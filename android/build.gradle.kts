@@ -1,7 +1,13 @@
+import java.util.Properties
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.multiplatform)
     alias(libs.plugins.compose.compiler)
+}
+
+val localProperties = Properties().also { props ->
+    rootProject.file("local.properties").takeIf { it.exists() }?.inputStream()?.use(props::load)
 }
 
 kotlin {
@@ -22,12 +28,14 @@ android {
         targetSdk = 35
         versionCode = 1
         versionName = "0.1.0"
-        val mapsKey = project.findProperty("MAPS_API_KEY")?.toString() ?: ""
-        manifestPlaceholders["MAPS_API_KEY"] = mapsKey
+        manifestPlaceholders["MAPS_API_KEY"] = localProperties.getProperty("MAPS_API_KEY") ?: ""
+        buildConfigField("String", "SERVER_WS_URL",
+            "\"${localProperties.getProperty("SERVER_WS_URL") ?: "ws://10.0.2.2:8080/ws"}\"")
     }
 
     buildFeatures {
         compose = true
+        buildConfig = true
     }
 
     compileOptions {

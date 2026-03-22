@@ -15,6 +15,7 @@ import com.google.accompanist.permissions.*
 import com.google.android.gms.maps.model.BitmapDescriptorFactory
 import com.google.android.gms.maps.model.CameraPosition
 import com.google.android.gms.maps.model.LatLng
+import com.google.android.gms.maps.CameraUpdateFactory
 import com.google.maps.android.compose.*
 import net.af0.where.model.UserLocation
 
@@ -28,6 +29,7 @@ fun MapScreen(
     onToggleSharing: () -> Unit,
     onAddFriend: (String) -> Unit,
     onRemoveFriend: (String) -> Unit,
+    onLocationPermissionGranted: () -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     val locationPermissions = rememberMultiplePermissionsState(
@@ -40,6 +42,12 @@ fun MapScreen(
     LaunchedEffect(Unit) {
         if (!locationPermissions.allPermissionsGranted) {
             locationPermissions.launchMultiplePermissionRequest()
+        }
+    }
+
+    LaunchedEffect(locationPermissions.allPermissionsGranted) {
+        if (locationPermissions.allPermissionsGranted) {
+            onLocationPermissionGranted()
         }
     }
 
@@ -56,6 +64,7 @@ fun MapScreen(
     }
 
     var showFriends by remember { mutableStateOf(false) }
+    var zoomToUserId by remember { mutableStateOf<String?>(null) }
 
     val defaultPosition = remember { CameraPosition.fromLatLngZoom(LatLng(37.33, -122.03), 10f) }
     val cameraPositionState = rememberCameraPositionState { position = defaultPosition }
@@ -67,6 +76,17 @@ fun MapScreen(
                 LatLng(ownLocation.lat, ownLocation.lng), 14f
             )
         }
+    }
+
+    LaunchedEffect(zoomToUserId) {
+        val id = zoomToUserId ?: return@LaunchedEffect
+        val user = users.find { it.userId == id }
+        if (user != null) {
+            cameraPositionState.animate(
+                CameraUpdateFactory.newLatLngZoom(LatLng(user.lat, user.lng), 15f)
+            )
+        }
+        zoomToUserId = null
     }
 
     Box(modifier.fillMaxSize()) {
@@ -143,6 +163,7 @@ fun MapScreen(
             onAdd = onAddFriend,
             onRemove = onRemoveFriend,
             onDismiss = { showFriends = false },
+            onZoomTo = { zoomToUserId = it },
         )
     }
 }

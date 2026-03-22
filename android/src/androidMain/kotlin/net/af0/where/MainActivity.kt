@@ -13,9 +13,12 @@ class MainActivity : ComponentActivity() {
 
     private val viewModel: LocationViewModel by viewModels()
 
+    fun startLocationService() {
+        startForegroundService(Intent(this, LocationService::class.java))
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        startForegroundService(Intent(this, LocationService::class.java))
 
         setContent {
             MaterialTheme {
@@ -30,6 +33,7 @@ class MainActivity : ComponentActivity() {
                     onToggleSharing = { viewModel.friendsStore.toggleSharing() },
                     onAddFriend = { viewModel.friendsStore.add(it) },
                     onRemoveFriend = { viewModel.friendsStore.remove(it) },
+                    onLocationPermissionGranted = ::startLocationService,
                 )
             }
         }

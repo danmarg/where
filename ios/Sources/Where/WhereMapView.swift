@@ -4,6 +4,7 @@ import MapKit
 struct WhereMapView: UIViewRepresentable {
     let users: [UserLocationData]
     let ownUserId: String
+    var zoomTarget: CLLocationCoordinate2D? = nil
 
     func makeUIView(context: Context) -> MKMapView {
         let mapView = MKMapView()
@@ -22,17 +23,27 @@ struct WhereMapView: UIViewRepresentable {
             mapView.addAnnotation(annotation)
         }
 
-        // Center on own location if present
-        if let own = users.first(where: { $0.userId == ownUserId }) {
+        // Zoom to friend if requested
+        if let target = zoomTarget {
+            let region = MKCoordinateRegion(center: target, latitudinalMeters: 1000, longitudinalMeters: 1000)
+            mapView.setRegion(region, animated: true)
+            return
+        }
+
+        // Auto-center on own location the first time only
+        if !context.coordinator.hasCentered,
+           let own = users.first(where: { $0.userId == ownUserId }) {
             let coord = CLLocationCoordinate2D(latitude: own.lat, longitude: own.lng)
             let region = MKCoordinateRegion(center: coord, latitudinalMeters: 5000, longitudinalMeters: 5000)
             mapView.setRegion(region, animated: true)
+            context.coordinator.hasCentered = true
         }
     }
 
     func makeCoordinator() -> Coordinator { Coordinator() }
 
     final class Coordinator: NSObject, MKMapViewDelegate {
+        var hasCentered = false
         func mapView(_ mapView: MKMapView, viewFor annotation: MKAnnotation) -> MKAnnotationView? {
             guard let userAnnotation = annotation as? UserAnnotation else { return nil }
             let id = "pin"

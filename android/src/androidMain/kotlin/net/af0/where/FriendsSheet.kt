@@ -1,5 +1,6 @@
 package net.af0.where
 
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -26,6 +27,7 @@ fun FriendsSheet(
     onAdd: (String) -> Unit,
     onRemove: (String) -> Unit,
     onDismiss: () -> Unit,
+    onZoomTo: (String) -> Unit = {},
 ) {
     val clipboard: ClipboardManager = LocalClipboardManager.current
     var copiedRecently by remember { mutableStateOf(false) }
@@ -112,7 +114,9 @@ fun FriendsSheet(
                 LazyColumn(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                     items(friendIds.toList()) { id ->
                         Row(
-                            modifier = Modifier.fillMaxWidth(),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable { onZoomTo(id); onDismiss() },
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.spacedBy(8.dp),
                         ) {

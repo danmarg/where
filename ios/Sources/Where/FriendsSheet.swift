@@ -2,6 +2,7 @@ import SwiftUI
 
 struct FriendsSheet: View {
     @ObservedObject var store: FriendsStore
+    var onZoomTo: (String) -> Void = { _ in }
     @State private var newId: String = ""
     @State private var showCopied = false
     @Environment(\.dismiss) private var dismiss
@@ -52,17 +53,26 @@ struct FriendsSheet: View {
                 if !store.friendIds.isEmpty {
                     Section("Friends") {
                         ForEach(Array(store.friendIds), id: \.self) { id in
-                            HStack {
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text(id.prefix(8))
-                                        .font(.system(.body, design: .monospaced))
-                                    Text(id)
-                                        .font(.system(.caption2, design: .monospaced))
+                            Button {
+                                onZoomTo(id)
+                                dismiss()
+                            } label: {
+                                HStack {
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text(id.prefix(8))
+                                            .font(.system(.body, design: .monospaced))
+                                        Text(id)
+                                            .font(.system(.caption2, design: .monospaced))
+                                            .foregroundStyle(.secondary)
+                                            .lineLimit(1)
+                                            .truncationMode(.middle)
+                                    }
+                                    Spacer()
+                                    Image(systemName: "location.fill")
                                         .foregroundStyle(.secondary)
-                                        .lineLimit(1)
-                                        .truncationMode(.middle)
+                                        .font(.caption)
                                 }
-                                Spacer()
+                                .foregroundStyle(.primary)
                             }
                         }
                         .onDelete { offsets in

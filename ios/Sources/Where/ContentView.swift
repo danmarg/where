@@ -1,11 +1,13 @@
 import SwiftUI
 import Combine
+import CoreLocation
 
 struct ContentView: View {
     @StateObject private var locationManager = LocationManager()
     @StateObject private var syncService = LocationSyncService(userId: UserIdentity.userId)
     @StateObject private var friendsStore = FriendsStore()
     @State private var showFriends = false
+    @State private var zoomTarget: CLLocationCoordinate2D? = nil
 
     // Only show self + friends on the map
     private var visibleUsers: [UserLocationData] {
@@ -16,7 +18,7 @@ struct ContentView: View {
 
     var body: some View {
         ZStack {
-            WhereMapView(users: visibleUsers, ownUserId: UserIdentity.userId)
+            WhereMapView(users: visibleUsers, ownUserId: UserIdentity.userId, zoomTarget: zoomTarget)
                 .ignoresSafeArea()
 
             VStack {
@@ -93,7 +95,12 @@ struct ContentView: View {
             }
         }
         .sheet(isPresented: $showFriends) {
-            FriendsSheet(store: friendsStore)
+            FriendsSheet(store: friendsStore) { friendId in
+                let user = syncService.users.first { $0.userId == friendId }
+                if let user {
+                    zoomTarget = CLLocationCoordinate2D(latitude: user.lat, longitude: user.lng)
+                }
+            }
         }
         .onAppear {
             locationManager.requestPermissionAndStart()
