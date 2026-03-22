@@ -21,20 +21,6 @@ targets:
       GENERATE_INFOPLIST_FILE: YES
       INFOPLIST_KEY_UIApplicationSceneManifest_Generation: YES
       INFOPLIST_KEY_UILaunchScreen_Generation: YES
-      FRAMEWORK_SEARCH_PATHS: $(SRCROOT)/../shared/build/xcode-frameworks/$(CONFIGURATION)/$(SDK_NAME)
-      OTHER_LDFLAGS: $(inherited) -framework Shared
-    preBuildScripts:
-      - name: Build KMP Shared Framework
-        script: |
-          set -e
-          cd "$SRCROOT/.."
-          # Read JDK path written by `nix develop` shellHook
-          if [ -f .xcode-java-home ]; then
-            export JAVA_HOME=$(cat .xcode-java-home)
-            export PATH="$JAVA_HOME/bin:$PATH"
-          fi
-          ./gradlew :shared:embedAndSignAppleFrameworkForXcode
-        basedOnDependencyAnalysis: false
-    dependencies:
-      - framework: ../shared/build/xcode-frameworks/$(CONFIGURATION)/$(SDK_NAME)/Shared.framework
-        embed: false
+      INFOPLIST_KEY_NSLocationWhenInUseUsageDescription: "Where needs your location to show it on the map."
+      INFOPLIST_KEY_NSLocationAlwaysAndWhenInUseUsageDescription: "Where needs your location in the background to keep sharing it."
+      INFOPLIST_KEY_UIBackgroundModes: location
