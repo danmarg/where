@@ -1,0 +1,12 @@
+.gradle/
+build/
+*.local.properties
+local.properties
+.idea/
+*.iml
+.DS_Store
+.xcode-java-home
+xcuserdata/
+*.xcworkspace/xcuserdata/
+DerivedData/
+.build/
