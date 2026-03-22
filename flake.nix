@@ -43,6 +43,7 @@
             pkgs.kotlin
             pkgs.ktlint
             pkgs.xcodegen
+            pkgs.gh
             androidSdk
           ];
 
