@@ -68,10 +68,23 @@ This document does **not** cover:
 | Honest-but-curious server | Reads all metadata and routing information but does not actively modify messages |
 | Malicious friend | A user who was legitimately added as a friend but later turns adversarial |
 | MITM during key exchange | Can intercept out-of-band key exchange if the channel is not authenticated |
+| Metadata-analyzing server | A server (honest-but-curious or compromised) that performs timing, presence, and social-graph analysis on connection metadata without decrypting payloads |
+
+### 2.1.1 Metadata Threat Model
+
+Metadata leakage is a first-class concern for this protocol, not a footnote. The server learns social graph, presence, and update timing even without decrypting payloads:
+
+- **Honest-but-curious server:** Social graph, presence, and timing leakage are observable limitations. Mitigations (inbox tokens, padding; see §7.4) reduce but do not eliminate this exposure. Timing-based movement inference is essentially unavoidable without cover traffic.
+- **Compromised server:** Metadata is less important than ciphertext recovery, but timing analysis can still reveal movement patterns. Payload padding (§7.4) is a mandatory baseline; cover traffic is optional.
+- **Passive network attacker:** TLS at the transport layer (§10.3) hides metadata from the network. The server still observes everything above.
+
+For threat models that include a metadata-analyzing server, the mitigations in §7.4 are the appropriate countermeasures. This document uses "honest-but-curious server" to mean a server that does not forge or modify ciphertexts, but may perform unlimited metadata analysis.
+
+---
 
 ### 2.2 What This Protocol Protects Against
 
-- **Server compromise revealing historical locations.** A server that is compromised at time T cannot decrypt location updates sent before the last ratchet epoch boundary (forward secrecy). It cannot decrypt updates after epoch boundaries it was not present for (post-compromise security, within limits; see §5.4).
+- **Server compromise revealing historical locations.** *Forward secrecy (per-message):* deleting each message key `MK_n` immediately after use ensures that compromise of one key does not expose others. *Post-compromise security (epoch-level):* the next DH ratchet step with fresh material limits how long a leaked chain key remains exploitable. However, this is **bounded PCS, not true PCS**: because Bob's DH contribution derives from his long-term identity key `IK.priv`, a future compromise of Bob's `IK.priv` allows retroactive recomputation of all historical epoch keys. See §5.0 and §5.4 for a precise characterisation of these limits.
 - **Passive eavesdropping.** All location payloads are encrypted with ephemeral symmetric keys derived from a per-friend ratchet. A passive observer with access to ciphertext learns nothing about coordinates.
 - **Replay attacks.** Each message carries a monotonically increasing sequence counter which is also authenticated (as AEAD additional data). The recipient rejects any frame with a counter it has already seen.
 - **Ciphertext forgery.** AES-256-GCM authentication tags cover both the ciphertext and associated data (sender ID, epoch, sequence number). A server or attacker cannot modify a frame without detection.
@@ -79,7 +92,8 @@ This document does **not** cover:
 
 ### 2.3 What This Protocol Does NOT Protect Against
 
-- **Traffic analysis.** The server still sees packet timing, packet sizes, and connection metadata. An attacker who knows Alice sends ~30-second updates can correlate encrypted frames to Alice's movement patterns (e.g., update frequency drops when she stops moving). Location *frequency* is as sensitive as location *content* for some threat models.
+- **Traffic analysis.** The server sees packet timing, packet sizes, and connection metadata regardless of payload encryption. For a location app, timing is nearly as sensitive as content: update intervals increasing from 30 s (moving) to 5 min (stationary) reveal movement state; silence reveals offline/stopped status; synchronized update timing across multiple users suggests co-location. A metadata-analyzing server can infer movement patterns from timing alone, independent of content. Mitigations (cover traffic, padding) are discussed in §7.4; they add overhead and battery cost and are not a panacea. This is elevated here as a top-level limitation for threat models that include a compromised or curious server.
+- **Initial TOFU impersonation.** The first key exchange (§4) is accepted unconditionally. If an attacker intercepts Bob's invite before Alice scans it and substitutes their own key, Alice will share her location with the attacker, not Bob. Safety number verification (§3.2) can detect this after the fact, but only if Alice and Bob compare numbers out-of-band — and by then the attacker may have accumulated a full movement history. See §3.1 for the unmitigated risk and §3.2 for the v2 mitigation.
 - **A malicious friend.** If Bob is Alice's friend, Bob receives Alice's plaintext location after decryption on his device. Bob can log it, forward it, or otherwise misuse it. The protocol provides no cryptographic protection against a legitimate-but-adversarial recipient.
 - **Device seizure or compromise.** If an attacker has physical access to Alice's device, they can read decrypted locations from memory or reconstruct keys from the device's persistent state. This is a device-security problem, not a protocol problem.
 - **Metadata about the social graph.** The server knows which user IDs are simultaneously connected. If Alice and Bob are both connected and Alice's friend list contains Bob's UUID, the server can infer the friendship even without reading location data (see §7 for partial mitigations).
@@ -108,6 +122,7 @@ The user proposes that each device generates a long-term identity key pair (Ed25
 - **TOFU is only as strong as the initial exchange.** Trust-on-First-Use means the very first time Alice receives Bob's public key, she accepts it unconditionally. If that initial exchange is intercepted (e.g., Eve intercepts a QR code over a shoulder, or intercepts the copy-pasted string), all future communication is compromised with no way for Alice to detect this. There is no retrospective verification.
 - **No cross-device binding.** If Bob runs the app on both his phone and tablet, Alice must separately verify and store two different public keys. There is no protocol that says "these keys belong to the same person."
 - **Binding of UUID to public key is unverifiable.** Nothing prevents Eve from constructing a fake `(uuid, publicKey)` pair and presenting it to Alice. Without a signed assertion from some trusted authority, Alice cannot know whether the public key she received truly belongs to the UUID's owner.
+- **No defense against fake accounts.** This design does not prevent a motivated attacker from creating multiple accounts with different UUIDs, each impersonating a different friend. Account identity verification (e.g., phone number or email binding) is a higher-layer concern outside the scope of this protocol. Applications using this protocol should implement such checks to reduce per-app TOFU risks.
 
 ### 3.2 Recommended Pragmatic Middle Ground
 
@@ -122,6 +137,10 @@ Rather than requiring a full PKI or central identity server, adopt a lightweight
 4. **No re-use of identity keys across re-installs.** App uninstall/reinstall generates a new key pair and UUID, forcing all friends to re-do the exchange. This is a deliberate forcing function: it prevents silent key reuse and ties identity churn to the natural friction of reinstallation.
 
 5. **Key rotation is manual and explicit.** There is no automated rotation of the long-term identity key. If a user suspects compromise, they rotate by reinstalling. This trades security-automation for implementation simplicity, appropriate for v2.
+
+**Implementation note — key derivation domain separation:** The identity key pair uses a single seed: the Ed25519 signing key derives the X25519 DH key via libsodium's `crypto_sign_ed25519_sk_to_curve25519`. This function implements RFC 8032 and correctly domain-separates the signing and DH contexts. Implementations MUST use this specific conversion function — not a raw key copy — to avoid key-confusion attacks between signing and key-agreement operations.
+
+**Lost-device recovery flow:** When a user loses their device, the recovery path is: (1) reinstall the app to generate a new identity key pair and UUID; (2) re-share the new invite code with each friend out-of-band; (3) each friend re-imports the code, triggering a "Safety Number Changed" alert they must explicitly acknowledge. There is no automated revocation in v2. User-facing guidance must describe this flow explicitly so users know what to do after a lost or stolen device. In-app revocation without reinstalling is deferred to future work.
 
 ---
 
@@ -167,19 +186,38 @@ SK  = HKDF-SHA-256(IKM = DH1 || DH2,
 Bob then encrypts `SK` with `Alice.IK.pub` (using ECIES / `crypto_box` semantics) and transmits:
 ```json
 {
-  "type": "KeyExchangeInit",
-  "from_uuid": "bob-uuid",
-  "ik_pub": base64(Bob.IK.pub),
-  "ek_pub": base64(EK_B.pub),
-  "sig": base64(Ed25519Sign(Bob.SigIK.priv, ik_pub || ek_pub))
+  "type":    "KeyExchangeInit",
+  "from":    "bob-uuid",
+  "to":      "alice-uuid",
+  "ik_pub":  "<base64, Bob's X25519 identity public key>",
+  "ek_pub":  "<base64, Bob's X25519 ephemeral public key>",
+  "sig_pub": "<base64, Bob's Ed25519 signing public key>",
+  "sig":     "<base64, Ed25519 signature over (ik_pub || ek_pub || sig_pub)>"
 }
 ```
 
-This message is sent over the WebSocket server. The server sees only Bob's and Alice's UUIDs and the encrypted blob.
+This message is sent over the WebSocket server. The server sees only Bob's and Alice's UUIDs and the public key material.
 
-Alice receives the `KeyExchangeInit`, verifies Bob's signature over `(ik_pub || ek_pub)`, recomputes the same DH operations to derive `SK`, and the session is bootstrapped.
+Alice receives the `KeyExchangeInit` and:
 
-**What the server learns:** Bob's UUID, Alice's UUID, two X25519 public keys, an Ed25519 signature, and the ciphertext of `SK`. It learns that these two users initiated a key exchange. It does not learn `SK`.
+**Signature verification (mandatory — abort on failure):**
+```
+sig_bytes     = Base64Decode(sig_field)
+ik_pub_bytes  = Base64Decode(ik_pub_field)
+ek_pub_bytes  = Base64Decode(ek_pub_field)
+sig_pub_bytes = Base64Decode(sig_pub_field)
+signed_data   = ik_pub_bytes || ek_pub_bytes || sig_pub_bytes
+if not Ed25519Verify(signed_data, sig_bytes, sig_pub_bytes):
+    abort — discard message, do not store any key material
+```
+
+Future versions should prepend a protocol version/context string to `signed_data` for cross-protocol domain separation.
+
+Alice then recomputes the same DH operations to derive `SK`, and the session is bootstrapped.
+
+**What the server learns:** Bob's UUID, Alice's UUID, two X25519 public keys, an Ed25519 signing key, a signature, and the ciphertext of `SK`. It learns that these two users initiated a key exchange. It does not learn `SK`.
+
+**Forward secrecy trade-off:** This protocol omits Signal's signed prekey and one-time prekey (present in full X3DH). Because both DH inputs in `DH2 = X25519(Bob.IK.priv, Alice.IK.pub)` are long-term keys, a future compromise of Bob's `IK.priv` allows an attacker to retroactively compute `SK` for every session Bob has established. This is a deliberate simplification: the exchange is synchronous (Bob is online), eliminating the need for a prekey server. For threat models requiring stronger forward secrecy of the initial handshake, full X3DH with a prekey server is deferred to future work (§13).
 
 ### 4.3 Option B: Out-of-Band Copy-Paste (Existing UUID Flow Extension)
 
@@ -192,7 +230,9 @@ This is less secure than Option A because the transmission channel (iMessage, et
 
 The key agreement proceeds identically to Option A, with the difference that the QR code scanning step is replaced by a deep link tap.
 
-**Risk:** If the out-of-band channel is compromised (e.g., Eve intercepts the iMessage before Bob sees it), Eve can substitute her own public key. Bob will then share his location with Eve, not Alice. This is the classic TOFU MITM. Encourage users who care about strong security to verify fingerprints in person.
+**Risk:** If the out-of-band channel is compromised (e.g., Eve intercepts the iMessage before Bob sees it), Eve can substitute her own public key. Bob will then share his location with Eve, not Alice. This is the classic TOFU MITM — and for a location app the impact is high: Eve accumulates a continuous time-series of movement history.
+
+Option B is appropriate when in-person exchange is impractical. However, the app MUST display a prominent, hard-to-dismiss prompt encouraging fingerprint verification after the friend is added via this path. This is not optional guidance: users who skip it unknowingly accept the impersonation risk. The prompt should show the safety number and explain what to do with it.
 
 ### 4.4 What the Server Learns from Key Exchange
 
@@ -204,7 +244,20 @@ The server cannot derive `SK` without one of the parties' private keys. This sat
 
 ---
 
-## 5. Ratchet Design for Streaming Location Data
+## 5. Ratchet Design for One-Way Streaming Location Data
+
+### 5.0 Architectural Trade-offs vs. Signal Double Ratchet
+
+This protocol uses a hybrid ratchet designed for **one-way streaming** (Alice sends continuously; Bob is a passive receiver), not bidirectional messaging. This asymmetry produces weaker security guarantees than Signal's Double Ratchet:
+
+| Property | Signal Double Ratchet | This Protocol |
+|---|---|---|
+| Forward secrecy | Per message | Per message |
+| Post-compromise security | Per round-trip (both parties contribute fresh DH material) | Per `RatchetAck` interval (≤10 min if Bob is online; degrades if offline — see §5.3.1) |
+| Bob's DH contribution | On every reply | Only via periodic `RatchetAck` |
+| Long-term identity key compromise | Limited to current session's secret material | Retroactively breaks all historical epoch keys (Bob's `IK.priv` never changes) |
+
+For a location app these trade-offs are acceptable: location data is time-sensitive, Bob's passive-receiver role is fundamental to the architecture, and users tolerate offline periods. The protocol's ratchet is not a drop-in Double Ratchet and should not be described as such.
 
 ### 5.1 The Signal Double Ratchet — Brief Recap
 
@@ -235,10 +288,12 @@ Alice's symmetric ratchet advances per-message. Additionally, every `T` minutes,
 
 ```json
 {
-  "type": "EpochRotation",
-  "new_ek_pub": base64(Alice.NewEK.pub),
-  "epoch": 42,
-  "sig": base64(Sign(Alice.SigIK.priv, new_ek_pub || epoch))
+  "type":       "EpochRotation",
+  "from":       "alice-uuid",
+  "to":         "bob-uuid",
+  "epoch":      43,
+  "new_ek_pub": "<base64, Alice's new X25519 ephemeral public key>",
+  "sig":        "<base64, Ed25519 signature over (from || to || epoch || new_ek_pub)>"
 }
 ```
 
@@ -272,11 +327,12 @@ The cleanest solution is to allow Bob to periodically reply on the channel, even
 
 ```json
 {
-  "type": "RatchetAck",
-  "to_uuid": "alice-uuid",
-  "new_ek_pub": base64(Bob.NewEK.pub),
+  "type":       "RatchetAck",
+  "from":       "bob-uuid",
+  "to":         "alice-uuid",
   "epoch_seen": 41,
-  "sig": base64(Sign(Bob.SigIK.priv, new_ek_pub || epoch_seen))
+  "new_ek_pub": "<base64, Bob's new X25519 ephemeral public key>",
+  "sig":        "<base64, Ed25519 signature over (from || to || epoch_seen || new_ek_pub)>"
 }
 ```
 
@@ -293,14 +349,35 @@ This restores the full Double Ratchet security guarantee: both parties contribut
 - Bob must remain connected (or buffer the `RatchetAck` for delivery when reconnected).
 - If Bob is offline for an extended period (days), Alice cannot advance the DH ratchet. A time-based fallback (Strategy 1) should fire if no `RatchetAck` is received within `2R` minutes — sacrificing PCS but maintaining forward secrecy.
 
+#### 5.3.1 Offline and Failure Modes
+
+**Offline Bob:** If Bob is offline, Alice receives no `RatchetAck`. After `2R` minutes (default: 20 min), Alice falls back to a time-based DH ratchet step using Bob's last known `their_ek_pub`. During the `2R`-minute offline window, the DH ratchet does not advance; only the per-message symmetric ratchet (forward secrecy) is active. PCS is not provided during this window.
+
+**`RatchetAck` loss or delay:** If a `RatchetAck` is dropped, Alice will eventually time out and fall back. To accelerate recovery, Alice SHOULD retransmit her latest `EpochRotation` if no `RatchetAck` is received within `R` minutes (rather than waiting for the full `2R` timeout). A `RatchetAck` that arrives after Alice has already fallen back is still valid: Alice SHOULD apply it to advance the DH ratchet from the current state, even if out of the expected window.
+
+**Device crash or restart:** Session state (root key, current EK) is reloaded from the platform keychain on restart. Bob's subsequent `RatchetAck` will use his new ephemeral key. Alice applies it, advances the DH ratchet, and the session recovers without re-keying.
+
+**Summary of PCS guarantees in hybrid mode:**
+
+| Scenario | PCS guarantee |
+|---|---|
+| Both online, `RatchetAck` delivered | True bilateral PCS within `R` minutes |
+| Bob offline `< 2R` min | No PCS (symmetric FS only); DH ratchet stalls |
+| Bob offline `> 2R` min | One-sided DH refresh (Alice's EK changes; Bob's does not) |
+| Bob offline indefinitely | Per-message FS only; no PCS |
+
 ### 5.4 Forward Secrecy Granularity vs. Overhead Analysis
 
 | Strategy | FS Granularity | PCS | Extra Messages/day (10 friends) | Notes |
 |---|---|---|---|---|
 | Per-message symmetric only | Per message | None | 0 | No DH ratchet; chain key compromise = full future exposure |
-| Time-based (T=5 min) | Per message | Per epoch (one-sided) | ~288 EpochRotation messages | Bob's IK compromise breaks PCS |
-| Message-count (K=20) | Per message | Per 20 messages | ~288 EpochRotation messages | Same weakness |
-| Hybrid RatchetAck (R=10 min) | Per message | Per 10 minutes (bilateral) | ~288 location + 144 RatchetAck | Full Double Ratchet; recommended |
+| Time-based (T=5 min) | Per message | One-sided DH refresh¹ | ~288 EpochRotation messages | Not true PCS; Bob's `IK.priv` compromise retroactively breaks all epochs |
+| Message-count (K=20) | Per message | One-sided DH refresh¹ | ~288 EpochRotation messages | Same weakness as time-based |
+| Hybrid RatchetAck (R=10 min) | Per message | Bilateral within R min² | ~288 location + 144 RatchetAck | Closest to Double Ratchet PCS; recommended |
+
+¹ *One-sided DH refresh:* Alice contributes a new ephemeral key each epoch, but Bob's DH input remains his long-term `IK.priv`. If Bob's `IK.priv` is ever compromised (now or in the future), all historical epoch keys can be recomputed. This is not post-compromise security in the Signal sense.
+
+² *Bilateral PCS:* Both Alice and Bob contribute fresh ephemeral material per `RatchetAck` cycle. Degrades to one-sided if Bob is offline for `> 2R` minutes; see §5.3.1.
 
 ### 5.5 Message Key Deletion Policy
 
@@ -312,6 +389,13 @@ Forward secrecy is only as strong as the message key deletion discipline:
 - Ephemeral DH private keys MUST be deleted after computing the shared secret.
 - On Android, keys live in a `SecureRandom`-backed in-memory structure; `Arrays.fill(key, 0)` before GC. On iOS, `Data` is zeroed explicitly before dealloc.
 - No message keys or chain keys are persisted to disk. If the app is killed and restarted, the session restarts from the last stored epoch state (root key + current EK). The root key is stored in the platform keychain (Android Keystore / iOS Secure Enclave-backed Keychain).
+
+**Keychain backup and state-rollback risk:** Platform keychains may be backed up (iCloud Keychain on iOS, Google Play Backup on Android). If a backup is restored to a different device or is compromised, the attacker gains access to the stored root key and current chain key, and can re-derive message keys from the backed-up epoch forward — until the next DH ratchet step heals the session.
+
+Mandatory mitigations:
+- **iOS:** Mark all session-state keychain items with `kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly`. This attribute excludes the item from iCloud Backup.
+- **Android:** Store session state in `EncryptedSharedPreferences` backed by a Keystore key created with `setIsStrongBoxBacked(true)` and `allowBackup=false` in the manifest.
+- **Both:** On detecting a fresh install or that session state is missing/invalid (e.g., root key absent, epoch counter reset), invalidate the session and initiate re-keying with all affected friends rather than accepting a potentially stale backup.
 
 ---
 
@@ -351,6 +435,8 @@ Signal's Sender Keys protocol ([documented in their group messaging work](https:
 
 MLS (RFC 9420) is the gold standard for large groups and achieves O(log N) key operations. It is also vastly more complex to implement correctly, requires tree state synchronization, and is overkill for groups of tens of users. It is noted here for completeness; it could be considered if Where scales to large ephemeral groups.
 
+**Scalability note:** For N ≤ 50 friends, per-friend encryption is practical — deriving 50 message keys per location update is sub-millisecond on modern mobile hardware, and 20-friend sessions require ~8 KB per 30-second cycle. For N > 500, sender-key schemes become meaningfully more attractive on bandwidth and compute. The current design is optimized for small groups (typical 5–50 friends). If Where adds large group shares or public location broadcasts, a shared-key model at that layer should be evaluated separately.
+
 ### 6.3 Handling Friend Add/Remove
 
 **Adding a friend:** When Alice adds Bob as a friend, she runs the key exchange (§4) and initializes a new ratchet session seeded from the resulting `SK`. There is no effect on other friends' sessions.
@@ -358,6 +444,8 @@ MLS (RFC 9420) is the gold standard for large groups and achieves O(log N) key o
 **Removing a friend:** Alice removes the ratchet session state for Bob. Since she was encrypting separately for each friend, Bob's removal immediately stops the flow of ciphertext addressed to him. He cannot recover future location updates.
 
 **Important:** Removing Bob does not provide cryptographic protection against Bob's having cached past location updates. If Bob logged Alice's decrypted locations before being removed, there is no technical mechanism to prevent that. This is a property of the application layer (consent model), not the cryptographic protocol.
+
+**Multi-device note:** This design does not address multi-device friend-list synchronisation (deferred to §13). Friend additions and removals are per-device: a user with two devices may have divergent friend lists, causing different friends to receive location from each device. This is a known v2 limitation; multi-device support with synchronised friend lists is planned for future work.
 
 ---
 
@@ -393,13 +481,13 @@ Even with fully opaque payloads, the server can observe:
 
 ### 7.4 Partial Mitigations
 
-These are incremental improvements, not panaceas:
+These are incremental improvements, not panaceas. They are listed in decreasing order of implementation priority:
 
-- **Obfuscated recipient IDs:** Instead of sending `"to": "bob-uuid"` in plaintext, send `"to": HMAC-SHA-256(routing_secret, "bob-uuid")[0:16]` where `routing_secret` is derived from the shared session key. The server still needs to route, so it must either know the mapping or receive a routable identifier. One approach: Alice registers an ephemeral "inbox token" for Bob during key exchange; only Alice knows this maps to Bob. The server indexes by inbox token, not UUID.
-- **Cover traffic:** Clients send a fixed-rate heartbeat (encrypted random bytes addressed to `/dev/null`) to mask the location-update cadence. This defeats timing-based inference but increases battery and bandwidth usage.
-- **Padding:** All location payloads are padded to a fixed length (e.g., 256 bytes) before encryption to mask payload size variations.
+- **Payload padding (mandatory in v2):** All location payloads MUST be padded to a fixed length before encryption to mask payload size variations. Pad the plaintext JSON to a fixed block size (e.g., 256 bytes) with zero bytes; the first two bytes of the decrypted plaintext encode the true payload length as a big-endian uint16. This is cheap and eliminates size-based traffic analysis at negligible cost (~50 bytes of overhead per message).
 
-Cover traffic and padding are recommended for a threat model that includes a curious server operator. They are optional for v2 but should be on the roadmap.
+- **Obfuscated recipient IDs / inbox tokens (recommended for v2):** Instead of routing to `"to": "bob-uuid"` in plaintext, clients SHOULD establish a per-friend ephemeral **inbox token** during key exchange. Alice includes a randomly generated 128-bit token in her `KeyExchangeInit`; Bob registers it as his inbox address for Alice's messages. The server indexes WebSocket connections by inbox token. Only Alice knows which token maps to Bob's UUID. Tokens rotate each epoch for forward unlinkability. **Without this mitigation, the server can directly reconstruct the full social graph from routing headers.** Inbox tokens are the recommended baseline for v2; the server changes required are minimal (swap UUID lookup for token lookup in the routing table).
+
+- **Cover traffic (optional, deferred):** Clients may send a fixed-rate stream of encrypted random bytes to a server sink to mask update cadence. At a 10-second cover interval (sufficient to hide 30-second real updates), overhead is roughly 3× baseline: ~8 KB/30 s becomes ~24 KB/30 s for a 20-friend session. Battery impact on mobile is non-trivial. Cover traffic is deferred to a future release; if implemented, it must be opt-in with explicit user warnings about data and battery cost.
 
 ---
 
@@ -449,21 +537,41 @@ Output: 64 bytes split as `[0:32] = new_root_key`, `[32:64] = new_chain_key`.
 
 **KDF_CK (symmetric ratchet step):**
 ```
-new_chain_key = HMAC-SHA-256(key=chain_key, data=0x01)
-message_key   = HMAC-SHA-256(key=chain_key, data=0x02)
+new_chain_key  = HMAC-SHA-256(key=chain_key, data=0x01)
+message_key    = HMAC-SHA-256(key=chain_key, data=0x02)
+message_nonce  = HMAC-SHA-256(key=chain_key, data=0x03)[0:12]  // optional; see nonce note below
 ```
-This is identical to the Signal spec's KDF_CK construction.
+The first two outputs are identical to the Signal spec's KDF_CK construction. The optional third output provides a deterministic nonce for implementations that choose to forego random nonce generation (see §8.3 note on nonces).
 
 **Message encryption:**
 ```
-nonce = random 12 bytes (96-bit, generated per message — NOT counter-based,
-        to avoid nonce reuse after ratchet state restoration from keychain)
-aad   = encode_aad(sender_uuid, recipient_uuid, epoch, seq)
+nonce = random 12 bytes (96-bit, generated per message)
+aad   = "Where-v2-Location" || encode_aad(sender_uuid, recipient_uuid, epoch, seq)
 (ciphertext, tag) = AES-256-GCM(key=message_key, nonce=nonce,
-                                  plaintext=loc_json, aad=aad)
+                                  plaintext=loc_json_padded, aad=aad)
 ```
 
-Note on nonce: Because `message_key` is unique per message (derived from the ratchet), nonce reuse across messages is not a concern — each message has a distinct key. A random 96-bit nonce provides a comfortable margin. However, if state recovery from persistent keychain is ever implemented (e.g., restoring from a root key), deterministic nonce assignment from `seq` is safer. For v2, random nonces are used.
+The `"Where-v2-Location"` prefix provides domain separation from other protocol contexts (e.g., `EpochRotation`, future protocol versions), preventing cross-context AAD collisions or forgery attempts.
+
+**Note on nonces:** Because `message_key` is unique per message (derived from the ratchet chain), nonce reuse across messages in the normal flow is not a concern — each message has a distinct key. A random 96-bit nonce provides comfortable margin. However, if keychain state is restored to an earlier epoch (e.g., backup restoration; see §5.5), the same root key may re-derive the same message key, and a random nonce could theoretically collide. This risk is mitigated by the mandatory keychain backup controls in §5.5 (device-only storage). As a hardening measure, implementations SHOULD derive nonces deterministically from the chain state:
+
+```
+// Third KDF_CK output alongside message_key:
+message_nonce = HMAC-SHA-256(key=chain_key, data=0x03)[0:12]
+```
+
+This guarantees nonce uniqueness within a session even across state rollbacks, at negligible cost. v2 MAY use random nonces if the §5.5 backup controls are enforced; deterministic nonces are the safer long-term choice.
+
+### 8.3.1 Ordering and Replay Handling
+
+Each `EncryptedLocation` frame carries a `seq` counter. Recipients enforce:
+
+1. **Replay rejection:** Any frame whose `seq` is already in the set of observed sequence numbers is dropped immediately.
+2. **Out-of-order handling:** A frame with `seq < max_seq_received` but not yet seen is a reordered delivery. Two approaches are viable:
+   - **(A) Strict ordering (recommended for v2):** Reject any frame with `seq < max_seq_received`. Because message keys are forward-derived and the previous chain key is deleted, the recipient cannot retroactively derive `MK_n` for `n < current`. Strict ordering is therefore the natural policy; it may cause rare dropped updates on lossy connections, but location data has low tolerance for stale state anyway.
+   - **(B) Skipped-message buffering (future):** Store message keys for a bounded window of `seq` values ahead of current and buffer out-of-order frames. Adds memory overhead and implementation complexity; deferred to a future revision if real-world out-of-order loss rates justify it.
+
+For v2, policy (A) is used. Monitor server-side sequence gaps to calibrate whether policy (B) is needed.
 
 ### 8.4 Ratchet Advancement Policy
 
@@ -497,7 +605,11 @@ All WebSocket messages are JSON-encoded binary frames. Message types are discrim
 
 **AAD (authenticated, not encrypted):**
 ```
-aad = alice-uuid || bob-uuid || epoch (4 bytes, big-endian) || seq (8 bytes, big-endian)
+aad = "Where-v2-Location" (18 bytes, UTF-8)
+    || alice-uuid (16 bytes, raw UUID bytes)
+    || bob-uuid   (16 bytes, raw UUID bytes)
+    || epoch      (4 bytes, big-endian uint32)
+    || seq        (8 bytes, big-endian uint64)
 ```
 
 **Plaintext (before encryption):**
@@ -585,6 +697,8 @@ On receipt of any `EncryptedLocation`, `EpochRotation`, `RatchetAck`, or `KeyExc
 
 The server never reads any field other than `"type"` and `"to"`.
 
+**Delivery guarantees:** The server provides best-effort, at-most-once delivery. If the destination UUID is not connected at the time a frame arrives, the frame is dropped (or held in a short-lived buffer, per §13.3). There are no ACKs, retransmissions, or delivery receipts at the server layer. For location updates this is acceptable: stale coordinates are not useful, and the sending client will emit a fresh update on its next cycle. Clients MUST NOT assume delivery and MUST NOT rely on server buffering for reliable state synchronisation.
+
 ### 10.3 What Stays the Same
 
 - Ktor WebSocket server infrastructure (`ktor-server-websockets`)
@@ -622,7 +736,7 @@ Migration is therefore a flag-day cut for the server, with a grace period for cl
 **Phase 2 — v2 client achieves >90% install base:**
 - Remove `LocationBroadcast` handling from server.
 - Remove `/locations` REST endpoint.
-- v1 clients gracefully degrade (they connect but receive no recognizable location updates).
+- v1 clients gracefully degrade (they connect but receive no recognisable location updates). The v1 app should display a message such as: "Your friend has upgraded to encrypted location sharing. Update Where to view their location." This requires the v1 client to handle unknown message types gracefully rather than crashing. If the installed v1 client crashes on unknown types, a mandatory v1 patch adding graceful degradation must ship before the server-side cutover.
 
 **Phase 3 — v1 EOL:**
 - Server drops connections from clients that send `LocationBroadcast` frames.
@@ -635,6 +749,8 @@ When a v2 client connects and discovers that a friend has not yet performed key 
 3. Does NOT fall back to sending plaintext location to unexchanged friends.
 
 This ensures that v2 clients never silently downgrade to plaintext.
+
+**v1 → v2 upgrade key exchange bootstrap:** When a user upgrades from v1 to v2, the app generates a new identity key pair and UUID on first launch. It then sends `KeyExchangeInit` messages to all UUIDs in the existing friend list. v1 friends receive these messages on the v2 server but cannot process them (unknown message type) — the messages are effectively dropped. When a v1 friend subsequently upgrades to v2, their app generates its own identity key pair and responds to any pending `KeyExchangeInit` (or sends a new one); both sides then enter the encrypted protocol. Until that exchange completes, the upgrading user sees "pending encryption" for that friend and receives no location from them.
 
 ### 11.4 State Migration
 
@@ -672,8 +788,12 @@ This ensures that v2 clients never silently downgrade to plaintext.
 
 3. **Server-side message buffering.** If Bob is offline when Alice sends a location update, the message is dropped. Buffering encrypted messages server-side for offline delivery is operationally straightforward (the server never needs to decrypt them) but raises storage and key-freshness concerns (a buffered location from 12 hours ago may not be useful). A short TTL (e.g., 5 minutes) on buffered messages is recommended.
 
-4. **Location data minimization.** Even with E2EE, clients receive precise GPS coordinates. A future feature could allow users to configure "fuzzing" — encrypting a location degraded to, e.g., neighborhood precision — so that even a legitimate friend who is untrusted at fine granularity cannot determine exact position.
+4. **Location precision control.** *(Decision required — see note below.)* Even with E2EE, recipients receive full GPS precision. Allowing users to degrade precision before encryption (e.g., to neighbourhood granularity) would prevent even a legitimate friend from learning exact position. Degradation happens on the sender's device before encryption, so the ciphertext contains only the degraded coordinate. The reviewer recommends this be v2 scope, not future work, because it is a core privacy control. **Decision needed: is this in scope for v2?**
 
-5. **Key transparency.** For stronger protection against MITM at key exchange time, a lightweight key transparency log (similar to [CONIKS](https://coniks.cs.princeton.edu/) or Apple's iCloud Key Transparency) could allow users to verify that the key stored for their UUID has not been silently changed by a server-side adversary. This is ambitious for v2 but would meaningfully close the gap on the TOFU weaknesses described in §3.1.
+5. **Key transparency / signed directory.** *(Decision required — see note below.)* The TOFU weakness described in §3.1 is the highest-value attack surface for a location app. Two options:
+   - **Option A — Lightweight signed directory:** The server signs `(UUID, IK.pub, timestamp)` tuples with a long-lived server signing key. Clients cache and verify these signatures; if the server provides a different `IK.pub` for the same UUID, the client detects the fork. Simpler than full KT; adds one server-side table and a signing step. Does not prevent the server from equivocating to different clients simultaneously, but makes equivocation auditable if clients compare notes.
+   - **Option B — Full key transparency (CONIKS / Apple iCloud KT):** Verifiable append-only log of `(UUID, IK.pub)` bindings. Clients verify log proofs; server cannot silently substitute keys. More complex; likely v3 scope.
+   - **Option C — Document as known limitation:** Keep current TOFU + safety numbers approach, document the impersonation risk prominently, and defer both options. This is the current v2 baseline.
+   **Decision needed: Option A, B, or C?** Option A has modest implementation cost and meaningfully raises the bar for server-side impersonation.
 
-6. **Ratchet state persistence and recovery.** Currently, root keys are stored in the platform keychain; if a user's keychain is wiped (e.g., factory reset), session state is lost and key exchange must be re-run. This is acceptable but creates friction. A sealed backup of session state (encrypted to the user's identity key and stored encrypted in the cloud) could enable recovery without trusting the server.
+6. **Ratchet state persistence and recovery.** Currently, root keys are stored in the platform keychain; if a user's keychain is wiped (e.g., factory reset), session state is lost and key exchange must be re-run. This is acceptable but creates friction. A sealed backup of session state (encrypted to the user's identity key and stored encrypted in the cloud) could enable recovery without trusting the server. Any such backup mechanism must be careful not to reintroduce the state-rollback risk described in §5.5.
