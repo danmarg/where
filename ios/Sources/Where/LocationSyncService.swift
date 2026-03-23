@@ -37,6 +37,12 @@ final class LocationSyncService: ObservableObject {
     }
 
     func connect() {
+        // Cancel any existing connection before creating a new one to prevent task leakage.
+        receiveLoop?.cancel()
+        receiveLoop = nil
+        webSocketTask?.cancel(with: .goingAway, reason: nil)
+        webSocketTask = nil
+
         connectionState = .connecting
         let urlString = "ws://localhost:8080/ws?userId=\(userId)"
         guard let url = URL(string: urlString) else { return }

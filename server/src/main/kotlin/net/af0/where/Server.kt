@@ -60,16 +60,19 @@ fun Application.module() {
                             json.decodeFromString<WsMessage>(frame.readText())
                         }.getOrNull() ?: continue
 
-                        if (msg is WsMessage.LocationUpdate) {
+                        if (msg is WsMessage.LocationUpdate && msg.location.userId == userId) {
                             locations[userId] = msg.location
                             broadcastLocations()
                         }
                     }
                 }
             } finally {
-                sessions.remove(userId)
-                locations.remove(userId)
-                broadcastLocations()
+                // Only remove state if this session is still the active one for this userId.
+                // A newer session may have already replaced us in the map.
+                if (sessions.remove(userId, this)) {
+                    locations.remove(userId)
+                    broadcastLocations()
+                }
             }
         }
     }
