@@ -10,7 +10,7 @@ enum ServerConfig {
     #if targetEnvironment(simulator)
     static let wsBaseUrl = "ws://localhost:8080/ws"
     #else
-    // TODO: replace with your server's address for real-device builds
-    static let wsBaseUrl = "ws://localhost:8080/ws"
+    // TODO: replace with your server's LAN IP or deployed URL before running on a real device.
+    static let wsBaseUrl = "ws://REPLACE_ME:8080/ws"
     #endif
 }

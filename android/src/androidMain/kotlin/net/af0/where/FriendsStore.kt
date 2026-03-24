@@ -4,6 +4,7 @@ import android.content.Context
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 
 class FriendsStore(context: Context, private val ownUserId: String) {
 
@@ -28,9 +29,8 @@ class FriendsStore(context: Context, private val ownUserId: String) {
     }
 
     fun toggleSharing() {
-        val newValue = !_isSharingLocation.value
-        _isSharingLocation.value = newValue
-        prefs.edit().putBoolean("is_sharing", newValue).apply()
+        _isSharingLocation.update { !it }
+        prefs.edit().putBoolean("is_sharing", _isSharingLocation.value).apply()
     }
 
     private fun loadFriends(): Set<String> =

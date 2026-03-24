@@ -19,17 +19,20 @@ import java.util.concurrent.ConcurrentHashMap
 
 private val json = Json { classDiscriminator = "type"; ignoreUnknownKeys = true }
 
-// Current known location per userId
-private val locations = ConcurrentHashMap<String, UserLocation>()
-
-// Active WebSocket sessions per userId
-private val sessions = ConcurrentHashMap<String, DefaultWebSocketServerSession>()
+/**
+ * Encapsulates all mutable server state so each module() invocation (including in tests)
+ * gets its own isolated state rather than sharing package-level globals.
+ */
+class ServerState {
+    val locations = ConcurrentHashMap<String, UserLocation>()
+    val sessions = ConcurrentHashMap<String, DefaultWebSocketServerSession>()
+}
 
 fun main() {
     embeddedServer(Netty, port = 8080, module = Application::module).start(wait = true)
 }
 
-fun Application.module() {
+fun Application.module(state: ServerState = ServerState()) {
     install(ContentNegotiation) { json(json) }
     install(CallLogging)
     install(WebSockets) {
@@ -42,7 +45,7 @@ fun Application.module() {
         }
 
         get("/locations") {
-            call.respond(locations.values.toList())
+            call.respond(state.locations.values.toList())
         }
 
         webSocket("/ws") {
@@ -53,7 +56,7 @@ fun Application.module() {
             }
 
             // Close any existing session for this userId before registering the new one.
-            sessions.put(userId, this)?.close(CloseReason(CloseReason.Codes.NORMAL, "replaced by new session"))
+            state.sessions.put(userId, this)?.close(CloseReason(CloseReason.Codes.NORMAL, "replaced by new session"))
             try {
                 for (frame in incoming) {
                     if (frame is Frame.Text) {
@@ -62,28 +65,28 @@ fun Application.module() {
                         }.getOrNull() ?: continue
 
                         if (msg is WsMessage.LocationUpdate && msg.location.userId == userId) {
-                            locations[userId] = msg.location
-                            broadcastLocations()
+                            state.locations[userId] = msg.location
+                            state.broadcastLocations()
                         }
                         if (msg is WsMessage.LocationRemove) {
-                            locations.remove(userId)
-                            broadcastLocations()
+                            state.locations.remove(userId)
+                            state.broadcastLocations()
                         }
                     }
                 }
             } finally {
                 // Only remove state if this session is still the active one for this userId.
                 // A newer session may have already replaced us in the map.
-                if (sessions.remove(userId, this)) {
-                    locations.remove(userId)
-                    broadcastLocations()
+                if (state.sessions.remove(userId, this)) {
+                    state.locations.remove(userId)
+                    state.broadcastLocations()
                 }
             }
         }
     }
 }
 
-private suspend fun broadcastLocations() {
+private suspend fun ServerState.broadcastLocations() {
     val broadcast = json.encodeToString(
         WsMessage.serializer(),
         WsMessage.LocationsBroadcast(locations.values.toList())

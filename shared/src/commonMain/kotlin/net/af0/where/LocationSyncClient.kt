@@ -4,6 +4,8 @@ import io.ktor.client.*
 import io.ktor.client.plugins.websocket.*
 import io.ktor.websocket.*
 import kotlinx.coroutines.*
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.json.Json
 import net.af0.where.model.UserLocation
 import net.af0.where.model.WsMessage
@@ -21,7 +23,8 @@ class LocationSyncClient(
     }
 
     private val scope = CoroutineScope(Dispatchers.Default + SupervisorJob())
-    @Volatile internal var session: DefaultClientWebSocketSession? = null
+    private val sessionLock = Mutex()
+    private var session: DefaultClientWebSocketSession? = null
     private var job: Job? = null
 
     fun connect() {
@@ -31,22 +34,24 @@ class LocationSyncClient(
             while (isActive) {
                 try {
                     client.webSocket("$serverWsUrl?userId=$userId") {
-                        session = this
-                        for (frame in incoming) {
-                            if (frame is Frame.Text) {
-                                val msg = runCatching {
-                                    json.decodeFromString<WsMessage>(frame.readText())
-                                }.getOrNull() ?: continue
-                                if (msg is WsMessage.LocationsBroadcast) {
-                                    onLocationsUpdate(msg.users)
+                        sessionLock.withLock { session = this }
+                        try {
+                            for (frame in incoming) {
+                                if (frame is Frame.Text) {
+                                    val msg = runCatching {
+                                        json.decodeFromString<WsMessage>(frame.readText())
+                                    }.getOrNull() ?: continue
+                                    if (msg is WsMessage.LocationsBroadcast) {
+                                        onLocationsUpdate(msg.users)
+                                    }
                                 }
                             }
+                        } finally {
+                            sessionLock.withLock { session = null }
                         }
                     }
                 } catch (e: Exception) {
                     if (!isActive) break
-                } finally {
-                    session = null
                 }
                 delay(3_000) // reconnect backoff
             }
@@ -59,14 +64,14 @@ class LocationSyncClient(
         )
         val text = json.encodeToString(WsMessage.serializer(), msg)
         scope.launch {
-            runCatching { session?.send(Frame.Text(text)) }
+            sessionLock.withLock { runCatching { session?.send(Frame.Text(text)) } }
         }
     }
 
     fun sendLocationRemove() {
         val text = json.encodeToString(WsMessage.serializer(), WsMessage.LocationRemove)
         scope.launch {
-            runCatching { session?.send(Frame.Text(text)) }
+            sessionLock.withLock { runCatching { session?.send(Frame.Text(text)) } }
         }
     }
 

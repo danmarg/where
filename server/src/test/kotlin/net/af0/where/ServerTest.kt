@@ -18,7 +18,7 @@ class ServerTest {
 
     @Test
     fun locationUpdateIsBroadcastBackToSender() = testApplication {
-        application { module() }
+        application { module(ServerState()) }
         val client = createClient { install(WebSockets) }
         client.webSocket("/ws?userId=alice") {
             // userId in the location must match the connection's userId or the server drops it
@@ -34,7 +34,7 @@ class ServerTest {
 
     @Test
     fun locationRemovedOnDisconnect() = testApplication {
-        application { module() }
+        application { module(ServerState()) }
         val client = createClient { install(WebSockets) }
         // Connect and send a location, then disconnect — server should remove it
         client.webSocket("/ws?userId=carol") {
@@ -54,7 +54,7 @@ class ServerTest {
 
     @Test
     fun locationRemoveMessageClearsPin() = testApplication {
-        application { module() }
+        application { module(ServerState()) }
         val client = createClient { install(WebSockets) }
         client.webSocket("/ws?userId=dave") {
             val location = UserLocation("dave", 5.0, 6.0, 0L)

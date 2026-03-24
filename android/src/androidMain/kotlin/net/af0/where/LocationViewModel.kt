@@ -1,7 +1,10 @@
 package net.af0.where
 
+import android.Manifest
 import android.app.Application
 import android.content.Intent
+import android.content.pm.PackageManager
+import androidx.core.content.ContextCompat
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.flow.SharingStarted
@@ -33,7 +36,7 @@ class LocationViewModel(app: Application) : AndroidViewModel(app) {
     init {
         syncClient.connect()
         viewModelScope.launch {
-            var prevSharing = true
+            var prevSharing = friendsStore.isSharingLocation.value
             combine(
                 LocationRepository.lastLocation,
                 friendsStore.isSharingLocation,
@@ -45,9 +48,15 @@ class LocationViewModel(app: Application) : AndroidViewModel(app) {
                 }
                 if (prevSharing != sharing) {
                     val intent = Intent(getApplication(), LocationService::class.java)
-                    if (sharing) {
+                    val hasLocationPermission = ContextCompat.checkSelfPermission(
+                        getApplication(), Manifest.permission.ACCESS_FINE_LOCATION
+                    ) == PackageManager.PERMISSION_GRANTED ||
+                    ContextCompat.checkSelfPermission(
+                        getApplication(), Manifest.permission.ACCESS_COARSE_LOCATION
+                    ) == PackageManager.PERMISSION_GRANTED
+                    if (sharing && hasLocationPermission) {
                         getApplication<Application>().startForegroundService(intent)
-                    } else {
+                    } else if (!sharing) {
                         getApplication<Application>().stopService(intent)
                     }
                 }
