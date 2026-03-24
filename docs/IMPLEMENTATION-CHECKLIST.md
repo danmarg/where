@@ -15,23 +15,30 @@ Split into client-crypto, client-app, and server.
 - For each friend, maintain `SessionState`: `root_key`, `send_chain_key`, `recv_chain_key`, `routing_token`, `send_seq`, `recv_seq`, `epoch`, `my_ek_priv`, `my_ek_pub`, `their_ek_pub`.
 
 ### Key exchange
-- Parse QR/link for `ik_pub`, `sig_pub`, `suggested_name`, `fingerprint`.
+- Generate fresh ephemeral keypair `EK_A` for Alice's QR code.
+- Parse QR/link for `ik_pub`, `ek_pub` (Alice's ephemeral), `sig_pub`, `suggested_name`, `fingerprint`.
 - On `KeyExchangeInit`:
   - Verify Ed25519 sig over `(ik_pub || ek_pub || sig_pub)`; abort on failure.
-  - Compute DH1 = X25519(EK_B.priv, Alice.IK.pub), DH2 = X25519(Bob.IK.priv, Alice.IK.pub).
-  - `SK = HKDF-SHA-256(DH1 || DH2, info="Where-v2-KeyExchange")`.
+  - Compute:
+    - `DH1 = X25519(Bob.EK_B.priv, Alice.IK.pub)`
+    - `DH2 = X25519(Bob.IK.priv, Alice.EK_A.pub)`
+    - `DH3 = X25519(Bob.EK_B.priv, Alice.EK_A.pub)`
+  - `SK = HKDF-SHA-256(DH1 || DH2 || DH3, info="Where-v2-KeyExchange")`.
   - `T_AB_0 = HKDF-SHA-256(SK, info="Where-v2-RoutingToken")[0:16]`.
-  - Initialize session state.
+  - Initialize session state; **Alice MUST delete EK_A.priv immediately after derivation**.
 
 ### Ratchet
 - `KDF_RK`: HKDF-SHA-256 for DH ratchet steps.
-- `KDF_CK`: HMAC-SHA-256 for symmetric chain (with optional deterministic nonce).
+- `KDF_CK`: HMAC-SHA-256 for symmetric chain. **Deterministic nonces are mandatory**:
+  - `new_chain_key = HMAC-SHA-256(chain_key, 0x01)`
+  - `message_key = HMAC-SHA-256(chain_key, 0x02)`
+  - `message_nonce = HMAC-SHA-256(chain_key, 0x03)[0:12]`
 - **Outgoing location**:
-  - Derive `message_key` from `send_chain_key`; delete old chain key.
+  - Derive `message_key` and `message_nonce` from `send_chain_key`; delete old chain key.
   - Increment `send_seq` (uint64).
   - AAD = `"Where-v2-Location" || sender_fp || recipient_fp || epoch || seq_be`.
-  - AES-256-GCM encrypt padded JSON.
-  - Send `EncryptedLocation`: `epoch`, `seq` (JSON string), `nonce`, `ct`. **No `ek_pub`**.
+  - AES-256-GCM encrypt padded JSON using `message_nonce`.
+  - Send `EncryptedLocation`: `epoch`, `seq` (JSON string), `nonce` (message_nonce), `ct`. **No `ek_pub`**.
 - **Incoming**:
   - Reject `seq <= max_seq_received` (strict).
   - Verify GCM tag; advance chain; delete old keys.
@@ -42,7 +49,10 @@ Split into client-crypto, client-app, and server.
   - `dh_out = X25519(my_ek_priv, their_new_ek_pub)`.
   - `new_root_key, new_chain_key = KDF_RK(...)`.
   - `new_routing_token = HKDF-SHA-256(new_root_key, info="Where-v2-RoutingToken")[0:16]`.
-  - Switch to new token; poll old briefly.
+- **Token Transition Protocol**:
+  - Alice posts subsequent messages to `new_routing_token`.
+  - Bob polls **both** `current` and `new` tokens.
+  - Bob retires `current` token only after receiving a valid frame on `new` token OR after `2 * R` seconds (20 min).
 - Fallback: time-based DH step after 20 min no `RatchetAck`.
 
 ### Secure storage
@@ -64,7 +74,8 @@ Split into client-crypto, client-app, and server.
 
 ### Mailbox API
 - `POST /inbox/{token}`: queue payload; TTL 30–60 min.
-- `GET /inbox/{token}`: drain queue; return `200 []` for empty/unknown tokens (**always identical**).
+- `GET /inbox/{token}`: drain queue; return `200 []` for empty/unknown tokens.
+- **Constant-Time Invariant**: Ensure mailbox lookup and response for empty/unknown tokens are indistinguishable from active tokens to prevent timing side-channels.
 - Treat payloads as opaque bytes; no parsing.
 
 ### Storage & logging
