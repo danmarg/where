@@ -16,6 +16,14 @@ kotlin {
             jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17)
         }
     }
+
+    sourceSets {
+        androidUnitTest.dependencies {
+            implementation(kotlin("test"))
+            implementation(libs.robolectric)
+            implementation(libs.androidx.test.core)
+        }
+    }
 }
 
 android {
@@ -49,8 +57,6 @@ android {
 }
 
 dependencies {
-    testImplementation(libs.robolectric)
-    testImplementation(kotlin("test"))
     implementation(project(":shared"))
     implementation(platform(libs.compose.bom))
     implementation(libs.compose.ui)
