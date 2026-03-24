@@ -533,7 +533,9 @@ new_routing_token = HKDF-SHA-256(
     info = "Where-v2-RoutingToken"
 )[0:16]
 ```
-This ensures the routing token rotates with every epoch, preventing the server from correlating historical traffic for a friendship pair via a static token. The initial bootstrap token `T_AB_0` (§4.2) is replaced by the epoch-1 token after the first ratchet step completes.
+This ensures the routing token rotates with every epoch, preventing the server from correlating historical traffic for a friendship pair via a static token. The initial bootstrap token `T_AB_0` (§4.2) is replaced by the epoch-1 token after the first ratchet step completes. Implementations SHOULD discard `T_AB_0` after the first successful DH ratchet and never reuse it.
+
+When the routing token changes, both sides must begin polling (and posting to) the new token and stop using the old one. To avoid stranding in-flight messages, implementations SHOULD continue polling the previous token for one additional poll cycle (a grace period of one `R`-second interval) before retiring it.
 
 **KDF_CK (symmetric ratchet step):**
 ```
