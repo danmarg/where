@@ -19,8 +19,13 @@ struct ContentView: View {
 
     var body: some View {
         ZStack {
-            WhereMapView(users: visibleUsers, ownUserId: UserIdentity.userId, zoomTarget: zoomTarget)
-                .ignoresSafeArea()
+            WhereMapView(
+                users: visibleUsers,
+                ownUserId: UserIdentity.userId,
+                zoomTarget: zoomTarget,
+                onZoomConsumed: { zoomTarget = nil }
+            )
+            .ignoresSafeArea()
 
             VStack {
                 // Top bar: connection status + user count

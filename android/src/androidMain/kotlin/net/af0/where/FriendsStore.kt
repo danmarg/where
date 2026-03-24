@@ -29,8 +29,9 @@ class FriendsStore(context: Context, private val ownUserId: String) {
     }
 
     fun toggleSharing() {
-        _isSharingLocation.update { !it }
-        prefs.edit().putBoolean("is_sharing", _isSharingLocation.value).apply()
+        _isSharingLocation.update { prev ->
+            (!prev).also { new -> prefs.edit().putBoolean("is_sharing", new).apply() }
+        }
     }
 
     private fun loadFriends(): Set<String> =

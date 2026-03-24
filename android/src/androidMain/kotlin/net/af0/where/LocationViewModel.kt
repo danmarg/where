@@ -14,14 +14,24 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import net.af0.where.model.UserLocation
 
-class LocationViewModel(app: Application) : AndroidViewModel(app) {
+class LocationViewModel(
+    app: Application,
+    private val locationSource: LocationSource = LocationRepository,
+) : AndroidViewModel(app) {
 
     val userId: String = UserPrefs.getUserId(app)
-    val friendsStore = FriendsStore(app, userId)
+    private val friendsStore = FriendsStore(app, userId)
+
+    val friendIds: StateFlow<Set<String>> = friendsStore.friendIds
+    val isSharingLocation: StateFlow<Boolean> = friendsStore.isSharingLocation
+
+    fun addFriend(id: String) = friendsStore.add(id)
+    fun removeFriend(id: String) = friendsStore.remove(id)
+    fun toggleSharing() = friendsStore.toggleSharing()
 
     // All users from server, filtered to self + friends
     val visibleUsers: StateFlow<List<UserLocation>> = combine(
-        LocationRepository.users,
+        locationSource.users,
         friendsStore.friendIds,
     ) { users, friends ->
         users.filter { it.userId == userId || friends.contains(it.userId) }
@@ -30,7 +40,7 @@ class LocationViewModel(app: Application) : AndroidViewModel(app) {
     private val syncClient = LocationSyncClient(
         serverWsUrl = BuildConfig.SERVER_WS_URL,
         userId = userId,
-        onLocationsUpdate = { LocationRepository.onUsersUpdate(it) },
+        onLocationsUpdate = { locationSource.onUsersUpdate(it) },
     )
 
     init {
@@ -38,7 +48,7 @@ class LocationViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             var prevSharing = friendsStore.isSharingLocation.value
             combine(
-                LocationRepository.lastLocation,
+                locationSource.lastLocation,
                 friendsStore.isSharingLocation,
             ) { loc, sharing -> Pair(loc, sharing) }.collect { (loc, sharing) ->
                 if (loc != null && sharing) {

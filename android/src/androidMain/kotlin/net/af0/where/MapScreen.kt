@@ -1,5 +1,6 @@
 package net.af0.where
 
+import android.os.Build
 import androidx.compose.foundation.layout.*
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.LocationOff
@@ -39,6 +40,12 @@ fun MapScreen(
         )
     )
 
+    // Background location must be requested separately on Android 10+.
+    val backgroundLocationPermission = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+        rememberPermissionState(android.Manifest.permission.ACCESS_BACKGROUND_LOCATION)
+    } else null
+    var showBackgroundRationale by remember { mutableStateOf(false) }
+
     LaunchedEffect(Unit) {
         if (!locationPermissions.allPermissionsGranted) {
             locationPermissions.launchMultiplePermissionRequest()
@@ -48,7 +55,33 @@ fun MapScreen(
     LaunchedEffect(locationPermissions.allPermissionsGranted) {
         if (locationPermissions.allPermissionsGranted) {
             onLocationPermissionGranted()
+            // Show disclosure before requesting background location (required by Play Store).
+            if (backgroundLocationPermission != null && !backgroundLocationPermission.status.isGranted) {
+                showBackgroundRationale = true
+            }
         }
+    }
+
+    if (showBackgroundRationale) {
+        AlertDialog(
+            onDismissRequest = { showBackgroundRationale = false },
+            title = { Text("Background Location") },
+            text = {
+                Text(
+                    "Allow Where to access your location in the background so friends can " +
+                    "see your position even when the app is not open."
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    showBackgroundRationale = false
+                    backgroundLocationPermission?.launchPermissionRequest()
+                }) { Text("Allow") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showBackgroundRationale = false }) { Text("Skip") }
+            },
+        )
     }
 
     if (!locationPermissions.allPermissionsGranted) {

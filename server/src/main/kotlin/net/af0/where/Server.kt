@@ -87,14 +87,15 @@ fun Application.module(state: ServerState = ServerState()) {
 }
 
 private suspend fun ServerState.broadcastLocations() {
+    // Encode once, but wrap in a fresh Frame.Text per send to avoid races on the
+    // ByteReadPacket cursor that is internal to Frame.
     val broadcast = json.encodeToString(
         WsMessage.serializer(),
         WsMessage.LocationsBroadcast(locations.values.toList())
     )
-    val frame = Frame.Text(broadcast)
     for ((_, session) in sessions) {
         session.launch {
-            runCatching { session.send(frame.copy()) }
+            runCatching { session.send(Frame.Text(broadcast)) }
         }
     }
 }

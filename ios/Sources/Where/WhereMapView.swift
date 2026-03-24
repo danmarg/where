@@ -6,6 +6,7 @@ struct WhereMapView: UIViewRepresentable {
     let users: [UserLocation]
     let ownUserId: String
     var zoomTarget: CLLocationCoordinate2D? = nil
+    var onZoomConsumed: () -> Void = {}
 
     func makeUIView(context: Context) -> MKMapView {
         let mapView = MKMapView()
@@ -32,10 +33,11 @@ struct WhereMapView: UIViewRepresentable {
             }
         }
 
-        // Zoom to friend if requested
+        // Zoom to friend if requested, then clear the target so it doesn't re-trigger.
         if let target = zoomTarget {
             let region = MKCoordinateRegion(center: target, latitudinalMeters: 1000, longitudinalMeters: 1000)
             mapView.setRegion(region, animated: true)
+            DispatchQueue.main.async { onZoomConsumed() }
             return
         }
 

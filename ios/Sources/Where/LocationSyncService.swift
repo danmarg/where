@@ -50,8 +50,12 @@ final class LocationSyncService: ObservableObject {
         let text = LocationMessageCodec.shared.encodeLocationUpdate(
             userId: userId, lat: lat, lng: lng, timestamp: timestamp
         )
-        task.send(.string(text)) { _ in }
-        connectionState = .connected
+        task.send(.string(text)) { [weak self] error in
+            if let error {
+                print("[LocationSyncService] send error: \(error)")
+                Task { await self?.connect() }
+            }
+        }
     }
 
     func sendLocationRemove() {
@@ -69,8 +73,9 @@ final class LocationSyncService: ObservableObject {
                     let message = try await wsTask.receive()
                     connectionState = .connected
                     if case .string(let text) = message,
-                       let users = LocationMessageCodec.shared.decodeUsers(text: text) {
-                        self.users = users as! [UserLocation]
+                       let users = LocationMessageCodec.shared.decodeUsers(text: text),
+                       let typedUsers = users as? [UserLocation] {
+                        self.users = typedUsers
                     }
                 } catch {
                     guard !Task.isCancelled else { break }
