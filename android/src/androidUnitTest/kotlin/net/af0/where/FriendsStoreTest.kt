@@ -74,4 +74,16 @@ class FriendsStoreTest {
         s.toggleSharing()
         assertTrue(s.isSharingLocation.value)
     }
+
+    @Test
+    fun sharingStatePersistedAcrossInstances() {
+        val s1 = store()
+        assertTrue(s1.isSharingLocation.value)
+        s1.toggleSharing()
+        assertFalse(s1.isSharingLocation.value)
+
+        // A new instance should load the persisted value
+        val s2 = store()
+        assertFalse(s2.isSharingLocation.value)
+    }
 }

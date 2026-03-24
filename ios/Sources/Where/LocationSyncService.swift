@@ -10,7 +10,7 @@ final class LocationSyncService: ObservableObject {
     @Published var users: [UserLocation] = []
     @Published var connectionState: ConnectionState = .disconnected
 
-    private static let serverWsBaseUrl = "ws://localhost:8080/ws"
+    private static let serverWsBaseUrl = ServerConfig.wsBaseUrl
 
     private let userId: String
     private var webSocketTask: URLSessionWebSocketTask?
@@ -77,8 +77,7 @@ final class LocationSyncService: ObservableObject {
                     connectionState = .disconnected
                     try? await Task.sleep(nanoseconds: 3_000_000_000)
                     guard !Task.isCancelled else { break }
-                    let urlString = "\(Self.serverWsBaseUrl)?userId=\(userId)"
-                    guard let url = URL(string: urlString) else { break }
+                    guard let url = URL(string: "\(Self.serverWsBaseUrl)?userId=\(userId)") else { break }
                     let newTask = URLSession.shared.webSocketTask(with: url)
                     webSocketTask = newTask
                     connectionState = .connecting

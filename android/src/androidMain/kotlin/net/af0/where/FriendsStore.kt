@@ -12,7 +12,7 @@ class FriendsStore(context: Context, private val ownUserId: String) {
     private val _friendIds = MutableStateFlow(loadFriends())
     val friendIds: StateFlow<Set<String>> = _friendIds.asStateFlow()
 
-    private val _isSharingLocation = MutableStateFlow(true)
+    private val _isSharingLocation = MutableStateFlow(prefs.getBoolean("is_sharing", true))
     val isSharingLocation: StateFlow<Boolean> = _isSharingLocation.asStateFlow()
 
     fun add(id: String) {
@@ -28,7 +28,9 @@ class FriendsStore(context: Context, private val ownUserId: String) {
     }
 
     fun toggleSharing() {
-        _isSharingLocation.value = !_isSharingLocation.value
+        val newValue = !_isSharingLocation.value
+        _isSharingLocation.value = newValue
+        prefs.edit().putBoolean("is_sharing", newValue).apply()
     }
 
     private fun loadFriends(): Set<String> =

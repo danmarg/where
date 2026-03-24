@@ -52,7 +52,8 @@ fun Application.module() {
                 return@webSocket
             }
 
-            sessions[userId] = this
+            // Close any existing session for this userId before registering the new one.
+            sessions.put(userId, this)?.close(CloseReason(CloseReason.Codes.NORMAL, "replaced by new session"))
             try {
                 for (frame in incoming) {
                     if (frame is Frame.Text) {

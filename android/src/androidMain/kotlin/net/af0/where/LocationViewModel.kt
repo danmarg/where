@@ -1,6 +1,7 @@
 package net.af0.where
 
 import android.app.Application
+import android.content.Intent
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.flow.SharingStarted
@@ -41,6 +42,14 @@ class LocationViewModel(app: Application) : AndroidViewModel(app) {
                     syncClient.sendLocation(loc.first, loc.second)
                 } else if (prevSharing && !sharing) {
                     syncClient.sendLocationRemove()
+                }
+                if (prevSharing != sharing) {
+                    val intent = Intent(getApplication(), LocationService::class.java)
+                    if (sharing) {
+                        getApplication<Application>().startForegroundService(intent)
+                    } else {
+                        getApplication<Application>().stopService(intent)
+                    }
                 }
                 prevSharing = sharing
             }

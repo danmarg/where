@@ -25,6 +25,8 @@ class LocationSyncClient(
     private var job: Job? = null
 
     fun connect() {
+        // Cancel any in-flight connection before starting a new one to prevent overlapping loops.
+        job?.cancel()
         job = scope.launch {
             while (isActive) {
                 try {
