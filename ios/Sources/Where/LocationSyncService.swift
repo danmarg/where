@@ -1,23 +1,5 @@
 import Foundation
-
-struct UserLocationData: Codable, Identifiable {
-    let userId: String
-    let lat: Double
-    let lng: Double
-    let timestamp: Int64
-
-    var id: String { userId }
-}
-
-private struct OutgoingMessage: Codable {
-    let type: String
-    let location: UserLocationData
-}
-
-private struct IncomingMessage: Codable {
-    let type: String
-    let users: [UserLocationData]?
-}
+import Shared
 
 enum ConnectionState {
     case disconnected, connecting, connected
@@ -25,8 +7,10 @@ enum ConnectionState {
 
 @MainActor
 final class LocationSyncService: ObservableObject {
-    @Published var users: [UserLocationData] = []
+    @Published var users: [UserLocation] = []
     @Published var connectionState: ConnectionState = .disconnected
+
+    private static let serverWsBaseUrl = "ws://localhost:8080/ws"
 
     private let userId: String
     private var webSocketTask: URLSessionWebSocketTask?
@@ -44,12 +28,12 @@ final class LocationSyncService: ObservableObject {
         webSocketTask = nil
 
         connectionState = .connecting
-        let urlString = "ws://localhost:8080/ws?userId=\(userId)"
+        let urlString = "\(Self.serverWsBaseUrl)?userId=\(userId)"
         guard let url = URL(string: urlString) else { return }
         let task = URLSession.shared.webSocketTask(with: url)
         webSocketTask = task
         task.resume()
-        startReceiving(task: task)
+        startReceiving(from: task)
     }
 
     func disconnect() {
@@ -62,41 +46,44 @@ final class LocationSyncService: ObservableObject {
 
     func sendLocation(lat: Double, lng: Double) {
         guard let task = webSocketTask else { return }
-        let msg = OutgoingMessage(
-            type: "location",
-            location: UserLocationData(
-                userId: userId,
-                lat: lat,
-                lng: lng,
-                timestamp: Int64(Date().timeIntervalSince1970 * 1000)
-            )
+        let timestamp = Int64(Date().timeIntervalSince1970 * 1000)
+        let text = LocationMessageCodec.shared.encodeLocationUpdate(
+            userId: userId, lat: lat, lng: lng, timestamp: timestamp
         )
-        guard let data = try? JSONEncoder().encode(msg),
-              let text = String(data: data, encoding: .utf8) else { return }
         task.send(.string(text)) { _ in }
         connectionState = .connected
     }
 
-    private func startReceiving(task: URLSessionWebSocketTask) {
+    func sendLocationRemove() {
+        guard let task = webSocketTask else { return }
+        let text = LocationMessageCodec.shared.encodeLocationRemove()
+        task.send(.string(text)) { _ in }
+    }
+
+    private func startReceiving(from initialTask: URLSessionWebSocketTask) {
         receiveLoop = Task { [weak self] in
             guard let self else { return }
+            var wsTask = initialTask
             while !Task.isCancelled {
                 do {
-                    let message = try await task.receive()
-                    await MainActor.run { self.connectionState = .connected }
+                    let message = try await wsTask.receive()
+                    connectionState = .connected
                     if case .string(let text) = message,
-                       let data = text.data(using: .utf8),
-                       let msg = try? JSONDecoder().decode(IncomingMessage.self, from: data),
-                       msg.type == "locations",
-                       let users = msg.users {
-                        await MainActor.run { self.users = users }
+                       let users = LocationMessageCodec.shared.decodeUsers(text: text) {
+                        self.users = users as! [UserLocation]
                     }
                 } catch {
                     guard !Task.isCancelled else { break }
-                    await MainActor.run { self.connectionState = .disconnected }
+                    connectionState = .disconnected
                     try? await Task.sleep(nanoseconds: 3_000_000_000)
-                    await self.connect()
-                    break
+                    guard !Task.isCancelled else { break }
+                    let urlString = "\(Self.serverWsBaseUrl)?userId=\(userId)"
+                    guard let url = URL(string: urlString) else { break }
+                    let newTask = URLSession.shared.webSocketTask(with: url)
+                    webSocketTask = newTask
+                    connectionState = .connecting
+                    newTask.resume()
+                    wsTask = newTask
                 }
             }
         }

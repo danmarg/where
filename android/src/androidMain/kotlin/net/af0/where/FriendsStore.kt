@@ -18,15 +18,13 @@ class FriendsStore(context: Context, private val ownUserId: String) {
     fun add(id: String) {
         val trimmed = id.trim()
         if (trimmed.isEmpty() || trimmed == ownUserId) return
-        val updated = _friendIds.value + trimmed
-        _friendIds.value = updated
-        persist(updated)
+        _friendIds.update { it + trimmed }
+        persist(_friendIds.value)
     }
 
     fun remove(id: String) {
-        val updated = _friendIds.value - id
-        _friendIds.value = updated
-        persist(updated)
+        _friendIds.update { it - id }
+        persist(_friendIds.value)
     }
 
     fun toggleSharing() {

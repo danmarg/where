@@ -17,6 +17,17 @@ targets:
     deploymentTarget: "17.0"
     sources:
       - path: Sources/Where
+    dependencies:
+      - framework: $(SRCROOT)/../shared/build/xcode-frameworks/$(CONFIGURATION)/$(SDK_NAME)/Shared.framework
+        embed: false
+        codeSign: false
+        implicit: true
+    preBuildScripts:
+      - script: |
+          cd "$SRCROOT/.."
+          ./gradlew :shared:embedAndSignAppleFrameworkForXcode
+        name: Build KMP Shared Framework
+        basedOnDependencyAnalysis: false
     settings:
       PRODUCT_BUNDLE_IDENTIFIER: net.af0.where
       GENERATE_INFOPLIST_FILE: YES
@@ -25,3 +36,4 @@ targets:
       INFOPLIST_KEY_NSLocationWhenInUseUsageDescription: "Where needs your location to show it on the map."
       INFOPLIST_KEY_NSLocationAlwaysAndWhenInUseUsageDescription: "Where needs your location in the background to keep sharing it."
       INFOPLIST_KEY_UIBackgroundModes: location
+      FRAMEWORK_SEARCH_PATHS: $(inherited) $(SRCROOT)/../shared/build/xcode-frameworks/$(CONFIGURATION)/$(SDK_NAME)

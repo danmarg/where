@@ -59,4 +59,17 @@ class WsMessageSerializationTest {
         assertIs<WsMessage.LocationsBroadcast>(decoded)
         assertEquals(1, (decoded as WsMessage.LocationsBroadcast).users.size)
     }
+
+    @Test
+    fun locationRemoveRoundTrip() {
+        val encoded = json.encodeToString(WsMessage.serializer(), WsMessage.LocationRemove)
+        val decoded = json.decodeFromString<WsMessage>(encoded)
+        assertIs<WsMessage.LocationRemove>(decoded)
+    }
+
+    @Test
+    fun locationRemoveTypeDiscriminator() {
+        val encoded = json.encodeToString(WsMessage.serializer(), WsMessage.LocationRemove)
+        assert(encoded.contains("\"type\":\"location_remove\"")) { "Expected type=location_remove in: $encoded" }
+    }
 }

@@ -41,7 +41,8 @@
 ### Shared vs. platform-specific networking
 - **Android**: uses `LocationSyncClient` from the shared KMP module (Ktor WebSocket client over OkHttp).
 - **iOS**: uses a native Swift `LocationSyncService` backed by `URLSessionWebSocketTask`. Bridging Kotlin coroutines + Ktor to Swift 6 strict concurrency adds friction; native URLSession is simpler and idiomatic.
-- The shared module still owns all serializable data models (`UserLocation`, `WsMessage`).
+- **All protocol data models are in the shared KMP module** — `UserLocation`, `WsMessage`, and all subclasses. iOS imports the `Shared` framework and uses these types directly; there are no duplicate Swift structs mirroring the Kotlin models.
+- **`LocationMessageCodec`** (in `shared/`) is a Swift-friendly singleton that handles all `kotlinx.serialization` encoding/decoding for iOS. iOS calls `LocationMessageCodec.shared.encodeLocationUpdate(...)` / `decodeUsers(text:)` instead of using Swift `Codable`.
 
 ### Maps
 - **Android**: `maps-compose` (Google Maps Compose). Requires a `MAPS_API_KEY` in `local.properties`.
@@ -68,8 +69,8 @@
 ### Swift (iOS)
 - **Swift 6 strict concurrency** — all `ObservableObject` classes marked `@MainActor`.
 - Use `async/await` for async WebSocket receive loops (`URLSessionWebSocketTask.receive()`).
-- No KMP bridging for networking; native `URLSession` only.
-- `Codable` structs mirror the Kotlin `@Serializable` data classes exactly (same field names).
+- Native `URLSession` for WebSocket networking; no Ktor/coroutine bridging.
+- Use KMP types (`UserLocation`, etc.) directly — no duplicate Swift structs. All protocol JSON encoding/decoding goes through `LocationMessageCodec.shared`.
 
 ### Android
 - Jetpack Compose only — no XML layouts.
@@ -98,8 +99,8 @@ curl localhost:8080/locations # → []
 
 ### iOS (simulator)
 - Server URL in `LocationSyncService` is `ws://localhost:8080/ws`.
-- Generate Xcode project: `cd ios && xcoderun xcodegen` (or `xcodegen` in nix shell).
-- Build KMP framework first: `./gradlew :shared:embedAndSignAppleFrameworkForXcode`
+- Generate Xcode project: `cd ios && xcodegen` (or `xcoderun xcodegen` in nix shell). The project calls `embedAndSignAppleFrameworkForXcode` as a pre-build script automatically.
+- To build the KMP framework manually: `./gradlew :shared:embedAndSignAppleFrameworkForXcode`
 
 ---
 

@@ -31,8 +31,6 @@ final class LocationManager: NSObject, ObservableObject, @preconcurrency CLLocat
 
     private func startUpdating() {
         manager.startUpdatingLocation()
-        // Use significant-change in background for battery efficiency
-        manager.startMonitoringSignificantLocationChanges()
     }
 
     nonisolated func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {

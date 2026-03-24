@@ -21,7 +21,7 @@ class LocationSyncClient(
     }
 
     private val scope = CoroutineScope(Dispatchers.Default + SupervisorJob())
-    private var session: DefaultClientWebSocketSession? = null
+    @Volatile internal var session: DefaultClientWebSocketSession? = null
     private var job: Job? = null
 
     fun connect() {
@@ -57,13 +57,19 @@ class LocationSyncClient(
         )
         val text = json.encodeToString(WsMessage.serializer(), msg)
         scope.launch {
-            session?.send(Frame.Text(text))
+            runCatching { session?.send(Frame.Text(text)) }
+        }
+    }
+
+    fun sendLocationRemove() {
+        val text = json.encodeToString(WsMessage.serializer(), WsMessage.LocationRemove)
+        scope.launch {
+            runCatching { session?.send(Frame.Text(text)) }
         }
     }
 
     fun disconnect() {
         job?.cancel()
-        client.close()
     }
 }
 

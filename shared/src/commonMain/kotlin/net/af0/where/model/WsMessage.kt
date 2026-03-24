@@ -14,4 +14,8 @@ sealed class WsMessage {
     @Serializable
     @SerialName("locations")
     data class LocationsBroadcast(val users: List<UserLocation>) : WsMessage()
+
+    @Serializable
+    @SerialName("location_remove")
+    object LocationRemove : WsMessage()
 }

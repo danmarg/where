@@ -50,6 +50,15 @@ kotlin {
         commonTest.dependencies {
             implementation(kotlin("test"))
         }
+
+        jvmTest.dependencies {
+            implementation(libs.ktor.server.core)
+            implementation(libs.ktor.server.netty)
+            implementation(libs.ktor.server.websockets)
+            implementation(libs.ktor.client.cio)
+            implementation(libs.kotlinx.coroutines.test)
+            implementation(libs.logback.classic)
+        }
     }
 }
 

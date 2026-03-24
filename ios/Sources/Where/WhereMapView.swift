@@ -1,8 +1,9 @@
 import SwiftUI
 import MapKit
+import Shared
 
 struct WhereMapView: UIViewRepresentable {
-    let users: [UserLocationData]
+    let users: [UserLocation]
     let ownUserId: String
     var zoomTarget: CLLocationCoordinate2D? = nil
 
@@ -14,13 +15,21 @@ struct WhereMapView: UIViewRepresentable {
     }
 
     func updateUIView(_ mapView: MKMapView, context: Context) {
-        // Remove old annotations
-        mapView.removeAnnotations(mapView.annotations)
+        let existing = mapView.annotations.compactMap { $0 as? UserAnnotation }
+        let existingById = Dictionary(uniqueKeysWithValues: existing.map { ($0.userId, $0) })
+        let newById = Dictionary(uniqueKeysWithValues: users.map { ($0.userId, $0) })
 
-        // Add one annotation per user
+        // Remove stale annotations
+        let toRemove = existing.filter { newById[$0.userId] == nil }
+        mapView.removeAnnotations(toRemove)
+
+        // Update existing or add new annotations
         for user in users {
-            let annotation = UserAnnotation(user: user, isOwn: user.userId == ownUserId)
-            mapView.addAnnotation(annotation)
+            if let pin = existingById[user.userId] {
+                pin.coordinate = CLLocationCoordinate2D(latitude: user.lat, longitude: user.lng)
+            } else {
+                mapView.addAnnotation(UserAnnotation(user: user, isOwn: user.userId == ownUserId))
+            }
         }
 
         // Zoom to friend if requested
@@ -59,11 +68,13 @@ struct WhereMapView: UIViewRepresentable {
 }
 
 final class UserAnnotation: NSObject, MKAnnotation {
-    let coordinate: CLLocationCoordinate2D
+    let userId: String
+    @objc dynamic var coordinate: CLLocationCoordinate2D
     let title: String?
     let isOwn: Bool
 
-    init(user: UserLocationData, isOwn: Bool) {
+    init(user: UserLocation, isOwn: Bool) {
+        self.userId = user.userId
         self.coordinate = CLLocationCoordinate2D(latitude: user.lat, longitude: user.lng)
         self.title = isOwn ? "You" : String(user.userId.prefix(8))
         self.isOwn = isOwn

@@ -1,6 +1,7 @@
 import SwiftUI
 import Combine
 import CoreLocation
+import Shared
 
 struct ContentView: View {
     @StateObject private var locationManager = LocationManager()
@@ -10,7 +11,7 @@ struct ContentView: View {
     @State private var zoomTarget: CLLocationCoordinate2D? = nil
 
     // Only show self + friends on the map
-    private var visibleUsers: [UserLocationData] {
+    private var visibleUsers: [UserLocation] {
         syncService.users.filter { user in
             user.userId == UserIdentity.userId || friendsStore.friendIds.contains(user.userId)
         }
@@ -112,6 +113,11 @@ struct ContentView: View {
         .onReceive(locationManager.$location) { newLocation in
             guard let loc = newLocation, friendsStore.isSharingLocation else { return }
             syncService.sendLocation(lat: loc.coordinate.latitude, lng: loc.coordinate.longitude)
+        }
+        .onChange(of: friendsStore.isSharingLocation) { newValue in
+            if !newValue {
+                syncService.sendLocationRemove()
+            }
         }
     }
 

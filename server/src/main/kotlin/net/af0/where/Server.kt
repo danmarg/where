@@ -64,6 +64,10 @@ fun Application.module() {
                             locations[userId] = msg.location
                             broadcastLocations()
                         }
+                        if (msg is WsMessage.LocationRemove) {
+                            locations.remove(userId)
+                            broadcastLocations()
+                        }
                     }
                 }
             } finally {

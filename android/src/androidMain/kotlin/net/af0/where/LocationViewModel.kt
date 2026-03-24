@@ -24,7 +24,7 @@ class LocationViewModel(app: Application) : AndroidViewModel(app) {
     }.stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
 
     private val syncClient = LocationSyncClient(
-        serverWsUrl = SERVER_WS_URL,
+        serverWsUrl = BuildConfig.SERVER_WS_URL,
         userId = userId,
         onLocationsUpdate = { LocationRepository.onUsersUpdate(it) },
     )
@@ -32,13 +32,17 @@ class LocationViewModel(app: Application) : AndroidViewModel(app) {
     init {
         syncClient.connect()
         viewModelScope.launch {
+            var prevSharing = true
             combine(
                 LocationRepository.lastLocation,
                 friendsStore.isSharingLocation,
             ) { loc, sharing -> Pair(loc, sharing) }.collect { (loc, sharing) ->
                 if (loc != null && sharing) {
                     syncClient.sendLocation(loc.first, loc.second)
+                } else if (prevSharing && !sharing) {
+                    syncClient.sendLocationRemove()
                 }
+                prevSharing = sharing
             }
         }
     }
@@ -46,9 +50,5 @@ class LocationViewModel(app: Application) : AndroidViewModel(app) {
     override fun onCleared() {
         syncClient.disconnect()
         super.onCleared()
-    }
-
-    companion object {
-        private const val SERVER_WS_URL = "ws://10.0.2.2:8080/ws"
     }
 }
