@@ -143,7 +143,7 @@ class LocationSyncClientIntegrationTest {
     /** Polls until the client has an active WebSocket session (up to 5s). */
     private suspend fun awaitSession(client: LocationSyncClient) {
         withTimeout(5_000) {
-            while (client.session == null) {
+            while (!client.isConnected) {
                 delay(50)
             }
         }

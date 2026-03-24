@@ -27,6 +27,9 @@ class LocationSyncClient(
     private var session: DefaultClientWebSocketSession? = null
     private var job: Job? = null
 
+    /** True while there is an active WebSocket session. Intended for testing. */
+    internal val isConnected: Boolean get() = session != null
+
     fun connect() {
         // Cancel any in-flight connection before starting a new one to prevent overlapping loops.
         job?.cancel()
