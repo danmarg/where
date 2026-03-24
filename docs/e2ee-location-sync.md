@@ -32,15 +32,12 @@
 In v1, each client connects to a Ktor WebSocket server at `/ws?userId=<uuid>`. When a client sends a location update, the server fans out the full user-location map to all connected clients as a JSON `WsMessage.LocationBroadcast`. Each client filters the received list to show only users in its local friends list.
 
 **What the server learns in v1:**
-- The precise GPS coordinates of every connected user at all times
-- Who is connected and when
-- The frequency of movement (indirectly, from update cadence)
-- Implicit social graph: if user A has user B's UUID, the server can observe their co-movement patterns
+- The precise GPS coordinates of every connected user at all times.
+- Who is connected and when (presence).
+- The frequency of movement (indirectly, from update cadence).
+- The full social graph: the server observes exactly which users are sharing with whom.
 
-**What a passive network eavesdropper learns in v1:**
-- Everything above (TLS mitigates this if deployed, but the server itself is fully trusted)
-
-The goal of v2 is to make the server cryptographically unable to read location payloads, even if it is fully compromised.
+The goal of v2 is to make the server cryptographically unable to read location payloads and unable to reconstruct the social graph, even if it is fully compromised.
 
 ### 1.2 Scope
 
@@ -102,45 +99,39 @@ For threat models that include a metadata-analyzing server, the mitigations in �
 
 ---
 
-## 3. Identity and Key Management — No PKI
+## 3. Identity and Key Management — Key as Identity
 
-### 3.1 The Proposal: Direct Public Key Sharing
+### 3.1 The Model: No Server-Mediated Key Discovery
 
-The user proposes that each device generates a long-term identity key pair (Ed25519 for signing, X25519 for key agreement) and shares the public key directly with friends alongside the existing UUID, analogous to the current "share your UUID" flow. No central identity server, no certificate authorities.
+The core architectural change in v2 is that the long-term identity public key **is** the user's identity. There are no UUIDs in the protocol. There is no central registry where a user can query for a key. Instead, users exchange their keys directly via an "invite" payload (QR code or link).
 
-**Arguments in favor:**
+Because the server is never in the key distribution path, the entire "key transparency" problem is eliminated. Security is bounded by the authenticity of the initial exchange channel.
 
-- **Appropriate for the use case.** Where is a small-group app (a user likely has 5–50 friends, not 5 million). The threat model is primarily the server operator or a network attacker, not a compromised friend. For this scale, direct key exchange is operationally tractable.
-- **Eliminates a high-value target.** A centralized identity server that maps UUIDs to public keys becomes an extremely attractive target for attackers (and subpoenas). Distributing that mapping to individual devices removes the single point of failure.
-- **Alignment with existing UX.** Users already exchange UUIDs out-of-band. Adding a public key to that exchange is a modest incremental change.
-- **No third-party trust required.** Alice trusts Bob's public key because Bob gave it to her directly. There is no CA whose compromise would silently undermine all sessions.
+### 3.2 Naming and Local Aliases
 
-**Arguments against:**
+To avoid requiring users to manage public keys in the UI, v2 implements local aliases:
+1. **Invite Payload:** An invite contains `{ik_pub, sig_pub, suggested_name: "Alice", fingerprint}`.
+2. **Local Import:** When a user imports an invite, the app pre-fills the "suggested_name" but allows the user to rename it locally before confirming.
+3. **Local Storage:** The name is a purely local alias. It is never sent to the server and never shared back with the other party after the initial exchange.
 
-- **No revocation mechanism.** If Alice loses her device (or suspects her private key is compromised), she has no way to revoke trust in her old public key. She can generate a new key pair and re-share, but every existing friend must re-do the key exchange manually. There is no CRL, OCSP, or signed key-expiration. In practice, users will not re-exchange keys after a lost phone.
-- **Key rotation is a UX and correctness problem.** If Bob gets a new phone and regenerates his key pair, Alice's app will present a "key changed" warning (assuming it even implements that check). Users routinely ignore such warnings (cf. HTTPS certificate errors). A user who taps through a key-change warning after Bob's key was silently replaced by an attacker has been silently MITMed.
-- **TOFU is only as strong as the initial exchange.** Trust-on-First-Use means the very first time Alice receives Bob's public key, she accepts it unconditionally. If that initial exchange is intercepted (e.g., Eve intercepts a QR code over a shoulder, or intercepts the copy-pasted string), all future communication is compromised with no way for Alice to detect this. There is no retrospective verification.
-- **No cross-device binding.** If Bob runs the app on both his phone and tablet, Alice must separately verify and store two different public keys. There is no protocol that says "these keys belong to the same person."
-- **Binding of UUID to public key is unverifiable.** Nothing prevents Eve from constructing a fake `(uuid, publicKey)` pair and presenting it to Alice. Without a signed assertion from some trusted authority, Alice cannot know whether the public key she received truly belongs to the UUID's owner.
-- **No defense against fake accounts.** This design does not prevent a motivated attacker from creating multiple accounts with different UUIDs, each impersonating a different friend. Account identity verification (e.g., phone number or email binding) is a higher-layer concern outside the scope of this protocol. Applications using this protocol should implement such checks to reduce per-app TOFU risks.
+### 3.3 Multi-Device and Migration
 
-### 3.2 Recommended Pragmatic Middle Ground
+1. **One Primary Device per Person (v1):** v1 scopes identity to a single primary device (typically a phone).
+2. **Device Migration / Lost Device:** When a user gets a new phone or loses their device, they generate a new identity key pair. This is a manual "identity reset":
+   - The user reinstalls the app and re-adds all contacts via new invite links.
+   - Contacts see a "Safety Number Changed" or "Identity Migrated" notice.
+3. **Future (v2):** Cross-device signing (the old device signs the new device's `IK.pub`) is the intended upgrade path to allow contacts to auto-migrate trust.
+4. **No Cloud Backup:** Encrypted cloud backup of the identity private key is explicitly excluded, as it reintroduces a third-party trust dependency.
 
-Rather than requiring a full PKI or central identity server, adopt a lightweight **local key registry** with safety-net UX mirroring what Signal does:
+### 3.4 Trust Establishment and Safety Numbers
 
-1. **Each device generates a single long-term key pair at first launch.** The identity public key (Ed25519) is concatenated with the UUID and a short fingerprint (e.g., first 20 bytes of `SHA-256(publicKey)`, displayed as 5 groups of 4 hex characters). The full "friend invite" payload is `base64(uuid || publicKey || fingerprint)`.
+V2 uses **Trust-on-First-Use (TOFU)** with local key pinning.
 
-2. **On first import of a friend's key, the app stores and pins it.** All subsequent location frames signed by a different key for the same UUID trigger a prominent, non-dismissable "Safety Number Changed" alert modeled on Signal's safety numbers feature.
+**Safety Numbers:** Two users can optionally verify their connection by comparing a safety number fingerprint.
+- **Calculation:** `SHA-256(local_IK.pub || remote_IK.pub)`, where the two public keys are concatenated in lexicographical order (sorted by key bytes).
+- The result is displayed as a human-readable 40-character hex string or QR code.
 
-3. **Safety number verification.** Two users can optionally compare a human-readable fingerprint (the 40-hex-character shortform of `SHA-256(alicePublicKey || bobPublicKey)`, sorted by UUID). If they match on both screens, the session is verified out-of-band. This is identical in spirit to Signal's safety numbers and PGP fingerprint verification.
-
-4. **No re-use of identity keys across re-installs.** App uninstall/reinstall generates a new key pair and UUID, forcing all friends to re-do the exchange. This is a deliberate forcing function: it prevents silent key reuse and ties identity churn to the natural friction of reinstallation.
-
-5. **Key rotation is manual and explicit.** There is no automated rotation of the long-term identity key. If a user suspects compromise, they rotate by reinstalling. This trades security-automation for implementation simplicity, appropriate for v2.
-
-**Implementation note — key derivation domain separation:** The identity key pair uses a single seed: the Ed25519 signing key derives the X25519 DH key via libsodium's `crypto_sign_ed25519_sk_to_curve25519`. This function implements RFC 8032 and correctly domain-separates the signing and DH contexts. Implementations MUST use this specific conversion function — not a raw key copy — to avoid key-confusion attacks between signing and key-agreement operations.
-
-**Lost-device recovery flow:** When a user loses their device, the recovery path is: (1) reinstall the app to generate a new identity key pair and UUID; (2) re-share the new invite code with each friend out-of-band; (3) each friend re-imports the code, triggering a "Safety Number Changed" alert they must explicitly acknowledge. There is no automated revocation in v2. User-facing guidance must describe this flow explicitly so users know what to do after a lost or stolen device. In-app revocation without reinstalling is deferred to future work.
+**Risk:** If the invite link (Option B, §4.3) is intercepted over an unauthenticated channel (e.g., SMS), an attacker can substitute their own key. Fingerprint verification is the primary countermeasure.
 
 ---
 
@@ -151,7 +142,6 @@ Rather than requiring a full PKI or central identity server, adopt a lightweight
 Each device holds:
 - `IK`: a long-term identity key pair (Ed25519 for signing; the same seed can derive an X25519 key pair for key agreement using RFC 8032 / libsodium's `crypto_sign_ed25519_sk_to_curve25519`)
 - `EK`: an ephemeral X25519 key pair, generated fresh for each key exchange initiation
-- `uuid`: the user's stable random UUID (existing v1 concept)
 
 ### 4.2 Option A: In-Person QR Code Exchange (Recommended for bootstrapping)
 
@@ -162,16 +152,16 @@ This is the preferred path for the initial trust establishment. It mirrors X3DH-
 Alice opens "Add Friend" and displays a QR code encoding:
 ```
 {
-  "uuid": "alice-uuid",
   "ik_pub": base64(Alice.IK.pub),    // X25519 public key
-  "sig_pub": base64(Alice.SigIK.pub), // Ed25519 public key (may be same material, different encoding)
+  "sig_pub": base64(Alice.SigIK.pub), // Ed25519 public key
+  "suggested_name": "Alice",
   "fingerprint": hex(SHA-256(Alice.IK.pub)[0:10])
 }
 ```
 
 Bob scans the QR code.
 
-**Key Agreement (X3DH-Lite):**
+**Key Agreement and Routing Token Derivation:**
 
 Because there is no prekey server, we use a simplified X3DH in which Bob is online. Bob generates an ephemeral key pair `EK_B`, computes:
 
@@ -181,14 +171,18 @@ DH2 = X25519(Bob.IK.priv, Alice.IK.pub) // Bob's identity × Alice's identity
 SK  = HKDF-SHA-256(IKM = DH1 || DH2,
                     salt = 0x00...00,
                     info = "Where-v2-KeyExchange")
+
+// Derive the 16-byte pairwise routing token for the server mailbox
+T_AB = HKDF-SHA-256(IKM = DH2, 
+                    salt = 0x00...00, 
+                    info = "Where-v2-RoutingToken")[0:16]
 ```
 
 Bob then encrypts `SK` with `Alice.IK.pub` (using ECIES / `crypto_box` semantics) and transmits:
 ```json
 {
   "type":    "KeyExchangeInit",
-  "from":    "bob-uuid",
-  "to":      "alice-uuid",
+  "token":   "<base64, first-time bootstrap token or T_AB>",
   "ik_pub":  "<base64, Bob's X25519 identity public key>",
   "ek_pub":  "<base64, Bob's X25519 ephemeral public key>",
   "sig_pub": "<base64, Bob's Ed25519 signing public key>",
@@ -196,7 +190,7 @@ Bob then encrypts `SK` with `Alice.IK.pub` (using ECIES / `crypto_box` semantics
 }
 ```
 
-This message is sent over the WebSocket server. The server sees only Bob's and Alice's UUIDs and the public key material.
+This message is posted to the server's mailbox API. The server sees only the opaque token and the public key material. It does not know who the sender or recipient is.
 
 Alice receives the `KeyExchangeInit` and:
 
@@ -211,36 +205,24 @@ if not Ed25519Verify(signed_data, sig_bytes, sig_pub_bytes):
     abort — discard message, do not store any key material
 ```
 
-Future versions should prepend a protocol version/context string to `signed_data` for cross-protocol domain separation.
+Alice then recomputes the same DH operations to derive `SK` and `T_AB`, and the session is bootstrapped.
 
-Alice then recomputes the same DH operations to derive `SK`, and the session is bootstrapped.
+### 4.3 Option B: Out-of-Band Copy-Paste (Existing Flow Extension)
 
-**What the server learns:** Bob's UUID, Alice's UUID, two X25519 public keys, an Ed25519 signing key, a signature, and the ciphertext of `SK`. It learns that these two users initiated a key exchange. It does not learn `SK`.
-
-**Forward secrecy trade-off:** This protocol omits Signal's signed prekey and one-time prekey (present in full X3DH). Because both DH inputs in `DH2 = X25519(Bob.IK.priv, Alice.IK.pub)` are long-term keys, a future compromise of Bob's `IK.priv` allows an attacker to retroactively compute `SK` for every session Bob has established. This is a deliberate simplification: the exchange is synchronous (Bob is online), eliminating the need for a prekey server. For threat models requiring stronger forward secrecy of the initial handshake, full X3DH with a prekey server is deferred to future work (§13).
-
-### 4.3 Option B: Out-of-Band Copy-Paste (Existing UUID Flow Extension)
-
-Users share a base64-encoded blob through any out-of-band channel (iMessage, Signal, in-person). The blob is:
+Users share a link through any out-of-band channel (iMessage, Signal, in-person). The link is:
 ```
-where://add?uuid=<uuid>&ik=<base64_ik_pub>&fp=<fingerprint>
+where://add?ik=<base64_ik_pub>&sig_pub=<base64_sig_pub>&fp=<fingerprint>&name=<name>
 ```
 
-This is less secure than Option A because the transmission channel (iMessage, etc.) is not guaranteed to be authenticated. However, it matches the existing UX and is appropriate when in-person exchange is not practical.
-
-The key agreement proceeds identically to Option A, with the difference that the QR code scanning step is replaced by a deep link tap.
-
-**Risk:** If the out-of-band channel is compromised (e.g., Eve intercepts the iMessage before Bob sees it), Eve can substitute her own public key. Bob will then share his location with Eve, not Alice. This is the classic TOFU MITM — and for a location app the impact is high: Eve accumulates a continuous time-series of movement history.
-
-Option B is appropriate when in-person exchange is impractical. However, the app MUST display a prominent, hard-to-dismiss prompt encouraging fingerprint verification after the friend is added via this path. This is not optional guidance: users who skip it unknowingly accept the impersonation risk. The prompt should show the safety number and explain what to do with it.
+The key agreement proceeds identically to Option A. The app MUST display a prominent prompt encouraging fingerprint verification after the friend is added via this path.
 
 ### 4.4 What the Server Learns from Key Exchange
 
-- Two UUIDs were involved in a key exchange at a given timestamp
-- Both public keys (they are intentionally public material)
-- Nothing about the resulting shared secret `SK`
+- A message was posted to and polled from an opaque 16-byte token.
+- Both public keys (they are intentionally public material).
+- Nothing about the resulting shared secret `SK` or the identities of the participants.
 
-The server cannot derive `SK` without one of the parties' private keys. This satisfies the requirement that the server be unable to decrypt location payloads.
+The server cannot derive `SK` or link the routing token to a real identity without one of the parties' private keys.
 
 ---
 
@@ -451,43 +433,36 @@ MLS (RFC 9420) is the gold standard for large groups and achieves O(log N) key o
 
 ## 7. Server's Role and Obliviousness
 
-### 7.1 What the Server Must Know to Route Messages
+### 7.1 The Mailbox Model
 
-At minimum, the server needs:
-- The **destination UUID** for each frame, to route it to the correct WebSocket connection
-- Whether the destination UUID is currently connected
+The server's role is strictly limited to acting as a stateless message router for anonymous mailboxes. It no longer uses WebSockets for push-based routing.
 
-The server does NOT need to know:
-- The sender's UUID (beyond what is implicit in the WebSocket connection)
-- The plaintext location
-- The epoch or ratchet state
+1. **Routing Token (T):** A random-looking 16-byte token derived pairwise by clients (§4.2).
+2. **Mailbox API:**
+   - `POST /inbox/{token}`: Clients push an encrypted payload into the mailbox.
+   - `GET /inbox/{token}`: Clients poll for and drain all available payloads in the mailbox.
+3. **Server Obliviousness:** The server does not know the sender or recipient identity—only the opaque routing token.
 
-### 7.2 Routing Model
+### 7.2 Invariant: Indistinguishable Responses
 
-Each encrypted frame sent by Alice contains:
-```
-{ "to": "bob-uuid", "payload": base64(ciphertext) }
-```
+To prevent the server from learning whether a routing token corresponds to a real relationship, the following invariant is mandatory:
 
-The server routes `payload` to the connection registered under `"bob-uuid"`. It does not open, inspect, or store the payload. In the ideal case, the server is a dumb forwarder that knows only `(from_connection, to_uuid)`.
+**The server MUST return an identical response (HTTP 200 OK with `[]`) for all token queries where no messages are pending, regardless of whether the token has ever been "registered" or used.**
 
-### 7.3 Metadata Exposure
+There is no "create mailbox" or "register token" step. Mailboxes exist implicitly upon the first `POST`. A `GET` for a non-existent token is indistinguishable from a `GET` for an empty real mailbox.
 
-Even with fully opaque payloads, the server can observe:
+### 7.3 Metadata Exposure and Traffic Analysis
 
-- **Social graph:** Alice's WebSocket connection sends messages addressed to B, C, and D — revealing that A, B, C, D are mutually connected. This is structural metadata, not content, but it is sensitive.
-- **Movement inference from update frequency:** If Alice sends an encrypted update every 30 seconds while walking and slows to every 5 minutes when stationary (due to Android's `PRIORITY_BALANCED_POWER_ACCURACY` coalescing updates), the server can infer Alice's movement state from message timing alone.
-- **Presence:** The server knows when any given UUID is online.
+The server can still observe the timing and frequency of `POST` and `GET` requests for specific tokens. IP correlation can be used to infer relationships over time.
 
-### 7.4 Partial Mitigations
+### 7.4 Mitigations
 
-These are incremental improvements, not panaceas. They are listed in decreasing order of implementation priority:
+- **Payload padding (mandatory):** All payloads MUST be padded to a fixed length (e.g., 256 bytes) before encryption.
+- **Tor / Onion Routing (Future):** Routing via Tor hides IP addresses, providing the strongest protection against traffic analysis.
 
-- **Payload padding (mandatory in v2):** All location payloads MUST be padded to a fixed length before encryption to mask payload size variations. Pad the plaintext JSON to a fixed block size (e.g., 256 bytes) with zero bytes; the first two bytes of the decrypted plaintext encode the true payload length as a big-endian uint16. This is cheap and eliminates size-based traffic analysis at negligible cost (~50 bytes of overhead per message).
+### 7.5 Future: Dummy Token Polling
 
-- **Obfuscated recipient IDs / inbox tokens (recommended for v2):** Instead of routing to `"to": "bob-uuid"` in plaintext, clients SHOULD establish a per-friend ephemeral **inbox token** during key exchange. Alice includes a randomly generated 128-bit token in her `KeyExchangeInit`; Bob registers it as his inbox address for Alice's messages. The server indexes WebSocket connections by inbox token. Only Alice knows which token maps to Bob's UUID. Tokens rotate each epoch for forward unlinkability. **Without this mitigation, the server can directly reconstruct the full social graph from routing headers.** Inbox tokens are the recommended baseline for v2; the server changes required are minimal (swap UUID lookup for token lookup in the routing table).
-
-- **Cover traffic (optional, deferred):** Clients may send a fixed-rate stream of encrypted random bytes to a server sink to mask update cadence. At a 10-second cover interval (sufficient to hide 30-second real updates), overhead is roughly 3× baseline: ~8 KB/30 s becomes ~24 KB/30 s for a 20-friend session. Battery impact on mobile is non-trivial. Cover traffic is deferred to a future release; if implemented, it must be opt-in with explicit user warnings about data and battery cost.
+Because of the indistinguishable response invariant (§7.2), clients can implement **dummy token polling** as a future enhancement. A client polls for random "dummy" tokens alongside real ones. The server cannot distinguish real polls from noise. This significantly raises the bar for traffic analysis and requires no server-side changes to implement. Dummy polling is deferred until the user base is large enough to provide meaningful cover traffic.
 
 ---
 
@@ -513,13 +488,14 @@ Alice maintains, for each friend B:
 SessionState {
   root_key:        [32]byte   // current root key
   send_chain_key:  [32]byte   // CK for Alice→B direction
-  recv_chain_key:  [32]byte   // CK for B→Alice direction (for RatchetAck decryption)
-  send_seq:        uint64     // monotonically increasing per-message counter
-  recv_seq:        uint64     // highest received seq from B
-  epoch:           uint32     // increments on each DH ratchet step
-  my_ek_priv:      [32]byte   // Alice's current ephemeral X25519 private key
-  my_ek_pub:       [32]byte   // Alice's current ephemeral X25519 public key
-  their_ek_pub:    [32]byte   // Bob's last known ephemeral public key
+  recv_chain_key:  [32]byte   // CK for B→Alice direction
+  routing_token:   [16]byte   // T_AB derived during key exchange
+  send_seq:        uint64     // monotonically increasing counter
+  recv_seq:        uint64     // highest received seq
+  epoch:           uint32     // increments on each DH step
+  my_ek_priv:      [32]byte   // current ephemeral private key
+  my_ek_pub:       [32]byte   // current ephemeral public key
+  their_ek_pub:    [32]byte   // their last known ephemeral public key
 }
 ```
 
@@ -546,10 +522,11 @@ The first two outputs are identical to the Signal spec's KDF_CK construction. Th
 **Message encryption:**
 ```
 nonce = random 12 bytes (96-bit, generated per message)
-aad   = "Where-v2-Location" || encode_aad(sender_uuid, recipient_uuid, epoch, seq)
+aad   = "Where-v2-Location" || sender_fp || recipient_fp || epoch || seq
 (ciphertext, tag) = AES-256-GCM(key=message_key, nonce=nonce,
                                   plaintext=loc_json_padded, aad=aad)
 ```
+Where `sender_fp` and `recipient_fp` are the first 8 bytes of `SHA-256(IK.pub)`. This replaces UUIDs in the authenticated data.
 
 The `"Where-v2-Location"` prefix provides domain separation from other protocol contexts (e.g., `EpochRotation`, future protocol versions), preventing cross-context AAD collisions or forgery attempts.
 
@@ -586,30 +563,31 @@ Per §5.3 Strategy 3 (Hybrid):
 
 ## 9. Wire Format
 
-All WebSocket messages are JSON-encoded binary frames. Message types are discriminated by a `"type"` field, consistent with the existing `classDiscriminator = "type"` pattern in the Kotlin codebase.
+All WebSocket messages are JSON-encoded binary frames.
 
 ### 9.1 Location Update (Alice → Server → Bob)
 
 ```json
 {
-  "type": "EncryptedLocation",
-  "from": "alice-uuid",
-  "to":   "bob-uuid",
-  "epoch": 42,
-  "seq":   1337,
-  "ek_pub": "<base64 of Alice's current ephemeral X25519 public key>",
-  "nonce":  "<base64, 12 bytes>",
-  "ct":     "<base64, AES-256-GCM ciphertext + 16-byte tag>"
+  "type": "Post",
+  "token": "<routing_token_T>",
+  "payload": {
+    "type": "EncryptedLocation",
+    "epoch": 42,
+    "seq":   1337,
+    "ek_pub": "<base64, Alice's current ephemeral EK>",
+    "nonce":  "<base64, 12 bytes>",
+    "ct":     "<base64, AES-256-GCM ciphertext + 16-byte tag>"
+  }
 }
 ```
 
 **AAD (authenticated, not encrypted):**
 ```
 aad = "Where-v2-Location" (18 bytes, UTF-8)
-    || alice-uuid (16 bytes, raw UUID bytes)
-    || bob-uuid   (16 bytes, raw UUID bytes)
-    || epoch      (4 bytes, big-endian uint32)
-    || seq        (8 bytes, big-endian uint64)
+    || token (16 bytes, raw token bytes)
+    || epoch (4 bytes, big-endian uint32)
+    || seq   (8 bytes, big-endian uint64)
 ```
 
 **Plaintext (before encryption):**
@@ -622,49 +600,28 @@ aad = "Where-v2-Location" (18 bytes, UTF-8)
 }
 ```
 
-Total wire size per update per friend: ~350–400 bytes (JSON overhead + base64 expansion + padding). With 20 friends, ~8 KB per 30-second update cycle — well within LTE budget.
-
-### 9.2 Epoch Rotation (Alice → Server → Bob)
+### 9.2 Poll Request (Bob → Server)
 
 ```json
 {
-  "type": "EpochRotation",
-  "from":     "alice-uuid",
-  "to":       "bob-uuid",
-  "epoch":    43,
-  "new_ek_pub": "<base64>",
-  "sig":      "<base64, Ed25519 signature over (from || to || epoch || new_ek_pub)>"
+  "type": "Poll",
+  "token": "<routing_token_T>"
 }
 ```
 
-Bob verifies `sig` against Alice's stored `sig_pub` before updating `their_ek_pub` and performing the KDF_RK step.
+### 9.3 Epoch Rotation and RatchetAck
 
-### 9.3 Ratchet Acknowledgment (Bob → Server → Alice)
-
+These follow the same `Post` envelope:
 ```json
 {
-  "type": "RatchetAck",
-  "from":        "bob-uuid",
-  "to":          "alice-uuid",
-  "epoch_seen":  42,
-  "new_ek_pub":  "<base64>",
-  "sig":         "<base64, Ed25519 signature over (from || to || epoch_seen || new_ek_pub)>"
-}
-```
-
-Alice verifies `sig` against Bob's stored `sig_pub`, then performs a KDF_RK step.
-
-### 9.4 Key Exchange Init (Bob → Server → Alice)
-
-```json
-{
-  "type":    "KeyExchangeInit",
-  "from":    "bob-uuid",
-  "to":      "alice-uuid",
-  "ik_pub":  "<base64, Bob's X25519 identity public key>",
-  "ek_pub":  "<base64, Bob's X25519 ephemeral public key>",
-  "sig_pub": "<base64, Bob's Ed25519 signing public key>",
-  "sig":     "<base64, Ed25519 signature over (ik_pub || ek_pub || sig_pub)>"
+  "type": "Post",
+  "token": "<routing_token_T>",
+  "payload": {
+    "type": "EpochRotation",
+    "epoch": 43,
+    "new_ek_pub": "<base64>",
+    "sig": "<base64, Ed25519 signature>"
+  }
 }
 ```
 
@@ -676,44 +633,40 @@ Alice verifies `sig` against Bob's stored `sig_pub`, then performs a KDF_RK step
 
 | Component | v1 Behavior | v2 Change |
 |---|---|---|
-| `/ws?userId=<uuid>` endpoint | Stores and broadcasts plaintext `UserLocation` | Routes opaque `EncryptedLocation` frames to destination UUID; no parsing of payload |
-| In-memory location store (`ConcurrentHashMap<UUID, UserLocation>`) | Stores all locations in plaintext | **Removed entirely.** Server no longer stores location state. It is a stateless message router. |
-| `/locations` REST endpoint | Returns all user locations | **Removed** (exposes plaintext state; not needed in v2) |
-| `/health` endpoint | Returns `"ok"` | Unchanged |
-| WebSocket fan-out logic | Broadcasts full location map to all clients | Routes each frame to its specific `to` UUID; O(1) lookup instead of O(N) broadcast |
+| Routing Model | Broadcasts locations by UUID | **Anonymous Mailboxes.** Routes opaque `EncryptedLocation` payloads by pairwise routing tokens (T). |
+| `/ws?userId=<uuid>` | Authenticates/registers by UUID | **Registration-less.** Clients just poll for tokens; the server does not need to know the global UUID. |
+| In-memory store | Plaintext `UserLocation` map | **Opaque Payload Buffer.** Brief TTL buffer of encrypted payloads indexed by T. |
+| Metadata Exposure | Full social graph visible | **Obfuscated.** Routing tokens are pairwise and random-looking; social graph is hidden from the server. |
 
 ### 10.2 Routing Table
 
-The server maintains only:
+The server maintains an in-memory or persisted map of **mailboxes** indexed by 16-byte routing tokens:
 ```kotlin
-val connections: ConcurrentHashMap<UUID, DefaultWebSocketServerSession>
+val mailboxes: ConcurrentHashMap<RoutingToken, Queue<EncryptedMessage>>
 ```
 
-On receipt of any `EncryptedLocation`, `EpochRotation`, `RatchetAck`, or `KeyExchangeInit`:
-1. Extract `"to"` UUID from the JSON envelope (no decryption required).
-2. Look up the destination in `connections`.
-3. If found: forward the raw frame verbatim.
-4. If not found: buffer for delivery when the destination connects (optional; otherwise drop and let the client retry on reconnect).
+1. **POST /inbox/{token}:**
+   - Push the payload into the corresponding queue.
+   - Apply a short TTL (e.g., 5 minutes).
 
-The server never reads any field other than `"type"` and `"to"`.
+2. **GET /inbox/{token}:**
+   - Drain and return all messages in the queue.
+   - **Mandatory Invariant:** If no messages are pending, always return HTTP 200 OK with `[]`, making non-existent and empty tokens indistinguishable.
 
-**Delivery guarantees:** The server provides best-effort, at-most-once delivery. If the destination UUID is not connected at the time a frame arrives, the frame is dropped (or held in a short-lived buffer, per §13.3). There are no ACKs, retransmissions, or delivery receipts at the server layer. For location updates this is acceptable: stale coordinates are not useful, and the sending client will emit a fresh update on its next cycle. Clients MUST NOT assume delivery and MUST NOT rely on server buffering for reliable state synchronisation.
+The server no longer uses the `/ws` WebSocket endpoint or the `/locations` REST endpoint.
 
 ### 10.3 What Stays the Same
 
-- Ktor WebSocket server infrastructure (`ktor-server-websockets`)
-- UUID-based connection registration
-- TLS termination (HTTPS/WSS)
-- Reconnection handling
-- Horizontal scalability model (if adding pub/sub backing like Redis, the routing key is still UUID)
+- TLS termination (HTTPS).
+- Best-effort delivery model.
+- Horizontal scalability via Redis if needed.
 
-### 10.4 Server Cannot Decrypt
+### 10.4 Server Cannot Decrypt or Link
 
 With this design:
-- The server has no knowledge of any session key, chain key, message key, or DH private key.
-- All ciphertext is created client-side and arrives at the server already encrypted.
-- The server's only function is routing.
-- A full server compromise exposes: social graph (who is connected to whom), connection timestamps, and ciphertext blobs that cannot be decrypted without client-side key material.
+- The server has no knowledge of any session keys or identity keys.
+- The server does not know the sender or recipient identity—only the opaque routing token.
+- A full server compromise reveals only the timing and frequency of anonymous posts and polls. Social graph and content remain hidden.
 
 ---
 
@@ -782,18 +735,17 @@ This ensures that v2 clients never silently downgrade to plaintext.
 
 ## 13. Open Questions and Future Work
 
-1. **Post-quantum migration.** X25519 is broken by Shor's algorithm on a cryptographically relevant quantum computer. Signal has already deployed their Sparse Post-Quantum Ratchet (SPQR) using CRYSTALS-Kyber for quantum-resistant ratchet steps. Where should plan a similar upgrade path: introduce a `pq_ek_pub` field in `EpochRotation` carrying a Kyber encapsulation, and combine the classical X25519 and Kyber shared secrets via `HKDF(X25519_out || Kyber_out)`. This is additive and backward-compatible.
+1. **Cross-Device Signing (v2).** While v1 uses a single primary device, v2 will introduce cross-device signing. The old device signs the new device's `IK.pub`, allowing contacts to auto-migrate trust.
 
-2. **Multi-device support.** If a user runs Where on both a phone and tablet, both devices need access to the same identity key, or separate identity keys need to be linked. This is a hard problem (Signal solves it with a sealed-sender device-linking protocol). Deferred to post-v2.
+2. **Post-Quantum Migration.** Introducing CRYSTALS-Kyber or similar PQ-resistant key exchange into the ratchet to maintain confidentiality against future quantum adversaries.
 
-3. **Server-side message buffering.** If Bob is offline when Alice sends a location update, the message is dropped. Buffering encrypted messages server-side for offline delivery is operationally straightforward (the server never needs to decrypt them) but raises storage and key-freshness concerns (a buffered location from 12 hours ago may not be useful). A short TTL (e.g., 5 minutes) on buffered messages is recommended.
+3. **Multi-device Support.** Full identity synchronization across multiple devices (e.g., phone and tablet) is a complex challenge planned for future work.
 
-4. **Location precision control.** *(Decision required — see note below.)* Even with E2EE, recipients receive full GPS precision. Allowing users to degrade precision before encryption (e.g., to neighbourhood granularity) would prevent even a legitimate friend from learning exact position. Degradation happens on the sender's device before encryption, so the ciphertext contains only the degraded coordinate. The reviewer recommends this be v2 scope, not future work, because it is a core privacy control. **Decision needed: is this in scope for v2?**
+4. **Location Precision Control.** Allowing the sender to degrade location precision (e.g., to neighborhood level) before encryption.
 
-5. **Key transparency / signed directory.** *(Decision required — see note below.)* The TOFU weakness described in §3.1 is the highest-value attack surface for a location app. Two options:
-   - **Option A — Lightweight signed directory:** The server signs `(UUID, IK.pub, timestamp)` tuples with a long-lived server signing key. Clients cache and verify these signatures; if the server provides a different `IK.pub` for the same UUID, the client detects the fork. Simpler than full KT; adds one server-side table and a signing step. Does not prevent the server from equivocating to different clients simultaneously, but makes equivocation auditable if clients compare notes.
-   - **Option B — Full key transparency (CONIKS / Apple iCloud KT):** Verifiable append-only log of `(UUID, IK.pub)` bindings. Clients verify log proofs; server cannot silently substitute keys. More complex; likely v3 scope.
-   - **Option C — Document as known limitation:** Keep current TOFU + safety numbers approach, document the impersonation risk prominently, and defer both options. This is the current v2 baseline.
-   **Decision needed: Option A, B, or C?** Option A has modest implementation cost and meaningfully raises the bar for server-side impersonation.
+5. **Server-Side Message Buffering.** Short-lived server-side buffering via the mailbox model with a ~5 minute TTL.
+-device Support.** Full identity synchronization across multiple devices (e.g., phone and tablet) is a complex challenge planned for future work.
 
-6. **Ratchet state persistence and recovery.** Currently, root keys are stored in the platform keychain; if a user's keychain is wiped (e.g., factory reset), session state is lost and key exchange must be re-run. This is acceptable but creates friction. A sealed backup of session state (encrypted to the user's identity key and stored encrypted in the cloud) could enable recovery without trusting the server. Any such backup mechanism must be careful not to reintroduce the state-rollback risk described in §5.5.
+5. **Location Precision Control.** Allowing the sender to degrade location precision (e.g., to neighborhood level) before encryption.
+
+6. **Server-Side Message Buffering.** Short-lived server-side buffering via the mailbox model with a ~5 minute TTL.
