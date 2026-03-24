@@ -133,6 +133,8 @@ V2 uses **Trust-on-First-Use (TOFU)** with local key pinning.
 
 **Risk:** If the invite link (Option B, §4.3) is intercepted over an unauthenticated channel (e.g., SMS), an attacker can substitute their own key. Fingerprint verification is the primary countermeasure.
 
+**Key-Change Alert:** Whenever a `KeyExchangeInit` is received for a friend whose `IK.pub` is already pinned locally, the app MUST display a prominent "Safety Number Changed" warning before accepting the new key. The app MUST NOT silently update the pinned key. The user must explicitly confirm the change (ideally after comparing the new safety number out-of-band). This alert fires on: (1) device migration — the friend reinstalled the app and generated a new identity; (2) potential MITM — an attacker is attempting to substitute a different key. The alert text should distinguish "friend migrated their device" (expected) from "identity changed unexpectedly" (suspicious) where possible.
+
 ---
 
 ## 4. Key Exchange Flow
@@ -140,7 +142,8 @@ V2 uses **Trust-on-First-Use (TOFU)** with local key pinning.
 ### 4.1 Prerequisites
 
 Each device holds:
-- `IK`: a long-term identity key pair (Ed25519 for signing; the same seed can derive an X25519 key pair for key agreement using RFC 8032 / libsodium's `crypto_sign_ed25519_sk_to_curve25519`)
+- `IK`: a long-term X25519 key pair for Diffie-Hellman key agreement
+- `SigIK`: a long-term Ed25519 key pair for signing — generated **independently** from `IK` with a separate seed. Do **not** derive `IK` from the Ed25519 seed via `crypto_sign_ed25519_sk_to_curve25519` or any shared-seed mechanism; using the same seed for signing and key agreement enables cross-protocol attacks.
 - `EK`: an ephemeral X25519 key pair, generated fresh for each key exchange initiation
 
 ### 4.2 Option A: In-Person QR Code Exchange (Recommended for bootstrapping)
@@ -166,16 +169,19 @@ Bob scans the QR code.
 Because there is no prekey server, we use a simplified X3DH in which Bob is online. Bob generates an ephemeral key pair `EK_B`, computes:
 
 ```
-DH1 = X25519(EK_B.priv, Alice.IK.pub)   // Bob's ephemeral × Alice's identity
+// DH(IK_A, EK_B): Alice's identity × Bob's ephemeral — mutual authentication term.
+// Bob computes using EK_B.priv; Alice recomputes using IK_A.priv. DH symmetry gives the same result.
+DH1 = X25519(EK_B.priv, Alice.IK.pub)   // = X25519(Alice.IK.priv, EK_B.pub) — DH(IK_A, EK_B)
 DH2 = X25519(Bob.IK.priv, Alice.IK.pub) // Bob's identity × Alice's identity
 SK  = HKDF-SHA-256(IKM = DH1 || DH2,
                     salt = 0x00...00,
                     info = "Where-v2-KeyExchange")
 
-// Derive the 16-byte pairwise routing token for the server mailbox
-T_AB = HKDF-SHA-256(IKM = DH2, 
-                    salt = 0x00...00, 
-                    info = "Where-v2-RoutingToken")[0:16]
+// Derive the initial bootstrap routing token from SK (not from static DH2).
+// After the first ratchet step, the token rotates per epoch — see §8.3 KDF_RK.
+T_AB_0 = HKDF-SHA-256(IKM = SK,
+                       salt = 0x00...00,
+                       info = "Where-v2-RoutingToken")[0:16]
 ```
 
 Bob then encrypts `SK` with `Alice.IK.pub` (using ECIES / `crypto_box` semantics) and transmits:
@@ -205,7 +211,9 @@ if not Ed25519Verify(signed_data, sig_bytes, sig_pub_bytes):
     abort — discard message, do not store any key material
 ```
 
-Alice then recomputes the same DH operations to derive `SK` and `T_AB`, and the session is bootstrapped.
+Alice then recomputes the same DH operations to derive `SK` and `T_AB_0`, and the session is bootstrapped.
+
+**Deviation from standard X3DH:** This simplified exchange omits the `DH(EK_A, IK_B)` term from the standard Signal X3DH because Alice does not generate an ephemeral key in the QR-code flow (she only presents her long-term `IK`). The DH1 term provides the `DH(IK_A, EK_B)` mutual-authentication binding. The missing term would require Alice to embed a one-time ephemeral in her QR code, which is a planned enhancement for a future revision. Until then, the security reduction relative to standard X3DH is that Alice's identity key never directly signs or contributes an ephemeral — all DH inputs to SK come from Bob's keys against Alice's static identity key.
 
 ### 4.3 Option B: Out-of-Band Copy-Paste (Existing Flow Extension)
 
@@ -322,7 +330,7 @@ Alice, upon receiving Bob's `RatchetAck`:
 1. Computes `dh_out = X25519(Alice.CurrentEK.priv, Bob.NewEK.pub)`.
 2. Derives `(new_root_key, new_send_CK) = HKDF(root_key, dh_out, "Where-v2-RatchetStep")`.
 3. Generates a fresh `Alice.NewEK` for the next step.
-4. Sends the next location update with her new `EK.pub` included.
+4. Sends an `EpochRotation` message (see §9.3) carrying her new `EK.pub`. The `EK.pub` is confined to `EpochRotation` only and is **not** included in ordinary `EncryptedLocation` frames (see §9.1), which would expose key-transition timing to the server.
 
 This restores the full Double Ratchet security guarantee: both parties contribute fresh DH material, so compromise of either party's ephemeral keys is healed within `R` minutes.
 
@@ -460,6 +468,12 @@ The server can still observe the timing and frequency of `POST` and `GET` reques
 - **Payload padding (mandatory):** All payloads MUST be padded to a fixed length (e.g., 256 bytes) before encryption.
 - **Tor / Onion Routing (Future):** Routing via Tor hides IP addresses, providing the strongest protection against traffic analysis.
 
+### 7.4.1 Polling Strategy
+
+To prevent timing-based social-graph inference, Bob MUST poll at a **constant rate** regardless of whether messages are expected. The recommended cadence is once per `R` seconds (default: `R = 10` seconds). Polling more frequently when a location update is expected, or less frequently when offline, creates a timing side-channel the server can exploit to infer when friends are actively sharing.
+
+Bob polls for all of his friendship tokens in a fixed, shuffled order. The shuffle MUST be re-randomised on each poll cycle to prevent ordering-based inference. This, combined with the indistinguishable-response invariant (§7.2), means the server cannot distinguish "polling for a real active friendship" from "polling for a stale or never-used token".
+
 ### 7.5 Future: Dummy Token Polling
 
 Because of the indistinguishable response invariant (§7.2), clients can implement **dummy token polling** as a future enhancement. A client polls for random "dummy" tokens alongside real ones. The server cannot distinguish real polls from noise. This significantly raises the bar for traffic analysis and requires no server-side changes to implement. Dummy polling is deferred until the user base is large enough to provide meaningful cover traffic.
@@ -472,8 +486,8 @@ Because of the indistinguishable response invariant (§7.2), clients can impleme
 
 | Purpose | Algorithm | Key size | Notes |
 |---|---|---|---|
-| Long-term identity (signing) | Ed25519 | 256-bit | One per device, stored in Keychain/Keystore |
-| Long-term identity (DH) | X25519 | 256-bit | Derived from Ed25519 seed via `ed25519_sk_to_curve25519` |
+| Long-term identity (signing) | Ed25519 (`SigIK`) | 256-bit | One per device, stored in Keychain/Keystore. Independent keypair — **not** derived from `IK`. |
+| Long-term identity (DH) | X25519 (`IK`) | 256-bit | One per device. Generated independently from `SigIK` with a distinct seed. |
 | Ephemeral DH | X25519 | 256-bit | Generated per key exchange; deleted after use |
 | Root KDF | HKDF-SHA-256 | 256-bit output | Inputs: DH output + current root key |
 | Chain KDF | HMAC-SHA-256 | — | Advancing symmetric ratchet |
@@ -510,6 +524,16 @@ SessionState {
 )
 ```
 Output: 64 bytes split as `[0:32] = new_root_key`, `[32:64] = new_chain_key`.
+
+After each DH ratchet step, the routing token for this friendship pair MUST be re-derived from the new root key:
+```
+new_routing_token = HKDF-SHA-256(
+    salt = 0x00...00,
+    ikm  = new_root_key,
+    info = "Where-v2-RoutingToken"
+)[0:16]
+```
+This ensures the routing token rotates with every epoch, preventing the server from correlating historical traffic for a friendship pair via a static token. The initial bootstrap token `T_AB_0` (§4.2) is replaced by the epoch-1 token after the first ratchet step completes.
 
 **KDF_CK (symmetric ratchet step):**
 ```
@@ -574,21 +598,27 @@ All WebSocket messages are JSON-encoded binary frames.
   "payload": {
     "type": "EncryptedLocation",
     "epoch": 42,
-    "seq":   1337,
-    "ek_pub": "<base64, Alice's current ephemeral EK>",
+    "seq":   "1337",
     "nonce":  "<base64, 12 bytes>",
     "ct":     "<base64, AES-256-GCM ciphertext + 16-byte tag>"
   }
 }
 ```
 
+**Note:** `ek_pub` is intentionally absent from `EncryptedLocation` frames. Including it in every frame would expose epoch-transition timing to the server. The current epoch's `ek_pub` is carried only in `EpochRotation` messages (§9.3); Bob uses the `epoch` field to look up the corresponding ratchet state.
+
+**Note:** `seq` is encoded as a decimal string to avoid IEEE-754 precision loss in JavaScript clients (which lose integer precision above 2⁵³). Native clients MAY parse it as `uint64`; JS clients MUST treat it as a string and use a `BigInt` library for comparison.
+
 **AAD (authenticated, not encrypted):**
 ```
 aad = "Where-v2-Location" (18 bytes, UTF-8)
-    || token (16 bytes, raw token bytes)
+    || sender_fp   (8 bytes, first 8 bytes of SHA-256(sender IK.pub))
+    || recipient_fp (8 bytes, first 8 bytes of SHA-256(recipient IK.pub))
     || epoch (4 bytes, big-endian uint32)
     || seq   (8 bytes, big-endian uint64)
 ```
+
+Using identity fingerprints rather than the routing token in the AAD prevents the server (which knows the routing token) from using the AAD as a correlation handle. The fingerprints are not transmitted in the frame and are therefore opaque to the server.
 
 **Plaintext (before encryption):**
 ```json
@@ -611,7 +641,9 @@ aad = "Where-v2-Location" (18 bytes, UTF-8)
 
 ### 9.3 Epoch Rotation and RatchetAck
 
-These follow the same `Post` envelope:
+These follow the same `Post` envelope.
+
+**EpochRotation** (Alice → Bob, sent when Alice advances the DH ratchet):
 ```json
 {
   "type": "Post",
@@ -619,8 +651,22 @@ These follow the same `Post` envelope:
   "payload": {
     "type": "EpochRotation",
     "epoch": 43,
-    "new_ek_pub": "<base64>",
-    "sig": "<base64, Ed25519 signature>"
+    "new_ek_pub": "<base64, Alice's new X25519 ephemeral public key>",
+    "sig": "<base64, Ed25519 signature over (epoch || new_ek_pub) using Alice's SigIK>"
+  }
+}
+```
+
+**RatchetAck** (Bob → Alice, sent every `R` minutes when Bob is online):
+```json
+{
+  "type": "Post",
+  "token": "<routing_token_T>",
+  "payload": {
+    "type": "RatchetAck",
+    "epoch_seen": 41,
+    "new_ek_pub": "<base64, Bob's new X25519 ephemeral public key>",
+    "sig": "<base64, Ed25519 signature over (epoch_seen || new_ek_pub) using Bob's SigIK>"
   }
 }
 ```
@@ -647,7 +693,7 @@ val mailboxes: ConcurrentHashMap<RoutingToken, Queue<EncryptedMessage>>
 
 1. **POST /inbox/{token}:**
    - Push the payload into the corresponding queue.
-   - Apply a short TTL (e.g., 5 minutes).
+   - Apply a TTL of at least 30 minutes (minimum `2R = 20 min` to cover the offline RatchetAck fallback window; 30–60 min recommended in practice). The previous 5-minute TTL was too short: Bob misses all location updates if offline for more than 5 minutes.
 
 2. **GET /inbox/{token}:**
    - Drain and return all messages in the queue.
@@ -739,13 +785,10 @@ This ensures that v2 clients never silently downgrade to plaintext.
 
 2. **Post-Quantum Migration.** Introducing CRYSTALS-Kyber or similar PQ-resistant key exchange into the ratchet to maintain confidentiality against future quantum adversaries.
 
-3. **Multi-device Support.** Full identity synchronization across multiple devices (e.g., phone and tablet) is a complex challenge planned for future work.
+3. **Multi-Device Support.** Full identity synchronization across multiple devices (e.g., phone and tablet) is a complex challenge planned for future work.
 
 4. **Location Precision Control.** Allowing the sender to degrade location precision (e.g., to neighborhood level) before encryption.
 
-5. **Server-Side Message Buffering.** Short-lived server-side buffering via the mailbox model with a ~5 minute TTL.
--device Support.** Full identity synchronization across multiple devices (e.g., phone and tablet) is a complex challenge planned for future work.
+5. **Server-Side Message Buffering TTL Tuning.** The current default TTL is 30–60 minutes (§10.2). The optimal value balances offline tolerance against server memory footprint and should be informed by real-world usage data.
 
-5. **Location Precision Control.** Allowing the sender to degrade location precision (e.g., to neighborhood level) before encryption.
-
-6. **Server-Side Message Buffering.** Short-lived server-side buffering via the mailbox model with a ~5 minute TTL.
+6. **Alice Ephemeral in Key Exchange.** Adding an ephemeral key for Alice in the QR-code / invite flow would allow the full 3-term X3DH (DH1 || DH2 || DH3) and provide the missing `DH(EK_A, IK_B)` term for stronger mutual authentication.
