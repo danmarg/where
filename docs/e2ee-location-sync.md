@@ -152,10 +152,11 @@ This is the preferred path for the initial trust establishment. It mirrors X3DH-
 
 **Setup:**
 
-Alice opens "Add Friend" and displays a QR code encoding:
+Alice opens "Add Friend" and generates a fresh ephemeral key pair `EK_A`. She then displays a QR code encoding:
 ```
 {
   "ik_pub": base64(Alice.IK.pub),    // X25519 public key
+  "ek_pub": base64(Alice.EK_A.pub),  // X25519 ephemeral key
   "sig_pub": base64(Alice.SigIK.pub), // Ed25519 public key
   "suggested_name": "Alice",
   "fingerprint": hex(SHA-256(Alice.IK.pub)[0:10])
@@ -166,18 +167,21 @@ Bob scans the QR code.
 
 **Key Agreement and Routing Token Derivation:**
 
-Because there is no prekey server, we use a simplified X3DH in which Bob is online. Bob generates an ephemeral key pair `EK_B`, computes:
+Bob generates an ephemeral key pair `EK_B`, and computes a 3-term Diffie-Hellman exchange:
 
 ```
-// DH(IK_A, EK_B): Alice's identity × Bob's ephemeral — mutual authentication term.
-// Bob computes using EK_B.priv; Alice recomputes using IK_A.priv. DH symmetry gives the same result.
-DH1 = X25519(EK_B.priv, Alice.IK.pub)   // = X25519(Alice.IK.priv, EK_B.pub) — DH(IK_A, EK_B)
-DH2 = X25519(Bob.IK.priv, Alice.IK.pub) // Bob's identity × Alice's identity
-SK  = HKDF-SHA-256(IKM = DH1 || DH2,
+// DH1: Alice's Identity x Bob's Ephemeral
+DH1 = X25519(Bob.EK_B.priv, Alice.IK.pub)
+// DH2: Alice's Ephemeral x Bob's Identity
+DH2 = X25519(Bob.IK.priv, Alice.EK_A.pub)
+// DH3: Alice's Ephemeral x Bob's Ephemeral
+DH3 = X25519(Bob.EK_B.priv, Alice.EK_A.pub)
+
+SK  = HKDF-SHA-256(IKM = DH1 || DH2 || DH3,
                     salt = 0x00...00,
                     info = "Where-v2-KeyExchange")
 
-// Derive the initial bootstrap routing token from SK (not from static DH2).
+// Derive the initial bootstrap routing token from SK.
 // After the first ratchet step, the token rotates per epoch — see §8.3 KDF_RK.
 T_AB_0 = HKDF-SHA-256(IKM = SK,
                        salt = 0x00...00,
@@ -188,7 +192,7 @@ Bob then encrypts `SK` with `Alice.IK.pub` (using ECIES / `crypto_box` semantics
 ```json
 {
   "type":    "KeyExchangeInit",
-  "token":   "<base64, first-time bootstrap token or T_AB>",
+  "token":   "<base64, first-time bootstrap token T_AB_0>",
   "ik_pub":  "<base64, Bob's X25519 identity public key>",
   "ek_pub":  "<base64, Bob's X25519 ephemeral public key>",
   "sig_pub": "<base64, Bob's Ed25519 signing public key>",
@@ -211,9 +215,7 @@ if not Ed25519Verify(signed_data, sig_bytes, sig_pub_bytes):
     abort — discard message, do not store any key material
 ```
 
-Alice then recomputes the same DH operations to derive `SK` and `T_AB_0`, and the session is bootstrapped.
-
-**Deviation from standard X3DH:** This simplified exchange omits the `DH(EK_A, IK_B)` term from the standard Signal X3DH because Alice does not generate an ephemeral key in the QR-code flow (she only presents her long-term `IK`). The DH1 term provides the `DH(IK_A, EK_B)` mutual-authentication binding. The missing term would require Alice to embed a one-time ephemeral in her QR code, which is a planned enhancement for a future revision. Until then, the security reduction relative to standard X3DH is that Alice's identity key never directly signs or contributes an ephemeral — all DH inputs to SK come from Bob's keys against Alice's static identity key.
+Alice then recomputes the same DH operations (using her `IK_A.priv` and `EK_A.priv`) to derive `SK` and `T_AB_0`, and the session is bootstrapped. Alice MUST delete `EK_A.priv` immediately after this derivation.
 
 ### 4.3 Option B: Out-of-Band Copy-Paste (Existing Flow Extension)
 
@@ -535,35 +537,32 @@ new_routing_token = HKDF-SHA-256(
 ```
 This ensures the routing token rotates with every epoch, preventing the server from correlating historical traffic for a friendship pair via a static token. The initial bootstrap token `T_AB_0` (§4.2) is replaced by the epoch-1 token after the first ratchet step completes. Implementations SHOULD discard `T_AB_0` after the first successful DH ratchet and never reuse it.
 
-When the routing token changes, both sides must begin polling (and posting to) the new token and stop using the old one. To avoid stranding in-flight messages, implementations SHOULD continue polling the previous token for one additional poll cycle (a grace period of one `R`-second interval) before retiring it.
+**Token Transition Protocol:**
+When the routing token changes (e.g., Alice sends an `EpochRotation` to the *current* token containing her new `EK.pub`):
+1. Alice begins posting all subsequent messages (including the `EpochRotation` if possible, or following frames) to the `new_routing_token`.
+2. Bob, upon receiving the `EpochRotation` and deriving the `new_routing_token`, MUST immediately start polling both the `current` and `new` tokens.
+3. Bob stops polling the `current` token only after he successfully receives at least one valid `EncryptedLocation` frame on the `new` token, or after a safety timeout of `2 * R` seconds.
 
 **KDF_CK (symmetric ratchet step):**
 ```
 new_chain_key  = HMAC-SHA-256(key=chain_key, data=0x01)
 message_key    = HMAC-SHA-256(key=chain_key, data=0x02)
-message_nonce  = HMAC-SHA-256(key=chain_key, data=0x03)[0:12]  // optional; see nonce note below
+message_nonce  = HMAC-SHA-256(key=chain_key, data=0x03)[0:12] // Mandatory
 ```
-The first two outputs are identical to the Signal spec's KDF_CK construction. The optional third output provides a deterministic nonce for implementations that choose to forego random nonce generation (see §8.3 note on nonces).
+The first two outputs are identical to the Signal spec's KDF_CK construction. The third output provides a deterministic nonce mandatory for v2 to protect against state-rollback attacks.
 
 **Message encryption:**
 ```
-nonce = random 12 bytes (96-bit, generated per message)
+// Nonce is derived deterministically from KDF_CK above
 aad   = "Where-v2-Location" || sender_fp || recipient_fp || epoch || seq
-(ciphertext, tag) = AES-256-GCM(key=message_key, nonce=nonce,
+(ciphertext, tag) = AES-256-GCM(key=message_key, nonce=message_nonce,
                                   plaintext=loc_json_padded, aad=aad)
 ```
 Where `sender_fp` and `recipient_fp` are the first 8 bytes of `SHA-256(IK.pub)`. This replaces UUIDs in the authenticated data.
 
 The `"Where-v2-Location"` prefix provides domain separation from other protocol contexts (e.g., `EpochRotation`, future protocol versions), preventing cross-context AAD collisions or forgery attempts.
 
-**Note on nonces:** Because `message_key` is unique per message (derived from the ratchet chain), nonce reuse across messages in the normal flow is not a concern — each message has a distinct key. A random 96-bit nonce provides comfortable margin. However, if keychain state is restored to an earlier epoch (e.g., backup restoration; see §5.5), the same root key may re-derive the same message key, and a random nonce could theoretically collide. This risk is mitigated by the mandatory keychain backup controls in §5.5 (device-only storage). As a hardening measure, implementations SHOULD derive nonces deterministically from the chain state:
-
-```
-// Third KDF_CK output alongside message_key:
-message_nonce = HMAC-SHA-256(key=chain_key, data=0x03)[0:12]
-```
-
-This guarantees nonce uniqueness within a session even across state rollbacks, at negligible cost. v2 MAY use random nonces if the §5.5 backup controls are enforced; deterministic nonces are the safer long-term choice.
+**Note on nonces:** Because `message_key` is unique per message (derived from the ratchet chain), nonce reuse across messages in the normal flow is not a concern. However, if keychain state is restored to an earlier epoch (e.g., backup restoration; see §5.5), the same root key may re-derive the same message key. To eliminate the risk of a (Key, Nonce) collision in such scenarios, v2 **requires** deterministic nonces derived from the chain state via `KDF_CK`. Implementations MUST NOT use random nonces for location encryption.
 
 ### 8.3.1 Ordering and Replay Handling
 
@@ -699,7 +698,7 @@ val mailboxes: ConcurrentHashMap<RoutingToken, Queue<EncryptedMessage>>
 
 2. **GET /inbox/{token}:**
    - Drain and return all messages in the queue.
-   - **Mandatory Invariant:** If no messages are pending, always return HTTP 200 OK with `[]`, making non-existent and empty tokens indistinguishable.
+   - **Constant-Time Invariant:** The server MUST return an identical response (HTTP 200 OK with `[]`) for non-existent tokens. To prevent timing side-channels, the lookup logic must ensure that the time taken to respond for a "hit" (active token) versus a "miss" (empty/unknown token) is indistinguishable to an attacker. This may require padding the response time to a fixed threshold or using constant-time map lookups.
 
 The server no longer uses the `/ws` WebSocket endpoint or the `/locations` REST endpoint.
 
@@ -792,5 +791,3 @@ This ensures that v2 clients never silently downgrade to plaintext.
 4. **Location Precision Control.** Allowing the sender to degrade location precision (e.g., to neighborhood level) before encryption.
 
 5. **Server-Side Message Buffering TTL Tuning.** The current default TTL is 30–60 minutes (§10.2). The optimal value balances offline tolerance against server memory footprint and should be informed by real-world usage data.
-
-6. **Alice Ephemeral in Key Exchange.** Adding an ephemeral key for Alice in the QR-code / invite flow would allow the full 3-term X3DH (DH1 || DH2 || DH3) and provide the missing `DH(EK_A, IK_B)` term for stronger mutual authentication.
