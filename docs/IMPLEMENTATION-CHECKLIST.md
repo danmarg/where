@@ -56,7 +56,7 @@ Split into client-crypto, client-app, and server.
   - Generate fresh `my_ek_priv`/`my_ek_pub` for the next step.
   - **Send `EpochRotation`** on the **current (old) routing token** with `epoch`, `new_ek_pub`, `ts` (uint64 Unix seconds), and Ed25519 sig over canonical blob `(v || epoch || new_ek_pub || ts || sender_fp || recipient_fp)` (same 80-byte fixed-width encoding as `RatchetAck`). Bob has not yet derived `new_routing_token`; posting to the new token would be undeliverable. Identity binding in the sig prevents cross-session replay.
 - **On receiving `EpochRotation`** (Bob's side): perform the same `KDF_RK` step and derive `new_routing_token`. Then send a `RatchetAck` for this epoch. If a batch of `EpochRotation` messages arrives (e.g., post-reconnect), process all in order and send a **single** `RatchetAck` citing only the highest epoch.
-- Alice SHOULD retransmit her latest `EpochRotation` if no `RatchetAck` arrives within T (one epoch period, e.g. 10 min) to accelerate loss recovery; a late-arriving `RatchetAck` is still valid and SHOULD be applied.
+- Alice MUST retransmit her latest `EpochRotation` if no `RatchetAck` arrives within T (one epoch period, e.g. 10 min), and MUST continue retransmitting every T minutes until a valid `RatchetAck` at or above the current epoch is received. This is the sole recovery mechanism for a stalled DH ratchet. A late-arriving `RatchetAck` MUST be applied regardless of when it arrives.
 - **Token Transition Protocol**:
   - Alice posts all frames *after* `EpochRotation` to `new_routing_token`.
   - Bob polls **both** `current` and `new` tokens (for all message types, including `RatchetAck`).
