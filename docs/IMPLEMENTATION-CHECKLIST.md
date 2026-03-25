@@ -16,7 +16,9 @@ Split into client-crypto, client-app, and server.
 
 ### Key exchange
 - Generate fresh ephemeral keypair `EK_A` for Alice's QR code.
-- Parse QR/link for `ik_pub`, `ek_pub` (Alice's ephemeral), `sig_pub`, `suggested_name`, `fingerprint`.
+- **Alice's QR payload MUST include a `sig` field:** Ed25519 signature over `(ik_pub_bytes || ek_pub_bytes || sig_pub_bytes)` using `Alice.SigIK.priv`. This closes the asymmetric authentication gap — without it, an attacker who replaces Alice's QR before Bob scans it can impersonate Alice to Bob (see §2.3 and §4.2).
+- Parse QR/link for `ik_pub`, `ek_pub` (Alice's ephemeral), `sig_pub`, `suggested_name`, `fingerprint`, `sig`.
+- **Bob MUST verify Alice's QR `sig` over `(ik_pub || ek_pub || sig_pub)` using `sig_pub` before deriving any key material.** Abort on failure.
 - On `KeyExchangeInit`:
   - Verify Ed25519 sig over `(ik_pub || ek_pub || sig_pub)`; abort on failure.
   - Compute:
@@ -24,7 +26,7 @@ Split into client-crypto, client-app, and server.
     - `DH2 = X25519(Bob.IK.priv, Alice.EK_A.pub)`
     - `DH3 = X25519(Bob.EK_B.priv, Alice.EK_A.pub)`
   - `SK = HKDF-SHA-256(DH1 || DH2 || DH3, info="Where-v1-KeyExchange")`.
-  - `T_AB_0 = HKDF-SHA-256(SK, salt=0x00...00, info="Where-v1-RoutingToken")[0:16]`.
+  - `T_AB_0 = HKDF-SHA-256(SK, salt=0x00000000, info="Where-v1-RoutingToken")[0:16]`. (salt = epoch=0 as 4-byte big-endian uint32).
   - Initialize session state; **Alice MUST delete EK_A.priv immediately after derivation**.
 
 ### Ratchet
@@ -48,7 +50,7 @@ Split into client-crypto, client-app, and server.
 - **On receiving `RatchetAck`** (Alice's side):
   - `dh_out = X25519(my_ek_priv, their_new_ek_pub)`.
   - `new_root_key, new_chain_key = KDF_RK(...)`.
-  - `new_routing_token = HKDF-SHA-256(new_root_key, salt=0x00...00, info="Where-v1-RoutingToken")[0:16]`.
+  - `new_routing_token = HKDF-SHA-256(new_root_key, salt=new_epoch (4-byte big-endian uint32), info="Where-v1-RoutingToken")[0:16]`.
   - Generate fresh `my_ek_priv`/`my_ek_pub` for the next step.
   - **Send `EpochRotation`** on the **current (old) routing token** with `epoch`, `new_ek_pub`, and Ed25519 sig over `(v || epoch || new_ek_pub || sender_fp || recipient_fp)`. Bob has not yet derived `new_routing_token`; posting to the new token would be undeliverable. Identity binding in the sig prevents cross-session replay.
 - **On receiving `EpochRotation`** (Bob's side): perform the same `KDF_RK` step and derive `new_routing_token`.
@@ -57,7 +59,10 @@ Split into client-crypto, client-app, and server.
   - Alice posts all frames *after* `EpochRotation` to `new_routing_token`.
   - Bob polls **both** `current` and `new` tokens (for all message types, including `RatchetAck`).
   - Bob retires `current` token only after receiving a valid frame on `new` token OR after `2 * R` seconds (20 min).
+  - **Alice MUST accept `RatchetAck` messages arriving on the old (current) token** during the transition window. Bob may not yet have derived `new_routing_token` when he sends his next `RatchetAck`; rejecting it on the old token would stall the DH ratchet.
+  - **T_AB_0 SHOULD be discarded** after the first successful DH ratchet step completes. Never reuse the bootstrap token.
 - **Fallback**: if no `RatchetAck` received within 20 min, perform **exactly one** time-based DH ratchet step using Bob's last known `their_ek_pub` **unchanged from session state** (one-sided refresh — Alice's EK rotates but Bob's does not; PCS degrades, FS is maintained). **Do not repeat the fallback** on subsequent timeouts; Alice SHOULD stop broadcasting after a configurable inactivity threshold rather than ratcheting one-sidedly indefinitely.
+  - **Security warning:** In the one-sided fallback (and in all epoch steps before a `RatchetAck` arrives), the DH input is `X25519(my_ek_priv, Bob.IK.pub)` — Bob's **static** identity key. If Bob's `IK.priv` is ever compromised, an attacker can retroactively recompute all historical epoch keys derived during these one-sided steps. This is a structural limitation of the hybrid ratchet (see §5.0 and §5.4). PCS against Bob's long-term key compromise is only achieved during epochs where Bob contributes a fresh `ek_pub` via `RatchetAck`.
 
 ### Secure storage
 - Wipe message/chain/ephemeral priv keys after use.
@@ -72,7 +77,7 @@ Split into client-crypto, client-app, and server.
 
 ### Polling & metadata
 - Poll `GET /inbox/{token}` at a **constant rate** (recommended: **60 s**; 10 s is excessive and leaks app-foreground state). Shuffle token order. The RatchetAck interval `R = 10 min` is a cryptographic parameter and is independent of polling cadence.
-- Optional: poll dummy tokens for cover traffic.
+- Dummy token polling for cover traffic is **deferred future work** (see §7.5); do not implement yet. Cover traffic provides no meaningful privacy benefit until the user base is large enough to provide population-level anonymity.
 
 ## 3. Server (Ktor)
 
