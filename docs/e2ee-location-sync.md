@@ -133,8 +133,9 @@ To avoid requiring users to manage public keys in the UI, the protocol implement
 This protocol uses **Trust-on-First-Use (TOFU)** with local key pinning.
 
 **Safety Numbers:** Two users can optionally verify their connection by comparing a safety number fingerprint.
-- **Calculation:** `SHA-256(local_IK.pub || remote_IK.pub)`, where the two public keys are concatenated in lexicographical order (sorted by key bytes).
+- **Calculation:** `SHA-256(local_IK.pub || local_SigIK.pub || remote_IK.pub || remote_SigIK.pub)`, where the two key *pairs* are sorted lexicographically by `IK.pub`, then concatenated as `(lower_IK.pub || lower_SigIK.pub || higher_IK.pub || higher_SigIK.pub)`.
 - The result is displayed as a human-readable 40-character hex string or QR code.
+- **Why include `SigIK.pub`:** Users bind to both keys during key exchange. Omitting `SigIK.pub` means a compromise of only the signing key is invisible to out-of-band fingerprint comparison.
 
 **Risk:** If the invite link (Option B, §4.3) is intercepted over an unauthenticated channel (e.g., SMS), an attacker can substitute their own key. Fingerprint verification is the primary countermeasure.
 
@@ -193,7 +194,7 @@ T_AB_0 = HKDF-SHA-256(IKM = SK,
                        info = "Where-v1-RoutingToken")[0:16]
 ```
 
-Bob then encrypts `SK` with `Alice.IK.pub` (using ECIES / `crypto_box` semantics) and transmits:
+Bob transmits his public key material (no encrypted SK — Alice recomputes it independently from her own private keys):
 ```json
 {
   "type":    "KeyExchangeInit",
@@ -472,7 +473,7 @@ The server can still observe the timing and frequency of `POST` and `GET` reques
 
 ### 7.4 Mitigations
 
-- **Payload padding (mandatory):** All payloads MUST be padded to a fixed length (e.g., 256 bytes) before encryption.
+- **Payload padding (mandatory):** All payloads MUST be padded to a fixed length (512 bytes recommended) before encryption. 256 bytes is insufficient: a JSON location payload plus GCM overhead already approaches ~150 bytes, leaving little headroom for variable-length fields. 512 bytes provides comfortable clearance while remaining a small fixed multiple of a cache line.
 - **Tor / Onion Routing (Future):** Routing via Tor hides IP addresses, providing the strongest protection against traffic analysis.
 
 ### 7.4.1 Polling Strategy
@@ -576,9 +577,9 @@ The `"Where-v1-Location"` prefix provides domain separation from other protocol 
 
 Each `EncryptedLocation` frame carries a `seq` counter. Recipients enforce:
 
-1. **Replay rejection:** Any frame whose `seq` is already in the set of observed sequence numbers is dropped immediately.
+1. **Replay rejection:** Any frame with `seq <= max_seq_received` is dropped immediately.
 2. **Out-of-order handling:** A frame with `seq < max_seq_received` but not yet seen is a reordered delivery. Two approaches are viable:
-   - **(A) Strict ordering (recommended):** Reject any frame with `seq < max_seq_received`. Because message keys are forward-derived and the previous chain key is deleted, the recipient cannot retroactively derive `MK_n` for `n < current`. Strict ordering is therefore the natural policy; it may cause rare dropped updates on lossy connections, but location data has low tolerance for stale state anyway.
+   - **(A) Strict ordering (recommended):** Reject any frame with `seq <= max_seq_received`. Because message keys are forward-derived and the previous chain key is deleted, the recipient cannot retroactively derive `MK_n` for `n < current`. Strict ordering is therefore the natural policy; it may cause rare dropped updates on lossy connections, but location data has low tolerance for stale state anyway. **Implementation note:** Policy A requires tracking only a single `max_seq_received` (uint64) — not a full set of observed sequence numbers. The "set" framing above is a conceptual description; the implementation is O(1) space.
    - **(B) Skipped-message buffering (future):** Store message keys for a bounded window of `seq` values ahead of current and buffer out-of-order frames. Adds memory overhead and implementation complexity; deferred to a future revision if real-world out-of-order loss rates justify it.
 
 Policy (A) is used. Monitor server-side sequence gaps to calibrate whether policy (B) is needed.
@@ -665,7 +666,7 @@ These follow the same `Post` envelope.
     "type": "EpochRotation",
     "epoch": 43,
     "new_ek_pub": "<base64, Alice's new X25519 ephemeral public key>",
-    "sig": "<base64, Ed25519 signature over (v || epoch || new_ek_pub) using Alice's SigIK>"
+    "sig": "<base64, Ed25519 signature over (v || epoch || new_ek_pub || sender_fp || recipient_fp) using Alice's SigIK>"
   }
 }
 ```
@@ -680,10 +681,14 @@ These follow the same `Post` envelope.
     "type": "RatchetAck",
     "epoch_seen": 41,
     "new_ek_pub": "<base64, Bob's new X25519 ephemeral public key>",
-    "sig": "<base64, Ed25519 signature over (v || epoch_seen || new_ek_pub) using Bob's SigIK>"
+    "sig": "<base64, Ed25519 signature over (v || epoch_seen || new_ek_pub || sender_fp || recipient_fp) using Bob's SigIK>"
   }
 }
 ```
+
+**Signature coverage rationale:** Both `EpochRotation` and `RatchetAck` signatures cover `sender_fp || recipient_fp` (the first 8 bytes of `SHA-256(IK.pub)` for each party). This prevents cross-session injection: a valid `EpochRotation` captured from Alice in one friendship session cannot be replayed into a different session at the same epoch number, because the fingerprints will not match. Without identity binding, a server or network attacker could corrupt a session's ratchet state while the GCM tag on subsequent frames (not the `EpochRotation` itself) provides the only eventual detection. The `v` field in all signatures provides downgrade protection symmetric with the AAD version field.
+
+**RatchetAck freshness:** `epoch_seen` scopes a `RatchetAck` to the epoch Bob observed, which prevents applying an ack from epoch N to epoch N+M. The remaining residual — that a captured `RatchetAck` for epoch N could be replayed during a future session at the same epoch number — is substantially mitigated by the `sender_fp || recipient_fp` binding (replay requires the same friendship pair, same epoch, same `new_ek_pub`). Adding a short-lived timestamp or monotonic nonce to the signed payload would eliminate this residual at the cost of clock-skew handling; deferred to a future revision.
 
 ---
 
