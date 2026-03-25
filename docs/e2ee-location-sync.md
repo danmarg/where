@@ -325,9 +325,9 @@ Advance the DH ratchet every `K` location updates rather than every `T` minutes.
 
 #### Strategy 3: Hybrid — Time + Bob Acknowledgments (Recommended)
 
-The cleanest solution is to allow Bob to periodically reply on the channel, even though he is receiving-only for location data.
+The cleanest solution is to allow Bob to reply on the channel, even though he is receiving-only for location data. Rather than a fixed independent timer, **Bob sends a `RatchetAck` in response to each `EpochRotation` he receives**, contributing a fresh ephemeral key with every reply. This gives true bilateral PCS: the DH ratchet advances once per epoch, and the compromise window for either party's ephemeral key is bounded by one epoch period (T minutes) rather than a separate ack timer.
 
-**Bob sends a "ratchet reply" message every `R` minutes (e.g., R = 10):**
+**Bob sends a `RatchetAck` upon receiving each `EpochRotation` from Alice:**
 
 > **Simplified pseudocode only.** The `from`/`to` UUID fields below are for illustration. The actual wire format (§9.3) omits user IDs entirely and uses identity fingerprints in the signature instead. See §7.1 and §10.4. The `sig` field here also omits the `ts` timestamp present in the canonical 80-byte signed blob — see §9.3 for the full format.
 
@@ -340,24 +340,26 @@ The cleanest solution is to allow Bob to periodically reply on the channel, even
 }
 ```
 
+**De-duplication:** If multiple `EpochRotation` messages arrive before Bob can respond (e.g., after reconnecting from a period offline), Bob MUST send a single `RatchetAck` referencing the **highest `epoch_seen`** only — not one per missed rotation. The `epoch_seen` field is sufficient for Alice to advance from whatever state she is in.
+
 Alice, upon receiving Bob's `RatchetAck`:
 1. Computes `dh_out = X25519(Alice.CurrentEK.priv, Bob.NewEK.pub)`.
 2. Derives `(new_root_key, new_send_CK) = HKDF(root_key, dh_out, "Where-v1-RatchetStep")`.
 3. Generates a fresh `Alice.NewEK` for the next step.
 4. Sends an `EpochRotation` message (see §9.3) carrying her new `EK.pub`. The `EK.pub` is confined to `EpochRotation` only and is **not** included in ordinary `EncryptedLocation` frames (see §9.1), which would expose key-transition timing to the server.
 
-This restores the full Double Ratchet security guarantee: both parties contribute fresh DH material, so compromise of either party's ephemeral keys is healed within `R` minutes.
+This gives true per-epoch bilateral PCS: both parties contribute a fresh ephemeral key on every DH ratchet step, so compromise of either party's current ephemeral key is healed within one epoch (T minutes). The separate ack timer `R` is eliminated — Bob's response rate is naturally governed by Alice's `EpochRotation` schedule.
 
 **Tradeoffs:**
-- Adds 1 uplink message per 10 minutes from Bob. At `R = 10 min`, this is ~144 messages/day per friendship pair — trivial overhead.
+- Adds 1 uplink message per epoch from Bob — identical bandwidth to the old timer-based design at equivalent cadence, but now tightly coupled to the epoch boundary.
 - Bob must remain connected (or buffer the `RatchetAck` for delivery when reconnected).
-- If Bob is offline, Alice cannot advance the DH ratchet. The symmetric ratchet continues providing per-message forward secrecy; PCS resumes automatically when Bob reconnects and sends a `RatchetAck`.
+- If Bob is offline, Alice cannot advance the DH ratchet. The symmetric ratchet continues providing per-message forward secrecy; PCS resumes automatically when Bob reconnects and sends a `RatchetAck` for the latest epoch.
 
 #### 5.3.1 Offline and Failure Modes
 
 **Offline Bob:** If Bob is offline, Alice receives no `RatchetAck`. Alice continues broadcasting on the symmetric ratchet; per-message forward secrecy is maintained regardless of Bob's connectivity. The DH ratchet does not advance — PCS is suspended for the duration of Bob's absence and resumes automatically the next time Bob sends a `RatchetAck`. Alice SHOULD stop broadcasting after a configurable inactivity threshold (§12 item 5) if Bob remains unreachable for an extended period.
 
-**`RatchetAck` loss or delay:** If a `RatchetAck` is dropped in transit, Alice SHOULD retransmit her latest `EpochRotation` after `R` minutes to prompt a fresh ack. A late-arriving `RatchetAck` is always valid: Alice SHOULD apply it to advance the DH ratchet from the current state even if outside the expected window.
+**`RatchetAck` loss or delay:** If a `RatchetAck` is dropped in transit, Alice SHOULD retransmit her latest `EpochRotation` after T minutes (one epoch period) to prompt a fresh ack — this serves as the loss-recovery mechanism in place of the old independent ack timer. A late-arriving `RatchetAck` is always valid: Alice SHOULD apply it to advance the DH ratchet from the current state even if it arrives outside the expected window.
 
 **Device crash or restart:** Session state (root key, current EK) is reloaded from the platform keychain on restart. Bob's subsequent `RatchetAck` will use his new ephemeral key. Alice applies it, advances the DH ratchet, and the session recovers without re-keying.
 
@@ -365,8 +367,10 @@ This restores the full Double Ratchet security guarantee: both parties contribut
 
 | Scenario | PCS guarantee |
 |---|---|
-| Both online, `RatchetAck` delivered | True bilateral PCS within `R` minutes |
-| Bob offline (any duration) | No PCS (symmetric FS only); DH ratchet stalled until Bob reconnects and sends `RatchetAck` |
+| Both online, `RatchetAck` delivered | True bilateral PCS per epoch (within T minutes) |
+| `RatchetAck` lost in transit | Alice retransmits `EpochRotation` after T minutes; PCS restored on receipt |
+| Bob offline (any duration) | No PCS (symmetric FS only); DH ratchet stalled until Bob reconnects and acks latest epoch |
+| Alice offline (any duration) | No new `EpochRotation` sent; Bob has nothing to ack; ratchet stalled symmetrically |
 
 ### 5.4 Forward Secrecy Granularity vs. Overhead Analysis
 
@@ -375,11 +379,11 @@ This restores the full Double Ratchet security guarantee: both parties contribut
 | Per-message symmetric only | Per message | None | 0 | No DH ratchet; chain key compromise = full future exposure |
 | Time-based (T=5 min) | Per message | One-sided DH refresh¹ | ~288 EpochRotation messages | Not true PCS; Bob's `IK.priv` compromise retroactively breaks all epochs |
 | Message-count (K=20) | Per message | One-sided DH refresh¹ | ~288 EpochRotation messages | Same weakness as time-based |
-| Hybrid RatchetAck (R=10 min) | Per message | Bilateral within R min² | ~288 location + 144 RatchetAck | Closest to Double Ratchet PCS; recommended |
+| Hybrid RatchetAck (T=10 min) | Per message | Bilateral per epoch² | ~288 location + 144 RatchetAck | True per-epoch bilateral PCS; recommended |
 
 ¹ *One-sided DH refresh:* Alice contributes a new ephemeral key each epoch, but Bob's DH input remains his long-term `IK.priv`. If Bob's `IK.priv` is ever compromised (now or in the future), all historical epoch keys can be recomputed. This is not post-compromise security in the Signal sense.
 
-² *Bilateral PCS:* Both Alice and Bob contribute fresh ephemeral material per `RatchetAck` cycle. Degrades to symmetric-only (no PCS) while Bob is offline; resumes automatically when Bob reconnects and sends a `RatchetAck`. See §5.3.1.
+² *Bilateral PCS:* Both Alice and Bob contribute a fresh ephemeral key on every DH ratchet step. Bob sends a `RatchetAck` in response to each `EpochRotation`, so the compromise window for either party's ephemeral key equals one epoch period (T minutes). Degrades to symmetric-only (no PCS) while either party is offline; resumes automatically when both are online and the next `EpochRotation` / `RatchetAck` exchange completes. See §5.3.1.
 
 ### 5.5 Message Key Deletion Policy
 

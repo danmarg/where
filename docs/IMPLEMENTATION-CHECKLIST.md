@@ -46,7 +46,7 @@ Split into client-crypto, client-app, and server.
   - Verify GCM tag; advance chain; delete old keys.
 
 ### DH ratchet & token rotation
-- Send `RatchetAck` every 10 min: new X25519 `ek_pub`, `ts` (uint64 Unix seconds), and Ed25519 sig over the canonical blob `(v || epoch_seen || new_ek_pub || ts || sender_fp || recipient_fp)` — all fixed-width big-endian: `v` 4 B, `epoch_seen` 4 B, `new_ek_pub` 32 B, `ts` 8 B, `sender_fp` 16 B, `recipient_fp` 16 B (total 80 bytes). All `RatchetAck`/`EpochRotation`/`Poll` envelopes also carry top-level `"v": 1`.
+- **Send `RatchetAck` upon receiving each `EpochRotation`** (event-driven, not timer-driven): include a fresh X25519 `ek_pub`, `ts` (uint64 Unix seconds), and Ed25519 sig over the canonical blob `(v || epoch_seen || new_ek_pub || ts || sender_fp || recipient_fp)` — all fixed-width big-endian: `v` 4 B, `epoch_seen` 4 B, `new_ek_pub` 32 B, `ts` 8 B, `sender_fp` 16 B, `recipient_fp` 16 B (total 80 bytes). If multiple `EpochRotation` messages arrive before Bob can respond (e.g., post-reconnect), send a **single** `RatchetAck` referencing the **highest `epoch_seen`** only. All `RatchetAck`/`EpochRotation`/`Poll` envelopes also carry top-level `"v": 1`.
 - **On receiving `RatchetAck` or `EpochRotation`**: reject if `ts` is outside ±5 min of local clock (clock-skew grace window).
 - **On receiving `RatchetAck`** (Alice's side):
   - `dh_out = X25519(my_ek_priv, their_new_ek_pub)`.
@@ -54,15 +54,15 @@ Split into client-crypto, client-app, and server.
   - `new_routing_token = HKDF-SHA-256(new_root_key, salt=new_epoch (4-byte big-endian uint32), info="Where-v1-RoutingToken")[0:16]`.
   - Generate fresh `my_ek_priv`/`my_ek_pub` for the next step.
   - **Send `EpochRotation`** on the **current (old) routing token** with `epoch`, `new_ek_pub`, `ts` (uint64 Unix seconds), and Ed25519 sig over canonical blob `(v || epoch || new_ek_pub || ts || sender_fp || recipient_fp)` (same 80-byte fixed-width encoding as `RatchetAck`). Bob has not yet derived `new_routing_token`; posting to the new token would be undeliverable. Identity binding in the sig prevents cross-session replay.
-- **On receiving `EpochRotation`** (Bob's side): perform the same `KDF_RK` step and derive `new_routing_token`.
-- Alice SHOULD retransmit her latest `EpochRotation` if no `RatchetAck` arrives within R (10 min) to accelerate recovery; a late-arriving `RatchetAck` is still valid and SHOULD be applied.
+- **On receiving `EpochRotation`** (Bob's side): perform the same `KDF_RK` step and derive `new_routing_token`. Then send a `RatchetAck` for this epoch. If a batch of `EpochRotation` messages arrives (e.g., post-reconnect), process all in order and send a **single** `RatchetAck` citing only the highest epoch.
+- Alice SHOULD retransmit her latest `EpochRotation` if no `RatchetAck` arrives within T (one epoch period, e.g. 10 min) to accelerate loss recovery; a late-arriving `RatchetAck` is still valid and SHOULD be applied.
 - **Token Transition Protocol**:
   - Alice posts all frames *after* `EpochRotation` to `new_routing_token`.
   - Bob polls **both** `current` and `new` tokens (for all message types, including `RatchetAck`).
-  - Bob retires `current` token only after receiving a valid frame on `new` token OR after `2 * R` seconds (20 min).
+  - Bob retires `current` token only after receiving a valid frame on `new` token OR after `2 * T` (2 epoch periods, e.g. 20 min).
   - **Alice MUST accept `RatchetAck` messages arriving on the old (current) token** during the transition window. Bob may not yet have derived `new_routing_token` when he sends his next `RatchetAck`; rejecting it on the old token would stall the DH ratchet.
   - **T_AB_0 SHOULD be discarded** after the first successful DH ratchet step completes. Never reuse the bootstrap token.
-  - **Out-of-order delivery during transition**: a poll batch from the old token may contain both `EpochRotation` and subsequent `EncryptedLocation` frames. Process `EpochRotation` messages before `EncryptedLocation` frames of higher epoch within any batch. If frames arrive on `new_routing_token` before the corresponding `EpochRotation` is processed, buffer up to 64 frames and decrypt them once `EpochRotation` is applied; discard buffered frames older than `2 * R` minutes.
+  - **Out-of-order delivery during transition**: a poll batch from the old token may contain both `EpochRotation` and subsequent `EncryptedLocation` frames. Process `EpochRotation` messages before `EncryptedLocation` frames of higher epoch within any batch. If frames arrive on `new_routing_token` before the corresponding `EpochRotation` is processed, buffer up to 64 frames and decrypt them once `EpochRotation` is applied; discard buffered frames older than `2 * T` (2 epoch periods).
 - **No fallback**: if no `RatchetAck` is received, Alice continues broadcasting on the symmetric ratchet (per-message FS maintained). The DH ratchet stalls — PCS is suspended until Bob reconnects and sends a `RatchetAck`. Alice SHOULD apply the inactivity threshold (§12 item 5) rather than broadcasting indefinitely into silence.
 
 ### Secure storage
@@ -77,7 +77,7 @@ Split into client-crypto, client-app, and server.
 - On `KeyExchangeInit` with mismatched pinned key: block with "Safety Number Changed"; require explicit confirm.
 
 ### Polling & metadata
-- Poll `GET /inbox/{token}` at a **constant rate** (recommended: **60 s**; 10 s is excessive and leaks app-foreground state). Shuffle token order. The RatchetAck interval `R = 10 min` is a cryptographic parameter and is independent of polling cadence.
+- Poll `GET /inbox/{token}` at a **constant rate** (recommended: **60 s**; 10 s is excessive and leaks app-foreground state). Shuffle token order. Bob sends one `RatchetAck` per `EpochRotation` received (event-driven); the epoch period T is a cryptographic parameter and is independent of polling cadence.
 - Dummy token polling for cover traffic is **deferred future work** (see §7.5); do not implement yet. Cover traffic provides no meaningful privacy benefit until the user base is large enough to provide population-level anonymity.
 
 ## 3. Server (Ktor)
