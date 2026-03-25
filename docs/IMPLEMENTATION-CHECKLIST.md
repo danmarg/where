@@ -25,7 +25,8 @@ Split into client-crypto, client-app, and server.
     - `DH1 = X25519(Bob.EK_B.priv, Alice.IK.pub)`
     - `DH2 = X25519(Bob.IK.priv, Alice.EK_A.pub)`
     - `DH3 = X25519(Bob.EK_B.priv, Alice.EK_A.pub)`
-  - `SK = HKDF-SHA-256(DH1 || DH2 || DH3, info="Where-v1-KeyExchange")`.
+    - `DH4 = X25519(Bob.IK.priv, Alice.IK.pub)`
+  - `SK = HKDF-SHA-256(DH1 || DH2 || DH3 || DH4, info="Where-v1-KeyExchange")`.
   - `T_AB_0 = HKDF-SHA-256(SK, salt=0x00000000, info="Where-v1-RoutingToken")[0:16]`. (salt = epoch=0 as 4-byte big-endian uint32).
   - Initialize session state; **Alice MUST delete EK_A.priv immediately after derivation**.
 
@@ -39,7 +40,7 @@ Split into client-crypto, client-app, and server.
 - **Outgoing location**:
   - Derive `message_key` and `message_nonce` from `send_chain_key`; delete old chain key.
   - Increment `send_seq` (uint64).
-  - AAD = `"Where-v1-Location"` (UTF-8) `|| version` (4 bytes, big-endian uint32 = 1) `|| sender_fp` (16 bytes, first 16 bytes of SHA-256(sender IK.pub)) `|| recipient_fp` (16 bytes, first 16 bytes of SHA-256(recipient IK.pub)) `|| epoch` (4 bytes BE uint32) `|| seq_be` (8 bytes BE uint64).
+  - AAD = `"Where-v1-Location"` (UTF-8) `|| version` (4 bytes, big-endian uint32 = 1) `|| sender_fp` (16 bytes, first 16 bytes of SHA-256(sender IK.pub || sender SigIK.pub)) `|| recipient_fp` (16 bytes, first 16 bytes of SHA-256(recipient IK.pub || recipient SigIK.pub)) `|| epoch` (4 bytes BE uint32) `|| seq_be` (8 bytes BE uint64).
   - AES-256-GCM encrypt padded JSON using `message_nonce`.
   - Send `EncryptedLocation` wrapped in a `Post` envelope with top-level **`"v": 1`** field: `epoch`, `seq` (JSON string — decimal-encoded to avoid JS uint64 precision loss; native clients parse as `uint64`), `ct`. **No `nonce` field** (nonce is deterministic and derived independently by both sides — transmitting it leaks chain-reset timing). **No `ek_pub`**.
 - **Incoming**:

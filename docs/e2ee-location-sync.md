@@ -185,8 +185,10 @@ DH1 = X25519(Bob.EK_B.priv, Alice.IK.pub)
 DH2 = X25519(Bob.IK.priv, Alice.EK_A.pub)
 // DH3: Alice's Ephemeral x Bob's Ephemeral
 DH3 = X25519(Bob.EK_B.priv, Alice.EK_A.pub)
+// DH4: Alice's Identity x Bob's Identity
+DH4 = X25519(Bob.IK.priv, Alice.IK.pub)
 
-SK  = HKDF-SHA-256(IKM = DH1 || DH2 || DH3,
+SK  = HKDF-SHA-256(IKM = DH1 || DH2 || DH3 || DH4,
                     salt = 0x00...00,
                     info = "Where-v1-KeyExchange")
 
@@ -428,7 +430,7 @@ When Alice sends a location update:
 1. She computes the plaintext: `loc = {lat, lng, accuracy, timestamp}`.
 2. For each friend `F_i` in her friend list:
    - Derive `MK_i` from Alice→F_i ratchet chain.
-   - Encrypt: `CT_i = AES-256-GCM(key=MK_i, plaintext=loc, aad=encode(sender_fp, recipient_fp, epoch_i, seq_i))` where `sender_fp` and `recipient_fp` are the first 16 bytes of `SHA-256(IK.pub)` for each party — matching the final AAD construction in §9.1.
+   - Encrypt: `CT_i = AES-256-GCM(key=MK_i, plaintext=loc, aad=encode(sender_fp, recipient_fp, epoch_i, seq_i))` where `sender_fp` and `recipient_fp` are the first 16 bytes of `SHA-256(IK.pub || SigIK.pub)` for each party — matching the final AAD construction in §9.1.
    - Send `(routing_token_i, CT_i, epoch_i, seq_i)` to the server.
 3. The server routes each `(routing_token_i, CT_i)` frame to the corresponding mailbox.
 
@@ -592,7 +594,7 @@ aad   = "Where-v1-Location" || sender_fp || recipient_fp || epoch || seq
 (ciphertext, tag) = AES-256-GCM(key=message_key, nonce=message_nonce,
                                   plaintext=loc_json_padded, aad=aad)
 ```
-Where `sender_fp` and `recipient_fp` are the first 16 bytes of `SHA-256(IK.pub)`.  This replaces user IDs in the authenticated data.
+Where `sender_fp` and `recipient_fp` are the first 16 bytes of `SHA-256(IK.pub || SigIK.pub)`.  This replaces user IDs in the authenticated data.
 
 The `"Where-v1-Location"` prefix provides domain separation from other protocol contexts (e.g., `EpochRotation`, future protocol versions), preventing cross-context AAD collisions or forgery attempts.
 
@@ -651,8 +653,8 @@ All messages are JSON-encoded. Every message MUST include a top-level `"v"` fiel
 ```
 aad = "Where-v1-Location" (18 bytes, UTF-8)
     || version      (4 bytes, big-endian uint32, currently 1)
-    || sender_fp    (16 bytes, first 16 bytes of SHA-256(sender IK.pub))
-    || recipient_fp (16 bytes, first 16 bytes of SHA-256(recipient IK.pub))
+    || sender_fp    (16 bytes, first 16 bytes of SHA-256(sender IK.pub || sender SigIK.pub))
+    || recipient_fp (16 bytes, first 16 bytes of SHA-256(recipient IK.pub || recipient SigIK.pub))
     || epoch (4 bytes, big-endian uint32)
     || seq   (8 bytes, big-endian uint64)
 ```
@@ -722,12 +724,12 @@ The canonical byte encoding for both signed payloads is:
 - `epoch` / `epoch_seen`: 4 bytes, big-endian uint32
 - `new_ek_pub`: 32 bytes, raw X25519 public key (no base64)
 - `ts`: 8 bytes, big-endian uint64 (Unix seconds)
-- `sender_fp`: 16 bytes, raw (first 16 bytes of SHA-256(sender IK.pub))
-- `recipient_fp`: 16 bytes, raw (first 16 bytes of SHA-256(recipient IK.pub))
+- `sender_fp`: 16 bytes, raw (first 16 bytes of SHA-256(sender IK.pub || sender SigIK.pub))
+- `recipient_fp`: 16 bytes, raw (first 16 bytes of SHA-256(recipient IK.pub || recipient SigIK.pub))
 
 Total signed payload: 80 bytes. Implementations MUST NOT use JSON, ASN.1, or any variable-length encoding for the signed blob — only the fixed-width big-endian encoding above.
 
-**Signature coverage rationale:** Both `EpochRotation` and `RatchetAck` signatures cover `sender_fp || recipient_fp` (the first 16 bytes of `SHA-256(IK.pub)` for each party). This prevents cross-session injection: a valid `EpochRotation` captured from Alice in one friendship session cannot be replayed into a different session at the same epoch number, because the fingerprints will not match. Without identity binding, a server or network attacker could corrupt a session's ratchet state while the GCM tag on subsequent frames (not the `EpochRotation` itself) provides the only eventual detection. The `v` field in all signatures provides downgrade protection symmetric with the AAD version field.
+**Signature coverage rationale:** Both `EpochRotation` and `RatchetAck` signatures cover `sender_fp || recipient_fp` (the first 16 bytes of `SHA-256(IK.pub || SigIK.pub)` for each party). This prevents cross-session injection: a valid `EpochRotation` captured from Alice in one friendship session cannot be replayed into a different session at the same epoch number, because the fingerprints will not match. Without identity binding, a server or network attacker could corrupt a session's ratchet state while the GCM tag on subsequent frames (not the `EpochRotation` itself) provides the only eventual detection. The `v` field in all signatures provides downgrade protection symmetric with the AAD version field.
 
 **RatchetAck freshness:** `epoch_seen` scopes a `RatchetAck` to the epoch Bob observed, preventing application of an ack from epoch N to epoch N+M. The `ts` field (Unix seconds, uint64) eliminates the epoch-collision replay window: a uint32 epoch counter at one epoch per 10 minutes can realistically repeat over a long-lived deployment, but a captured `RatchetAck` or `EpochRotation` with a stale `ts` will be rejected. Recipients MUST reject any `EpochRotation` or `RatchetAck` whose `ts` falls outside a ±5 minute clock-skew grace window relative to the recipient's local clock. Together, `ts` and `sender_fp || recipient_fp` binding mean replay requires the same friendship pair, same epoch, same `new_ek_pub`, *and* a fresh timestamp — which is not achievable with a captured old message.
 
