@@ -341,6 +341,13 @@ The cleanest solution is to allow Bob to reply on the channel, even though he is
 **De-duplication:** If multiple `EpochRotation` messages arrive before Bob can respond (e.g., after reconnecting from a period offline), Bob MUST send a single `RatchetAck` referencing the **highest `epoch_seen`** only — not one per missed rotation. The `epoch_seen` field is sufficient for Alice to advance from whatever state she is in.
 
 Alice, upon receiving Bob's `RatchetAck`:
+
+**Epoch validation (before processing):**
+- If `epoch_seen < Alice.current_epoch`: the ack is stale (e.g., a retransmit of an already-applied ack). Alice MUST ignore it silently.
+- If `epoch_seen > Alice.current_epoch`: this is impossible in normal operation — Alice cannot have sent an `EpochRotation` for an epoch she hasn't reached, so Bob cannot have seen one. Alice MUST reject such an ack as invalid and log it. (Note: this invariant holds because Alice can only advance her DH epoch by receiving a `RatchetAck`; she cannot unilaterally skip epochs. See de-duplication rule in §5.3.)
+- If `epoch_seen == Alice.current_epoch`: apply normally.
+
+**Processing (epoch_seen == Alice.current_epoch):**
 1. Computes `dh_out = X25519(Alice.CurrentEK.priv, Bob.NewEK.pub)`.
 2. Derives `(new_root_key, new_send_CK) = HKDF(root_key, dh_out, "Where-v1-RatchetStep")`.
 3. Generates a fresh `Alice.NewEK` for the next step.
@@ -377,11 +384,11 @@ This gives true per-epoch bilateral PCS: both parties contribute a fresh ephemer
 | Per-message symmetric only | Per message | None | 0 | No DH ratchet; chain key compromise = full future exposure |
 | Time-based (T=5 min) | Per message | One-sided DH refresh¹ | ~288 EpochRotation messages | Not true PCS; Bob's `IK.priv` compromise retroactively breaks all epochs |
 | Message-count (K=20) | Per message | One-sided DH refresh¹ | ~288 EpochRotation messages | Same weakness as time-based |
-| Hybrid RatchetAck (T=10 min) | Per message | Bilateral per epoch² | ~288 location + 144 RatchetAck | True per-epoch bilateral PCS; recommended |
+| Hybrid RatchetAck (T=10 min) | Per message | Bilateral per epoch (when both online)² | ~288 location + 144 RatchetAck | True per-epoch bilateral PCS; recommended |
 
 ¹ *One-sided DH refresh:* Alice contributes a new ephemeral key each epoch, but Bob's DH input remains his long-term `IK.priv`. If Bob's `IK.priv` is ever compromised (now or in the future), all historical epoch keys can be recomputed. This is not post-compromise security in the Signal sense.
 
-² *Bilateral PCS:* Both Alice and Bob contribute a fresh ephemeral key on every DH ratchet step. Bob sends a `RatchetAck` in response to each `EpochRotation`, so the compromise window for either party's ephemeral key equals one epoch period (T minutes). Degrades to symmetric-only (no PCS) while either party is offline; resumes automatically when both are online and the next `EpochRotation` / `RatchetAck` exchange completes. See §5.3.1.
+² *Bilateral PCS:* Both Alice and Bob contribute a fresh ephemeral key on every DH ratchet step. Bob sends a `RatchetAck` in response to each `EpochRotation`, so the compromise window for either party's ephemeral key equals one epoch period (T minutes). When either party is offline, the DH ratchet stalls — PCS is suspended for that period (symmetric per-message forward secrecy continues uninterrupted); the DH ratchet resumes automatically once both are online and the next `EpochRotation` / `RatchetAck` exchange completes. See §5.3.1.
 
 ### 5.5 Message Key Deletion Policy
 
