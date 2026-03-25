@@ -329,14 +329,14 @@ The cleanest solution is to allow Bob to periodically reply on the channel, even
 
 **Bob sends a "ratchet reply" message every `R` minutes (e.g., R = 10):**
 
-> **Simplified pseudocode only.** The `from`/`to` UUID fields below are for illustration. The actual wire format (§9.3) omits user IDs entirely and uses identity fingerprints in the signature instead. See §7.1 and §10.4.
+> **Simplified pseudocode only.** The `from`/`to` UUID fields below are for illustration. The actual wire format (§9.3) omits user IDs entirely and uses identity fingerprints in the signature instead. See §7.1 and §10.4. The `sig` field here also omits the `ts` timestamp present in the canonical 80-byte signed blob — see §9.3 for the full format.
 
 ```json
 {
   "type":       "RatchetAck",
   "epoch_seen": 41,
   "new_ek_pub": "<base64, Bob's new X25519 ephemeral public key>",
-  "sig":        "<base64, Ed25519 signature over (v || epoch_seen || new_ek_pub || sender_fp || recipient_fp)>"
+  "sig":        "<base64, Ed25519 signature over (v || epoch_seen || new_ek_pub || sender_fp || recipient_fp) — simplified; canonical form includes ts, see §9.3>"
 }
 ```
 
@@ -517,7 +517,7 @@ Alice maintains, for each friend B:
 SessionState {
   root_key:        [32]byte   // current root key
   send_chain_key:  [32]byte   // CK for Alice→B direction
-  recv_chain_key:  [32]byte   // CK for B→Alice direction
+  recv_chain_key:  [32]byte   // Reserved — Alice is send-only for location data; Bob's RatchetAck is authenticated by Ed25519 signature, not a symmetric ratchet. This field is not used in the current unidirectional protocol and is reserved for a future bidirectional extension.
   routing_token:   [16]byte   // T_AB derived during key exchange
   send_seq:        uint64     // monotonically increasing counter
   recv_seq:        uint64     // highest received seq
@@ -571,7 +571,7 @@ The first two outputs are identical to the Signal spec's KDF_CK construction. Th
 
 **Note on key/nonce co-derivation:** `message_key` and `message_nonce` are both derived from the same `chain_key` input, separated only by their domain-separation constants (0x02 and 0x03). HMAC-SHA-256 is a PRF and these outputs are computationally independent given distinct constants, so there is no known cryptographic weakness in the current construction. However, an alternative that makes the independence structurally explicit — and is more robust to future primitive substitution — is an HKDF split: `(message_key || message_nonce) = HKDF-SHA-256(ikm=chain_key, info="Where-v1-MsgKey")[0:44]`, slicing bytes 0–31 as `message_key` and bytes 32–43 as `message_nonce`. This alternative SHOULD be evaluated for a future protocol revision.
 
-**Note on routing-token HKDF salt:** Routing token derivation uses the current epoch as the 4-byte big-endian uint32 salt (epoch=0 for the bootstrap token `T_AB_0`). Using an all-zero or absent salt degrades HKDF to an HMAC-based PRF with a fixed key (RFC 5869 §3.1); including the epoch is a trivially cheap change that aligns with RFC 5869 guidance and makes each epoch's token derivation domain-separated by epoch number. This is a requirement; the all-zero construction is not acceptable.
+**Note on routing-token HKDF salt:** Routing token derivation uses the current epoch as the 4-byte big-endian uint32 salt (epoch=0 for the bootstrap token `T_AB_0`). Using an all-zero or absent salt degrades HKDF to an HMAC-based PRF with a fixed key (RFC 5869 §3.1); including the epoch is a trivially cheap change that aligns with RFC 5869 guidance and makes each epoch's token derivation domain-separated by epoch number. This is a requirement; the all-zero construction is not acceptable. Note that `T_AB_0` uses `salt = 0x00000000` (epoch=0 encoded as a 4-byte big-endian uint32), which is **not** the same as an absent or null salt: RFC 5869 §3.1 defines an absent salt as a zero-filled string of `HashLen` bytes (32 bytes for SHA-256), whereas `0x00000000` is a 4-byte salt with meaningful domain separation by length alone. Implementations MUST pass the 4-byte epoch encoding as the explicit salt argument — do not omit the salt parameter.
 
 **Message encryption:**
 ```
