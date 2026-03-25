@@ -191,11 +191,11 @@ SK  = HKDF-SHA-256(IKM = DH1 || DH2 || DH3,
                     info = "Where-v1-KeyExchange")
 
 // Derive the initial bootstrap routing token from SK.
-// After the first ratchet step, the token rotates per epoch — see §8.3 KDF_RK.
-// salt = epoch encoded as big-endian uint32; for the bootstrap token epoch = 0 → 0x00000000.
+// info string includes both fingerprints to ensure domain separation per friendship pair.
+info_token = "Where-v1-RoutingToken" || sender_fp || recipient_fp
 T_AB_0 = HKDF-SHA-256(IKM = SK,
                        salt = 0x00000000,   // epoch=0, 4 bytes big-endian uint32
-                       info = "Where-v1-RoutingToken")[0:16]
+                       info = info_token)[0:16]
 ```
 
 Bob transmits his public key material (no encrypted SK — Alice recomputes it independently from her own private keys):
@@ -211,6 +211,17 @@ Bob transmits his public key material (no encrypted SK — Alice recomputes it i
 ```
 
 This message is posted to the server's mailbox API. The server sees only the opaque token and the public key material. It does not know who the sender or recipient is.
+
+**Key Confirmation:**
+Immediately after posting `KeyExchangeInit`, Bob MUST post a `KeyConfirmation` message to `T_AB_0`. This allows Alice to verify that both parties have derived the same `SK` before any location data is shared.
+
+```json
+{
+  "type": "KeyConfirmation",
+  "v": 1,
+  "ct": "<base64, AES-256-GCM(key=SK, plaintext='Where-v1-Confirm', aad=T_AB_0)>"
+}
+```
 
 Alice receives the `KeyExchangeInit` and:
 
@@ -441,7 +452,7 @@ When Alice sends a location update:
 1. She computes the plaintext: `loc = {lat, lng, accuracy, timestamp}`.
 2. For each friend `F_i` in her friend list:
    - Derive `MK_i` from Alice→F_i ratchet chain.
-   - Encrypt: `CT_i = AES-256-GCM(key=MK_i, plaintext=loc, aad=encode(sender_fp, recipient_fp, epoch_i, seq_i))` where `sender_fp` and `recipient_fp` are the first 16 bytes of `SHA-256(IK.pub || SigIK.pub)` for each party — matching the final AAD construction in §9.1.
+   - Encrypt: `CT_i = AES-256-GCM(key=MK_i, plaintext=loc, aad=encode(sender_fp, recipient_fp, epoch_i, seq_i))` where `sender_fp` and `recipient_fp` are the full 32 bytes of `SHA-256(IK.pub || SigIK.pub)` for each party — matching the final AAD construction in §9.1.
    - Send `(routing_token_i, CT_i, epoch_i, seq_i)` to the server.
 3. The server routes each `(routing_token_i, CT_i)` frame to the corresponding mailbox.
 
@@ -564,10 +575,11 @@ Output: 64 bytes split as `[0:32] = new_root_key`, `[32:64] = new_chain_key`.
 
 After each DH ratchet step, the routing token for this friendship pair MUST be re-derived from the new root key:
 ```
+info_token = "Where-v1-RoutingToken" || sender_fp || recipient_fp
 new_routing_token = HKDF-SHA-256(
     salt = new_epoch (big-endian uint32, 4 bytes),
     ikm  = new_root_key,
-    info = "Where-v1-RoutingToken"
+    info = info_token
 )[0:16]
 ```
 This ensures the routing token rotates with every epoch, preventing the server from correlating historical traffic for a friendship pair via a static token. The initial bootstrap token `T_AB_0` (§4.2) is replaced by the epoch-1 token after the first ratchet step completes. Implementations SHOULD discard `T_AB_0` after the first successful DH ratchet and never reuse it.
@@ -577,26 +589,29 @@ When the routing token changes, the ordering of events is strictly sequenced:
 
 1. Alice MUST send the `EpochRotation` message on the **old (current) token**. Bob has not yet derived `new_routing_token` and cannot poll it; posting `EpochRotation` to the new token would make it undeliverable.
 2. Alice begins posting all frames *after* the `EpochRotation` to the `new_routing_token`.
-3. Bob, upon receiving the `EpochRotation` on the old token and deriving `new_routing_token`, MUST immediately start polling **both** the old and new tokens for all message types (including `RatchetAck`, not only `EncryptedLocation` frames).
-4. Bob sends any outbound `RatchetAck` to the **most recently derived routing token** — `new_routing_token` if he has already processed the `EpochRotation`, otherwise the current (old) token. Alice MUST accept `RatchetAck` messages arriving on the old token during the transition window.
-5. Bob stops polling the old token only after he successfully receives at least one valid `EncryptedLocation` frame on the new token, or after a safety timeout of `2 * T` (2 epoch periods, e.g. 20 min). The `2 * T` window is intentionally generous to hedge against server replication lag in load-balanced deployments: Alice's POST to `new_routing_token` may not be immediately visible on all server replicas, so Bob MUST keep polling the old token during this window rather than assuming frames on the new token are immediately available.
+3. Alice MUST continue polling the **old (current) token** for `RatchetAck` (optional) and any incoming `PreKeyBundle` updates until the `2 * T` window expires.
+4. Bob, upon receiving the `EpochRotation` on the old token and deriving `new_routing_token`, MUST immediately start polling **both** the old and new tokens for all message types (including `PreKeyBundle`, not only `EncryptedLocation` frames).
+5. Bob sends any outbound messages to the **most recently derived routing token** — `new_routing_token` if he has already processed the `EpochRotation`, otherwise the current (old) token. Alice MUST accept messages arriving on the old token during the transition window.
+6. Bob stops polling the old token only after he successfully receives at least one valid `EncryptedLocation` frame on the new token, or after a safety timeout of `2 * T` (2 epoch periods, e.g. 20 min).
 
 **Out-of-order delivery during transition:** A `GET /inbox/{old_token}` response may contain both the `EpochRotation` and subsequent `EncryptedLocation` frames in the same batch. Bob MUST process `EpochRotation` messages before `EncryptedLocation` frames of higher epoch within any batch — sort or partition by type before applying. If Bob polls `new_routing_token` during the dual-polling window and receives `EncryptedLocation` frames before having processed the corresponding `EpochRotation`, he MUST buffer those frames. The buffer MUST NOT exceed 64 frames per friendship pair; when full, incoming frames MUST be silently dropped (not the oldest buffered frames evicted) — this is a hard DoS bound against memory exhaustion from garbage posted to a known token. Implementation SHOULD log buffer-full events as a potential DoS indicator. Decrypt buffered frames once the `EpochRotation` arrives. Frames buffered longer than `2 * T` without a matching `EpochRotation` MUST be discarded — they are stale for a location app and the missing `EpochRotation` will be retransmitted by Alice's mandatory retransmit logic (§5.3.1).
 
 **KDF_CK (symmetric ratchet step):**
 ```
-new_chain_key              = HMAC-SHA-256(key=chain_key, data=0x01)
-(message_key||message_nonce) = HKDF-SHA-256(ikm=chain_key,
-                                             salt=<absent>,
-                                             info="Where-v1-MsgKey")[0:44]
-// message_key   = bytes  0–31  (32 bytes, AES-256-GCM key)
-// message_nonce = bytes 32–43  (12 bytes, GCM nonce)
+(new_chain_key || message_key || message_nonce) = HKDF-SHA-256(
+    ikm  = current_chain_key,
+    salt = <absent>,
+    info = "Where-v1-MsgStep"
+)[0:76]
+// new_chain_key   = bytes  0–31 (32 bytes)
+// message_key     = bytes 32–63 (32 bytes)
+// message_nonce   = bytes 64–75 (12 bytes)
 ```
-The chain advancement (`new_chain_key`) is identical to the Signal spec's KDF_CK construction. The message key and nonce are derived together via a single HKDF call, producing 44 bytes that are then split: bytes 0–31 become the AES-256-GCM key and bytes 32–43 become the 12-byte GCM nonce. Both values are derived from `chain_key` in one PRF invocation, so they are structurally independent outputs of the HKDF expand phase, not merely domain-separated HMAC calls over the same input.
+The symmetric ratchet step is simplified to a single `HKDF-SHA-256` invocation that produces 76 bytes of output. This output is split into the next `chain_key`, the current `message_key` for AES-256-GCM, and the 12-byte deterministic `message_nonce`. This replaces the hybrid HMAC/HKDF construction with a single standard KDF call, ensuring structural independence of all outputs in one PRF invocation.
 
-**Why HKDF rather than two HMAC calls:** Deriving `message_key` and `message_nonce` as separate `HMAC-SHA-256(chain_key, 0x02/0x03)` outputs is cryptographically sound — HMAC is a PRF and the outputs are computationally independent given distinct constants — but it has a structural weakness: both outputs are co-derivable from `chain_key` in a single step, and there is no length separation between them. A single HKDF call with a 44-byte output makes the independence explicit, aligns with RFC 5869 intended use (keying material derivation), and is more robust to future primitive substitution. The nonce remains deterministic (mandatory, to protect against state-rollback attacks) — only the derivation mechanism changes.
+**Why HKDF:** HKDF (RFC 5869) is designed for key expansion. A single call with a 76-byte output provides independent bits for the chain key, message key, and nonce. The nonce remains deterministic (mandatory, to protect against state-rollback attacks).
 
-**Note on routing-token HKDF salt:** Routing token derivation uses the current epoch as the 4-byte big-endian uint32 salt (epoch=0 for the bootstrap token `T_AB_0`). Using an all-zero or absent salt degrades HKDF to an HMAC-based PRF with a fixed key (RFC 5869 §3.1); including the epoch is a trivially cheap change that aligns with RFC 5869 guidance and makes each epoch's token derivation domain-separated by epoch number. This is a requirement; the all-zero construction is not acceptable. Note that `T_AB_0` uses `salt = 0x00000000` (epoch=0 encoded as a 4-byte big-endian uint32), which is **not** the same as an absent or null salt: RFC 5869 §3.1 defines an absent salt as a zero-filled string of `HashLen` bytes (32 bytes for SHA-256), whereas `0x00000000` is a 4-byte salt with meaningful domain separation by length alone. Implementations MUST pass the 4-byte epoch encoding as the explicit salt argument — do not omit the salt parameter.
+**Note on routing-token HKDF salt:** Routing token derivation uses the current epoch as the 4-byte big-endian uint32 salt. Including the epoch and the identity fingerprints in the `info` string ensures cryptographic domain separation per friendship pair and per epoch. Note that `T_AB_0` uses `salt = 0x00000000` (epoch=0 encoded as a 4-byte big-endian uint32). Implementations MUST pass the 4-byte epoch encoding as the explicit salt argument — do not omit the salt parameter.
 
 **Message encryption:**
 ```
@@ -605,7 +620,7 @@ aad   = "Where-v1-Location" || sender_fp || recipient_fp || epoch || seq
 (ciphertext, tag) = AES-256-GCM(key=message_key, nonce=message_nonce,
                                   plaintext=loc_json_padded, aad=aad)
 ```
-Where `sender_fp` and `recipient_fp` are the first 16 bytes of `SHA-256(IK.pub || SigIK.pub)`.  This replaces user IDs in the authenticated data.
+Where `sender_fp` and `recipient_fp` are the full 32 bytes of `SHA-256(IK.pub || SigIK.pub)`.  This replaces user IDs in the authenticated data.
 
 The `"Where-v1-Location"` prefix provides domain separation from other protocol contexts (e.g., `EpochRotation`, future protocol versions), preventing cross-context AAD collisions or forgery attempts.
 
@@ -665,13 +680,15 @@ All messages are JSON-encoded. Every message MUST include a top-level `"v"` fiel
 ```
 aad = "Where-v1-Location" (18 bytes, UTF-8)
     || version      (4 bytes, big-endian uint32, currently 1)
-    || sender_fp    (16 bytes, first 16 bytes of SHA-256(sender IK.pub || sender SigIK.pub))
-    || recipient_fp (16 bytes, first 16 bytes of SHA-256(recipient IK.pub || recipient SigIK.pub))
+    || sender_fp    (32 bytes, full SHA-256(sender IK.pub || sender SigIK.pub))
+    || recipient_fp (32 bytes, full SHA-256(recipient IK.pub || recipient SigIK.pub))
     || epoch (4 bytes, big-endian uint32)
     || seq   (8 bytes, big-endian uint64)
 ```
 
 Including the protocol version in the AAD ensures that a recipient running a future protocol version will reject messages encrypted under old logic, preventing downgrade attacks. Using identity fingerprints rather than the routing token in the AAD prevents the server (which knows the routing token) from using the AAD as a correlation handle. The fingerprints are not transmitted in the frame and are therefore opaque to the server.
+
+**Note on sequence counter overflow:** The `seq` counter is a `uint64`. While practically impossible to reach at normal data rates, the implementation MUST ensure `seq` never wraps. If `seq` reaches `UINT64_MAX`, the session MUST be invalidated and the friendship re-keyed via a fresh Key Exchange. Reusing `seq` values with the same `chain_key` would violate the deterministic nonce security of the ratchet.
 
 **Plaintext (before encryption):**
 ```json
@@ -751,27 +768,27 @@ These follow the same `Post` envelope.
 
 The canonical byte encoding for signed payloads is:
 
-**EpochRotation (84 bytes):**
+**EpochRotation (116 bytes):**
 - `v`: 4 bytes, big-endian uint32
 - `epoch`: 4 bytes, big-endian uint32
 - `opk_id`: 4 bytes, big-endian uint32 (the ID of Bob's pre-key Alice consumed)
 - `new_ek_pub`: 32 bytes, raw X25519 public key (no base64)
 - `ts`: 8 bytes, big-endian uint64 (Unix seconds)
-- `sender_fp`: 16 bytes, raw (first 16 bytes of SHA-256(sender IK.pub || sender SigIK.pub))
-- `recipient_fp`: 16 bytes, raw (first 16 bytes of SHA-256(recipient IK.pub || recipient SigIK.pub))
+- `sender_fp`: 32 bytes, raw (SHA-256(sender IK.pub || sender SigIK.pub))
+- `recipient_fp`: 32 bytes, raw (SHA-256(recipient IK.pub || recipient SigIK.pub))
 
-**RatchetAck (48 bytes):**
+**RatchetAck (80 bytes):**
 - `v`: 4 bytes, big-endian uint32
 - `epoch_seen`: 4 bytes, big-endian uint32
 - `ts`: 8 bytes, big-endian uint64 (Unix seconds)
-- `sender_fp`: 16 bytes, raw (first 16 bytes of SHA-256(sender IK.pub || sender SigIK.pub))
-- `recipient_fp`: 16 bytes, raw (first 16 bytes of SHA-256(recipient IK.pub || recipient SigIK.pub))
+- `sender_fp`: 32 bytes, raw (SHA-256(sender IK.pub || sender SigIK.pub))
+- `recipient_fp`: 32 bytes, raw (SHA-256(recipient IK.pub || recipient SigIK.pub))
 
 Implementations MUST NOT use JSON, ASN.1, or any variable-length encoding for the signed blob — only the fixed-width big-endian encoding above.
 
-**Signature coverage rationale:** Both `EpochRotation` and `RatchetAck` signatures cover `sender_fp || recipient_fp` (the first 16 bytes of `SHA-256(IK.pub || SigIK.pub)` for each party). This prevents cross-session injection: a valid `EpochRotation` captured from Alice in one friendship session cannot be replayed into a different session at the same epoch number, because the fingerprints will not match. Without identity binding, a server or network attacker could corrupt a session's ratchet state while the GCM tag on subsequent frames (not the `EpochRotation` itself) provides the only eventual detection. The `v` field in all signatures provides downgrade protection symmetric with the AAD version field.
+**Signature coverage rationale:** Both `EpochRotation` and `RatchetAck` signatures cover `sender_fp || recipient_fp` (the full 32-byte `SHA-256(IK.pub || SigIK.pub)` for each party). This prevents cross-session injection: a valid `EpochRotation` captured from Alice in one friendship session cannot be replayed into a different session at the same epoch number, because the fingerprints will not match. Without identity binding, a server or network attacker could corrupt a session's ratchet state while the GCM tag on subsequent frames (not the `EpochRotation` itself) provides the only eventual detection. The `v` field in all signatures provides downgrade protection symmetric with the AAD version field.
 
-**RatchetAck freshness:** `epoch_seen` scopes a `RatchetAck` to the epoch Bob observed, preventing application of an ack from epoch N to epoch N+M. The `ts` field (Unix seconds, uint64) eliminates the epoch-collision replay window: a uint32 epoch counter at one epoch per 10 minutes can realistically repeat over a long-lived deployment, but a captured `RatchetAck` or `EpochRotation` with a stale `ts` will be rejected. Recipients MUST reject any `EpochRotation` or `RatchetAck` whose `ts` falls outside a ±5 minute clock-skew grace window relative to the recipient's local clock. Together, `ts` and `sender_fp || recipient_fp` binding mean replay requires the same friendship pair, same epoch, same `new_ek_pub`, *and* a fresh timestamp — which is not achievable with a captured old message.
+**RatchetAck freshness:** `epoch_seen` scopes a `RatchetAck` to the epoch Bob observed, preventing application of an ack from epoch N to epoch N+M. The `ts` field (Unix seconds, uint64) eliminates the epoch-collision replay window: a uint32 epoch counter at one epoch per 10 minutes can realistically repeat over a long-lived deployment, but a captured `RatchetAck` or `EpochRotation` with a stale `ts` will be rejected. Recipients MUST reject any `EpochRotation` or `RatchetAck` whose `ts` falls outside a `T + 5 minute` clock-skew grace window relative to the recipient's local clock (where `T` is the current epoch period). Together, `ts` and `sender_fp || recipient_fp` binding mean replay requires the same friendship pair, same epoch, same `new_ek_pub`, *and* a fresh timestamp — which is not achievable with a captured old message.
 
 ---
 

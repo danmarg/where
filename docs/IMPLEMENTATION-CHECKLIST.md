@@ -26,24 +26,28 @@ Split into client-crypto, client-app, and server.
     - `DH2 = X25519(Bob.IK.priv, Alice.EK_A.pub)`
     - `DH3 = X25519(Bob.EK_B.priv, Alice.EK_A.pub)`
   - `SK = HKDF-SHA-256(DH1 || DH2 || DH3, info="Where-v1-KeyExchange")`.
-  - `T_AB_0 = HKDF-SHA-256(SK, salt=0x00000000, info="Where-v1-RoutingToken")[0:16]`. (salt = epoch=0 as 4-byte big-endian uint32).
+  - `info_token = "Where-v1-RoutingToken" || sender_fp || recipient_fp`.
+  - `T_AB_0 = HKDF-SHA-256(SK, salt=0x00000000, info=info_token)[0:16]`. (salt = epoch=0 as 4-byte big-endian uint32).
   - Initialize session state; **Alice MUST delete EK_A.priv immediately after derivation**.
+- **Bob MUST post `KeyConfirmation` immediately after `KeyExchangeInit`**:
+  - `AES-256-GCM(key=SK, plaintext='Where-v1-Confirm', aad=T_AB_0)`.
+  - Alice MUST verify this before sharing any location data.
 
 ### Ratchet
 - `KDF_RK`: HKDF-SHA-256 for DH ratchet steps.
-- `KDF_CK`: HMAC-SHA-256 for chain advancement + HKDF-SHA-256 for key/nonce derivation. **Deterministic nonces are mandatory**:
-  - `new_chain_key = HMAC-SHA-256(key=chain_key, data=0x01)`
-  - `buf[0:44] = HKDF-SHA-256(ikm=chain_key, salt=<absent>, info="Where-v1-MsgKey")[0:44]`
-  - `message_key = buf[0:32]`  (AES-256-GCM key)
-  - `message_nonce = buf[32:44]`  (12-byte GCM nonce)
+- `KDF_CK`: Single `HKDF-SHA-256(ikm=current_chain_key, salt=<absent>, info="Where-v1-MsgStep")` producing 76 bytes:
+  - `new_chain_key = buf[0:32]`
+  - `message_key = buf[32:64]`
+  - `message_nonce = buf[64:76]` (12-byte deterministic nonce)
 - **Outgoing location**:
   - Derive `message_key` and `message_nonce` from `send_chain_key`; delete old chain key.
   - Increment `send_seq` (uint64).
-  - AAD = `"Where-v1-Location"` (UTF-8) `|| version` (4 bytes, big-endian uint32 = 1) `|| sender_fp` (16 bytes, first 16 bytes of SHA-256(sender IK.pub || sender SigIK.pub)) `|| recipient_fp` (16 bytes, first 16 bytes of SHA-256(recipient IK.pub || recipient SigIK.pub)) `|| epoch` (4 bytes BE uint32) `|| seq_be` (8 bytes BE uint64).
+  - **Overflow check**: If `send_seq == UINT64_MAX`, terminate session and re-key.
+  - AAD = `"Where-v1-Location"` (UTF-8) `|| version` (4 bytes, big-endian uint32 = 1) `|| sender_fp` (32 bytes, SHA-256(sender IK.pub || sender SigIK.pub)) `|| recipient_fp` (32 bytes, SHA-256(recipient IK.pub || recipient SigIK.pub)) `|| epoch` (4 bytes BE uint32) `|| seq_be` (8 bytes BE uint64).
   - AES-256-GCM encrypt padded JSON using `message_nonce`.
-  - Send `EncryptedLocation` wrapped in a `Post` envelope with top-level **`"v": 1`** field: `epoch`, `seq` (JSON string — decimal-encoded to avoid JS uint64 precision loss; native clients parse as `uint64`), `ct`. **No `nonce` field** (nonce is deterministic and derived independently by both sides — transmitting it leaks chain-reset timing). **No `ek_pub`**.
+  - Send `EncryptedLocation` wrapped in a `Post` envelope with top-level **`"v": 1`** field. **No `nonce` field**. **No `ek_pub`**.
 - **Incoming**:
-  - **Drop** (do not buffer) any frame with `seq <= max_seq_received`. Track only `max_seq_received` (a single uint64) — a full set is unnecessary under policy A and would grow unboundedly.
+  - **Drop** (do not buffer) any frame with `seq <= max_seq_received`.
   - Verify GCM tag; advance chain; delete old keys.
 
 ### DH ratchet & token rotation
@@ -56,14 +60,17 @@ Split into client-crypto, client-app, and server.
   - On epoch boundary (every `T` minutes), pop one OPK.
   - `dh_out = X25519(my_ek_priv, Bob.OPK.pub)`.
   - `new_root_key, new_chain_key = KDF_RK(...)`.
-  - `new_routing_token = HKDF-SHA-256(new_root_key, salt=new_epoch, info="Where-v1-RoutingToken")[0:16]`.
-  - **Send `EpochRotation`** on the **current (old) routing token** with `epoch`, `opk_id`, `new_ek_pub`, `ts`, and Ed25519 sig over 84-byte canonical blob `(v || epoch || opk_id || new_ek_pub || ts || sender_fp || recipient_fp)`.
+  - `info_token = "Where-v1-RoutingToken" || sender_fp || recipient_fp`.
+  - `new_routing_token = HKDF-SHA-256(new_root_key, salt=new_epoch, info=info_token)[0:16]`.
+  - **Alice MUST continue polling the old (current) token** for `PreKeyBundle` and `RatchetAck` (optional) until `2 * T` expires.
+  - **Send `EpochRotation`** on the **current (old) routing token** with `epoch`, `opk_id`, `new_ek_pub`, `ts`, and Ed25519 sig over 116-byte canonical blob `(v || epoch || opk_id || new_ek_pub || ts || sender_fp || recipient_fp)`.
+- **On receiving EpochRotation or RatchetAck**: reject if `ts` is outside `T + 5 min` of local clock.
 - **Bob: Process Epoch Rotation**:
   - Retrieve private key for `opk_id` from secure storage.
   - Perform `KDF_RK` to derive `new_root_key` and `new_routing_token`.
   - **MUST delete OPK private key immediately after use.**
-  - (Optional) Send `RatchetAck` (48-byte canonical blob: `v || epoch_seen || ts || sender_fp || recipient_fp`) to prune Alice's retransmit timer.
-- **On receiving EpochRotation or RatchetAck**: reject if `ts` is outside ±5 min of local clock.
+  - (Optional) Send `RatchetAck` (80-byte canonical blob: `v || epoch_seen || ts || sender_fp || recipient_fp`) to prune Alice's retransmit timer.
+
 - **Token Transition Protocol**:
   - Alice posts all frames *after* `EpochRotation` to `new_routing_token`.
   - Bob polls **both** `current` and `new` tokens.
