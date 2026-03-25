@@ -1,0 +1,114 @@
+package net.af0.where.e2ee
+
+import kotlinx.serialization.KSerializer
+import kotlinx.serialization.SerialName
+import kotlinx.serialization.Serializable
+import kotlinx.serialization.descriptors.PrimitiveKind
+import kotlinx.serialization.descriptors.PrimitiveSerialDescriptor
+import kotlinx.serialization.descriptors.SerialDescriptor
+import kotlinx.serialization.encoding.Decoder
+import kotlinx.serialization.encoding.Encoder
+import kotlin.io.encoding.Base64
+import kotlin.io.encoding.ExperimentalEncodingApi
+
+/**
+ * Base64 serializer for ByteArray — encodes as a standard base64 string in JSON.
+ */
+@OptIn(ExperimentalEncodingApi::class)
+object ByteArrayBase64Serializer : KSerializer<ByteArray> {
+    override val descriptor: SerialDescriptor =
+        PrimitiveSerialDescriptor("ByteArrayBase64", PrimitiveKind.STRING)
+
+    override fun serialize(encoder: Encoder, value: ByteArray) =
+        encoder.encodeString(Base64.encode(value))
+
+    override fun deserialize(decoder: Decoder): ByteArray =
+        Base64.decode(decoder.decodeString())
+}
+
+/**
+ * Sealed base class for all payloads exchanged through the mailbox API (§9).
+ *
+ * Encode/decode with a Json instance that has `classDiscriminator = "type"`:
+ *   val json = Json { classDiscriminator = "type" }
+ *   json.encodeToString(MailboxPayload.serializer(), payload)
+ */
+@Serializable
+sealed class MailboxPayload
+
+/**
+ * An encrypted location frame (Alice → Bob, §9.1).
+ *
+ * @property epoch  DH ratchet epoch (uint32).
+ * @property seq    Monotone counter as a decimal string, to avoid JS uint64 precision loss.
+ * @property ct     AES-256-GCM ciphertext + 16-byte tag (base64 on the wire).
+ */
+@Serializable
+@SerialName("EncryptedLocation")
+data class EncryptedLocationPayload(
+    val epoch: Int,
+    val seq: String,
+    @Serializable(with = ByteArrayBase64Serializer::class) val ct: ByteArray,
+) : MailboxPayload() {
+    /** Parses [seq] as a Long for use in protocol logic. */
+    fun seqAsLong(): Long = seq.toLong()
+}
+
+/** Wire representation of a single One-Time Pre-Key (id + base64 public key). */
+@Serializable
+data class OPKWire(
+    val id: Int,
+    @Serializable(with = ByteArrayBase64Serializer::class) val pub: ByteArray,
+) {
+    fun toOPK(): OPK = OPK(id = id, pub = pub)
+}
+
+/**
+ * Bob's signed batch of One-Time Pre-Keys (Bob → Alice, §9.3).
+ *
+ * @property keys  OPKs in the bundle.
+ * @property sig   Ed25519 signature over the canonical binary encoding (see [PreKeyBundleOps]).
+ */
+@Serializable
+@SerialName("PreKeyBundle")
+data class PreKeyBundlePayload(
+    val keys: List<OPKWire>,
+    @Serializable(with = ByteArrayBase64Serializer::class) val sig: ByteArray,
+) : MailboxPayload() {
+    fun toOPKList(): List<OPK> = keys.map { it.toOPK() }
+}
+
+/**
+ * DH epoch rotation announcement (Alice → Bob, §9.3).
+ *
+ * @property epoch     New epoch number (uint32).
+ * @property opkId     ID of the Bob OPK Alice consumed for this ratchet step.
+ * @property newEkPub  Alice's new X25519 ephemeral public key (32 bytes, base64).
+ * @property ts        Unix timestamp in seconds (uint64).
+ * @property sig       Ed25519 signature over the 116-byte canonical blob (see [Session.epochRotationSignedBlob]).
+ */
+@Serializable
+@SerialName("EpochRotation")
+data class EpochRotationPayload(
+    val epoch: Int,
+    @SerialName("opk_id") val opkId: Int,
+    @SerialName("new_ek_pub")
+    @Serializable(with = ByteArrayBase64Serializer::class) val newEkPub: ByteArray,
+    val ts: Long,
+    @Serializable(with = ByteArrayBase64Serializer::class) val sig: ByteArray,
+) : MailboxPayload()
+
+/**
+ * Optional acknowledgment from Bob after processing an EpochRotation (Bob → Alice, §9.3).
+ *
+ * @property epochSeen  The epoch number Bob successfully processed.
+ * @property ts         Unix timestamp in seconds.
+ * @property sig        Ed25519 signature over the 80-byte canonical blob (see [Session.ratchetAckSignedBlob]).
+ */
+@Serializable
+@SerialName("RatchetAck")
+data class RatchetAckPayload(
+    @SerialName("epoch_seen") val epochSeen: Int,
+    val ts: Long,
+    @Serializable(with = ByteArrayBase64Serializer::class) val sig: ByteArray,
+) : MailboxPayload()
