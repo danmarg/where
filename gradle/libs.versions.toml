@@ -1,4 +1,5 @@
 [versions]
+bouncycastle = "1.80"
 kotlin = "2.1.20"
 kmp-plugin = "2.1.20"
 agp = "8.9.0"
@@ -48,6 +49,9 @@ activity-compose = { module = "androidx.activity:activity-compose", version.ref 
 maps-compose = { module = "com.google.maps.android:maps-compose", version.ref = "maps-compose" }
 play-services-location = { module = "com.google.android.gms:play-services-location", version.ref = "play-services-location" }
 accompanist-permissions = { module = "com.google.accompanist:accompanist-permissions", version.ref = "accompanist-permissions" }
+
+# Crypto
+bouncycastle = { module = "org.bouncycastle:bcprov-jdk18on", version.ref = "bouncycastle" }
 
 # Logging
 logback-classic = { module = "ch.qos.logback:logback-classic", version.ref = "logback" }

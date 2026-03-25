@@ -102,10 +102,29 @@ curl localhost:8080/locations # → []
 - Generate Xcode project: `cd ios && xcodegen` (or `xcoderun xcodegen` in nix shell). The project calls `embedAndSignAppleFrameworkForXcode` as a pre-build script automatically.
 - To build the KMP framework manually: `./gradlew :shared:embedAndSignAppleFrameworkForXcode`
 
+### Running tests (Linux / CI)
+
+The dev shell (`flake.nix`) includes `xcodegen` which is macOS-only and fails to build on Linux. Use `nix shell` with just the required packages instead:
+
+```bash
+NIXPKGS_ALLOW_UNSUPPORTED_SYSTEM=1 \
+  nix --extra-experimental-features "nix-command flakes" \
+  shell nixpkgs#jdk21 nixpkgs#gradle --impure \
+  --command ./gradlew :shared:jvmTest
+```
+
+On macOS with the full nix dev shell (`nix develop`), all targets build normally:
+```bash
+nix develop --command ./gradlew :shared:jvmTest
+```
+
+The E2EE crypto library tests live in `shared/src/commonTest/kotlin/net/af0/where/e2ee/`
+and run on the JVM target via `:shared:jvmTest`.
+
 ---
 
 ## Planned future work
-- End-to-end encryption (E2EE) — protocol TBD
+- End-to-end encryption (E2EE) — in progress (see `docs/`, `implement-e2ee` branch)
 - Persistent server storage
 - User-controlled sharing (groups, time-limited sharing)
 - Push notifications when a friend's location changes significantly

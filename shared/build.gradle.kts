@@ -29,6 +29,13 @@ kotlin {
     }
 
     sourceSets {
+        // Intermediate source set shared by jvm and android (identical JCA+BouncyCastle crypto impl)
+        val jvmAndAndroidMain by creating {
+            dependsOn(commonMain.get())
+        }
+        jvmMain { dependsOn(jvmAndAndroidMain) }
+        androidMain { dependsOn(jvmAndAndroidMain) }
+
         commonMain.dependencies {
             implementation(libs.ktor.client.core)
             implementation(libs.ktor.client.content.negotiation)
@@ -36,6 +43,10 @@ kotlin {
             implementation(libs.ktor.serialization.kotlinx.json)
             implementation(libs.kotlinx.coroutines.core)
             implementation(libs.kotlinx.serialization.json)
+        }
+
+        jvmAndAndroidMain.dependencies {
+            implementation(libs.bouncycastle)
         }
 
         androidMain.dependencies {
