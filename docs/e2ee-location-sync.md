@@ -1,7 +1,6 @@
 # End-to-End Encrypted Location Sync — Design Document
 
 **Status:** Draft
-**Target version:** Where v2
 **Authors:** Engineering
 **Date:** 2026-03-23
 
@@ -19,25 +18,24 @@
 8. [Concrete Protocol Recommendation](#8-concrete-protocol-recommendation)
 9. [Wire Format](#9-wire-format)
 10. [Server Changes](#10-server-changes)
-11. [Migration Path: v1 → v2](#11-migration-path-v1--v2)
-12. [Cryptographic Primitives Summary](#12-cryptographic-primitives-summary)
-13. [Open Questions and Future Work](#13-open-questions-and-future-work)
+11. [Cryptographic Primitives Summary](#11-cryptographic-primitives-summary)
+12. [Open Questions and Future Work](#12-open-questions-and-future-work)
 
 ---
 
 ## 1. Background and Motivation
 
-### 1.1 Current Architecture (v1)
+### 1.1 Motivation: Unencrypted Baseline
 
-In v1, each client connects to a Ktor WebSocket server at `/ws?userId=<uuid>`. When a client sends a location update, the server fans out the full user-location map to all connected clients as a JSON `WsMessage.LocationBroadcast`. Each client filters the received list to show only users in its local friends list.
+Without E2EE, each client connects to a Ktor WebSocket server at `/ws?userId=<uuid>`. When a client sends a location update, the server fans out the full user-location map to all connected clients as a JSON `WsMessage.LocationBroadcast`. Each client filters the received list to show only users in its local friends list.
 
-**What the server learns in v1:**
+**What the server learns without E2EE:**
 - The precise GPS coordinates of every connected user at all times.
 - Who is connected and when (presence).
 - The frequency of movement (indirectly, from update cadence).
 - The full social graph: the server observes exactly which users are sharing with whom.
 
-The goal of v2 is to make the server cryptographically unable to read location payloads and unable to reconstruct the social graph, even if it is fully compromised.
+The goal of this protocol is to make the server cryptographically unable to read location payloads and unable to reconstruct the social graph, even if it is fully compromised.
 
 ### 1.2 Location Precision Control
 
@@ -52,7 +50,7 @@ This document covers:
 - The resulting wire format and server changes
 
 This document does **not** cover:
-- Post-quantum cryptography (deferred; see Section 13)
+- Post-quantum cryptography (deferred; see Section 12)
 - Multi-device support (deferred)
 - Server-side persistence encryption
 
@@ -94,13 +92,13 @@ For threat models that include a metadata-analyzing server, the mitigations in �
 ### 2.3 What This Protocol Does NOT Protect Against
 
 - **Traffic analysis.** The server sees packet timing, packet sizes, and connection metadata regardless of payload encryption. For a location app, timing is nearly as sensitive as content: update intervals increasing from 30 s (moving) to 5 min (stationary) reveal movement state; silence reveals offline/stopped status; synchronized update timing across multiple users suggests co-location. A metadata-analyzing server can infer movement patterns from timing alone, independent of content. Mitigations (cover traffic, padding) are discussed in §7.4; they add overhead and battery cost and are not a panacea. This is elevated here as a top-level limitation for threat models that include a compromised or curious server.
-- **Initial TOFU impersonation.** The first key exchange (§4) is accepted unconditionally. If an attacker intercepts Bob's invite before Alice scans it and substitutes their own key, Alice will share her location with the attacker, not Bob. Safety number verification (§3.2) can detect this after the fact, but only if Alice and Bob compare numbers out-of-band — and by then the attacker may have accumulated a full movement history. See §3.1 for the unmitigated risk and §3.2 for the v2 mitigation.
+- **Initial TOFU impersonation.** The first key exchange (§4) is accepted unconditionally. If an attacker intercepts Bob's invite before Alice scans it and substitutes their own key, Alice will share her location with the attacker, not Bob. Safety number verification (§3.2) can detect this after the fact, but only if Alice and Bob compare numbers out-of-band — and by then the attacker may have accumulated a full movement history. See §3.1 for the unmitigated risk and §3.2 for the protocol's mitigation.
 - **A malicious friend.** If Bob is Alice's friend, Bob receives Alice's plaintext location after decryption on his device. Bob can log it, forward it, or otherwise misuse it. The protocol provides no cryptographic protection against a legitimate-but-adversarial recipient.
 - **Device seizure or compromise.** If an attacker has physical access to Alice's device, they can read decrypted locations from memory or reconstruct keys from the device's persistent state. This is a device-security problem, not a protocol problem.
-- **Metadata about the social graph.** The server knows which user IDs are simultaneously connected. If Alice and Bob are both connected and Alice's friend list contains Bob's UUID, the server can infer the friendship even without reading location data (see §7 for partial mitigations).
+- **Metadata about the social graph.** The server never sees user IDs or UUIDs — routing tokens are opaque and random-looking. However, the server observes which IP addresses `POST` to and `GET` from each token. If Alice's IP consistently posts to token T and Bob's IP consistently polls T, the server can infer they share a friendship, even without decrypting any payload. Timing correlation reinforces this: correlated activity (Alice posts, Bob polls seconds later) on the same token is a strong signal. See §7 for partial mitigations (constant-rate polling, dummy tokens, Tor).
 - **Map tile server leakage.** When a recipient views a friend's location on a map, the map provider (e.g., Google Maps, Apple Maps, Mapbox) may infer the friend's location from which tiles the recipient's device requests. This can be mitigated at the application layer via tile pre-fetching or caching, but is outside the scope of this protocol.
 - **Denial of service.** This protocol does not protect against a server that drops or delays messages.
-- **Quantum adversaries.** All DH operations here use X25519 (256-bit elliptic curve). A cryptographically relevant quantum computer running Shor's algorithm could break these. See §13.
+- **Quantum adversaries.** All DH operations here use X25519 (256-bit elliptic curve). A cryptographically relevant quantum computer running Shor's algorithm could break these. See §12.
 
 ---
 
@@ -108,29 +106,29 @@ For threat models that include a metadata-analyzing server, the mitigations in �
 
 ### 3.1 The Model: No Server-Mediated Key Discovery
 
-The core architectural change in v2 is that the long-term identity public key **is** the user's identity. There are no UUIDs in the protocol. There is no central registry where a user can query for a key. Instead, users exchange their keys directly via an "invite" payload (QR code or link).
+In this protocol, the long-term identity public key **is** the user's identity.
+There are no user IDs in the protocol. There is no central registry where a user can query for a key. Instead, users exchange their keys directly via an "invite" payload (QR code or link).
 
 Because the server is never in the key distribution path, the entire "key transparency" problem is eliminated. Security is bounded by the authenticity of the initial exchange channel.
 
 ### 3.2 Naming and Local Aliases
 
-To avoid requiring users to manage public keys in the UI, v2 implements local aliases:
+To avoid requiring users to manage public keys in the UI, the protocol implements local aliases:
 1. **Invite Payload:** An invite contains `{ik_pub, sig_pub, suggested_name: "Alice", fingerprint}`.
 2. **Local Import:** When a user imports an invite, the app pre-fills the "suggested_name" but allows the user to rename it locally before confirming.
 3. **Local Storage:** The name is a purely local alias. It is never sent to the server and never shared back with the other party after the initial exchange.
 
-### 3.3 Multi-Device and Migration
+### 3.3 Device Management
 
-1. **One Primary Device per Person (v1):** v1 scopes identity to a single primary device (typically a phone).
-2. **Device Migration / Lost Device:** When a user gets a new phone or loses their device, they generate a new identity key pair. This is a manual "identity reset":
+1. **One Primary Device per Person:** Identity is scoped to a single primary device (typically a phone).
+2. **Lost Device / Device Replacement:** When a user gets a new phone or loses their device, they generate a new identity key pair. This is a manual "identity reset":
    - The user reinstalls the app and re-adds all contacts via new invite links.
    - Contacts see a "Safety Number Changed" or "Identity Migrated" notice.
-3. **Future (v2):** Cross-device signing (the old device signs the new device's `IK.pub`) is the intended upgrade path to allow contacts to auto-migrate trust.
-4. **No Cloud Backup:** Encrypted cloud backup of the identity private key is explicitly excluded, as it reintroduces a third-party trust dependency.
+3. **No Cloud Backup:** Encrypted cloud backup of the identity private key is explicitly excluded, as it reintroduces a third-party trust dependency.
 
 ### 3.4 Trust Establishment and Safety Numbers
 
-V2 uses **Trust-on-First-Use (TOFU)** with local key pinning.
+This protocol uses **Trust-on-First-Use (TOFU)** with local key pinning.
 
 **Safety Numbers:** Two users can optionally verify their connection by comparing a safety number fingerprint.
 - **Calculation:** `SHA-256(local_IK.pub || remote_IK.pub)`, where the two public keys are concatenated in lexicographical order (sorted by key bytes).
@@ -184,13 +182,13 @@ DH3 = X25519(Bob.EK_B.priv, Alice.EK_A.pub)
 
 SK  = HKDF-SHA-256(IKM = DH1 || DH2 || DH3,
                     salt = 0x00...00,
-                    info = "Where-v2-KeyExchange")
+                    info = "Where-v1-KeyExchange")
 
 // Derive the initial bootstrap routing token from SK.
 // After the first ratchet step, the token rotates per epoch — see §8.3 KDF_RK.
 T_AB_0 = HKDF-SHA-256(IKM = SK,
                        salt = 0x00...00,
-                       info = "Where-v2-RoutingToken")[0:16]
+                       info = "Where-v1-RoutingToken")[0:16]
 ```
 
 Bob then encrypts `SK` with `Alice.IK.pub` (using ECIES / `crypto_box` semantics) and transmits:
@@ -296,7 +294,7 @@ Alice's symmetric ratchet advances per-message. Additionally, every `T` minutes,
 
 When Bob receives an `EpochRotation`:
 1. He computes `new_root_input = X25519(Bob.IK.priv, Alice.NewEK.pub)`.
-2. `(new_root_key, new_CK) = HKDF(old_root_key, new_root_input, "Where-v2-Epoch")`.
+2. `(new_root_key, new_CK) = HKDF(old_root_key, new_root_input, "Where-v1-Epoch")`.
 3. He discards the old chain state and updates to `new_CK`.
 
 Bob sends nothing back. Alice uses `new_CK` to seed the next epoch's symmetric ratchet.
@@ -335,7 +333,7 @@ The cleanest solution is to allow Bob to periodically reply on the channel, even
 
 Alice, upon receiving Bob's `RatchetAck`:
 1. Computes `dh_out = X25519(Alice.CurrentEK.priv, Bob.NewEK.pub)`.
-2. Derives `(new_root_key, new_send_CK) = HKDF(root_key, dh_out, "Where-v2-RatchetStep")`.
+2. Derives `(new_root_key, new_send_CK) = HKDF(root_key, dh_out, "Where-v1-RatchetStep")`.
 3. Generates a fresh `Alice.NewEK` for the next step.
 4. Sends an `EpochRotation` message (see §9.3) carrying her new `EK.pub`. The `EK.pub` is confined to `EpochRotation` only and is **not** included in ordinary `EncryptedLocation` frames (see §9.1), which would expose key-transition timing to the server.
 
@@ -442,7 +440,7 @@ MLS (RFC 9420) is the gold standard for large groups and achieves O(log N) key o
 
 **Important:** Removing Bob does not provide cryptographic protection against Bob's having cached past location updates. If Bob logged Alice's decrypted locations before being removed, there is no technical mechanism to prevent that. This is a property of the application layer (consent model), not the cryptographic protocol.
 
-**Multi-device note:** This design does not address multi-device friend-list synchronisation (deferred to §13). Friend additions and removals are per-device: a user with two devices may have divergent friend lists, causing different friends to receive location from each device. This is a known v2 limitation; multi-device support with synchronised friend lists is planned for future work.
+**Multi-device note:** This design does not address multi-device friend-list synchronisation (deferred to §12). Friend additions and removals are per-device: a user with two devices may have divergent friend lists, causing different friends to receive location from each device. Multi-device support with synchronised friend lists is planned for future work.
 
 ---
 
@@ -500,7 +498,7 @@ Because of the indistinguishable response invariant (§7.2), clients can impleme
 | Chain KDF | HMAC-SHA-256 | — | Advancing symmetric ratchet |
 | Message encryption | AES-256-GCM | 256-bit | Per-message key; deleted after use |
 | Message authentication | AES-256-GCM tag | 128-bit | Included in AEAD output; covers AAD |
-| Key exchange KDF | HKDF-SHA-256 | — | `info = "Where-v2-KeyExchange"` |
+| Key exchange KDF | HKDF-SHA-256 | — | `info = "Where-v1-KeyExchange"` |
 
 ### 8.2 Session State Per Friend-Pair
 
@@ -527,7 +525,7 @@ SessionState {
 (new_root_key, new_chain_key) = HKDF-SHA-256(
     salt = current_root_key,
     ikm  = X25519(my_ek_priv, their_ek_pub),
-    info = "Where-v2-RatchetStep"
+    info = "Where-v1-RatchetStep"
 )
 ```
 Output: 64 bytes split as `[0:32] = new_root_key`, `[32:64] = new_chain_key`.
@@ -537,7 +535,7 @@ After each DH ratchet step, the routing token for this friendship pair MUST be r
 new_routing_token = HKDF-SHA-256(
     salt = 0x00...00,
     ikm  = new_root_key,
-    info = "Where-v2-RoutingToken"
+    info = "Where-v1-RoutingToken"
 )[0:16]
 ```
 This ensures the routing token rotates with every epoch, preventing the server from correlating historical traffic for a friendship pair via a static token. The initial bootstrap token `T_AB_0` (§4.2) is replaced by the epoch-1 token after the first ratchet step completes. Implementations SHOULD discard `T_AB_0` after the first successful DH ratchet and never reuse it.
@@ -554,18 +552,18 @@ new_chain_key  = HMAC-SHA-256(key=chain_key, data=0x01)
 message_key    = HMAC-SHA-256(key=chain_key, data=0x02)
 message_nonce  = HMAC-SHA-256(key=chain_key, data=0x03)[0:12] // Mandatory
 ```
-The first two outputs are identical to the Signal spec's KDF_CK construction. The third output provides a deterministic nonce mandatory for v2 to protect against state-rollback attacks.
+The first two outputs are identical to the Signal spec's KDF_CK construction. The third output provides a deterministic nonce (mandatory) to protect against state-rollback attacks.
 
 **Message encryption:**
 ```
 // Nonce is derived deterministically from KDF_CK above
-aad   = "Where-v2-Location" || sender_fp || recipient_fp || epoch || seq
+aad   = "Where-v1-Location" || sender_fp || recipient_fp || epoch || seq
 (ciphertext, tag) = AES-256-GCM(key=message_key, nonce=message_nonce,
                                   plaintext=loc_json_padded, aad=aad)
 ```
-Where `sender_fp` and `recipient_fp` are the first 8 bytes of `SHA-256(IK.pub)`. This replaces UUIDs in the authenticated data.
+Where `sender_fp` and `recipient_fp` are the first 8 bytes of `SHA-256(IK.pub)`.  This replaces user IDs in the authenticated data.
 
-The `"Where-v2-Location"` prefix provides domain separation from other protocol contexts (e.g., `EpochRotation`, future protocol versions), preventing cross-context AAD collisions or forgery attempts.
+The `"Where-v1-Location"` prefix provides domain separation from other protocol contexts (e.g., `EpochRotation`, future protocol versions), preventing cross-context AAD collisions or forgery attempts.
 
 **Note on nonces:** Because `message_key` is unique per message (derived from the ratchet chain), nonce reuse across messages in the normal flow is not a concern. However, if keychain state is restored to an earlier epoch (e.g., backup restoration; see §5.5), the same root key may re-derive the same message key. To eliminate the risk of a (Key, Nonce) collision in such scenarios, v2 **requires** deterministic nonces derived from the chain state via `KDF_CK`. Implementations MUST NOT use random nonces for location encryption.
 
@@ -575,10 +573,10 @@ Each `EncryptedLocation` frame carries a `seq` counter. Recipients enforce:
 
 1. **Replay rejection:** Any frame whose `seq` is already in the set of observed sequence numbers is dropped immediately.
 2. **Out-of-order handling:** A frame with `seq < max_seq_received` but not yet seen is a reordered delivery. Two approaches are viable:
-   - **(A) Strict ordering (recommended for v2):** Reject any frame with `seq < max_seq_received`. Because message keys are forward-derived and the previous chain key is deleted, the recipient cannot retroactively derive `MK_n` for `n < current`. Strict ordering is therefore the natural policy; it may cause rare dropped updates on lossy connections, but location data has low tolerance for stale state anyway.
+   - **(A) Strict ordering (recommended):** Reject any frame with `seq < max_seq_received`. Because message keys are forward-derived and the previous chain key is deleted, the recipient cannot retroactively derive `MK_n` for `n < current`. Strict ordering is therefore the natural policy; it may cause rare dropped updates on lossy connections, but location data has low tolerance for stale state anyway.
    - **(B) Skipped-message buffering (future):** Store message keys for a bounded window of `seq` values ahead of current and buffer out-of-order frames. Adds memory overhead and implementation complexity; deferred to a future revision if real-world out-of-order loss rates justify it.
 
-For v2, policy (A) is used. Monitor server-side sequence gaps to calibrate whether policy (B) is needed.
+Policy (A) is used. Monitor server-side sequence gaps to calibrate whether policy (B) is needed.
 
 ### 8.4 Ratchet Advancement Policy
 
@@ -593,7 +591,7 @@ Per §5.3 Strategy 3 (Hybrid):
 
 ## 9. Wire Format
 
-All messages are JSON-encoded. Every message MUST include a top-level `"v"` field set to the current protocol version (currently `1`). This allows future protocol migrations and enables recipients to reject messages from incompatible versions.
+All messages are JSON-encoded. Every message MUST include a top-level `"v"` field set to the current protocol version (currently `1`). This enables recipients to reject messages from incompatible future versions.
 
 ### 9.1 Location Update (Alice → Server → Bob)
 
@@ -618,7 +616,7 @@ All messages are JSON-encoded. Every message MUST include a top-level `"v"` fiel
 
 **AAD (authenticated, not encrypted):**
 ```
-aad = "Where-v2-Location" (18 bytes, UTF-8)
+aad = "Where-v1-Location" (18 bytes, UTF-8)
     || version      (4 bytes, big-endian uint32, currently 1)
     || sender_fp    (8 bytes, first 8 bytes of SHA-256(sender IK.pub))
     || recipient_fp (8 bytes, first 8 bytes of SHA-256(recipient IK.pub))
@@ -686,14 +684,14 @@ These follow the same `Post` envelope.
 
 ## 10. Server Changes
 
-### 10.1 What Changes
+### 10.1 Server Architecture
 
-| Component | v1 Behavior | v2 Change |
-|---|---|---|
-| Routing Model | Broadcasts locations by UUID | **Anonymous Mailboxes.** Routes opaque `EncryptedLocation` payloads by pairwise routing tokens (T). |
-| `/ws?userId=<uuid>` | Authenticates/registers by UUID | **Registration-less.** Clients just poll for tokens; the server does not need to know the global UUID. |
-| In-memory store | Plaintext `UserLocation` map | **Opaque Payload Buffer.** Brief TTL buffer of encrypted payloads indexed by T. |
-| Metadata Exposure | Full social graph visible | **Obfuscated.** Routing tokens are pairwise and random-looking; social graph is hidden from the server. |
+| Component | Design |
+|---|---|
+| Routing Model | **Anonymous Mailboxes.** Routes opaque `EncryptedLocation` payloads by pairwise routing tokens (T). No userid-based addressing. |
+| Client Interaction | **Registration-less.** Clients poll `GET /inbox/{token}` and post `POST /inbox/{token}`; the server has no knowledge of user identity. |
+| In-memory store | **Opaque Payload Buffer.** Brief TTL buffer of encrypted payloads indexed by routing token T. |
+| Metadata Exposure | **Obfuscated.** Routing tokens are pairwise and random-looking; social graph is hidden from the server. |
 
 ### 10.2 Routing Table
 
@@ -727,50 +725,7 @@ With this design:
 
 ---
 
-## 11. Migration Path: v1 → v2
-
-### 11.1 Compatibility
-
-v1 and v2 clients cannot interoperate on the encrypted channel. A v1 client connected to a v2 server will receive `EncryptedLocation` frames it cannot decrypt; a v2 client connected to a v1 server will receive plaintext `LocationBroadcast` frames that do not match the expected format.
-
-Migration is therefore a flag-day cut for the server, with a grace period for clients.
-
-### 11.2 Phased Rollout
-
-**Phase 1 — Server v2 deployed, clients v1 still in use:**
-- Server v2 supports both the old `LocationBroadcast` message type and the new `EncryptedLocation` routing.
-- Old v1 clients continue to work unchanged (server still fans out their plaintext broadcasts).
-- New v2 clients send encrypted frames. v1 clients receive them and discard them (unknown message type).
-- Users who both upgrade see encrypted location sharing. Mixed pairs see the v1 plaintext path as fallback.
-
-**Phase 2 — v2 client achieves >90% install base:**
-- Remove `LocationBroadcast` handling from server.
-- Remove `/locations` REST endpoint.
-- v1 clients gracefully degrade (they connect but receive no recognisable location updates). The v1 app should display a message such as: "Your friend has upgraded to encrypted location sharing. Update Where to view their location." This requires the v1 client to handle unknown message types gracefully rather than crashing. If the installed v1 client crashes on unknown types, a mandatory v1 patch adding graceful degradation must ship before the server-side cutover.
-
-**Phase 3 — v1 EOL:**
-- Server drops connections from clients that send `LocationBroadcast` frames.
-
-### 11.3 Key Exchange Bootstrap During Migration
-
-When a v2 client connects and discovers that a friend has not yet performed key exchange, it:
-1. Sends a `KeyExchangeInit` message to the friend's UUID.
-2. Falls back to showing "pending encryption setup" in the UI until the friend upgrades and responds.
-3. Does NOT fall back to sending plaintext location to unexchanged friends.
-
-This ensures that v2 clients never silently downgrade to plaintext.
-
-**v1 → v2 upgrade key exchange bootstrap:** When a user upgrades from v1 to v2, the app generates a new identity key pair and UUID on first launch. It then sends `KeyExchangeInit` messages to all UUIDs in the existing friend list. v1 friends receive these messages on the v2 server but cannot process them (unknown message type) — the messages are effectively dropped. When a v1 friend subsequently upgrades to v2, their app generates its own identity key pair and responds to any pending `KeyExchangeInit` (or sends a new one); both sides then enter the encrypted protocol. Until that exchange completes, the upgrading user sees "pending encryption" for that friend and receives no location from them.
-
-### 11.4 State Migration
-
-- Existing friend UUIDs remain valid (they are stable identifiers).
-- The migration adds an `ik_pub` and `sig_pub` to each friend record.
-- On first v2 launch, the app generates the identity key pair and prompts the user to "re-share your code" with friends, triggering the key exchange flow for each friend.
-
----
-
-## 12. Cryptographic Primitives Summary
+## 11. Cryptographic Primitives Summary
 
 | Primitive | Algorithm | Purpose | Library |
 |---|---|---|---|
@@ -790,11 +745,11 @@ This ensures that v2 clients never silently downgrade to plaintext.
 
 ---
 
-## 13. Open Questions and Future Work
+## 12. Open Questions and Future Work
 
-1. **Cross-Device Signing (v2).** While v1 uses a single primary device, v2 will introduce cross-device signing. The old device signs the new device's `IK.pub`, allowing contacts to auto-migrate trust.
+1. **Cross-Device Signing.** The protocol currently scopes identity to a single primary device. A future extension would allow the old device to sign the new device's `IK.pub`, allowing contacts to auto-migrate trust without re-adding the friend.
 
-2. **Post-Quantum Migration.** Introducing CRYSTALS-Kyber or similar PQ-resistant key exchange into the ratchet to maintain confidentiality against future quantum adversaries.
+2. **Post-Quantum Cryptography.** Introducing CRYSTALS-Kyber or similar PQ-resistant key exchange into the ratchet to maintain confidentiality against future quantum adversaries.
 
 3. **Multi-Device Support.** Full identity synchronization across multiple devices (e.g., phone and tablet) is a complex challenge planned for future work.
 
