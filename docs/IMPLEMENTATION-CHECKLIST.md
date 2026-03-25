@@ -25,8 +25,7 @@ Split into client-crypto, client-app, and server.
     - `DH1 = X25519(Bob.EK_B.priv, Alice.IK.pub)`
     - `DH2 = X25519(Bob.IK.priv, Alice.EK_A.pub)`
     - `DH3 = X25519(Bob.EK_B.priv, Alice.EK_A.pub)`
-    - `DH4 = X25519(Bob.IK.priv, Alice.IK.pub)`
-  - `SK = HKDF-SHA-256(DH1 || DH2 || DH3 || DH4, info="Where-v1-KeyExchange")`.
+  - `SK = HKDF-SHA-256(DH1 || DH2 || DH3, info="Where-v1-KeyExchange")`.
   - `T_AB_0 = HKDF-SHA-256(SK, salt=0x00000000, info="Where-v1-RoutingToken")[0:16]`. (salt = epoch=0 as 4-byte big-endian uint32).
   - Initialize session state; **Alice MUST delete EK_A.priv immediately after derivation**.
 
@@ -48,27 +47,30 @@ Split into client-crypto, client-app, and server.
   - Verify GCM tag; advance chain; delete old keys.
 
 ### DH ratchet & token rotation
-- **Send `RatchetAck` upon receiving each `EpochRotation`** (event-driven, not timer-driven): include a fresh X25519 `ek_pub`, `ts` (uint64 Unix seconds), and Ed25519 sig over the canonical blob `(v || epoch_seen || new_ek_pub || ts || sender_fp || recipient_fp)` — all fixed-width big-endian: `v` 4 B, `epoch_seen` 4 B, `new_ek_pub` 32 B, `ts` 8 B, `sender_fp` 16 B, `recipient_fp` 16 B (total 80 bytes). If multiple `EpochRotation` messages arrive before Bob can respond (e.g., post-reconnect), send a **single** `RatchetAck` referencing the **highest `epoch_seen`** only. All `RatchetAck`/`EpochRotation`/`Poll` envelopes also carry top-level `"v": 1`.
-- **On receiving `RatchetAck` or `EpochRotation`**: reject if `ts` is outside ±5 min of local clock (clock-skew grace window).
-- **On receiving `RatchetAck`** (Alice's side): validate `epoch_seen` before processing:
-  - `epoch_seen < current_epoch` → stale ack; ignore silently.
-  - `epoch_seen > current_epoch` → invalid (Alice cannot have sent an EpochRotation for an epoch she hasn't reached); reject and log.
-  - `epoch_seen == current_epoch` → apply:
-  - `dh_out = X25519(my_ek_priv, their_new_ek_pub)`.
+- **Bob: Periodically generate and post `PreKeyBundle`**:
+  - Generate a batch of X25519 keypairs (OPKs).
+  - Post public keys with unique IDs to the shared mailbox.
+  - Sign bundle: `Ed25519Sign(Bob.SigIK.priv, v || token || keys_json_canonical)`.
+- **Alice: Consume OPK for Epoch Rotation**:
+  - Cache Bob's OPKs from mailbox.
+  - On epoch boundary (every `T` minutes), pop one OPK.
+  - `dh_out = X25519(my_ek_priv, Bob.OPK.pub)`.
   - `new_root_key, new_chain_key = KDF_RK(...)`.
-  - `new_routing_token = HKDF-SHA-256(new_root_key, salt=new_epoch (4-byte big-endian uint32), info="Where-v1-RoutingToken")[0:16]`.
-  - Generate fresh `my_ek_priv`/`my_ek_pub` for the next step.
-  - **Send `EpochRotation`** on the **current (old) routing token** with `epoch`, `new_ek_pub`, `ts` (uint64 Unix seconds), and Ed25519 sig over canonical blob `(v || epoch || new_ek_pub || ts || sender_fp || recipient_fp)` (same 80-byte fixed-width encoding as `RatchetAck`). Bob has not yet derived `new_routing_token`; posting to the new token would be undeliverable. Identity binding in the sig prevents cross-session replay.
-- **On receiving `EpochRotation`** (Bob's side): perform the same `KDF_RK` step and derive `new_routing_token`. Then send a `RatchetAck` for this epoch. If a batch of `EpochRotation` messages arrives (e.g., post-reconnect), process all in order and send a **single** `RatchetAck` citing only the highest epoch.
-- Alice MUST retransmit her latest `EpochRotation` if no `RatchetAck` arrives within T (one epoch period, e.g. 10 min), and MUST continue retransmitting every T minutes until a valid `RatchetAck` at or above the current epoch is received. This is the sole recovery mechanism for a stalled DH ratchet. A late-arriving `RatchetAck` MUST be applied regardless of when it arrives.
+  - `new_routing_token = HKDF-SHA-256(new_root_key, salt=new_epoch, info="Where-v1-RoutingToken")[0:16]`.
+  - **Send `EpochRotation`** on the **current (old) routing token** with `epoch`, `opk_id`, `new_ek_pub`, `ts`, and Ed25519 sig over 84-byte canonical blob `(v || epoch || opk_id || new_ek_pub || ts || sender_fp || recipient_fp)`.
+- **Bob: Process Epoch Rotation**:
+  - Retrieve private key for `opk_id` from secure storage.
+  - Perform `KDF_RK` to derive `new_root_key` and `new_routing_token`.
+  - **MUST delete OPK private key immediately after use.**
+  - (Optional) Send `RatchetAck` (48-byte canonical blob: `v || epoch_seen || ts || sender_fp || recipient_fp`) to prune Alice's retransmit timer.
+- **On receiving EpochRotation or RatchetAck**: reject if `ts` is outside ±5 min of local clock.
 - **Token Transition Protocol**:
   - Alice posts all frames *after* `EpochRotation` to `new_routing_token`.
-  - Bob polls **both** `current` and `new` tokens (for all message types, including `RatchetAck`).
-  - Bob retires `current` token only after receiving a valid frame on `new` token OR after `2 * T` (2 epoch periods, e.g. 20 min).
-  - **Alice MUST accept `RatchetAck` messages arriving on the old (current) token** during the transition window. Bob may not yet have derived `new_routing_token` when he sends his next `RatchetAck`; rejecting it on the old token would stall the DH ratchet.
-  - **T_AB_0 SHOULD be discarded** after the first successful DH ratchet step completes. Never reuse the bootstrap token.
-  - **Out-of-order delivery during transition**: a poll batch from the old token may contain both `EpochRotation` and subsequent `EncryptedLocation` frames. Process `EpochRotation` messages before `EncryptedLocation` frames of higher epoch within any batch. If frames arrive on `new_routing_token` before the corresponding `EpochRotation` is processed, buffer up to 64 frames and decrypt them once `EpochRotation` is applied; discard buffered frames older than `2 * T` (2 epoch periods).
-- **No fallback**: if no `RatchetAck` is received, Alice continues broadcasting on the symmetric ratchet (per-message FS maintained). The DH ratchet stalls — PCS is suspended until Bob reconnects and sends a `RatchetAck`. Alice SHOULD apply the inactivity threshold (§12 item 5) rather than broadcasting indefinitely into silence.
+  - Bob polls **both** `current` and `new` tokens.
+  - Bob retires `current` token only after receiving a valid frame on `new` token OR after `2 * T` (20 min).
+  - **T_AB_0 SHOULD be discarded** after the first successful DH ratchet step completes.
+- **Out-of-order delivery during transition**: process `EpochRotation` before `EncryptedLocation` of higher epoch in same batch. Buffer up to 64 frames on `new_routing_token` if `EpochRotation` hasn't arrived; discard after `2 * T`.
+- **No OPKs**: if Alice runs out of cached OPKs, the DH ratchet stalls (PCS suspended). Alice continues broadcasting on the symmetric ratchet. Alice SHOULD NOT rotate the DH epoch until a new bundle is received.
 
 ### Secure storage
 - Wipe message/chain/ephemeral priv keys after use.
@@ -82,7 +84,7 @@ Split into client-crypto, client-app, and server.
 - On `KeyExchangeInit` with mismatched pinned key: block with "Safety Number Changed"; require explicit confirm.
 
 ### Polling & metadata
-- Poll `GET /inbox/{token}` at a **constant rate** (recommended: **60 s**; 10 s is excessive and leaks app-foreground state). Shuffle token order. Bob sends one `RatchetAck` per `EpochRotation` received (event-driven); the epoch period T is a cryptographic parameter and is independent of polling cadence.
+- Poll `GET /inbox/{token}` at a **constant rate** (recommended: **60 s**; 10 s is excessive and leaks app-foreground state). Shuffle token order. The epoch period T is a cryptographic parameter and is independent of polling cadence. Bob periodically "tops up" his pre-key bundle in the shared mailbox to enable Alice's asynchronous DH ratchet.
 - Dummy token polling for cover traffic is **deferred future work** (see §7.5); do not implement yet. Cover traffic provides no meaningful privacy benefit until the user base is large enough to provide population-level anonymity.
 
 ## 3. Server (Ktor)

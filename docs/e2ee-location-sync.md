@@ -185,10 +185,8 @@ DH1 = X25519(Bob.EK_B.priv, Alice.IK.pub)
 DH2 = X25519(Bob.IK.priv, Alice.EK_A.pub)
 // DH3: Alice's Ephemeral x Bob's Ephemeral
 DH3 = X25519(Bob.EK_B.priv, Alice.EK_A.pub)
-// DH4: Alice's Identity x Bob's Identity
-DH4 = X25519(Bob.IK.priv, Alice.IK.pub)
 
-SK  = HKDF-SHA-256(IKM = DH1 || DH2 || DH3 || DH4,
+SK  = HKDF-SHA-256(IKM = DH1 || DH2 || DH3,
                     salt = 0x00...00,
                     info = "Where-v1-KeyExchange")
 
@@ -259,8 +257,8 @@ This protocol uses a hybrid ratchet designed for **one-way streaming** (Alice se
 | Property | Signal Double Ratchet | This Protocol |
 |---|---|---|
 | Forward secrecy | Per message | Per message |
-| Post-compromise security | Per round-trip (both parties contribute fresh DH material) | Per `RatchetAck` interval (≤10 min if Bob is online; degrades if offline — see §5.3.1) |
-| Bob's DH contribution | On every reply | Only via periodic `RatchetAck` |
+| Post-compromise security | Per round-trip (both parties contribute fresh DH material) | Asynchronous via One-Time Pre-Keys (OPKs) |
+| Bob's DH contribution | On every reply | Periodic `PreKeyBundle` |
 | Long-term identity key compromise | Limited to current session's secret material | Retroactively breaks all historical epoch keys (Bob's `IK.priv` never changes) |
 
 For a location app these trade-offs are acceptable: location data is time-sensitive, Bob's passive-receiver role is fundamental to the architecture, and users tolerate offline periods. The protocol's ratchet is not a drop-in Double Ratchet and should not be described as such.
@@ -323,61 +321,74 @@ Advance the DH ratchet every `K` location updates rather than every `T` minutes.
 - At 30-second intervals with `K = 20`, epochs rotate roughly every 10 minutes.
 - Same structural weakness as Strategy 1 regarding Bob's static private key.
 
-#### Strategy 3: Hybrid — Time + Bob Acknowledgments (Recommended)
+#### Strategy 3: Asynchronous PCS using One-Time Pre-Keys (OPKs) (Recommended)
 
-The cleanest solution is to allow Bob to reply on the channel, even though he is receiving-only for location data. Rather than a fixed independent timer, **Bob sends a `RatchetAck` in response to each `EpochRotation` he receives**, contributing a fresh ephemeral key with every reply. This gives true bilateral PCS: the DH ratchet advances once per epoch, and the compromise window for either party's ephemeral key is bounded by one epoch period (T minutes) rather than a separate ack timer.
+To achieve true Post-Compromise Security (PCS) without requiring the recipient (Bob) to be online when the sender (Alice) rotates keys, the protocol uses **One-Time Pre-Keys (OPKs)** posted to the shared mailbox.
 
-**Bob sends a `RatchetAck` upon receiving each `EpochRotation` from Alice:**
-
-> **Simplified pseudocode only.** The `sig` field here also omits the `ts` timestamp present in the canonical 80-byte signed blob — see §9.3 for the full format.
+**1. Pre-Key Delivery:**
+Bob periodically generates a batch of fresh ephemeral X25519 keypairs (e.g., 20 OPKs). He posts the public keys to the shared mailbox as a `PreKeyBundle`:
 
 ```json
 {
-  "type":       "RatchetAck",
-  "epoch_seen": 41,
-  "new_ek_pub": "<base64, Bob's new X25519 ephemeral public key>",
-  "sig":        "<base64, Ed25519 signature over (v || epoch_seen || new_ek_pub || sender_fp || recipient_fp) — simplified; canonical form includes ts, see §9.3>"
+  "type": "PreKeyBundle",
+  "keys": [
+    {"id": 101, "pub": "<base64_opk1_pub>"},
+    {"id": 102, "pub": "<base64_opk2_pub>"},
+    ...
+  ],
+  "sig": "<base64, Ed25519 signature over (v || token || opk_list) using Bob's SigIK>"
 }
 ```
 
-**De-duplication:** If multiple `EpochRotation` messages arrive before Bob can respond (e.g., after reconnecting from a period offline), Bob MUST send a single `RatchetAck` referencing the **highest `epoch_seen`** only — not one per missed rotation. The `epoch_seen` field is sufficient for Alice to advance from whatever state she is in.
+**2. Epoch Rotation (Alice):**
+Alice polls the mailbox and caches Bob's OPKs. When Alice reaches an epoch boundary (every `T` minutes), she pops the oldest OPK from her local cache and uses it to advance the DH ratchet:
 
-Alice, upon receiving Bob's `RatchetAck`:
+1. `dh_out = X25519(Alice.NewEK_A.priv, Bob.OPK.pub)`.
+2. `(new_root_key, new_send_CK) = HKDF(root_key, dh_out, "Where-v1-RatchetStep")`.
+3. Alice announces the rotation via an `EpochRotation` message:
 
-**Epoch validation (before processing):**
-- If `epoch_seen < Alice.current_epoch`: the ack is stale (e.g., a retransmit of an already-applied ack). Alice MUST ignore it silently.
-- If `epoch_seen > Alice.current_epoch`: this is impossible in normal operation — Alice cannot have sent an `EpochRotation` for an epoch she hasn't reached, so Bob cannot have seen one. Alice MUST reject such an ack as invalid and log it. (Note: this invariant holds because Alice can only advance her DH epoch by receiving a `RatchetAck`; she cannot unilaterally skip epochs. See de-duplication rule in §5.3.)
-- If `epoch_seen == Alice.current_epoch`: apply normally.
+```json
+{
+  "type":       "EpochRotation",
+  "epoch":      43,
+  "opk_id":     101,
+  "new_ek_pub": "<base64, Alice's new X25519 ephemeral public key>",
+  "ts":         1711152000,
+  "sig":        "<base64, Ed25519 signature over (v || epoch || opk_id || new_ek_pub || ts || sender_fp || recipient_fp)>"
+}
+```
 
-**Processing (epoch_seen == Alice.current_epoch):**
-1. Computes `dh_out = X25519(Alice.CurrentEK.priv, Bob.NewEK.pub)`.
-2. Derives `(new_root_key, new_send_CK) = HKDF(root_key, dh_out, "Where-v1-RatchetStep")`.
-3. Generates a fresh `Alice.NewEK` for the next step.
-4. Sends an `EpochRotation` message (see §9.3) carrying her new `EK.pub`. The `EK.pub` is confined to `EpochRotation` only and is **not** included in ordinary `EncryptedLocation` frames (see §9.1), which would expose key-transition timing to the server.
+**3. Consumption (Bob):**
+When Bob retrieves the `EpochRotation`:
+1. He identifies the `opk_id` used by Alice.
+2. He retrieves the corresponding private key from his local secure storage.
+3. He computes the same `dh_out = X25519(Bob.OPK.priv, Alice.NewEK_A.pub)`.
+4. He derives the new root and chain keys.
+5. **Bob MUST delete the OPK private key immediately after use.**
 
-This gives true per-epoch bilateral PCS: both parties contribute a fresh ephemeral key on every DH ratchet step, so compromise of either party's current ephemeral key is healed within one epoch (T minutes). The separate ack timer `R` is eliminated — Bob's response rate is naturally governed by Alice's `EpochRotation` schedule.
+This provides true asynchronous PCS: Alice can "heal" the session at any time using a pre-key Bob provided earlier, even if Bob is currently offline.
 
 **Tradeoffs:**
-- Adds 1 uplink message per epoch from Bob — identical bandwidth to the old timer-based design at equivalent cadence, but now tightly coupled to the epoch boundary.
-- Bob must remain connected (or buffer the `RatchetAck` for delivery when reconnected).
-- If Bob is offline, Alice cannot advance the DH ratchet. The symmetric ratchet continues providing per-message forward secrecy; PCS resumes automatically when Bob reconnects and sends a `RatchetAck` for the latest epoch.
+- Bob must periodically "top up" his pre-key bundle in the mailbox.
+- Alice must cache pre-keys. If her cache is empty, she falls back to Strategy 1 (FS only, no PCS) until Bob provides more keys.
+- Bandwidth: Occasional bulk upload of public keys.
 
 #### 5.3.1 Offline and Failure Modes
 
-**Offline Bob:** If Bob is offline, Alice receives no `RatchetAck`. Alice continues broadcasting on the symmetric ratchet; per-message forward secrecy is maintained regardless of Bob's connectivity. The DH ratchet does not advance — PCS is suspended for the duration of Bob's absence and resumes automatically the next time Bob sends a `RatchetAck`. Alice SHOULD stop broadcasting after a configurable inactivity threshold (§12 item 5) if Bob remains unreachable for an extended period.
+**Bob Offline:** Alice consumes a cached OPK. PCS is achieved immediately. If Alice runs out of cached OPKs while Bob is offline, the DH ratchet stalls (PCS suspended), but symmetric per-message forward secrecy continues.
 
-**`RatchetAck` loss or delay:** If no `RatchetAck` is received within T minutes of sending an `EpochRotation`, Alice MUST retransmit her latest `EpochRotation` — this is the sole loss-recovery mechanism for a stalled DH ratchet. Alice MUST continue retransmitting every T minutes until a valid `RatchetAck` at or above the current epoch is received. A late-arriving `RatchetAck` is always valid: Alice MUST apply it to advance the DH ratchet from the current state even if it arrives outside the expected window.
+**OPK Depletion:** If Alice has no OPKs for Bob, she SHOULD continue broadcasting on the symmetric ratchet and SHOULD NOT rotate the DH epoch until a new bundle is received.
 
-**Device crash or restart:** Session state (root key, current EK) is reloaded from the platform keychain on restart. Bob's subsequent `RatchetAck` will use his new ephemeral key. Alice applies it, advances the DH ratchet, and the session recovers without re-keying.
+**Retransmission:** Alice retransmits her `EpochRotation` every `T` minutes until she receives an `EncryptedLocation` acknowledgment or a `RatchetAck` (now optional but useful for pruning OPK state) from Bob.
 
-**Summary of PCS guarantees in hybrid mode:**
+**Summary of PCS guarantees in OPK mode:**
 
 | Scenario | PCS guarantee |
 |---|---|
-| Both online, `RatchetAck` delivered | True bilateral PCS per epoch (within T minutes) |
-| `RatchetAck` lost in transit | Alice retransmits `EpochRotation` after T minutes; PCS restored on receipt |
-| Bob offline (any duration) | No PCS (symmetric FS only); DH ratchet stalled until Bob reconnects and acks latest epoch |
-| Alice offline (any duration) | No new `EpochRotation` sent; Bob has nothing to ack; ratchet stalled symmetrically |
+| Alice has cached OPKs | True asynchronous PCS (heals even if Bob is offline) |
+| Alice runs out of OPKs | No PCS (symmetric FS only); DH ratchet stalled until Bob posts new bundle |
+| Bob offline | Fully protected as long as Alice has cached OPKs |
+| Alice offline | No new epoch started; ratchet stalled symmetrically |
 
 ### 5.4 Forward Secrecy Granularity vs. Overhead Analysis
 
@@ -386,11 +397,11 @@ This gives true per-epoch bilateral PCS: both parties contribute a fresh ephemer
 | Per-message symmetric only | Per message | None | 0 | No DH ratchet; chain key compromise = full future exposure |
 | Time-based (T=5 min) | Per message | One-sided DH refresh¹ | ~288 EpochRotation messages | Not true PCS; Bob's `IK.priv` compromise retroactively breaks all epochs |
 | Message-count (K=20) | Per message | One-sided DH refresh¹ | ~288 EpochRotation messages | Same weakness as time-based |
-| Hybrid RatchetAck (T=10 min) | Per message | Bilateral per epoch (when both online)² | ~288 location + 144 RatchetAck | True per-epoch bilateral PCS; recommended |
+| Hybrid OPK (T=10 min) | Per message | Bilateral per epoch (asynchronous)² | ~288 location + periodic PreKeyBundle | True per-epoch bilateral PCS; recommended |
 
 ¹ *One-sided DH refresh:* Alice contributes a new ephemeral key each epoch, but Bob's DH input remains his long-term `IK.priv`. If Bob's `IK.priv` is ever compromised (now or in the future), all historical epoch keys can be recomputed. This is not post-compromise security in the Signal sense.
 
-² *Bilateral PCS:* Both Alice and Bob contribute a fresh ephemeral key on every DH ratchet step. Bob sends a `RatchetAck` in response to each `EpochRotation`, so the compromise window for either party's ephemeral key equals one epoch period (T minutes). When either party is offline, the DH ratchet stalls — PCS is suspended for that period (symmetric per-message forward secrecy continues uninterrupted); the DH ratchet resumes automatically once both are online and the next `EpochRotation` / `RatchetAck` exchange completes. See §5.3.1.
+² *Bilateral PCS:* Both Alice and Bob contribute a fresh ephemeral key on every DH ratchet step. Alice consumes a One-Time Pre-Key (OPK) provided by Bob. This allows the DH ratchet to advance and "heal" the session even if Bob is offline. If Alice runs out of cached OPKs, the DH ratchet stalls until Bob provides a new bundle (symmetric per-message forward secrecy continues uninterrupted). See §5.3.1.
 
 ### 5.5 Message Key Deletion Policy
 
@@ -494,7 +505,7 @@ The server can still observe the timing and frequency of `POST` and `GET` reques
 
 To prevent timing-based social-graph inference, Bob MUST poll at a **constant rate** regardless of whether messages are expected. Polling more frequently when a location update is expected, or less frequently when offline, creates a timing side-channel the server can exploit to infer when friends are actively sharing.
 
-**Polling cadence is a UX/battery parameter, not a cryptographic one.** The epoch period `T` (e.g. 10 min) governs PCS granularity and `RatchetAck` cadence — it is a cryptographic parameter. The polling interval is independent and should be set based on freshness requirements and battery budget. A 60–120 second poll interval provides acceptable location freshness for a mapping application without the battery drain of 10-second polling, and without revealing fine-grained app-foreground state to the server. Recommended default: **60 seconds**. Implementations MUST NOT couple the polling cadence to `T`.
+**Polling cadence is a UX/battery parameter, not a cryptographic one.** The epoch period `T` (e.g. 10 min) governs PCS granularity and `EpochRotation` cadence — it is a cryptographic parameter. The polling interval is independent and should be set based on freshness requirements and battery budget. A 60–120 second poll interval provides acceptable location freshness for a mapping application without the battery drain of 10-second polling, and without revealing fine-grained app-foreground state to the server. Recommended default: **60 seconds**. Implementations MUST NOT couple the polling cadence to `T`.
 
 Bob polls for all of his friendship tokens in a fixed, shuffled order. The shuffle MUST be re-randomised on each poll cycle to prevent ordering-based inference. This, combined with the indistinguishable-response invariant (§7.2), means the server cannot distinguish "polling for a real active friendship" from "polling for a stale or never-used token".
 
@@ -613,13 +624,14 @@ Policy (A) is used. Monitor server-side sequence gaps to calibrate whether polic
 
 ### 8.4 Ratchet Advancement Policy
 
-Per §5.3 Strategy 3 (Hybrid):
+Per §5.3 Strategy 3 (Asynchronous OPK):
 
 1. Alice advances the **symmetric ratchet** on every location update (every ~30 seconds).
-2. Alice advances the **DH ratchet** when she receives a `RatchetAck` from Bob containing a new `ek_pub`.
-3. `EpochRotation` messages are sent at the start of each DH ratchet step to notify Bob of Alice's new `ek_pub`.
+2. Alice advances the **DH ratchet** at each epoch boundary (every `T` minutes) by consuming a cached OPK from Bob.
+3. `EpochRotation` messages are sent at each DH ratchet step to notify Bob of the `opk_id` consumed and Alice's new `ek_pub`.
+4. Bob periodically uploads new `PreKeyBundle` messages to the shared mailbox to ensure Alice has a supply of OPKs.
 
-If Alice has not received a `RatchetAck` for an extended period, she continues broadcasting on the symmetric ratchet (per-message FS maintained) and SHOULD apply the inactivity threshold in §12 item 5 rather than broadcasting indefinitely into silence.
+If Alice runs out of cached OPKs for Bob, she continues broadcasting on the symmetric ratchet (per-message FS maintained) and SHOULD NOT rotate the DH epoch until a new bundle is received. Alice SHOULD apply the inactivity threshold in §12 item 5 rather than broadcasting indefinitely into silence.
 
 ---
 
@@ -681,9 +693,27 @@ Including the protocol version in the AAD ensures that a recipient running a fut
 }
 ```
 
-### 9.3 Epoch Rotation and RatchetAck
+### 9.3 Pre-Key Bundle, Epoch Rotation, and RatchetAck
 
 These follow the same `Post` envelope.
+
+**PreKeyBundle** (Bob → Alice, periodically sent to top up Alice's OPK cache):
+```json
+{
+  "v": 1,
+  "type": "Post",
+  "token": "<routing_token_T>",
+  "payload": {
+    "type": "PreKeyBundle",
+    "keys": [
+      {"id": 101, "pub": "<base64_opk1_pub>"},
+      {"id": 102, "pub": "<base64_opk2_pub>"},
+      ...
+    ],
+    "sig": "<base64, Ed25519 signature over (v || token || keys_json_canonical) using Bob's SigIK>"
+  }
+}
+```
 
 **EpochRotation** (Alice → Bob, sent when Alice advances the DH ratchet):
 ```json
@@ -694,14 +724,15 @@ These follow the same `Post` envelope.
   "payload": {
     "type": "EpochRotation",
     "epoch": 43,
+    "opk_id": 101,
     "new_ek_pub": "<base64, Alice's new X25519 ephemeral public key>",
     "ts": 1711152000,
-    "sig": "<base64, Ed25519 signature over (v || epoch || new_ek_pub || ts || sender_fp || recipient_fp) using Alice's SigIK>"
+    "sig": "<base64, Ed25519 signature over (v || epoch || opk_id || new_ek_pub || ts || sender_fp || recipient_fp) using Alice's SigIK>"
   }
 }
 ```
 
-**RatchetAck** (Bob → Alice, sent in response to each `EpochRotation` received):
+**RatchetAck** (Bob → Alice, optional acknowledgment of rotation):
 ```json
 {
   "v": 1,
@@ -709,25 +740,34 @@ These follow the same `Post` envelope.
   "token": "<routing_token_T>",
   "payload": {
     "type": "RatchetAck",
-    "epoch_seen": 41,
-    "new_ek_pub": "<base64, Bob's new X25519 ephemeral public key>",
+    "epoch_seen": 43,
     "ts": 1711152000,
-    "sig": "<base64, Ed25519 signature over (v || epoch_seen || new_ek_pub || ts || sender_fp || recipient_fp) using Bob's SigIK>"
+    "sig": "<base64, Ed25519 signature over (v || epoch_seen || ts || sender_fp || recipient_fp) using Bob's SigIK>"
   }
 }
 ```
 
-**Implementation note on field naming and canonical encoding:** `EpochRotation` signs `(v || epoch || new_ek_pub || ts || sender_fp || recipient_fp)` while `RatchetAck` signs `(v || epoch_seen || new_ek_pub || ts || sender_fp || recipient_fp)`. The field at position 1 has different semantics in each message type (`epoch` = the epoch Alice is *announcing*; `epoch_seen` = the epoch Bob last *observed*). Implementations MUST use named fields, not positional byte offsets, when encoding the signed payload — using the same offset for both without reading the field name would silently treat the two as interchangeable and undermine the semantic distinction. Encode each message type's signed blob with its own clearly labelled construction.
+**Implementation note on field naming and canonical encoding:** `EpochRotation` signs `(v || epoch || opk_id || new_ek_pub || ts || sender_fp || recipient_fp)` while `RatchetAck` signs `(v || epoch_seen || ts || sender_fp || recipient_fp)`.
 
-The canonical byte encoding for both signed payloads is:
+The canonical byte encoding for signed payloads is:
+
+**EpochRotation (84 bytes):**
 - `v`: 4 bytes, big-endian uint32
-- `epoch` / `epoch_seen`: 4 bytes, big-endian uint32
+- `epoch`: 4 bytes, big-endian uint32
+- `opk_id`: 4 bytes, big-endian uint32 (the ID of Bob's pre-key Alice consumed)
 - `new_ek_pub`: 32 bytes, raw X25519 public key (no base64)
 - `ts`: 8 bytes, big-endian uint64 (Unix seconds)
 - `sender_fp`: 16 bytes, raw (first 16 bytes of SHA-256(sender IK.pub || sender SigIK.pub))
 - `recipient_fp`: 16 bytes, raw (first 16 bytes of SHA-256(recipient IK.pub || recipient SigIK.pub))
 
-Total signed payload: 80 bytes. Implementations MUST NOT use JSON, ASN.1, or any variable-length encoding for the signed blob — only the fixed-width big-endian encoding above.
+**RatchetAck (48 bytes):**
+- `v`: 4 bytes, big-endian uint32
+- `epoch_seen`: 4 bytes, big-endian uint32
+- `ts`: 8 bytes, big-endian uint64 (Unix seconds)
+- `sender_fp`: 16 bytes, raw (first 16 bytes of SHA-256(sender IK.pub || sender SigIK.pub))
+- `recipient_fp`: 16 bytes, raw (first 16 bytes of SHA-256(recipient IK.pub || recipient SigIK.pub))
+
+Implementations MUST NOT use JSON, ASN.1, or any variable-length encoding for the signed blob — only the fixed-width big-endian encoding above.
 
 **Signature coverage rationale:** Both `EpochRotation` and `RatchetAck` signatures cover `sender_fp || recipient_fp` (the first 16 bytes of `SHA-256(IK.pub || SigIK.pub)` for each party). This prevents cross-session injection: a valid `EpochRotation` captured from Alice in one friendship session cannot be replayed into a different session at the same epoch number, because the fingerprints will not match. Without identity binding, a server or network attacker could corrupt a session's ratchet state while the GCM tag on subsequent frames (not the `EpochRotation` itself) provides the only eventual detection. The `v` field in all signatures provides downgrade protection symmetric with the AAD version field.
 
