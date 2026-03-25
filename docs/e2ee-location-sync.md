@@ -290,8 +290,6 @@ If we naively apply the Double Ratchet to Alice's location stream:
 
 Alice's symmetric ratchet advances per-message. Additionally, every `T` minutes, Alice generates a fresh ephemeral DH key pair, and the new epoch is announced as a special `EpochRotation` message:
 
-> **Simplified pseudocode only.** The `from`/`to` UUID fields below are for illustration. The actual wire format (§9.3) omits user IDs entirely and uses identity fingerprints in the signature instead. See §7.1 and §10.4.
-
 ```json
 {
   "type":       "EpochRotation",
@@ -329,7 +327,7 @@ The cleanest solution is to allow Bob to reply on the channel, even though he is
 
 **Bob sends a `RatchetAck` upon receiving each `EpochRotation` from Alice:**
 
-> **Simplified pseudocode only.** The `from`/`to` UUID fields below are for illustration. The actual wire format (§9.3) omits user IDs entirely and uses identity fingerprints in the signature instead. See §7.1 and §10.4. The `sig` field here also omits the `ts` timestamp present in the canonical 80-byte signed blob — see §9.3 for the full format.
+> **Simplified pseudocode only.** The `sig` field here also omits the `ts` timestamp present in the canonical 80-byte signed blob — see §9.3 for the full format.
 
 ```json
 {
