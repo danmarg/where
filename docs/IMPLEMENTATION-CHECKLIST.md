@@ -40,17 +40,17 @@ Split into client-crypto, client-app, and server.
   - AES-256-GCM encrypt padded JSON using `message_nonce`.
   - Send `EncryptedLocation` wrapped in a `Post` envelope with top-level **`"v": 1`** field: `epoch`, `seq` (JSON string — decimal-encoded to avoid JS uint64 precision loss; native clients parse as `uint64`), `nonce` (message_nonce), `ct`. **No `ek_pub`**.
 - **Incoming**:
-  - **Drop** (do not buffer) any frame with `seq <= max_seq_received` (strict ordering policy; keys are forward-deleted so retroactive decryption is impossible anyway).
+  - **Drop** (do not buffer) any frame with `seq <= max_seq_received`. Track only `max_seq_received` (a single uint64) — a full set is unnecessary under policy A and would grow unboundedly.
   - Verify GCM tag; advance chain; delete old keys.
 
 ### DH ratchet & token rotation
-- Send `RatchetAck` every 10 min: new X25519 `ek_pub` + Ed25519 sig over `(v || epoch_seen || new_ek_pub)`. All `RatchetAck`/`EpochRotation`/`Poll` envelopes also carry top-level `"v": 1`.
+- Send `RatchetAck` every 10 min: new X25519 `ek_pub` + Ed25519 sig over `(v || epoch_seen || new_ek_pub || sender_fp || recipient_fp)`. All `RatchetAck`/`EpochRotation`/`Poll` envelopes also carry top-level `"v": 1`.
 - **On receiving `RatchetAck`** (Alice's side):
   - `dh_out = X25519(my_ek_priv, their_new_ek_pub)`.
   - `new_root_key, new_chain_key = KDF_RK(...)`.
   - `new_routing_token = HKDF-SHA-256(new_root_key, salt=0x00...00, info="Where-v2-RoutingToken")[0:16]`.
   - Generate fresh `my_ek_priv`/`my_ek_pub` for the next step.
-  - **Send `EpochRotation`** on the **current (old) routing token** with `epoch`, `new_ek_pub`, and Ed25519 sig over `(v || epoch || new_ek_pub)`. Bob has not yet derived `new_routing_token`; posting to the new token would be undeliverable.
+  - **Send `EpochRotation`** on the **current (old) routing token** with `epoch`, `new_ek_pub`, and Ed25519 sig over `(v || epoch || new_ek_pub || sender_fp || recipient_fp)`. Bob has not yet derived `new_routing_token`; posting to the new token would be undeliverable. Identity binding in the sig prevents cross-session replay.
 - **On receiving `EpochRotation`** (Bob's side): perform the same `KDF_RK` step and derive `new_routing_token`.
 - Alice SHOULD retransmit her latest `EpochRotation` if no `RatchetAck` arrives within R (10 min) to accelerate recovery; a late-arriving `RatchetAck` is still valid and SHOULD be applied.
 - **Token Transition Protocol**:
@@ -67,7 +67,7 @@ Split into client-crypto, client-app, and server.
 ## 2. Client App Logic
 
 ### Identity & safety numbers
-- Safety number = `SHA-256(local_IK.pub || remote_IK.pub)` (lex sorted).
+- Safety number = `SHA-256(lower_IK.pub || lower_SigIK.pub || higher_IK.pub || higher_SigIK.pub)` — key pairs sorted lexicographically by `IK.pub`, so both the DH key and signing key are covered (a signing-key-only substitution would otherwise be invisible).
 - On `KeyExchangeInit` with mismatched pinned key: block with "Safety Number Changed"; require explicit confirm.
 
 ### Polling & metadata
