@@ -49,7 +49,10 @@ Split into client-crypto, client-app, and server.
 ### DH ratchet & token rotation
 - **Send `RatchetAck` upon receiving each `EpochRotation`** (event-driven, not timer-driven): include a fresh X25519 `ek_pub`, `ts` (uint64 Unix seconds), and Ed25519 sig over the canonical blob `(v || epoch_seen || new_ek_pub || ts || sender_fp || recipient_fp)` — all fixed-width big-endian: `v` 4 B, `epoch_seen` 4 B, `new_ek_pub` 32 B, `ts` 8 B, `sender_fp` 16 B, `recipient_fp` 16 B (total 80 bytes). If multiple `EpochRotation` messages arrive before Bob can respond (e.g., post-reconnect), send a **single** `RatchetAck` referencing the **highest `epoch_seen`** only. All `RatchetAck`/`EpochRotation`/`Poll` envelopes also carry top-level `"v": 1`.
 - **On receiving `RatchetAck` or `EpochRotation`**: reject if `ts` is outside ±5 min of local clock (clock-skew grace window).
-- **On receiving `RatchetAck`** (Alice's side):
+- **On receiving `RatchetAck`** (Alice's side): validate `epoch_seen` before processing:
+  - `epoch_seen < current_epoch` → stale ack; ignore silently.
+  - `epoch_seen > current_epoch` → invalid (Alice cannot have sent an EpochRotation for an epoch she hasn't reached); reject and log.
+  - `epoch_seen == current_epoch` → apply:
   - `dh_out = X25519(my_ek_priv, their_new_ek_pub)`.
   - `new_root_key, new_chain_key = KDF_RK(...)`.
   - `new_routing_token = HKDF-SHA-256(new_root_key, salt=new_epoch (4-byte big-endian uint32), info="Where-v1-RoutingToken")[0:16]`.
