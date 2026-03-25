@@ -31,10 +31,11 @@ Split into client-crypto, client-app, and server.
 
 ### Ratchet
 - `KDF_RK`: HKDF-SHA-256 for DH ratchet steps.
-- `KDF_CK`: HMAC-SHA-256 for symmetric chain. **Deterministic nonces are mandatory**:
-  - `new_chain_key = HMAC-SHA-256(chain_key, 0x01)`
-  - `message_key = HMAC-SHA-256(chain_key, 0x02)`
-  - `message_nonce = HMAC-SHA-256(chain_key, 0x03)[0:12]`
+- `KDF_CK`: HMAC-SHA-256 for chain advancement + HKDF-SHA-256 for key/nonce derivation. **Deterministic nonces are mandatory**:
+  - `new_chain_key = HMAC-SHA-256(key=chain_key, data=0x01)`
+  - `buf[0:44] = HKDF-SHA-256(ikm=chain_key, salt=<absent>, info="Where-v1-MsgKey")[0:44]`
+  - `message_key = buf[0:32]`  (AES-256-GCM key)
+  - `message_nonce = buf[32:44]`  (12-byte GCM nonce)
 - **Outgoing location**:
   - Derive `message_key` and `message_nonce` from `send_chain_key`; delete old chain key.
   - Increment `send_seq` (uint64).
