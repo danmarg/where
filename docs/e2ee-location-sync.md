@@ -39,13 +39,17 @@ In v1, each client connects to a Ktor WebSocket server at `/ws?userId=<uuid>`. W
 
 The goal of v2 is to make the server cryptographically unable to read location payloads and unable to reconstruct the social graph, even if it is fully compromised.
 
-### 1.2 Scope
+### 1.2 Location Precision Control
+
+As a core privacy feature, the protocol supports client-side precision degradation. Before encryption, the sender may apply a configurable rounding function to their coordinates (e.g., snapping to a coarser grid or rounding to N decimal places). This allows users to share "neighbourhood" or "city" level precision with specific friends. Because degradation happens before encryption, the recipient only ever receives the degraded coordinates, and the server cannot recover the original precision.
+
+### 1.3 Scope
 
 This document covers:
 - Key establishment between peers with no central identity server
 - A ratchet-based forward secrecy scheme adapted for continuous one-way location broadcasting
 - Group fan-out (one sender, N recipients)
-- The resulting wire format and Ktor server changes
+- The resulting wire format and server changes
 
 This document does **not** cover:
 - Post-quantum cryptography (deferred; see Section 13)
@@ -94,6 +98,7 @@ For threat models that include a metadata-analyzing server, the mitigations in �
 - **A malicious friend.** If Bob is Alice's friend, Bob receives Alice's plaintext location after decryption on his device. Bob can log it, forward it, or otherwise misuse it. The protocol provides no cryptographic protection against a legitimate-but-adversarial recipient.
 - **Device seizure or compromise.** If an attacker has physical access to Alice's device, they can read decrypted locations from memory or reconstruct keys from the device's persistent state. This is a device-security problem, not a protocol problem.
 - **Metadata about the social graph.** The server knows which user IDs are simultaneously connected. If Alice and Bob are both connected and Alice's friend list contains Bob's UUID, the server can infer the friendship even without reading location data (see §7 for partial mitigations).
+- **Map tile server leakage.** When a recipient views a friend's location on a map, the map provider (e.g., Google Maps, Apple Maps, Mapbox) may infer the friend's location from which tiles the recipient's device requests. This can be mitigated at the application layer via tile pre-fetching or caching, but is outside the scope of this protocol.
 - **Denial of service.** This protocol does not protect against a server that drops or delays messages.
 - **Quantum adversaries.** All DH operations here use X25519 (256-bit elliptic curve). A cryptographically relevant quantum computer running Shor's algorithm could break these. See §13.
 
@@ -588,12 +593,13 @@ Per §5.3 Strategy 3 (Hybrid):
 
 ## 9. Wire Format
 
-All WebSocket messages are JSON-encoded binary frames.
+All messages are JSON-encoded. Every message MUST include a top-level `"v"` field set to the current protocol version (currently `1`). This allows future protocol migrations and enables recipients to reject messages from incompatible versions.
 
 ### 9.1 Location Update (Alice → Server → Bob)
 
 ```json
 {
+  "v": 1,
   "type": "Post",
   "token": "<routing_token_T>",
   "payload": {
@@ -613,13 +619,14 @@ All WebSocket messages are JSON-encoded binary frames.
 **AAD (authenticated, not encrypted):**
 ```
 aad = "Where-v2-Location" (18 bytes, UTF-8)
-    || sender_fp   (8 bytes, first 8 bytes of SHA-256(sender IK.pub))
+    || version      (4 bytes, big-endian uint32, currently 1)
+    || sender_fp    (8 bytes, first 8 bytes of SHA-256(sender IK.pub))
     || recipient_fp (8 bytes, first 8 bytes of SHA-256(recipient IK.pub))
     || epoch (4 bytes, big-endian uint32)
     || seq   (8 bytes, big-endian uint64)
 ```
 
-Using identity fingerprints rather than the routing token in the AAD prevents the server (which knows the routing token) from using the AAD as a correlation handle. The fingerprints are not transmitted in the frame and are therefore opaque to the server.
+Including the protocol version in the AAD ensures that a recipient running a future protocol version will reject messages encrypted under old logic, preventing downgrade attacks. Using identity fingerprints rather than the routing token in the AAD prevents the server (which knows the routing token) from using the AAD as a correlation handle. The fingerprints are not transmitted in the frame and are therefore opaque to the server.
 
 **Plaintext (before encryption):**
 ```json
@@ -635,6 +642,7 @@ Using identity fingerprints rather than the routing token in the AAD prevents th
 
 ```json
 {
+  "v": 1,
   "type": "Poll",
   "token": "<routing_token_T>"
 }
@@ -647,13 +655,14 @@ These follow the same `Post` envelope.
 **EpochRotation** (Alice → Bob, sent when Alice advances the DH ratchet):
 ```json
 {
+  "v": 1,
   "type": "Post",
   "token": "<routing_token_T>",
   "payload": {
     "type": "EpochRotation",
     "epoch": 43,
     "new_ek_pub": "<base64, Alice's new X25519 ephemeral public key>",
-    "sig": "<base64, Ed25519 signature over (epoch || new_ek_pub) using Alice's SigIK>"
+    "sig": "<base64, Ed25519 signature over (v || epoch || new_ek_pub) using Alice's SigIK>"
   }
 }
 ```
@@ -661,13 +670,14 @@ These follow the same `Post` envelope.
 **RatchetAck** (Bob → Alice, sent every `R` minutes when Bob is online):
 ```json
 {
+  "v": 1,
   "type": "Post",
   "token": "<routing_token_T>",
   "payload": {
     "type": "RatchetAck",
     "epoch_seen": 41,
     "new_ek_pub": "<base64, Bob's new X25519 ephemeral public key>",
-    "sig": "<base64, Ed25519 signature over (epoch_seen || new_ek_pub) using Bob's SigIK>"
+    "sig": "<base64, Ed25519 signature over (v || epoch_seen || new_ek_pub) using Bob's SigIK>"
   }
 }
 ```
@@ -788,6 +798,4 @@ This ensures that v2 clients never silently downgrade to plaintext.
 
 3. **Multi-Device Support.** Full identity synchronization across multiple devices (e.g., phone and tablet) is a complex challenge planned for future work.
 
-4. **Location Precision Control.** Allowing the sender to degrade location precision (e.g., to neighborhood level) before encryption.
-
-5. **Server-Side Message Buffering TTL Tuning.** The current default TTL is 30–60 minutes (§10.2). The optimal value balances offline tolerance against server memory footprint and should be informed by real-world usage data.
+4. **Server-Side Message Buffering TTL Tuning.** The current default TTL is 30–60 minutes (§10.2). The optimal value balances offline tolerance against server memory footprint and should be informed by real-world usage data.
