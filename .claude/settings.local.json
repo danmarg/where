@@ -7,7 +7,8 @@
       "Bash(xcrun --find clang)",
       "Bash(xcodebuild -project ios/Where.xcodeproj -scheme Where -destination 'platform=iOS Simulator,name=iPhone 16' -configuration Debug build)",
       "Bash(xcrun simctl:*)",
-      "Bash(xcodebuild -project ios/Where.xcodeproj -scheme Where -destination 'platform=iOS Simulator,name=iPhone 17' -configuration Debug build)"
+      "Bash(xcodebuild -project ios/Where.xcodeproj -scheme Where -destination 'platform=iOS Simulator,name=iPhone 17' -configuration Debug build)",
+      "WebFetch(domain:www.perplexity.ai)"
     ]
   }
 }
