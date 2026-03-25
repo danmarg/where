@@ -38,7 +38,7 @@ Split into client-crypto, client-app, and server.
 - **Outgoing location**:
   - Derive `message_key` and `message_nonce` from `send_chain_key`; delete old chain key.
   - Increment `send_seq` (uint64).
-  - AAD = `"Where-v1-Location"` (UTF-8) `|| version` (4 bytes, big-endian uint32 = 1) `|| sender_fp || recipient_fp || epoch` (4 bytes BE uint32) `|| seq_be` (8 bytes BE uint64).
+  - AAD = `"Where-v1-Location"` (UTF-8) `|| version` (4 bytes, big-endian uint32 = 1) `|| sender_fp` (16 bytes, first 16 bytes of SHA-256(sender IK.pub)) `|| recipient_fp` (16 bytes, first 16 bytes of SHA-256(recipient IK.pub)) `|| epoch` (4 bytes BE uint32) `|| seq_be` (8 bytes BE uint64).
   - AES-256-GCM encrypt padded JSON using `message_nonce`.
   - Send `EncryptedLocation` wrapped in a `Post` envelope with top-level **`"v": 1`** field: `epoch`, `seq` (JSON string — decimal-encoded to avoid JS uint64 precision loss; native clients parse as `uint64`), `ct`. **No `nonce` field** (nonce is deterministic and derived independently by both sides — transmitting it leaks chain-reset timing). **No `ek_pub`**.
 - **Incoming**:
@@ -46,13 +46,14 @@ Split into client-crypto, client-app, and server.
   - Verify GCM tag; advance chain; delete old keys.
 
 ### DH ratchet & token rotation
-- Send `RatchetAck` every 10 min: new X25519 `ek_pub` + Ed25519 sig over `(v || epoch_seen || new_ek_pub || sender_fp || recipient_fp)`. All `RatchetAck`/`EpochRotation`/`Poll` envelopes also carry top-level `"v": 1`.
+- Send `RatchetAck` every 10 min: new X25519 `ek_pub`, `ts` (uint64 Unix seconds), and Ed25519 sig over the canonical blob `(v || epoch_seen || new_ek_pub || ts || sender_fp || recipient_fp)` — all fixed-width big-endian: `v` 4 B, `epoch_seen` 4 B, `new_ek_pub` 32 B, `ts` 8 B, `sender_fp` 16 B, `recipient_fp` 16 B (total 80 bytes). All `RatchetAck`/`EpochRotation`/`Poll` envelopes also carry top-level `"v": 1`.
+- **On receiving `RatchetAck` or `EpochRotation`**: reject if `ts` is outside ±5 min of local clock (clock-skew grace window).
 - **On receiving `RatchetAck`** (Alice's side):
   - `dh_out = X25519(my_ek_priv, their_new_ek_pub)`.
   - `new_root_key, new_chain_key = KDF_RK(...)`.
   - `new_routing_token = HKDF-SHA-256(new_root_key, salt=new_epoch (4-byte big-endian uint32), info="Where-v1-RoutingToken")[0:16]`.
   - Generate fresh `my_ek_priv`/`my_ek_pub` for the next step.
-  - **Send `EpochRotation`** on the **current (old) routing token** with `epoch`, `new_ek_pub`, and Ed25519 sig over `(v || epoch || new_ek_pub || sender_fp || recipient_fp)`. Bob has not yet derived `new_routing_token`; posting to the new token would be undeliverable. Identity binding in the sig prevents cross-session replay.
+  - **Send `EpochRotation`** on the **current (old) routing token** with `epoch`, `new_ek_pub`, `ts` (uint64 Unix seconds), and Ed25519 sig over canonical blob `(v || epoch || new_ek_pub || ts || sender_fp || recipient_fp)` (same 80-byte fixed-width encoding as `RatchetAck`). Bob has not yet derived `new_routing_token`; posting to the new token would be undeliverable. Identity binding in the sig prevents cross-session replay.
 - **On receiving `EpochRotation`** (Bob's side): perform the same `KDF_RK` step and derive `new_routing_token`.
 - Alice SHOULD retransmit her latest `EpochRotation` if no `RatchetAck` arrives within R (10 min) to accelerate recovery; a late-arriving `RatchetAck` is still valid and SHOULD be applied.
 - **Token Transition Protocol**:
@@ -61,8 +62,8 @@ Split into client-crypto, client-app, and server.
   - Bob retires `current` token only after receiving a valid frame on `new` token OR after `2 * R` seconds (20 min).
   - **Alice MUST accept `RatchetAck` messages arriving on the old (current) token** during the transition window. Bob may not yet have derived `new_routing_token` when he sends his next `RatchetAck`; rejecting it on the old token would stall the DH ratchet.
   - **T_AB_0 SHOULD be discarded** after the first successful DH ratchet step completes. Never reuse the bootstrap token.
-- **Fallback**: if no `RatchetAck` received within 20 min, perform **exactly one** time-based DH ratchet step using Bob's last known `their_ek_pub` **unchanged from session state** (one-sided refresh — Alice's EK rotates but Bob's does not; PCS degrades, FS is maintained). **Do not repeat the fallback** on subsequent timeouts; Alice SHOULD stop broadcasting after a configurable inactivity threshold rather than ratcheting one-sidedly indefinitely.
-  - **Security warning:** In the one-sided fallback (and in all epoch steps before a `RatchetAck` arrives), the DH input is `X25519(my_ek_priv, Bob.IK.pub)` — Bob's **static** identity key. If Bob's `IK.priv` is ever compromised, an attacker can retroactively recompute all historical epoch keys derived during these one-sided steps. This is a structural limitation of the hybrid ratchet (see §5.0 and §5.4). PCS against Bob's long-term key compromise is only achieved during epochs where Bob contributes a fresh `ek_pub` via `RatchetAck`.
+  - **Out-of-order delivery during transition**: a poll batch from the old token may contain both `EpochRotation` and subsequent `EncryptedLocation` frames. Process `EpochRotation` messages before `EncryptedLocation` frames of higher epoch within any batch. If frames arrive on `new_routing_token` before the corresponding `EpochRotation` is processed, buffer up to 64 frames and decrypt them once `EpochRotation` is applied; discard buffered frames older than `2 * R` minutes.
+- **No fallback**: if no `RatchetAck` is received, Alice continues broadcasting on the symmetric ratchet (per-message FS maintained). The DH ratchet stalls — PCS is suspended until Bob reconnects and sends a `RatchetAck`. Alice SHOULD apply the inactivity threshold (§12 item 5) rather than broadcasting indefinitely into silence.
 
 ### Secure storage
 - Wipe message/chain/ephemeral priv keys after use.
