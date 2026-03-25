@@ -7,43 +7,33 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		25C7C204409EE87B7316383F /* LocationSyncService.swift in Sources */ = {isa = PBXBuildFile; fileRef = D4B36665B05EA8E1F42A11EA /* LocationSyncService.swift */; };
+		296E222ADF2ED6BA05F597CC /* FriendsSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 28DD2FC8358389E8C9F6ABE6 /* FriendsSheet.swift */; };
+		4A8A07DB9013B997E0C41EFB /* FriendsStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 87F9371D289CC150DF786A96 /* FriendsStore.swift */; };
+		5EF9E5113CEBF25BACE77F5E /* WhereMapView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2421CE3D6966994F4875E311 /* WhereMapView.swift */; };
 		60D8A627443A5ADF3F5C00CB /* WhereApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7A1BBBBE8782378C8B03BB4C /* WhereApp.swift */; };
 		6CB91DD32C87A081852B00C4 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D43663670EB5FB46B5C7C4EA /* ContentView.swift */; };
-		D856CF3786D735F63CD21D1C /* Shared.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 38851FB1006A4C013C3B8A94 /* Shared.framework */; };
+		B60DEE3289B4F67659B77C8A /* LocationManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3ADAF0FD19742D151B957FD9 /* LocationManager.swift */; };
+		CAA74FF2347CA0BA2A825A66 /* UserIdentity.swift in Sources */ = {isa = PBXBuildFile; fileRef = 47183C59D3C1EE4A360DF7ED /* UserIdentity.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
-		38851FB1006A4C013C3B8A94 /* Shared.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Shared.framework; path = "../shared/build/xcode-frameworks/$(CONFIGURATION)/$(SDK_NAME)/Shared.framework"; sourceTree = "<group>"; };
+		2421CE3D6966994F4875E311 /* WhereMapView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WhereMapView.swift; sourceTree = "<group>"; };
+		28DD2FC8358389E8C9F6ABE6 /* FriendsSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FriendsSheet.swift; sourceTree = "<group>"; };
+		3ADAF0FD19742D151B957FD9 /* LocationManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocationManager.swift; sourceTree = "<group>"; };
+		47183C59D3C1EE4A360DF7ED /* UserIdentity.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UserIdentity.swift; sourceTree = "<group>"; };
 		7A1BBBBE8782378C8B03BB4C /* WhereApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WhereApp.swift; sourceTree = "<group>"; };
+		87F9371D289CC150DF786A96 /* FriendsStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FriendsStore.swift; sourceTree = "<group>"; };
 		D43663670EB5FB46B5C7C4EA /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
+		D4B36665B05EA8E1F42A11EA /* LocationSyncService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocationSyncService.swift; sourceTree = "<group>"; };
 		EA47D2499F3983EF98B459AB /* Where.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = Where.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
-/* Begin PBXFrameworksBuildPhase section */
-		EFB0479BA721AAE049851BE1 /* Frameworks */ = {
-			isa = PBXFrameworksBuildPhase;
-			buildActionMask = 2147483647;
-			files = (
-				D856CF3786D735F63CD21D1C /* Shared.framework in Frameworks */,
-			);
-			runOnlyForDeploymentPostprocessing = 0;
-		};
-/* End PBXFrameworksBuildPhase section */
-
 /* Begin PBXGroup section */
-		04AE05A338521963D27F32FA /* Frameworks */ = {
-			isa = PBXGroup;
-			children = (
-				38851FB1006A4C013C3B8A94 /* Shared.framework */,
-			);
-			name = Frameworks;
-			sourceTree = "<group>";
-		};
 		177C19F85F562AB1BF838A33 = {
 			isa = PBXGroup;
 			children = (
 				B39C72AD8B5E1F0E3A409FD2 /* Where */,
-				04AE05A338521963D27F32FA /* Frameworks */,
 				C945058DA9DF7EA90A7EE8D7 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -52,7 +42,13 @@
 			isa = PBXGroup;
 			children = (
 				D43663670EB5FB46B5C7C4EA /* ContentView.swift */,
+				28DD2FC8358389E8C9F6ABE6 /* FriendsSheet.swift */,
+				87F9371D289CC150DF786A96 /* FriendsStore.swift */,
+				3ADAF0FD19742D151B957FD9 /* LocationManager.swift */,
+				D4B36665B05EA8E1F42A11EA /* LocationSyncService.swift */,
+				47183C59D3C1EE4A360DF7ED /* UserIdentity.swift */,
 				7A1BBBBE8782378C8B03BB4C /* WhereApp.swift */,
+				2421CE3D6966994F4875E311 /* WhereMapView.swift */,
 			);
 			name = Where;
 			path = Sources/Where;
@@ -73,9 +69,7 @@
 			isa = PBXNativeTarget;
 			buildConfigurationList = 179750A609FCACFE5552F4E1 /* Build configuration list for PBXNativeTarget "Where" */;
 			buildPhases = (
-				624159653114A75804EC2379 /* Build KMP Shared Framework */,
 				E7ED0F8B6CA06472498EA266 /* Sources */,
-				EFB0479BA721AAE049851BE1 /* Frameworks */,
 			);
 			buildRules = (
 			);
@@ -116,35 +110,19 @@
 		};
 /* End PBXProject section */
 
-/* Begin PBXShellScriptBuildPhase section */
-		624159653114A75804EC2379 /* Build KMP Shared Framework */ = {
-			isa = PBXShellScriptBuildPhase;
-			alwaysOutOfDate = 1;
-			buildActionMask = 2147483647;
-			files = (
-			);
-			inputFileListPaths = (
-			);
-			inputPaths = (
-			);
-			name = "Build KMP Shared Framework";
-			outputFileListPaths = (
-			);
-			outputPaths = (
-			);
-			runOnlyForDeploymentPostprocessing = 0;
-			shellPath = /bin/sh;
-			shellScript = "set -e\ncd \"$SRCROOT/..\"\n# Read JDK path written by `nix develop` shellHook\nif [ -f .xcode-java-home ]; then\n  export JAVA_HOME=$(cat .xcode-java-home)\n  export PATH=\"$JAVA_HOME/bin:$PATH\"\nfi\n./gradlew :shared:embedAndSignAppleFrameworkForXcode\n";
-		};
-/* End PBXShellScriptBuildPhase section */
-
 /* Begin PBXSourcesBuildPhase section */
 		E7ED0F8B6CA06472498EA266 /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
 				6CB91DD32C87A081852B00C4 /* ContentView.swift in Sources */,
+				296E222ADF2ED6BA05F597CC /* FriendsSheet.swift in Sources */,
+				4A8A07DB9013B997E0C41EFB /* FriendsStore.swift in Sources */,
+				B60DEE3289B4F67659B77C8A /* LocationManager.swift in Sources */,
+				25C7C204409EE87B7316383F /* LocationSyncService.swift in Sources */,
+				CAA74FF2347CA0BA2A825A66 /* UserIdentity.swift in Sources */,
 				60D8A627443A5ADF3F5C00CB /* WhereApp.swift in Sources */,
+				5EF9E5113CEBF25BACE77F5E /* WhereMapView.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -200,6 +178,7 @@
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
 				MTL_ENABLE_DEBUG_INFO = NO;
 				MTL_FAST_MATH = YES;
+				OTHER_LDFLAGS = "$(inherited) -ld_classic";
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = iphoneos;
 				SWIFT_COMPILATION_MODE = wholemodule;
@@ -213,19 +192,17 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
-				FRAMEWORK_SEARCH_PATHS = (
-					"$(SRCROOT)/../shared/build/xcode-frameworks/$(CONFIGURATION)/$(SDK_NAME)",
-					"\"../shared/build/xcode-frameworks/$(CONFIGURATION)/$(SDK_NAME)\"",
-				);
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_NSLocationAlwaysAndWhenInUseUsageDescription = "Where needs your location in the background to keep sharing it.";
+				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "Where needs your location to show it on the map.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
+				INFOPLIST_KEY_UIBackgroundModes = location;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				OTHER_LDFLAGS = "$(inherited) -framework Shared";
 				PRODUCT_BUNDLE_IDENTIFIER = net.af0.where;
 				SDKROOT = iphoneos;
 				TARGETED_DEVICE_FAMILY = "1,2";
@@ -237,19 +214,17 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
-				FRAMEWORK_SEARCH_PATHS = (
-					"$(SRCROOT)/../shared/build/xcode-frameworks/$(CONFIGURATION)/$(SDK_NAME)",
-					"\"../shared/build/xcode-frameworks/$(CONFIGURATION)/$(SDK_NAME)\"",
-				);
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_NSLocationAlwaysAndWhenInUseUsageDescription = "Where needs your location in the background to keep sharing it.";
+				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "Where needs your location to show it on the map.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
+				INFOPLIST_KEY_UIBackgroundModes = location;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				OTHER_LDFLAGS = "$(inherited) -framework Shared";
 				PRODUCT_BUNDLE_IDENTIFIER = net.af0.where;
 				SDKROOT = iphoneos;
 				TARGETED_DEVICE_FAMILY = "1,2";
@@ -312,6 +287,7 @@
 				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
 				MTL_FAST_MATH = YES;
 				ONLY_ACTIVE_ARCH = YES;
+				OTHER_LDFLAGS = "$(inherited) -ld_classic";
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = iphoneos;
 				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;

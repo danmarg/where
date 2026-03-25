@@ -56,6 +56,11 @@
             export SDKROOT=/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk
             # Prepend real Xcode tools so they shadow Nix stubs (xcrun, lipo, etc.)
             export PATH=/Applications/Xcode.app/Contents/Developer/usr/bin:/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin:$PATH
+            # External Android SDK/AVD on /Volumes/Ext to save main disk space
+            export ANDROID_HOME=/Volumes/Ext/android-sdk
+            export ANDROID_SDK_ROOT=/Volumes/Ext/android-sdk
+            export ANDROID_AVD_HOME=/Volumes/Ext/android-avd
+            export PATH=/Volumes/Ext/android-sdk/cmdline-tools/latest/bin:/Volumes/Ext/android-sdk/platform-tools:/Volumes/Ext/android-sdk/emulator:$PATH
             # Write JDK path for Xcode build scripts (which run outside the Nix shell)
             echo "$JAVA_HOME" > .xcode-java-home
             echo "Where dev environment"
