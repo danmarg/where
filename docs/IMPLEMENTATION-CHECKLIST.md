@@ -38,7 +38,7 @@ Split into client-crypto, client-app, and server.
   - Increment `send_seq` (uint64).
   - AAD = `"Where-v1-Location"` (UTF-8) `|| version` (4 bytes, big-endian uint32 = 1) `|| sender_fp || recipient_fp || epoch` (4 bytes BE uint32) `|| seq_be` (8 bytes BE uint64).
   - AES-256-GCM encrypt padded JSON using `message_nonce`.
-  - Send `EncryptedLocation` wrapped in a `Post` envelope with top-level **`"v": 1`** field: `epoch`, `seq` (JSON string — decimal-encoded to avoid JS uint64 precision loss; native clients parse as `uint64`), `nonce` (message_nonce), `ct`. **No `ek_pub`**.
+  - Send `EncryptedLocation` wrapped in a `Post` envelope with top-level **`"v": 1`** field: `epoch`, `seq` (JSON string — decimal-encoded to avoid JS uint64 precision loss; native clients parse as `uint64`), `ct`. **No `nonce` field** (nonce is deterministic and derived independently by both sides — transmitting it leaks chain-reset timing). **No `ek_pub`**.
 - **Incoming**:
   - **Drop** (do not buffer) any frame with `seq <= max_seq_received`. Track only `max_seq_received` (a single uint64) — a full set is unnecessary under policy A and would grow unboundedly.
   - Verify GCM tag; advance chain; delete old keys.
@@ -57,7 +57,7 @@ Split into client-crypto, client-app, and server.
   - Alice posts all frames *after* `EpochRotation` to `new_routing_token`.
   - Bob polls **both** `current` and `new` tokens (for all message types, including `RatchetAck`).
   - Bob retires `current` token only after receiving a valid frame on `new` token OR after `2 * R` seconds (20 min).
-- **Fallback**: if no `RatchetAck` received within 20 min, perform a time-based DH ratchet step using Bob's last known `their_ek_pub` **unchanged from session state** (one-sided refresh — Alice's EK rotates but Bob's does not; PCS degrades, FS is maintained).
+- **Fallback**: if no `RatchetAck` received within 20 min, perform **exactly one** time-based DH ratchet step using Bob's last known `their_ek_pub` **unchanged from session state** (one-sided refresh — Alice's EK rotates but Bob's does not; PCS degrades, FS is maintained). **Do not repeat the fallback** on subsequent timeouts; Alice SHOULD stop broadcasting after a configurable inactivity threshold rather than ratcheting one-sidedly indefinitely.
 
 ### Secure storage
 - Wipe message/chain/ephemeral priv keys after use.
@@ -71,7 +71,7 @@ Split into client-crypto, client-app, and server.
 - On `KeyExchangeInit` with mismatched pinned key: block with "Safety Number Changed"; require explicit confirm.
 
 ### Polling & metadata
-- Poll `GET /inbox/{token}` every 10s at **constant rate**, shuffle token order.
+- Poll `GET /inbox/{token}` at a **constant rate** (recommended: **60 s**; 10 s is excessive and leaks app-foreground state). Shuffle token order. The RatchetAck interval `R = 10 min` is a cryptographic parameter and is independent of polling cadence.
 - Optional: poll dummy tokens for cover traffic.
 
 ## 3. Server (Ktor)

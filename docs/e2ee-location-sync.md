@@ -227,8 +227,10 @@ Alice then recomputes the same DH operations (using her `IK_A.priv` and `EK_A.pr
 
 Users share a link through any out-of-band channel (iMessage, Signal, in-person). The link is:
 ```
-where://add?ik=<base64_ik_pub>&sig_pub=<base64_sig_pub>&fp=<fingerprint>&name=<name>
+where://add?ik=<base64_ik_pub>&ek=<base64_ek_pub>&sig_pub=<base64_sig_pub>&fp=<fingerprint>&name=<name>
 ```
+
+`ek` carries Alice's ephemeral public key `EK_A.pub`, the same value encoded in the Option A QR code. It is required: without it, Bob cannot complete the 3-term DH exchange (DH2 and DH3 depend on Alice's ephemeral key) and the key agreement is not cryptographically equivalent to Option A.
 
 The key agreement proceeds identically to Option A. The app MUST display a prominent prompt encouraging fingerprint verification after the friend is added via this path.
 
@@ -284,14 +286,14 @@ If we naively apply the Double Ratchet to Alice's location stream:
 
 Alice's symmetric ratchet advances per-message. Additionally, every `T` minutes, Alice generates a fresh ephemeral DH key pair, and the new epoch is announced as a special `EpochRotation` message:
 
+> **Simplified pseudocode only.** The `from`/`to` UUID fields below are for illustration. The actual wire format (§9.3) omits user IDs entirely and uses identity fingerprints in the signature instead. See §7.1 and §10.4.
+
 ```json
 {
   "type":       "EpochRotation",
-  "from":       "alice-uuid",
-  "to":         "bob-uuid",
   "epoch":      43,
   "new_ek_pub": "<base64, Alice's new X25519 ephemeral public key>",
-  "sig":        "<base64, Ed25519 signature over (from || to || epoch || new_ek_pub)>"
+  "sig":        "<base64, Ed25519 signature over (v || epoch || new_ek_pub || sender_fp || recipient_fp)>"
 }
 ```
 
@@ -323,14 +325,14 @@ The cleanest solution is to allow Bob to periodically reply on the channel, even
 
 **Bob sends a "ratchet reply" message every `R` minutes (e.g., R = 10):**
 
+> **Simplified pseudocode only.** The `from`/`to` UUID fields below are for illustration. The actual wire format (§9.3) omits user IDs entirely and uses identity fingerprints in the signature instead. See §7.1 and §10.4.
+
 ```json
 {
   "type":       "RatchetAck",
-  "from":       "bob-uuid",
-  "to":         "alice-uuid",
   "epoch_seen": 41,
   "new_ek_pub": "<base64, Bob's new X25519 ephemeral public key>",
-  "sig":        "<base64, Ed25519 signature over (from || to || epoch_seen || new_ek_pub)>"
+  "sig":        "<base64, Ed25519 signature over (v || epoch_seen || new_ek_pub || sender_fp || recipient_fp)>"
 }
 ```
 
@@ -349,7 +351,7 @@ This restores the full Double Ratchet security guarantee: both parties contribut
 
 #### 5.3.1 Offline and Failure Modes
 
-**Offline Bob:** If Bob is offline, Alice receives no `RatchetAck`. After `2R` minutes (default: 20 min), Alice falls back to a time-based DH ratchet step using Bob's last known `their_ek_pub`. During the `2R`-minute offline window, the DH ratchet does not advance; only the per-message symmetric ratchet (forward secrecy) is active. PCS is not provided during this window.
+**Offline Bob:** If Bob is offline, Alice receives no `RatchetAck`. After `2R` minutes (default: 20 min), Alice performs **exactly one** time-based DH ratchet step using Bob's last known `their_ek_pub`. This one-sided fallback refreshes Alice's ephemeral key but receives no new DH entropy from Bob; it maintains FS but does not advance PCS. After this single fallback step, Alice continues sending on the ratchet derived from it but does **not** perform additional fallback steps — repeated one-sided steps provide diminishing security value (Bob's contribution remains static) and Alice SHOULD stop broadcasting location after a configurable inactivity threshold (see §12) rather than rotating indefinitely. During the `2R`-minute window before the fallback fires, the DH ratchet does not advance; only the per-message symmetric ratchet (forward secrecy) is active. PCS is not provided during this window.
 
 **`RatchetAck` loss or delay:** If a `RatchetAck` is dropped, Alice will eventually time out and fall back. To accelerate recovery, Alice SHOULD retransmit her latest `EpochRotation` if no `RatchetAck` is received within `R` minutes (rather than waiting for the full `2R` timeout). A `RatchetAck` that arrives after Alice has already fallen back is still valid: Alice SHOULD apply it to advance the DH ratchet from the current state, even if out of the expected window.
 
@@ -415,7 +417,7 @@ When Alice sends a location update:
 1. She computes the plaintext: `loc = {lat, lng, accuracy, timestamp}`.
 2. For each friend `F_i` in her friend list:
    - Derive `MK_i` from Alice→F_i ratchet chain.
-   - Encrypt: `CT_i = AES-256-GCM(key=MK_i, plaintext=loc, aad=encode(alice_uuid, f_i_uuid, epoch_i, seq_i))`.
+   - Encrypt: `CT_i = AES-256-GCM(key=MK_i, plaintext=loc, aad=encode(sender_fp, recipient_fp, epoch_i, seq_i))` where `sender_fp` and `recipient_fp` are the first 8 bytes of `SHA-256(IK.pub)` for each party — matching the final AAD construction in §9.1.
    - Send `(f_i_uuid, CT_i, epoch_i, seq_i)` to the server.
 3. The server routes each `(f_i_uuid, CT_i)` frame to the corresponding connected client.
 
@@ -478,7 +480,9 @@ The server can still observe the timing and frequency of `POST` and `GET` reques
 
 ### 7.4.1 Polling Strategy
 
-To prevent timing-based social-graph inference, Bob MUST poll at a **constant rate** regardless of whether messages are expected. The recommended cadence is once per `R` seconds (default: `R = 10` seconds). Polling more frequently when a location update is expected, or less frequently when offline, creates a timing side-channel the server can exploit to infer when friends are actively sharing.
+To prevent timing-based social-graph inference, Bob MUST poll at a **constant rate** regardless of whether messages are expected. Polling more frequently when a location update is expected, or less frequently when offline, creates a timing side-channel the server can exploit to infer when friends are actively sharing.
+
+**Polling cadence is a UX/battery parameter, not a cryptographic one.** `R = 10 min` is the `RatchetAck` interval — a cryptographic parameter governing PCS granularity. The polling interval is independent and should be set based on freshness requirements and battery budget. A 60–120 second poll interval provides acceptable location freshness for a mapping application without the battery drain of 10-second polling, and without revealing fine-grained app-foreground state to the server. Recommended default: **60 seconds**. Implementations SHOULD NOT couple the polling cadence to `R`.
 
 Bob polls for all of his friendship tokens in a fixed, shuffled order. The shuffle MUST be re-randomised on each poll cycle to prevent ordering-based inference. This, combined with the indistinguishable-response invariant (§7.2), means the server cannot distinguish "polling for a real active friendship" from "polling for a stale or never-used token".
 
@@ -560,6 +564,10 @@ message_nonce  = HMAC-SHA-256(key=chain_key, data=0x03)[0:12] // Mandatory
 ```
 The first two outputs are identical to the Signal spec's KDF_CK construction. The third output provides a deterministic nonce (mandatory) to protect against state-rollback attacks.
 
+**Note on key/nonce co-derivation:** `message_key` and `message_nonce` are both derived from the same `chain_key` input, separated only by their domain-separation constants (0x02 and 0x03). HMAC-SHA-256 is a PRF and these outputs are computationally independent given distinct constants, so there is no known cryptographic weakness in the current construction. However, an alternative that makes the independence structurally explicit — and is more robust to future primitive substitution — is an HKDF split: `(message_key || message_nonce) = HKDF-SHA-256(ikm=chain_key, info="Where-v1-MsgKey")[0:44]`, slicing bytes 0–31 as `message_key` and bytes 32–43 as `message_nonce`. This alternative SHOULD be adopted in a v2 revision.
+
+**Note on routing-token HKDF salt:** The routing token derivation uses `salt = 0x00...00`. RFC 5869 recommends a random or randomly-derived salt; an all-zero salt degrades HKDF to an HMAC-based PRF with a fixed key. The construction is secure but non-standard. A future revision SHOULD use the epoch value (big-endian uint32) or `SHA-256(root_key)[0:32]` as the salt to align with RFC 5869 guidance.
+
 **Message encryption:**
 ```
 // Nonce is derived deterministically from KDF_CK above
@@ -590,7 +598,7 @@ Per §5.3 Strategy 3 (Hybrid):
 
 1. Alice advances the **symmetric ratchet** on every location update (every ~30 seconds).
 2. Alice advances the **DH ratchet** when she receives a `RatchetAck` from Bob containing a new `ek_pub`.
-3. If Alice has not received a `RatchetAck` from Bob within 20 minutes (i.e., `2R` for `R = 10 min`), she falls back to a **time-based DH ratchet step** using Bob's last known `their_ek_pub` (no new DH input from Bob, but the epoch key refreshes Alice's side). This degrades PCS but maintains FS.
+3. If Alice has not received a `RatchetAck` from Bob within 20 minutes (i.e., `2R` for `R = 10 min`), she performs **exactly one** time-based DH ratchet step using Bob's last known `their_ek_pub` (no new DH input from Bob, but the epoch key refreshes Alice's side). This fallback fires once only — it does not repeat every `R` minutes. After the single fallback step, Alice continues sending on the derived chain; she SHOULD stop broadcasting after a configurable inactivity threshold rather than rotating one-sidedly indefinitely (see §12). This degrades PCS but maintains FS.
 4. `EpochRotation` messages are sent at the start of each DH ratchet step to notify Bob of Alice's new `ek_pub`.
 
 ---
@@ -610,11 +618,12 @@ All messages are JSON-encoded. Every message MUST include a top-level `"v"` fiel
     "type": "EncryptedLocation",
     "epoch": 42,
     "seq":   "1337",
-    "nonce":  "<base64, 12 bytes>",
     "ct":     "<base64, AES-256-GCM ciphertext + 16-byte tag>"
   }
 }
 ```
+
+**Note on the `nonce` field:** The nonce is deterministically derived via `KDF_CK` (§8.3); both sides compute it independently from chain state. It is therefore **not transmitted** in the wire format. Transmitting it would waste 12 bytes per frame and, more importantly, leak chain-state reset timing to a passive observer (nonce values restart at a predictable pattern at each ratchet step). If a future debugging or robustness mode needs to transmit the nonce, a separate `"debug"` envelope flag should gate it — the production wire format omits it.
 
 **Note:** `ek_pub` is intentionally absent from `EncryptedLocation` frames. Including it in every frame would expose epoch-transition timing to the server. The current epoch's `ek_pub` is carried only in `EpochRotation` messages (§9.3); Bob uses the `epoch` field to look up the corresponding ratchet state.
 
@@ -688,7 +697,7 @@ These follow the same `Post` envelope.
 
 **Signature coverage rationale:** Both `EpochRotation` and `RatchetAck` signatures cover `sender_fp || recipient_fp` (the first 8 bytes of `SHA-256(IK.pub)` for each party). This prevents cross-session injection: a valid `EpochRotation` captured from Alice in one friendship session cannot be replayed into a different session at the same epoch number, because the fingerprints will not match. Without identity binding, a server or network attacker could corrupt a session's ratchet state while the GCM tag on subsequent frames (not the `EpochRotation` itself) provides the only eventual detection. The `v` field in all signatures provides downgrade protection symmetric with the AAD version field.
 
-**RatchetAck freshness:** `epoch_seen` scopes a `RatchetAck` to the epoch Bob observed, which prevents applying an ack from epoch N to epoch N+M. The remaining residual — that a captured `RatchetAck` for epoch N could be replayed during a future session at the same epoch number — is substantially mitigated by the `sender_fp || recipient_fp` binding (replay requires the same friendship pair, same epoch, same `new_ek_pub`). Adding a short-lived timestamp or monotonic nonce to the signed payload would eliminate this residual at the cost of clock-skew handling; deferred to a future revision.
+**RatchetAck freshness:** `epoch_seen` scopes a `RatchetAck` to the epoch Bob observed, which prevents applying an ack from epoch N to epoch N+M. The remaining residual — that a captured `RatchetAck` for epoch N could be replayed during a future session at the same epoch number — is substantially mitigated by the `sender_fp || recipient_fp` binding (replay requires the same friendship pair, same epoch, same `new_ek_pub`). For a uint32 epoch counter (~4 billion epochs), same-epoch collision across sessions is low-probability but non-zero over a very long-lived deployment. **This SHOULD be fixed before v1 ships** by adding a short-lived timestamp (e.g., Unix seconds, uint64) or a monotonic session nonce to the signed payload, eliminating the residual at the cost of clock-skew handling (±5 min grace window is sufficient).
 
 ---
 
@@ -718,7 +727,7 @@ val mailboxes: ConcurrentHashMap<RoutingToken, Queue<EncryptedMessage>>
    - Drain and return all messages in the queue.
    - **Constant-Time Invariant:** The server MUST return an identical response (HTTP 200 OK with `[]`) for non-existent tokens. To prevent timing side-channels, the lookup logic must ensure that the time taken to respond for a "hit" (active token) versus a "miss" (empty/unknown token) is indistinguishable to an attacker. This may require padding the response time to a fixed threshold or using constant-time map lookups.
 
-The server no longer uses the `/ws` WebSocket endpoint or the `/locations` REST endpoint.
+The server exposes only the mailbox API (`POST /inbox/{token}` and `GET /inbox/{token}`). There is no WebSocket or user-addressed REST endpoint.
 
 ### 10.3 What Stays the Same
 
@@ -764,3 +773,7 @@ With this design:
 3. **Multi-Device Support.** Full identity synchronization across multiple devices (e.g., phone and tablet) is a complex challenge planned for future work.
 
 4. **Server-Side Message Buffering TTL Tuning.** The current default TTL is 30–60 minutes (§10.2). The optimal value balances offline tolerance against server memory footprint and should be informed by real-world usage data.
+
+5. **Session Expiry and Staleness Handling.** If Alice stops sharing (app uninstalled, account deleted, extended offline period), Bob's client continues polling indefinitely against a token that will never receive new messages. The server-side TTL (30–60 min) handles queued messages but not client-side polling. Bob's client SHOULD implement exponential back-off after a configurable number of consecutive empty responses (e.g., back off after 10 empty polls, doubling the interval up to a maximum of 30 min), and SHOULD surface a "no recent location" staleness indicator to the user after a threshold (e.g., 2 hours without a new frame). Persistent polling against a dead session is both a battery/bandwidth drain and a minor privacy leak (polling patterns are observable to the server).
+
+6. **RatchetAck Replay Residual (Pre-v1 Fix).** Add a timestamp or monotonic session nonce to the `RatchetAck` and `EpochRotation` signed payloads to eliminate the low-probability epoch-collision replay window identified in §9.3. A ±5 min clock-skew grace window is sufficient for the timestamp approach.
