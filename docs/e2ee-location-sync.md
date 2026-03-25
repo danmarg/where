@@ -165,11 +165,14 @@ Alice opens "Add Friend" and generates a fresh ephemeral key pair `EK_A`. She th
   "ek_pub": base64(Alice.EK_A.pub),  // X25519 ephemeral key
   "sig_pub": base64(Alice.SigIK.pub), // Ed25519 public key
   "suggested_name": "Alice",
-  "fingerprint": hex(SHA-256(Alice.IK.pub)[0:10])
+  "fingerprint": hex(SHA-256(Alice.IK.pub)[0:10]),
+  "sig": base64(Ed25519Sign(Alice.SigIK.priv, ik_pub_bytes || ek_pub_bytes || sig_pub_bytes))
 }
 ```
 
-Bob scans the QR code.
+The `sig` field is a mandatory Ed25519 signature over the concatenation of the raw (decoded) `ik_pub`, `ek_pub`, and `sig_pub` bytes, produced by Alice using her `SigIK.priv`. This closes the asymmetric authentication gap: Bob already signs his `KeyExchangeInit` so that Alice can authenticate him; Alice's QR signature lets Bob authenticate Alice's QR payload symmetrically. Without it, an attacker who replaces Alice's QR code before Bob scans it can receive Bob's `KeyExchangeInit` and impersonate Alice to Bob (see §2.3).
+
+Bob scans the QR code. **Bob MUST verify `sig` over `(ik_pub || ek_pub || sig_pub)` using the supplied `sig_pub` before proceeding.** Abort and discard if verification fails.
 
 **Key Agreement and Routing Token Derivation:**
 
@@ -189,8 +192,9 @@ SK  = HKDF-SHA-256(IKM = DH1 || DH2 || DH3,
 
 // Derive the initial bootstrap routing token from SK.
 // After the first ratchet step, the token rotates per epoch — see §8.3 KDF_RK.
+// salt = epoch encoded as big-endian uint32; for the bootstrap token epoch = 0 → 0x00000000.
 T_AB_0 = HKDF-SHA-256(IKM = SK,
-                       salt = 0x00...00,
+                       salt = 0x00000000,   // epoch=0, 4 bytes big-endian uint32
                        info = "Where-v1-RoutingToken")[0:16]
 ```
 
@@ -418,8 +422,8 @@ When Alice sends a location update:
 2. For each friend `F_i` in her friend list:
    - Derive `MK_i` from Alice→F_i ratchet chain.
    - Encrypt: `CT_i = AES-256-GCM(key=MK_i, plaintext=loc, aad=encode(sender_fp, recipient_fp, epoch_i, seq_i))` where `sender_fp` and `recipient_fp` are the first 8 bytes of `SHA-256(IK.pub)` for each party — matching the final AAD construction in §9.1.
-   - Send `(f_i_uuid, CT_i, epoch_i, seq_i)` to the server.
-3. The server routes each `(f_i_uuid, CT_i)` frame to the corresponding connected client.
+   - Send `(routing_token_i, CT_i, epoch_i, seq_i)` to the server.
+3. The server routes each `(routing_token_i, CT_i)` frame to the corresponding mailbox.
 
 **Bandwidth:** For N friends, Alice sends N encrypted frames per location update. At 30-second intervals with 20 friends and ~100 bytes per ciphertext, this is ~2,000 bytes per update — entirely within mobile data budgets.
 
@@ -488,7 +492,9 @@ Bob polls for all of his friendship tokens in a fixed, shuffled order. The shuff
 
 ### 7.5 Future: Dummy Token Polling
 
-Because of the indistinguishable response invariant (§7.2), clients can implement **dummy token polling** as a future enhancement. A client polls for random "dummy" tokens alongside real ones. The server cannot distinguish real polls from noise. This significantly raises the bar for traffic analysis and requires no server-side changes to implement. Dummy polling is deferred until the user base is large enough to provide meaningful cover traffic.
+Because of the indistinguishable response invariant (§7.2), clients can implement **dummy token polling** as a future enhancement. A client polls for random "dummy" tokens alongside real ones. The server cannot distinguish real polls from noise. This significantly raises the bar for traffic analysis and requires no server-side changes to implement.
+
+**Dummy polling is deferred to a future release** and MUST NOT be described as currently available. Cover traffic provides no meaningful privacy benefit until the user base is large enough that dummy polls are indistinguishable from real sessions at the population level; premature deployment creates implementation complexity without the corresponding privacy gain. Implementations SHOULD NOT add dummy polling until this threshold is reached and the feature is explicitly included in a protocol revision.
 
 ---
 
@@ -540,7 +546,7 @@ Output: 64 bytes split as `[0:32] = new_root_key`, `[32:64] = new_chain_key`.
 After each DH ratchet step, the routing token for this friendship pair MUST be re-derived from the new root key:
 ```
 new_routing_token = HKDF-SHA-256(
-    salt = 0x00...00,
+    salt = new_epoch (big-endian uint32, 4 bytes),
     ikm  = new_root_key,
     info = "Where-v1-RoutingToken"
 )[0:16]
@@ -566,7 +572,7 @@ The first two outputs are identical to the Signal spec's KDF_CK construction. Th
 
 **Note on key/nonce co-derivation:** `message_key` and `message_nonce` are both derived from the same `chain_key` input, separated only by their domain-separation constants (0x02 and 0x03). HMAC-SHA-256 is a PRF and these outputs are computationally independent given distinct constants, so there is no known cryptographic weakness in the current construction. However, an alternative that makes the independence structurally explicit — and is more robust to future primitive substitution — is an HKDF split: `(message_key || message_nonce) = HKDF-SHA-256(ikm=chain_key, info="Where-v1-MsgKey")[0:44]`, slicing bytes 0–31 as `message_key` and bytes 32–43 as `message_nonce`. This alternative SHOULD be adopted in a v2 revision.
 
-**Note on routing-token HKDF salt:** The routing token derivation uses `salt = 0x00...00`. RFC 5869 recommends a random or randomly-derived salt; an all-zero salt degrades HKDF to an HMAC-based PRF with a fixed key. The construction is secure but non-standard. A future revision SHOULD use the epoch value (big-endian uint32) or `SHA-256(root_key)[0:32]` as the salt to align with RFC 5869 guidance.
+**Note on routing-token HKDF salt:** Routing token derivation uses the current epoch as the 4-byte big-endian uint32 salt (epoch=0 for the bootstrap token `T_AB_0`). Using an all-zero or absent salt degrades HKDF to an HMAC-based PRF with a fixed key (RFC 5869 §3.1); including the epoch is a trivially cheap change that aligns with RFC 5869 guidance and makes each epoch's token derivation domain-separated by epoch number. This is a requirement; the all-zero construction is not acceptable.
 
 **Message encryption:**
 ```
@@ -695,9 +701,11 @@ These follow the same `Post` envelope.
 }
 ```
 
+**Implementation note on field naming:** `EpochRotation` signs `(v || epoch || new_ek_pub || sender_fp || recipient_fp)` while `RatchetAck` signs `(v || epoch_seen || new_ek_pub || sender_fp || recipient_fp)`. The field at position 1 has different semantics in each message type (`epoch` = the epoch Alice is *announcing*; `epoch_seen` = the epoch Bob last *observed*). Implementations MUST use named fields, not positional byte offsets, when encoding the signed payload — using the same offset for both without reading the field name would silently treat the two as interchangeable and undermine the semantic distinction. Encode each message type's signed blob with its own clearly labelled construction.
+
 **Signature coverage rationale:** Both `EpochRotation` and `RatchetAck` signatures cover `sender_fp || recipient_fp` (the first 8 bytes of `SHA-256(IK.pub)` for each party). This prevents cross-session injection: a valid `EpochRotation` captured from Alice in one friendship session cannot be replayed into a different session at the same epoch number, because the fingerprints will not match. Without identity binding, a server or network attacker could corrupt a session's ratchet state while the GCM tag on subsequent frames (not the `EpochRotation` itself) provides the only eventual detection. The `v` field in all signatures provides downgrade protection symmetric with the AAD version field.
 
-**RatchetAck freshness:** `epoch_seen` scopes a `RatchetAck` to the epoch Bob observed, which prevents applying an ack from epoch N to epoch N+M. The remaining residual — that a captured `RatchetAck` for epoch N could be replayed during a future session at the same epoch number — is substantially mitigated by the `sender_fp || recipient_fp` binding (replay requires the same friendship pair, same epoch, same `new_ek_pub`). For a uint32 epoch counter (~4 billion epochs), same-epoch collision across sessions is low-probability but non-zero over a very long-lived deployment. **This SHOULD be fixed before v1 ships** by adding a short-lived timestamp (e.g., Unix seconds, uint64) or a monotonic session nonce to the signed payload, eliminating the residual at the cost of clock-skew handling (±5 min grace window is sufficient).
+**RatchetAck freshness:** `epoch_seen` scopes a `RatchetAck` to the epoch Bob observed, which prevents applying an ack from epoch N to epoch N+M. The remaining residual — that a captured `RatchetAck` for epoch N could be replayed during a future session at the same epoch number — is substantially mitigated by the `sender_fp || recipient_fp` binding (replay requires the same friendship pair, same epoch, same `new_ek_pub`). However, for a uint32 epoch counter at one epoch per 10 minutes, epoch values can realistically repeat over a multi-year deployment; the replay window is non-zero. **This MUST be fixed** by adding a short-lived timestamp (Unix seconds, uint64) or a monotonic session nonce to the signed payload of both `RatchetAck` and `EpochRotation`. For the timestamp approach, a ±5 min clock-skew grace window is sufficient. See §12 item 6 for the open-question tracking entry.
 
 ---
 
@@ -776,4 +784,4 @@ With this design:
 
 5. **Session Expiry and Staleness Handling.** If Alice stops sharing (app uninstalled, account deleted, extended offline period), Bob's client continues polling indefinitely against a token that will never receive new messages. The server-side TTL (30–60 min) handles queued messages but not client-side polling. Bob's client SHOULD implement exponential back-off after a configurable number of consecutive empty responses (e.g., back off after 10 empty polls, doubling the interval up to a maximum of 30 min), and SHOULD surface a "no recent location" staleness indicator to the user after a threshold (e.g., 2 hours without a new frame). Persistent polling against a dead session is both a battery/bandwidth drain and a minor privacy leak (polling patterns are observable to the server).
 
-6. **RatchetAck Replay Residual (Pre-v1 Fix).** Add a timestamp or monotonic session nonce to the `RatchetAck` and `EpochRotation` signed payloads to eliminate the low-probability epoch-collision replay window identified in §9.3. A ±5 min clock-skew grace window is sufficient for the timestamp approach.
+6. **RatchetAck Replay Residual — Required Fix.** Add a Unix-seconds timestamp (uint64) or monotonic session nonce to the signed payloads of both `RatchetAck` and `EpochRotation` to eliminate the epoch-collision replay window identified in §9.3. At one epoch per 10 minutes, epoch values can realistically cycle over a long-lived deployment; this MUST be resolved before shipping. A ±5 min clock-skew grace window is sufficient for the timestamp approach. Wire format update required: add a `"ts"` (uint64 Unix seconds) field to both `EpochRotation` and `RatchetAck` payloads, covered by their respective signatures.
