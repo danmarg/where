@@ -567,13 +567,16 @@ When the routing token changes, the ordering of events is strictly sequenced:
 
 **KDF_CK (symmetric ratchet step):**
 ```
-new_chain_key  = HMAC-SHA-256(key=chain_key, data=0x01)
-message_key    = HMAC-SHA-256(key=chain_key, data=0x02)
-message_nonce  = HMAC-SHA-256(key=chain_key, data=0x03)[0:12] // Mandatory
+new_chain_key              = HMAC-SHA-256(key=chain_key, data=0x01)
+(message_key||message_nonce) = HKDF-SHA-256(ikm=chain_key,
+                                             salt=<absent>,
+                                             info="Where-v1-MsgKey")[0:44]
+// message_key   = bytes  0–31  (32 bytes, AES-256-GCM key)
+// message_nonce = bytes 32–43  (12 bytes, GCM nonce)
 ```
-The first two outputs are identical to the Signal spec's KDF_CK construction. The third output provides a deterministic nonce (mandatory) to protect against state-rollback attacks.
+The chain advancement (`new_chain_key`) is identical to the Signal spec's KDF_CK construction. The message key and nonce are derived together via a single HKDF call, producing 44 bytes that are then split: bytes 0–31 become the AES-256-GCM key and bytes 32–43 become the 12-byte GCM nonce. Both values are derived from `chain_key` in one PRF invocation, so they are structurally independent outputs of the HKDF expand phase, not merely domain-separated HMAC calls over the same input.
 
-**Note on key/nonce co-derivation:** `message_key` and `message_nonce` are both derived from the same `chain_key` input, separated only by their domain-separation constants (0x02 and 0x03). HMAC-SHA-256 is a PRF and these outputs are computationally independent given distinct constants, so there is no known cryptographic weakness in the current construction. However, an alternative that makes the independence structurally explicit — and is more robust to future primitive substitution — is an HKDF split: `(message_key || message_nonce) = HKDF-SHA-256(ikm=chain_key, info="Where-v1-MsgKey")[0:44]`, slicing bytes 0–31 as `message_key` and bytes 32–43 as `message_nonce`. This alternative SHOULD be evaluated for a future protocol revision.
+**Why HKDF rather than two HMAC calls:** Deriving `message_key` and `message_nonce` as separate `HMAC-SHA-256(chain_key, 0x02/0x03)` outputs is cryptographically sound — HMAC is a PRF and the outputs are computationally independent given distinct constants — but it has a structural weakness: both outputs are co-derivable from `chain_key` in a single step, and there is no length separation between them. A single HKDF call with a 44-byte output makes the independence explicit, aligns with RFC 5869 intended use (keying material derivation), and is more robust to future primitive substitution. The nonce remains deterministic (mandatory, to protect against state-rollback attacks) — only the derivation mechanism changes.
 
 **Note on routing-token HKDF salt:** Routing token derivation uses the current epoch as the 4-byte big-endian uint32 salt (epoch=0 for the bootstrap token `T_AB_0`). Using an all-zero or absent salt degrades HKDF to an HMAC-based PRF with a fixed key (RFC 5869 §3.1); including the epoch is a trivially cheap change that aligns with RFC 5869 guidance and makes each epoch's token derivation domain-separated by epoch number. This is a requirement; the all-zero construction is not acceptable. Note that `T_AB_0` uses `salt = 0x00000000` (epoch=0 encoded as a 4-byte big-endian uint32), which is **not** the same as an absent or null salt: RFC 5869 §3.1 defines an absent salt as a zero-filled string of `HashLen` bytes (32 bytes for SHA-256), whereas `0x00000000` is a 4-byte salt with meaningful domain separation by length alone. Implementations MUST pass the 4-byte epoch encoding as the explicit salt argument — do not omit the salt parameter.
 
@@ -776,7 +779,7 @@ With this design:
 | Digital signatures | Ed25519 | Sign `EpochRotation`, `RatchetAck`, `KeyExchangeInit` | libsodium / Tink |
 | Symmetric encryption | AES-256-GCM | Encrypt location payloads (AEAD) | libsodium / JCA / CryptoKit |
 | Key derivation (KDF_RK) | HKDF-SHA-256 | Derive new root key and chain key from DH output | BouncyCastle / CryptoKit |
-| Chain KDF (KDF_CK) | HMAC-SHA-256 | Advance symmetric ratchet to produce message keys | JCA / CommonCrypto |
+| Chain KDF (KDF_CK) | HMAC-SHA-256 + HKDF-SHA-256 | Advance symmetric ratchet; derive message key (32 B) and nonce (12 B) via single 44-byte HKDF expand | JCA / CommonCrypto + BouncyCastle / CryptoKit |
 | Key exchange KDF | HKDF-SHA-256 | Derive session seed `SK` from X3DH-lite DH outputs | BouncyCastle / CryptoKit |
 | Hash / fingerprint | SHA-256 | Public key fingerprints for safety number display | JCA / CryptoKit |
 | Random number generation | OS CSPRNG | Nonce generation, ephemeral key generation | `SecureRandom` (Android) / `SecRandomCopyBytes` (iOS) |
