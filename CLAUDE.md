@@ -102,12 +102,23 @@ curl localhost:8080/locations # → []
 - Generate Xcode project: `cd ios && xcodegen` (or `xcoderun xcodegen` in nix shell). The project calls `embedAndSignAppleFrameworkForXcode` as a pre-build script automatically.
 - To build the KMP framework manually: `./gradlew :shared:embedAndSignAppleFrameworkForXcode`
 
+### Local build configuration
+
+Machine-specific paths (build output dirs, SDK locations, cache dirs) must **never** be added to checked-in files (`gradle.properties`, `build.gradle.kts`, `flake.nix`, etc.). Use gitignored local overrides instead:
+
+- **`local.gradle.kts`** (gitignored) — applied automatically by the root `build.gradle.kts` if present; use for `allprojects { layout.buildDirectory.set(...) }` and similar overrides.
+- **`.envrc`** (gitignored) — use for env vars like `GRADLE_USER_HOME`, `KONAN_DATA_DIR`, `TMPDIR`.
+- **`local.properties`** (gitignored) — Android SDK path and other local Android properties.
+
+The `/Volumes/Ext` external drive is used on the dev machine for all large caches and build outputs. These settings live in `local.gradle.kts` and `.envrc`, not in source control.
+
 ### Running tests (Linux / CI)
 
 The dev shell (`flake.nix`) includes `xcodegen` which is macOS-only and fails to build on Linux. Use `nix shell` with just the required packages instead:
 
 ```bash
-NIXPKGS_ALLOW_UNSUPPORTED_SYSTEM=1 \
+GRADLE_USER_HOME=/Volumes/Ext/.gradle KONAN_DATA_DIR=/Volumes/Ext/.konan TMPDIR=/Volumes/Ext/tmp \
+  NIXPKGS_ALLOW_UNSUPPORTED_SYSTEM=1 \
   nix --extra-experimental-features "nix-command flakes" \
   shell nixpkgs#jdk21 nixpkgs#gradle --impure \
   --command ./gradlew :shared:jvmTest

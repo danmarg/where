@@ -3,6 +3,8 @@
 build/
 *.local.properties
 local.properties
+local.gradle.kts
+.envrc
 .idea/
 *.iml
 .DS_Store
