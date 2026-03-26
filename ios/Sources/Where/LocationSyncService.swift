@@ -97,18 +97,20 @@ private func ratchetAckBody(_ payload: RatchetAckPayload) -> [String: Any] {
     ]
 }
 
+// JSONSerialization always produces `Int` (64-bit on iOS) for JSON integers,
+// never `Int32` or `Int64` directly.  Cast to `Int` first, then narrow.
 private func parseEpochRotation(_ msg: [String: Any]) -> EpochRotationPayload? {
     guard (msg["type"] as? String) == "EpochRotation",
-          let epoch = msg["epoch"] as? Int32,
-          let opkId = msg["opk_id"] as? Int32,
+          let epochInt = msg["epoch"] as? Int,
+          let opkIdInt = msg["opk_id"] as? Int,
           let newEkPubB64 = msg["new_ek_pub"] as? String, let newEkPubData = Data(base64Encoded: newEkPubB64),
-          let ts = msg["ts"] as? Int64,
+          let tsInt = msg["ts"] as? Int,
           let sigB64 = msg["sig"] as? String, let sigData = Data(base64Encoded: sigB64)
     else { return nil }
     return EpochRotationPayload(
-        epoch: epoch, opkId: opkId,
+        epoch: Int32(epochInt), opkId: Int32(opkIdInt),
         newEkPub: kotlinByteArray(from: newEkPubData),
-        ts: ts, sig: kotlinByteArray(from: sigData)
+        ts: Int64(tsInt), sig: kotlinByteArray(from: sigData)
     )
 }
 
@@ -119,22 +121,22 @@ private func parsePreKeyBundle(_ msg: [String: Any]) -> PreKeyBundlePayload? {
     else { return nil }
     var opkWires: [OPKWire] = []
     for k in keysArr {
-        guard let id = k["id"] as? Int32,
+        guard let idInt = k["id"] as? Int,
               let pubB64 = k["pub"] as? String,
               let pubData = Data(base64Encoded: pubB64)
         else { return nil }
-        opkWires.append(OPKWire(id: id, pub: kotlinByteArray(from: pubData)))
+        opkWires.append(OPKWire(id: Int32(idInt), pub: kotlinByteArray(from: pubData)))
     }
     return PreKeyBundlePayload(keys: opkWires, sig: kotlinByteArray(from: sigData))
 }
 
 private func parseRatchetAck(_ msg: [String: Any]) -> RatchetAckPayload? {
     guard (msg["type"] as? String) == "RatchetAck",
-          let epochSeen = msg["epoch_seen"] as? Int32,
-          let ts = msg["ts"] as? Int64,
+          let epochSeenInt = msg["epoch_seen"] as? Int,
+          let tsInt = msg["ts"] as? Int,
           let sigB64 = msg["sig"] as? String, let sigData = Data(base64Encoded: sigB64)
     else { return nil }
-    return RatchetAckPayload(epochSeen: epochSeen, ts: ts, sig: kotlinByteArray(from: sigData))
+    return RatchetAckPayload(epochSeen: Int32(epochSeenInt), ts: Int64(tsInt), sig: kotlinByteArray(from: sigData))
 }
 
 // MARK: - LocationSyncService
@@ -255,7 +257,7 @@ final class LocationSyncService: ObservableObject {
     // MARK: - Private helpers
 
     private func postOpkBundle(friend: FriendEntry) async {
-        guard let bundle = e2eeStore.generateOpkBundle(friendId: friend.id, count: Int32(E2eeStore.companion.OPK_BATCH_SIZE)) else { return }
+        guard let bundle = e2eeStore.generateOpkBundle(friendId: friend.id, count: 10) else { return }
         let hexToken = toHex(friend.session.routingToken)
         await postToMailbox(token: hexToken, body: preKeyBundleBody(bundle))
     }
