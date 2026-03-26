@@ -8,10 +8,11 @@ struct ContentView: View {
     @State private var showFriends = false
     @State private var showScanner = false
     @State private var zoomTarget: CLLocationCoordinate2D? = nil
+    
+    @State private var newFriendName: String = ""
 
     private var visibleUsers: [UserLocation] {
         var result: [UserLocation] = []
-        // Own location when sharing
         if syncService.isSharingLocation, let loc = locationManager.location {
             result.append(UserLocation(
                 userId: syncService.myId,
@@ -20,7 +21,6 @@ struct ContentView: View {
                 timestamp: Int64(Date().timeIntervalSince1970)
             ))
         }
-        // Friends' decrypted locations
         for (friendId, loc) in syncService.friendLocations {
             result.append(UserLocation(userId: friendId, lat: loc.lat, lng: loc.lng, timestamp: loc.ts))
         }
@@ -87,7 +87,10 @@ struct ContentView: View {
         .sheet(isPresented: $showFriends) {
             FriendsSheet(
                 myId: syncService.myId,
+                displayName: $syncService.displayName,
                 friends: syncService.friends,
+                pausedFriendIds: syncService.pausedFriendIds,
+                onTogglePause: { syncService.togglePauseFriend(id: $0) },
                 onCreateInvite: {
                     showFriends = false
                     syncService.createInvite()
@@ -96,7 +99,7 @@ struct ContentView: View {
                     showFriends = false
                     showScanner = true
                 },
-                onRemove: { syncService.e2eeStore.deleteFriend(id: $0) },
+                onRemove: { syncService.removeFriend(id: $0) },
                 onZoomTo: { friendId in
                     if let loc = syncService.friendLocations[friendId] {
                         zoomTarget = CLLocationCoordinate2D(latitude: loc.lat, longitude: loc.lng)
@@ -119,12 +122,48 @@ struct ContentView: View {
                 InviteSheet(qrPayload: qr, onDismiss: { syncService.clearInvite() })
             }
         }
+        .alert("Name this contact", isPresented: Binding(
+            get: { syncService.pendingQrForNaming != nil },
+            set: { if !$0 { syncService.pendingQrForNaming = nil } }
+        )) {
+            TextField("Friend's Name", text: $newFriendName)
+            Button("Add") {
+                if let qr = syncService.pendingQrForNaming {
+                    syncService.confirmQrScan(qr: qr, friendName: newFriendName.isEmpty ? "Friend" : newFriendName)
+                    newFriendName = ""
+                }
+            }
+            Button("Cancel", role: .cancel) {
+                syncService.pendingQrForNaming = nil
+                newFriendName = ""
+            }
+        } message: {
+            Text("Enter a name for this friend.")
+        }
+        .alert("Name this contact", isPresented: $syncService.hasPendingInit) {
+            TextField("Friend's Name", text: $newFriendName)
+            Button("Save") {
+                syncService.confirmPendingInit(name: newFriendName.isEmpty ? "Friend" : newFriendName)
+                newFriendName = ""
+            }
+            Button("Skip", role: .cancel) {
+                syncService.confirmPendingInit(name: "Friend")
+                newFriendName = ""
+            }
+        } message: {
+            Text("A new friend has scanned your QR code.")
+        }
         .onAppear {
             locationManager.requestPermissionAndStart()
         }
         .onReceive(locationManager.$location) { loc in
             guard let loc else { return }
             syncService.sendLocation(lat: loc.coordinate.latitude, lng: loc.coordinate.longitude)
+        }
+        .onReceive(syncService.$pendingQrForNaming) { qr in
+            if let qr = qr {
+                newFriendName = qr.suggestedName
+            }
         }
     }
 }

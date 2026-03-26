@@ -7,9 +7,22 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.viewModels
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.height
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import com.journeyapps.barcodescanner.ScanContract
 import com.journeyapps.barcodescanner.ScanOptions
@@ -42,14 +55,22 @@ class MainActivity : ComponentActivity() {
         setContent {
             MaterialTheme {
                 val users by viewModel.visibleUsers.collectAsState()
-                val friendIds by viewModel.friendIds.collectAsState()
+                val friends by viewModel.friends.collectAsState()
+                val displayName by viewModel.displayName.collectAsState()
+                val pausedFriendIds by viewModel.pausedFriendIds.collectAsState()
                 val isSharing by viewModel.isSharingLocation.collectAsState()
                 val pendingInviteQr by viewModel.pendingInviteQr.collectAsState()
+                val pendingQrForNaming by viewModel.pendingQrForNaming.collectAsState()
+                val pendingInitPayload by viewModel.pendingInitPayload.collectAsState()
 
                 MapScreen(
                     userId = viewModel.userId,
                     users = users,
-                    friendIds = friendIds,
+                    friends = friends,
+                    displayName = displayName,
+                    onDisplayNameChange = { viewModel.setDisplayName(it) },
+                    pausedFriendIds = pausedFriendIds,
+                    onTogglePause = { viewModel.togglePauseFriend(it) },
                     isSharing = isSharing,
                     onToggleSharing = { viewModel.toggleSharing() },
                     onCreateInvite = { viewModel.createInvite() },
@@ -68,6 +89,62 @@ class MainActivity : ComponentActivity() {
 
                 pendingInviteQr?.let { qr ->
                     InviteSheet(qrPayload = qr, onDismiss = { viewModel.clearInvite() })
+                }
+
+                pendingQrForNaming?.let { qr ->
+                    var name by remember(qr) { mutableStateOf(qr.suggestedName) }
+                    AlertDialog(
+                        onDismissRequest = { viewModel.cancelQrScan() },
+                        title = { Text("Name this contact") },
+                        text = {
+                            OutlinedTextField(
+                                value = name,
+                                onValueChange = { name = it },
+                                label = { Text("Friend's Name") },
+                                singleLine = true,
+                            )
+                        },
+                        confirmButton = {
+                            TextButton(onClick = { viewModel.confirmQrScan(qr, name.ifEmpty { "Friend" }) }) {
+                                Text("Add")
+                            }
+                        },
+                        dismissButton = {
+                            TextButton(onClick = { viewModel.cancelQrScan() }) {
+                                Text("Cancel")
+                            }
+                        }
+                    )
+                }
+
+                pendingInitPayload?.let { _ ->
+                    var name by remember { mutableStateOf("") }
+                    AlertDialog(
+                        onDismissRequest = { viewModel.cancelPendingInit() },
+                        title = { Text("Name this contact") },
+                        text = {
+                            Column {
+                                Text("A new friend has scanned your QR code.")
+                                Spacer(Modifier.height(8.dp))
+                                OutlinedTextField(
+                                    value = name,
+                                    onValueChange = { name = it },
+                                    label = { Text("Friend's Name") },
+                                    singleLine = true,
+                                )
+                            }
+                        },
+                        confirmButton = {
+                            TextButton(onClick = { viewModel.confirmPendingInit(name.ifEmpty { "Friend" }) }) {
+                                Text("Save")
+                            }
+                        },
+                        dismissButton = {
+                            TextButton(onClick = { viewModel.cancelPendingInit() }) {
+                                Text("Skip")
+                            }
+                        }
+                    )
                 }
             }
         }
