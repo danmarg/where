@@ -16,6 +16,7 @@ package net.af0.where.e2ee
  *
  * Convention: "senderFp" always refers to Alice (location sender), "recipientFp" to Bob.
  */
+
 object KeyExchange {
     private const val CONFIRM_PLAINTEXT = "Where-v1-Confirm"
 
