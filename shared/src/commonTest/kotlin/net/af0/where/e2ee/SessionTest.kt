@@ -27,7 +27,7 @@ class SessionTest {
 
         val (qr, aliceEkPriv) = KeyExchange.aliceCreateQrPayload(alice, "Alice")
         val (msg, bobSession) = KeyExchange.bobProcessQr(qr, bob, aliceFp, bobFp)
-        val aliceSession = KeyExchange.aliceProcessInit(msg, alice, aliceEkPriv, aliceFp, bobFp)
+        val aliceSession = KeyExchange.aliceProcessInit(msg, alice, aliceEkPriv, qr.ekPub, aliceFp, bobFp)
 
         return ExchangeResult(aliceSession, bobSession, aliceFp, bobFp)
     }
@@ -154,7 +154,7 @@ class SessionTest {
 
         val (qr, aliceEkPriv) = KeyExchange.aliceCreateQrPayload(alice, "Alice")
         val (msg, bobSession) = KeyExchange.bobProcessQr(qr, bob, aliceFp, bobFp)
-        val aliceSession = KeyExchange.aliceProcessInit(msg, alice, aliceEkPriv, aliceFp, bobFp)
+        val aliceSession = KeyExchange.aliceProcessInit(msg, alice, aliceEkPriv, qr.ekPub, aliceFp, bobFp)
 
         val loc = LocationPlaintext(1.0, 2.0, 3.0, 4L)
         val (aliceNew, ct) = Session.encryptLocation(aliceSession, loc, aliceFp, bobFp)
@@ -205,7 +205,8 @@ class SessionTest {
         assertContentEquals(aliceRotated.routingToken, bobRotated.routingToken)
         assertNotEquals(aliceSession.routingToken.toList(), aliceRotated.routingToken.toList())
         assertContentEquals(aliceRotated.rootKey, bobRotated.rootKey)
-        assertContentEquals(aliceRotated.sendChainKey, bobRotated.sendChainKey)
+        // After epoch rotation Alice's new send chain must equal Bob's new recv chain.
+        assertContentEquals(aliceRotated.sendChainKey, bobRotated.recvChainKey)
     }
 
     @Test

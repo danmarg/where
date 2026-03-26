@@ -19,7 +19,18 @@ import kotlinx.serialization.json.put
 object Session {
     private const val AAD_PREFIX = "Where-v1-Location"
     private const val PROTOCOL_VERSION = 1
-    private const val PADDING_SIZE = 512 // §7.4: pad plaintext to 512 bytes before encryption
+    // §7.4: pad plaintext to a fixed block size for traffic-analysis resistance.
+    // 256 bytes guarantees the PKCS#7 pad count fits in one byte (range [1, 255])
+    // since encoded location JSON is always < 256 bytes.
+    private const val PADDING_SIZE = 256
+
+    /**
+     * Maximum allowed gap between the last received seq and the incoming seq.
+     * A gap larger than this most likely indicates a desynchronized or malicious session.
+     * Enforcing a cap prevents the chain from being advanced thousands of steps in a tight
+     * loop on the UI thread (issue #7).
+     */
+    private const val MAX_DECRYPT_GAP = 1000L
 
     /**
      * Encrypt one location update for a single peer.
@@ -63,8 +74,9 @@ object Session {
      *
      * Rules:
      *   - Frames with seq <= state.recvSeq are silently dropped (replay).
-     *   - The chain key is advanced deterministically; missing frames permanently
+     *   - The receive chain key is advanced deterministically; missing frames permanently
      *     skip their message keys (strict-ordering policy §8.3.1).
+     *   - Gaps larger than MAX_DECRYPT_GAP are rejected to prevent CPU exhaustion.
      *
      * @param state       Current session state.
      * @param ct          Ciphertext + GCM tag (as returned by encryptLocation).
@@ -72,7 +84,7 @@ object Session {
      * @param senderFp    32-byte fingerprint of the sender.
      * @param recipientFp 32-byte fingerprint of the recipient.
      * @return Pair(newState, plaintext) or null if the frame is a replay.
-     * @throws IllegalArgumentException if GCM authentication fails.
+     * @throws IllegalArgumentException if GCM authentication fails or the seq gap is too large.
      */
     fun decryptLocation(
         state: SessionState,
@@ -83,10 +95,14 @@ object Session {
     ): Pair<SessionState, LocationPlaintext>? {
         if (seq <= state.recvSeq) return null // replay — drop silently
 
-        // Advance chain key to reach the correct seq (handles gaps).
-        var chainKey = state.sendChainKey.copyOf()
-        var step: ChainStep? = null
         val stepsNeeded = seq - state.recvSeq
+        require(stepsNeeded <= MAX_DECRYPT_GAP) {
+            "seq gap $stepsNeeded exceeds maximum $MAX_DECRYPT_GAP — session may be desynchronized"
+        }
+
+        // Advance the receive chain key to reach the correct seq (handles gaps).
+        var chainKey = state.recvChainKey.copyOf()
+        var step: ChainStep? = null
         repeat(stepsNeeded.toInt()) {
             step = kdfCk(chainKey)
             chainKey = step!!.newChainKey
@@ -99,7 +115,7 @@ object Session {
 
         val newState =
             state.copy(
-                sendChainKey = chainKey,
+                recvChainKey = chainKey,
                 recvSeq = seq,
             )
         return newState to location
@@ -133,7 +149,8 @@ object Session {
         val newToken = deriveRoutingToken(ratchetStep.newRootKey, newEpoch, senderFp, recipientFp)
         return state.copy(
             rootKey = ratchetStep.newRootKey,
-            sendChainKey = ratchetStep.newChainKey,
+            sendChainKey = ratchetStep.newChainKey, // Alice's new send chain
+            // recvChainKey is unchanged — Bob's outgoing chain has not rotated
             routingToken = newToken,
             epoch = newEpoch,
             myEkPriv = aliceNewEkPriv.copyOf(),
@@ -143,6 +160,9 @@ object Session {
 
     /**
      * Bob: process an EpochRotation by computing the matching DH step.
+     *
+     * Updates Bob's receive chain key (= Alice's new send chain) so he can decrypt
+     * Alice's messages in the new epoch. Bob's own send chain is not affected.
      *
      * @param state       Bob's current session state.
      * @param aliceNewEkPub Alice's new ephemeral public key (from EpochRotation message).
@@ -164,7 +184,8 @@ object Session {
         val newToken = deriveRoutingToken(ratchetStep.newRootKey, newEpoch, senderFp, recipientFp)
         return state.copy(
             rootKey = ratchetStep.newRootKey,
-            sendChainKey = ratchetStep.newChainKey,
+            recvChainKey = ratchetStep.newChainKey, // Bob's new recv chain (= Alice's new send)
+            // sendChainKey is unchanged — Bob's own outgoing chain has not rotated
             routingToken = newToken,
             epoch = newEpoch,
             theirEkPub = aliceNewEkPub.copyOf(),
@@ -246,19 +267,29 @@ object Session {
         )
     }
 
-    /** PKCS#7-style zero-padding to a fixed size. */
+    /**
+     * PKCS#7 padding to a fixed size.
+     * The pad byte value equals the number of padding bytes appended, so unpadding
+     * is unambiguous even if the plaintext ends with a zero byte.
+     */
     private fun padToFixedSize(
         data: ByteArray,
         size: Int,
     ): ByteArray {
-        require(data.size <= size) { "plaintext (${data.size} bytes) exceeds pad size $size" }
-        return data.copyOf(size) // pads with zero bytes
+        require(data.size in 1 until size) { "plaintext (${data.size} bytes) must be in [1, ${size - 1}]" }
+        val padByte = (size - data.size).toByte()
+        return data.copyOf(size).also { padded ->
+            for (i in data.size until size) padded[i] = padByte
+        }
     }
 
     private fun unpad(data: ByteArray): ByteArray {
-        // Strip trailing zero bytes.
-        var end = data.size
-        while (end > 0 && data[end - 1] == 0.toByte()) end--
-        return data.copyOfRange(0, end)
+        require(data.isNotEmpty()) { "padded data is empty" }
+        val padCount = data.last().toInt() and 0xFF
+        require(padCount > 0 && padCount <= data.size) { "invalid PKCS#7 padding byte: $padCount" }
+        for (i in data.size - padCount until data.size) {
+            require(data[i] == padCount.toByte()) { "invalid PKCS#7 padding at index $i" }
+        }
+        return data.copyOfRange(0, data.size - padCount)
     }
 }

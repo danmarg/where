@@ -35,8 +35,8 @@ class E2eeStoreTest {
 
     @Test
     fun testKeyExchangeFlow() {
-        val aliceId = fingerprint(aliceIdentity.ik.pub, aliceIdentity.sigIk.pub).toHex().substring(0, 20)
-        val bobId = fingerprint(bobIdentity.ik.pub, bobIdentity.sigIk.pub).toHex().substring(0, 20)
+        val aliceId = fingerprint(aliceIdentity.ik.pub, aliceIdentity.sigIk.pub).toHex()
+        val bobId = fingerprint(bobIdentity.ik.pub, bobIdentity.sigIk.pub).toHex()
 
         // Alice creates invite
         val qr = aliceStore.createInvite("Alice")

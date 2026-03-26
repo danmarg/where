@@ -112,13 +112,13 @@ class KeyExchangeTest {
 
         val (qr, aliceEkPriv) = KeyExchange.aliceCreateQrPayload(alice, "Alice")
         val (msg, bobSession) = KeyExchange.bobProcessQr(qr, bob, aliceFp, bobFp)
-        val aliceSession = KeyExchange.aliceProcessInit(msg, alice, aliceEkPriv, aliceFp, bobFp)
+        val aliceSession = KeyExchange.aliceProcessInit(msg, alice, aliceEkPriv, qr.ekPub, aliceFp, bobFp)
 
         assertContentEquals(aliceSession.routingToken, bobSession.routingToken)
     }
 
     @Test
-    fun `alice and bob derive the same root and chain keys`() {
+    fun `alice send chain matches bob recv chain and vice versa`() {
         val alice = makeIdentity()
         val bob = makeIdentity()
         val aliceFp = fingerprint(alice.ik.pub, alice.sigIk.pub)
@@ -126,10 +126,12 @@ class KeyExchangeTest {
 
         val (qr, aliceEkPriv) = KeyExchange.aliceCreateQrPayload(alice, "Alice")
         val (msg, bobSession) = KeyExchange.bobProcessQr(qr, bob, aliceFp, bobFp)
-        val aliceSession = KeyExchange.aliceProcessInit(msg, alice, aliceEkPriv, aliceFp, bobFp)
+        val aliceSession = KeyExchange.aliceProcessInit(msg, alice, aliceEkPriv, qr.ekPub, aliceFp, bobFp)
 
         assertContentEquals(aliceSession.rootKey, bobSession.rootKey)
-        assertContentEquals(aliceSession.sendChainKey, bobSession.sendChainKey)
+        // Alice's send chain must equal Bob's receive chain, and vice versa.
+        assertContentEquals(aliceSession.sendChainKey, bobSession.recvChainKey)
+        assertContentEquals(aliceSession.recvChainKey, bobSession.sendChainKey)
     }
 
     @Test
@@ -145,7 +147,7 @@ class KeyExchangeTest {
 
         val threw =
             try {
-                KeyExchange.aliceProcessInit(badMsg, alice, aliceEkPriv, aliceFp, bobFp)
+                KeyExchange.aliceProcessInit(badMsg, alice, aliceEkPriv, qr.ekPub, aliceFp, bobFp)
                 false
             } catch (_: IllegalArgumentException) {
                 true
@@ -166,7 +168,7 @@ class KeyExchangeTest {
 
         val (qr, aliceEkPriv) = KeyExchange.aliceCreateQrPayload(alice, "Alice")
         val (msg, bobSession) = KeyExchange.bobProcessQr(qr, bob, aliceFp, bobFp)
-        val aliceSession = KeyExchange.aliceProcessInit(msg, alice, aliceEkPriv, aliceFp, bobFp)
+        val aliceSession = KeyExchange.aliceProcessInit(msg, alice, aliceEkPriv, qr.ekPub, aliceFp, bobFp)
 
         // Both sides should derive the same SK (evidenced by identical session keys above).
         // Build confirmation from Bob's side, verify on Alice's side.
@@ -278,7 +280,7 @@ class KeyExchangeTest {
         val bobFp = fingerprint(bob.ik.pub, bob.sigIk.pub)
         val (qr, aliceEkPriv) = KeyExchange.aliceCreateQrPayload(alice, "Alice")
         val (initMsg, _) = KeyExchange.bobProcessQr(qr, bob, aliceFp, bobFp)
-        val aliceSession = KeyExchange.aliceProcessInit(initMsg, alice, aliceEkPriv, aliceFp, bobFp)
+        val aliceSession = KeyExchange.aliceProcessInit(initMsg, alice, aliceEkPriv, qr.ekPub, aliceFp, bobFp)
         assertNotEquals(qr.discoveryToken().toList(), aliceSession.routingToken.toList())
     }
 }

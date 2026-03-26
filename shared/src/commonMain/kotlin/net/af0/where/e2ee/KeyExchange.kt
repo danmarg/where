@@ -9,7 +9,7 @@ package net.af0.where.e2ee
  *   DH1 = X25519(Bob.EK_B.priv, Alice.IK.pub) = X25519(Alice.IK.priv, Bob.EK_B.pub)
  *   DH2 = X25519(Bob.IK.priv, Alice.EK_A.pub) = X25519(Alice.EK_A.priv, Bob.IK.pub)
  *   DH3 = X25519(Bob.EK_B.priv, Alice.EK_A.pub) = X25519(Alice.EK_A.priv, Bob.EK_B.pub)
- *   SK  = HKDF-SHA-256(DH1 || DH2 || DH3, salt=zeroes, info="Where-v1-KeyExchange")
+ *   SK  = HKDF-SHA-256(DH1 || DH2 || DH3, salt=null, info="Where-v1-KeyExchange")
  *
  * Each side computes the same DH values using its own private keys and the peer's public keys.
  * The DH terms must be concatenated in protocol order (DH1 || DH2 || DH3) on both sides.
@@ -78,6 +78,7 @@ object KeyExchange {
         val session =
             KeyExchange.initSession(
                 sk = sk,
+                isSender = false, // Bob is the receiver of Alice's location
                 myEkPriv = ekB.priv,
                 myEkPub = ekB.pub,
                 theirEkPub = qr.ekPub,
@@ -104,6 +105,7 @@ object KeyExchange {
      * @param msg          Bob's KeyExchangeInit.
      * @param aliceIdentity Alice's identity keypairs.
      * @param aliceEkPriv  Alice's ephemeral private key from aliceCreateQrPayload.
+     * @param aliceEkPub   Alice's ephemeral public key (from the QrPayload.ekPub that was shown to Bob).
      * @param aliceFp      Alice's fingerprint (senderFp).
      * @param bobFp        Bob's fingerprint (recipientFp).
      */
@@ -111,6 +113,7 @@ object KeyExchange {
         msg: KeyExchangeInitMessage,
         aliceIdentity: IdentityKeys,
         aliceEkPriv: ByteArray,
+        aliceEkPub: ByteArray,
         aliceFp: ByteArray,
         bobFp: ByteArray,
     ): SessionState {
@@ -129,8 +132,9 @@ object KeyExchange {
         val token = deriveRoutingToken(sk, epoch = 0, senderFp = aliceFp, recipientFp = bobFp)
         return initSession(
             sk = sk,
+            isSender = true, // Alice is the sender of location
             myEkPriv = aliceEkPriv.copyOf(),
-            myEkPub = ByteArray(32),
+            myEkPub = aliceEkPub.copyOf(),
             theirEkPub = msg.ekPub,
             routingToken = token,
         )
@@ -140,6 +144,10 @@ object KeyExchange {
      * Bob: build the AES-256-GCM KeyConfirmation ciphertext.
      * Posted to T_AB_0 immediately after KeyExchangeInit.
      *
+     * A dedicated confirmation key is derived from SK via HKDF with info
+     * "Where-v1-Confirm-Key" to ensure no key material is shared with the
+     * session encryption keys derived from the same SK.
+     *
      * @param sk    32-byte session key.
      * @param token T_AB_0 (used as AAD).
      * @return AES-256-GCM ciphertext + 16-byte tag.
@@ -148,9 +156,10 @@ object KeyExchange {
         sk: ByteArray,
         token: ByteArray,
     ): ByteArray {
-        // Nonce is all-zero; the key is single-use so (key, nonce) pair is unique.
+        val confirmKey = deriveConfirmKey(sk)
+        // Nonce is all-zero; confirmKey is single-use so (key, nonce) pair is unique.
         return aesgcmEncrypt(
-            key = sk,
+            key = confirmKey,
             nonce = ByteArray(12),
             plaintext = CONFIRM_PLAINTEXT.encodeToByteArray(),
             aad = token,
@@ -167,7 +176,8 @@ object KeyExchange {
         ct: ByteArray,
     ): Boolean =
         try {
-            val plaintext = aesgcmDecrypt(key = sk, nonce = ByteArray(12), ciphertext = ct, aad = token)
+            val confirmKey = deriveConfirmKey(sk)
+            val plaintext = aesgcmDecrypt(key = confirmKey, nonce = ByteArray(12), ciphertext = ct, aad = token)
             plaintext.contentEquals(CONFIRM_PLAINTEXT.encodeToByteArray())
         } catch (_: Exception) {
             false
@@ -188,17 +198,26 @@ object KeyExchange {
     ): ByteArray =
         hkdfSha256(
             ikm = dh1 + dh2 + dh3,
-            salt = ByteArray(32),
+            salt = null, // RFC 5869 §2.2: null → 32 zero bytes, canonical "no salt"
             info = INFO_KEY_EXCHANGE.encodeToByteArray(),
             length = 32,
         )
 
     /**
      * Derive the initial session state from SK.
-     * HKDF expands SK to 64 bytes: [root_key (32) || send_chain_key (32)].
+     *
+     * HKDF expands SK to 96 bytes: [root_key (32) || chain_key_0 (32) || chain_key_1 (32)].
+     *
+     * chain_key_0 is the send chain for the location sender (Alice) and the receive chain
+     * for the recipient (Bob). chain_key_1 is the reverse. Assigning them based on [isSender]
+     * ensures that send and receive chains are always independent — using the send chain to
+     * derive receive keys (or vice versa) would break forward secrecy between the two directions.
+     *
+     * @param isSender true if the caller is Alice (location sender); false if Bob (recipient).
      */
     internal fun initSession(
         sk: ByteArray,
+        isSender: Boolean,
         myEkPriv: ByteArray,
         myEkPub: ByteArray,
         theirEkPub: ByteArray,
@@ -209,11 +228,15 @@ object KeyExchange {
                 ikm = sk,
                 salt = null,
                 info = INFO_SESSION.encodeToByteArray(),
-                length = 64,
+                length = 96,
             )
+        // chainKey0 = Alice's send / Bob's recv; chainKey1 = Bob's send / Alice's recv.
+        val chainKey0 = expanded.copyOfRange(32, 64)
+        val chainKey1 = expanded.copyOfRange(64, 96)
         return SessionState(
             rootKey = expanded.copyOfRange(0, 32),
-            sendChainKey = expanded.copyOfRange(32, 64),
+            sendChainKey = if (isSender) chainKey0 else chainKey1,
+            recvChainKey = if (isSender) chainKey1 else chainKey0,
             routingToken = routingToken.copyOf(),
             sendSeq = 0L,
             // seq counter starts at 1; recvSeq=0 means no messages received yet
@@ -224,6 +247,14 @@ object KeyExchange {
             theirEkPub = theirEkPub.copyOf(),
         )
     }
+
+    private fun deriveConfirmKey(sk: ByteArray): ByteArray =
+        hkdfSha256(
+            ikm = sk,
+            salt = null,
+            info = INFO_CONFIRM_KEY.encodeToByteArray(),
+            length = 32,
+        )
 }
 
 internal fun ByteArray.toHex(): String = joinToString("") { (it.toInt() and 0xFF).toString(16).padStart(2, '0') }

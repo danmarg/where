@@ -32,6 +32,15 @@ private val json =
 /** TTL for mailbox messages: 60 minutes. */
 private const val MAILBOX_TTL_MS = 60 * 60 * 1000L
 
+/** Maximum messages retained per token. Prevents unbounded memory growth from floods. */
+private const val MAX_QUEUE_DEPTH = 100
+
+/** Maximum POST requests per token within the rate-limit window. */
+private const val RATE_LIMIT_MAX_POSTS = 60
+
+/** Rate-limit window duration in milliseconds (1 minute). */
+private const val RATE_LIMIT_WINDOW_MS = 60_000L
+
 private data class MailboxEntry(val payload: JsonElement, val expiresAt: Long)
 
 /**
@@ -43,15 +52,36 @@ private data class MailboxEntry(val payload: JsonElement, val expiresAt: Long)
 class MailboxState {
     private val mailboxes = ConcurrentHashMap<String, ConcurrentLinkedQueue<MailboxEntry>>()
 
-    /** Store [payload] under [token]. Expired entries in the same queue are pruned first. */
+    /** Per-token post timestamps used for rate limiting (sliding window). */
+    private val postTimes = ConcurrentHashMap<String, ConcurrentLinkedQueue<Long>>()
+
+    /**
+     * Store [payload] under [token].
+     *
+     * Expired entries are pruned before adding. Returns false (and does not store the
+     * payload) if the token has exceeded [MAX_QUEUE_DEPTH] live messages or the
+     * [RATE_LIMIT_MAX_POSTS] per-minute rate limit.
+     */
     fun post(
         token: String,
         payload: JsonElement,
-    ) {
-        val queue = mailboxes.getOrPut(token) { ConcurrentLinkedQueue() }
+    ): Boolean {
         val now = System.currentTimeMillis()
+
+        // Rate-limit check: drop if too many posts in the sliding window.
+        val times = postTimes.getOrPut(token) { ConcurrentLinkedQueue() }
+        times.removeIf { it < now - RATE_LIMIT_WINDOW_MS }
+        if (times.size >= RATE_LIMIT_MAX_POSTS) return false
+        times.add(now)
+
+        val queue = mailboxes.getOrPut(token) { ConcurrentLinkedQueue() }
         queue.removeIf { it.expiresAt <= now }
+
+        // Queue-depth cap: drop if already at maximum.
+        if (queue.size >= MAX_QUEUE_DEPTH) return false
+
         queue.add(MailboxEntry(payload, now + MAILBOX_TTL_MS))
+        return true
     }
 
     /**
@@ -116,7 +146,10 @@ fun Application.module(state: ServerState = ServerState()) {
                 call.respond(HttpStatusCode.BadRequest, "invalid json payload")
                 return@post
             }
-            state.mailbox.post(token, payload)
+            if (!state.mailbox.post(token, payload)) {
+                call.respond(HttpStatusCode.TooManyRequests)
+                return@post
+            }
             call.respond(HttpStatusCode.NoContent)
         }
 

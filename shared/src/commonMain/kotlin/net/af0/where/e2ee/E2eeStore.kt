@@ -27,8 +27,8 @@ data class FriendEntry(
     val sigIkPub: ByteArray,
     val session: SessionState,
 ) {
-    /** Computed friend ID: hex(SHA-256(ikPub || sigIkPub))[0:20] */
-    val id: String get() = fingerprint(ikPub, sigIkPub).toHex().substring(0, 20)
+    /** Computed friend ID: hex(SHA-256(ikPub || sigIkPub)) — full 64 hex chars. */
+    val id: String get() = fingerprint(ikPub, sigIkPub).toHex()
 
     override fun equals(other: Any?): Boolean {
         if (this === other) return true
@@ -89,7 +89,6 @@ class E2eeStore(
                     friends.values.map {
                         SerializedFriendEntry(it.id, it.name, it.ikPub, it.sigIkPub, it.session)
                     },
-                pendingInvite = null,
             )
         storage.putString(STORAGE_KEY, Json.encodeToString(serialized))
     }
@@ -143,8 +142,12 @@ class E2eeStore(
      *
      * @param payload Wire payload received from GET /inbox/{discoveryToken}.
      * @param bobName The name Alice wants to call this friend.
-     * @return The new [FriendEntry], or null if verification fails or no invite is active.
+     * @return The new [FriendEntry], or null if no invite is active or the payload is
+     *         malformed in a non-security-relevant way.
+     * @throws IllegalArgumentException if Bob's signature fails verification — this is a
+     *         crypto failure that callers should surface (not silently discard).
      */
+    @Throws(IllegalArgumentException::class)
     fun processKeyExchangeInit(
         payload: KeyExchangeInitPayload,
         bobName: String,
@@ -164,19 +167,22 @@ class E2eeStore(
         return try {
             val session =
                 KeyExchange.aliceProcessInit(
-                    msg,
-                    myIdentity,
-                    pending.aliceEkPriv,
-                    aliceFp,
-                    bobFp,
+                    msg = msg,
+                    aliceIdentity = myIdentity,
+                    aliceEkPriv = pending.aliceEkPriv,
+                    aliceEkPub = pending.qrPayload.ekPub,
+                    aliceFp = aliceFp,
+                    bobFp = bobFp,
                 )
             val entry = FriendEntry(bobName, msg.ikPub, msg.sigPub, session)
             friends[entry.id] = entry
             pendingInvite = null
             save()
             entry
+        } catch (e: IllegalArgumentException) {
+            throw e // signature verification failure — surface to caller
         } catch (_: Exception) {
-            null
+            null // transient parse/format error — treat as "not ready yet"
         }
     }
 
@@ -216,11 +222,5 @@ internal data class SerializedFriendEntry(
 @Serializable
 internal data class SerializedStore(
     val friends: List<SerializedFriendEntry>,
-    val pendingInvite: SerializedPendingInvite? = null,
-)
-
-@Serializable
-internal data class SerializedPendingInvite(
-    val qrPayload: QrPayload,
-    @Serializable(with = ByteArrayBase64Serializer::class) val aliceEkPriv: ByteArray,
+    // pendingInvite is intentionally not persisted: single-session design (see PendingInvite).
 )
