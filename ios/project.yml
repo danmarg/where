@@ -35,5 +35,6 @@ targets:
       INFOPLIST_KEY_UILaunchScreen_Generation: YES
       INFOPLIST_KEY_NSLocationWhenInUseUsageDescription: "Where needs your location to show it on the map."
       INFOPLIST_KEY_NSLocationAlwaysAndWhenInUseUsageDescription: "Where needs your location in the background to keep sharing it."
+      INFOPLIST_KEY_NSCameraUsageDescription: "Where needs the camera to scan friend invite QR codes."
       INFOPLIST_KEY_UIBackgroundModes: location
       FRAMEWORK_SEARCH_PATHS: $(inherited) $(SRCROOT)/../shared/build/xcode-frameworks/$(CONFIGURATION)/$(SDK_NAME)

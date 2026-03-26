@@ -18,8 +18,11 @@ import kotlinx.coroutines.launch
 import net.af0.where.e2ee.E2eeMailboxClient
 import net.af0.where.e2ee.E2eeStore
 import net.af0.where.e2ee.EncryptedLocationPayload
+import net.af0.where.e2ee.KeyExchangeInitPayload
 import net.af0.where.e2ee.LocationPlaintext
+import net.af0.where.e2ee.QrPayload
 import net.af0.where.e2ee.Session
+import net.af0.where.e2ee.discoveryToken
 import net.af0.where.model.UserLocation
 import java.security.MessageDigest
 
@@ -44,6 +47,9 @@ class LocationViewModel(
     val friendIds: StateFlow<Set<String>> = _friendIds
 
     private val friendLocations = MutableStateFlow(emptyMap<String, UserLocation>())
+
+    private val _pendingInviteQr = MutableStateFlow<QrPayload?>(null)
+    val pendingInviteQr: StateFlow<QrPayload?> = _pendingInviteQr
 
     val visibleUsers: StateFlow<List<UserLocation>> =
         combine(locationSource.lastLocation, _isSharingLocation, friendLocations) { myLoc, sharing, friendLocs ->
@@ -90,10 +96,52 @@ class LocationViewModel(
         friendLocations.value -= id
     }
 
+    fun createInvite() {
+        _pendingInviteQr.value = e2eeStore.createInvite("Me")
+    }
+
+    fun clearInvite() {
+        e2eeStore.clearInvite()
+        _pendingInviteQr.value = null
+    }
+
+    /** Bob: parse scanned URL, run key exchange, POST init to discovery token. Returns true on success. */
+    fun processQrUrl(url: String): Boolean {
+        val qr = QrUtils.urlToPayload(url) ?: return false
+        return try {
+            val (initPayload, _) = e2eeStore.processScannedQr(qr)
+            _friendIds.value = e2eeStore.listFriends().map { it.id }.toSet()
+            viewModelScope.launch {
+                try {
+                    val discoveryHex = qr.discoveryToken().toHexStr()
+                    E2eeMailboxClient.post(BuildConfig.SERVER_HTTP_URL, discoveryHex, initPayload)
+                } catch (_: Exception) {
+                }
+            }
+            true
+        } catch (_: Exception) {
+            false
+        }
+    }
+
     private suspend fun pollLoop() {
         while (true) {
             pollAllFriends()
+            pollPendingInvite()
             delay(60_000)
+        }
+    }
+
+    private suspend fun pollPendingInvite() {
+        val qr = e2eeStore.pendingQrPayload ?: return
+        try {
+            val discoveryHex = qr.discoveryToken().toHexStr()
+            val messages = E2eeMailboxClient.poll(BuildConfig.SERVER_HTTP_URL, discoveryHex)
+            val initPayload = messages.filterIsInstance<KeyExchangeInitPayload>().firstOrNull() ?: return
+            e2eeStore.processKeyExchangeInit(initPayload, "Friend") ?: return
+            _pendingInviteQr.value = null
+            _friendIds.value = e2eeStore.listFriends().map { it.id }.toSet()
+        } catch (_: Exception) {
         }
     }
 
