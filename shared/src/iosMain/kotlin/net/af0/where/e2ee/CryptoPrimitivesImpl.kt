@@ -1,39 +1,177 @@
+@file:OptIn(kotlinx.cinterop.ExperimentalForeignApi::class)
+
 package net.af0.where.e2ee
 
-/**
- * iOS crypto primitive stubs. These are placeholders until CryptoKit interop is wired up.
- *
- * Implementation plan:
- *   sha256, hmacSha256, aesgcmEncrypt, aesgcmDecrypt — CommonCrypto (C API, accessible from
- *   Kotlin/Native via platform.CoreFoundation / platform.Security / kotlinx-cinterop).
- *
- *   generateX25519KeyPair, x25519, generateEd25519KeyPair, ed25519Sign, ed25519Verify —
- *   CryptoKit is Swift-only. Two options:
- *     (a) Expose a Swift helper object from the iOS app layer that the KMP framework calls
- *         via a platform.darwin expect/actual bridge.
- *     (b) Integrate libsodium as a C interop dependency (provides all primitives via cinterop).
- *   Option (b) is recommended for full KMP isolation; option (a) is simpler for the near term.
- *
- *   Until one of these is implemented, the iOS app must either use the Swift-side
- *   LocationSyncService (which already handles crypto natively) and only consume the
- *   KMP data types and protocol constants, OR inject platform implementations via
- *   a CryptoProvider interface.
- */
+import kotlinx.cinterop.*
+import net.af0.where.e2ee.native.*
 
-internal actual fun sha256(data: ByteArray): ByteArray = TODO("iOS: implement via CommonCrypto CCDigest")
+// ---------------------------------------------------------------------------
+// SHA-256
+// ---------------------------------------------------------------------------
 
-internal actual fun hmacSha256(key: ByteArray, data: ByteArray): ByteArray = TODO("iOS: implement via CommonCrypto CCHmac")
+internal actual fun sha256(data: ByteArray): ByteArray {
+    val out = ByteArray(32)
+    data.usePinned { d ->
+        out.usePinned { o ->
+            where_sha256(d.addressOf(0).reinterpret(), data.size.toULong(),
+                         o.addressOf(0).reinterpret())
+        }
+    }
+    return out
+}
 
-actual fun generateX25519KeyPair(): RawKeyPair = TODO("iOS: implement via CryptoKit or libsodium")
+// ---------------------------------------------------------------------------
+// HMAC-SHA-256
+// ---------------------------------------------------------------------------
 
-internal actual fun x25519(myPriv: ByteArray, theirPub: ByteArray): ByteArray = TODO("iOS: implement via CryptoKit or libsodium")
+internal actual fun hmacSha256(key: ByteArray, data: ByteArray): ByteArray {
+    val out = ByteArray(32)
+    key.usePinned { k ->
+        data.usePinned { d ->
+            out.usePinned { o ->
+                where_hmac_sha256(
+                    k.addressOf(0).reinterpret(), key.size.toULong(),
+                    d.addressOf(0).reinterpret(), data.size.toULong(),
+                    o.addressOf(0).reinterpret(),
+                )
+            }
+        }
+    }
+    return out
+}
 
-actual fun generateEd25519KeyPair(): RawKeyPair = TODO("iOS: implement via CryptoKit or libsodium")
+// ---------------------------------------------------------------------------
+// X25519
+// ---------------------------------------------------------------------------
 
-internal actual fun ed25519Sign(priv: ByteArray, message: ByteArray): ByteArray = TODO("iOS: implement via CryptoKit or libsodium")
+actual fun generateX25519KeyPair(): RawKeyPair {
+    val priv = ByteArray(32)
+    val pub  = ByteArray(32)
+    val rc = priv.usePinned { p ->
+        pub.usePinned { q ->
+            where_x25519_keypair(p.addressOf(0).reinterpret(), q.addressOf(0).reinterpret())
+        }
+    }
+    if (rc != 0) throw IllegalStateException("X25519 key generation failed")
+    return RawKeyPair(priv, pub)
+}
 
-internal actual fun ed25519Verify(pub: ByteArray, message: ByteArray, sig: ByteArray): Boolean = TODO("iOS: implement via CryptoKit or libsodium")
+internal actual fun x25519(myPriv: ByteArray, theirPub: ByteArray): ByteArray {
+    val out = ByteArray(32)
+    val rc = out.usePinned { o ->
+        myPriv.usePinned { p ->
+            theirPub.usePinned { q ->
+                where_x25519_dh(
+                    o.addressOf(0).reinterpret(),
+                    p.addressOf(0).reinterpret(),
+                    q.addressOf(0).reinterpret(),
+                )
+            }
+        }
+    }
+    if (rc != 0) throw IllegalStateException("X25519 DH failed")
+    return out
+}
 
-internal actual fun aesgcmEncrypt(key: ByteArray, nonce: ByteArray, plaintext: ByteArray, aad: ByteArray): ByteArray = TODO("iOS: implement via CommonCrypto or CryptoKit")
+// ---------------------------------------------------------------------------
+// Ed25519
+// ---------------------------------------------------------------------------
 
-internal actual fun aesgcmDecrypt(key: ByteArray, nonce: ByteArray, ciphertext: ByteArray, aad: ByteArray): ByteArray = TODO("iOS: implement via CommonCrypto or CryptoKit")
+actual fun generateEd25519KeyPair(): RawKeyPair {
+    val priv = ByteArray(32)
+    val pub  = ByteArray(32)
+    val rc = priv.usePinned { p ->
+        pub.usePinned { q ->
+            where_ed25519_keypair(p.addressOf(0).reinterpret(), q.addressOf(0).reinterpret())
+        }
+    }
+    if (rc != 0) throw IllegalStateException("Ed25519 key generation failed")
+    return RawKeyPair(priv, pub)
+}
+
+internal actual fun ed25519Sign(priv: ByteArray, message: ByteArray): ByteArray {
+    val sig = ByteArray(64)
+    val rc = sig.usePinned { s ->
+        priv.usePinned { p ->
+            message.usePinned { m ->
+                where_ed25519_sign(
+                    s.addressOf(0).reinterpret(),
+                    p.addressOf(0).reinterpret(),
+                    m.addressOf(0).reinterpret(), message.size.toULong(),
+                )
+            }
+        }
+    }
+    if (rc != 0) throw IllegalStateException("Ed25519 sign failed")
+    return sig
+}
+
+internal actual fun ed25519Verify(pub: ByteArray, message: ByteArray, sig: ByteArray): Boolean {
+    val rc = pub.usePinned { p ->
+        message.usePinned { m ->
+            sig.usePinned { s ->
+                where_ed25519_verify(
+                    p.addressOf(0).reinterpret(),
+                    m.addressOf(0).reinterpret(), message.size.toULong(),
+                    s.addressOf(0).reinterpret(),
+                )
+            }
+        }
+    }
+    return rc == 0
+}
+
+// ---------------------------------------------------------------------------
+// AES-256-GCM
+// ---------------------------------------------------------------------------
+
+internal actual fun aesgcmEncrypt(
+    key: ByteArray, nonce: ByteArray, plaintext: ByteArray, aad: ByteArray,
+): ByteArray {
+    val out = ByteArray(plaintext.size + 16)
+    val rc = key.usePinned { k ->
+        nonce.usePinned { n ->
+            aad.usePinned { a ->
+                plaintext.usePinned { p ->
+                    out.usePinned { o ->
+                        where_aesgcm_encrypt(
+                            k.addressOf(0).reinterpret(),
+                            n.addressOf(0).reinterpret(),
+                            a.addressOf(0).reinterpret(), aad.size.toULong(),
+                            p.addressOf(0).reinterpret(), plaintext.size.toULong(),
+                            o.addressOf(0).reinterpret(),
+                        )
+                    }
+                }
+            }
+        }
+    }
+    if (rc != 0) throw IllegalStateException("AES-GCM encrypt failed")
+    return out
+}
+
+internal actual fun aesgcmDecrypt(
+    key: ByteArray, nonce: ByteArray, ciphertext: ByteArray, aad: ByteArray,
+): ByteArray {
+    require(ciphertext.size >= 16) { "ciphertext too short to contain GCM tag" }
+    val out = ByteArray(ciphertext.size - 16)
+    val rc = key.usePinned { k ->
+        nonce.usePinned { n ->
+            aad.usePinned { a ->
+                ciphertext.usePinned { c ->
+                    out.usePinned { o ->
+                        where_aesgcm_decrypt(
+                            k.addressOf(0).reinterpret(),
+                            n.addressOf(0).reinterpret(),
+                            a.addressOf(0).reinterpret(), aad.size.toULong(),
+                            c.addressOf(0).reinterpret(), ciphertext.size.toULong(),
+                            o.addressOf(0).reinterpret(),
+                        )
+                    }
+                }
+            }
+        }
+    }
+    if (rc != 0) throw IllegalArgumentException("AES-GCM authentication failed")
+    return out
+}

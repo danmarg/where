@@ -21,6 +21,12 @@ kotlin {
         iosArm64(),
         iosSimulatorArm64()
     ).forEach { iosTarget ->
+        iosTarget.compilations["main"].cinterops {
+            val whereCrypto by creating {
+                defFile("src/nativeInterop/cinterop/WhereCrypto.def")
+                includeDirs("src/nativeInterop/cinterop")
+            }
+        }
         iosTarget.binaries.framework {
             baseName = "Shared"
             isStatic = true
@@ -35,6 +41,13 @@ kotlin {
         }
         jvmMain { dependsOn(jvmAndAndroidMain) }
         androidMain { dependsOn(jvmAndAndroidMain) }
+
+        // Explicit iOS hierarchy wiring (required because the explicit dependsOn calls above
+        // disable Kotlin's default hierarchy template for all source sets)
+        val iosMain by creating { dependsOn(commonMain.get()) }
+        val iosX64Main by getting { dependsOn(iosMain) }
+        val iosArm64Main by getting { dependsOn(iosMain) }
+        val iosSimulatorArm64Main by getting { dependsOn(iosMain) }
 
         commonMain.dependencies {
             implementation(libs.ktor.client.core)
@@ -57,6 +70,7 @@ kotlin {
         iosMain.dependencies {
             implementation(libs.ktor.client.darwin)
         }
+
 
         commonTest.dependencies {
             implementation(kotlin("test"))
