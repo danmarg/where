@@ -113,3 +113,33 @@ data class RatchetAckPayload(
     val ts: Long,
     @Serializable(with = ByteArrayBase64Serializer::class) val sig: ByteArray,
 ) : MailboxPayload()
+
+/**
+ * Bob's KeyExchangeInit posted to the discovery token address (§4.2).
+ *
+ * @property token  Hex-encoded T_AB_0 (16 bytes) — the pairwise routing token Bob computed.
+ * @property ikPub  Bob's X25519 identity public key (32 bytes).
+ * @property ekPub  Bob's X25519 ephemeral public key (32 bytes).
+ * @property sigPub Bob's Ed25519 signing public key (32 bytes).
+ * @property sig    Ed25519 signature over (ikPub || ekPub || sigPub).
+ */
+@Serializable
+@SerialName("KeyExchangeInit")
+data class KeyExchangeInitPayload(
+    val token: String,
+    @Serializable(with = ByteArrayBase64Serializer::class) val ikPub: ByteArray,
+    @Serializable(with = ByteArrayBase64Serializer::class) val ekPub: ByteArray,
+    @Serializable(with = ByteArrayBase64Serializer::class) val sigPub: ByteArray,
+    @Serializable(with = ByteArrayBase64Serializer::class) val sig: ByteArray,
+) : MailboxPayload()
+
+/**
+ * Bob's key confirmation posted to T_AB_0 immediately after [KeyExchangeInitPayload] (§4.2).
+ *
+ * @property ct AES-256-GCM(key=SK, nonce=0, plaintext="Where-v1-Confirm", aad=T_AB_0).
+ */
+@Serializable
+@SerialName("KeyConfirmation")
+data class KeyConfirmationPayload(
+    @Serializable(with = ByteArrayBase64Serializer::class) val ct: ByteArray,
+) : MailboxPayload()
