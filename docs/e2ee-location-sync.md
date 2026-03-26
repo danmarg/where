@@ -145,6 +145,12 @@ This protocol uses **Trust-on-First-Use (TOFU)** with local key pinning.
 
 ## 4. Key Exchange Flow
 
+### 4.0 Key Exchange vs. Location Sharing
+
+QR/link exchange establishes a mutual contact with pinned keys on both devices; it does not itself imply reciprocal location sharing. Each device stores the remote party's identity bundle and a local alias. Location sharing is directional and controlled independently by each side; enabling sharing starts that side's outbound location stream to the contact.
+
+For a pair of contacts, the implementation may maintain up to two independent location-sharing sessions, one for each direction, rather than treating the relationship as inherently sender/receiver.
+
 ### 4.1 Prerequisites
 
 Each device holds:
