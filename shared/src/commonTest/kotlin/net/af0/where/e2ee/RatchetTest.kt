@@ -6,7 +6,6 @@ import kotlin.test.assertEquals
 import kotlin.test.assertNotEquals
 
 class RatchetTest {
-
     @Test
     fun `kdfCk produces 32+32+12 byte split`() {
         val chainKey = ByteArray(32) { it.toByte() }

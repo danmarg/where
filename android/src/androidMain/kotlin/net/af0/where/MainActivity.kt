@@ -13,16 +13,16 @@ import androidx.compose.runtime.getValue
 import androidx.core.content.ContextCompat
 
 class MainActivity : ComponentActivity() {
-
     private val viewModel: LocationViewModel by viewModels()
 
     fun startLocationService() {
-        val hasPermission = ContextCompat.checkSelfPermission(
-            this, Manifest.permission.ACCESS_FINE_LOCATION
-        ) == PackageManager.PERMISSION_GRANTED ||
-        ContextCompat.checkSelfPermission(
-            this, Manifest.permission.ACCESS_COARSE_LOCATION
-        ) == PackageManager.PERMISSION_GRANTED
+        val hasPermission =
+            ContextCompat.checkSelfPermission(
+                this, Manifest.permission.ACCESS_FINE_LOCATION,
+            ) == PackageManager.PERMISSION_GRANTED ||
+                ContextCompat.checkSelfPermission(
+                    this, Manifest.permission.ACCESS_COARSE_LOCATION,
+                ) == PackageManager.PERMISSION_GRANTED
         if (hasPermission) {
             startForegroundService(Intent(this, LocationService::class.java))
         }

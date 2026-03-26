@@ -18,7 +18,6 @@ class LocationViewModel(
     app: Application,
     private val locationSource: LocationSource = LocationRepository,
 ) : AndroidViewModel(app) {
-
     val userId: String = UserPrefs.getUserId(app)
     private val friendsStore = FriendsStore(app, userId)
 
@@ -26,22 +25,26 @@ class LocationViewModel(
     val isSharingLocation: StateFlow<Boolean> = friendsStore.isSharingLocation
 
     fun addFriend(id: String) = friendsStore.add(id)
+
     fun removeFriend(id: String) = friendsStore.remove(id)
+
     fun toggleSharing() = friendsStore.toggleSharing()
 
     // All users from server, filtered to self + friends
-    val visibleUsers: StateFlow<List<UserLocation>> = combine(
-        locationSource.users,
-        friendsStore.friendIds,
-    ) { users, friends ->
-        users.filter { it.userId == userId || friends.contains(it.userId) }
-    }.stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
+    val visibleUsers: StateFlow<List<UserLocation>> =
+        combine(
+            locationSource.users,
+            friendsStore.friendIds,
+        ) { users, friends ->
+            users.filter { it.userId == userId || friends.contains(it.userId) }
+        }.stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
 
-    private val syncClient = LocationSyncClient(
-        serverWsUrl = BuildConfig.SERVER_WS_URL,
-        userId = userId,
-        onLocationsUpdate = { locationSource.onUsersUpdate(it) },
-    )
+    private val syncClient =
+        LocationSyncClient(
+            serverWsUrl = BuildConfig.SERVER_WS_URL,
+            userId = userId,
+            onLocationsUpdate = { locationSource.onUsersUpdate(it) },
+        )
 
     init {
         syncClient.connect()
@@ -58,12 +61,13 @@ class LocationViewModel(
                 }
                 if (prevSharing != sharing) {
                     val intent = Intent(getApplication(), LocationService::class.java)
-                    val hasLocationPermission = ContextCompat.checkSelfPermission(
-                        getApplication(), Manifest.permission.ACCESS_FINE_LOCATION
-                    ) == PackageManager.PERMISSION_GRANTED ||
-                    ContextCompat.checkSelfPermission(
-                        getApplication(), Manifest.permission.ACCESS_COARSE_LOCATION
-                    ) == PackageManager.PERMISSION_GRANTED
+                    val hasLocationPermission =
+                        ContextCompat.checkSelfPermission(
+                            getApplication(), Manifest.permission.ACCESS_FINE_LOCATION,
+                        ) == PackageManager.PERMISSION_GRANTED ||
+                            ContextCompat.checkSelfPermission(
+                                getApplication(), Manifest.permission.ACCESS_COARSE_LOCATION,
+                            ) == PackageManager.PERMISSION_GRANTED
                     if (sharing && hasLocationPermission) {
                         getApplication<Application>().startForegroundService(intent)
                     } else if (!sharing) {

@@ -21,14 +21,16 @@ import javax.crypto.spec.SecretKeySpec
 // SHA-256
 // ---------------------------------------------------------------------------
 
-internal actual fun sha256(data: ByteArray): ByteArray =
-    MessageDigest.getInstance("SHA-256").digest(data)
+internal actual fun sha256(data: ByteArray): ByteArray = MessageDigest.getInstance("SHA-256").digest(data)
 
 // ---------------------------------------------------------------------------
 // HMAC-SHA-256
 // ---------------------------------------------------------------------------
 
-internal actual fun hmacSha256(key: ByteArray, data: ByteArray): ByteArray {
+internal actual fun hmacSha256(
+    key: ByteArray,
+    data: ByteArray,
+): ByteArray {
     val mac = Mac.getInstance("HmacSHA256")
     mac.init(SecretKeySpec(key, "HmacSHA256"))
     return mac.doFinal(data)
@@ -49,7 +51,10 @@ actual fun generateX25519KeyPair(): RawKeyPair {
     return RawKeyPair(priv, pub)
 }
 
-internal actual fun x25519(myPriv: ByteArray, theirPub: ByteArray): ByteArray {
+internal actual fun x25519(
+    myPriv: ByteArray,
+    theirPub: ByteArray,
+): ByteArray {
     val agreement = X25519Agreement()
     agreement.init(X25519PrivateKeyParameters(myPriv, 0))
     val result = ByteArray(32)
@@ -72,14 +77,21 @@ actual fun generateEd25519KeyPair(): RawKeyPair {
     return RawKeyPair(priv, pub)
 }
 
-internal actual fun ed25519Sign(priv: ByteArray, message: ByteArray): ByteArray {
+internal actual fun ed25519Sign(
+    priv: ByteArray,
+    message: ByteArray,
+): ByteArray {
     val signer = Ed25519Signer()
     signer.init(true, Ed25519PrivateKeyParameters(priv, 0))
     signer.update(message, 0, message.size)
     return signer.generateSignature()
 }
 
-internal actual fun ed25519Verify(pub: ByteArray, message: ByteArray, sig: ByteArray): Boolean {
+internal actual fun ed25519Verify(
+    pub: ByteArray,
+    message: ByteArray,
+    sig: ByteArray,
+): Boolean {
     val verifier = Ed25519Signer()
     verifier.init(false, Ed25519PublicKeyParameters(pub, 0))
     verifier.update(message, 0, message.size)

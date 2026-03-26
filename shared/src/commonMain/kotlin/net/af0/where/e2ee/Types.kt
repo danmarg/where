@@ -5,8 +5,8 @@ package net.af0.where.e2ee
  * as defined by RFC 7748 / RFC 8032.
  */
 data class RawKeyPair(val priv: ByteArray, val pub: ByteArray) {
-    override fun equals(other: Any?): Boolean =
-        other is RawKeyPair && priv.contentEquals(other.priv) && pub.contentEquals(other.pub)
+    override fun equals(other: Any?): Boolean = other is RawKeyPair && priv.contentEquals(other.priv) && pub.contentEquals(other.pub)
+
     override fun hashCode(): Int = 31 * priv.contentHashCode() + pub.contentHashCode()
 }
 
@@ -86,12 +86,17 @@ data class LocationPlaintext(
  * The sig field is mandatory: Ed25519(SigIK.priv, ikPub || ekPub || sigPub).
  */
 data class QrPayload(
-    val ikPub: ByteArray,        // Alice's X25519 identity public key (32 bytes)
-    val ekPub: ByteArray,        // Alice's ephemeral X25519 public key (32 bytes)
-    val sigPub: ByteArray,       // Alice's Ed25519 signing public key (32 bytes)
+    // Alice's X25519 identity public key (32 bytes)
+    val ikPub: ByteArray,
+    // Alice's ephemeral X25519 public key (32 bytes)
+    val ekPub: ByteArray,
+    // Alice's Ed25519 signing public key (32 bytes)
+    val sigPub: ByteArray,
     val suggestedName: String,
-    val fingerprint: String,     // hex(SHA-256(ikPub)[0:10])
-    val sig: ByteArray,          // Ed25519 signature (64 bytes)
+    // hex(SHA-256(ikPub)[0:10])
+    val fingerprint: String,
+    // Ed25519 signature (64 bytes)
+    val sig: ByteArray,
 ) {
     override fun equals(other: Any?): Boolean {
         if (other !is QrPayload) return false
@@ -99,18 +104,26 @@ data class QrPayload(
             sigPub.contentEquals(other.sigPub) && suggestedName == other.suggestedName &&
             fingerprint == other.fingerprint && sig.contentEquals(other.sig)
     }
+
     override fun hashCode(): Int =
-        31 * (31 * (31 * ikPub.contentHashCode() + ekPub.contentHashCode()) +
-            sigPub.contentHashCode()) + sig.contentHashCode()
+        31 * (
+            31 * (31 * ikPub.contentHashCode() + ekPub.contentHashCode()) +
+                sigPub.contentHashCode()
+        ) + sig.contentHashCode()
 }
 
 /** Bob's KeyExchangeInit message sent to the mailbox. */
 data class KeyExchangeInitMessage(
-    val token: ByteArray,    // T_AB_0 (16 bytes) — mailbox address
-    val ikPub: ByteArray,    // Bob's X25519 identity public key
-    val ekPub: ByteArray,    // Bob's ephemeral X25519 public key
-    val sigPub: ByteArray,   // Bob's Ed25519 signing public key
-    val sig: ByteArray,      // Ed25519(SigIK.priv, ikPub || ekPub || sigPub)
+    // T_AB_0 (16 bytes) — mailbox address
+    val token: ByteArray,
+    // Bob's X25519 identity public key
+    val ikPub: ByteArray,
+    // Bob's ephemeral X25519 public key
+    val ekPub: ByteArray,
+    // Bob's Ed25519 signing public key
+    val sigPub: ByteArray,
+    // Ed25519(SigIK.priv, ikPub || ekPub || sigPub)
+    val sig: ByteArray,
 ) {
     override fun equals(other: Any?): Boolean {
         if (other !is KeyExchangeInitMessage) return false
@@ -118,13 +131,14 @@ data class KeyExchangeInitMessage(
             ekPub.contentEquals(other.ekPub) && sigPub.contentEquals(other.sigPub) &&
             sig.contentEquals(other.sig)
     }
+
     override fun hashCode(): Int = token.contentHashCode()
 }
 
 /** One OPK entry in a PreKeyBundle. */
 data class OPK(val id: Int, val pub: ByteArray) {
-    override fun equals(other: Any?): Boolean =
-        other is OPK && id == other.id && pub.contentEquals(other.pub)
+    override fun equals(other: Any?): Boolean = other is OPK && id == other.id && pub.contentEquals(other.pub)
+
     override fun hashCode(): Int = 31 * id + pub.contentHashCode()
 }
 

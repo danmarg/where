@@ -17,7 +17,6 @@ package net.af0.where.e2ee
  * Convention: "senderFp" always refers to Alice (location sender), "recipientFp" to Bob.
  */
 object KeyExchange {
-
     private const val CONFIRM_PLAINTEXT = "Where-v1-Confirm"
 
     /**
@@ -32,14 +31,15 @@ object KeyExchange {
         val signedData = identity.ik.pub + ek.pub + identity.sigIk.pub
         val sig = ed25519Sign(identity.sigIk.priv, signedData)
         val fp = sha256(identity.ik.pub).copyOfRange(0, 10).toHex()
-        val payload = QrPayload(
-            ikPub = identity.ik.pub.copyOf(),
-            ekPub = ek.pub.copyOf(),
-            sigPub = identity.sigIk.pub.copyOf(),
-            suggestedName = suggestedName,
-            fingerprint = fp,
-            sig = sig,
-        )
+        val payload =
+            QrPayload(
+                ikPub = identity.ik.pub.copyOf(),
+                ekPub = ek.pub.copyOf(),
+                sigPub = identity.sigIk.pub.copyOf(),
+                suggestedName = suggestedName,
+                fingerprint = fp,
+                sig = sig,
+            )
         return payload to ek.priv
     }
 
@@ -67,27 +67,32 @@ object KeyExchange {
         val ekB = generateX25519KeyPair()
 
         // 3-term DH in protocol order: DH1, DH2, DH3 (Bob's side).
-        val dh1 = x25519(ekB.priv, qr.ikPub)                    // EK_B.priv × Alice.IK.pub
-        val dh2 = x25519(bobIdentity.ik.priv, qr.ekPub)          // IK_B.priv × Alice.EK_A.pub
-        val dh3 = x25519(ekB.priv, qr.ekPub)                     // EK_B.priv × Alice.EK_A.pub
+        val dh1 = x25519(ekB.priv, qr.ikPub) // EK_B.priv × Alice.IK.pub
+        val dh2 = x25519(bobIdentity.ik.priv, qr.ekPub) // IK_B.priv × Alice.EK_A.pub
+        val dh3 = x25519(ekB.priv, qr.ekPub) // EK_B.priv × Alice.EK_A.pub
         val sk = deriveSK(dh1, dh2, dh3)
 
         // senderFp = aliceFp, recipientFp = bobFp (Alice sends location to Bob).
         val token = deriveRoutingToken(sk, epoch = 0, senderFp = aliceFp, recipientFp = bobFp)
-        val session = KeyExchange.initSession(
-            sk = sk, myEkPriv = ekB.priv, myEkPub = ekB.pub,
-            theirEkPub = qr.ekPub, routingToken = token
-        )
+        val session =
+            KeyExchange.initSession(
+                sk = sk,
+                myEkPriv = ekB.priv,
+                myEkPub = ekB.pub,
+                theirEkPub = qr.ekPub,
+                routingToken = token,
+            )
 
         val msgSignedData = bobIdentity.ik.pub + ekB.pub + bobIdentity.sigIk.pub
         val sig = ed25519Sign(bobIdentity.sigIk.priv, msgSignedData)
-        val msg = KeyExchangeInitMessage(
-            token = token.copyOf(),
-            ikPub = bobIdentity.ik.pub.copyOf(),
-            ekPub = ekB.pub.copyOf(),
-            sigPub = bobIdentity.sigIk.pub.copyOf(),
-            sig = sig,
-        )
+        val msg =
+            KeyExchangeInitMessage(
+                token = token.copyOf(),
+                ikPub = bobIdentity.ik.pub.copyOf(),
+                ekPub = ekB.pub.copyOf(),
+                sigPub = bobIdentity.sigIk.pub.copyOf(),
+                sig = sig,
+            )
         return msg to session
     }
 
@@ -115,15 +120,18 @@ object KeyExchange {
         }
 
         // 3-term DH in protocol order: DH1, DH2, DH3 (Alice's side).
-        val dh1 = x25519(aliceIdentity.ik.priv, msg.ekPub)   // IK_A.priv × Bob.EK_B.pub  = DH1
-        val dh2 = x25519(aliceEkPriv, msg.ikPub)               // EK_A.priv × Bob.IK.pub    = DH2
-        val dh3 = x25519(aliceEkPriv, msg.ekPub)               // EK_A.priv × Bob.EK_B.pub  = DH3
+        val dh1 = x25519(aliceIdentity.ik.priv, msg.ekPub) // IK_A.priv × Bob.EK_B.pub  = DH1
+        val dh2 = x25519(aliceEkPriv, msg.ikPub) // EK_A.priv × Bob.IK.pub    = DH2
+        val dh3 = x25519(aliceEkPriv, msg.ekPub) // EK_A.priv × Bob.EK_B.pub  = DH3
         val sk = deriveSK(dh1, dh2, dh3)
 
         val token = deriveRoutingToken(sk, epoch = 0, senderFp = aliceFp, recipientFp = bobFp)
         return initSession(
-            sk = sk, myEkPriv = aliceEkPriv.copyOf(), myEkPub = ByteArray(32),
-            theirEkPub = msg.ekPub, routingToken = token
+            sk = sk,
+            myEkPriv = aliceEkPriv.copyOf(),
+            myEkPub = ByteArray(32),
+            theirEkPub = msg.ekPub,
+            routingToken = token,
         )
     }
 
@@ -135,7 +143,10 @@ object KeyExchange {
      * @param token T_AB_0 (used as AAD).
      * @return AES-256-GCM ciphertext + 16-byte tag.
      */
-    fun buildKeyConfirmation(sk: ByteArray, token: ByteArray): ByteArray {
+    fun buildKeyConfirmation(
+        sk: ByteArray,
+        token: ByteArray,
+    ): ByteArray {
         // Nonce is all-zero; the key is single-use so (key, nonce) pair is unique.
         return aesgcmEncrypt(
             key = sk,
@@ -149,11 +160,17 @@ object KeyExchange {
      * Alice: verify Bob's KeyConfirmation before sending any location data.
      * Returns true if the confirmation decrypts and matches.
      */
-    fun verifyKeyConfirmation(sk: ByteArray, token: ByteArray, ct: ByteArray): Boolean =
+    fun verifyKeyConfirmation(
+        sk: ByteArray,
+        token: ByteArray,
+        ct: ByteArray,
+    ): Boolean =
         try {
             val plaintext = aesgcmDecrypt(key = sk, nonce = ByteArray(12), ciphertext = ct, aad = token)
             plaintext.contentEquals(CONFIRM_PLAINTEXT.encodeToByteArray())
-        } catch (_: Exception) { false }
+        } catch (_: Exception) {
+            false
+        }
 
     // ---------------------------------------------------------------------------
     // Internal helpers
@@ -163,7 +180,11 @@ object KeyExchange {
      * Final SK derivation. Takes the three DH outputs in protocol order (DH1, DH2, DH3)
      * and applies HKDF. Both Alice and Bob must pass the same DH values in the same order.
      */
-    internal fun deriveSK(dh1: ByteArray, dh2: ByteArray, dh3: ByteArray): ByteArray =
+    internal fun deriveSK(
+        dh1: ByteArray,
+        dh2: ByteArray,
+        dh3: ByteArray,
+    ): ByteArray =
         hkdfSha256(
             ikm = dh1 + dh2 + dh3,
             salt = ByteArray(32),
@@ -182,18 +203,20 @@ object KeyExchange {
         theirEkPub: ByteArray,
         routingToken: ByteArray,
     ): SessionState {
-        val expanded = hkdfSha256(
-            ikm = sk,
-            salt = null,
-            info = INFO_SESSION.encodeToByteArray(),
-            length = 64,
-        )
+        val expanded =
+            hkdfSha256(
+                ikm = sk,
+                salt = null,
+                info = INFO_SESSION.encodeToByteArray(),
+                length = 64,
+            )
         return SessionState(
             rootKey = expanded.copyOfRange(0, 32),
             sendChainKey = expanded.copyOfRange(32, 64),
             routingToken = routingToken.copyOf(),
             sendSeq = 0L,
-            recvSeq = 0L,  // seq counter starts at 1; recvSeq=0 means no messages received yet
+            // seq counter starts at 1; recvSeq=0 means no messages received yet
+            recvSeq = 0L,
             epoch = 0,
             myEkPriv = myEkPriv.copyOf(),
             myEkPub = myEkPub.copyOf(),
@@ -202,5 +225,4 @@ object KeyExchange {
     }
 }
 
-internal fun ByteArray.toHex(): String =
-    joinToString("") { (it.toInt() and 0xFF).toString(16).padStart(2, '0') }
+internal fun ByteArray.toHex(): String = joinToString("") { (it.toInt() and 0xFF).toString(16).padStart(2, '0') }

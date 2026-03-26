@@ -11,7 +11,6 @@ import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
 class MailboxTest {
-
     private val json = Json { ignoreUnknownKeys = true }
 
     // ---------------------------------------------------------------------------
@@ -19,126 +18,137 @@ class MailboxTest {
     // ---------------------------------------------------------------------------
 
     @Test
-    fun `POST inbox returns 204`() = testApplication {
-        application { module(ServerState()) }
-        val response = client.post("/inbox/aabbccddeeff0011") {
-            contentType(ContentType.Application.Json)
-            setBody("""{"type":"EncryptedLocation","epoch":1,"seq":"1","ct":"AAEC"}""")
+    fun `POST inbox returns 204`() =
+        testApplication {
+            application { module(ServerState()) }
+            val response =
+                client.post("/inbox/aabbccddeeff0011") {
+                    contentType(ContentType.Application.Json)
+                    setBody("""{"type":"EncryptedLocation","epoch":1,"seq":"1","ct":"AAEC"}""")
+                }
+            assertEquals(HttpStatusCode.NoContent, response.status)
         }
-        assertEquals(HttpStatusCode.NoContent, response.status)
-    }
 
     @Test
-    fun `POST inbox with empty body returns 400`() = testApplication {
-        application { module(ServerState()) }
-        val response = client.post("/inbox/aabbccddeeff0011") {
-            contentType(ContentType.Application.Json)
-            setBody("")
+    fun `POST inbox with empty body returns 400`() =
+        testApplication {
+            application { module(ServerState()) }
+            val response =
+                client.post("/inbox/aabbccddeeff0011") {
+                    contentType(ContentType.Application.Json)
+                    setBody("")
+                }
+            assertEquals(HttpStatusCode.BadRequest, response.status)
         }
-        assertEquals(HttpStatusCode.BadRequest, response.status)
-    }
 
     @Test
-    fun `POST inbox with non-JSON body returns 400`() = testApplication {
-        application { module(ServerState()) }
-        val response = client.post("/inbox/sometoken") {
-            contentType(ContentType.Application.Json)
-            setBody("not json")
+    fun `POST inbox with non-JSON body returns 400`() =
+        testApplication {
+            application { module(ServerState()) }
+            val response =
+                client.post("/inbox/sometoken") {
+                    contentType(ContentType.Application.Json)
+                    setBody("not json")
+                }
+            assertEquals(HttpStatusCode.BadRequest, response.status)
         }
-        assertEquals(HttpStatusCode.BadRequest, response.status)
-    }
 
     // ---------------------------------------------------------------------------
     // GET /inbox/{token}
     // ---------------------------------------------------------------------------
 
     @Test
-    fun `GET inbox for unknown token returns empty array`() = testApplication {
-        application { module(ServerState()) }
-        val response = client.get("/inbox/unknowntoken")
-        assertEquals(HttpStatusCode.OK, response.status)
-        assertEquals(ContentType.Application.Json.withCharset(Charsets.UTF_8), response.contentType())
-        val body = response.bodyAsText()
-        val arr = json.decodeFromString<JsonArray>(body)
-        assertTrue(arr.isEmpty(), "Expected empty array for unknown token, got: $body")
-    }
+    fun `GET inbox for unknown token returns empty array`() =
+        testApplication {
+            application { module(ServerState()) }
+            val response = client.get("/inbox/unknowntoken")
+            assertEquals(HttpStatusCode.OK, response.status)
+            assertEquals(ContentType.Application.Json.withCharset(Charsets.UTF_8), response.contentType())
+            val body = response.bodyAsText()
+            val arr = json.decodeFromString<JsonArray>(body)
+            assertTrue(arr.isEmpty(), "Expected empty array for unknown token, got: $body")
+        }
 
     @Test
-    fun `GET inbox drains messages posted to that token`() = testApplication {
-        application { module(ServerState()) }
-        val token = "deadbeef01234567"
-        val payload1 = """{"type":"EncryptedLocation","epoch":1,"seq":"1","ct":"AA=="}"""
-        val payload2 = """{"type":"EncryptedLocation","epoch":1,"seq":"2","ct":"BB=="}"""
+    fun `GET inbox drains messages posted to that token`() =
+        testApplication {
+            application { module(ServerState()) }
+            val token = "deadbeef01234567"
+            val payload1 = """{"type":"EncryptedLocation","epoch":1,"seq":"1","ct":"AA=="}"""
+            val payload2 = """{"type":"EncryptedLocation","epoch":1,"seq":"2","ct":"BB=="}"""
 
-        client.post("/inbox/$token") {
-            contentType(ContentType.Application.Json)
-            setBody(payload1)
-        }
-        client.post("/inbox/$token") {
-            contentType(ContentType.Application.Json)
-            setBody(payload2)
-        }
+            client.post("/inbox/$token") {
+                contentType(ContentType.Application.Json)
+                setBody(payload1)
+            }
+            client.post("/inbox/$token") {
+                contentType(ContentType.Application.Json)
+                setBody(payload2)
+            }
 
-        val response = client.get("/inbox/$token")
-        assertEquals(HttpStatusCode.OK, response.status)
-        val arr = json.decodeFromString<JsonArray>(response.bodyAsText())
-        assertEquals(2, arr.size)
-    }
+            val response = client.get("/inbox/$token")
+            assertEquals(HttpStatusCode.OK, response.status)
+            val arr = json.decodeFromString<JsonArray>(response.bodyAsText())
+            assertEquals(2, arr.size)
+        }
 
     @Test
-    fun `GET inbox is destructive - second GET returns empty`() = testApplication {
-        application { module(ServerState()) }
-        val token = "cafebabe12345678"
-        client.post("/inbox/$token") {
-            contentType(ContentType.Application.Json)
-            setBody("""{"type":"EncryptedLocation","epoch":1,"seq":"1","ct":"AA=="}""")
+    fun `GET inbox is destructive - second GET returns empty`() =
+        testApplication {
+            application { module(ServerState()) }
+            val token = "cafebabe12345678"
+            client.post("/inbox/$token") {
+                contentType(ContentType.Application.Json)
+                setBody("""{"type":"EncryptedLocation","epoch":1,"seq":"1","ct":"AA=="}""")
+            }
+
+            val first = json.decodeFromString<JsonArray>(client.get("/inbox/$token").bodyAsText())
+            assertEquals(1, first.size)
+
+            val second = json.decodeFromString<JsonArray>(client.get("/inbox/$token").bodyAsText())
+            assertTrue(second.isEmpty(), "Second GET should return empty array")
         }
-
-        val first = json.decodeFromString<JsonArray>(client.get("/inbox/$token").bodyAsText())
-        assertEquals(1, first.size)
-
-        val second = json.decodeFromString<JsonArray>(client.get("/inbox/$token").bodyAsText())
-        assertTrue(second.isEmpty(), "Second GET should return empty array")
-    }
 
     @Test
-    fun `GET inbox for different tokens are independent`() = testApplication {
-        application { module(ServerState()) }
-        val tokenA = "aaaaaaaaaaaaaaaa"
-        val tokenB = "bbbbbbbbbbbbbbbb"
+    fun `GET inbox for different tokens are independent`() =
+        testApplication {
+            application { module(ServerState()) }
+            val tokenA = "aaaaaaaaaaaaaaaa"
+            val tokenB = "bbbbbbbbbbbbbbbb"
 
-        client.post("/inbox/$tokenA") {
-            contentType(ContentType.Application.Json)
-            setBody("""{"type":"EncryptedLocation","epoch":1,"seq":"1","ct":"AA=="}""")
+            client.post("/inbox/$tokenA") {
+                contentType(ContentType.Application.Json)
+                setBody("""{"type":"EncryptedLocation","epoch":1,"seq":"1","ct":"AA=="}""")
+            }
+
+            val responseA = json.decodeFromString<JsonArray>(client.get("/inbox/$tokenA").bodyAsText())
+            val responseB = json.decodeFromString<JsonArray>(client.get("/inbox/$tokenB").bodyAsText())
+
+            assertEquals(1, responseA.size)
+            assertTrue(responseB.isEmpty())
         }
-
-        val responseA = json.decodeFromString<JsonArray>(client.get("/inbox/$tokenA").bodyAsText())
-        val responseB = json.decodeFromString<JsonArray>(client.get("/inbox/$tokenB").bodyAsText())
-
-        assertEquals(1, responseA.size)
-        assertTrue(responseB.isEmpty())
-    }
 
     // ---------------------------------------------------------------------------
     // Constant-time invariant: unknown tokens look like empty tokens (§7.2)
     // ---------------------------------------------------------------------------
 
     @Test
-    fun `GET inbox response is identical for unknown and empty tokens`() = testApplication {
-        application { module(ServerState()) }
-        val neverUsed = "0000000000000000"
-        val posted = "1111111111111111"
+    fun `GET inbox response is identical for unknown and empty tokens`() =
+        testApplication {
+            application { module(ServerState()) }
+            val neverUsed = "0000000000000000"
+            val posted = "1111111111111111"
 
-        // Post then drain 'posted' to make it an empty known token
-        client.post("/inbox/$posted") {
-            contentType(ContentType.Application.Json)
-            setBody("""{"type":"EncryptedLocation","epoch":1,"seq":"1","ct":"AA=="}""")
+            // Post then drain 'posted' to make it an empty known token
+            client.post("/inbox/$posted") {
+                contentType(ContentType.Application.Json)
+                setBody("""{"type":"EncryptedLocation","epoch":1,"seq":"1","ct":"AA=="}""")
+            }
+            client.get("/inbox/$posted") // drain
+
+            val unknownResponse = client.get("/inbox/$neverUsed").bodyAsText()
+            val emptyResponse = client.get("/inbox/$posted").bodyAsText()
+
+            assertEquals(unknownResponse, emptyResponse, "Unknown and empty-inbox responses must be identical")
         }
-        client.get("/inbox/$posted")  // drain
-
-        val unknownResponse = client.get("/inbox/$neverUsed").bodyAsText()
-        val emptyResponse = client.get("/inbox/$posted").bodyAsText()
-
-        assertEquals(unknownResponse, emptyResponse, "Unknown and empty-inbox responses must be identical")
-    }
 }

@@ -9,7 +9,6 @@ import android.os.IBinder
 import com.google.android.gms.location.*
 
 class LocationService : Service() {
-
     private lateinit var fusedClient: FusedLocationProviderClient
     private lateinit var locationCallback: LocationCallback
 
@@ -19,19 +18,26 @@ class LocationService : Service() {
         startForeground(NOTIFICATION_ID, buildNotification())
 
         fusedClient = LocationServices.getFusedLocationProviderClient(this)
-        locationCallback = object : LocationCallback() {
-            override fun onLocationResult(result: LocationResult) {
-                val loc = result.lastLocation ?: return
-                LocationRepository.onLocation(loc.latitude, loc.longitude)
+        locationCallback =
+            object : LocationCallback() {
+                override fun onLocationResult(result: LocationResult) {
+                    val loc = result.lastLocation ?: return
+                    LocationRepository.onLocation(loc.latitude, loc.longitude)
+                }
             }
-        }
     }
 
-    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        val request = LocationRequest.Builder(
-            Priority.PRIORITY_BALANCED_POWER_ACCURACY,
-            30_000L // 30 seconds
-        ).setMinUpdateIntervalMillis(15_000L).build()
+    override fun onStartCommand(
+        intent: Intent?,
+        flags: Int,
+        startId: Int,
+    ): Int {
+        val request =
+            LocationRequest.Builder(
+                Priority.PRIORITY_BALANCED_POWER_ACCURACY,
+                // 30 seconds
+                30_000L,
+            ).setMinUpdateIntervalMillis(15_000L).build()
 
         try {
             fusedClient.requestLocationUpdates(request, locationCallback, mainLooper)
@@ -49,9 +55,12 @@ class LocationService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     private fun createNotificationChannel() {
-        val channel = NotificationChannel(
-            CHANNEL_ID, "Where Location", NotificationManager.IMPORTANCE_LOW
-        )
+        val channel =
+            NotificationChannel(
+                CHANNEL_ID,
+                "Where Location",
+                NotificationManager.IMPORTANCE_LOW,
+            )
         getSystemService(NotificationManager::class.java).createNotificationChannel(channel)
     }
 

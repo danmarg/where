@@ -8,9 +8,7 @@ import kotlin.test.assertNotEquals
 import kotlin.test.assertTrue
 
 class KeyExchangeTest {
-
-    private fun makeIdentity(): IdentityKeys =
-        IdentityKeys(ik = generateX25519KeyPair(), sigIk = generateEd25519KeyPair())
+    private fun makeIdentity(): IdentityKeys = IdentityKeys(ik = generateX25519KeyPair(), sigIk = generateEd25519KeyPair())
 
     // ---------------------------------------------------------------------------
     // QR payload
@@ -25,7 +23,7 @@ class KeyExchangeTest {
         assertContentEquals(alice.sigIk.pub, qr.sigPub)
         assertEquals(32, qr.ekPub.size)
         assertEquals(64, qr.sig.size)
-        assertEquals(20, qr.fingerprint.length)  // hex(SHA-256(ikPub)[0:10])
+        assertEquals(20, qr.fingerprint.length) // hex(SHA-256(ikPub)[0:10])
 
         // Signature must be valid.
         val signedData = qr.ikPub + qr.ekPub + qr.sigPub
@@ -87,14 +85,17 @@ class KeyExchangeTest {
         val alice = makeIdentity()
         val bob = makeIdentity()
         val (qr, _) = KeyExchange.aliceCreateQrPayload(alice, "Alice")
-        val badQr = qr.copy(sig = ByteArray(64))  // zeroed sig
+        val badQr = qr.copy(sig = ByteArray(64)) // zeroed sig
         val aliceFp = fingerprint(alice.ik.pub, alice.sigIk.pub)
         val bobFp = fingerprint(bob.ik.pub, bob.sigIk.pub)
 
-        val threw = try {
-            KeyExchange.bobProcessQr(badQr, bob, aliceFp, bobFp)
-            false
-        } catch (_: IllegalArgumentException) { true }
+        val threw =
+            try {
+                KeyExchange.bobProcessQr(badQr, bob, aliceFp, bobFp)
+                false
+            } catch (_: IllegalArgumentException) {
+                true
+            }
         assertTrue(threw, "Expected bobProcessQr to reject tampered QR signature")
     }
 
@@ -142,10 +143,13 @@ class KeyExchangeTest {
         val (msg, _) = KeyExchange.bobProcessQr(qr, bob, aliceFp, bobFp)
         val badMsg = msg.copy(sig = ByteArray(64))
 
-        val threw = try {
-            KeyExchange.aliceProcessInit(badMsg, alice, aliceEkPriv, aliceFp, bobFp)
-            false
-        } catch (_: IllegalArgumentException) { true }
+        val threw =
+            try {
+                KeyExchange.aliceProcessInit(badMsg, alice, aliceEkPriv, aliceFp, bobFp)
+                false
+            } catch (_: IllegalArgumentException) {
+                true
+            }
         assertTrue(threw)
     }
 

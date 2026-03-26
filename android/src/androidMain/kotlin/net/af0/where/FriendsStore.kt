@@ -7,7 +7,6 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 
 class FriendsStore(context: Context, private val ownUserId: String) {
-
     private val prefs = context.getSharedPreferences("where_friends", Context.MODE_PRIVATE)
 
     private val _friendIds = MutableStateFlow(loadFriends())
@@ -34,9 +33,7 @@ class FriendsStore(context: Context, private val ownUserId: String) {
         }
     }
 
-    private fun loadFriends(): Set<String> =
-        prefs.getStringSet("ids", emptySet())?.toSet() ?: emptySet()
+    private fun loadFriends(): Set<String> = prefs.getStringSet("ids", emptySet())?.toSet() ?: emptySet()
 
-    private fun persist(ids: Set<String>) =
-        prefs.edit().putStringSet("ids", ids).apply()
+    private fun persist(ids: Set<String>) = prefs.edit().putStringSet("ids", ids).apply()
 }

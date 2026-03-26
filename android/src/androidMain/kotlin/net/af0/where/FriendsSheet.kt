@@ -42,10 +42,11 @@ fun FriendsSheet(
 
     ModalBottomSheet(onDismissRequest = onDismiss) {
         Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 16.dp)
-                .padding(bottom = 32.dp),
+            modifier =
+                Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp)
+                    .padding(bottom = 32.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp),
         ) {
             Text("Friends", style = MaterialTheme.typography.titleLarge)
@@ -101,7 +102,10 @@ fun FriendsSheet(
                     textStyle = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
                 )
                 FilledTonalButton(
-                    onClick = { onAdd(newId); newId = "" },
+                    onClick = {
+                        onAdd(newId)
+                        newId = ""
+                    },
                     enabled = newId.isNotBlank(),
                 ) {
                     Icon(Icons.Default.PersonAdd, contentDescription = "Add")
@@ -114,16 +118,24 @@ fun FriendsSheet(
                 LazyColumn(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                     items(friendIds.toList()) { id ->
                         Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clickable { onZoomTo(id); onDismiss() },
+                            modifier =
+                                Modifier
+                                    .fillMaxWidth()
+                                    .clickable {
+                                        onZoomTo(id)
+                                        onDismiss()
+                                    },
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.spacedBy(8.dp),
                         ) {
                             Column(modifier = Modifier.weight(1f)) {
                                 Text(id.take(8), style = MaterialTheme.typography.bodyMedium, fontFamily = FontFamily.Monospace)
-                                Text(id, style = MaterialTheme.typography.bodySmall, fontFamily = FontFamily.Monospace,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                Text(
+                                    id,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    fontFamily = FontFamily.Monospace,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
                             }
                             IconButton(onClick = { onRemove(id) }) {
                                 Icon(Icons.Default.Delete, contentDescription = "Remove", tint = MaterialTheme.colorScheme.error)

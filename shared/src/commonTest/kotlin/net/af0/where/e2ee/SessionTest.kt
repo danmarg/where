@@ -9,9 +9,7 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 class SessionTest {
-
-    private fun makeIdentity(): IdentityKeys =
-        IdentityKeys(ik = generateX25519KeyPair(), sigIk = generateEd25519KeyPair())
+    private fun makeIdentity(): IdentityKeys = IdentityKeys(ik = generateX25519KeyPair(), sigIk = generateEd25519KeyPair())
 
     data class ExchangeResult(
         val aliceSession: SessionState,
@@ -80,9 +78,10 @@ class SessionTest {
     @Test
     fun `multiple sequential messages decrypt correctly`() {
         val (aliceSession, bobSession, aliceFp, bobFp) = exchangeKeys()
-        val locs = (1..5).map { i ->
-            LocationPlaintext(lat = i.toDouble(), lng = i.toDouble(), acc = 1.0, ts = i.toLong())
-        }
+        val locs =
+            (1..5).map { i ->
+                LocationPlaintext(lat = i.toDouble(), lng = i.toDouble(), acc = 1.0, ts = i.toLong())
+            }
 
         var aSess = aliceSession
         var bSess = bobSession
@@ -161,10 +160,13 @@ class SessionTest {
         val (aliceNew, ct) = Session.encryptLocation(aliceSession, loc, aliceFp, bobFp)
 
         // Decrypting with wrong sender fingerprint must fail.
-        val threw = try {
-            Session.decryptLocation(bobSession, ct, aliceNew.sendSeq, eveFp, bobFp)
-            false
-        } catch (_: Exception) { true }
+        val threw =
+            try {
+                Session.decryptLocation(bobSession, ct, aliceNew.sendSeq, eveFp, bobFp)
+                false
+            } catch (_: Exception) {
+                true
+            }
         assertTrue(threw, "Expected decryption to fail with wrong sender fingerprint")
     }
 
@@ -179,22 +181,24 @@ class SessionTest {
         val bobOpk = generateX25519KeyPair()
         val aliceNewEk = generateX25519KeyPair()
 
-        val aliceRotated = Session.aliceEpochRotation(
-            state = aliceSession,
-            aliceNewEkPriv = aliceNewEk.priv,
-            aliceNewEkPub = aliceNewEk.pub,
-            bobOpkPub = bobOpk.pub,
-            senderFp = aliceFp,
-            recipientFp = bobFp,
-        )
-        val bobRotated = Session.bobProcessEpochRotation(
-            state = bobSession,
-            aliceNewEkPub = aliceNewEk.pub,
-            bobOpkPriv = bobOpk.priv,
-            newEpoch = 1,
-            senderFp = aliceFp,
-            recipientFp = bobFp,
-        )
+        val aliceRotated =
+            Session.aliceEpochRotation(
+                state = aliceSession,
+                aliceNewEkPriv = aliceNewEk.priv,
+                aliceNewEkPub = aliceNewEk.pub,
+                bobOpkPub = bobOpk.pub,
+                senderFp = aliceFp,
+                recipientFp = bobFp,
+            )
+        val bobRotated =
+            Session.bobProcessEpochRotation(
+                state = bobSession,
+                aliceNewEkPub = aliceNewEk.pub,
+                bobOpkPriv = bobOpk.priv,
+                newEpoch = 1,
+                senderFp = aliceFp,
+                recipientFp = bobFp,
+            )
 
         assertEquals(1, aliceRotated.epoch)
         assertEquals(1, bobRotated.epoch)
@@ -211,12 +215,24 @@ class SessionTest {
         val bobOpk = generateX25519KeyPair()
         val aliceNewEk = generateX25519KeyPair()
 
-        val aliceRotated = Session.aliceEpochRotation(
-            aliceSession, aliceNewEk.priv, aliceNewEk.pub, bobOpk.pub, aliceFp, bobFp
-        )
-        val bobRotated = Session.bobProcessEpochRotation(
-            bobSession, aliceNewEk.pub, bobOpk.priv, 1, aliceFp, bobFp
-        )
+        val aliceRotated =
+            Session.aliceEpochRotation(
+                aliceSession,
+                aliceNewEk.priv,
+                aliceNewEk.pub,
+                bobOpk.pub,
+                aliceFp,
+                bobFp,
+            )
+        val bobRotated =
+            Session.bobProcessEpochRotation(
+                bobSession,
+                aliceNewEk.pub,
+                bobOpk.priv,
+                1,
+                aliceFp,
+                bobFp,
+            )
 
         val loc = LocationPlaintext(lat = 48.8566, lng = 2.3522, acc = 5.0, ts = 1711155000L)
         // Alice's epoch is now 1; encrypt uses epoch from state.
@@ -233,36 +249,42 @@ class SessionTest {
 
     @Test
     fun `epochRotationSignedBlob is 116 bytes`() {
-        val blob = Session.epochRotationSignedBlob(
-            epoch = 43, opkId = 101,
-            newEkPub = ByteArray(32),
-            ts = 1711152000L,
-            senderFp = ByteArray(32),
-            recipientFp = ByteArray(32),
-        )
+        val blob =
+            Session.epochRotationSignedBlob(
+                epoch = 43,
+                opkId = 101,
+                newEkPub = ByteArray(32),
+                ts = 1711152000L,
+                senderFp = ByteArray(32),
+                recipientFp = ByteArray(32),
+            )
         assertEquals(116, blob.size)
     }
 
     @Test
     fun `ratchetAckSignedBlob is 80 bytes`() {
-        val blob = Session.ratchetAckSignedBlob(
-            epochSeen = 43, ts = 1711152000L,
-            senderFp = ByteArray(32),
-            recipientFp = ByteArray(32),
-        )
+        val blob =
+            Session.ratchetAckSignedBlob(
+                epochSeen = 43,
+                ts = 1711152000L,
+                senderFp = ByteArray(32),
+                recipientFp = ByteArray(32),
+            )
         assertEquals(80, blob.size)
     }
 
     @Test
     fun `signed blobs can be signed and verified`() {
         val identity = makeIdentity()
-        val blob = Session.epochRotationSignedBlob(
-            epoch = 5, opkId = 99,
-            newEkPub = ByteArray(32) { it.toByte() },
-            ts = 1711152000L,
-            senderFp = ByteArray(32) { 0xAA.toByte() },
-            recipientFp = ByteArray(32) { 0xBB.toByte() },
-        )
+        val blob =
+            Session.epochRotationSignedBlob(
+                epoch = 5,
+                opkId = 99,
+                newEkPub = ByteArray(32) { it.toByte() },
+                ts = 1711152000L,
+                senderFp = ByteArray(32) { 0xAA.toByte() },
+                recipientFp = ByteArray(32) { 0xBB.toByte() },
+            )
         val sig = ed25519Sign(identity.sigIk.priv, blob)
         assertTrue(ed25519Verify(identity.sigIk.pub, blob, sig))
     }

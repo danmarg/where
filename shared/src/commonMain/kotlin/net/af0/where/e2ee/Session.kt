@@ -17,10 +17,9 @@ import kotlinx.serialization.json.put
  * can easily audit state transitions and write deterministic tests.
  */
 object Session {
-
     private const val AAD_PREFIX = "Where-v1-Location"
     private const val PROTOCOL_VERSION = 1
-    private const val PADDING_SIZE = 512  // §7.4: pad plaintext to 512 bytes before encryption
+    private const val PADDING_SIZE = 512 // §7.4: pad plaintext to 512 bytes before encryption
 
     /**
      * Encrypt one location update for a single peer.
@@ -49,10 +48,11 @@ object Session {
         val plaintext = padToFixedSize(encodeLocation(location), PADDING_SIZE)
         val ct = aesgcmEncrypt(step.messageKey, step.messageNonce, plaintext, aad)
 
-        val newState = state.copy(
-            sendChainKey = step.newChainKey,
-            sendSeq = seq,
-        )
+        val newState =
+            state.copy(
+                sendChainKey = step.newChainKey,
+                sendSeq = seq,
+            )
         return newState to ct
     }
 
@@ -81,7 +81,7 @@ object Session {
         senderFp: ByteArray,
         recipientFp: ByteArray,
     ): Pair<SessionState, LocationPlaintext>? {
-        if (seq <= state.recvSeq) return null  // replay — drop silently
+        if (seq <= state.recvSeq) return null // replay — drop silently
 
         // Advance chain key to reach the correct seq (handles gaps).
         var chainKey = state.sendChainKey.copyOf()
@@ -97,10 +97,11 @@ object Session {
         val plaintext = aesgcmDecrypt(finalStep.messageKey, finalStep.messageNonce, ct, aad)
         val location = decodeLocation(unpad(plaintext))
 
-        val newState = state.copy(
-            sendChainKey = chainKey,
-            recvSeq = seq,
-        )
+        val newState =
+            state.copy(
+                sendChainKey = chainKey,
+                recvSeq = seq,
+            )
         return newState to location
     }
 
@@ -187,12 +188,12 @@ object Session {
         recipientFp: ByteArray,
     ): ByteArray =
         intToBeBytes(PROTOCOL_VERSION) +
-        intToBeBytes(epoch) +
-        intToBeBytes(opkId) +
-        newEkPub +             // 32 bytes
-        longToBeBytes(ts) +
-        senderFp +             // 32 bytes
-        recipientFp            // 32 bytes
+            intToBeBytes(epoch) +
+            intToBeBytes(opkId) +
+            newEkPub + // 32 bytes
+            longToBeBytes(ts) +
+            senderFp + // 32 bytes
+            recipientFp // 32 bytes
 
     /**
      * Build the 80-byte canonical blob signed in a RatchetAck message.
@@ -205,10 +206,10 @@ object Session {
         recipientFp: ByteArray,
     ): ByteArray =
         intToBeBytes(PROTOCOL_VERSION) +
-        intToBeBytes(epochSeen) +
-        longToBeBytes(ts) +
-        senderFp +
-        recipientFp
+            intToBeBytes(epochSeen) +
+            longToBeBytes(ts) +
+            senderFp +
+            recipientFp
 
     // ---------------------------------------------------------------------------
     // Private helpers
@@ -221,11 +222,11 @@ object Session {
         seq: Long,
     ): ByteArray =
         AAD_PREFIX.encodeToByteArray() +
-        intToBeBytes(PROTOCOL_VERSION) +
-        senderFp +
-        recipientFp +
-        intToBeBytes(epoch) +
-        longToBeBytes(seq)
+            intToBeBytes(PROTOCOL_VERSION) +
+            senderFp +
+            recipientFp +
+            intToBeBytes(epoch) +
+            longToBeBytes(seq)
 
     private fun encodeLocation(loc: LocationPlaintext): ByteArray =
         buildJsonObject {
@@ -246,9 +247,12 @@ object Session {
     }
 
     /** PKCS#7-style zero-padding to a fixed size. */
-    private fun padToFixedSize(data: ByteArray, size: Int): ByteArray {
+    private fun padToFixedSize(
+        data: ByteArray,
+        size: Int,
+    ): ByteArray {
         require(data.size <= size) { "plaintext (${data.size} bytes) exceeds pad size $size" }
-        return data.copyOf(size)  // pads with zero bytes
+        return data.copyOf(size) // pads with zero bytes
     }
 
     private fun unpad(data: ByteArray): ByteArray {

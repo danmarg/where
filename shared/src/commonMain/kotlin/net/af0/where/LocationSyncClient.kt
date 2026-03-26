@@ -17,10 +17,15 @@ class LocationSyncClient(
     private val userId: String,
     private val onLocationsUpdate: (List<UserLocation>) -> Unit,
 ) {
-    private val json = Json { classDiscriminator = "type"; ignoreUnknownKeys = true }
-    private val client = HttpClient {
-        install(WebSockets)
-    }
+    private val json =
+        Json {
+            classDiscriminator = "type"
+            ignoreUnknownKeys = true
+        }
+    private val client =
+        HttpClient {
+            install(WebSockets)
+        }
 
     private val scope = CoroutineScope(Dispatchers.Default + SupervisorJob())
     private val sessionLock = Mutex()
@@ -33,38 +38,44 @@ class LocationSyncClient(
     fun connect() {
         // Cancel any in-flight connection before starting a new one to prevent overlapping loops.
         job?.cancel()
-        job = scope.launch {
-            while (isActive) {
-                try {
-                    client.webSocket("$serverWsUrl?userId=$userId") {
-                        sessionLock.withLock { session = this }
-                        try {
-                            for (frame in incoming) {
-                                if (frame is Frame.Text) {
-                                    val msg = runCatching {
-                                        json.decodeFromString<WsMessage>(frame.readText())
-                                    }.getOrNull() ?: continue
-                                    if (msg is WsMessage.LocationsBroadcast) {
-                                        onLocationsUpdate(msg.users)
+        job =
+            scope.launch {
+                while (isActive) {
+                    try {
+                        client.webSocket("$serverWsUrl?userId=$userId") {
+                            sessionLock.withLock { session = this }
+                            try {
+                                for (frame in incoming) {
+                                    if (frame is Frame.Text) {
+                                        val msg =
+                                            runCatching {
+                                                json.decodeFromString<WsMessage>(frame.readText())
+                                            }.getOrNull() ?: continue
+                                        if (msg is WsMessage.LocationsBroadcast) {
+                                            onLocationsUpdate(msg.users)
+                                        }
                                     }
                                 }
+                            } finally {
+                                sessionLock.withLock { session = null }
                             }
-                        } finally {
-                            sessionLock.withLock { session = null }
                         }
+                    } catch (e: Exception) {
+                        if (!isActive) break
                     }
-                } catch (e: Exception) {
-                    if (!isActive) break
+                    delay(3_000) // reconnect backoff
                 }
-                delay(3_000) // reconnect backoff
             }
-        }
     }
 
-    fun sendLocation(lat: Double, lng: Double) {
-        val msg = WsMessage.LocationUpdate(
-            UserLocation(userId, lat, lng, currentTimeMillis())
-        )
+    fun sendLocation(
+        lat: Double,
+        lng: Double,
+    ) {
+        val msg =
+            WsMessage.LocationUpdate(
+                UserLocation(userId, lat, lng, currentTimeMillis()),
+            )
         val text = json.encodeToString(WsMessage.serializer(), msg)
         scope.launch {
             sessionLock.withLock { runCatching { session?.send(Frame.Text(text)) } }
