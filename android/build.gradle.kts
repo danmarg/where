@@ -3,6 +3,7 @@ import java.util.Properties
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.multiplatform)
+    alias(libs.plugins.kotlin.serialization)
     alias(libs.plugins.compose.compiler)
 }
 
@@ -19,6 +20,9 @@ kotlin {
     }
 
     sourceSets {
+        androidMain.dependencies {
+            implementation(libs.kotlinx.serialization.json)
+        }
         androidUnitTest.dependencies {
             implementation(kotlin("test"))
             implementation(libs.robolectric)
@@ -76,4 +80,6 @@ dependencies {
     implementation(libs.maps.compose)
     implementation(libs.play.services.location)
     implementation(libs.accompanist.permissions)
+    implementation(libs.zxing.core)
+    implementation(libs.zxing.android.embedded)
 }

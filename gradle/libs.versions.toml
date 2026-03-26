@@ -12,6 +12,8 @@ logback = "1.5.18"
 maps-compose = "6.4.4"
 play-services-location = "21.3.0"
 accompanist-permissions = "0.37.3"
+zxing-core = "3.5.3"
+zxing-android = "4.3.0"
 
 [libraries]
 # Ktor server
@@ -49,6 +51,8 @@ activity-compose = { module = "androidx.activity:activity-compose", version.ref 
 maps-compose = { module = "com.google.maps.android:maps-compose", version.ref = "maps-compose" }
 play-services-location = { module = "com.google.android.gms:play-services-location", version.ref = "play-services-location" }
 accompanist-permissions = { module = "com.google.accompanist:accompanist-permissions", version.ref = "accompanist-permissions" }
+zxing-core = { module = "com.google.zxing:core", version.ref = "zxing-core" }
+zxing-android-embedded = { module = "com.journeyapps:zxing-android-embedded", version.ref = "zxing-android" }
 
 # Crypto
 bouncycastle = { module = "org.bouncycastle:bcprov-jdk18on", version.ref = "bouncycastle" }

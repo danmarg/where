@@ -9,9 +9,14 @@ import Foundation
 enum ServerConfig {
     #if targetEnvironment(simulator)
     static let wsBaseUrl = "ws://localhost:8080/ws"
+    static let httpBaseUrl = "http://localhost:8080"
     #else
     // Replace with your server's LAN IP or deployed URL before running on a real device.
     static let wsBaseUrl: String = {
+        preconditionFailure("Replace with your server's LAN IP or deployed URL before running on a real device.")
+    }()
+
+    static let httpBaseUrl: String = {
         preconditionFailure("Replace with your server's LAN IP or deployed URL before running on a real device.")
     }()
     #endif
