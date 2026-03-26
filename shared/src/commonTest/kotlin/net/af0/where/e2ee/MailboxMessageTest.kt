@@ -7,10 +7,13 @@ import kotlin.test.assertEquals
 import kotlin.test.assertIs
 
 /** Json instance matching the wire format used by all mailbox messages. */
-private val json = Json { classDiscriminator = "type"; ignoreUnknownKeys = true }
+private val json =
+    Json {
+        classDiscriminator = "type"
+        ignoreUnknownKeys = true
+    }
 
 class MailboxMessageTest {
-
     // ---------------------------------------------------------------------------
     // EncryptedLocationPayload round-trip
     // ---------------------------------------------------------------------------
@@ -36,9 +39,9 @@ class MailboxMessageTest {
     @Test
     fun `EncryptedLocationPayload type discriminator is EncryptedLocation`() {
         val payload = EncryptedLocationPayload(epoch = 1, seq = "1", ct = ByteArray(16))
-        val json_str = json.encodeToString(MailboxPayload.serializer(), payload)
-        assert(json_str.contains("\"type\":\"EncryptedLocation\"")) {
-            "Expected type discriminator in: $json_str"
+        val jsonStr = json.encodeToString(MailboxPayload.serializer(), payload)
+        assert(jsonStr.contains("\"type\":\"EncryptedLocation\"")) {
+            "Expected type discriminator in: $jsonStr"
         }
     }
 
@@ -48,10 +51,11 @@ class MailboxMessageTest {
 
     @Test
     fun `PreKeyBundlePayload serialises and deserialises`() {
-        val keys = listOf(
-            OPKWire(id = 101, pub = ByteArray(32) { 0x01.toByte() }),
-            OPKWire(id = 102, pub = ByteArray(32) { 0x02.toByte() }),
-        )
+        val keys =
+            listOf(
+                OPKWire(id = 101, pub = ByteArray(32) { 0x01.toByte() }),
+                OPKWire(id = 102, pub = ByteArray(32) { 0x02.toByte() }),
+            )
         val sig = ByteArray(64) { 0xFF.toByte() }
         val original = PreKeyBundlePayload(keys = keys, sig = sig)
         val encoded = json.encodeToString(MailboxPayload.serializer(), original)
@@ -81,9 +85,14 @@ class MailboxMessageTest {
     fun `EpochRotationPayload serialises and deserialises`() {
         val newEkPub = ByteArray(32) { 0xAA.toByte() }
         val sig = ByteArray(64) { 0xBB.toByte() }
-        val original = EpochRotationPayload(
-            epoch = 43, opkId = 101, newEkPub = newEkPub, ts = 1711152000L, sig = sig
-        )
+        val original =
+            EpochRotationPayload(
+                epoch = 43,
+                opkId = 101,
+                newEkPub = newEkPub,
+                ts = 1711152000L,
+                sig = sig,
+            )
         val encoded = json.encodeToString(MailboxPayload.serializer(), original)
         val decoded = json.decodeFromString<MailboxPayload>(encoded)
         assertIs<EpochRotationPayload>(decoded)
@@ -96,9 +105,14 @@ class MailboxMessageTest {
 
     @Test
     fun `EpochRotationPayload uses snake_case field names`() {
-        val payload = EpochRotationPayload(
-            epoch = 1, opkId = 5, newEkPub = ByteArray(32), ts = 0L, sig = ByteArray(64)
-        )
+        val payload =
+            EpochRotationPayload(
+                epoch = 1,
+                opkId = 5,
+                newEkPub = ByteArray(32),
+                ts = 0L,
+                sig = ByteArray(64),
+            )
         val encoded = json.encodeToString(MailboxPayload.serializer(), payload)
         assert(encoded.contains("\"opk_id\"")) { "Expected opk_id in: $encoded" }
         assert(encoded.contains("\"new_ek_pub\"")) { "Expected new_ek_pub in: $encoded" }
@@ -133,12 +147,13 @@ class MailboxMessageTest {
 
     @Test
     fun `all four payload types round-trip via sealed class deserializer`() {
-        val payloads: List<MailboxPayload> = listOf(
-            EncryptedLocationPayload(epoch = 1, seq = "1", ct = ByteArray(32)),
-            PreKeyBundlePayload(keys = emptyList(), sig = ByteArray(64)),
-            EpochRotationPayload(epoch = 1, opkId = 1, newEkPub = ByteArray(32), ts = 0L, sig = ByteArray(64)),
-            RatchetAckPayload(epochSeen = 1, ts = 0L, sig = ByteArray(64)),
-        )
+        val payloads: List<MailboxPayload> =
+            listOf(
+                EncryptedLocationPayload(epoch = 1, seq = "1", ct = ByteArray(32)),
+                PreKeyBundlePayload(keys = emptyList(), sig = ByteArray(64)),
+                EpochRotationPayload(epoch = 1, opkId = 1, newEkPub = ByteArray(32), ts = 0L, sig = ByteArray(64)),
+                RatchetAckPayload(epochSeen = 1, ts = 0L, sig = ByteArray(64)),
+            )
         for (payload in payloads) {
             val encoded = json.encodeToString(MailboxPayload.serializer(), payload)
             val decoded = json.decodeFromString<MailboxPayload>(encoded)

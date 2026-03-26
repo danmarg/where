@@ -12,7 +12,10 @@ expect fun currentTimeSeconds(): Long
  * @param ts                Unix timestamp from the incoming message.
  * @param epochPeriodSeconds Epoch period T in seconds (default: 600 = 10 min).
  */
-fun isTimestampFresh(ts: Long, epochPeriodSeconds: Long = 600L): Boolean {
+fun isTimestampFresh(
+    ts: Long,
+    epochPeriodSeconds: Long = 600L,
+): Boolean {
     val now = currentTimeSeconds()
     val gracePeriod = epochPeriodSeconds + 5 * 60L
     return ts in (now - gracePeriod)..(now + gracePeriod)

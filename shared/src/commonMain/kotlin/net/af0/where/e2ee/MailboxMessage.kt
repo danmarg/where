@@ -19,11 +19,12 @@ object ByteArrayBase64Serializer : KSerializer<ByteArray> {
     override val descriptor: SerialDescriptor =
         PrimitiveSerialDescriptor("ByteArrayBase64", PrimitiveKind.STRING)
 
-    override fun serialize(encoder: Encoder, value: ByteArray) =
-        encoder.encodeString(Base64.encode(value))
+    override fun serialize(
+        encoder: Encoder,
+        value: ByteArray,
+    ) = encoder.encodeString(Base64.encode(value))
 
-    override fun deserialize(decoder: Decoder): ByteArray =
-        Base64.decode(decoder.decodeString())
+    override fun deserialize(decoder: Decoder): ByteArray = Base64.decode(decoder.decodeString())
 }
 
 /**

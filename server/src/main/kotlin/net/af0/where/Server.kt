@@ -1,5 +1,6 @@
 package net.af0.where
 
+import io.ktor.http.*
 import io.ktor.serialization.kotlinx.*
 import io.ktor.serialization.kotlinx.json.*
 import io.ktor.server.application.*
@@ -8,7 +9,6 @@ import io.ktor.server.netty.*
 import io.ktor.server.plugins.calllogging.*
 import io.ktor.server.plugins.contentnegotiation.*
 import io.ktor.server.request.*
-import io.ktor.http.*
 import io.ktor.server.response.*
 import io.ktor.server.routing.*
 import io.ktor.server.websocket.*
@@ -23,7 +23,11 @@ import net.af0.where.model.WsMessage
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.ConcurrentLinkedQueue
 
-private val json = Json { classDiscriminator = "type"; ignoreUnknownKeys = true }
+private val json =
+    Json {
+        classDiscriminator = "type"
+        ignoreUnknownKeys = true
+    }
 
 /** TTL for mailbox messages: 60 minutes. */
 private const val MAILBOX_TTL_MS = 60 * 60 * 1000L
@@ -40,7 +44,10 @@ class MailboxState {
     private val mailboxes = ConcurrentHashMap<String, ConcurrentLinkedQueue<MailboxEntry>>()
 
     /** Store [payload] under [token]. Expired entries in the same queue are pruned first. */
-    fun post(token: String, payload: JsonElement) {
+    fun post(
+        token: String,
+        payload: JsonElement,
+    ) {
         val queue = mailboxes.getOrPut(token) { ConcurrentLinkedQueue() }
         val now = System.currentTimeMillis()
         queue.removeIf { it.expiresAt <= now }
@@ -98,10 +105,11 @@ fun Application.module(state: ServerState = ServerState()) {
         // ---------------------------------------------------------------------------
 
         post("/inbox/{token}") {
-            val token = call.parameters["token"] ?: run {
-                call.respond(HttpStatusCode.BadRequest, "token required")
-                return@post
-            }
+            val token =
+                call.parameters["token"] ?: run {
+                    call.respond(HttpStatusCode.BadRequest, "token required")
+                    return@post
+                }
             val body = call.receiveText()
             val payload = runCatching { json.parseToJsonElement(body) }.getOrNull()
             if (payload == null || payload == JsonNull) {
@@ -113,10 +121,11 @@ fun Application.module(state: ServerState = ServerState()) {
         }
 
         get("/inbox/{token}") {
-            val token = call.parameters["token"] ?: run {
-                call.respond(HttpStatusCode.BadRequest, "token required")
-                return@get
-            }
+            val token =
+                call.parameters["token"] ?: run {
+                    call.respond(HttpStatusCode.BadRequest, "token required")
+                    return@get
+                }
             val messages = state.mailbox.drain(token)
             call.respond(JsonArray(messages))
         }
@@ -133,9 +142,10 @@ fun Application.module(state: ServerState = ServerState()) {
             try {
                 for (frame in incoming) {
                     if (frame is Frame.Text) {
-                        val msg = runCatching {
-                            json.decodeFromString<WsMessage>(frame.readText())
-                        }.getOrNull() ?: continue
+                        val msg =
+                            runCatching {
+                                json.decodeFromString<WsMessage>(frame.readText())
+                            }.getOrNull() ?: continue
 
                         if (msg is WsMessage.LocationUpdate && msg.location.userId == userId) {
                             state.locations[userId] = msg.location
@@ -162,10 +172,11 @@ fun Application.module(state: ServerState = ServerState()) {
 private suspend fun ServerState.broadcastLocations() {
     // Encode once, but wrap in a fresh Frame.Text per send to avoid races on the
     // ByteReadPacket cursor that is internal to Frame.
-    val broadcast = json.encodeToString(
-        WsMessage.serializer(),
-        WsMessage.LocationsBroadcast(locations.values.toList())
-    )
+    val broadcast =
+        json.encodeToString(
+            WsMessage.serializer(),
+            WsMessage.LocationsBroadcast(locations.values.toList()),
+        )
     for ((_, session) in sessions) {
         session.launch {
             runCatching { session.send(Frame.Text(broadcast)) }

@@ -22,13 +22,17 @@ internal const val INFO_ROUTING_TOKEN = "Where-v1-RoutingToken"
  * @param rootKey      Current 32-byte root key (used as HKDF salt).
  * @param dhOutput     32-byte X25519 shared secret.
  */
-internal fun kdfRk(rootKey: ByteArray, dhOutput: ByteArray): RatchetStep {
-    val out = hkdfSha256(
-        ikm = dhOutput,
-        salt = rootKey,
-        info = INFO_RATCHET_STEP.encodeToByteArray(),
-        length = 64,
-    )
+internal fun kdfRk(
+    rootKey: ByteArray,
+    dhOutput: ByteArray,
+): RatchetStep {
+    val out =
+        hkdfSha256(
+            ikm = dhOutput,
+            salt = rootKey,
+            info = INFO_RATCHET_STEP.encodeToByteArray(),
+            length = 64,
+        )
     return RatchetStep(
         newRootKey = out.copyOfRange(0, 32),
         newChainKey = out.copyOfRange(32, 64),
@@ -40,12 +44,13 @@ internal fun kdfRk(rootKey: ByteArray, dhOutput: ByteArray): RatchetStep {
  * @param chainKey  Current 32-byte chain key. MUST be zeroed by caller after this returns.
  */
 internal fun kdfCk(chainKey: ByteArray): ChainStep {
-    val out = hkdfSha256(
-        ikm = chainKey,
-        salt = null,
-        info = INFO_MSG_STEP.encodeToByteArray(),
-        length = 76,
-    )
+    val out =
+        hkdfSha256(
+            ikm = chainKey,
+            salt = null,
+            info = INFO_MSG_STEP.encodeToByteArray(),
+            length = 76,
+        )
     return ChainStep(
         newChainKey = out.copyOfRange(0, 32),
         messageKey = out.copyOfRange(32, 64),
@@ -76,11 +81,22 @@ internal fun deriveRoutingToken(
 // Encoding helpers
 // ---------------------------------------------------------------------------
 
-internal fun intToBeBytes(v: Int): ByteArray = byteArrayOf(
-    (v shr 24).toByte(), (v shr 16).toByte(), (v shr 8).toByte(), v.toByte()
-)
+internal fun intToBeBytes(v: Int): ByteArray =
+    byteArrayOf(
+        (v shr 24).toByte(),
+        (v shr 16).toByte(),
+        (v shr 8).toByte(),
+        v.toByte(),
+    )
 
-internal fun longToBeBytes(v: Long): ByteArray = byteArrayOf(
-    (v shr 56).toByte(), (v shr 48).toByte(), (v shr 40).toByte(), (v shr 32).toByte(),
-    (v shr 24).toByte(), (v shr 16).toByte(), (v shr 8).toByte(), v.toByte()
-)
+internal fun longToBeBytes(v: Long): ByteArray =
+    byteArrayOf(
+        (v shr 56).toByte(),
+        (v shr 48).toByte(),
+        (v shr 40).toByte(),
+        (v shr 32).toByte(),
+        (v shr 24).toByte(),
+        (v shr 16).toByte(),
+        (v shr 8).toByte(),
+        v.toByte(),
+    )

@@ -10,7 +10,12 @@ package net.af0.where.e2ee
  * @param info Context / domain-separation string
  * @param length Number of output bytes requested (must be ≤ 255 * 32)
  */
-internal fun hkdfSha256(ikm: ByteArray, salt: ByteArray?, info: ByteArray, length: Int): ByteArray {
+internal fun hkdfSha256(
+    ikm: ByteArray,
+    salt: ByteArray?,
+    info: ByteArray,
+    length: Int,
+): ByteArray {
     require(length > 0) { "length must be > 0" }
     require(length <= 255 * 32) { "length exceeds HKDF maximum" }
 

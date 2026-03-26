@@ -6,7 +6,6 @@ import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 class PreKeyBundleTest {
-
     private fun makeOPKs(count: Int): List<Pair<OPK, ByteArray>> =
         (1..count).map { i ->
             val kp = generateX25519KeyPair()
@@ -38,7 +37,7 @@ class PreKeyBundleTest {
     fun `signedData sorts OPKs by id regardless of input order`() {
         val token = ByteArray(16)
         val opks = makeOPKs(3).map { it.first }
-        val shuffled = listOf(opks[2], opks[0], opks[1])  // out of order
+        val shuffled = listOf(opks[2], opks[0], opks[1]) // out of order
         assertEquals(
             PreKeyBundleOps.signedData(token, opks).toList(),
             PreKeyBundleOps.signedData(token, shuffled).toList(),
@@ -52,8 +51,8 @@ class PreKeyBundleTest {
         val opks = makeOPKs(1).map { it.first }
         assertFalse(
             PreKeyBundleOps.signedData(token1, opks).contentEquals(
-                PreKeyBundleOps.signedData(token2, opks)
-            )
+                PreKeyBundleOps.signedData(token2, opks),
+            ),
         )
     }
 

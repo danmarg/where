@@ -9,15 +9,23 @@ import net.af0.where.model.WsMessage
  * but delegates all JSON encoding/decoding to this object so the protocol stays in KMP.
  */
 object LocationMessageCodec {
-    private val json = Json { classDiscriminator = "type"; ignoreUnknownKeys = true }
+    private val json =
+        Json {
+            classDiscriminator = "type"
+            ignoreUnknownKeys = true
+        }
 
-    fun encodeLocationUpdate(userId: String, lat: Double, lng: Double, timestamp: Long): String {
+    fun encodeLocationUpdate(
+        userId: String,
+        lat: Double,
+        lng: Double,
+        timestamp: Long,
+    ): String {
         val msg = WsMessage.LocationUpdate(UserLocation(userId, lat, lng, timestamp))
         return json.encodeToString(WsMessage.serializer(), msg)
     }
 
-    fun encodeLocationRemove(): String =
-        json.encodeToString(WsMessage.serializer(), WsMessage.LocationRemove)
+    fun encodeLocationRemove(): String = json.encodeToString(WsMessage.serializer(), WsMessage.LocationRemove)
 
     /** Returns the list of users from a locations-broadcast message, or null if not applicable. */
     fun decodeUsers(text: String): List<UserLocation>? {

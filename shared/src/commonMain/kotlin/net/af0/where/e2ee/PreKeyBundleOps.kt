@@ -8,7 +8,6 @@ package net.af0.where.e2ee
  * DH epoch rotation.
  */
 object PreKeyBundleOps {
-
     private const val PROTOCOL_VERSION = 1
 
     /**
@@ -19,7 +18,11 @@ object PreKeyBundleOps {
      * @param sigIkPriv Bob's Ed25519 signing private key (32 bytes).
      * @return 64-byte Ed25519 signature.
      */
-    fun buildSignature(token: ByteArray, opks: List<OPK>, sigIkPriv: ByteArray): ByteArray {
+    fun buildSignature(
+        token: ByteArray,
+        opks: List<OPK>,
+        sigIkPriv: ByteArray,
+    ): ByteArray {
         require(token.size == 16) { "token must be 16 bytes, got ${token.size}" }
         return ed25519Sign(sigIkPriv, signedData(token, opks))
     }
@@ -33,7 +36,12 @@ object PreKeyBundleOps {
      * @param sigIkPub  Bob's Ed25519 signing public key (32 bytes).
      * @return true iff the signature is valid.
      */
-    fun verify(token: ByteArray, opks: List<OPK>, sig: ByteArray, sigIkPub: ByteArray): Boolean {
+    fun verify(
+        token: ByteArray,
+        opks: List<OPK>,
+        sig: ByteArray,
+        sigIkPub: ByteArray,
+    ): Boolean {
         require(token.size == 16) { "token must be 16 bytes, got ${token.size}" }
         return ed25519Verify(sigIkPub, signedData(token, opks), sig)
     }
@@ -51,7 +59,10 @@ object PreKeyBundleOps {
      *
      * OPKs are sorted by id to ensure the encoding is deterministic regardless of input order.
      */
-    internal fun signedData(token: ByteArray, opks: List<OPK>): ByteArray {
+    internal fun signedData(
+        token: ByteArray,
+        opks: List<OPK>,
+    ): ByteArray {
         val sorted = opks.sortedBy { it.id }
         var data = intToBeBytes(PROTOCOL_VERSION) + token + intToBeBytes(sorted.size)
         for (opk in sorted) {
