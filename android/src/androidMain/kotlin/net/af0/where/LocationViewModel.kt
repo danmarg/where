@@ -2,85 +2,176 @@ package net.af0.where
 
 import android.Manifest
 import android.app.Application
+import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import net.af0.where.e2ee.E2eeMailboxClient
+import net.af0.where.e2ee.E2eeStore
+import net.af0.where.e2ee.EncryptedLocationPayload
+import net.af0.where.e2ee.LocationPlaintext
+import net.af0.where.e2ee.Session
 import net.af0.where.model.UserLocation
+import java.security.MessageDigest
 
 class LocationViewModel(
     app: Application,
     private val locationSource: LocationSource = LocationRepository,
 ) : AndroidViewModel(app) {
-    val userId: String = UserPrefs.getUserId(app)
-    private val friendsStore = FriendsStore(app, userId)
+    private val identityKeys = IdentityKeyStore.getOrCreate(app)
+    private val e2eeStore = E2eeStore(SharedPrefsE2eeStorage(app), identityKeys)
 
-    val friendIds: StateFlow<Set<String>> = friendsStore.friendIds
-    val isSharingLocation: StateFlow<Boolean> = friendsStore.isSharingLocation
+    private val myFp: ByteArray by lazy {
+        MessageDigest.getInstance("SHA-256").digest(identityKeys.ik.pub + identityKeys.sigIk.pub)
+    }
 
-    fun addFriend(id: String) = friendsStore.add(id)
+    val userId: String by lazy { myFp.toHexStr().substring(0, 20) }
 
-    fun removeFriend(id: String) = friendsStore.remove(id)
+    private val sharingPrefs = app.getSharedPreferences("where_prefs", Context.MODE_PRIVATE)
+    private val _isSharingLocation = MutableStateFlow(sharingPrefs.getBoolean("is_sharing", true))
+    val isSharingLocation: StateFlow<Boolean> = _isSharingLocation
 
-    fun toggleSharing() = friendsStore.toggleSharing()
+    private val _friendIds = MutableStateFlow(e2eeStore.listFriends().map { it.id }.toSet())
+    val friendIds: StateFlow<Set<String>> = _friendIds
 
-    // All users from server, filtered to self + friends
+    private val friendLocations = MutableStateFlow(emptyMap<String, UserLocation>())
+
     val visibleUsers: StateFlow<List<UserLocation>> =
-        combine(
-            locationSource.users,
-            friendsStore.friendIds,
-        ) { users, friends ->
-            users.filter { it.userId == userId || friends.contains(it.userId) }
+        combine(locationSource.lastLocation, _isSharingLocation, friendLocations) { myLoc, sharing, friendLocs ->
+            buildList {
+                if (myLoc != null && sharing) {
+                    add(UserLocation(userId, myLoc.first, myLoc.second, System.currentTimeMillis() / 1000))
+                }
+                addAll(friendLocs.values)
+            }
         }.stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
 
-    private val syncClient =
-        LocationSyncClient(
-            serverWsUrl = BuildConfig.SERVER_WS_URL,
-            userId = userId,
-            onLocationsUpdate = { locationSource.onUsersUpdate(it) },
-        )
-
     init {
-        syncClient.connect()
+        viewModelScope.launch { pollLoop() }
         viewModelScope.launch {
-            var prevSharing = friendsStore.isSharingLocation.value
-            combine(
-                locationSource.lastLocation,
-                friendsStore.isSharingLocation,
-            ) { loc, sharing -> Pair(loc, sharing) }.collect { (loc, sharing) ->
+            var prevSharing = _isSharingLocation.value
+            combine(locationSource.lastLocation, _isSharingLocation) { loc, sharing ->
+                loc to sharing
+            }.collect { (loc, sharing) ->
                 if (loc != null && sharing) {
-                    syncClient.sendLocation(loc.first, loc.second)
-                } else if (prevSharing && !sharing) {
-                    syncClient.sendLocationRemove()
+                    sendEncryptedLocation(loc.first, loc.second)
                 }
                 if (prevSharing != sharing) {
-                    val intent = Intent(getApplication(), LocationService::class.java)
-                    val hasLocationPermission =
-                        ContextCompat.checkSelfPermission(
-                            getApplication(), Manifest.permission.ACCESS_FINE_LOCATION,
-                        ) == PackageManager.PERMISSION_GRANTED ||
-                            ContextCompat.checkSelfPermission(
-                                getApplication(), Manifest.permission.ACCESS_COARSE_LOCATION,
-                            ) == PackageManager.PERMISSION_GRANTED
-                    if (sharing && hasLocationPermission) {
-                        getApplication<Application>().startForegroundService(intent)
-                    } else if (!sharing) {
-                        getApplication<Application>().stopService(intent)
-                    }
+                    manageForegroundService(sharing)
                 }
                 prevSharing = sharing
             }
         }
     }
 
-    override fun onCleared() {
-        syncClient.disconnect()
-        super.onCleared()
+    fun toggleSharing() {
+        val new = !_isSharingLocation.value
+        _isSharingLocation.value = new
+        sharingPrefs.edit().putBoolean("is_sharing", new).apply()
     }
+
+    // QR-based friend adding is handled via the invite/scan flow; this stub satisfies the UI API.
+    fun addFriend(
+        @Suppress("UNUSED_PARAMETER") id: String,
+    ) = Unit
+
+    fun removeFriend(id: String) {
+        e2eeStore.deleteFriend(id)
+        _friendIds.value = e2eeStore.listFriends().map { it.id }.toSet()
+        friendLocations.value -= id
+    }
+
+    private suspend fun pollLoop() {
+        while (true) {
+            pollAllFriends()
+            delay(60_000)
+        }
+    }
+
+    private suspend fun pollAllFriends() {
+        for (friend in e2eeStore.listFriends()) {
+            try {
+                val hexToken = friend.session.routingToken.toHexStr()
+                val messages = E2eeMailboxClient.poll(BuildConfig.SERVER_HTTP_URL, hexToken)
+                val friendFp = MessageDigest.getInstance("SHA-256").digest(friend.ikPub + friend.sigIkPub)
+                var session = friend.session
+                for (msg in messages.filterIsInstance<EncryptedLocationPayload>().sortedBy { it.seqAsLong() }) {
+                    val result =
+                        Session.decryptLocation(
+                            state = session,
+                            ct = msg.ct,
+                            seq = msg.seqAsLong(),
+                            senderFp = friendFp,
+                            recipientFp = myFp,
+                        ) ?: continue
+                    session = result.first
+                    val location = result.second
+                    friendLocations.value += (friend.id to UserLocation(friend.id, location.lat, location.lng, location.ts))
+                }
+                if (session !== friend.session) {
+                    e2eeStore.updateSession(friend.id, session)
+                }
+            } catch (_: Exception) {
+                // ignore transient poll failures
+            }
+        }
+    }
+
+    private suspend fun sendEncryptedLocation(
+        lat: Double,
+        lng: Double,
+    ) {
+        val ts = System.currentTimeMillis() / 1000
+        val plaintext = LocationPlaintext(lat = lat, lng = lng, acc = 0.0, ts = ts)
+        for (friend in e2eeStore.listFriends()) {
+            try {
+                val friendFp = MessageDigest.getInstance("SHA-256").digest(friend.ikPub + friend.sigIkPub)
+                val (newSession, ct) =
+                    Session.encryptLocation(
+                        state = friend.session,
+                        location = plaintext,
+                        senderFp = myFp,
+                        recipientFp = friendFp,
+                    )
+                e2eeStore.updateSession(friend.id, newSession)
+                E2eeMailboxClient.post(
+                    baseUrl = BuildConfig.SERVER_HTTP_URL,
+                    token = friend.session.routingToken.toHexStr(),
+                    payload =
+                        EncryptedLocationPayload(
+                            epoch = newSession.epoch,
+                            seq = newSession.sendSeq.toString(),
+                            ct = ct,
+                        ),
+                )
+            } catch (_: Exception) {
+                // ignore transient send failures
+            }
+        }
+    }
+
+    private fun manageForegroundService(sharing: Boolean) {
+        val intent = Intent(getApplication(), LocationService::class.java)
+        val hasLocationPermission =
+            ContextCompat.checkSelfPermission(getApplication(), Manifest.permission.ACCESS_FINE_LOCATION) ==
+                PackageManager.PERMISSION_GRANTED ||
+                ContextCompat.checkSelfPermission(getApplication(), Manifest.permission.ACCESS_COARSE_LOCATION) ==
+                PackageManager.PERMISSION_GRANTED
+        if (sharing && hasLocationPermission) {
+            getApplication<Application>().startForegroundService(intent)
+        } else if (!sharing) {
+            getApplication<Application>().stopService(intent)
+        }
+    }
+
+    private fun ByteArray.toHexStr(): String = joinToString("") { (it.toInt() and 0xFF).toString(16).padStart(2, '0') }
 }
