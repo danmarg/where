@@ -174,6 +174,21 @@ The `sig` field is a mandatory Ed25519 signature over the concatenation of the r
 
 Bob scans the QR code. **Bob MUST verify `sig` over `(ik_pub || ek_pub || sig_pub)` using the supplied `sig_pub` before proceeding.** Abort and discard if verification fails.
 
+**Discovery Token (Pre-Session Rendezvous):**
+
+After Alice generates her QR, she does not yet know Bob's public keys and therefore cannot compute the pairwise routing token `T_AB_0`. A discovery token bridges this gap. Both parties derive it independently from `EK_A.pub`, which is already present in the QR payload:
+
+```
+discovery_token_A = HKDF-SHA-256(IKM  = Alice.EK_A.pub,
+                                  salt = 0x00...00,   // 32 zero bytes
+                                  info = "Where-v1-Discovery")[0:16]
+```
+
+- Alice begins polling `GET /inbox/{hex(discovery_token_A)}` as soon as she displays the QR.
+- Bob, after verifying the QR signature, derives the same `discovery_token_A` and POSTs his `KeyExchangeInit` to `POST /inbox/{hex(discovery_token_A)}`.
+- Once Alice retrieves and processes the `KeyExchangeInit`, she switches to polling the pairwise `T_AB_0` token for all subsequent messages.
+- The discovery token is single-use and ephemeral: implementations MUST discard it after `aliceProcessInit` completes. Because `EK_A` is freshly generated per QR, each invite produces a unique, unlinkable discovery token.
+
 **Key Agreement and Routing Token Derivation:**
 
 Bob generates an ephemeral key pair `EK_B`, and computes a 3-term Diffie-Hellman exchange:
@@ -210,7 +225,7 @@ Bob transmits his public key material (no encrypted SK — Alice recomputes it i
 }
 ```
 
-This message is posted to the server's mailbox API. The server sees only the opaque token and the public key material. It does not know who the sender or recipient is.
+Bob POSTs this message to `POST /inbox/{hex(discovery_token_A)}` — the pre-session rendezvous address Alice is already polling. The server sees only opaque tokens and public key material; it does not know who the sender or recipient is.
 
 **Key Confirmation:**
 Immediately after posting `KeyExchangeInit`, Bob MUST post a `KeyConfirmation` message to `T_AB_0`. This allows Alice to verify that both parties have derived the same `SK` before any location data is shared.
@@ -247,15 +262,15 @@ where://add?ik=<base64_ik_pub>&ek=<base64_ek_pub>&sig_pub=<base64_sig_pub>&fp=<f
 
 `ek` carries Alice's ephemeral public key `EK_A.pub`, the same value encoded in the Option A QR code. It is required: without it, Bob cannot complete the 3-term DH exchange (DH2 and DH3 depend on Alice's ephemeral key) and the key agreement is not cryptographically equivalent to Option A.
 
-The key agreement proceeds identically to Option A. The app MUST display a prominent prompt encouraging fingerprint verification after the friend is added via this path.
+The key agreement proceeds identically to Option A, including the discovery token mechanism: Alice's app polls `GET /inbox/{hex(discovery_token_A)}` while the pending invite is active, and Bob POSTs his `KeyExchangeInit` there after deriving `discovery_token_A` from the link's `ek` parameter. The app MUST display a prominent prompt encouraging fingerprint verification after the friend is added via this path.
 
 ### 4.4 What the Server Learns from Key Exchange
 
-- A message was posted to and polled from an opaque 16-byte token.
-- Both public keys (they are intentionally public material). Note that Bob's `ik_pub` is his stable long-term identity key; a passive observer who captures this message retains a permanent identifier for Bob's device. See §2.3 for the threat model treatment of this trade-off.
-- Nothing about the resulting shared secret `SK` or the identities of the participants.
+- **Discovery phase:** A 16-byte token was used briefly for rendezvous. This token is derived from `EK_A.pub` (ephemeral, per-invite), so the server cannot link it to Alice's long-term identity. The server observes that some IP polled it and another IP posted to it, but learns nothing about who those IPs represent.
+- **After key exchange:** Both public keys are in the `KeyExchangeInit` payload (they are intentionally public material). Note that Bob's `ik_pub` is his stable long-term identity key; a passive observer who captures this message retains a permanent identifier for Bob's device. See §2.3 for the threat model treatment of this trade-off.
+- **Nothing** about the resulting shared secret `SK` or the identities of the participants.
 
-The server cannot derive `SK` or link the routing token to a real identity without one of the parties' private keys.
+The server cannot derive `SK` or link any routing token to a real identity without one of the parties' private keys. An honest-but-curious server can observe that the same IP addresses that interacted with `discovery_token_A` later interact with `T_AB_0`; this timing correlation is an accepted metadata trade-off documented in §2.3.
 
 ---
 
@@ -542,6 +557,7 @@ Because of the indistinguishable response invariant (§7.2), clients can impleme
 | Message encryption | AES-256-GCM | 256-bit | Per-message key; deleted after use |
 | Message authentication | AES-256-GCM tag | 128-bit | Included in AEAD output; covers AAD |
 | Key exchange KDF | HKDF-SHA-256 | — | `info = "Where-v1-KeyExchange"` |
+| Discovery token | HKDF-SHA-256 | 16-byte output | `ikm = EK_A.pub`, `salt = 0x00*32`, `info = "Where-v1-Discovery"` (§4.2) |
 
 ### 8.2 Session State Per Friend-Pair
 

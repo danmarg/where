@@ -238,4 +238,47 @@ class KeyExchangeTest {
         val sn2 = safetyNumber(a.ik.pub, a.sigIk.pub, c.ik.pub, c.sigIk.pub)
         assertNotEquals(sn1.toList(), sn2.toList())
     }
+
+    // ---------------------------------------------------------------------------
+    // Discovery token (danmarg/where#5)
+    // ---------------------------------------------------------------------------
+
+    @Test
+    fun `deriveDiscoveryToken produces 16 bytes`() {
+        val ekPub = ByteArray(32) { it.toByte() }
+        assertEquals(16, deriveDiscoveryToken(ekPub).size)
+    }
+
+    @Test
+    fun `deriveDiscoveryToken is deterministic`() {
+        val ekPub = ByteArray(32) { it.toByte() }
+        assertContentEquals(deriveDiscoveryToken(ekPub), deriveDiscoveryToken(ekPub))
+    }
+
+    @Test
+    fun `deriveDiscoveryToken differs for distinct ephemeral keys`() {
+        val ek1 = generateX25519KeyPair().pub
+        val ek2 = generateX25519KeyPair().pub
+        assertNotEquals(deriveDiscoveryToken(ek1).toList(), deriveDiscoveryToken(ek2).toList())
+    }
+
+    @Test
+    fun `QrPayload discoveryToken matches deriveDiscoveryToken on ekPub`() {
+        val alice = makeIdentity()
+        val (qr, _) = KeyExchange.aliceCreateQrPayload(alice, "Alice")
+        assertContentEquals(deriveDiscoveryToken(qr.ekPub), qr.discoveryToken())
+    }
+
+    @Test
+    fun `discovery token is distinct from session routing token`() {
+        // Ensures the discovery address and the pairwise session address never collide.
+        val alice = makeIdentity()
+        val bob = makeIdentity()
+        val aliceFp = fingerprint(alice.ik.pub, alice.sigIk.pub)
+        val bobFp = fingerprint(bob.ik.pub, bob.sigIk.pub)
+        val (qr, aliceEkPriv) = KeyExchange.aliceCreateQrPayload(alice, "Alice")
+        val (initMsg, _) = KeyExchange.bobProcessQr(qr, bob, aliceFp, bobFp)
+        val aliceSession = KeyExchange.aliceProcessInit(initMsg, alice, aliceEkPriv, aliceFp, bobFp)
+        assertNotEquals(qr.discoveryToken().toList(), aliceSession.routingToken.toList())
+    }
 }
