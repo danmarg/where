@@ -18,9 +18,13 @@ import kotlinx.coroutines.launch
 import net.af0.where.e2ee.E2eeMailboxClient
 import net.af0.where.e2ee.E2eeStore
 import net.af0.where.e2ee.EncryptedLocationPayload
+import net.af0.where.e2ee.EpochRotationPayload
+import net.af0.where.e2ee.FriendEntry
 import net.af0.where.e2ee.KeyExchangeInitPayload
 import net.af0.where.e2ee.LocationPlaintext
+import net.af0.where.e2ee.PreKeyBundlePayload
 import net.af0.where.e2ee.QrPayload
+import net.af0.where.e2ee.RatchetAckPayload
 import net.af0.where.e2ee.Session
 import net.af0.where.e2ee.discoveryToken
 import net.af0.where.model.UserLocation
@@ -105,11 +109,11 @@ class LocationViewModel(
         _pendingInviteQr.value = null
     }
 
-    /** Bob: parse scanned URL, run key exchange, POST init to discovery token. Returns true on success. */
+    /** Bob: parse scanned URL, run key exchange, POST init + initial OPK bundle. */
     fun processQrUrl(url: String): Boolean {
         val qr = QrUtils.urlToPayload(url) ?: return false
         return try {
-            val (initPayload, _) = e2eeStore.processScannedQr(qr)
+            val (initPayload, bobEntry) = e2eeStore.processScannedQr(qr)
             _friendIds.value = e2eeStore.listFriends().map { it.id }.toSet()
             viewModelScope.launch {
                 try {
@@ -117,10 +121,21 @@ class LocationViewModel(
                     E2eeMailboxClient.post(BuildConfig.SERVER_HTTP_URL, discoveryHex, initPayload)
                 } catch (_: Exception) {
                 }
+                // Bob posts his initial OPK bundle so Alice can initiate epoch rotation.
+                postOpkBundle(bobEntry)
             }
             true
         } catch (_: Exception) {
             false
+        }
+    }
+
+    private suspend fun postOpkBundle(friend: FriendEntry) {
+        try {
+            val bundle = e2eeStore.generateOpkBundle(friend.id) ?: return
+            val hexToken = friend.session.routingToken.toHexStr()
+            E2eeMailboxClient.post(BuildConfig.SERVER_HTTP_URL, hexToken, bundle)
+        } catch (_: Exception) {
         }
     }
 
@@ -156,7 +171,37 @@ class LocationViewModel(
                 val hexToken = friend.session.routingToken.toHexStr()
                 val messages = E2eeMailboxClient.poll(BuildConfig.SERVER_HTTP_URL, hexToken)
                 val friendFp = MessageDigest.getInstance("SHA-256").digest(friend.ikPub + friend.sigIkPub)
-                var session = friend.session
+
+                // --- Epoch rotation first: changes session/token for subsequent messages ---
+                for (msg in messages.filterIsInstance<EpochRotationPayload>()) {
+                    val ack = try {
+                        e2eeStore.processEpochRotation(friend.id, msg)
+                    } catch (_: IllegalArgumentException) {
+                        null // bad signature — discard
+                    } ?: continue
+
+                    val newToken = e2eeStore.getFriend(friend.id)?.session?.routingToken?.toHexStr() ?: break
+                    try {
+                        E2eeMailboxClient.post(BuildConfig.SERVER_HTTP_URL, newToken, ack)
+                    } catch (_: Exception) {
+                    }
+                    // Replenish OPKs on the new token so Alice can rotate again.
+                    val bundle = e2eeStore.generateOpkBundle(friend.id)
+                    if (bundle != null) {
+                        try {
+                            E2eeMailboxClient.post(BuildConfig.SERVER_HTTP_URL, newToken, bundle)
+                        } catch (_: Exception) {
+                        }
+                    }
+                }
+
+                // --- Cache incoming OPK bundles (Alice stores Bob's prekeys) ---
+                for (msg in messages.filterIsInstance<PreKeyBundlePayload>()) {
+                    e2eeStore.storeOpkBundle(friend.id, msg)
+                }
+
+                // --- Decrypt location updates in seq order ---
+                var session = e2eeStore.getFriend(friend.id)?.session ?: continue
                 for (msg in messages.filterIsInstance<EncryptedLocationPayload>().sortedBy { it.seqAsLong() }) {
                     val result =
                         Session.decryptLocation(
@@ -170,8 +215,19 @@ class LocationViewModel(
                     val location = result.second
                     friendLocations.value += (friend.id to UserLocation(friend.id, location.lat, location.lng, location.ts))
                 }
-                if (session !== friend.session) {
+                if (session !== (e2eeStore.getFriend(friend.id)?.session)) {
                     e2eeStore.updateSession(friend.id, session)
+                }
+
+                // --- Validate RatchetAck (informational for Alice) ---
+                for (msg in messages.filterIsInstance<RatchetAckPayload>()) {
+                    e2eeStore.processRatchetAck(friend.id, msg)
+                }
+
+                // --- Bob: proactively replenish OPKs if running low ---
+                if (e2eeStore.shouldReplenishOpks(friend.id)) {
+                    val current = e2eeStore.getFriend(friend.id) ?: continue
+                    postOpkBundle(current)
                 }
             } catch (_: Exception) {
                 // ignore transient poll failures
@@ -187,10 +243,25 @@ class LocationViewModel(
         val plaintext = LocationPlaintext(lat = lat, lng = lng, acc = 0.0, ts = ts)
         for (friend in e2eeStore.listFriends()) {
             try {
+                // Alice: rotate epoch when due, before sending the next message.
+                if (e2eeStore.shouldRotateEpoch(friend.id)) {
+                    val oldToken = friend.session.routingToken.toHexStr()
+                    val rotPayload = e2eeStore.initiateEpochRotation(friend.id)
+                    if (rotPayload != null) {
+                        // Post rotation announcement to the OLD token so Bob can process it.
+                        try {
+                            E2eeMailboxClient.post(BuildConfig.SERVER_HTTP_URL, oldToken, rotPayload)
+                        } catch (_: Exception) {
+                        }
+                    }
+                }
+
+                // Re-fetch after potential rotation to use the current session/token.
+                val current = e2eeStore.getFriend(friend.id) ?: continue
                 val friendFp = MessageDigest.getInstance("SHA-256").digest(friend.ikPub + friend.sigIkPub)
                 val (newSession, ct) =
                     Session.encryptLocation(
-                        state = friend.session,
+                        state = current.session,
                         location = plaintext,
                         senderFp = myFp,
                         recipientFp = friendFp,
@@ -198,7 +269,7 @@ class LocationViewModel(
                 e2eeStore.updateSession(friend.id, newSession)
                 E2eeMailboxClient.post(
                     baseUrl = BuildConfig.SERVER_HTTP_URL,
-                    token = friend.session.routingToken.toHexStr(),
+                    token = current.session.routingToken.toHexStr(),
                     payload =
                         EncryptedLocationPayload(
                             epoch = newSession.epoch,
