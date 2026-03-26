@@ -170,7 +170,11 @@ Alice opens "Add Friend" and generates a fresh ephemeral key pair `EK_A`. She th
 }
 ```
 
-The `sig` field is a mandatory Ed25519 signature over the concatenation of the raw (decoded) `ik_pub`, `ek_pub`, and `sig_pub` bytes, produced by Alice using her `SigIK.priv`. This closes the asymmetric authentication gap: Bob already signs his `KeyExchangeInit` so that Alice can authenticate him; Alice's QR signature lets Bob authenticate Alice's QR payload symmetrically. Without it, an attacker who replaces Alice's QR code before Bob scans it can receive Bob's `KeyExchangeInit` and impersonate Alice to Bob (see §2.3).
+The `sig` field is a mandatory Ed25519 signature over the concatenation of the
+raw (decoded) `ik_pub`, `ek_pub`, and `sig_pub` bytes, produced by Alice using
+her `SigIK.priv`.  This ensures against partial substitution attacks, where an
+ephemeral key (but not an identity key) can be swapped out by an attacker
+without being detectable later (by comparing safety numbers).
 
 Bob scans the QR code. **Bob MUST verify `sig` over `(ik_pub || ek_pub || sig_pub)` using the supplied `sig_pub` before proceeding.** Abort and discard if verification fails.
 
@@ -242,12 +246,13 @@ Alice then recomputes the same DH operations (using her `IK_A.priv` and `EK_A.pr
 
 Users share a link through any out-of-band channel (iMessage, Signal, in-person). The link is:
 ```
-where://add?ik=<base64_ik_pub>&ek=<base64_ek_pub>&sig_pub=<base64_sig_pub>&fp=<fingerprint>&name=<name>
+where://add?ik=<base64_ik_pub>&ek=<base64_ek_pub>&sig_pub=<base64_sig_pub>&fp=<fingerprint>&name=<name>&sig=<base64
+Ed25519 signature over (ik_pub || ek_pub || sig_pub)>
 ```
 
 `ek` carries Alice's ephemeral public key `EK_A.pub`, the same value encoded in the Option A QR code. It is required: without it, Bob cannot complete the 3-term DH exchange (DH2 and DH3 depend on Alice's ephemeral key) and the key agreement is not cryptographically equivalent to Option A.
 
-The key agreement proceeds identically to Option A. The app MUST display a prominent prompt encouraging fingerprint verification after the friend is added via this path.
+The key agreement proceeds identically to Option A.
 
 ### 4.4 What the Server Learns from Key Exchange
 
