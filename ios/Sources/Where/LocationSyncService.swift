@@ -149,6 +149,16 @@ final class LocationSyncService: ObservableObject {
     @Published var isSharingLocation: Bool {
         didSet { UserDefaults.standard.set(isSharingLocation, forKey: "where_is_sharing") }
     }
+    @Published var displayName: String {
+        didSet { UserDefaults.standard.set(displayName, forKey: "display_name") }
+    }
+    @Published var pausedFriendIds: Set<String> {
+        didSet { UserDefaults.standard.set(Array(pausedFriendIds), forKey: "paused_friends") }
+    }
+
+    @Published var pendingQrForNaming: QrPayload? = nil
+    @Published var pendingInitPayload: KeyExchangeInitPayload? = nil
+    @Published var hasPendingInit: Bool = false
 
     private let identityKeys: IdentityKeys
     let e2eeStore: E2eeStore
@@ -162,8 +172,15 @@ final class LocationSyncService: ObservableObject {
     init() {
         identityKeys = IdentityKeyStore.shared
         e2eeStore = E2eeStore(storage: UserDefaultsE2eeStorage(), myIdentity: identityKeys)
-        let saved = UserDefaults.standard.object(forKey: "where_is_sharing")
-        isSharingLocation = saved != nil ? UserDefaults.standard.bool(forKey: "where_is_sharing") : true
+        
+        let savedSharing = UserDefaults.standard.object(forKey: "where_is_sharing")
+        isSharingLocation = savedSharing != nil ? UserDefaults.standard.bool(forKey: "where_is_sharing") : true
+        
+        displayName = UserDefaults.standard.string(forKey: "display_name") ?? ""
+        
+        let savedPaused = UserDefaults.standard.stringArray(forKey: "paused_friends") ?? []
+        pausedFriendIds = Set(savedPaused)
+        
         friends = e2eeStore.listFriends() as! [FriendEntry]
         startPolling()
     }
@@ -190,6 +207,7 @@ final class LocationSyncService: ObservableObject {
         let myFp = identityFingerprint(ikPub: identityKeys.ik.pub, sigIkPub: identityKeys.sigIk.pub)
         let friendList = e2eeStore.listFriends() as! [FriendEntry]
         for friend in friendList {
+            if pausedFriendIds.contains(friend.id) { continue }
             let friendFp = identityFingerprint(ikPub: friend.ikPub, sigIkPub: friend.sigIkPub)
 
             // Alice: rotate epoch when due, before encrypting the next message.
@@ -220,7 +238,7 @@ final class LocationSyncService: ObservableObject {
     }
 
     func createInvite() {
-        let qr = e2eeStore.createInvite(suggestedName: "Me")
+        let qr = e2eeStore.createInvite(suggestedName: displayName.isEmpty ? "Me" : displayName)
         pendingInviteQr = qr
     }
 
@@ -232,12 +250,26 @@ final class LocationSyncService: ObservableObject {
     @discardableResult
     func processQrUrl(_ url: String) -> Bool {
         guard let qr = urlToQrPayload(url) else { return false }
-        guard let result = try? e2eeStore.processScannedQr(qr: qr) else { return false }
+        pendingQrForNaming = qr
+        return true
+    }
+
+    func confirmQrScan(qr: QrPayload, friendName: String) {
+        pendingQrForNaming = nil
+        let qrWithName = QrPayload(
+            ikPub: qr.ikPub,
+            ekPub: qr.ekPub,
+            sigPub: qr.sigPub,
+            suggestedName: friendName,
+            fingerprint: qr.fingerprint,
+            sig: qr.sig
+        )
+        guard let result = try? e2eeStore.processScannedQr(qr: qrWithName) else { return }
         let initPayload = result.first as! KeyExchangeInitPayload
         let bobEntry = result.second as! FriendEntry
         friends = e2eeStore.listFriends() as! [FriendEntry]
-        // POST KeyExchangeInit to discovery token so Alice can find it.
-        let discoveryHex = toHex(qr.discoveryToken())
+        
+        let discoveryHex = toHex(qrWithName.discoveryToken())
         let payload: [String: Any] = [
             "type": "KeyExchangeInit",
             "token": initPayload.token,
@@ -248,10 +280,31 @@ final class LocationSyncService: ObservableObject {
         ]
         Task {
             await postToMailbox(token: discoveryHex, body: payload)
-            // Bob posts initial OPK bundle so Alice can initiate epoch rotation.
             await postOpkBundle(friend: bobEntry)
         }
-        return true
+    }
+
+    func confirmPendingInit(name: String) {
+        guard let payload = pendingInitPayload else { return }
+        pendingInitPayload = nil
+        hasPendingInit = false
+        _ = try? e2eeStore.processKeyExchangeInit(payload: payload, bobName: name)
+        friends = e2eeStore.listFriends() as! [FriendEntry]
+    }
+
+    func togglePauseFriend(id: String) {
+        if pausedFriendIds.contains(id) {
+            pausedFriendIds.remove(id)
+        } else {
+            pausedFriendIds.insert(id)
+        }
+    }
+
+    func removeFriend(id: String) {
+        e2eeStore.deleteFriend(id: id)
+        friends = e2eeStore.listFriends() as! [FriendEntry]
+        friendLocations.removeValue(forKey: id)
+        pausedFriendIds.remove(id)
     }
 
     // MARK: - Private helpers
@@ -350,11 +403,12 @@ final class LocationSyncService: ObservableObject {
                 sigPub: kotlinByteArray(from: sigPub),
                 sig: kotlinByteArray(from: sig)
             )
-            // processKeyExchangeInit throws IllegalArgumentException on bad signature.
-            guard let result = try? e2eeStore.processKeyExchangeInit(payload: initPayload, bobName: "Friend"),
-                  result != nil else { continue }
+            
+            // Found init payload! Show naming dialog instead of processing immediately.
+            pendingInitPayload = initPayload
+            hasPendingInit = true
             pendingInviteQr = nil
-            friends = e2eeStore.listFriends() as! [FriendEntry]
+            e2eeStore.clearInvite()
             break
         }
     }

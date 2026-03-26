@@ -47,13 +47,27 @@ class LocationViewModel(
     private val _isSharingLocation = MutableStateFlow(sharingPrefs.getBoolean("is_sharing", true))
     val isSharingLocation: StateFlow<Boolean> = _isSharingLocation
 
-    private val _friendIds = MutableStateFlow(e2eeStore.listFriends().map { it.id }.toSet())
-    val friendIds: StateFlow<Set<String>> = _friendIds
+    private val _displayName = MutableStateFlow(sharingPrefs.getString("display_name", "") ?: "")
+    val displayName: StateFlow<String> = _displayName
+
+    private val _friends = MutableStateFlow(e2eeStore.listFriends())
+    val friends: StateFlow<List<FriendEntry>> = _friends
+
+    private val _pausedFriendIds = MutableStateFlow(
+        sharingPrefs.getString("paused_friends", "")?.split(",")?.filter { it.isNotEmpty() }?.toSet() ?: emptySet()
+    )
+    val pausedFriendIds: StateFlow<Set<String>> = _pausedFriendIds
 
     private val friendLocations = MutableStateFlow(emptyMap<String, UserLocation>())
 
     private val _pendingInviteQr = MutableStateFlow<QrPayload?>(null)
     val pendingInviteQr: StateFlow<QrPayload?> = _pendingInviteQr
+
+    private val _pendingQrForNaming = MutableStateFlow<QrPayload?>(null)
+    val pendingQrForNaming: StateFlow<QrPayload?> = _pendingQrForNaming
+
+    private val _pendingInitPayload = MutableStateFlow<KeyExchangeInitPayload?>(null)
+    val pendingInitPayload: StateFlow<KeyExchangeInitPayload?> = _pendingInitPayload
 
     val visibleUsers: StateFlow<List<UserLocation>> =
         combine(locationSource.lastLocation, _isSharingLocation, friendLocations) { myLoc, sharing, friendLocs ->
@@ -83,25 +97,37 @@ class LocationViewModel(
         }
     }
 
+    fun setDisplayName(name: String) {
+        _displayName.value = name
+        sharingPrefs.edit().putString("display_name", name).apply()
+    }
+
     fun toggleSharing() {
         val new = !_isSharingLocation.value
         _isSharingLocation.value = new
         sharingPrefs.edit().putBoolean("is_sharing", new).apply()
     }
 
-    // QR-based friend adding is handled via the invite/scan flow; this stub satisfies the UI API.
-    fun addFriend(
-        @Suppress("UNUSED_PARAMETER") id: String,
-    ) = Unit
+    fun togglePauseFriend(id: String) {
+        val current = _pausedFriendIds.value
+        val new = if (id in current) current - id else current + id
+        _pausedFriendIds.value = new
+        sharingPrefs.edit().putString("paused_friends", new.joinToString(",")).apply()
+    }
 
     fun removeFriend(id: String) {
         e2eeStore.deleteFriend(id)
-        _friendIds.value = e2eeStore.listFriends().map { it.id }.toSet()
+        _friends.value = e2eeStore.listFriends()
         friendLocations.value -= id
+        if (id in _pausedFriendIds.value) {
+            val newPaused = _pausedFriendIds.value - id
+            _pausedFriendIds.value = newPaused
+            sharingPrefs.edit().putString("paused_friends", newPaused.joinToString(",")).apply()
+        }
     }
 
     fun createInvite() {
-        _pendingInviteQr.value = e2eeStore.createInvite("Me")
+        _pendingInviteQr.value = e2eeStore.createInvite(_displayName.value.ifEmpty { "Me" })
     }
 
     fun clearInvite() {
@@ -109,25 +135,48 @@ class LocationViewModel(
         _pendingInviteQr.value = null
     }
 
-    /** Bob: parse scanned URL, run key exchange, POST init + initial OPK bundle. */
+    /** Bob: parse scanned URL, but wait for user to name the friend. */
     fun processQrUrl(url: String): Boolean {
         val qr = QrUtils.urlToPayload(url) ?: return false
-        return try {
-            val (initPayload, bobEntry) = e2eeStore.processScannedQr(qr)
-            _friendIds.value = e2eeStore.listFriends().map { it.id }.toSet()
+        _pendingQrForNaming.value = qr
+        return true
+    }
+
+    fun cancelQrScan() {
+        _pendingQrForNaming.value = null
+    }
+
+    fun confirmQrScan(qr: QrPayload, friendName: String) {
+        _pendingQrForNaming.value = null
+        val qrWithName = qr.copy(suggestedName = friendName)
+        try {
+            val (initPayload, bobEntry) = e2eeStore.processScannedQr(qrWithName)
+            _friends.value = e2eeStore.listFriends()
             viewModelScope.launch {
                 try {
-                    val discoveryHex = qr.discoveryToken().toHexStr()
+                    val discoveryHex = qrWithName.discoveryToken().toHexStr()
                     E2eeMailboxClient.post(BuildConfig.SERVER_HTTP_URL, discoveryHex, initPayload)
                 } catch (_: Exception) {
                 }
                 // Bob posts his initial OPK bundle so Alice can initiate epoch rotation.
                 postOpkBundle(bobEntry)
             }
-            true
         } catch (_: Exception) {
-            false
         }
+    }
+
+    fun confirmPendingInit(name: String) {
+        val payload = _pendingInitPayload.value ?: return
+        _pendingInitPayload.value = null
+        try {
+            e2eeStore.processKeyExchangeInit(payload, name)
+            _friends.value = e2eeStore.listFriends()
+        } catch (_: Exception) {
+        }
+    }
+
+    fun cancelPendingInit() {
+        _pendingInitPayload.value = null
     }
 
     private suspend fun postOpkBundle(friend: FriendEntry) {
@@ -153,14 +202,11 @@ class LocationViewModel(
             val discoveryHex = qr.discoveryToken().toHexStr()
             val messages = E2eeMailboxClient.poll(BuildConfig.SERVER_HTTP_URL, discoveryHex)
             val initPayload = messages.filterIsInstance<KeyExchangeInitPayload>().firstOrNull() ?: return
-            val entry =
-                try {
-                    e2eeStore.processKeyExchangeInit(initPayload, "Friend")
-                } catch (_: IllegalArgumentException) {
-                    return // bad signature — skip this payload
-                } ?: return
+            
+            // Found init payload! Show naming dialog instead of processing immediately.
+            _pendingInitPayload.value = initPayload
             _pendingInviteQr.value = null
-            _friendIds.value = e2eeStore.listFriends().map { it.id }.toSet()
+            e2eeStore.clearInvite()
         } catch (_: Exception) {
         }
     }
@@ -242,6 +288,7 @@ class LocationViewModel(
         val ts = System.currentTimeMillis() / 1000
         val plaintext = LocationPlaintext(lat = lat, lng = lng, acc = 0.0, ts = ts)
         for (friend in e2eeStore.listFriends()) {
+            if (friend.id in _pausedFriendIds.value) continue
             try {
                 // Alice: rotate epoch when due, before sending the next message.
                 if (e2eeStore.shouldRotateEpoch(friend.id)) {

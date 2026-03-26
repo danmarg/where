@@ -18,6 +18,7 @@ import com.google.android.gms.maps.model.BitmapDescriptorFactory
 import com.google.android.gms.maps.model.CameraPosition
 import com.google.android.gms.maps.model.LatLng
 import com.google.maps.android.compose.*
+import net.af0.where.e2ee.FriendEntry
 import net.af0.where.model.UserLocation
 
 @OptIn(ExperimentalPermissionsApi::class, ExperimentalMaterial3Api::class)
@@ -25,7 +26,11 @@ import net.af0.where.model.UserLocation
 fun MapScreen(
     userId: String,
     users: List<UserLocation>,
-    friendIds: Set<String>,
+    friends: List<FriendEntry>,
+    displayName: String,
+    onDisplayNameChange: (String) -> Unit,
+    pausedFriendIds: Set<String>,
+    onTogglePause: (String) -> Unit,
     isSharing: Boolean,
     onToggleSharing: () -> Unit,
     onCreateInvite: () -> Unit,
@@ -137,7 +142,7 @@ fun MapScreen(
                 val isMe = user.userId == userId
                 Marker(
                     state = MarkerState(position = LatLng(user.lat, user.lng)),
-                    title = if (isMe) "You" else user.userId.take(8),
+                    title = if (isMe) "You" else friends.find { it.id == user.userId }?.name ?: user.userId.take(8),
                     icon =
                         BitmapDescriptorFactory.defaultMarker(
                             if (isMe) {
@@ -196,7 +201,7 @@ fun MapScreen(
             FilledTonalButton(onClick = { showFriends = true }) {
                 Icon(Icons.Default.People, contentDescription = null, modifier = Modifier.size(16.dp))
                 Spacer(Modifier.width(4.dp))
-                Text("${friendIds.size}", style = MaterialTheme.typography.labelMedium)
+                Text("${friends.size}", style = MaterialTheme.typography.labelMedium)
             }
         }
     }
@@ -204,7 +209,11 @@ fun MapScreen(
     if (showFriends) {
         FriendsSheet(
             userId = userId,
-            friendIds = friendIds,
+            friends = friends,
+            displayName = displayName,
+            onDisplayNameChange = onDisplayNameChange,
+            pausedFriendIds = pausedFriendIds,
+            onTogglePause = onTogglePause,
             onCreateInvite = onCreateInvite,
             onScanQr = onScanQr,
             onRemove = onRemoveFriend,
