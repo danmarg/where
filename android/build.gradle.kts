@@ -43,6 +43,11 @@ android {
             "SERVER_WS_URL",
             "\"${localProperties.getProperty("SERVER_WS_URL") ?: "ws://10.0.2.2:8080/ws"}\"",
         )
+        buildConfigField(
+            "String",
+            "SERVER_HTTP_URL",
+            "\"${localProperties.getProperty("SERVER_HTTP_URL") ?: "http://10.0.2.2:8080"}\"",
+        )
     }
 
     buildFeatures {
