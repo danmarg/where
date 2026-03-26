@@ -64,6 +64,79 @@ private func pollMailbox(token: String) async -> [[String: Any]] {
     return arr
 }
 
+// MARK: - Wire serialization helpers for new payload types
+
+private func preKeyBundleBody(_ bundle: PreKeyBundlePayload) -> [String: Any] {
+    let keys = bundle.keys.map { opk -> [String: Any] in
+        ["id": opk.id, "pub": toSwiftData(opk.pub).base64EncodedString()]
+    }
+    return [
+        "type": "PreKeyBundle",
+        "keys": keys,
+        "sig": toSwiftData(bundle.sig).base64EncodedString(),
+    ]
+}
+
+private func epochRotationBody(_ payload: EpochRotationPayload) -> [String: Any] {
+    return [
+        "type": "EpochRotation",
+        "epoch": payload.epoch,
+        "opk_id": payload.opkId,
+        "new_ek_pub": toSwiftData(payload.newEkPub).base64EncodedString(),
+        "ts": payload.ts,
+        "sig": toSwiftData(payload.sig).base64EncodedString(),
+    ]
+}
+
+private func ratchetAckBody(_ payload: RatchetAckPayload) -> [String: Any] {
+    return [
+        "type": "RatchetAck",
+        "epoch_seen": payload.epochSeen,
+        "ts": payload.ts,
+        "sig": toSwiftData(payload.sig).base64EncodedString(),
+    ]
+}
+
+private func parseEpochRotation(_ msg: [String: Any]) -> EpochRotationPayload? {
+    guard (msg["type"] as? String) == "EpochRotation",
+          let epoch = msg["epoch"] as? Int32,
+          let opkId = msg["opk_id"] as? Int32,
+          let newEkPubB64 = msg["new_ek_pub"] as? String, let newEkPubData = Data(base64Encoded: newEkPubB64),
+          let ts = msg["ts"] as? Int64,
+          let sigB64 = msg["sig"] as? String, let sigData = Data(base64Encoded: sigB64)
+    else { return nil }
+    return EpochRotationPayload(
+        epoch: epoch, opkId: opkId,
+        newEkPub: kotlinByteArray(from: newEkPubData),
+        ts: ts, sig: kotlinByteArray(from: sigData)
+    )
+}
+
+private func parsePreKeyBundle(_ msg: [String: Any]) -> PreKeyBundlePayload? {
+    guard (msg["type"] as? String) == "PreKeyBundle",
+          let keysArr = msg["keys"] as? [[String: Any]],
+          let sigB64 = msg["sig"] as? String, let sigData = Data(base64Encoded: sigB64)
+    else { return nil }
+    var opkWires: [OPKWire] = []
+    for k in keysArr {
+        guard let id = k["id"] as? Int32,
+              let pubB64 = k["pub"] as? String,
+              let pubData = Data(base64Encoded: pubB64)
+        else { return nil }
+        opkWires.append(OPKWire(id: id, pub: kotlinByteArray(from: pubData)))
+    }
+    return PreKeyBundlePayload(keys: opkWires, sig: kotlinByteArray(from: sigData))
+}
+
+private func parseRatchetAck(_ msg: [String: Any]) -> RatchetAckPayload? {
+    guard (msg["type"] as? String) == "RatchetAck",
+          let epochSeen = msg["epoch_seen"] as? Int32,
+          let ts = msg["ts"] as? Int64,
+          let sigB64 = msg["sig"] as? String, let sigData = Data(base64Encoded: sigB64)
+    else { return nil }
+    return RatchetAckPayload(epochSeen: epochSeen, ts: ts, sig: kotlinByteArray(from: sigData))
+}
+
 // MARK: - LocationSyncService
 
 @MainActor
@@ -116,13 +189,24 @@ final class LocationSyncService: ObservableObject {
         let friendList = e2eeStore.listFriends() as! [FriendEntry]
         for friend in friendList {
             let friendFp = identityFingerprint(ikPub: friend.ikPub, sigIkPub: friend.sigIkPub)
-            guard let result = try? Session.shared.encryptLocation(
-                state: friend.session, location: plaintext, senderFp: myFp, recipientFp: friendFp
+
+            // Alice: rotate epoch when due, before encrypting the next message.
+            if e2eeStore.shouldRotateEpoch(friendId: friend.id) {
+                let oldToken = toHex(friend.session.routingToken)
+                if let rotPayload = e2eeStore.initiateEpochRotation(friendId: friend.id) {
+                    Task { await postToMailbox(token: oldToken, body: epochRotationBody(rotPayload)) }
+                }
+            }
+
+            // Re-fetch after potential rotation to use the current session/token.
+            guard let current = e2eeStore.getFriend(id: friend.id) else { continue }
+            guard let result = Session.shared.encryptLocation(
+                state: current.session, location: plaintext, senderFp: myFp, recipientFp: friendFp
             ) else { continue }
             let newSession = result.first as! SessionState
             let ct = result.second as! KotlinByteArray
             e2eeStore.updateSession(id: friend.id, newSession: newSession)
-            let hexToken = toHex(friend.session.routingToken)
+            let hexToken = toHex(current.session.routingToken)
             let payload: [String: Any] = [
                 "type": "EncryptedLocation",
                 "epoch": Int(newSession.epoch),
@@ -148,8 +232,9 @@ final class LocationSyncService: ObservableObject {
         guard let qr = urlToQrPayload(url) else { return false }
         guard let result = try? e2eeStore.processScannedQr(qr: qr) else { return false }
         let initPayload = result.first as! KeyExchangeInitPayload
+        let bobEntry = result.second as! FriendEntry
         friends = e2eeStore.listFriends() as! [FriendEntry]
-        // POST KeyExchangeInit to discovery token so Alice can find it
+        // POST KeyExchangeInit to discovery token so Alice can find it.
         let discoveryHex = toHex(qr.discoveryToken())
         let payload: [String: Any] = [
             "type": "KeyExchangeInit",
@@ -159,8 +244,20 @@ final class LocationSyncService: ObservableObject {
             "sigPub": toSwiftData(initPayload.sigPub).base64EncodedString(),
             "sig": toSwiftData(initPayload.sig).base64EncodedString(),
         ]
-        Task { await postToMailbox(token: discoveryHex, body: payload) }
+        Task {
+            await postToMailbox(token: discoveryHex, body: payload)
+            // Bob posts initial OPK bundle so Alice can initiate epoch rotation.
+            await postOpkBundle(friend: bobEntry)
+        }
         return true
+    }
+
+    // MARK: - Private helpers
+
+    private func postOpkBundle(friend: FriendEntry) async {
+        guard let bundle = e2eeStore.generateOpkBundle(friendId: friend.id, count: Int32(E2eeStore.companion.OPK_BATCH_SIZE)) else { return }
+        let hexToken = toHex(friend.session.routingToken)
+        await postToMailbox(token: hexToken, body: preKeyBundleBody(bundle))
     }
 
     // MARK: - Private polling
@@ -177,7 +274,26 @@ final class LocationSyncService: ObservableObject {
             let hexToken = toHex(friend.session.routingToken)
             let messages = await pollMailbox(token: hexToken)
             let friendFp = identityFingerprint(ikPub: friend.ikPub, sigIkPub: friend.sigIkPub)
-            var session = friend.session
+
+            // --- Epoch rotation first: changes session/token ---
+            for msg in messages {
+                guard let rotPayload = parseEpochRotation(msg) else { continue }
+                guard let ack = try? e2eeStore.processEpochRotation(friendId: friend.id, payload: rotPayload),
+                      let ack = ack else { continue }
+                guard let newEntry = e2eeStore.getFriend(id: friend.id) else { continue }
+                let newToken = toHex(newEntry.session.routingToken)
+                await postToMailbox(token: newToken, body: ratchetAckBody(ack))
+                await postOpkBundle(friend: newEntry)
+            }
+
+            // --- Cache incoming OPK bundles ---
+            for msg in messages {
+                guard let bundle = parsePreKeyBundle(msg) else { continue }
+                e2eeStore.storeOpkBundle(friendId: friend.id, bundle: bundle)
+            }
+
+            // --- Decrypt location updates ---
+            var session = (e2eeStore.getFriend(id: friend.id) ?? friend).session
             var sessionChanged = false
             for msg in messages {
                 guard (msg["type"] as? String) == "EncryptedLocation",
@@ -197,6 +313,18 @@ final class LocationSyncService: ObservableObject {
             }
             if sessionChanged {
                 e2eeStore.updateSession(id: friend.id, newSession: session)
+            }
+
+            // --- Validate RatchetAck ---
+            for msg in messages {
+                guard let ack = parseRatchetAck(msg) else { continue }
+                e2eeStore.processRatchetAck(friendId: friend.id, payload: ack)
+            }
+
+            // --- Bob: proactively replenish OPKs if running low ---
+            if e2eeStore.shouldReplenishOpks(friendId: friend.id),
+               let current = e2eeStore.getFriend(id: friend.id) {
+                await postOpkBundle(friend: current)
             }
         }
     }
