@@ -138,7 +138,12 @@ class LocationViewModel(
             val discoveryHex = qr.discoveryToken().toHexStr()
             val messages = E2eeMailboxClient.poll(BuildConfig.SERVER_HTTP_URL, discoveryHex)
             val initPayload = messages.filterIsInstance<KeyExchangeInitPayload>().firstOrNull() ?: return
-            e2eeStore.processKeyExchangeInit(initPayload, "Friend") ?: return
+            val entry =
+                try {
+                    e2eeStore.processKeyExchangeInit(initPayload, "Friend")
+                } catch (_: IllegalArgumentException) {
+                    return // bad signature — skip this payload
+                } ?: return
             _pendingInviteQr.value = null
             _friendIds.value = e2eeStore.listFriends().map { it.id }.toSet()
         } catch (_: Exception) {

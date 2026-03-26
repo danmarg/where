@@ -28,6 +28,9 @@ data class IdentityKeys(val ik: RawKeyPair, val sigIk: RawKeyPair)
  * Fields:
  *   rootKey       – 32-byte root key, updated on every DH ratchet step.
  *   sendChainKey  – 32-byte symmetric chain key; advanced on every location send.
+ *   recvChainKey  – 32-byte symmetric chain key; advanced on every location receive.
+ *                   Independent from sendChainKey; initialized to the peer's send chain
+ *                   so that send and receive ratchets never share key material.
  *   routingToken  – 16-byte opaque token used as the mailbox address.
  *   sendSeq       – Monotonically increasing counter; MUST NOT wrap (session must be
  *                   invalidated and re-keyed if it reaches Long.MAX_VALUE).
@@ -41,6 +44,7 @@ data class IdentityKeys(val ik: RawKeyPair, val sigIk: RawKeyPair)
 data class SessionState(
     @Serializable(with = ByteArrayBase64Serializer::class) val rootKey: ByteArray,
     @Serializable(with = ByteArrayBase64Serializer::class) val sendChainKey: ByteArray,
+    @Serializable(with = ByteArrayBase64Serializer::class) val recvChainKey: ByteArray,
     @Serializable(with = ByteArrayBase64Serializer::class) val routingToken: ByteArray,
     val sendSeq: Long,
     val recvSeq: Long,
@@ -53,6 +57,7 @@ data class SessionState(
         if (other !is SessionState) return false
         return rootKey.contentEquals(other.rootKey) &&
             sendChainKey.contentEquals(other.sendChainKey) &&
+            recvChainKey.contentEquals(other.recvChainKey) &&
             routingToken.contentEquals(other.routingToken) &&
             sendSeq == other.sendSeq &&
             recvSeq == other.recvSeq &&
@@ -65,6 +70,7 @@ data class SessionState(
     override fun hashCode(): Int {
         var h = rootKey.contentHashCode()
         h = 31 * h + sendChainKey.contentHashCode()
+        h = 31 * h + recvChainKey.contentHashCode()
         h = 31 * h + routingToken.contentHashCode()
         h = 31 * h + sendSeq.hashCode()
         h = 31 * h + recvSeq.hashCode()
@@ -109,11 +115,15 @@ data class QrPayload(
             fingerprint == other.fingerprint && sig.contentEquals(other.sig)
     }
 
-    override fun hashCode(): Int =
-        31 * (
-            31 * (31 * ikPub.contentHashCode() + ekPub.contentHashCode()) +
-                sigPub.contentHashCode()
-        ) + sig.contentHashCode()
+    override fun hashCode(): Int {
+        var h = ikPub.contentHashCode()
+        h = 31 * h + ekPub.contentHashCode()
+        h = 31 * h + sigPub.contentHashCode()
+        h = 31 * h + suggestedName.hashCode()
+        h = 31 * h + fingerprint.hashCode()
+        h = 31 * h + sig.contentHashCode()
+        return h
+    }
 }
 
 /** Bob's KeyExchangeInit message sent to the mailbox. */

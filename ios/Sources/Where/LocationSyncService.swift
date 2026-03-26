@@ -187,7 +187,7 @@ final class LocationSyncService: ObservableObject {
                       let ctData = Data(base64Encoded: ctB64)
                 else { continue }
                 let ct = kotlinByteArray(from: ctData)
-                guard let result = try? Session.shared.decryptLocation(
+                guard let result = Session.shared.decryptLocation(
                     state: session, ct: ct, seq: seq, senderFp: friendFp, recipientFp: myFp
                 ) else { continue }
                 session = result.first as! SessionState
@@ -220,7 +220,9 @@ final class LocationSyncService: ObservableObject {
                 sigPub: kotlinByteArray(from: sigPub),
                 sig: kotlinByteArray(from: sig)
             )
-            guard e2eeStore.processKeyExchangeInit(payload: initPayload, bobName: "Friend") != nil else { continue }
+            // processKeyExchangeInit throws IllegalArgumentException on bad signature.
+            guard let result = try? e2eeStore.processKeyExchangeInit(payload: initPayload, bobName: "Friend"),
+                  result != nil else { continue }
             pendingInviteQr = nil
             friends = e2eeStore.listFriends() as! [FriendEntry]
             break

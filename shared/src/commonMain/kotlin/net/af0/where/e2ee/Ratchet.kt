@@ -11,12 +11,6 @@ package net.af0.where.e2ee
  *   The old chain key MUST be discarded immediately after this call.
  */
 
-internal const val INFO_RATCHET_STEP = "Where-v1-RatchetStep"
-internal const val INFO_MSG_STEP = "Where-v1-MsgStep"
-internal const val INFO_KEY_EXCHANGE = "Where-v1-KeyExchange"
-internal const val INFO_SESSION = "Where-v1-Session"
-internal const val INFO_ROUTING_TOKEN = "Where-v1-RoutingToken"
-
 /**
  * DH ratchet step.
  * @param rootKey      Current 32-byte root key (used as HKDF salt).
