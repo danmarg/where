@@ -1,5 +1,7 @@
 package net.af0.where.e2ee
 
+import kotlinx.serialization.Serializable
+
 /**
  * Raw X25519 or Ed25519 keypair. Both fields are 32-byte little-endian representations
  * as defined by RFC 7748 / RFC 8032.
@@ -35,16 +37,17 @@ data class IdentityKeys(val ik: RawKeyPair, val sigIk: RawKeyPair)
  *   myEkPub       – 32-byte current ephemeral X25519 public key.
  *   theirEkPub    – 32-byte peer's last known ephemeral X25519 public key.
  */
+@Serializable
 data class SessionState(
-    val rootKey: ByteArray,
-    val sendChainKey: ByteArray,
-    val routingToken: ByteArray,
+    @Serializable(with = ByteArrayBase64Serializer::class) val rootKey: ByteArray,
+    @Serializable(with = ByteArrayBase64Serializer::class) val sendChainKey: ByteArray,
+    @Serializable(with = ByteArrayBase64Serializer::class) val routingToken: ByteArray,
     val sendSeq: Long,
     val recvSeq: Long,
     val epoch: Int,
-    val myEkPriv: ByteArray,
-    val myEkPub: ByteArray,
-    val theirEkPub: ByteArray,
+    @Serializable(with = ByteArrayBase64Serializer::class) val myEkPriv: ByteArray,
+    @Serializable(with = ByteArrayBase64Serializer::class) val myEkPub: ByteArray,
+    @Serializable(with = ByteArrayBase64Serializer::class) val theirEkPub: ByteArray,
 ) {
     override fun equals(other: Any?): Boolean {
         if (other !is SessionState) return false
@@ -85,18 +88,19 @@ data class LocationPlaintext(
  * Alice's QR / invite-link payload.
  * The sig field is mandatory: Ed25519(SigIK.priv, ikPub || ekPub || sigPub).
  */
+@Serializable
 data class QrPayload(
     // Alice's X25519 identity public key (32 bytes)
-    val ikPub: ByteArray,
+    @Serializable(with = ByteArrayBase64Serializer::class) val ikPub: ByteArray,
     // Alice's ephemeral X25519 public key (32 bytes)
-    val ekPub: ByteArray,
+    @Serializable(with = ByteArrayBase64Serializer::class) val ekPub: ByteArray,
     // Alice's Ed25519 signing public key (32 bytes)
-    val sigPub: ByteArray,
+    @Serializable(with = ByteArrayBase64Serializer::class) val sigPub: ByteArray,
     val suggestedName: String,
     // hex(SHA-256(ikPub)[0:10])
     val fingerprint: String,
     // Ed25519 signature (64 bytes)
-    val sig: ByteArray,
+    @Serializable(with = ByteArrayBase64Serializer::class) val sig: ByteArray,
 ) {
     override fun equals(other: Any?): Boolean {
         if (other !is QrPayload) return false
@@ -113,17 +117,18 @@ data class QrPayload(
 }
 
 /** Bob's KeyExchangeInit message sent to the mailbox. */
+@Serializable
 data class KeyExchangeInitMessage(
     // T_AB_0 (16 bytes) — mailbox address
-    val token: ByteArray,
+    @Serializable(with = ByteArrayBase64Serializer::class) val token: ByteArray,
     // Bob's X25519 identity public key
-    val ikPub: ByteArray,
+    @Serializable(with = ByteArrayBase64Serializer::class) val ikPub: ByteArray,
     // Bob's ephemeral X25519 public key
-    val ekPub: ByteArray,
+    @Serializable(with = ByteArrayBase64Serializer::class) val ekPub: ByteArray,
     // Bob's Ed25519 signing public key
-    val sigPub: ByteArray,
+    @Serializable(with = ByteArrayBase64Serializer::class) val sigPub: ByteArray,
     // Ed25519(SigIK.priv, ikPub || ekPub || sigPub)
-    val sig: ByteArray,
+    @Serializable(with = ByteArrayBase64Serializer::class) val sig: ByteArray,
 ) {
     override fun equals(other: Any?): Boolean {
         if (other !is KeyExchangeInitMessage) return false
