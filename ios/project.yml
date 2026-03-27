@@ -25,7 +25,10 @@ targets:
     preBuildScripts:
       - script: |
           cd "$SRCROOT/.."
-          ./gradlew :shared:embedAndSignAppleFrameworkForXcode
+          export GRADLE_USER_HOME=/Volumes/Ext/.gradle
+          export KONAN_DATA_DIR=/Volumes/Ext/.konan
+          export TMPDIR=/Volumes/Ext/tmp
+          /nix/var/nix/profiles/default/bin/nix develop --command ./gradlew :shared:embedAndSignAppleFrameworkForXcode
         name: Build KMP Shared Framework
         basedOnDependencyAnalysis: false
     settings:
