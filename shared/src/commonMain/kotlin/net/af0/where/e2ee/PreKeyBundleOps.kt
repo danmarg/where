@@ -1,63 +1,58 @@
 package net.af0.where.e2ee
 
 /**
- * Operations for building and verifying signed PreKeyBundle messages (§5.3, §9.3).
+ * Operations for building and verifying authenticated PreKeyBundle messages (§5.3, §9.3).
  *
- * A PreKeyBundle is Bob's batch of One-Time Pre-Key (OPK) public keys, signed with his
- * Ed25519 SigIK, so that Alice can verify the keys are authentic before using them for
- * DH epoch rotation.
+ * A PreKeyBundle is Bob's batch of One-Time Pre-Key (OPK) public keys, authenticated with
+ * HMAC-SHA-256 using kBundle (a session-derived key), so Alice can verify the keys are
+ * authentic before using them for DH epoch rotation.
  */
 object PreKeyBundleOps {
     private const val PROTOCOL_VERSION = 1
 
     /**
-     * Compute the Ed25519 signature for a PreKeyBundle.
+     * Compute the HMAC-SHA-256 MAC for a PreKeyBundle.
      *
-     * @param token     The routing token (16 bytes) for this friendship session.
-     * @param opks      The OPKs to include in the bundle.
-     * @param sigIkPriv Bob's Ed25519 signing private key (32 bytes).
-     * @return 64-byte Ed25519 signature.
+     * @param token   The routing token (16 bytes) for this friendship session.
+     * @param opks    The OPKs to include in the bundle.
+     * @param kBundle 32-byte session-derived bundle authentication key.
+     * @return 32-byte HMAC-SHA-256.
      */
-    fun buildSignature(
+    fun buildMac(
         token: ByteArray,
         opks: List<OPK>,
-        sigIkPriv: ByteArray,
+        kBundle: ByteArray,
     ): ByteArray {
         require(token.size == 16) { "token must be 16 bytes, got ${token.size}" }
-        return ed25519Sign(sigIkPriv, signedData(token, opks))
+        return hmacSha256(kBundle, signedData(token, opks))
     }
 
     /**
-     * Verify a PreKeyBundle signature.
+     * Verify a PreKeyBundle MAC.
      *
-     * @param token     The routing token (16 bytes) that was used when signing.
-     * @param opks      The OPKs in the bundle.
-     * @param sig       64-byte Ed25519 signature.
-     * @param sigIkPub  Bob's Ed25519 signing public key (32 bytes).
-     * @return true iff the signature is valid.
+     * @param token   The routing token (16 bytes).
+     * @param opks    The OPKs in the bundle.
+     * @param mac     32-byte HMAC-SHA-256.
+     * @param kBundle 32-byte session-derived bundle authentication key.
+     * @return true iff the MAC is valid.
      */
     fun verify(
         token: ByteArray,
         opks: List<OPK>,
-        sig: ByteArray,
-        sigIkPub: ByteArray,
+        mac: ByteArray,
+        kBundle: ByteArray,
     ): Boolean {
         require(token.size == 16) { "token must be 16 bytes, got ${token.size}" }
-        return ed25519Verify(sigIkPub, signedData(token, opks), sig)
+        val expected = hmacSha256(kBundle, signedData(token, opks))
+        if (expected.size != mac.size) return false
+        var diff = 0
+        for (i in expected.indices) diff = diff or (expected[i].toInt() xor mac[i].toInt())
+        return diff == 0
     }
 
     /**
-     * Canonical binary encoding for PreKeyBundle signatures.
-     *
-     * Format (total: 24 + 36*n bytes):
-     *   v        (4 bytes, big-endian uint32 = 1)
-     *   token    (16 bytes)
-     *   n_keys   (4 bytes, big-endian uint32)
-     *   for each OPK in ascending id order:
-     *     id     (4 bytes, big-endian uint32)
-     *     pub    (32 bytes)
-     *
-     * OPKs are sorted by id to ensure the encoding is deterministic regardless of input order.
+     * Canonical binary encoding for PreKeyBundle authentication.
+     * Format: v(4) + token(16) + n_keys(4) + for each OPK in ascending id order: id(4) + pub(32).
      */
     internal fun signedData(
         token: ByteArray,

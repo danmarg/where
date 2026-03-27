@@ -13,15 +13,6 @@ data class RawKeyPair(val priv: ByteArray, val pub: ByteArray) {
 }
 
 /**
- * The two long-term identity keypairs held by each device:
- *   ik    – X25519 keypair used for Diffie-Hellman key agreement only.
- *   sigIk – Ed25519 keypair used for signatures only.
- *
- * These MUST be generated independently; do NOT derive one from the other.
- */
-data class IdentityKeys(val ik: RawKeyPair, val sigIk: RawKeyPair)
-
-/**
  * Per-friendship ratchet state maintained by the sender (Alice).
  * All byte arrays are copies; callers must zero them after use.
  *
@@ -39,6 +30,9 @@ data class IdentityKeys(val ik: RawKeyPair, val sigIk: RawKeyPair)
  *   myEkPriv      – 32-byte current ephemeral X25519 private key (deleted after DH ratchet step).
  *   myEkPub       – 32-byte current ephemeral X25519 public key.
  *   theirEkPub    – 32-byte peer's last known ephemeral X25519 public key.
+ *   aliceFp       – SHA-256(EK_A.pub) — Alice's session fingerprint.
+ *   bobFp         – SHA-256(EK_B.pub) — Bob's session fingerprint.
+ *   kBundle       – HKDF(SK, info="Where-v1-BundleAuth") — bundle authentication key.
  */
 @Serializable
 data class SessionState(
@@ -52,6 +46,9 @@ data class SessionState(
     @Serializable(with = ByteArrayBase64Serializer::class) val myEkPriv: ByteArray,
     @Serializable(with = ByteArrayBase64Serializer::class) val myEkPub: ByteArray,
     @Serializable(with = ByteArrayBase64Serializer::class) val theirEkPub: ByteArray,
+    @Serializable(with = ByteArrayBase64Serializer::class) val aliceFp: ByteArray,
+    @Serializable(with = ByteArrayBase64Serializer::class) val bobFp: ByteArray,
+    @Serializable(with = ByteArrayBase64Serializer::class) val kBundle: ByteArray,
 ) {
     override fun equals(other: Any?): Boolean {
         if (other !is SessionState) return false
@@ -64,7 +61,10 @@ data class SessionState(
             epoch == other.epoch &&
             myEkPriv.contentEquals(other.myEkPriv) &&
             myEkPub.contentEquals(other.myEkPub) &&
-            theirEkPub.contentEquals(other.theirEkPub)
+            theirEkPub.contentEquals(other.theirEkPub) &&
+            aliceFp.contentEquals(other.aliceFp) &&
+            bobFp.contentEquals(other.bobFp) &&
+            kBundle.contentEquals(other.kBundle)
     }
 
     override fun hashCode(): Int {
@@ -78,6 +78,9 @@ data class SessionState(
         h = 31 * h + myEkPriv.contentHashCode()
         h = 31 * h + myEkPub.contentHashCode()
         h = 31 * h + theirEkPub.contentHashCode()
+        h = 31 * h + aliceFp.contentHashCode()
+        h = 31 * h + bobFp.contentHashCode()
+        h = 31 * h + kBundle.contentHashCode()
         return h
     }
 }
@@ -92,59 +95,44 @@ data class LocationPlaintext(
 
 /**
  * Alice's QR / invite-link payload.
- * The sig field is mandatory: Ed25519(SigIK.priv, ikPub || ekPub || sigPub).
+ * Contains only her ephemeral public key; no long-term identity keys.
  */
 @Serializable
 data class QrPayload(
-    // Alice's X25519 identity public key (32 bytes)
-    @Serializable(with = ByteArrayBase64Serializer::class) val ikPub: ByteArray,
     // Alice's ephemeral X25519 public key (32 bytes)
     @Serializable(with = ByteArrayBase64Serializer::class) val ekPub: ByteArray,
-    // Alice's Ed25519 signing public key (32 bytes)
-    @Serializable(with = ByteArrayBase64Serializer::class) val sigPub: ByteArray,
     val suggestedName: String,
-    // hex(SHA-256(ikPub)[0:10])
+    // hex(SHA-256(ekPub)[0:8])
     val fingerprint: String,
-    // Ed25519 signature (64 bytes)
-    @Serializable(with = ByteArrayBase64Serializer::class) val sig: ByteArray,
 ) {
     override fun equals(other: Any?): Boolean {
         if (other !is QrPayload) return false
-        return ikPub.contentEquals(other.ikPub) && ekPub.contentEquals(other.ekPub) &&
-            sigPub.contentEquals(other.sigPub) && suggestedName == other.suggestedName &&
-            fingerprint == other.fingerprint && sig.contentEquals(other.sig)
+        return ekPub.contentEquals(other.ekPub) && suggestedName == other.suggestedName &&
+            fingerprint == other.fingerprint
     }
 
     override fun hashCode(): Int {
-        var h = ikPub.contentHashCode()
-        h = 31 * h + ekPub.contentHashCode()
-        h = 31 * h + sigPub.contentHashCode()
+        var h = ekPub.contentHashCode()
         h = 31 * h + suggestedName.hashCode()
         h = 31 * h + fingerprint.hashCode()
-        h = 31 * h + sig.contentHashCode()
         return h
     }
 }
 
 /** Bob's KeyExchangeInit message sent to the mailbox. */
-@Serializable
 data class KeyExchangeInitMessage(
     // T_AB_0 (16 bytes) — mailbox address
     @Serializable(with = ByteArrayBase64Serializer::class) val token: ByteArray,
-    // Bob's X25519 identity public key
-    @Serializable(with = ByteArrayBase64Serializer::class) val ikPub: ByteArray,
     // Bob's ephemeral X25519 public key
     @Serializable(with = ByteArrayBase64Serializer::class) val ekPub: ByteArray,
-    // Bob's Ed25519 signing public key
-    @Serializable(with = ByteArrayBase64Serializer::class) val sigPub: ByteArray,
-    // Ed25519(SigIK.priv, ikPub || ekPub || sigPub)
-    @Serializable(with = ByteArrayBase64Serializer::class) val sig: ByteArray,
+    // HMAC-SHA-256(SK, "Where-v1-Confirm" || EK_A.pub || EK_B.pub)
+    @Serializable(with = ByteArrayBase64Serializer::class) val keyConfirmation: ByteArray,
+    val suggestedName: String,
 ) {
     override fun equals(other: Any?): Boolean {
         if (other !is KeyExchangeInitMessage) return false
-        return token.contentEquals(other.token) && ikPub.contentEquals(other.ikPub) &&
-            ekPub.contentEquals(other.ekPub) && sigPub.contentEquals(other.sigPub) &&
-            sig.contentEquals(other.sig)
+        return token.contentEquals(other.token) && ekPub.contentEquals(other.ekPub) &&
+            keyConfirmation.contentEquals(other.keyConfirmation) && suggestedName == other.suggestedName
     }
 
     override fun hashCode(): Int = token.contentHashCode()

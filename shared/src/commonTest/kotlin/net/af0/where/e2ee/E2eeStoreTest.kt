@@ -16,8 +16,6 @@ class MemoryStorage : E2eeStorage {
 }
 
 class E2eeStoreTest {
-    private lateinit var aliceIdentity: IdentityKeys
-    private lateinit var bobIdentity: IdentityKeys
     private lateinit var aliceStorage: MemoryStorage
     private lateinit var bobStorage: MemoryStorage
     private lateinit var aliceStore: E2eeStore
@@ -25,19 +23,14 @@ class E2eeStoreTest {
 
     @BeforeTest
     fun setup() {
-        aliceIdentity = IdentityKeys(generateX25519KeyPair(), generateEd25519KeyPair())
-        bobIdentity = IdentityKeys(generateX25519KeyPair(), generateEd25519KeyPair())
         aliceStorage = MemoryStorage()
         bobStorage = MemoryStorage()
-        aliceStore = E2eeStore(aliceStorage, aliceIdentity)
-        bobStore = E2eeStore(bobStorage, bobIdentity)
+        aliceStore = E2eeStore(aliceStorage)
+        bobStore = E2eeStore(bobStorage)
     }
 
     @Test
     fun testKeyExchangeFlow() {
-        val aliceId = fingerprint(aliceIdentity.ik.pub, aliceIdentity.sigIk.pub).toHex()
-        val bobId = fingerprint(bobIdentity.ik.pub, bobIdentity.sigIk.pub).toHex()
-
         // Alice creates invite
         val qr = aliceStore.createInvite("Alice")
 
@@ -48,8 +41,11 @@ class E2eeStoreTest {
         val aliceEntry = aliceStore.processKeyExchangeInit(initPayload, "Bob")
 
         assertNotNull(aliceEntry)
-        assertEquals(aliceId, bobEntry.id)
-        assertEquals(bobId, aliceEntry.id)
+
+        // Friend IDs are based on aliceFp = SHA-256(EK_A.pub)
+        val expectedAliceFp = sha256(qr.ekPub).toHex()
+        assertEquals(expectedAliceFp, bobEntry.id)
+        assertEquals(expectedAliceFp, aliceEntry.id)
         assertEquals("Alice", bobEntry.name)
         assertEquals("Bob", aliceEntry.name)
 
@@ -83,7 +79,7 @@ class E2eeStoreTest {
         val aliceEntryBefore = aliceStore.listFriends().first()
 
         // Reload Alice's store from same storage
-        val reloadedAliceStore = E2eeStore(aliceStorage, aliceIdentity)
+        val reloadedAliceStore = E2eeStore(aliceStorage)
         val aliceEntryAfter = reloadedAliceStore.listFriends().first()
 
         assertEquals(aliceEntryBefore, aliceEntryAfter)
@@ -101,7 +97,7 @@ class E2eeStoreTest {
         assertNull(aliceStore.getFriend(aliceEntry.id))
 
         // Verify persistence after delete
-        val reloadedAliceStore = E2eeStore(aliceStorage, aliceIdentity)
+        val reloadedAliceStore = E2eeStore(aliceStorage)
         assertTrue(reloadedAliceStore.listFriends().isEmpty())
     }
 
@@ -110,7 +106,7 @@ class E2eeStoreTest {
         aliceStore.createInvite("Alice")
 
         // Reloading should have no pending invite — single-session design
-        val reloadedAliceStore = E2eeStore(aliceStorage, aliceIdentity)
+        val reloadedAliceStore = E2eeStore(aliceStorage)
         assertNull(reloadedAliceStore.pendingQrPayload)
 
         // Processing an init against a reloaded store (no pending invite) must return null
@@ -124,8 +120,8 @@ class E2eeStoreTest {
     fun testProcessKeyExchangeInitFailsWithoutPendingInvite() {
         val qr = bobStore.createInvite("Bob")
         val (initPayload, _) = aliceStore.processScannedQr(qr)
-        // aliceStore has no pending invite of its own, but has Alice's identity
-        val freshStore = E2eeStore(MemoryStorage(), aliceIdentity)
+        // freshStore has no pending invite
+        val freshStore = E2eeStore(MemoryStorage())
         assertNull(freshStore.processKeyExchangeInit(initPayload, "Bob"))
     }
 
@@ -179,23 +175,23 @@ class E2eeStoreTest {
 
         val bundle = bobStore.generateOpkBundle(bobEntry.id, count = 3)!!
         val stored = aliceStore.storeOpkBundle(aliceEntry.id, bundle)
-        assertTrue(stored, "Alice should accept a valid signed OPK bundle")
+        assertTrue(stored, "Alice should accept a valid MAC'd OPK bundle")
 
         val updatedAlice = aliceStore.getFriend(aliceEntry.id)!!
         assertEquals(3, updatedAlice.theirOpkPubs.size)
     }
 
     @Test
-    fun testStoreOpkBundleRejectsBadSignature() {
+    fun testStoreOpkBundleRejectsBadMac() {
         val qr = aliceStore.createInvite("Alice")
         val (initPayload, bobEntry) = bobStore.processScannedQr(qr)
         val aliceEntry = aliceStore.processKeyExchangeInit(initPayload, "Bob")!!
 
         val bundle = bobStore.generateOpkBundle(bobEntry.id, count = 2)!!
-        // Corrupt the signature
-        val tampered = bundle.sig.copyOf()
+        // Corrupt the MAC
+        val tampered = bundle.mac.copyOf()
         tampered[0] = (tampered[0].toInt() xor 0xFF).toByte()
-        val badBundle = bundle.copy(sig = tampered)
+        val badBundle = bundle.copy(mac = tampered)
 
         assertFalse(aliceStore.storeOpkBundle(aliceEntry.id, badBundle))
         // Alice's cache should be untouched
@@ -261,9 +257,6 @@ class E2eeStoreTest {
         val (initPayload, bobEntry) = bobStore.processScannedQr(qr)
         val aliceEntry = aliceStore.processKeyExchangeInit(initPayload, "Bob")!!
 
-        val aliceFp = fingerprint(aliceIdentity.ik.pub, aliceIdentity.sigIk.pub)
-        val bobFp = fingerprint(bobIdentity.ik.pub, bobIdentity.sigIk.pub)
-
         val bundle = bobStore.generateOpkBundle(bobEntry.id, count = 1)!!
         aliceStore.storeOpkBundle(aliceEntry.id, bundle)
 
@@ -274,12 +267,18 @@ class E2eeStoreTest {
         // Alice sends a location after rotation
         val aliceCurrent = aliceStore.getFriend(aliceEntry.id)!!
         val loc = net.af0.where.e2ee.LocationPlaintext(lat = 51.5, lng = -0.1, acc = 5.0, ts = 1_000_000L)
-        val (newAliceSess, ct) = Session.encryptLocation(aliceCurrent.session, loc, aliceFp, bobFp)
+        val (newAliceSess, ct) = Session.encryptLocation(
+            aliceCurrent.session, loc,
+            aliceCurrent.session.aliceFp, aliceCurrent.session.bobFp
+        )
         aliceStore.updateSession(aliceEntry.id, newAliceSess)
 
         // Bob decrypts
         val bobCurrent = bobStore.getFriend(bobEntry.id)!!
-        val result = Session.decryptLocation(bobCurrent.session, ct, newAliceSess.sendSeq, aliceFp, bobFp)
+        val result = Session.decryptLocation(
+            bobCurrent.session, ct, newAliceSess.sendSeq,
+            bobCurrent.session.aliceFp, bobCurrent.session.bobFp
+        )
         assertNotNull(result, "Decryption must succeed after epoch rotation")
         assertEquals(loc.lat, result!!.second.lat, 1e-9)
     }
@@ -289,9 +288,6 @@ class E2eeStoreTest {
         val qr = aliceStore.createInvite("Alice")
         val (initPayload, bobEntry) = bobStore.processScannedQr(qr)
         val aliceEntry = aliceStore.processKeyExchangeInit(initPayload, "Bob")!!
-
-        val aliceFp = fingerprint(aliceIdentity.ik.pub, aliceIdentity.sigIk.pub)
-        val bobFp = fingerprint(bobIdentity.ik.pub, bobIdentity.sigIk.pub)
 
         // No OPKs yet — should not rotate
         assertFalse(aliceStore.shouldRotateEpoch(aliceEntry.id))
@@ -307,7 +303,7 @@ class E2eeStoreTest {
         var sess = aliceStore.getFriend(aliceEntry.id)!!.session
         val loc = net.af0.where.e2ee.LocationPlaintext(0.0, 0.0, 0.0, 0L)
         repeat(E2eeStore.EPOCH_ROTATION_INTERVAL.toInt()) {
-            val (next, _) = Session.encryptLocation(sess, loc, aliceFp, bobFp)
+            val (next, _) = Session.encryptLocation(sess, loc, sess.aliceFp, sess.bobFp)
             sess = next
         }
         aliceStore.updateSession(aliceEntry.id, sess)
@@ -325,8 +321,8 @@ class E2eeStoreTest {
         aliceStore.storeOpkBundle(aliceEntry.id, bundle)
 
         // Reload both stores
-        val reloadedBobStore = E2eeStore(bobStorage, bobIdentity)
-        val reloadedAliceStore = E2eeStore(aliceStorage, aliceIdentity)
+        val reloadedBobStore = E2eeStore(bobStorage)
+        val reloadedAliceStore = E2eeStore(aliceStorage)
 
         val reloadedBob = reloadedBobStore.getFriend(bobEntry.id)!!
         val reloadedAlice = reloadedAliceStore.getFriend(aliceEntry.id)!!

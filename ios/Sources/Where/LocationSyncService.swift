@@ -5,12 +5,9 @@ import Shared
 
 private func qrPayloadToUrl(_ qr: QrPayload) -> String {
     let dict: [String: Any] = [
-        "ikPub": toSwiftData(qr.ikPub).base64EncodedString(),
         "ekPub": toSwiftData(qr.ekPub).base64EncodedString(),
-        "sigPub": toSwiftData(qr.sigPub).base64EncodedString(),
         "suggestedName": qr.suggestedName,
         "fingerprint": qr.fingerprint,
-        "sig": toSwiftData(qr.sig).base64EncodedString(),
     ]
     let jsonData = try! JSONSerialization.data(withJSONObject: dict)
     let b64 = jsonData.base64EncodedString()
@@ -26,20 +23,14 @@ private func urlToQrPayload(_ url: String) -> QrPayload? {
     while b64.count % 4 != 0 { b64 += "=" }
     guard let data = Data(base64Encoded: b64),
           let dict = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-          let ikPub = (dict["ikPub"] as? String).flatMap({ Data(base64Encoded: $0) }),
           let ekPub = (dict["ekPub"] as? String).flatMap({ Data(base64Encoded: $0) }),
-          let sigPub = (dict["sigPub"] as? String).flatMap({ Data(base64Encoded: $0) }),
           let name = dict["suggestedName"] as? String,
-          let fp = dict["fingerprint"] as? String,
-          let sig = (dict["sig"] as? String).flatMap({ Data(base64Encoded: $0) })
+          let fp = dict["fingerprint"] as? String
     else { return nil }
     return QrPayload(
-        ikPub: kotlinByteArray(from: ikPub),
         ekPub: kotlinByteArray(from: ekPub),
-        sigPub: kotlinByteArray(from: sigPub),
         suggestedName: name,
-        fingerprint: fp,
-        sig: kotlinByteArray(from: sig)
+        fingerprint: fp
     )
 }
 
@@ -73,7 +64,7 @@ private func preKeyBundleBody(_ bundle: PreKeyBundlePayload) -> [String: Any] {
     return [
         "type": "PreKeyBundle",
         "keys": keys,
-        "sig": toSwiftData(bundle.sig).base64EncodedString(),
+        "mac": toSwiftData(bundle.mac).base64EncodedString(),
     ]
 }
 
@@ -84,7 +75,7 @@ private func epochRotationBody(_ payload: EpochRotationPayload) -> [String: Any]
         "opk_id": payload.opkId,
         "new_ek_pub": toSwiftData(payload.newEkPub).base64EncodedString(),
         "ts": payload.ts,
-        "sig": toSwiftData(payload.sig).base64EncodedString(),
+        "ct": toSwiftData(payload.ct).base64EncodedString(),
     ]
 }
 
@@ -93,7 +84,7 @@ private func ratchetAckBody(_ payload: RatchetAckPayload) -> [String: Any] {
         "type": "RatchetAck",
         "epoch_seen": payload.epochSeen,
         "ts": payload.ts,
-        "sig": toSwiftData(payload.sig).base64EncodedString(),
+        "ct": toSwiftData(payload.ct).base64EncodedString(),
     ]
 }
 
@@ -105,19 +96,19 @@ private func parseEpochRotation(_ msg: [String: Any]) -> EpochRotationPayload? {
           let opkIdInt = msg["opk_id"] as? Int,
           let newEkPubB64 = msg["new_ek_pub"] as? String, let newEkPubData = Data(base64Encoded: newEkPubB64),
           let tsInt = msg["ts"] as? Int,
-          let sigB64 = msg["sig"] as? String, let sigData = Data(base64Encoded: sigB64)
+          let ctB64 = msg["ct"] as? String, let ctData = Data(base64Encoded: ctB64)
     else { return nil }
     return EpochRotationPayload(
         epoch: Int32(epochInt), opkId: Int32(opkIdInt),
         newEkPub: kotlinByteArray(from: newEkPubData),
-        ts: Int64(tsInt), sig: kotlinByteArray(from: sigData)
+        ts: Int64(tsInt), ct: kotlinByteArray(from: ctData)
     )
 }
 
 private func parsePreKeyBundle(_ msg: [String: Any]) -> PreKeyBundlePayload? {
     guard (msg["type"] as? String) == "PreKeyBundle",
           let keysArr = msg["keys"] as? [[String: Any]],
-          let sigB64 = msg["sig"] as? String, let sigData = Data(base64Encoded: sigB64)
+          let macB64 = msg["mac"] as? String, let macData = Data(base64Encoded: macB64)
     else { return nil }
     var opkWires: [OPKWire] = []
     for k in keysArr {
@@ -127,16 +118,16 @@ private func parsePreKeyBundle(_ msg: [String: Any]) -> PreKeyBundlePayload? {
         else { return nil }
         opkWires.append(OPKWire(id: Int32(idInt), pub: kotlinByteArray(from: pubData)))
     }
-    return PreKeyBundlePayload(keys: opkWires, sig: kotlinByteArray(from: sigData))
+    return PreKeyBundlePayload(keys: opkWires, mac: kotlinByteArray(from: macData))
 }
 
 private func parseRatchetAck(_ msg: [String: Any]) -> RatchetAckPayload? {
     guard (msg["type"] as? String) == "RatchetAck",
           let epochSeenInt = msg["epoch_seen"] as? Int,
           let tsInt = msg["ts"] as? Int,
-          let sigB64 = msg["sig"] as? String, let sigData = Data(base64Encoded: sigB64)
+          let ctB64 = msg["ct"] as? String, let ctData = Data(base64Encoded: ctB64)
     else { return nil }
-    return RatchetAckPayload(epochSeen: Int32(epochSeenInt), ts: Int64(tsInt), sig: kotlinByteArray(from: sigData))
+    return RatchetAckPayload(epochSeen: Int32(epochSeenInt), ts: Int64(tsInt), ct: kotlinByteArray(from: ctData))
 }
 
 // MARK: - LocationSyncService
@@ -160,27 +151,28 @@ final class LocationSyncService: ObservableObject {
     @Published var pendingInitPayload: KeyExchangeInitPayload? = nil
     @Published var hasPendingInit: Bool = false
 
-    private let identityKeys: IdentityKeys
     let e2eeStore: E2eeStore
     private var pollTask: Task<Void, Never>?
 
-    var myId: String {
-        let fp = identityFingerprint(ikPub: identityKeys.ik.pub, sigIkPub: identityKeys.sigIk.pub)
-        return String(toHex(fp).prefix(20))
-    }
+    let myId: String = {
+        let key = "where_user_id"
+        if let id = UserDefaults.standard.string(forKey: key) { return id }
+        let id = UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased()
+        UserDefaults.standard.set(id, forKey: key)
+        return id
+    }()
 
     init() {
-        identityKeys = IdentityKeyStore.shared
-        e2eeStore = E2eeStore(storage: UserDefaultsE2eeStorage(), myIdentity: identityKeys)
-        
+        e2eeStore = E2eeStore(storage: UserDefaultsE2eeStorage())
+
         let savedSharing = UserDefaults.standard.object(forKey: "where_is_sharing")
         isSharingLocation = savedSharing != nil ? UserDefaults.standard.bool(forKey: "where_is_sharing") : true
-        
+
         displayName = UserDefaults.standard.string(forKey: "display_name") ?? ""
-        
+
         let savedPaused = UserDefaults.standard.stringArray(forKey: "paused_friends") ?? []
         pausedFriendIds = Set(savedPaused)
-        
+
         friends = e2eeStore.listFriends() as! [FriendEntry]
         startPolling()
     }
@@ -204,11 +196,9 @@ final class LocationSyncService: ObservableObject {
         guard isSharingLocation else { return }
         let ts = Int64(Date().timeIntervalSince1970)
         let plaintext = LocationPlaintext(lat: lat, lng: lng, acc: 0.0, ts: ts)
-        let myFp = identityFingerprint(ikPub: identityKeys.ik.pub, sigIkPub: identityKeys.sigIk.pub)
         let friendList = e2eeStore.listFriends() as! [FriendEntry]
         for friend in friendList {
             if pausedFriendIds.contains(friend.id) { continue }
-            let friendFp = identityFingerprint(ikPub: friend.ikPub, sigIkPub: friend.sigIkPub)
 
             // Alice: rotate epoch when due, before encrypting the next message.
             if e2eeStore.shouldRotateEpoch(friendId: friend.id) {
@@ -221,7 +211,8 @@ final class LocationSyncService: ObservableObject {
             // Re-fetch after potential rotation to use the current session/token.
             guard let current = e2eeStore.getFriend(id: friend.id) else { continue }
             guard let result = Session.shared.encryptLocation(
-                state: current.session, location: plaintext, senderFp: myFp, recipientFp: friendFp
+                state: current.session, location: plaintext,
+                senderFp: current.session.aliceFp, recipientFp: current.session.bobFp
             ) else { continue }
             let newSession = result.first as! SessionState
             let ct = result.second as! KotlinByteArray
@@ -257,26 +248,22 @@ final class LocationSyncService: ObservableObject {
     func confirmQrScan(qr: QrPayload, friendName: String) {
         pendingQrForNaming = nil
         let qrWithName = QrPayload(
-            ikPub: qr.ikPub,
             ekPub: qr.ekPub,
-            sigPub: qr.sigPub,
             suggestedName: friendName,
-            fingerprint: qr.fingerprint,
-            sig: qr.sig
+            fingerprint: qr.fingerprint
         )
-        guard let result = try? e2eeStore.processScannedQr(qr: qrWithName) else { return }
+        guard let result = try? e2eeStore.processScannedQr(qr: qrWithName, bobSuggestedName: displayName) else { return }
         let initPayload = result.first as! KeyExchangeInitPayload
         let bobEntry = result.second as! FriendEntry
         friends = e2eeStore.listFriends() as! [FriendEntry]
-        
+
         let discoveryHex = toHex(qrWithName.discoveryToken())
         let payload: [String: Any] = [
             "type": "KeyExchangeInit",
             "token": initPayload.token,
-            "ikPub": toSwiftData(initPayload.ikPub).base64EncodedString(),
             "ekPub": toSwiftData(initPayload.ekPub).base64EncodedString(),
-            "sigPub": toSwiftData(initPayload.sigPub).base64EncodedString(),
-            "sig": toSwiftData(initPayload.sig).base64EncodedString(),
+            "key_confirmation": toSwiftData(initPayload.keyConfirmation).base64EncodedString(),
+            "suggested_name": initPayload.suggestedName,
         ]
         Task {
             await postToMailbox(token: discoveryHex, body: payload)
@@ -323,12 +310,12 @@ final class LocationSyncService: ObservableObject {
     }
 
     private func pollFriendLocations() async {
-        let myFp = identityFingerprint(ikPub: identityKeys.ik.pub, sigIkPub: identityKeys.sigIk.pub)
         let friendList = e2eeStore.listFriends() as! [FriendEntry]
         for friend in friendList {
             let hexToken = toHex(friend.session.routingToken)
             let messages = await pollMailbox(token: hexToken)
-            let friendFp = identityFingerprint(ikPub: friend.ikPub, sigIkPub: friend.sigIkPub)
+            let senderFp = friend.session.aliceFp
+            let recipientFp = friend.session.bobFp
 
             // --- Epoch rotation first: changes session/token ---
             for msg in messages {
@@ -359,7 +346,7 @@ final class LocationSyncService: ObservableObject {
                 else { continue }
                 let ct = kotlinByteArray(from: ctData)
                 guard let result = Session.shared.decryptLocation(
-                    state: session, ct: ct, seq: seq, senderFp: friendFp, recipientFp: myFp
+                    state: session, ct: ct, seq: seq, senderFp: senderFp, recipientFp: recipientFp
                 ) else { continue }
                 session = result.first as! SessionState
                 let loc = result.second as! LocationPlaintext
@@ -391,19 +378,17 @@ final class LocationSyncService: ObservableObject {
         for msg in messages {
             guard (msg["type"] as? String) == "KeyExchangeInit",
                   let token = msg["token"] as? String,
-                  let ikPubB64 = msg["ikPub"] as? String, let ikPub = Data(base64Encoded: ikPubB64),
                   let ekPubB64 = msg["ekPub"] as? String, let ekPub = Data(base64Encoded: ekPubB64),
-                  let sigPubB64 = msg["sigPub"] as? String, let sigPub = Data(base64Encoded: sigPubB64),
-                  let sigB64 = msg["sig"] as? String, let sig = Data(base64Encoded: sigB64)
+                  let keyConfB64 = msg["key_confirmation"] as? String, let keyConfData = Data(base64Encoded: keyConfB64)
             else { continue }
+            let suggestedName = msg["suggested_name"] as? String ?? ""
             let initPayload = KeyExchangeInitPayload(
                 token: token,
-                ikPub: kotlinByteArray(from: ikPub),
                 ekPub: kotlinByteArray(from: ekPub),
-                sigPub: kotlinByteArray(from: sigPub),
-                sig: kotlinByteArray(from: sig)
+                keyConfirmation: kotlinByteArray(from: keyConfData),
+                suggestedName: suggestedName
             )
-            
+
             // Found init payload! Show naming dialog instead of processing immediately.
             pendingInitPayload = initPayload
             hasPendingInit = true

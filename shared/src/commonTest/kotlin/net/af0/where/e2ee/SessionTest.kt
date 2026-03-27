@@ -9,27 +9,18 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 class SessionTest {
-    private fun makeIdentity(): IdentityKeys = IdentityKeys(ik = generateX25519KeyPair(), sigIk = generateEd25519KeyPair())
-
     data class ExchangeResult(
         val aliceSession: SessionState,
         val bobSession: SessionState,
-        val aliceFp: ByteArray,
-        val bobFp: ByteArray,
     )
 
     /** Full key exchange: Alice sends, Bob receives. */
     private fun exchangeKeys(): ExchangeResult {
-        val alice = makeIdentity()
-        val bob = makeIdentity()
-        val aliceFp = fingerprint(alice.ik.pub, alice.sigIk.pub)
-        val bobFp = fingerprint(bob.ik.pub, bob.sigIk.pub)
+        val (qr, aliceEkPriv) = KeyExchange.aliceCreateQrPayload("Alice")
+        val (msg, bobSession) = KeyExchange.bobProcessQr(qr, "Bob")
+        val aliceSession = KeyExchange.aliceProcessInit(msg, aliceEkPriv, qr.ekPub)
 
-        val (qr, aliceEkPriv) = KeyExchange.aliceCreateQrPayload(alice, "Alice")
-        val (msg, bobSession) = KeyExchange.bobProcessQr(qr, bob, aliceFp, bobFp)
-        val aliceSession = KeyExchange.aliceProcessInit(msg, alice, aliceEkPriv, qr.ekPub, aliceFp, bobFp)
-
-        return ExchangeResult(aliceSession, bobSession, aliceFp, bobFp)
+        return ExchangeResult(aliceSession, bobSession)
     }
 
     // ---------------------------------------------------------------------------
@@ -38,11 +29,11 @@ class SessionTest {
 
     @Test
     fun `encrypt and decrypt location round-trip`() {
-        val (aliceSession, bobSession, aliceFp, bobFp) = exchangeKeys()
+        val (aliceSession, bobSession) = exchangeKeys()
         val loc = LocationPlaintext(lat = 37.7749, lng = -122.4194, acc = 15.0, ts = 1711152000L)
 
-        val (aliceNew, ct) = Session.encryptLocation(aliceSession, loc, aliceFp, bobFp)
-        val (_, decrypted) = Session.decryptLocation(bobSession, ct, aliceNew.sendSeq, aliceFp, bobFp)!!
+        val (aliceNew, ct) = Session.encryptLocation(aliceSession, loc, aliceSession.aliceFp, aliceSession.bobFp)
+        val (_, decrypted) = Session.decryptLocation(bobSession, ct, aliceNew.sendSeq, bobSession.aliceFp, bobSession.bobFp)!!
 
         assertEquals(loc.lat, decrypted.lat)
         assertEquals(loc.lng, decrypted.lng)
@@ -52,12 +43,12 @@ class SessionTest {
 
     @Test
     fun `seq advances on each encrypt`() {
-        val (aliceSession, _, aliceFp, bobFp) = exchangeKeys()
+        val (aliceSession, _) = exchangeKeys()
         val loc = LocationPlaintext(0.0, 0.0, 0.0, 0L)
 
-        val (s1, _) = Session.encryptLocation(aliceSession, loc, aliceFp, bobFp)
-        val (s2, _) = Session.encryptLocation(s1, loc, aliceFp, bobFp)
-        val (s3, _) = Session.encryptLocation(s2, loc, aliceFp, bobFp)
+        val (s1, _) = Session.encryptLocation(aliceSession, loc, aliceSession.aliceFp, aliceSession.bobFp)
+        val (s2, _) = Session.encryptLocation(s1, loc, aliceSession.aliceFp, aliceSession.bobFp)
+        val (s3, _) = Session.encryptLocation(s2, loc, aliceSession.aliceFp, aliceSession.bobFp)
 
         assertEquals(1L, s1.sendSeq)
         assertEquals(2L, s2.sendSeq)
@@ -66,18 +57,18 @@ class SessionTest {
 
     @Test
     fun `each message produces a different ciphertext`() {
-        val (aliceSession, _, aliceFp, bobFp) = exchangeKeys()
+        val (aliceSession, _) = exchangeKeys()
         val loc = LocationPlaintext(0.0, 0.0, 0.0, 0L)
 
-        val (s1, ct1) = Session.encryptLocation(aliceSession, loc, aliceFp, bobFp)
-        val (_, ct2) = Session.encryptLocation(s1, loc, aliceFp, bobFp)
+        val (s1, ct1) = Session.encryptLocation(aliceSession, loc, aliceSession.aliceFp, aliceSession.bobFp)
+        val (_, ct2) = Session.encryptLocation(s1, loc, aliceSession.aliceFp, aliceSession.bobFp)
 
         assertNotEquals(ct1.toList(), ct2.toList())
     }
 
     @Test
     fun `multiple sequential messages decrypt correctly`() {
-        val (aliceSession, bobSession, aliceFp, bobFp) = exchangeKeys()
+        val (aliceSession, bobSession) = exchangeKeys()
         val locs =
             (1..5).map { i ->
                 LocationPlaintext(lat = i.toDouble(), lng = i.toDouble(), acc = 1.0, ts = i.toLong())
@@ -86,8 +77,8 @@ class SessionTest {
         var aSess = aliceSession
         var bSess = bobSession
         for (loc in locs) {
-            val (newA, ct) = Session.encryptLocation(aSess, loc, aliceFp, bobFp)
-            val (newB, dec) = Session.decryptLocation(bSess, ct, newA.sendSeq, aliceFp, bobFp)!!
+            val (newA, ct) = Session.encryptLocation(aSess, loc, aSess.aliceFp, aSess.bobFp)
+            val (newB, dec) = Session.decryptLocation(bSess, ct, newA.sendSeq, bSess.aliceFp, bSess.bobFp)!!
             assertEquals(loc.lat, dec.lat)
             aSess = newA
             bSess = newB
@@ -100,42 +91,42 @@ class SessionTest {
 
     @Test
     fun `replay is dropped silently`() {
-        val (aliceSession, bobSession, aliceFp, bobFp) = exchangeKeys()
+        val (aliceSession, bobSession) = exchangeKeys()
         val loc = LocationPlaintext(1.0, 2.0, 3.0, 4L)
 
-        val (aliceNew, ct) = Session.encryptLocation(aliceSession, loc, aliceFp, bobFp)
+        val (aliceNew, ct) = Session.encryptLocation(aliceSession, loc, aliceSession.aliceFp, aliceSession.bobFp)
         val seq = aliceNew.sendSeq
 
-        val (bobNew, _) = Session.decryptLocation(bobSession, ct, seq, aliceFp, bobFp)!!
+        val (bobNew, _) = Session.decryptLocation(bobSession, ct, seq, bobSession.aliceFp, bobSession.bobFp)!!
         // Second delivery of the same seq must be dropped.
-        val result = Session.decryptLocation(bobNew, ct, seq, aliceFp, bobFp)
+        val result = Session.decryptLocation(bobNew, ct, seq, bobNew.aliceFp, bobNew.bobFp)
         assertNull(result, "Replay should be dropped (return null)")
     }
 
     @Test
     fun `frame with lower seq than recvSeq is dropped`() {
-        val (aliceSession, bobSession, aliceFp, bobFp) = exchangeKeys()
+        val (aliceSession, bobSession) = exchangeKeys()
         val loc = LocationPlaintext(0.0, 0.0, 0.0, 0L)
 
         var aSess = aliceSession
         var bSess = bobSession
         val cts = mutableListOf<Pair<Long, ByteArray>>()
         repeat(3) {
-            val (newA, ct) = Session.encryptLocation(aSess, loc, aliceFp, bobFp)
+            val (newA, ct) = Session.encryptLocation(aSess, loc, aSess.aliceFp, aSess.bobFp)
             cts += newA.sendSeq to ct
             aSess = newA
         }
 
         // Deliver in order first.
         for ((seq, ct) in cts) {
-            val res = Session.decryptLocation(bSess, ct, seq, aliceFp, bobFp)
+            val res = Session.decryptLocation(bSess, ct, seq, bSess.aliceFp, bSess.bobFp)
             assertNotNull(res)
             bSess = res.first
         }
 
         // Re-deliver any of them — all should be dropped.
         for ((seq, ct) in cts) {
-            assertNull(Session.decryptLocation(bSess, ct, seq, aliceFp, bobFp))
+            assertNull(Session.decryptLocation(bSess, ct, seq, bSess.aliceFp, bSess.bobFp))
         }
     }
 
@@ -145,24 +136,16 @@ class SessionTest {
 
     @Test
     fun `ciphertext is bound to sender fingerprint`() {
-        val alice = makeIdentity()
-        val bob = makeIdentity()
-        val eve = makeIdentity()
-        val aliceFp = fingerprint(alice.ik.pub, alice.sigIk.pub)
-        val bobFp = fingerprint(bob.ik.pub, bob.sigIk.pub)
-        val eveFp = fingerprint(eve.ik.pub, eve.sigIk.pub)
-
-        val (qr, aliceEkPriv) = KeyExchange.aliceCreateQrPayload(alice, "Alice")
-        val (msg, bobSession) = KeyExchange.bobProcessQr(qr, bob, aliceFp, bobFp)
-        val aliceSession = KeyExchange.aliceProcessInit(msg, alice, aliceEkPriv, qr.ekPub, aliceFp, bobFp)
+        val (aliceSession, bobSession) = exchangeKeys()
+        val eveFp = sha256(generateX25519KeyPair().pub)
 
         val loc = LocationPlaintext(1.0, 2.0, 3.0, 4L)
-        val (aliceNew, ct) = Session.encryptLocation(aliceSession, loc, aliceFp, bobFp)
+        val (aliceNew, ct) = Session.encryptLocation(aliceSession, loc, aliceSession.aliceFp, aliceSession.bobFp)
 
         // Decrypting with wrong sender fingerprint must fail.
         val threw =
             try {
-                Session.decryptLocation(bobSession, ct, aliceNew.sendSeq, eveFp, bobFp)
+                Session.decryptLocation(bobSession, ct, aliceNew.sendSeq, eveFp, bobSession.bobFp)
                 false
             } catch (_: Exception) {
                 true
@@ -176,7 +159,7 @@ class SessionTest {
 
     @Test
     fun `epoch rotation produces different routing token and chain key`() {
-        val (aliceSession, bobSession, aliceFp, bobFp) = exchangeKeys()
+        val (aliceSession, bobSession) = exchangeKeys()
 
         val bobOpk = generateX25519KeyPair()
         val aliceNewEk = generateX25519KeyPair()
@@ -187,8 +170,8 @@ class SessionTest {
                 aliceNewEkPriv = aliceNewEk.priv,
                 aliceNewEkPub = aliceNewEk.pub,
                 bobOpkPub = bobOpk.pub,
-                senderFp = aliceFp,
-                recipientFp = bobFp,
+                senderFp = aliceSession.aliceFp,
+                recipientFp = aliceSession.bobFp,
             )
         val bobRotated =
             Session.bobProcessEpochRotation(
@@ -196,8 +179,8 @@ class SessionTest {
                 aliceNewEkPub = aliceNewEk.pub,
                 bobOpkPriv = bobOpk.priv,
                 newEpoch = 1,
-                senderFp = aliceFp,
-                recipientFp = bobFp,
+                senderFp = bobSession.aliceFp,
+                recipientFp = bobSession.bobFp,
             )
 
         assertEquals(1, aliceRotated.epoch)
@@ -211,7 +194,7 @@ class SessionTest {
 
     @Test
     fun `messages after epoch rotation can be decrypted`() {
-        val (aliceSession, bobSession, aliceFp, bobFp) = exchangeKeys()
+        val (aliceSession, bobSession) = exchangeKeys()
 
         val bobOpk = generateX25519KeyPair()
         val aliceNewEk = generateX25519KeyPair()
@@ -222,8 +205,8 @@ class SessionTest {
                 aliceNewEk.priv,
                 aliceNewEk.pub,
                 bobOpk.pub,
-                aliceFp,
-                bobFp,
+                aliceSession.aliceFp,
+                aliceSession.bobFp,
             )
         val bobRotated =
             Session.bobProcessEpochRotation(
@@ -231,62 +214,92 @@ class SessionTest {
                 aliceNewEk.pub,
                 bobOpk.priv,
                 1,
-                aliceFp,
-                bobFp,
+                bobSession.aliceFp,
+                bobSession.bobFp,
             )
 
         val loc = LocationPlaintext(lat = 48.8566, lng = 2.3522, acc = 5.0, ts = 1711155000L)
         // Alice's epoch is now 1; encrypt uses epoch from state.
-        val (aliceAfter, ct) = Session.encryptLocation(aliceRotated, loc, aliceFp, bobFp)
-        val (_, decrypted) = Session.decryptLocation(bobRotated, ct, aliceAfter.sendSeq, aliceFp, bobFp)!!
+        val (aliceAfter, ct) = Session.encryptLocation(aliceRotated, loc, aliceRotated.aliceFp, aliceRotated.bobFp)
+        val (_, decrypted) = Session.decryptLocation(bobRotated, ct, aliceAfter.sendSeq, bobRotated.aliceFp, bobRotated.bobFp)!!
 
         assertEquals(loc.lat, decrypted.lat)
         assertEquals(loc.lng, decrypted.lng)
     }
 
     // ---------------------------------------------------------------------------
-    // Signed blob helpers
+    // AEAD control message helpers
     // ---------------------------------------------------------------------------
 
     @Test
-    fun `epochRotationSignedBlob is 116 bytes`() {
-        val blob =
-            Session.epochRotationSignedBlob(
-                epoch = 43,
-                opkId = 101,
-                newEkPub = ByteArray(32),
-                ts = 1711152000L,
-                senderFp = ByteArray(32),
-                recipientFp = ByteArray(32),
-            )
-        assertEquals(116, blob.size)
+    fun `EpochRotation AEAD round-trip`() {
+        val rootKey = ByteArray(32) { it.toByte() }
+        val routingToken = ByteArray(16) { (it + 1).toByte() }
+        val newEkPub = ByteArray(32) { (it + 64).toByte() }
+        val ts = 1711152000L
+
+        val ct = buildEpochRotationCt(
+            rootKey = rootKey,
+            epoch = 3,
+            opkId = 7,
+            newEkPub = newEkPub,
+            ts = ts,
+            routingToken = routingToken,
+        )
+
+        val plaintext = decryptEpochRotationCt(
+            rootKey = rootKey,
+            ct = ct,
+            routingToken = routingToken,
+        )
+
+        assertEquals(3, plaintext.epoch)
+        assertEquals(7, plaintext.opkId)
+        assertContentEquals(newEkPub, plaintext.newEkPub)
+        assertEquals(ts, plaintext.ts)
     }
 
     @Test
-    fun `ratchetAckSignedBlob is 80 bytes`() {
-        val blob =
-            Session.ratchetAckSignedBlob(
-                epochSeen = 43,
-                ts = 1711152000L,
-                senderFp = ByteArray(32),
-                recipientFp = ByteArray(32),
-            )
-        assertEquals(80, blob.size)
+    fun `EpochRotation AEAD fails with wrong routing token`() {
+        val rootKey = ByteArray(32) { it.toByte() }
+        val routingToken = ByteArray(16) { 0x01.toByte() }
+        val wrongToken = ByteArray(16) { 0x02.toByte() }
+        val newEkPub = ByteArray(32)
+
+        val ct = buildEpochRotationCt(rootKey, 1, 1, newEkPub, 1000L, routingToken)
+
+        val threw = try {
+            decryptEpochRotationCt(rootKey, ct, wrongToken)
+            false
+        } catch (_: Exception) { true }
+        assertTrue(threw, "Expected AEAD to fail with wrong routing token")
     }
 
     @Test
-    fun `signed blobs can be signed and verified`() {
-        val identity = makeIdentity()
-        val blob =
-            Session.epochRotationSignedBlob(
-                epoch = 5,
-                opkId = 99,
-                newEkPub = ByteArray(32) { it.toByte() },
-                ts = 1711152000L,
-                senderFp = ByteArray(32) { 0xAA.toByte() },
-                recipientFp = ByteArray(32) { 0xBB.toByte() },
-            )
-        val sig = ed25519Sign(identity.sigIk.priv, blob)
-        assertTrue(ed25519Verify(identity.sigIk.pub, blob, sig))
+    fun `RatchetAck AEAD round-trip`() {
+        val rootKey = ByteArray(32) { it.toByte() }
+        val routingToken = ByteArray(16) { (it + 1).toByte() }
+        val ts = 1711152000L
+
+        val ct = buildRatchetAckCt(rootKey, epochSeen = 5, ts = ts, routingToken = routingToken)
+        val plaintext = decryptRatchetAckCt(rootKey, ct, routingToken)
+
+        assertEquals(5, plaintext.epochSeen)
+        assertEquals(ts, plaintext.ts)
+    }
+
+    @Test
+    fun `RatchetAck AEAD fails with wrong routing token`() {
+        val rootKey = ByteArray(32) { it.toByte() }
+        val routingToken = ByteArray(16) { 0x01.toByte() }
+        val wrongToken = ByteArray(16) { 0x02.toByte() }
+
+        val ct = buildRatchetAckCt(rootKey, epochSeen = 1, ts = 1000L, routingToken = routingToken)
+
+        val threw = try {
+            decryptRatchetAckCt(rootKey, ct, wrongToken)
+            false
+        } catch (_: Exception) { true }
+        assertTrue(threw, "Expected AEAD to fail with wrong routing token")
     }
 }
