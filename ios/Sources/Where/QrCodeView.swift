@@ -30,7 +30,7 @@ struct QrCodeView: View {
 }
 
 struct InviteSheet: View {
-    let qrPayload: QrPayload
+    let qrPayload: Shared.QrPayload
     let onDismiss: () -> Void
 
     @State private var showShareSheet = false

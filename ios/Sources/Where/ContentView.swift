@@ -11,10 +11,10 @@ struct ContentView: View {
     
     @State private var newFriendName: String = ""
 
-    private var visibleUsers: [UserLocation] {
-        var result: [UserLocation] = []
+    private var visibleUsers: [Shared.UserLocation] {
+        var result: [Shared.UserLocation] = []
         if syncService.isSharingLocation, let loc = locationManager.location {
-            result.append(UserLocation(
+            result.append(Shared.UserLocation(
                 userId: syncService.myId,
                 lat: loc.coordinate.latitude,
                 lng: loc.coordinate.longitude,
@@ -22,7 +22,7 @@ struct ContentView: View {
             ))
         }
         for (friendId, loc) in syncService.friendLocations {
-            result.append(UserLocation(userId: friendId, lat: loc.lat, lng: loc.lng, timestamp: loc.ts))
+            result.append(Shared.UserLocation(userId: friendId, lat: loc.lat, lng: loc.lng, timestamp: loc.ts))
         }
         return result
     }
