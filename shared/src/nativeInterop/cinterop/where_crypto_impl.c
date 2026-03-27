@@ -147,7 +147,7 @@ static int export_sec_key(SecKeyRef key, uint8_t *out, size_t expectedLen) {
  * X25519
  * ========================================================================= */
 
-int where_x25519_keypair(uint8_t priv[32], uint8_t pub[32]) {
+__attribute__((visibility("default"))) int where_x25519_keypair(uint8_t priv[32], uint8_t pub[32]) {
     CFErrorRef err = NULL;
     const void *keys[2]   = { kSecAttrKeyType,           kSecAttrKeyClass        };
     const void *values[2] = { kSecAttrKeyTypeCurve25519, kSecAttrKeyClassPrivate };
@@ -168,7 +168,7 @@ int where_x25519_keypair(uint8_t priv[32], uint8_t pub[32]) {
     return ok ? 0 : -1;
 }
 
-int where_x25519_dh(uint8_t out[32], const uint8_t priv[32], const uint8_t pub[32]) {
+__attribute__((visibility("default"))) int where_x25519_dh(uint8_t out[32], const uint8_t priv[32], const uint8_t pub[32]) {
     SecKeyRef privKey = import_sec_key(priv, 32, kSecAttrKeyTypeCurve25519,
                                        kSecAttrKeyClassPrivate);
     if (!privKey) return -1;
@@ -203,7 +203,7 @@ int where_x25519_dh(uint8_t out[32], const uint8_t priv[32], const uint8_t pub[3
  * Ed25519
  * ========================================================================= */
 
-int where_ed25519_keypair(uint8_t priv[32], uint8_t pub[32]) {
+__attribute__((visibility("default"))) int where_ed25519_keypair(uint8_t priv[32], uint8_t pub[32]) {
     CFErrorRef err = NULL;
     const void *keys[2]   = { kSecAttrKeyType,      kSecAttrKeyClass        };
     const void *values[2] = { kSecAttrKeyTypeEdDSA, kSecAttrKeyClassPrivate };

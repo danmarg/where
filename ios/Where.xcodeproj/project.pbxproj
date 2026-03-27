@@ -128,7 +128,7 @@
 			isa = PBXProject;
 			attributes = {
 				BuildIndependentTargetsInParallel = YES;
-				LastUpgradeCheck = 1600;
+				LastUpgradeCheck = 1430;
 			};
 			buildConfigurationList = 777AFC5049C583D110519BB8 /* Build configuration list for PBXProject "Where" */;
 			compatibilityVersion = "Xcode 14.0";
@@ -167,7 +167,7 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
-			shellScript = "cd \"$SRCROOT/..\"\nexport GRADLE_USER_HOME=/Volumes/Ext/.gradle\nexport KONAN_DATA_DIR=/Volumes/Ext/.konan\nexport TMPDIR=/Volumes/Ext/tmp\n/nix/var/nix/profiles/default/bin/nix develop --command ./gradlew :shared:embedAndSignAppleFrameworkForXcode\n";
+			shellScript = "cd \"$SRCROOT/..\"\nexport GRADLE_USER_HOME=/Volumes/Ext/.gradle\nexport KONAN_DATA_DIR=/Volumes/Ext/.konan\nexport TMPDIR=/Volumes/Ext/tmp\n/nix/var/nix/profiles/default/bin/nix develop --command ./gradlew :shared:embedAndSignAppleFrameworkForXcode\n\n# If local.gradle.kts redirects the build dir, symlink xcode-frameworks to the standard location.\nLOCAL_GRADLE=\"$SRCROOT/../local.gradle.kts\"\nEXPECTED=\"$SRCROOT/../shared/build/xcode-frameworks\"\nif [ -f \"$LOCAL_GRADLE\" ] && [ ! -d \"$EXPECTED\" ]; then\n  BUILD_DIR_PATTERN=$(grep -o '\"[^\"]*\"' \"$LOCAL_GRADLE\" | tr -d '\"' | grep where-build | head -1)\n  ACTUAL=\"${BUILD_DIR_PATTERN/\\$\\{project.name\\}/shared}\"\n  if [ -d \"$ACTUAL/xcode-frameworks\" ]; then\n    mkdir -p \"$SRCROOT/../shared/build\"\n    ln -sfn \"$ACTUAL/xcode-frameworks\" \"$EXPECTED\"\n  fi\nfi\n";
 		};
 /* End PBXShellScriptBuildPhase section */
 
@@ -231,6 +231,7 @@
 				COPY_PHASE_STRIP = NO;
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
 				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_PREVIEWS = NO;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
 				ENABLE_USER_SCRIPT_SANDBOXING = NO;
 				GCC_C_LANGUAGE_STANDARD = gnu11;
@@ -242,9 +243,10 @@
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				LD = "$(DT_TOOLCHAIN_DIR)/usr/bin/clang";
 				MTL_ENABLE_DEBUG_INFO = NO;
 				MTL_FAST_MATH = YES;
-				OTHER_LDFLAGS = "$(inherited) -ld_classic";
+				OTHER_LDFLAGS = "$(inherited)";
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = iphoneos;
 				SWIFT_COMPILATION_MODE = wholemodule;
@@ -336,6 +338,7 @@
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				COPY_PHASE_STRIP = NO;
 				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_PREVIEWS = NO;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
 				ENABLE_TESTABILITY = YES;
 				ENABLE_USER_SCRIPT_SANDBOXING = NO;
@@ -354,10 +357,11 @@
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				LD = "$(DT_TOOLCHAIN_DIR)/usr/bin/clang";
 				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
 				MTL_FAST_MATH = YES;
 				ONLY_ACTIVE_ARCH = YES;
-				OTHER_LDFLAGS = "$(inherited) -ld_classic";
+				OTHER_LDFLAGS = "$(inherited)";
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = iphoneos;
 				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;

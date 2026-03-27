@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -e
+set -o pipefail
 cd "$(dirname "$0")"
 
 # Path defaults — override via environment variables or local.properties.
@@ -9,8 +10,8 @@ BUILD_DIR="${BUILD_DIR:-$(./gradlew -q :android:printBuildDir 2>/dev/null || ech
 
 # Also read from local.properties if the env vars are not set
 if [ -f local.properties ]; then
-  _PROP_SDK=$(grep "^ANDROID_SDK_BASE=" local.properties 2>/dev/null | cut -d= -f2 | tr -d '[:space:]')
-  _PROP_BUILD=$(grep "^BUILD_DIR=" local.properties 2>/dev/null | cut -d= -f2 | tr -d '[:space:]')
+  _PROP_SDK=$(grep "^ANDROID_SDK_BASE=" local.properties | cut -d= -f2 | tr -d '[:space:]' || true)
+  _PROP_BUILD=$(grep "^BUILD_DIR=" local.properties | cut -d= -f2 | tr -d '[:space:]' || true)
   [ -n "$_PROP_SDK" ] && ANDROID_SDK_BASE="$_PROP_SDK"
   [ -n "$_PROP_BUILD" ] && BUILD_DIR="$_PROP_BUILD"
 fi
@@ -21,7 +22,7 @@ export ANDROID_AVD_HOME
 export PATH="$ANDROID_SDK_BASE/emulator:$ANDROID_SDK_BASE/platform-tools:$ANDROID_SDK_BASE/cmdline-tools/latest/bin:$PATH"
 
 # Read ANDROID_ADB_HOST from local.properties if set
-ADB_HOST=$(grep "^ANDROID_ADB_HOST=" local.properties 2>/dev/null | cut -d= -f2 | tr -d '[:space:]')
+ADB_HOST=$(grep "^ANDROID_ADB_HOST=" local.properties | cut -d= -f2 | tr -d '[:space:]' || true)
 
 if [ -n "$ADB_HOST" ]; then
   ADB="adb -s $ADB_HOST:36869"
@@ -44,7 +45,10 @@ else
 fi
 
 echo "Building APK..."
-nix develop --command ./gradlew :android:assembleDebug
+if ! nix develop --command ./gradlew :android:assembleDebug; then
+  echo "Gradle build failed."
+  exit 1
+fi
 
 APK_PATH="${BUILD_DIR}/android/outputs/apk/debug/android-debug.apk"
 echo "Installing APK from $APK_PATH..."

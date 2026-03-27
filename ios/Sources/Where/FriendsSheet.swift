@@ -4,7 +4,7 @@ import SwiftUI
 struct FriendsSheet: View {
     let myId: String
     @Binding var displayName: String
-    let friends: [FriendEntry]
+    let friends: [Shared.FriendEntry]
     let pausedFriendIds: Set<String>
     let onTogglePause: (String) -> Void
     let onCreateInvite: () -> Void
@@ -12,7 +12,7 @@ struct FriendsSheet: View {
     let onRemove: (String) -> Void
     let onZoomTo: (String) -> Void
 
-    @State private var friendToRemove: FriendEntry? = nil
+    @State private var friendToRemove: Shared.FriendEntry? = nil
 
     var body: some View {
         NavigationStack {
