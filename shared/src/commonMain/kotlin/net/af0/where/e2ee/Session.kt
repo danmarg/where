@@ -193,46 +193,6 @@ object Session {
     }
 
     // ---------------------------------------------------------------------------
-    // Signed blob builders (canonical byte encoding per §9.3)
-    // ---------------------------------------------------------------------------
-
-    /**
-     * Build the 116-byte canonical blob signed in an EpochRotation message.
-     * Caller signs this with Ed25519(SigIK.priv, blob).
-     */
-    fun epochRotationSignedBlob(
-        epoch: Int,
-        opkId: Int,
-        newEkPub: ByteArray,
-        ts: Long,
-        senderFp: ByteArray,
-        recipientFp: ByteArray,
-    ): ByteArray =
-        intToBeBytes(PROTOCOL_VERSION) +
-            intToBeBytes(epoch) +
-            intToBeBytes(opkId) +
-            newEkPub + // 32 bytes
-            longToBeBytes(ts) +
-            senderFp + // 32 bytes
-            recipientFp // 32 bytes
-
-    /**
-     * Build the 80-byte canonical blob signed in a RatchetAck message.
-     * Caller signs this with Ed25519(SigIK.priv, blob).
-     */
-    fun ratchetAckSignedBlob(
-        epochSeen: Int,
-        ts: Long,
-        senderFp: ByteArray,
-        recipientFp: ByteArray,
-    ): ByteArray =
-        intToBeBytes(PROTOCOL_VERSION) +
-            intToBeBytes(epochSeen) +
-            longToBeBytes(ts) +
-            senderFp +
-            recipientFp
-
-    // ---------------------------------------------------------------------------
     // Private helpers
     // ---------------------------------------------------------------------------
 
@@ -293,3 +253,92 @@ object Session {
         return data.copyOfRange(0, data.size - padCount)
     }
 }
+
+// ---------------------------------------------------------------------------
+// AEAD-based control message helpers
+// ---------------------------------------------------------------------------
+
+internal data class EpochRotationPlaintext(val epoch: Int, val opkId: Int, val newEkPub: ByteArray, val ts: Long)
+internal data class RatchetAckPlaintext(val epochSeen: Int, val ts: Long)
+
+/**
+ * Build the AEAD-encrypted EpochRotation payload blob.
+ * K_rot is derived from the current root key via HKDF.
+ * All-zero nonce is safe because K_rot is single-use per epoch.
+ */
+internal fun buildEpochRotationCt(
+    rootKey: ByteArray,
+    epoch: Int,
+    opkId: Int,
+    newEkPub: ByteArray,
+    ts: Long,
+    routingToken: ByteArray,
+): ByteArray {
+    val kRot = hkdfSha256(rootKey, null, INFO_EPOCH_ROTATION.encodeToByteArray(), 32)
+    val plaintext = intToBeBytes(epoch) + intToBeBytes(opkId) + newEkPub + longToBeBytes(ts)
+    return aesgcmEncrypt(kRot, ByteArray(12), plaintext, routingToken)
+}
+
+/**
+ * Verify and decrypt an EpochRotation ct. Returns EpochRotationPlaintext or throws.
+ */
+internal fun decryptEpochRotationCt(
+    rootKey: ByteArray,
+    ct: ByteArray,
+    routingToken: ByteArray,
+): EpochRotationPlaintext {
+    val kRot = hkdfSha256(rootKey, null, INFO_EPOCH_ROTATION.encodeToByteArray(), 32)
+    val plaintext = aesgcmDecrypt(kRot, ByteArray(12), ct, routingToken)
+    require(plaintext.size == 4 + 4 + 32 + 8) { "bad EpochRotation plaintext size: ${plaintext.size}" }
+    val epoch = bytesToInt(plaintext, 0)
+    val opkId = bytesToInt(plaintext, 4)
+    val newEkPub = plaintext.copyOfRange(8, 40)
+    val ts = bytesToLong(plaintext, 40)
+    return EpochRotationPlaintext(epoch, opkId, newEkPub, ts)
+}
+
+/**
+ * Build the AEAD-encrypted RatchetAck payload blob.
+ */
+internal fun buildRatchetAckCt(
+    rootKey: ByteArray,
+    epochSeen: Int,
+    ts: Long,
+    routingToken: ByteArray,
+): ByteArray {
+    val kAck = hkdfSha256(rootKey, null, INFO_RATCHET_ACK.encodeToByteArray(), 32)
+    val plaintext = intToBeBytes(epochSeen) + longToBeBytes(ts)
+    return aesgcmEncrypt(kAck, ByteArray(12), plaintext, routingToken)
+}
+
+/**
+ * Verify and decrypt a RatchetAck ct. Returns RatchetAckPlaintext or throws.
+ */
+internal fun decryptRatchetAckCt(
+    rootKey: ByteArray,
+    ct: ByteArray,
+    routingToken: ByteArray,
+): RatchetAckPlaintext {
+    val kAck = hkdfSha256(rootKey, null, INFO_RATCHET_ACK.encodeToByteArray(), 32)
+    val plaintext = aesgcmDecrypt(kAck, ByteArray(12), ct, routingToken)
+    require(plaintext.size == 4 + 8) { "bad RatchetAck plaintext size: ${plaintext.size}" }
+    val epochSeen = bytesToInt(plaintext, 0)
+    val ts = bytesToLong(plaintext, 4)
+    return RatchetAckPlaintext(epochSeen, ts)
+}
+
+private fun bytesToInt(buf: ByteArray, offset: Int): Int =
+    ((buf[offset].toInt() and 0xFF) shl 24) or
+    ((buf[offset+1].toInt() and 0xFF) shl 16) or
+    ((buf[offset+2].toInt() and 0xFF) shl 8) or
+    (buf[offset+3].toInt() and 0xFF)
+
+private fun bytesToLong(buf: ByteArray, offset: Int): Long =
+    ((buf[offset].toLong() and 0xFF) shl 56) or
+    ((buf[offset+1].toLong() and 0xFF) shl 48) or
+    ((buf[offset+2].toLong() and 0xFF) shl 40) or
+    ((buf[offset+3].toLong() and 0xFF) shl 32) or
+    ((buf[offset+4].toLong() and 0xFF) shl 24) or
+    ((buf[offset+5].toLong() and 0xFF) shl 16) or
+    ((buf[offset+6].toLong() and 0xFF) shl 8) or
+    (buf[offset+7].toLong() and 0xFF)

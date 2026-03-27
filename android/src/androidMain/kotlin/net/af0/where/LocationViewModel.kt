@@ -28,22 +28,23 @@ import net.af0.where.e2ee.RatchetAckPayload
 import net.af0.where.e2ee.Session
 import net.af0.where.e2ee.discoveryToken
 import net.af0.where.model.UserLocation
-import java.security.MessageDigest
 
 class LocationViewModel(
     app: Application,
     private val locationSource: LocationSource = LocationRepository,
 ) : AndroidViewModel(app) {
-    private val identityKeys = IdentityKeyStore.getOrCreate(app)
-    private val e2eeStore = E2eeStore(SharedPrefsE2eeStorage(app), identityKeys)
-
-    private val myFp: ByteArray by lazy {
-        MessageDigest.getInstance("SHA-256").digest(identityKeys.ik.pub + identityKeys.sigIk.pub)
-    }
-
-    val userId: String by lazy { myFp.toHexStr().substring(0, 20) }
+    private val e2eeStore = E2eeStore(SharedPrefsE2eeStorage(app))
 
     private val sharingPrefs = app.getSharedPreferences("where_prefs", Context.MODE_PRIVATE)
+
+    val userId: String by lazy {
+        sharingPrefs.getString("user_id", null) ?: run {
+            val id = java.util.UUID.randomUUID().toString().replace("-", "")
+            sharingPrefs.edit().putString("user_id", id).apply()
+            id
+        }
+    }
+
     private val _isSharingLocation = MutableStateFlow(sharingPrefs.getBoolean("is_sharing", true))
     val isSharingLocation: StateFlow<Boolean> = _isSharingLocation
 
@@ -150,7 +151,7 @@ class LocationViewModel(
         _pendingQrForNaming.value = null
         val qrWithName = qr.copy(suggestedName = friendName)
         try {
-            val (initPayload, bobEntry) = e2eeStore.processScannedQr(qrWithName)
+            val (initPayload, bobEntry) = e2eeStore.processScannedQr(qrWithName, _displayName.value.ifEmpty { "" })
             _friends.value = e2eeStore.listFriends()
             viewModelScope.launch {
                 try {
@@ -202,7 +203,7 @@ class LocationViewModel(
             val discoveryHex = qr.discoveryToken().toHexStr()
             val messages = E2eeMailboxClient.poll(BuildConfig.SERVER_HTTP_URL, discoveryHex)
             val initPayload = messages.filterIsInstance<KeyExchangeInitPayload>().firstOrNull() ?: return
-            
+
             // Found init payload! Show naming dialog instead of processing immediately.
             _pendingInitPayload.value = initPayload
             _pendingInviteQr.value = null
@@ -216,14 +217,15 @@ class LocationViewModel(
             try {
                 val hexToken = friend.session.routingToken.toHexStr()
                 val messages = E2eeMailboxClient.poll(BuildConfig.SERVER_HTTP_URL, hexToken)
-                val friendFp = MessageDigest.getInstance("SHA-256").digest(friend.ikPub + friend.sigIkPub)
+                val senderFp = friend.session.aliceFp
+                val recipientFp = friend.session.bobFp
 
                 // --- Epoch rotation first: changes session/token for subsequent messages ---
                 for (msg in messages.filterIsInstance<EpochRotationPayload>()) {
                     val ack = try {
                         e2eeStore.processEpochRotation(friend.id, msg)
                     } catch (_: IllegalArgumentException) {
-                        null // bad signature — discard
+                        null // bad AEAD — discard
                     } ?: continue
 
                     val newToken = e2eeStore.getFriend(friend.id)?.session?.routingToken?.toHexStr() ?: break
@@ -254,8 +256,8 @@ class LocationViewModel(
                             state = session,
                             ct = msg.ct,
                             seq = msg.seqAsLong(),
-                            senderFp = friendFp,
-                            recipientFp = myFp,
+                            senderFp = senderFp,
+                            recipientFp = recipientFp,
                         ) ?: continue
                     session = result.first
                     val location = result.second
@@ -305,13 +307,12 @@ class LocationViewModel(
 
                 // Re-fetch after potential rotation to use the current session/token.
                 val current = e2eeStore.getFriend(friend.id) ?: continue
-                val friendFp = MessageDigest.getInstance("SHA-256").digest(friend.ikPub + friend.sigIkPub)
                 val (newSession, ct) =
                     Session.encryptLocation(
                         state = current.session,
                         location = plaintext,
-                        senderFp = myFp,
-                        recipientFp = friendFp,
+                        senderFp = current.session.aliceFp,
+                        recipientFp = current.session.bobFp,
                     )
                 e2eeStore.updateSession(friend.id, newSession)
                 E2eeMailboxClient.post(

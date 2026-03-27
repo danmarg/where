@@ -65,16 +65,16 @@ data class OPKWire(
 }
 
 /**
- * Bob's signed batch of One-Time Pre-Keys (Bob → Alice, §9.3).
+ * Bob's authenticated batch of One-Time Pre-Keys (Bob → Alice, §9.3).
  *
  * @property keys  OPKs in the bundle.
- * @property sig   Ed25519 signature over the canonical binary encoding (see [PreKeyBundleOps]).
+ * @property mac   HMAC-SHA-256 over the canonical binary encoding (see [PreKeyBundleOps]).
  */
 @Serializable
 @SerialName("PreKeyBundle")
 data class PreKeyBundlePayload(
     val keys: List<OPKWire>,
-    @Serializable(with = ByteArrayBase64Serializer::class) val sig: ByteArray,
+    @Serializable(with = ByteArrayBase64Serializer::class) val mac: ByteArray,
 ) : MailboxPayload() {
     fun toOPKList(): List<OPK> = keys.map { it.toOPK() }
 }
@@ -86,7 +86,7 @@ data class PreKeyBundlePayload(
  * @property opkId     ID of the Bob OPK Alice consumed for this ratchet step.
  * @property newEkPub  Alice's new X25519 ephemeral public key (32 bytes, base64).
  * @property ts        Unix timestamp in seconds (uint64).
- * @property sig       Ed25519 signature over the 116-byte canonical blob (see [Session.epochRotationSignedBlob]).
+ * @property ct        AEAD ciphertext authenticating the rotation (see [Session.buildEpochRotationCt]).
  */
 @Serializable
 @SerialName("EpochRotation")
@@ -96,7 +96,7 @@ data class EpochRotationPayload(
     @SerialName("new_ek_pub")
     @Serializable(with = ByteArrayBase64Serializer::class) val newEkPub: ByteArray,
     val ts: Long,
-    @Serializable(with = ByteArrayBase64Serializer::class) val sig: ByteArray,
+    @Serializable(with = ByteArrayBase64Serializer::class) val ct: ByteArray,
 ) : MailboxPayload()
 
 /**
@@ -104,42 +104,37 @@ data class EpochRotationPayload(
  *
  * @property epochSeen  The epoch number Bob successfully processed.
  * @property ts         Unix timestamp in seconds.
- * @property sig        Ed25519 signature over the 80-byte canonical blob (see [Session.ratchetAckSignedBlob]).
+ * @property ct         AEAD ciphertext authenticating the ack (see [Session.buildRatchetAckCt]).
  */
 @Serializable
 @SerialName("RatchetAck")
 data class RatchetAckPayload(
     @SerialName("epoch_seen") val epochSeen: Int,
     val ts: Long,
-    @Serializable(with = ByteArrayBase64Serializer::class) val sig: ByteArray,
+    @Serializable(with = ByteArrayBase64Serializer::class) val ct: ByteArray,
 ) : MailboxPayload()
 
 /**
  * Bob's KeyExchangeInit posted to the discovery token address (§4.2).
  *
- * @property token  Hex-encoded T_AB_0 (16 bytes) — the pairwise routing token Bob computed.
- * @property ikPub  Bob's X25519 identity public key (32 bytes).
- * @property ekPub  Bob's X25519 ephemeral public key (32 bytes).
- * @property sigPub Bob's Ed25519 signing public key (32 bytes).
- * @property sig    Ed25519 signature over (ikPub || ekPub || sigPub).
+ * @property token           Hex-encoded T_AB_0 (16 bytes) — the pairwise routing token Bob computed.
+ * @property ekPub           Bob's X25519 ephemeral public key (32 bytes).
+ * @property keyConfirmation HMAC-SHA-256(SK, "Where-v1-Confirm" || EK_A.pub || EK_B.pub).
+ * @property suggestedName   Bob's suggested display name for Alice.
  */
 @Serializable
 @SerialName("KeyExchangeInit")
 data class KeyExchangeInitPayload(
     val token: String,
-    @Serializable(with = ByteArrayBase64Serializer::class) val ikPub: ByteArray,
     @Serializable(with = ByteArrayBase64Serializer::class) val ekPub: ByteArray,
-    @Serializable(with = ByteArrayBase64Serializer::class) val sigPub: ByteArray,
-    @Serializable(with = ByteArrayBase64Serializer::class) val sig: ByteArray,
-) : MailboxPayload()
-
-/**
- * Bob's key confirmation posted to T_AB_0 immediately after [KeyExchangeInitPayload] (§4.2).
- *
- * @property ct AES-256-GCM(key=SK, nonce=0, plaintext="Where-v1-Confirm", aad=T_AB_0).
- */
-@Serializable
-@SerialName("KeyConfirmation")
-data class KeyConfirmationPayload(
-    @Serializable(with = ByteArrayBase64Serializer::class) val ct: ByteArray,
-) : MailboxPayload()
+    @SerialName("key_confirmation")
+    @Serializable(with = ByteArrayBase64Serializer::class) val keyConfirmation: ByteArray,
+    @SerialName("suggested_name") val suggestedName: String = "",
+) : MailboxPayload() {
+    override fun equals(other: Any?): Boolean {
+        if (other !is KeyExchangeInitPayload) return false
+        return token == other.token && ekPub.contentEquals(other.ekPub) &&
+            keyConfirmation.contentEquals(other.keyConfirmation) && suggestedName == other.suggestedName
+    }
+    override fun hashCode(): Int = token.hashCode()
+}

@@ -19,7 +19,7 @@ interface E2eeStorage {
 }
 
 /**
- * Friend entry containing their identity keys and the active session state.
+ * Friend entry containing their session state.
  *
  * @param isInitiator  true if the local user was "Alice" (created the QR); false if "Bob" (scanned QR).
  * @param myOpkPrivs   Bob's OPK private keys keyed by OPK ID — kept to process Alice's epoch rotations.
@@ -28,23 +28,19 @@ interface E2eeStorage {
  */
 data class FriendEntry(
     val name: String,
-    val ikPub: ByteArray,
-    val sigIkPub: ByteArray,
     val session: SessionState,
     val isInitiator: Boolean = false,
     val myOpkPrivs: Map<Int, ByteArray> = emptyMap(),
     val theirOpkPubs: Map<Int, ByteArray> = emptyMap(),
     val nextOpkId: Int = 1,
 ) {
-    /** Computed friend ID: hex(SHA-256(ikPub || sigIkPub)) — full 64 hex chars. */
-    val id: String get() = fingerprint(ikPub, sigIkPub).toHex()
+    /** Computed friend ID: hex(SHA-256(EK_A.pub)) — full 64 hex chars. */
+    val id: String get() = session.aliceFp.toHex()
 
     override fun equals(other: Any?): Boolean {
         if (this === other) return true
         if (other !is FriendEntry) return false
         return name == other.name &&
-            ikPub.contentEquals(other.ikPub) &&
-            sigIkPub.contentEquals(other.sigIkPub) &&
             session == other.session &&
             isInitiator == other.isInitiator &&
             myOpkPrivs.contentEquals(other.myOpkPrivs) &&
@@ -54,8 +50,6 @@ data class FriendEntry(
 
     override fun hashCode(): Int {
         var result = name.hashCode()
-        result = 31 * result + ikPub.contentHashCode()
-        result = 31 * result + sigIkPub.contentHashCode()
         result = 31 * result + session.hashCode()
         result = 31 * result + isInitiator.hashCode()
         result = 31 * result + nextOpkId
@@ -78,7 +72,6 @@ internal data class PendingInvite(
 
 class E2eeStore(
     private val storage: E2eeStorage,
-    private val myIdentity: IdentityKeys,
 ) {
     private var friends = mutableMapOf<String, FriendEntry>()
     private var pendingInvite: PendingInvite? = null
@@ -96,8 +89,6 @@ class E2eeStore(
                     val entry =
                         FriendEntry(
                             name = s.name,
-                            ikPub = s.ikPub,
-                            sigIkPub = s.sigIkPub,
                             session = s.session,
                             isInitiator = s.isInitiator,
                             myOpkPrivs = s.myOpkPrivs.associate { it.id to it.key },
@@ -120,8 +111,6 @@ class E2eeStore(
                         SerializedFriendEntry(
                             friendId = f.id,
                             name = f.name,
-                            ikPub = f.ikPub,
-                            sigIkPub = f.sigIkPub,
                             session = f.session,
                             isInitiator = f.isInitiator,
                             myOpkPrivs = f.myOpkPrivs.map { (id, key) -> SerializedOpkEntry(id, key) },
@@ -141,7 +130,7 @@ class E2eeStore(
      * Replaces any previously active invite.
      */
     fun createInvite(suggestedName: String): QrPayload {
-        val (payload, ekPriv) = KeyExchange.aliceCreateQrPayload(myIdentity, suggestedName)
+        val (payload, ekPriv) = KeyExchange.aliceCreateQrPayload(suggestedName)
         pendingInvite = PendingInvite(payload, ekPriv)
         return payload
     }
@@ -153,19 +142,14 @@ class E2eeStore(
 
     /**
      * Bob: Process Alice's scanned QR code.
-     * Performs the 3-term DH, creates the initial session, and saves the new friend.
+     * Performs the single X25519 DH, creates the initial session, and saves the new friend.
      * Returns the wire payload ready to POST to [QrPayload.discoveryToken] and the new entry.
      */
-    fun processScannedQr(qr: QrPayload): Pair<KeyExchangeInitPayload, FriendEntry> {
-        val aliceFp = fingerprint(qr.ikPub, qr.sigPub)
-        val bobFp = fingerprint(myIdentity.ik.pub, myIdentity.sigIk.pub)
-
-        val (initMsg, session) = KeyExchange.bobProcessQr(qr, myIdentity, aliceFp, bobFp)
+    fun processScannedQr(qr: QrPayload, bobSuggestedName: String = ""): Pair<KeyExchangeInitPayload, FriendEntry> {
+        val (initMsg, session) = KeyExchange.bobProcessQr(qr, bobSuggestedName)
 
         val entry = FriendEntry(
             name = qr.suggestedName,
-            ikPub = qr.ikPub,
-            sigIkPub = qr.sigPub,
             session = session,
             isInitiator = false, // Bob scanned Alice's QR
         )
@@ -174,23 +158,22 @@ class E2eeStore(
         val payload =
             KeyExchangeInitPayload(
                 token = initMsg.token.toHex(),
-                ikPub = initMsg.ikPub,
                 ekPub = initMsg.ekPub,
-                sigPub = initMsg.sigPub,
-                sig = initMsg.sig,
+                keyConfirmation = initMsg.keyConfirmation,
+                suggestedName = initMsg.suggestedName,
             )
         return payload to entry
     }
 
     /**
      * Alice: Process Bob's KeyExchangeInit payload received from the discovery inbox.
-     * Verifies the signature, recomputes the session, and saves the new friend.
+     * Verifies key_confirmation, recomputes the session, and saves the new friend.
      *
      * @param payload Wire payload received from GET /inbox/{discoveryToken}.
      * @param bobName The name Alice wants to call this friend.
      * @return The new [FriendEntry], or null if no invite is active or the payload is
      *         malformed in a non-security-relevant way.
-     * @throws IllegalArgumentException if Bob's signature fails verification — this is a
+     * @throws IllegalArgumentException if key_confirmation fails — this is a
      *         crypto failure that callers should surface (not silently discard).
      */
     @Throws(IllegalArgumentException::class)
@@ -202,28 +185,20 @@ class E2eeStore(
         val msg =
             KeyExchangeInitMessage(
                 token = payload.token.hexToByteArray(),
-                ikPub = payload.ikPub,
                 ekPub = payload.ekPub,
-                sigPub = payload.sigPub,
-                sig = payload.sig,
+                keyConfirmation = payload.keyConfirmation,
+                suggestedName = payload.suggestedName,
             )
-        val aliceFp = fingerprint(myIdentity.ik.pub, myIdentity.sigIk.pub)
-        val bobFp = fingerprint(msg.ikPub, msg.sigPub)
 
         return try {
             val session =
                 KeyExchange.aliceProcessInit(
                     msg = msg,
-                    aliceIdentity = myIdentity,
                     aliceEkPriv = pending.aliceEkPriv,
                     aliceEkPub = pending.qrPayload.ekPub,
-                    aliceFp = aliceFp,
-                    bobFp = bobFp,
                 )
             val entry = FriendEntry(
                 name = bobName,
-                ikPub = msg.ikPub,
-                sigIkPub = msg.sigPub,
                 session = session,
                 isInitiator = true, // Alice created the QR
             )
@@ -232,7 +207,7 @@ class E2eeStore(
             save()
             entry
         } catch (e: IllegalArgumentException) {
-            throw e // signature verification failure — surface to caller
+            throw e // key_confirmation failure — surface to caller
         } catch (_: Exception) {
             null // transient parse/format error — treat as "not ready yet"
         }
@@ -263,7 +238,7 @@ class E2eeStore(
 
     /**
      * Bob: Generate [count] fresh one-time pre-keys, store their private keys, and return
-     * a signed [PreKeyBundlePayload] ready to POST to the routing token.
+     * a MAC-authenticated [PreKeyBundlePayload] ready to POST to the routing token.
      *
      * Returns null if the friend is not found or this device is not Bob (isInitiator = true).
      */
@@ -282,10 +257,10 @@ class E2eeStore(
         }
 
         val opkList = newOpks.map { (opk, _) -> opk }
-        val sig = PreKeyBundleOps.buildSignature(
+        val mac = PreKeyBundleOps.buildMac(
             token = entry.session.routingToken,
             opks = opkList,
-            sigIkPriv = myIdentity.sigIk.priv,
+            kBundle = entry.session.kBundle,
         )
 
         val newPrivMap = entry.myOpkPrivs + newOpks.associate { (opk, priv) -> opk.id to priv }
@@ -297,13 +272,13 @@ class E2eeStore(
 
         return PreKeyBundlePayload(
             keys = opkList.map { OPKWire(it.id, it.pub) },
-            sig = sig,
+            mac = mac,
         )
     }
 
     /**
      * Alice: Verify and cache an incoming [PreKeyBundlePayload] from Bob.
-     * Returns true if the signature was valid and the keys were stored.
+     * Returns true if the MAC was valid and the keys were stored.
      */
     fun storeOpkBundle(
         friendId: String,
@@ -317,8 +292,8 @@ class E2eeStore(
         if (!PreKeyBundleOps.verify(
                 token = entry.session.routingToken,
                 opks = opks,
-                sig = bundle.sig,
-                sigIkPub = entry.sigIkPub,
+                mac = bundle.mac,
+                kBundle = entry.session.kBundle,
             )
         ) {
             return false
@@ -375,28 +350,25 @@ class E2eeStore(
         val ts = currentTimeSeconds()
         val (opkId, opkPub) = entry.theirOpkPubs.minBy { it.key }
 
-        val aliceFp = fingerprint(myIdentity.ik.pub, myIdentity.sigIk.pub)
-        val bobFp = fingerprint(entry.ikPub, entry.sigIkPub)
-
         val newEk = generateX25519KeyPair()
         val newSession = Session.aliceEpochRotation(
             state = entry.session,
             aliceNewEkPriv = newEk.priv,
             aliceNewEkPub = newEk.pub,
             bobOpkPub = opkPub,
-            senderFp = aliceFp,
-            recipientFp = bobFp,
+            senderFp = entry.session.aliceFp,
+            recipientFp = entry.session.bobFp,
         )
 
-        val blob = Session.epochRotationSignedBlob(
+        val oldRoutingToken = entry.session.routingToken
+        val ct = buildEpochRotationCt(
+            rootKey = entry.session.rootKey,
             epoch = newSession.epoch,
             opkId = opkId,
             newEkPub = newEk.pub,
             ts = ts,
-            senderFp = aliceFp,
-            recipientFp = bobFp,
+            routingToken = oldRoutingToken,
         )
-        val sig = ed25519Sign(myIdentity.sigIk.priv, blob)
 
         friends[friendId] = entry.copy(
             session = newSession,
@@ -409,7 +381,7 @@ class E2eeStore(
             opkId = opkId,
             newEkPub = newEk.pub,
             ts = ts,
-            sig = sig,
+            ct = ct,
         )
     }
 
@@ -422,7 +394,7 @@ class E2eeStore(
      *
      * Returns null if the friend is not found, the OPK is unknown, or another
      * non-security parse error occurs. Throws [IllegalArgumentException] on
-     * cryptographic failures (bad signature, stale timestamp).
+     * cryptographic failures (bad AEAD, stale timestamp).
      */
     @Throws(IllegalArgumentException::class)
     fun processEpochRotation(
@@ -432,23 +404,19 @@ class E2eeStore(
         val entry = friends[friendId] ?: return null
         if (entry.isInitiator) return null // Alice doesn't process her own rotations
 
-        val aliceFp = fingerprint(entry.ikPub, entry.sigIkPub) // Alice is the friend
-        val bobFp = fingerprint(myIdentity.ik.pub, myIdentity.sigIk.pub)
-
-        val blob = Session.epochRotationSignedBlob(
-            epoch = payload.epoch,
-            opkId = payload.opkId,
-            newEkPub = payload.newEkPub,
-            ts = payload.ts,
-            senderFp = aliceFp,
-            recipientFp = bobFp,
-        )
-        require(ed25519Verify(entry.sigIkPub, blob, payload.sig)) {
-            "EpochRotation signature verification failed"
+        val oldRoutingToken = entry.session.routingToken
+        val rotData = try {
+            decryptEpochRotationCt(
+                rootKey = entry.session.rootKey,
+                ct = payload.ct,
+                routingToken = oldRoutingToken,
+            )
+        } catch (_: Exception) {
+            throw IllegalArgumentException("EpochRotation AEAD verification failed")
         }
-        require(isTimestampFresh(payload.ts)) {
-            "EpochRotation timestamp outside freshness window"
-        }
+        require(rotData.epoch == payload.epoch) { "epoch mismatch in EpochRotation" }
+        require(rotData.opkId == payload.opkId) { "opkId mismatch in EpochRotation" }
+        require(isTimestampFresh(rotData.ts)) { "EpochRotation timestamp outside freshness window" }
 
         val opkPriv = entry.myOpkPrivs[payload.opkId] ?: return null // unknown OPK — skip
 
@@ -457,8 +425,8 @@ class E2eeStore(
             aliceNewEkPub = payload.newEkPub,
             bobOpkPriv = opkPriv,
             newEpoch = payload.epoch,
-            senderFp = aliceFp,
-            recipientFp = bobFp,
+            senderFp = entry.session.aliceFp,
+            recipientFp = entry.session.bobFp,
         )
 
         friends[friendId] = entry.copy(
@@ -468,19 +436,18 @@ class E2eeStore(
         save()
 
         val ts = currentTimeSeconds()
-        val ackBlob = Session.ratchetAckSignedBlob(
+        val ackCt = buildRatchetAckCt(
+            rootKey = newSession.rootKey,
             epochSeen = payload.epoch,
             ts = ts,
-            senderFp = aliceFp,
-            recipientFp = bobFp,
+            routingToken = newSession.routingToken,
         )
-        val ackSig = ed25519Sign(myIdentity.sigIk.priv, ackBlob)
-        return RatchetAckPayload(epochSeen = payload.epoch, ts = ts, sig = ackSig)
+        return RatchetAckPayload(epochSeen = payload.epoch, ts = ts, ct = ackCt)
     }
 
     /**
      * Alice: Verify Bob's [RatchetAckPayload].
-     * Returns true if the signature and timestamp are valid; false otherwise.
+     * Returns true if the AEAD and timestamp are valid; false otherwise.
      * No state change is made — this is informational only.
      */
     fun processRatchetAck(
@@ -490,18 +457,14 @@ class E2eeStore(
         val entry = friends[friendId] ?: return false
         if (!entry.isInitiator) return false
 
-        val aliceFp = fingerprint(myIdentity.ik.pub, myIdentity.sigIk.pub)
-        val bobFp = fingerprint(entry.ikPub, entry.sigIkPub)
-
-        if (!isTimestampFresh(payload.ts)) return false
-
-        val blob = Session.ratchetAckSignedBlob(
-            epochSeen = payload.epochSeen,
-            ts = payload.ts,
-            senderFp = aliceFp,
-            recipientFp = bobFp,
-        )
-        return ed25519Verify(entry.sigIkPub, blob, payload.sig)
+        val ackData = try {
+            decryptRatchetAckCt(
+                rootKey = entry.session.rootKey,
+                ct = payload.ct,
+                routingToken = entry.session.routingToken,
+            )
+        } catch (_: Exception) { return false }
+        return isTimestampFresh(ackData.ts)
     }
 
     companion object {
@@ -538,8 +501,6 @@ internal data class SerializedOpkEntry(
 internal data class SerializedFriendEntry(
     val friendId: String,
     val name: String,
-    @Serializable(with = ByteArrayBase64Serializer::class) val ikPub: ByteArray,
-    @Serializable(with = ByteArrayBase64Serializer::class) val sigIkPub: ByteArray,
     val session: SessionState,
     val isInitiator: Boolean = false,
     val myOpkPrivs: List<SerializedOpkEntry> = emptyList(),

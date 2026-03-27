@@ -8,26 +8,17 @@ import kotlin.test.assertNotEquals
 import kotlin.test.assertTrue
 
 class KeyExchangeTest {
-    private fun makeIdentity(): IdentityKeys = IdentityKeys(ik = generateX25519KeyPair(), sigIk = generateEd25519KeyPair())
 
     // ---------------------------------------------------------------------------
     // QR payload
     // ---------------------------------------------------------------------------
 
     @Test
-    fun `aliceCreateQrPayload produces a valid signed payload`() {
-        val alice = makeIdentity()
-        val (qr, ekPriv) = KeyExchange.aliceCreateQrPayload(alice, "Alice")
+    fun `aliceCreateQrPayload produces a valid payload`() {
+        val (qr, ekPriv) = KeyExchange.aliceCreateQrPayload("Alice")
 
-        assertContentEquals(alice.ik.pub, qr.ikPub)
-        assertContentEquals(alice.sigIk.pub, qr.sigPub)
         assertEquals(32, qr.ekPub.size)
-        assertEquals(64, qr.sig.size)
-        assertEquals(20, qr.fingerprint.length) // hex(SHA-256(ikPub)[0:10])
-
-        // Signature must be valid.
-        val signedData = qr.ikPub + qr.ekPub + qr.sigPub
-        assertTrue(ed25519Verify(qr.sigPub, signedData, qr.sig))
+        assertEquals(16, qr.fingerprint.length) // hex(SHA-256(ekPub)[0:8])
 
         // ekPriv is 32 bytes and non-zero.
         assertEquals(32, ekPriv.size)
@@ -36,9 +27,8 @@ class KeyExchangeTest {
 
     @Test
     fun `aliceCreateQrPayload uses fresh ephemeral key each time`() {
-        val alice = makeIdentity()
-        val (qr1, _) = KeyExchange.aliceCreateQrPayload(alice, "Alice")
-        val (qr2, _) = KeyExchange.aliceCreateQrPayload(alice, "Alice")
+        val (qr1, _) = KeyExchange.aliceCreateQrPayload("Alice")
+        val (qr2, _) = KeyExchange.aliceCreateQrPayload("Alice")
         // Different ephemeral keys on each invocation.
         assertNotEquals(qr1.ekPub.toList(), qr2.ekPub.toList())
     }
@@ -48,55 +38,25 @@ class KeyExchangeTest {
     // ---------------------------------------------------------------------------
 
     @Test
-    fun `bobProcessQr produces signed KeyExchangeInit with correct field sizes`() {
-        val alice = makeIdentity()
-        val bob = makeIdentity()
-        val (qr, _) = KeyExchange.aliceCreateQrPayload(alice, "Alice")
-        val aliceFp = fingerprint(alice.ik.pub, alice.sigIk.pub)
-        val bobFp = fingerprint(bob.ik.pub, bob.sigIk.pub)
+    fun `bobProcessQr produces KeyExchangeInit with correct field sizes`() {
+        val (qr, _) = KeyExchange.aliceCreateQrPayload("Alice")
 
-        val (msg, _) = KeyExchange.bobProcessQr(qr, bob, aliceFp, bobFp)
+        val (msg, _) = KeyExchange.bobProcessQr(qr, "Bob")
 
         assertEquals(16, msg.token.size)
-        assertEquals(32, msg.ikPub.size)
         assertEquals(32, msg.ekPub.size)
-        assertEquals(32, msg.sigPub.size)
-        assertEquals(64, msg.sig.size)
-        assertContentEquals(bob.ik.pub, msg.ikPub)
-        assertContentEquals(bob.sigIk.pub, msg.sigPub)
+        assertEquals(32, msg.keyConfirmation.size)
+        assertEquals("Bob", msg.suggestedName)
     }
 
     @Test
-    fun `bobProcessQr signature on KeyExchangeInit is valid`() {
-        val alice = makeIdentity()
-        val bob = makeIdentity()
-        val (qr, _) = KeyExchange.aliceCreateQrPayload(alice, "Alice")
-        val aliceFp = fingerprint(alice.ik.pub, alice.sigIk.pub)
-        val bobFp = fingerprint(bob.ik.pub, bob.sigIk.pub)
+    fun `bobProcessQr key_confirmation is valid`() {
+        val (qr, aliceEkPriv) = KeyExchange.aliceCreateQrPayload("Alice")
+        val (msg, _) = KeyExchange.bobProcessQr(qr, "Bob")
 
-        val (msg, _) = KeyExchange.bobProcessQr(qr, bob, aliceFp, bobFp)
-
-        val signedData = msg.ikPub + msg.ekPub + msg.sigPub
-        assertTrue(ed25519Verify(msg.sigPub, signedData, msg.sig))
-    }
-
-    @Test
-    fun `bobProcessQr rejects tampered QR signature`() {
-        val alice = makeIdentity()
-        val bob = makeIdentity()
-        val (qr, _) = KeyExchange.aliceCreateQrPayload(alice, "Alice")
-        val badQr = qr.copy(sig = ByteArray(64)) // zeroed sig
-        val aliceFp = fingerprint(alice.ik.pub, alice.sigIk.pub)
-        val bobFp = fingerprint(bob.ik.pub, bob.sigIk.pub)
-
-        val threw =
-            try {
-                KeyExchange.bobProcessQr(badQr, bob, aliceFp, bobFp)
-                false
-            } catch (_: IllegalArgumentException) {
-                true
-            }
-        assertTrue(threw, "Expected bobProcessQr to reject tampered QR signature")
+        // Alice can verify the key_confirmation by computing SK herself
+        val sk = x25519(aliceEkPriv, msg.ekPub)
+        assertTrue(KeyExchange.verifyKeyConfirmation(sk, qr.ekPub, msg.ekPub, msg.keyConfirmation))
     }
 
     // ---------------------------------------------------------------------------
@@ -105,28 +65,18 @@ class KeyExchangeTest {
 
     @Test
     fun `alice and bob derive the same routing token`() {
-        val alice = makeIdentity()
-        val bob = makeIdentity()
-        val aliceFp = fingerprint(alice.ik.pub, alice.sigIk.pub)
-        val bobFp = fingerprint(bob.ik.pub, bob.sigIk.pub)
-
-        val (qr, aliceEkPriv) = KeyExchange.aliceCreateQrPayload(alice, "Alice")
-        val (msg, bobSession) = KeyExchange.bobProcessQr(qr, bob, aliceFp, bobFp)
-        val aliceSession = KeyExchange.aliceProcessInit(msg, alice, aliceEkPriv, qr.ekPub, aliceFp, bobFp)
+        val (qr, aliceEkPriv) = KeyExchange.aliceCreateQrPayload("Alice")
+        val (msg, bobSession) = KeyExchange.bobProcessQr(qr, "Bob")
+        val aliceSession = KeyExchange.aliceProcessInit(msg, aliceEkPriv, qr.ekPub)
 
         assertContentEquals(aliceSession.routingToken, bobSession.routingToken)
     }
 
     @Test
     fun `alice send chain matches bob recv chain and vice versa`() {
-        val alice = makeIdentity()
-        val bob = makeIdentity()
-        val aliceFp = fingerprint(alice.ik.pub, alice.sigIk.pub)
-        val bobFp = fingerprint(bob.ik.pub, bob.sigIk.pub)
-
-        val (qr, aliceEkPriv) = KeyExchange.aliceCreateQrPayload(alice, "Alice")
-        val (msg, bobSession) = KeyExchange.bobProcessQr(qr, bob, aliceFp, bobFp)
-        val aliceSession = KeyExchange.aliceProcessInit(msg, alice, aliceEkPriv, qr.ekPub, aliceFp, bobFp)
+        val (qr, aliceEkPriv) = KeyExchange.aliceCreateQrPayload("Alice")
+        val (msg, bobSession) = KeyExchange.bobProcessQr(qr, "Bob")
+        val aliceSession = KeyExchange.aliceProcessInit(msg, aliceEkPriv, qr.ekPub)
 
         assertContentEquals(aliceSession.rootKey, bobSession.rootKey)
         // Alice's send chain must equal Bob's receive chain, and vice versa.
@@ -135,19 +85,14 @@ class KeyExchangeTest {
     }
 
     @Test
-    fun `aliceProcessInit rejects tampered KeyExchangeInit signature`() {
-        val alice = makeIdentity()
-        val bob = makeIdentity()
-        val aliceFp = fingerprint(alice.ik.pub, alice.sigIk.pub)
-        val bobFp = fingerprint(bob.ik.pub, bob.sigIk.pub)
-
-        val (qr, aliceEkPriv) = KeyExchange.aliceCreateQrPayload(alice, "Alice")
-        val (msg, _) = KeyExchange.bobProcessQr(qr, bob, aliceFp, bobFp)
-        val badMsg = msg.copy(sig = ByteArray(64))
+    fun `aliceProcessInit rejects tampered key_confirmation`() {
+        val (qr, aliceEkPriv) = KeyExchange.aliceCreateQrPayload("Alice")
+        val (msg, _) = KeyExchange.bobProcessQr(qr, "Bob")
+        val badMsg = msg.copy(keyConfirmation = ByteArray(32))
 
         val threw =
             try {
-                KeyExchange.aliceProcessInit(badMsg, alice, aliceEkPriv, qr.ekPub, aliceFp, bobFp)
+                KeyExchange.aliceProcessInit(badMsg, aliceEkPriv, qr.ekPub)
                 false
             } catch (_: IllegalArgumentException) {
                 true
@@ -161,83 +106,82 @@ class KeyExchangeTest {
 
     @Test
     fun `key confirmation round-trip`() {
-        val alice = makeIdentity()
-        val bob = makeIdentity()
-        val aliceFp = fingerprint(alice.ik.pub, alice.sigIk.pub)
-        val bobFp = fingerprint(bob.ik.pub, bob.sigIk.pub)
+        val (qr, aliceEkPriv) = KeyExchange.aliceCreateQrPayload("Alice")
+        val (msg, _) = KeyExchange.bobProcessQr(qr, "Bob")
 
-        val (qr, aliceEkPriv) = KeyExchange.aliceCreateQrPayload(alice, "Alice")
-        val (msg, bobSession) = KeyExchange.bobProcessQr(qr, bob, aliceFp, bobFp)
-        val aliceSession = KeyExchange.aliceProcessInit(msg, alice, aliceEkPriv, qr.ekPub, aliceFp, bobFp)
+        // Both sides compute the same SK.
+        val aliceSk = x25519(aliceEkPriv, msg.ekPub)
+        val bobSk = x25519(msg.ekPub, qr.ekPub) // just verify the HMAC directly
 
-        // Both sides should derive the same SK (evidenced by identical session keys above).
-        // Build confirmation from Bob's side, verify on Alice's side.
-        // We compute SK directly to pass to buildKeyConfirmation.
-        val bobDh1 = x25519(bobSession.myEkPriv, qr.ikPub)
-        val bobDh2 = x25519(bob.ik.priv, qr.ekPub)
-        val bobDh3 = x25519(bobSession.myEkPriv, qr.ekPub)
-        val bobSk = KeyExchange.deriveSK(bobDh1, bobDh2, bobDh3)
-
-        val aliceDh1 = x25519(alice.ik.priv, msg.ekPub)
-        val aliceDh2 = x25519(aliceEkPriv, msg.ikPub)
-        val aliceDh3 = x25519(aliceEkPriv, msg.ekPub)
-        val aliceSk = KeyExchange.deriveSK(aliceDh1, aliceDh2, aliceDh3)
-
-        assertContentEquals(bobSk, aliceSk)
-
-        val token = bobSession.routingToken
-        val ct = KeyExchange.buildKeyConfirmation(bobSk, token)
-        assertTrue(KeyExchange.verifyKeyConfirmation(aliceSk, token, ct))
+        // Build confirmation from SK, verify it round-trips.
+        val confirmation = KeyExchange.buildKeyConfirmation(aliceSk, qr.ekPub, msg.ekPub)
+        assertTrue(KeyExchange.verifyKeyConfirmation(aliceSk, qr.ekPub, msg.ekPub, confirmation))
     }
 
     @Test
     fun `key confirmation fails with wrong sk`() {
+        val ekAPub = ByteArray(32) { 0xAA.toByte() }
+        val ekBPub = ByteArray(32) { 0xBB.toByte() }
         val sk = ByteArray(32) { 0xAA.toByte() }
         val wrongSk = ByteArray(32) { 0xBB.toByte() }
-        val token = ByteArray(16) { 0xCC.toByte() }
-        val ct = KeyExchange.buildKeyConfirmation(sk, token)
-        assertFalse(KeyExchange.verifyKeyConfirmation(wrongSk, token, ct))
+        val confirmation = KeyExchange.buildKeyConfirmation(sk, ekAPub, ekBPub)
+        assertFalse(KeyExchange.verifyKeyConfirmation(wrongSk, ekAPub, ekBPub, confirmation))
     }
 
     @Test
-    fun `key confirmation fails with wrong token`() {
-        val sk = ByteArray(32) { 0xAA.toByte() }
-        val token = ByteArray(16) { 0xCC.toByte() }
-        val wrongToken = ByteArray(16) { 0xDD.toByte() }
-        val ct = KeyExchange.buildKeyConfirmation(sk, token)
-        assertFalse(KeyExchange.verifyKeyConfirmation(sk, wrongToken, ct))
+    fun `key confirmation fails with wrong ekAPub`() {
+        val ekAPub = ByteArray(32) { 0xAA.toByte() }
+        val ekBPub = ByteArray(32) { 0xBB.toByte() }
+        val wrongEkAPub = ByteArray(32) { 0xCC.toByte() }
+        val sk = ByteArray(32) { 0xDD.toByte() }
+        val confirmation = KeyExchange.buildKeyConfirmation(sk, ekAPub, ekBPub)
+        assertFalse(KeyExchange.verifyKeyConfirmation(sk, wrongEkAPub, ekBPub, confirmation))
     }
 
     // ---------------------------------------------------------------------------
-    // Fingerprint and safety number
+    // Session fingerprints
     // ---------------------------------------------------------------------------
 
     @Test
     fun `fingerprint is 32 bytes and deterministic`() {
-        val ikPub = ByteArray(32) { it.toByte() }
-        val sigIkPub = ByteArray(32) { (it + 32).toByte() }
-        val fp1 = fingerprint(ikPub, sigIkPub)
-        val fp2 = fingerprint(ikPub, sigIkPub)
+        val ekPub = ByteArray(32) { it.toByte() }
+        val fp1 = fingerprint(ekPub)
+        val fp2 = fingerprint(ekPub)
         assertEquals(32, fp1.size)
         assertContentEquals(fp1, fp2)
     }
 
     @Test
+    fun `session aliceFp and bobFp are set correctly`() {
+        val (qr, aliceEkPriv) = KeyExchange.aliceCreateQrPayload("Alice")
+        val (msg, bobSession) = KeyExchange.bobProcessQr(qr, "Bob")
+        val aliceSession = KeyExchange.aliceProcessInit(msg, aliceEkPriv, qr.ekPub)
+
+        // Both sides derive same aliceFp and bobFp
+        assertContentEquals(aliceSession.aliceFp, bobSession.aliceFp)
+        assertContentEquals(aliceSession.bobFp, bobSession.bobFp)
+        // aliceFp = SHA-256(EK_A.pub)
+        assertContentEquals(sha256(qr.ekPub), aliceSession.aliceFp)
+        // bobFp = SHA-256(EK_B.pub)
+        assertContentEquals(sha256(msg.ekPub), aliceSession.bobFp)
+    }
+
+    @Test
     fun `safetyNumber is symmetric`() {
-        val alice = makeIdentity()
-        val bob = makeIdentity()
-        val sn1 = safetyNumber(alice.ik.pub, alice.sigIk.pub, bob.ik.pub, bob.sigIk.pub)
-        val sn2 = safetyNumber(bob.ik.pub, bob.sigIk.pub, alice.ik.pub, alice.sigIk.pub)
+        val ekA = generateX25519KeyPair().pub
+        val ekB = generateX25519KeyPair().pub
+        val sn1 = safetyNumber(ekA, ekB)
+        val sn2 = safetyNumber(ekB, ekA)
         assertContentEquals(sn1, sn2)
     }
 
     @Test
     fun `safetyNumber differs for different pairs`() {
-        val a = makeIdentity()
-        val b = makeIdentity()
-        val c = makeIdentity()
-        val sn1 = safetyNumber(a.ik.pub, a.sigIk.pub, b.ik.pub, b.sigIk.pub)
-        val sn2 = safetyNumber(a.ik.pub, a.sigIk.pub, c.ik.pub, c.sigIk.pub)
+        val ekA = generateX25519KeyPair().pub
+        val ekB = generateX25519KeyPair().pub
+        val ekC = generateX25519KeyPair().pub
+        val sn1 = safetyNumber(ekA, ekB)
+        val sn2 = safetyNumber(ekA, ekC)
         assertNotEquals(sn1.toList(), sn2.toList())
     }
 
@@ -266,21 +210,16 @@ class KeyExchangeTest {
 
     @Test
     fun `QrPayload discoveryToken matches deriveDiscoveryToken on ekPub`() {
-        val alice = makeIdentity()
-        val (qr, _) = KeyExchange.aliceCreateQrPayload(alice, "Alice")
+        val (qr, _) = KeyExchange.aliceCreateQrPayload("Alice")
         assertContentEquals(deriveDiscoveryToken(qr.ekPub), qr.discoveryToken())
     }
 
     @Test
     fun `discovery token is distinct from session routing token`() {
         // Ensures the discovery address and the pairwise session address never collide.
-        val alice = makeIdentity()
-        val bob = makeIdentity()
-        val aliceFp = fingerprint(alice.ik.pub, alice.sigIk.pub)
-        val bobFp = fingerprint(bob.ik.pub, bob.sigIk.pub)
-        val (qr, aliceEkPriv) = KeyExchange.aliceCreateQrPayload(alice, "Alice")
-        val (initMsg, _) = KeyExchange.bobProcessQr(qr, bob, aliceFp, bobFp)
-        val aliceSession = KeyExchange.aliceProcessInit(initMsg, alice, aliceEkPriv, qr.ekPub, aliceFp, bobFp)
+        val (qr, aliceEkPriv) = KeyExchange.aliceCreateQrPayload("Alice")
+        val (initMsg, _) = KeyExchange.bobProcessQr(qr, "Bob")
+        val aliceSession = KeyExchange.aliceProcessInit(initMsg, aliceEkPriv, qr.ekPub)
         assertNotEquals(qr.discoveryToken().toList(), aliceSession.routingToken.toList())
     }
 }

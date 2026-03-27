@@ -61,57 +61,58 @@ class PreKeyBundleTest {
     // ---------------------------------------------------------------------------
 
     @Test
-    fun `signature round-trip succeeds`() {
-        val identity = IdentityKeys(ik = generateX25519KeyPair(), sigIk = generateEd25519KeyPair())
+    fun `MAC round-trip succeeds`() {
+        val kBundle = ByteArray(32) { 0xAB.toByte() }
         val token = ByteArray(16) { 0xAB.toByte() }
         val opks = makeOPKs(3).map { it.first }
 
-        val sig = PreKeyBundleOps.buildSignature(token, opks, identity.sigIk.priv)
-        assertTrue(PreKeyBundleOps.verify(token, opks, sig, identity.sigIk.pub))
+        val mac = PreKeyBundleOps.buildMac(token, opks, kBundle)
+        assertEquals(32, mac.size) // HMAC-SHA-256 = 32 bytes
+        assertTrue(PreKeyBundleOps.verify(token, opks, mac, kBundle))
     }
 
     @Test
-    fun `verify rejects wrong signing key`() {
-        val identity = IdentityKeys(ik = generateX25519KeyPair(), sigIk = generateEd25519KeyPair())
-        val other = generateEd25519KeyPair()
+    fun `verify rejects wrong kBundle`() {
+        val kBundle = ByteArray(32) { 0xAB.toByte() }
+        val wrongKBundle = ByteArray(32) { 0xCD.toByte() }
         val token = ByteArray(16)
         val opks = makeOPKs(2).map { it.first }
 
-        val sig = PreKeyBundleOps.buildSignature(token, opks, identity.sigIk.priv)
-        assertFalse(PreKeyBundleOps.verify(token, opks, sig, other.pub))
+        val mac = PreKeyBundleOps.buildMac(token, opks, kBundle)
+        assertFalse(PreKeyBundleOps.verify(token, opks, mac, wrongKBundle))
     }
 
     @Test
     fun `verify rejects tampered OPK list`() {
-        val identity = IdentityKeys(ik = generateX25519KeyPair(), sigIk = generateEd25519KeyPair())
+        val kBundle = ByteArray(32) { 0xAB.toByte() }
         val token = ByteArray(16)
         val opks = makeOPKs(2).map { it.first }
         val tampered = opks.toMutableList().apply { removeAt(0) }
 
-        val sig = PreKeyBundleOps.buildSignature(token, opks, identity.sigIk.priv)
-        assertFalse(PreKeyBundleOps.verify(token, tampered, sig, identity.sigIk.pub))
+        val mac = PreKeyBundleOps.buildMac(token, opks, kBundle)
+        assertFalse(PreKeyBundleOps.verify(token, tampered, mac, kBundle))
     }
 
     @Test
     fun `verify rejects tampered token`() {
-        val identity = IdentityKeys(ik = generateX25519KeyPair(), sigIk = generateEd25519KeyPair())
+        val kBundle = ByteArray(32) { 0xAB.toByte() }
         val token = ByteArray(16) { 0x01.toByte() }
         val badToken = ByteArray(16) { 0x02.toByte() }
         val opks = makeOPKs(2).map { it.first }
 
-        val sig = PreKeyBundleOps.buildSignature(token, opks, identity.sigIk.priv)
-        assertFalse(PreKeyBundleOps.verify(badToken, opks, sig, identity.sigIk.pub))
+        val mac = PreKeyBundleOps.buildMac(token, opks, kBundle)
+        assertFalse(PreKeyBundleOps.verify(badToken, opks, mac, kBundle))
     }
 
     @Test
     fun `verify accepts OPKs in any order if content is same`() {
-        val identity = IdentityKeys(ik = generateX25519KeyPair(), sigIk = generateEd25519KeyPair())
+        val kBundle = ByteArray(32) { 0xAB.toByte() }
         val token = ByteArray(16)
         val opks = makeOPKs(3).map { it.first }
         val shuffled = listOf(opks[1], opks[0], opks[2])
 
-        val sig = PreKeyBundleOps.buildSignature(token, opks, identity.sigIk.priv)
-        // signedData sorts by id, so signature over opks == signature over shuffled
-        assertTrue(PreKeyBundleOps.verify(token, shuffled, sig, identity.sigIk.pub))
+        val mac = PreKeyBundleOps.buildMac(token, opks, kBundle)
+        // signedData sorts by id, so MAC over opks == MAC over shuffled
+        assertTrue(PreKeyBundleOps.verify(token, shuffled, mac, kBundle))
     }
 }
