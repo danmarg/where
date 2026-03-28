@@ -21,12 +21,17 @@ kotlin {
         iosArm64(),
         iosSimulatorArm64(),
     ).forEach { iosTarget ->
-        iosTarget.compilations["main"].cinterops {
-            val whereCrypto by creating {
-                defFile("src/nativeInterop/cinterop/WhereCrypto.def")
-                includeDirs("src/nativeInterop/cinterop")
-                // Compile C implementation source file
-                extraOpts("-Xcompile-source", "src/nativeInterop/cinterop/where_crypto_impl.c")
+        iosTarget.compilations["main"].apply {
+            cinterops {
+                val whereCrypto by creating {
+                    defFile("src/nativeInterop/cinterop/WhereCrypto.def")
+                    includeDirs("src/nativeInterop/cinterop")
+                }
+            }
+            // Compile C source files as native sources
+            nativeSources {
+                srcDir("src/nativeInterop/cinterop")
+                include("*.c")
             }
         }
         iosTarget.binaries.framework {
