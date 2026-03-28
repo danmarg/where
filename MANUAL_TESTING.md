@@ -35,11 +35,9 @@ Android pulls the server URL from `local.properties`.
    ```properties
    # For Emulator (10.0.2.2 points to host machine)
    SERVER_HTTP_URL=http://10.0.2.2:8080
-   SERVER_WS_URL=ws://10.0.2.2:8080/ws
 
    # For Real Device (use your machine's LAN IP)
    SERVER_HTTP_URL=http://192.168.1.50:8080
-   SERVER_WS_URL=ws://192.168.1.50:8080/ws
    ```
 
 ### Build and Push to Device
@@ -66,7 +64,6 @@ iOS uses `ServerConfig.swift` for configuration.
 3. For **Real Device**, update the `#else` block with your server's LAN IP or production URL:
    ```swift
    #else
-   static let wsBaseUrl = "ws://192.168.1.50:8080/ws"
    static let httpBaseUrl = "http://192.168.1.50:8080"
    #endif
    ```
