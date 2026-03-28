@@ -72,6 +72,10 @@ jobs:
       - name: Generate Xcode Project
         run: cd ios && xcodegen
 
+      - name: Ensure SDKROOT is set for K/N cinterop
+        run: |
+          echo "SDKROOT=$(xcrun --sdk iphoneos --show-sdk-path)" >> $GITHUB_ENV
+
       - name: Build iOS Debug App (device)
         if: ${{ !env.IS_RELEASE }}
         run: |
