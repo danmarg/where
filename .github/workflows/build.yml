@@ -1,4 +1,4 @@
-name: Build Apps
+name: Build iOS & Android
 
 on:
   push:
@@ -61,9 +61,6 @@ jobs:
           distribution: temurin
           java-version: 21
           cache: gradle
-
-      - name: Build KMP Framework
-        run: ./gradlew :shared:embedAndSignAppleFrameworkForXcode
 
       - name: Setup Xcode
         run: |
