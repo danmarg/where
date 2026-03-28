@@ -2,5 +2,5 @@ headers = where_crypto.h
 headerFilter = where_crypto.h
 package = net.af0.where.e2ee.native
 linkerOpts = -framework Security -framework CoreFoundation
-
 ---
+
