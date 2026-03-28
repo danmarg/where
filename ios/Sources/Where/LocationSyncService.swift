@@ -36,6 +36,7 @@ private func urlToQrPayload(_ url: String) -> Shared.QrPayload? {
 
 // MARK: - HTTP mailbox helpers
 
+@MainActor
 private func postToMailbox(token: String, bodyData: Data) async {
     guard let url = URL(string: "\(ServerConfig.httpBaseUrl)/inbox/\(token)") else { return }
     var req = URLRequest(url: url)
@@ -45,6 +46,7 @@ private func postToMailbox(token: String, bodyData: Data) async {
     _ = try? await URLSession.shared.data(for: req)
 }
 
+@MainActor
 private func pollMailbox(token: String) async -> [[String: Any]] {
     guard let url = URL(string: "\(ServerConfig.httpBaseUrl)/inbox/\(token)") else { return [] }
     guard let (data, _) = try? await URLSession.shared.data(from: url),
