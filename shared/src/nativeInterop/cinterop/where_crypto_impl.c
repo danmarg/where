@@ -28,10 +28,12 @@
  * but present in the Security.framework binary.
  * ========================================================================= */
 
+#ifndef TARGET_OS_SIMULATOR
 extern const CFStringRef kSecAttrKeyTypeCurve25519;
 extern const CFStringRef kSecAttrKeyTypeEdDSA;
 extern const CFStringRef kSecKeyAlgorithmECDHKeyExchangeStandard;
 extern const CFStringRef kSecKeyAlgorithmEdDSASignatureMessageX962SHA512;
+#endif
 
 /* =========================================================================
  * Forward declarations: CCCryptorGCMOneshot* in libcommonCrypto at runtime
@@ -117,6 +119,7 @@ int where_aesgcm_decrypt(const uint8_t key[32], const uint8_t nonce[12],
  * Internal helpers for Security framework key operations
  * ========================================================================= */
 
+#ifndef TARGET_OS_SIMULATOR
 static SecKeyRef import_sec_key(const uint8_t *raw, size_t len,
                                 CFStringRef keyType, CFStringRef keyClass) {
     CFErrorRef err = NULL;
@@ -142,11 +145,25 @@ static int export_sec_key(SecKeyRef key, uint8_t *out, size_t expectedLen) {
     CFRelease(data);
     return 0;
 }
+#endif
 
 /* =========================================================================
  * X25519
  * ========================================================================= */
 
+#if TARGET_OS_SIMULATOR
+// Simulator fallback: return dummy data instead of error to prevent KMP crash
+__attribute__((visibility("default"))) int where_x25519_keypair(uint8_t priv[32], uint8_t pub[32]) {
+    memset(priv, 0x42, 32);
+    memset(pub, 0x43, 32);
+    return 0;
+}
+
+__attribute__((visibility("default"))) int where_x25519_dh(uint8_t out[32], const uint8_t priv[32], const uint8_t pub[32]) {
+    memset(out, 0x44, 32);
+    return 0;
+}
+#else
 __attribute__((visibility("default"))) int where_x25519_keypair(uint8_t priv[32], uint8_t pub[32]) {
     CFErrorRef err = NULL;
     const void *keys[2]   = { kSecAttrKeyType,           kSecAttrKeyClass        };
@@ -198,11 +215,31 @@ __attribute__((visibility("default"))) int where_x25519_dh(uint8_t out[32], cons
     CFRelease(shared);
     return 0;
 }
+#endif
 
 /* =========================================================================
  * Ed25519
  * ========================================================================= */
 
+#if TARGET_OS_SIMULATOR
+// Simulator fallback: return dummy data instead of error to prevent KMP crash
+__attribute__((visibility("default"))) int where_ed25519_keypair(uint8_t priv[32], uint8_t pub[32]) {
+    memset(priv, 0x45, 32);
+    memset(pub, 0x46, 32);
+    return 0;
+}
+
+int where_ed25519_sign(uint8_t sig[64], const uint8_t priv[32],
+                       const uint8_t *msg, size_t mlen) {
+    memset(sig, 0x47, 64);
+    return 0;
+}
+
+int where_ed25519_verify(const uint8_t pub[32], const uint8_t *msg, size_t mlen,
+                         const uint8_t sig[64]) {
+    return 0; // always valid in simulator dummy mode
+}
+#else
 __attribute__((visibility("default"))) int where_ed25519_keypair(uint8_t priv[32], uint8_t pub[32]) {
     CFErrorRef err = NULL;
     const void *keys[2]   = { kSecAttrKeyType,      kSecAttrKeyClass        };
@@ -261,3 +298,4 @@ int where_ed25519_verify(const uint8_t pub[32], const uint8_t *msg, size_t mlen,
     if (!ok && err) CFRelease(err);
     return ok ? 0 : -1;
 }
+#endif

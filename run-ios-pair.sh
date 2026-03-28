@@ -4,14 +4,25 @@ set -o pipefail
 cd "$(dirname "$0")"
 
 # Path defaults — override via environment variables or local.properties.
-APP_PATH="${APP_PATH:-/Volumes/Ext/Build/Products/Debug-iphonesimulator/Where.app}"
+APP_PATH="${APP_PATH:-ios/build/Build/Products/Debug-iphonesimulator/Where.app}"
 if [ -f local.properties ]; then
   _PROP=$(grep "^APP_PATH=" local.properties | cut -d= -f2 | tr -d '[:space:]' || true)
   [ -n "$_PROP" ] && APP_PATH="$_PROP"
 fi
 
-SIM1_ID="AA956031-5F12-4266-A0B5-7C4932D0BF14"  # iPhone 17
-SIM2_ID="11DCC254-3DC4-4CD1-AC51-DD9439F4FA64"  # iPhone 17 Pro
+# Dynamically fetch the iPhone 17 and iPhone 17 Pro simulator IDs
+SIM1_ID=$(nix develop --command xcrun simctl list devices | grep "iPhone 17" | grep -v "Pro" | grep -v "Max" | grep -v "e" | awk '{print $NF}' | tr -d '()')
+SIM2_ID=$(nix develop --command xcrun simctl list devices | grep "iPhone 17 Pro" | grep -v "Max" | awk '{print $NF}' | tr -d '()')
+
+if [ -z "$SIM1_ID" ]; then
+  echo "Error: iPhone 17 simulator not found."
+  exit 1
+fi
+
+if [ -z "$SIM2_ID" ]; then
+  echo "Error: iPhone 17 Pro simulator not found."
+  exit 1
+fi
 
 boot_if_needed() {
   local udid=$1 name=$2
@@ -26,12 +37,13 @@ boot_if_needed "$SIM2_ID" "iPhone 17 Pro"
 
 open -a Simulator
 
-echo "Building..."
+echo "Building iOS app..."
 if ! nix develop --command xcodebuild \
   -project ios/Where.xcodeproj \
   -scheme Where \
   -destination "platform=iOS Simulator,name=iPhone 17" \
   -configuration Debug \
+  -derivedDataPath ios/build \
   build 2>&1 | tee ios_build_pair.log | grep -E "error:|BUILD SUCCEEDED|BUILD FAILED"; then
   echo "Build command failed."
   exit 1
