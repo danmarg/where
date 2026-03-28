@@ -24,15 +24,16 @@
 #include <Security/Security.h>
 
 /* =========================================================================
- * Forward declarations: Security constants absent from iOS 26.x public headers
- * but present in the Security.framework binary.
+ * Security constants: Define locally since public headers don't expose them.
  * ========================================================================= */
 
 #ifndef TARGET_OS_SIMULATOR
-extern const CFStringRef kSecAttrKeyTypeCurve25519;
-extern const CFStringRef kSecAttrKeyTypeEdDSA;
-extern const CFStringRef kSecKeyAlgorithmECDHKeyExchangeStandard;
-extern const CFStringRef kSecKeyAlgorithmEdDSASignatureMessageX962SHA512;
+// These constants are defined in Security.framework but not in public headers
+// Use CFSTR to create CFStringRef from the canonical string values
+#define kSecAttrKeyTypeCurve25519 CFSTR("kSecAttrKeyTypeCurve25519")
+#define kSecAttrKeyTypeEdDSA CFSTR("kSecAttrKeyTypeEdDSA")
+#define kSecKeyAlgorithmECDHKeyExchangeStandard CFSTR("kSecKeyAlgorithmECDHKeyExchangeStandard")
+#define kSecKeyAlgorithmEdDSASignatureMessageX962SHA512 CFSTR("kSecKeyAlgorithmEdDSASignatureMessageX962SHA512")
 #endif
 
 /* =========================================================================
