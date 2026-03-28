@@ -42,18 +42,19 @@ targets:
             fi
           fi
 
-          # Set SDKROOT if not already set (needed for C interop with iOS SDK)
+          # Ensure SDKROOT is set for iOS SDK headers
           if [ -z "$SDKROOT" ]; then
             SDKROOT=$(xcrun --sdk iphoneos --show-sdk-path 2>/dev/null)
             [ -z "$SDKROOT" ] && SDKROOT=$(xcrun --sdk iphonesimulator --show-sdk-path 2>/dev/null)
-            [ ! -z "$SDKROOT" ] && export SDKROOT
           fi
+          export SDKROOT
 
           # Run with nix if available (local dev), otherwise run directly (CI)
+          # Pass SDKROOT via Gradle property for cinterop compilation
           if command -v nix &> /dev/null; then
-            nix develop --command ./gradlew :shared:embedAndSignAppleFrameworkForXcode
+            nix develop --command ./gradlew :shared:embedAndSignAppleFrameworkForXcode -Dios.sdk.root="$SDKROOT"
           else
-            ./gradlew :shared:embedAndSignAppleFrameworkForXcode
+            ./gradlew :shared:embedAndSignAppleFrameworkForXcode -Dios.sdk.root="$SDKROOT"
           fi
 
           # If local.gradle.kts redirects the build dir, symlink xcode-frameworks to the standard location.
