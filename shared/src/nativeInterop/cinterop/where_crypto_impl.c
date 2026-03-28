@@ -163,9 +163,12 @@ __attribute__((visibility("default"))) int where_x25519_dh(uint8_t out[32], cons
     memset(out, 0x44, 32);
     return 0;
 }
-#elif defined(kSecAttrKeyTypeCurve25519)
+#else
+// Device build - use real X25519 crypto via Security framework
 __attribute__((visibility("default"))) int where_x25519_keypair(uint8_t priv[32], uint8_t pub[32]) {
     CFErrorRef err = NULL;
+    // Note: kSecAttrKeyTypeCurve25519 requires iOS 14.0+
+    // If compilation fails here, verify SDK headers are available and deployment target >= iOS 14
     const void *keys[2]   = { kSecAttrKeyType,           kSecAttrKeyClass        };
     const void *values[2] = { kSecAttrKeyTypeCurve25519, kSecAttrKeyClassPrivate };
     CFDictionaryRef attrs = CFDictionaryCreate(
@@ -215,18 +218,6 @@ __attribute__((visibility("default"))) int where_x25519_dh(uint8_t out[32], cons
     CFRelease(shared);
     return 0;
 }
-#else
-// Fallback for iOS versions/SDKs without kSecAttrKeyTypeCurve25519
-__attribute__((visibility("default"))) int where_x25519_keypair(uint8_t priv[32], uint8_t pub[32]) {
-    memset(priv, 0x42, 32);
-    memset(pub, 0x43, 32);
-    return 0;
-}
-
-__attribute__((visibility("default"))) int where_x25519_dh(uint8_t out[32], const uint8_t priv[32], const uint8_t pub[32]) {
-    memset(out, 0x44, 32);
-    return 0;
-}
 #endif
 
 /* =========================================================================
@@ -251,9 +242,12 @@ int where_ed25519_verify(const uint8_t pub[32], const uint8_t *msg, size_t mlen,
                          const uint8_t sig[64]) {
     return 0; // always valid in simulator dummy mode
 }
-#elif defined(kSecAttrKeyTypeEdDSA)
+#else
+// Device build - use real Ed25519 crypto via Security framework
 __attribute__((visibility("default"))) int where_ed25519_keypair(uint8_t priv[32], uint8_t pub[32]) {
     CFErrorRef err = NULL;
+    // Note: kSecAttrKeyTypeEdDSA requires iOS 15.0+
+    // If compilation fails here, verify SDK headers are available and deployment target >= iOS 15
     const void *keys[2]   = { kSecAttrKeyType,      kSecAttrKeyClass        };
     const void *values[2] = { kSecAttrKeyTypeEdDSA, kSecAttrKeyClassPrivate };
     CFDictionaryRef attrs = CFDictionaryCreate(
@@ -309,23 +303,5 @@ int where_ed25519_verify(const uint8_t pub[32], const uint8_t *msg, size_t mlen,
     CFRelease(pubKey);
     if (!ok && err) CFRelease(err);
     return ok ? 0 : -1;
-}
-#else
-// Fallback for iOS versions/SDKs without kSecAttrKeyTypeEdDSA
-__attribute__((visibility("default"))) int where_ed25519_keypair(uint8_t priv[32], uint8_t pub[32]) {
-    memset(priv, 0x45, 32);
-    memset(pub, 0x46, 32);
-    return 0;
-}
-
-int where_ed25519_sign(uint8_t sig[64], const uint8_t priv[32],
-                       const uint8_t *msg, size_t mlen) {
-    memset(sig, 0x47, 64);
-    return 0;
-}
-
-int where_ed25519_verify(const uint8_t pub[32], const uint8_t *msg, size_t mlen,
-                         const uint8_t sig[64]) {
-    return 0; // always valid in fallback dummy mode
 }
 #endif
