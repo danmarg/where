@@ -24,16 +24,16 @@
 #include <Security/Security.h>
 
 /* =========================================================================
- * Security constants: Define locally since public headers don't expose them.
+ * Security framework constants
+ * These are defined in Security.framework but not in public iOS headers.
+ * They will be resolved at link time from the framework binary.
  * ========================================================================= */
 
 #ifndef TARGET_OS_SIMULATOR
-// These constants are defined in Security.framework but not in public headers
-// Use CFSTR to create CFStringRef from the canonical string values
-#define kSecAttrKeyTypeCurve25519 CFSTR("kSecAttrKeyTypeCurve25519")
-#define kSecAttrKeyTypeEdDSA CFSTR("kSecAttrKeyTypeEdDSA")
-#define kSecKeyAlgorithmECDHKeyExchangeStandard CFSTR("kSecKeyAlgorithmECDHKeyExchangeStandard")
-#define kSecKeyAlgorithmEdDSASignatureMessageX962SHA512 CFSTR("kSecKeyAlgorithmEdDSASignatureMessageX962SHA512")
+extern const CFStringRef kSecAttrKeyTypeCurve25519;
+extern const CFStringRef kSecAttrKeyTypeEdDSA;
+extern const CFStringRef kSecKeyAlgorithmECDHKeyExchangeStandard;
+extern const CFStringRef kSecKeyAlgorithmEdDSASignatureMessageX962SHA512;
 #endif
 
 /* =========================================================================
