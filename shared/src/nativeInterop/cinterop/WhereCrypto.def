@@ -2,6 +2,7 @@ headers = where_crypto.h
 headerFilter = where_crypto.h
 package = net.af0.where.e2ee.native
 linkerOpts = -framework Security -framework CoreFoundation
+# Note: For device builds, SDK headers are passed by Xcode's build environment via SDKROOT
 
 ---
 #include "where_crypto_impl.c"
