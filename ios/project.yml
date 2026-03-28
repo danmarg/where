@@ -23,12 +23,15 @@ targets:
         embed: false
         codeSign: false
         implicit: true
+      - framework: Security
+      - framework: MapKit
+      - framework: CoreLocation
     preBuildScripts:
       - script: |
           cd "$SRCROOT/.."
-          export GRADLE_USER_HOME=/Volumes/Ext/.gradle
-          export KONAN_DATA_DIR=/Volumes/Ext/.konan
-          export TMPDIR=/Volumes/Ext/tmp
+          export GRADLE_USER_HOME=$HOME/.gradle
+          export KONAN_DATA_DIR=$HOME/.konan
+          export TMPDIR=/tmp
           /nix/var/nix/profiles/default/bin/nix develop --command ./gradlew :shared:embedAndSignAppleFrameworkForXcode
 
           # If local.gradle.kts redirects the build dir, symlink xcode-frameworks to the standard location.
