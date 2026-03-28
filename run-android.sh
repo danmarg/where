@@ -33,23 +33,23 @@ export PATH="$ANDROID_SDK_BASE/emulator:$ANDROID_SDK_BASE/platform-tools:$ANDROI
 ADB_HOST=$(grep "^ANDROID_ADB_HOST=" local.properties 2>/dev/null | cut -d= -f2 | tr -d '[:space:]' || true)
 
 if [ -n "$ADB_HOST" ]; then
-  ADB="adb -s $ADB_HOST:36869"
-  adb connect "$ADB_HOST:36869" 2>/dev/null || true
+  ADB="nix develop --command adb -s $ADB_HOST:36869"
+  nix develop --command adb connect "$ADB_HOST:36869" 2>/dev/null || true
 else
-  ADB="adb"
+  ADB="nix develop --command adb"
 fi
 
 # Check for any connected device (physical or emulator)
-if nix develop --command $ADB devices | grep -q "device$"; then
+if $ADB devices | grep -q "device$"; then
   echo "Device connected."
 else
   echo "No device found. Starting emulator..."
   # Let the emulator auto-detect hardware acceleration (KVM on Linux, HAXM on macOS).
-  nix develop --command emulator -avd pixel9 -no-audio -no-boot-anim &
+  # Use -gpu host to avoid HV_UNSUPPORTED on some Apple Silicon setups.
+  nix develop --command emulator -avd pixel9 -no-audio -no-boot-anim -gpu host &
   echo "Waiting for emulator to boot..."
   nix develop --command adb wait-for-device
   nix develop --command adb shell input keyevent 82  # unlock screen
-  ADB="nix develop --command adb"
 fi
 
 echo "Building APK..."

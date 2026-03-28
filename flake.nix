@@ -48,19 +48,18 @@
           ];
 
           JAVA_HOME = "${jdk}";
-          ANDROID_HOME = "${androidSdk}/libexec/android-sdk";
-          ANDROID_SDK_ROOT = "${androidSdk}/libexec/android-sdk";
 
           shellHook = ''
             export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
             export SDKROOT=/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk
             # Prepend real Xcode tools so they shadow Nix stubs (xcrun, lipo, etc.)
             export PATH=/Applications/Xcode.app/Contents/Developer/usr/bin:/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin:$PATH
-            # Android SDK/AVD in home directory
-            export ANDROID_HOME=''${ANDROID_HOME:-$HOME/.android/sdk}
-            export ANDROID_SDK_ROOT=''${ANDROID_SDK_ROOT:-$HOME/.android/sdk}
+            # Android SDK/AVD in home directory, fallback to nix-store
+            export ANDROID_HOME=''${ANDROID_HOME:-''${HOME}/.android/sdk}
+            [ ! -d "$ANDROID_HOME" ] && export ANDROID_HOME=${androidSdk}/libexec/android-sdk
+            export ANDROID_SDK_ROOT=''${ANDROID_SDK_ROOT:-$ANDROID_HOME}
             export ANDROID_AVD_HOME=''${ANDROID_AVD_HOME:-$HOME/.android/avd}
-            export PATH=$HOME/.android/sdk/cmdline-tools/latest/bin:$HOME/.android/sdk/platform-tools:$HOME/.android/sdk/emulator:$PATH
+            export PATH=$ANDROID_HOME/cmdline-tools/latest/bin:$ANDROID_HOME/platform-tools:$ANDROID_HOME/emulator:$PATH
             # Ensure TMPDIR is set properly for nix
             export TMPDIR=''${TMPDIR:-/tmp}
             # Write JDK path for Xcode build scripts (which run outside the Nix shell)

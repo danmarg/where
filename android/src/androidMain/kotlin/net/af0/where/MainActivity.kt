@@ -63,6 +63,8 @@ class MainActivity : ComponentActivity() {
                 val pendingQrForNaming by viewModel.pendingQrForNaming.collectAsState()
                 val pendingInitPayload by viewModel.pendingInitPayload.collectAsState()
 
+                var showSimulatorScanner by remember { mutableStateOf(false) }
+
                 MapScreen(
                     userId = viewModel.userId,
                     users = users,
@@ -75,17 +77,56 @@ class MainActivity : ComponentActivity() {
                     onToggleSharing = { viewModel.toggleSharing() },
                     onCreateInvite = { viewModel.createInvite() },
                     onScanQr = {
-                        scanLauncher.launch(
-                            ScanOptions().apply {
-                                setDesiredBarcodeFormats(ScanOptions.QR_CODE)
-                                setBeepEnabled(false)
-                                setOrientationLocked(false)
-                            },
-                        )
+                        if (android.os.Build.PRODUCT.contains("sdk") || 
+                            android.os.Build.MODEL.contains("Emulator") || 
+                            android.os.Build.DEVICE.contains("generic")) {
+                            showSimulatorScanner = true
+                        } else {
+                            scanLauncher.launch(
+                                ScanOptions().apply {
+                                    setDesiredBarcodeFormats(ScanOptions.QR_CODE)
+                                    setBeepEnabled(false)
+                                    setOrientationLocked(false)
+                                },
+                            )
+                        }
                     },
                     onRemoveFriend = { viewModel.removeFriend(it) },
                     onLocationPermissionGranted = ::startLocationService,
                 )
+
+                if (showSimulatorScanner) {
+                    var manualUrl by remember { mutableStateOf("where://invite?q=...") }
+                    AlertDialog(
+                        onDismissRequest = { showSimulatorScanner = false },
+                        title = { Text("QR Scanner (Simulator)") },
+                        text = {
+                            Column {
+                                Text("Camera is unavailable in the emulator. Enter an invite URL manually.")
+                                Spacer(Modifier.height(8.dp))
+                                OutlinedTextField(
+                                    value = manualUrl,
+                                    onValueChange = { manualUrl = it },
+                                    label = { Text("Invite URL") },
+                                    singleLine = true,
+                                )
+                            }
+                        },
+                        confirmButton = {
+                            TextButton(onClick = {
+                                viewModel.processQrUrl(manualUrl)
+                                showSimulatorScanner = false
+                            }) {
+                                Text("Simulate Scan")
+                            }
+                        },
+                        dismissButton = {
+                            TextButton(onClick = { showSimulatorScanner = false }) {
+                                Text("Cancel")
+                            }
+                        }
+                    )
+                }
 
                 pendingInviteQr?.let { qr ->
                     InviteSheet(qrPayload = qr, onDismiss = { viewModel.clearInvite() })
