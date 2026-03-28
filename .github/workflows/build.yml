@@ -67,9 +67,7 @@ jobs:
           sudo xcode-select --switch /Applications/Xcode.app/Contents/Developer
 
       - name: Install XcodeGen
-        run: |
-          curl -fL https://github.com/yonaskolb/XcodeGen/releases/download/$(curl -s https://api.github.com/repos/yonaskolb/XcodeGen/releases/latest | grep tag_name | cut -d'"' -f4)/xcodegen.zip -o /tmp/xcodegen.zip
-          unzip /tmp/xcodegen.zip -d /usr/local/bin
+        run: brew install xcodegen
 
       - name: Generate Xcode Project
         run: cd ios && xcodegen
