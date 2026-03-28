@@ -24,19 +24,10 @@
 #include <Security/Security.h>
 
 /* =========================================================================
- * Security framework constants
- * These are defined in Security.framework but not in public iOS headers.
- * For K/N interop and device builds, declare them as opaque void pointers.
- * They will be properly resolved at link time from the framework binary.
+ * Security framework constants (imported from Security.framework headers)
+ * Note: kSecAttrKeyTypeCurve25519 and kSecAttrKeyTypeEdDSA are available
+ * in the iOS SDK starting with iOS 14.0 and iOS 15.0 respectively.
  * ========================================================================= */
-
-// These constants are defined in Security.framework
-// Declare them as opaque void pointers for compile-time compatibility
-// They will be resolved at link time from the framework binary
-extern const void *kSecAttrKeyTypeCurve25519;
-extern const void *kSecAttrKeyTypeEdDSA;
-extern const void *kSecKeyAlgorithmECDHKeyExchangeStandard;
-extern const void *kSecKeyAlgorithmEdDSASignatureMessageX962SHA512;
 
 /* =========================================================================
  * Forward declarations: CCCryptorGCMOneshot* in libcommonCrypto at runtime
@@ -122,11 +113,6 @@ int where_aesgcm_decrypt(const uint8_t key[32], const uint8_t nonce[12],
  * Internal helpers for Security framework key operations
  * ========================================================================= */
 
-#ifndef TARGET_OS_SIMULATOR
-// Note: Security framework constants (kSecAttrKeyTypeCurve25519, etc.) are not declared here.
-// They are resolved at link time from the Security.framework binary.
-// The linker will find them even if the compiler doesn't see a declaration.
-
 static SecKeyRef import_sec_key(const uint8_t *raw, size_t len,
                                 CFStringRef keyType, CFStringRef keyClass) {
     CFErrorRef err = NULL;
@@ -152,7 +138,6 @@ static int export_sec_key(SecKeyRef key, uint8_t *out, size_t expectedLen) {
     CFRelease(data);
     return 0;
 }
-#endif
 
 /* =========================================================================
  * X25519
