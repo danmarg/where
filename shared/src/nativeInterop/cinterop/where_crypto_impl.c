@@ -27,14 +27,8 @@
  * Security framework constants
  * These are defined in Security.framework but not in public iOS headers.
  * They will be resolved at link time from the framework binary.
+ * The extern declarations are only in the code below (not visible to K/N parser).
  * ========================================================================= */
-
-#ifndef TARGET_OS_SIMULATOR
-extern const CFStringRef kSecAttrKeyTypeCurve25519;
-extern const CFStringRef kSecAttrKeyTypeEdDSA;
-extern const CFStringRef kSecKeyAlgorithmECDHKeyExchangeStandard;
-extern const CFStringRef kSecKeyAlgorithmEdDSASignatureMessageX962SHA512;
-#endif
 
 /* =========================================================================
  * Forward declarations: CCCryptorGCMOneshot* in libcommonCrypto at runtime
@@ -121,6 +115,10 @@ int where_aesgcm_decrypt(const uint8_t key[32], const uint8_t nonce[12],
  * ========================================================================= */
 
 #ifndef TARGET_OS_SIMULATOR
+// Note: Security framework constants (kSecAttrKeyTypeCurve25519, etc.) are not declared here.
+// They are resolved at link time from the Security.framework binary.
+// The linker will find them even if the compiler doesn't see a declaration.
+
 static SecKeyRef import_sec_key(const uint8_t *raw, size_t len,
                                 CFStringRef keyType, CFStringRef keyClass) {
     CFErrorRef err = NULL;
