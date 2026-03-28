@@ -42,6 +42,13 @@ targets:
             fi
           fi
 
+          # Set SDKROOT if not already set (needed for C interop with iOS SDK)
+          if [ -z "$SDKROOT" ]; then
+            SDKROOT=$(xcrun --sdk iphoneos --show-sdk-path 2>/dev/null)
+            [ -z "$SDKROOT" ] && SDKROOT=$(xcrun --sdk iphonesimulator --show-sdk-path 2>/dev/null)
+            [ ! -z "$SDKROOT" ] && export SDKROOT
+          fi
+
           # Run with nix if available (local dev), otherwise run directly (CI)
           if command -v nix &> /dev/null; then
             nix develop --command ./gradlew :shared:embedAndSignAppleFrameworkForXcode
