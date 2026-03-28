@@ -4,4 +4,3 @@ package = net.af0.where.e2ee.native
 linkerOpts = -framework Security -framework CoreFoundation
 
 ---
-#include "where_crypto_impl.c"
