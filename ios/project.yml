@@ -29,10 +29,18 @@ targets:
     preBuildScripts:
       - script: |
           cd "$SRCROOT/.."
-          export GRADLE_USER_HOME=$HOME/.gradle
-          export KONAN_DATA_DIR=$HOME/.konan
-          export TMPDIR=/tmp
-          /nix/var/nix/profiles/default/bin/nix develop --command ./gradlew :shared:embedAndSignAppleFrameworkForXcode
+
+          # Use system defaults for CI environments, or local overrides if available
+          export GRADLE_USER_HOME="${GRADLE_USER_HOME:-$HOME/.gradle}"
+          export KONAN_DATA_DIR="${KONAN_DATA_DIR:-$HOME/.konan}"
+          export TMPDIR="${TMPDIR:-/tmp}"
+
+          # Run with nix if available (local dev), otherwise run directly (CI)
+          if command -v nix &> /dev/null; then
+            nix develop --command ./gradlew :shared:embedAndSignAppleFrameworkForXcode
+          else
+            ./gradlew :shared:embedAndSignAppleFrameworkForXcode
+          fi
 
           # If local.gradle.kts redirects the build dir, symlink xcode-frameworks to the standard location.
           LOCAL_GRADLE="$SRCROOT/../local.gradle.kts"
