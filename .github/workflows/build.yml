@@ -5,7 +5,7 @@ on:
     tags:
       - 'v*'
       - 'test-*'
-  workflow_dispatch
+  workflow_dispatch:
 
 env:
   IS_RELEASE: ${{ startsWith(github.ref, 'refs/tags/v') }}
