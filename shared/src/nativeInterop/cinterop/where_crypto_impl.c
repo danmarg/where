@@ -26,9 +26,18 @@
 /* =========================================================================
  * Security framework constants
  * These are defined in Security.framework but not in public iOS headers.
- * They will be resolved at link time from the framework binary.
- * The extern declarations are only in the code below (not visible to K/N parser).
+ * On device builds, define them locally using CFSTR to avoid linking issues.
  * ========================================================================= */
+
+#ifndef TARGET_OS_SIMULATOR
+// These constants are defined in Security.framework
+// For K/N interop parsing, declare them as opaque void pointers
+// They will be properly resolved at link time from the framework binary
+extern const void *kSecAttrKeyTypeCurve25519;
+extern const void *kSecAttrKeyTypeEdDSA;
+extern const void *kSecKeyAlgorithmECDHKeyExchangeStandard;
+extern const void *kSecKeyAlgorithmEdDSASignatureMessageX962SHA512;
+#endif
 
 /* =========================================================================
  * Forward declarations: CCCryptorGCMOneshot* in libcommonCrypto at runtime
