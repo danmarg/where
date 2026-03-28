@@ -35,6 +35,13 @@ targets:
           export KONAN_DATA_DIR="${KONAN_DATA_DIR:-$HOME/.konan}"
           export TMPDIR="${TMPDIR:-/tmp}"
 
+          # Ensure JAVA_HOME is set (required for gradle)
+          if [ -z "$JAVA_HOME" ]; then
+            if command -v /usr/libexec/java_home &> /dev/null; then
+              export JAVA_HOME=$(/usr/libexec/java_home)
+            fi
+          fi
+
           # Run with nix if available (local dev), otherwise run directly (CI)
           if command -v nix &> /dev/null; then
             nix develop --command ./gradlew :shared:embedAndSignAppleFrameworkForXcode
