@@ -3,11 +3,5 @@ headerFilter = where_crypto.h
 package = net.af0.where.e2ee.native
 linkerOpts = -framework Security -framework CoreFoundation
 
-# Platform-specific compiler options for iOS to locate SDK headers
-# This tells the C preprocessor where to find Security.framework headers
-compilerOpts.ios_x64 = -isysroot $(SDKROOT)
-compilerOpts.ios_arm64 = -isysroot $(SDKROOT)
-compilerOpts.ios_simulator_arm64 = -isysroot $(SDKROOT)
-
 ---
 #include "where_crypto_impl.c"
