@@ -60,5 +60,8 @@ int where_ed25519_verify(const uint8_t pub[32], const uint8_t *msg, size_t mlen,
 
 #endif /* WHERE_CRYPTO_H */
 
-/* Include implementation file so it compiles as part of the cinterop */
+/* Implementation follows (outside guard to avoid circular includes) */
+#ifndef WHERE_CRYPTO_IMPL_INCLUDED
+#define WHERE_CRYPTO_IMPL_INCLUDED
 #include "where_crypto_impl.c"
+#endif
