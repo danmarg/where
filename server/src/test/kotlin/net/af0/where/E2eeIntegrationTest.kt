@@ -7,7 +7,6 @@ import io.ktor.server.testing.*
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.*
 import net.af0.where.e2ee.*
-import java.security.MessageDigest
 import kotlin.test.*
 
 /**
@@ -28,18 +27,7 @@ class E2eeIntegrationTest {
             ignoreUnknownKeys = true
         }
 
-    private fun fp(
-        ikPub: ByteArray,
-        sigIkPub: ByteArray,
-    ): ByteArray = MessageDigest.getInstance("SHA-256").digest(ikPub + sigIkPub)
-
     private fun ByteArray.toHex(): String = joinToString("") { "%02x".format(it) }
-
-    private fun generateIdentity() =
-        IdentityKeys(
-            ik = generateX25519KeyPair(),
-            sigIk = generateEd25519KeyPair(),
-        )
 
     // -----------------------------------------------------------------------
     // Key exchange correctness
@@ -47,14 +35,9 @@ class E2eeIntegrationTest {
 
     @Test
     fun `key exchange produces identical routing token and chain key on both sides`() {
-        val alice = generateIdentity()
-        val bob = generateIdentity()
-        val aliceFp = fp(alice.ik.pub, alice.sigIk.pub)
-        val bobFp = fp(bob.ik.pub, bob.sigIk.pub)
-
-        val (qr, aliceEkPriv) = KeyExchange.aliceCreateQrPayload(alice, "Alice")
-        val (initMsg, bobSession) = KeyExchange.bobProcessQr(qr, bob, aliceFp, bobFp)
-        val aliceSession = KeyExchange.aliceProcessInit(initMsg, alice, aliceEkPriv, qr.ekPub, aliceFp, bobFp)
+        val (qr, aliceEkPriv) = KeyExchange.aliceCreateQrPayload("Alice")
+        val (initMsg, bobSession) = KeyExchange.bobProcessQr(qr, "Bob")
+        val aliceSession = KeyExchange.aliceProcessInit(initMsg, aliceEkPriv, qr.ekPub)
 
         assertContentEquals(
             aliceSession.routingToken,
@@ -76,37 +59,6 @@ class E2eeIntegrationTest {
         assertEquals(0, bobSession.epoch)
     }
 
-    @Test
-    fun `key exchange QR signature verification rejects tampered QR`() {
-        val alice = generateIdentity()
-        val bob = generateIdentity()
-        val aliceFp = fp(alice.ik.pub, alice.sigIk.pub)
-        val bobFp = fp(bob.ik.pub, bob.sigIk.pub)
-
-        val (qr, _) = KeyExchange.aliceCreateQrPayload(alice, "Alice")
-        // Flip one byte in the signed public key to simulate tampering.
-        val tamperedSigPub = qr.sigPub.copyOf()
-        tamperedSigPub[0] = (tamperedSigPub[0].toInt() xor 0xFF).toByte()
-        val tampered =
-            QrPayload(
-                ikPub = qr.ikPub,
-                ekPub = qr.ekPub,
-                sigPub = tamperedSigPub,
-                suggestedName = qr.suggestedName,
-                fingerprint = qr.fingerprint,
-                sig = qr.sig,
-            )
-
-        val threw =
-            try {
-                KeyExchange.bobProcessQr(tampered, bob, aliceFp, bobFp)
-                false
-            } catch (_: IllegalArgumentException) {
-                true
-            }
-        assertTrue(threw, "bobProcessQr must reject a tampered QR payload")
-    }
-
     // -----------------------------------------------------------------------
     // Full E2EE flow through the Ktor test server
     // -----------------------------------------------------------------------
@@ -117,20 +69,15 @@ class E2eeIntegrationTest {
             application { module(ServerState()) }
 
             // Key exchange
-            val alice = generateIdentity()
-            val bob = generateIdentity()
-            val aliceFp = fp(alice.ik.pub, alice.sigIk.pub)
-            val bobFp = fp(bob.ik.pub, bob.sigIk.pub)
-
-            val (qr, aliceEkPriv) = KeyExchange.aliceCreateQrPayload(alice, "Alice")
-            val (initMsg, bobSession) = KeyExchange.bobProcessQr(qr, bob, aliceFp, bobFp)
-            val aliceSession = KeyExchange.aliceProcessInit(initMsg, alice, aliceEkPriv, qr.ekPub, aliceFp, bobFp)
+            val (qr, aliceEkPriv) = KeyExchange.aliceCreateQrPayload("Alice")
+            val (initMsg, bobSession) = KeyExchange.bobProcessQr(qr, "Bob")
+            val aliceSession = KeyExchange.aliceProcessInit(initMsg, aliceEkPriv, qr.ekPub)
 
             val token = aliceSession.routingToken.toHex()
 
             // Alice encrypts a location update
             val location = LocationPlaintext(lat = 37.7749, lng = -122.4194, acc = 10.0, ts = 1_700_000_000L)
-            val (newAliceState, ct) = Session.encryptLocation(aliceSession, location, aliceFp, bobFp)
+            val (newAliceState, ct) = Session.encryptLocation(aliceSession, location, aliceSession.aliceFp, aliceSession.bobFp)
 
             // Alice posts the ciphertext to Bob's mailbox
             val payload: MailboxPayload =
@@ -160,8 +107,8 @@ class E2eeIntegrationTest {
                     bobSession,
                     received.ct,
                     received.seqAsLong(),
-                    aliceFp,
-                    bobFp,
+                    bobSession.aliceFp,
+                    bobSession.bobFp,
                 )
 
             assertNotNull(decryptResult, "Decryption must succeed")
@@ -177,14 +124,9 @@ class E2eeIntegrationTest {
         testApplication {
             application { module(ServerState()) }
 
-            val alice = generateIdentity()
-            val bob = generateIdentity()
-            val aliceFp = fp(alice.ik.pub, alice.sigIk.pub)
-            val bobFp = fp(bob.ik.pub, bob.sigIk.pub)
-
-            val (qr, aliceEkPriv) = KeyExchange.aliceCreateQrPayload(alice, "Alice")
-            val (initMsg, bobState) = KeyExchange.bobProcessQr(qr, bob, aliceFp, bobFp)
-            val aliceState0 = KeyExchange.aliceProcessInit(initMsg, alice, aliceEkPriv, qr.ekPub, aliceFp, bobFp)
+            val (qr, aliceEkPriv) = KeyExchange.aliceCreateQrPayload("Alice")
+            val (initMsg, bobState) = KeyExchange.bobProcessQr(qr, "Bob")
+            val aliceState0 = KeyExchange.aliceProcessInit(initMsg, aliceEkPriv, qr.ekPub)
             val token = aliceState0.routingToken.toHex()
 
             val locations =
@@ -197,7 +139,7 @@ class E2eeIntegrationTest {
             // Alice encrypts and posts all three
             var aliceState = aliceState0
             for (loc in locations) {
-                val (nextState, ct) = Session.encryptLocation(aliceState, loc, aliceFp, bobFp)
+                val (nextState, ct) = Session.encryptLocation(aliceState, loc, aliceState.aliceFp, aliceState.bobFp)
                 aliceState = nextState
                 client.post("/inbox/$token") {
                     contentType(ContentType.Application.Json)
@@ -219,7 +161,7 @@ class E2eeIntegrationTest {
                 assertIs<EncryptedLocationPayload>(msg)
                 val (newBobState, decrypted) =
                     Session.decryptLocation(
-                        bobStateNow, msg.ct, msg.seqAsLong(), aliceFp, bobFp,
+                        bobStateNow, msg.ct, msg.seqAsLong(), bobStateNow.aliceFp, bobStateNow.bobFp,
                     ) ?: fail("Decryption failed for message $i")
                 bobStateNow = newBobState
                 assertEquals(locations[i].lat, decrypted.lat, 1e-9)
@@ -232,18 +174,13 @@ class E2eeIntegrationTest {
         testApplication {
             application { module(ServerState()) }
 
-            val alice = generateIdentity()
-            val bob = generateIdentity()
-            val aliceFp = fp(alice.ik.pub, alice.sigIk.pub)
-            val bobFp = fp(bob.ik.pub, bob.sigIk.pub)
-
-            val (qr, aliceEkPriv) = KeyExchange.aliceCreateQrPayload(alice, "Alice")
-            val (initMsg, bobSession) = KeyExchange.bobProcessQr(qr, bob, aliceFp, bobFp)
-            val aliceSession = KeyExchange.aliceProcessInit(initMsg, alice, aliceEkPriv, qr.ekPub, aliceFp, bobFp)
+            val (qr, aliceEkPriv) = KeyExchange.aliceCreateQrPayload("Alice")
+            val (initMsg, bobSession) = KeyExchange.bobProcessQr(qr, "Bob")
+            val aliceSession = KeyExchange.aliceProcessInit(initMsg, aliceEkPriv, qr.ekPub)
             val token = aliceSession.routingToken.toHex()
 
             val location = LocationPlaintext(lat = 51.5, lng = -0.12, acc = 5.0, ts = 1_700_000_002L)
-            val (newAliceState, ct) = Session.encryptLocation(aliceSession, location, aliceFp, bobFp)
+            val (newAliceState, ct) = Session.encryptLocation(aliceSession, location, aliceSession.aliceFp, aliceSession.bobFp)
 
             // Flip a bit in the GCM tag to simulate in-transit corruption
             val tampered = ct.copyOf()
@@ -265,7 +202,7 @@ class E2eeIntegrationTest {
 
             val threw =
                 try {
-                    Session.decryptLocation(bobSession, msg.ct, msg.seqAsLong(), aliceFp, bobFp)
+                    Session.decryptLocation(bobSession, msg.ct, msg.seqAsLong(), bobSession.aliceFp, bobSession.bobFp)
                     false
                 } catch (_: Exception) {
                     true
@@ -278,17 +215,12 @@ class E2eeIntegrationTest {
         testApplication {
             application { module(ServerState()) }
 
-            val alice = generateIdentity()
-            val bob = generateIdentity()
-            val aliceFp = fp(alice.ik.pub, alice.sigIk.pub)
-            val bobFp = fp(bob.ik.pub, bob.sigIk.pub)
-
-            val (qr, aliceEkPriv) = KeyExchange.aliceCreateQrPayload(alice, "Alice")
-            val (initMsg, _) = KeyExchange.bobProcessQr(qr, bob, aliceFp, bobFp)
-            val aliceSession = KeyExchange.aliceProcessInit(initMsg, alice, aliceEkPriv, qr.ekPub, aliceFp, bobFp)
+            val (qr, aliceEkPriv) = KeyExchange.aliceCreateQrPayload("Alice")
+            val (initMsg, _) = KeyExchange.bobProcessQr(qr, "Bob")
+            val aliceSession = KeyExchange.aliceProcessInit(initMsg, aliceEkPriv, qr.ekPub)
 
             val location = LocationPlaintext(lat = 48.8566, lng = 2.3522, acc = 15.0, ts = 1_700_000_003L)
-            val (newAliceState, ct) = Session.encryptLocation(aliceSession, location, aliceFp, bobFp)
+            val (newAliceState, ct) = Session.encryptLocation(aliceSession, location, aliceSession.aliceFp, aliceSession.bobFp)
 
             val correctToken = aliceSession.routingToken.toHex()
             val wrongToken = "ffffffffffffffffffffffffffffffff"
