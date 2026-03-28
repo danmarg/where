@@ -24,17 +24,15 @@
 #include <Security/Security.h>
 
 /* =========================================================================
- * Security framework constants
- * These constants are defined in Security.framework but not in public iOS headers
- * prior to iOS 14.0 (Curve25519) and iOS 15.0 (EdDSA).
- * We declare them here as extern so they can be resolved at link time from the binary.
+ * Forward-declare Security framework constants that may not be in public
+ * headers for all SDK versions. Link against Security.framework binary.
  * ========================================================================= */
 
-// Declare as CFStringRef to match the actual SDK types
-extern const void *kSecAttrKeyTypeCurve25519;
-extern const void *kSecAttrKeyTypeEdDSA;
-extern const void *kSecKeyAlgorithmECDHKeyExchangeStandard;
-extern const void *kSecKeyAlgorithmEdDSASignatureMessageX962SHA512;
+extern const CFStringRef kSecAttrKeyTypeCurve25519;
+extern const CFStringRef kSecAttrKeyTypeEdDSA;
+extern const SecKeyAlgorithm kSecKeyAlgorithmECDHKeyExchangeStandard;
+extern const SecKeyAlgorithm kSecKeyAlgorithmEdDSASignatureMessageX962SHA512;
+
 
 /* =========================================================================
  * Forward declarations: CCCryptorGCMOneshot* in libcommonCrypto at runtime
