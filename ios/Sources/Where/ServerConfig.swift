@@ -8,16 +8,13 @@ import Foundation
 /// - Production: point to your deployed server URL.
 enum ServerConfig {
     #if targetEnvironment(simulator)
-    static let wsBaseUrl = "ws://localhost:8080/ws"
     static let httpBaseUrl = "http://localhost:8080"
     #else
-    // Replace with your server's LAN IP or deployed URL before running on a real device.
-    static let wsBaseUrl: String = {
-        preconditionFailure("Replace with your server's LAN IP or deployed URL before running on a real device.")
-    }()
-
+    // Read from environment variable set at build time (e.g., by build.sh).
+    // Falls back to local hostname if not provided.
     static let httpBaseUrl: String = {
-        preconditionFailure("Replace with your server's LAN IP or deployed URL before running on a real device.")
+        ProcessInfo.processInfo.environment["WHERE_SERVER_HTTP_URL"]
+            ?? "http://where:8080"
     }()
     #endif
 }
