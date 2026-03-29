@@ -67,13 +67,15 @@ if [ ! -f ios/Where.xcodeproj/project.pbxproj ]; then
   cd ..
 fi
 
-# Build for iphoneos (real device) with the server URL passed as an environment variable
+# Build for iphoneos (real device) with code signing disabled
 if ! nix develop --command bash -c "cd ios && WHERE_SERVER_HTTP_URL='$SERVER_URL' xcodebuild \
   -project Where.xcodeproj \
   -scheme Where \
-  -destination generic/platform=iOS \
   -configuration Debug \
+  -sdk iphoneos \
   -derivedDataPath build \
+  CODE_SIGN_IDENTITY=\"\" \
+  CODE_SIGNING_REQUIRED=NO \
   build 2>&1 | tee ../ios_build.log"; then
   echo "iOS build failed."
   exit 1
@@ -97,9 +99,8 @@ android_build_dir=$(nix develop --command ./gradlew -q :android:printBuildDir 2>
 echo "  $android_build_dir/outputs/apk/debug/android-debug.apk"
 echo "  Install: adb install -r <path>"
 echo ""
-echo "iOS app location:"
+echo "iOS app location (device):"
 echo "  ios/build/Build/Products/Debug-iphoneos/Where.app"
-echo "  Use Xcode to sign and install to device, or:"
-echo "  xcodebuild -project ios/Where.xcodeproj -scheme Where -destination <device> install"
+echo "  Use Xcode to sign and install to device"
 echo ""
 echo "To run the server: ./run-server.sh"
