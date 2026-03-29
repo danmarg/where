@@ -58,7 +58,6 @@ int where_ed25519_sign(uint8_t sig[64], const uint8_t priv[32],
 int where_ed25519_verify(const uint8_t pub[32], const uint8_t *msg, size_t mlen,
                          const uint8_t sig[64]);
 
-#ifdef WHERE_CRYPTO_IMPLEMENTATION
 /* =========================================================================
  * IMPLEMENTATION — included inline for cinterop compilation
  * ========================================================================= */
@@ -285,7 +284,5 @@ int where_ed25519_verify(const uint8_t pub[32], const uint8_t *msg, size_t mlen,
     return ok ? 0 : -1;
 }
 #endif
-
-#endif /* WHERE_CRYPTO_IMPLEMENTATION */
 
 #endif /* WHERE_CRYPTO_H */
