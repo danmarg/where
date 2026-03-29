@@ -1,5 +1,6 @@
 package net.af0.where
 
+import com.ionspin.kotlin.crypto.LibsodiumInitializer
 import io.ktor.client.request.*
 import io.ktor.client.statement.*
 import io.ktor.http.*
@@ -7,7 +8,6 @@ import io.ktor.server.testing.*
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.*
 import net.af0.where.e2ee.*
-import com.ionspin.kotlin.crypto.LibsodiumInitializer
 import kotlin.test.*
 
 /**
@@ -27,6 +27,7 @@ class E2eeIntegrationTest {
             // Libsodium initialized
         }
     }
+
     private val json =
         Json {
             classDiscriminator = "type"
