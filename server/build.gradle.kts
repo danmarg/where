@@ -24,5 +24,6 @@ dependencies {
     implementation(libs.logback.classic)
     testImplementation(libs.ktor.server.test.host)
     testImplementation(libs.kotlinx.coroutines.test)
+    testImplementation(libs.libsodium.kmp)
     testImplementation(kotlin("test"))
 }
