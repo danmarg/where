@@ -9,13 +9,20 @@ import kotlin.test.assertTrue
  *
  * These run on ALL platforms (JVM, Android, iOS) via the commonTest source set.
  * On iOS the actual implementations are the Security framework / CommonCrypto
- * cinterop; on JVM/Android they use BouncyCastle / JCA.
+ * cinterop; on JVM/Android they use libsodium bindings.
  *
  * Catching a failure here on one platform means that platform's implementation
  * diverges from the spec — most likely an Ed25519 seed-format mismatch.
  */
 class CryptoPrimitivesVectorTest {
+    companion object {
+        init {
+            initializeE2eeTests()
+        }
+    }
+
     init {
+        // Additional initialization for each test instance
         initializeE2eeTests()
     }
 
