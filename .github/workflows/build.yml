@@ -26,6 +26,10 @@ jobs:
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
 
+      - name: Set ANDROID_HOME for Gradle
+        run: |
+          echo "ANDROID_HOME=$ANDROID_SDK_ROOT" >> $GITHUB_ENV
+
       - name: Build Android Debug APK
         if: ${{ !env.IS_RELEASE }}
         run: ./gradlew :android:assembleDebug
