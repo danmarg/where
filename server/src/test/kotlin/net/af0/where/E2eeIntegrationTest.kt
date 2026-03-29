@@ -7,13 +7,14 @@ import io.ktor.server.testing.*
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.*
 import net.af0.where.e2ee.*
+import com.ionspin.kotlin.crypto.LibsodiumInitializer
 import kotlin.test.*
 
 /**
  * Integration tests for the E2EE key exchange and location-send flow, exercised against
  * the Ktor test server.
  *
- * Runs on the JVM using the BouncyCastle crypto implementation in :shared.
+ * Runs on the JVM using the libsodium crypto implementation in :shared.
  *
  * Validates:
  *   - Key exchange produces matching session state (routing token, chain key) on both sides.
@@ -21,6 +22,11 @@ import kotlin.test.*
  *   - Routing token isolation: messages in one token are not visible via a different token.
  */
 class E2eeIntegrationTest {
+    init {
+        LibsodiumInitializer.initializeWithCallback {
+            // Libsodium initialized
+        }
+    }
     private val json =
         Json {
             classDiscriminator = "type"
