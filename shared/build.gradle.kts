@@ -21,13 +21,6 @@ kotlin {
         iosArm64(),
         iosSimulatorArm64(),
     ).forEach { iosTarget ->
-        iosTarget.compilations["main"].cinterops {
-            val whereCrypto by creating {
-                defFile("src/nativeInterop/cinterop/WhereCrypto.def")
-                includeDirs("src/nativeInterop/cinterop")
-                extraOpts("-Xsource", "src/nativeInterop/cinterop/where_crypto_impl.c")
-            }
-        }
         iosTarget.binaries.framework {
             baseName = "Shared"
             isStatic = true
@@ -57,10 +50,11 @@ kotlin {
             implementation(libs.ktor.serialization.kotlinx.json)
             implementation(libs.kotlinx.coroutines.core)
             implementation(libs.kotlinx.serialization.json)
+            implementation(libs.libsodium.kmp)
         }
 
         jvmAndAndroidMain.dependencies {
-            implementation(libs.bouncycastle)
+            // Crypto is handled by cryptography-kotlin in commonMain
         }
 
         androidMain.dependencies {

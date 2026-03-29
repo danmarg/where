@@ -9,6 +9,10 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 class SessionTest {
+    init {
+        initializeE2eeTests()
+    }
+
     data class ExchangeResult(
         val aliceSession: SessionState,
         val bobSession: SessionState,

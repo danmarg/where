@@ -86,7 +86,7 @@ For threat models that include a metadata-analyzing server, the mitigations in �
 - **Server compromise revealing historical locations.** *Forward secrecy (per-message):* deleting each message key `MK_n` immediately after use ensures that compromise of one key does not expose others. *Post-compromise security (epoch-level):* the DH ratchet step with fresh OPK material limits how long a leaked chain key remains exploitable.
 - **Passive eavesdropping.** All location payloads are encrypted with ephemeral symmetric keys derived from a per-friend ratchet. A passive observer with access to ciphertext learns nothing about coordinates.
 - **Replay attacks.** Each message carries a monotonically increasing sequence counter which is also authenticated (as AEAD additional data). The recipient rejects any frame with a counter it has already seen.
-- **Ciphertext forgery.** AES-256-GCM authentication tags cover both the ciphertext and associated data (sender session fingerprint, epoch, sequence number). A server or attacker cannot modify a frame without detection.
+- **Ciphertext forgery.** ChaCha20-Poly1305 authentication tags cover both the ciphertext and associated data (sender session fingerprint, epoch, sequence number). A server or attacker cannot modify a frame without detection.
 - **Ratchet hijacking.** `EpochRotation` and `RatchetAck` control messages are AEAD-encrypted under keys derived from the current session root key. An attacker without session state cannot forge or inject valid control messages.
 - **Key mismatch at bootstrap.** The `key_confirmation` field in `KeyExchangeInit` (§4.2) proves that both parties derived the same `SK` before any location data is shared.
 
@@ -437,7 +437,7 @@ When Alice sends a location update:
 1. She computes the plaintext: `loc = {lat, lng, accuracy, timestamp}`.
 2. For each friend `F_i` in her friend list:
    - Derive `MK_i` from Alice→F_i ratchet chain.
-   - Encrypt: `CT_i = AES-256-GCM(key=MK_i, plaintext=loc, aad=encode(alice_fp_i, bob_fp_i, epoch_i, seq_i))` where `alice_fp_i = SHA-256(EK_A_i.pub)` and `bob_fp_i = SHA-256(EK_B_i.pub)` — the session fingerprints for friendship i (see §8.3).
+   - Encrypt: `CT_i = ChaCha20-Poly1305(key=MK_i, plaintext=loc, aad=encode(alice_fp_i, bob_fp_i, epoch_i, seq_i))` where `alice_fp_i = SHA-256(EK_A_i.pub)` and `bob_fp_i = SHA-256(EK_B_i.pub)` — the session fingerprints for friendship i (see §8.3).
    - Send `(routing_token_i, CT_i, epoch_i, seq_i)` to the server.
 3. The server routes each `(routing_token_i, CT_i)` frame to the corresponding mailbox.
 
@@ -524,8 +524,8 @@ Because of the indistinguishable response invariant (§7.2), clients can impleme
 | One-Time Pre-Key (Bob) | X25519 (`OPK`) | 256-bit | Ephemeral, generated in batches; deleted after epoch rotation |
 | Root KDF | HKDF-SHA-256 | 256-bit output | Inputs: DH output + current root key |
 | Chain KDF | HKDF-SHA-256 | — | Advancing symmetric ratchet |
-| Message encryption | AES-256-GCM | 256-bit | Per-message key; deleted after use |
-| Message authentication | AES-256-GCM tag | 128-bit | Included in AEAD output; covers AAD |
+| Message encryption | ChaCha20-Poly1305 | 256-bit | Per-message key; deleted after use |
+| Message authentication | ChaCha20-Poly1305 tag | 128-bit | Included in AEAD output; covers AAD |
 | Key exchange KDF | HKDF-SHA-256 | — | `info = "Where-v1-KeyExchange"` (initial SK) |
 | Discovery token | HKDF-SHA-256 | 16-byte output | `ikm = EK_A.pub`, `salt = 0x00*32`, `info = "Where-v1-Discovery"` (§4.2) |
 | Bundle auth key | HKDF-SHA-256 | 32-byte output | `K_bundle = HKDF(SK, salt=0, info="Where-v1-BundleAuth")`; for PreKeyBundle HMAC |
@@ -601,7 +601,7 @@ When the routing token changes, the ordering of events is strictly sequenced:
 
 **Control message authentication:**
 
-Because there are no long-term signing keys in this protocol, `EpochRotation` and `RatchetAck` control messages are authenticated using AES-256-GCM keyed from the current session root key. This provides equivalent authentication for a closed two-party session: only a party with access to the root key can produce or verify a valid ciphertext.
+Because there are no long-term signing keys in this protocol, `EpochRotation` and `RatchetAck` control messages are authenticated using ChaCha20-Poly1305 keyed from the current session root key. This provides equivalent authentication for a closed two-party session: only a party with access to the root key can produce or verify a valid ciphertext.
 
 *EpochRotation encryption (Alice):*
 ```
@@ -609,7 +609,7 @@ K_rot = HKDF-SHA-256(salt = epoch_be4,          // 4-byte big-endian epoch
                       ikm  = current_root_key,   // pre-rotation root key
                       info = "Where-v1-RotationAuth")[0:32]
 nonce = epoch_be4 || 0x00...00                   // epoch (4 bytes) || 8 zero bytes = 12 bytes
-ct    = AES-256-GCM(key=K_rot, nonce=nonce,
+ct    = ChaCha20-Poly1305(key=K_rot, nonce=nonce,
                     plaintext=rotation_payload_json,
                     aad=alice_fp || bob_fp)
 ```
@@ -620,7 +620,7 @@ K_ack = HKDF-SHA-256(salt = epoch_be4,
                       ikm  = new_root_key,        // post-rotation root key
                       info = "Where-v1-AckAuth")[0:32]
 nonce = epoch_be4 || 0x00...00
-ct    = AES-256-GCM(key=K_ack, nonce=nonce,
+ct    = ChaCha20-Poly1305(key=K_ack, nonce=nonce,
                     plaintext=ack_payload_json,
                     aad=alice_fp || bob_fp)
 ```
@@ -644,7 +644,7 @@ aad   = "Where-v1-Location" || version (4 bytes, BE uint32 = 1)
       || bob_fp   (32 bytes, SHA-256(EK_B.pub))
       || epoch (4 bytes, BE uint32)
       || seq   (8 bytes, BE uint64)
-(ciphertext, tag) = AES-256-GCM(key=message_key, nonce=message_nonce,
+(ciphertext, tag) = ChaCha20-Poly1305(key=message_key, nonce=message_nonce,
                                   plaintext=loc_json_padded, aad=aad)
 ```
 
@@ -692,7 +692,7 @@ All messages are JSON-encoded. Every message MUST include a top-level `"v"` fiel
     "type": "EncryptedLocation",
     "epoch": 42,
     "seq":   "1337",
-    "ct":     "<base64, AES-256-GCM ciphertext + 16-byte tag>"
+    "ct":     "<base64, ChaCha20-Poly1305 ciphertext + 16-byte tag>"
   }
 }
 ```
@@ -780,7 +780,7 @@ Alice MUST verify the MAC using her cached `K_bundle` before storing any OPKs.
   "payload": {
     "type": "EpochRotation",
     "epoch": 43,
-    "ct": "<base64, AES-256-GCM(key=K_rot, nonce=epoch_be4||zeros8, aad=alice_fp||bob_fp, plaintext=rotation_inner_json)>"
+    "ct": "<base64, ChaCha20-Poly1305(key=K_rot, nonce=epoch_be4||zeros8, aad=alice_fp||bob_fp, plaintext=rotation_inner_json)>"
   }
 }
 ```
@@ -807,7 +807,7 @@ Bob MUST decrypt using `K_rot` derived from his current root key. If decryption 
   "payload": {
     "type": "RatchetAck",
     "epoch_seen": 43,
-    "ct": "<base64, AES-256-GCM(key=K_ack, nonce=epoch_seen_be4||zeros8, aad=alice_fp||bob_fp, plaintext=ack_inner_json)>"
+    "ct": "<base64, ChaCha20-Poly1305(key=K_ack, nonce=epoch_seen_be4||zeros8, aad=alice_fp||bob_fp, plaintext=ack_inner_json)>"
   }
 }
 ```
@@ -877,17 +877,17 @@ With this design:
 | Primitive | Algorithm | Purpose | Library |
 |---|---|---|---|
 | Asymmetric key agreement | X25519 (ECDH) | Diffie-Hellman key exchange at bootstrap and each epoch rotation | libsodium / Tink / CryptoKit |
-| Symmetric encryption | AES-256-GCM | Encrypt location payloads and control messages (AEAD) | libsodium / JCA / CryptoKit |
-| Key derivation (KDF_RK) | HKDF-SHA-256 | Derive new root key and chain key from DH output | BouncyCastle / CryptoKit |
-| Chain KDF (KDF_CK) | HKDF-SHA-256 | Advance symmetric ratchet; derive message key (32 B) and nonce (12 B) via single 76-byte HKDF expand | JCA / CommonCrypto + BouncyCastle / CryptoKit |
-| Bundle/session auth | HMAC-SHA-256 | Authenticate `PreKeyBundle` and `KeyExchangeInit` key confirmation | JCA / CryptoKit |
-| Hash / fingerprint | SHA-256 | Session fingerprints (`alice_fp`, `bob_fp`), safety number, discovery token | JCA / CryptoKit |
+| Symmetric encryption | ChaCha20-Poly1305 (IETF) | Encrypt location payloads and control messages (AEAD) | libsodium |
+| Key derivation (KDF_RK) | HKDF-SHA-256 | Derive new root key and chain key from DH output | libsodium |
+| Chain KDF (KDF_CK) | HKDF-SHA-256 | Advance symmetric ratchet; derive message key (32 B) and nonce (12 B) via single 76-byte HKDF expand | libsodium |
+| Bundle/session auth | HMAC-SHA-256 | Authenticate `PreKeyBundle` and `KeyExchangeInit` key confirmation | libsodium |
+| Hash / fingerprint | SHA-256 | Session fingerprints (`alice_fp`, `bob_fp`), safety number, discovery token | libsodium |
 | Random number generation | OS CSPRNG | Ephemeral key generation | `SecureRandom` (Android) / `SecRandomCopyBytes` (iOS) |
 
 **Library recommendations:**
-- **Android / Kotlin:** Use [Google Tink](https://github.com/tink-crypto/tink-java) for high-level AES-GCM and HKDF. Use BouncyCastle or Tink's `Hkdf` for key derivation. Store root keys in Android Keystore where possible (note: Keystore does not support raw AES key import on all devices; wrapping with a Keystore-backed AES key is the practical approach).
-- **iOS / Swift:** Use Apple's `CryptoKit` framework (`Curve25519.KeyAgreement`, `AES.GCM`, `HKDF`). Key material persists in the Secure Enclave-backed Keychain.
-- **Kotlin Multiplatform shared module:** Data models and wire format encoding (`kotlinx.serialization`) remain in shared. Cryptographic operations are platform-specific `expect/actual` declarations — the KMP module should define `expect fun deriveRatchetStep(...)` with `actual` implementations calling Tink (Android) and CryptoKit via Swift interop (iOS).
+- **Kotlin Multiplatform:** Use [ionspin/kotlin-multiplatform-libsodium](https://github.com/ionspin/kotlin-multiplatform-libsodium) for all cryptographic primitives (X25519, ChaCha20-Poly1305, SHA-256, HMAC-SHA-256, Ed25519). Libsodium provides a unified API across JVM, Android, and iOS, eliminating platform-specific implementation variance. All crypto operations are common-code `expect/actual` implementations.
+- **Android / Kotlin:** Libsodium bindings use `libsodium.so` (statically linked). Store root keys in Android Keystore where supported; a Keystore-backed wrapper key can protect the master key material.
+- **iOS / Swift:** Libsodium bindings use the native `libsodium` framework (iOS includes sodium.dylib). Key material persists in the Secure Enclave-backed Keychain. SwiftUI calls `LocationSyncService` (native URLSession WebSocket) which invokes the KMP shared module for crypto.
 
 ---
 

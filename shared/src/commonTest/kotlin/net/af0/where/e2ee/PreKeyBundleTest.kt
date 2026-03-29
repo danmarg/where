@@ -6,6 +6,10 @@ import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 class PreKeyBundleTest {
+    init {
+        initializeE2eeTests()
+    }
+
     private fun makeOPKs(count: Int): List<Pair<OPK, ByteArray>> =
         (1..count).map { i ->
             val kp = generateX25519KeyPair()
