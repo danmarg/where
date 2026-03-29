@@ -28,10 +28,12 @@ jobs:
       - name: Install libsodium
         run: |
           sudo apt-get update
-          sudo apt-get install -y libsodium-dev
+          sudo apt-get install -y libsodium-dev libsodium23
 
       - name: Run shared + server tests (JVM)
-        run: ./gradlew :shared:jvmTest :server:test
+        run: |
+          export LD_LIBRARY_PATH=/usr/lib/x86_64-linux-gnu:$LD_LIBRARY_PATH
+          ./gradlew :shared:jvmTest :server:test
 
       - name: Run Android unit tests
         run: ./gradlew :android:testDebugUnitTest
