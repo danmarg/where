@@ -24,8 +24,11 @@ targets:
         codeSign: false
         implicit: true
       - framework: Security
+        embed: false
       - framework: MapKit
+        embed: false
       - framework: CoreLocation
+        embed: false
     preBuildScripts:
       - script: |
           cd "$SRCROOT/.."
