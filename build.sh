@@ -13,10 +13,15 @@ export TMPDIR="${TMPDIR:-/tmp}"
 
 # Parse arguments
 SERVER_URL=""
+BUILD_FLAVOR="debug"
 while [[ $# -gt 0 ]]; do
   case $1 in
     --server-url)
       SERVER_URL="$2"
+      shift 2
+      ;;
+    --flavor)
+      BUILD_FLAVOR="$2"
       shift 2
       ;;
     *)
@@ -25,6 +30,12 @@ while [[ $# -gt 0 ]]; do
       ;;
   esac
 done
+
+# Validate flavor
+if [[ "$BUILD_FLAVOR" != "debug" && "$BUILD_FLAVOR" != "release" ]]; then
+  echo "Invalid flavor: $BUILD_FLAVOR (must be 'debug' or 'release')"
+  exit 1
+fi
 
 # Default server URL from local.properties, or fallback
 if [ -z "$SERVER_URL" ]; then
@@ -47,13 +58,18 @@ fi
 echo "✓ Server built"
 echo ""
 
-# Build Android debug APK
-echo "=== Building Android debug APK ==="
-if ! nix develop --command ./gradlew :android:assembleDebug; then
+# Build Android AAB (App Bundle)
+if [[ "$BUILD_FLAVOR" == "debug" ]]; then
+  GRADLE_TASK="bundleDebug"
+else
+  GRADLE_TASK="bundleRelease"
+fi
+echo "=== Building Android $BUILD_FLAVOR AAB ==="
+if ! nix develop --command ./gradlew :android:$GRADLE_TASK; then
   echo "Android build failed."
   exit 1
 fi
-echo "✓ Android APK built"
+echo "✓ Android AAB built ($BUILD_FLAVOR)"
 echo ""
 
 # Build iOS for real device (iphoneos)
@@ -68,10 +84,16 @@ if [ ! -f ios/Where.xcodeproj/project.pbxproj ]; then
 fi
 
 # Build for iphoneos (real device) with code signing disabled
+if [[ "$BUILD_FLAVOR" == "debug" ]]; then
+  XCODE_CONFIGURATION="Debug"
+else
+  XCODE_CONFIGURATION="Release"
+fi
+echo "=== Building iOS for real device ($XCODE_CONFIGURATION) ==="
 if ! nix develop --command bash -c "cd ios && WHERE_SERVER_HTTP_URL='$SERVER_URL' xcodebuild \
   -project Where.xcodeproj \
   -scheme Where \
-  -configuration Debug \
+  -configuration $XCODE_CONFIGURATION \
   -sdk iphoneos \
   -derivedDataPath build \
   CODE_SIGN_IDENTITY=\"\" \
@@ -86,7 +108,7 @@ if grep -q "BUILD FAILED" ios_build.log; then
   exit 1
 fi
 
-echo "✓ iOS app built"
+echo "✓ iOS app built ($XCODE_CONFIGURATION)"
 echo ""
 
 # Summary
@@ -94,13 +116,13 @@ echo "=== Build complete ==="
 echo ""
 echo "Server: ./gradlew :server:run"
 echo ""
-echo "Android APK location:"
+echo "Android AAB location:"
 android_build_dir=$(nix develop --command ./gradlew -q :android:printBuildDir 2>/dev/null || echo "android/build")
-echo "  $android_build_dir/outputs/apk/debug/android-debug.apk"
-echo "  Install: adb install -r <path>"
+echo "  $android_build_dir/outputs/bundle/$BUILD_FLAVOR/android-$BUILD_FLAVOR.aab"
+echo "  Upload to Google Play Store or use bundletool to test"
 echo ""
 echo "iOS app location (device):"
-echo "  ios/build/Build/Products/Debug-iphoneos/Where.app"
+echo "  ios/build/Build/Products/$XCODE_CONFIGURATION-iphoneos/Where.app"
 echo "  Use Xcode to sign and install to device"
 echo ""
 echo "To run the server: ./run-server.sh"
