@@ -25,6 +25,7 @@ kotlin {
             val whereCrypto by creating {
                 defFile("src/nativeInterop/cinterop/WhereCrypto.def")
                 includeDirs("src/nativeInterop/cinterop")
+                extraOpts("-Xsource", "src/nativeInterop/cinterop/where_crypto_impl.c")
             }
         }
         iosTarget.binaries.framework {
