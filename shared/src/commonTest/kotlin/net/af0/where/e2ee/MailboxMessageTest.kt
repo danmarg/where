@@ -14,6 +14,10 @@ private val json =
     }
 
 class MailboxMessageTest {
+    init {
+        initializeE2eeTests()
+    }
+
     // ---------------------------------------------------------------------------
     // EncryptedLocationPayload round-trip
     // ---------------------------------------------------------------------------

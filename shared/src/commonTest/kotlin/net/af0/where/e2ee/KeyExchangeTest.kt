@@ -8,6 +8,9 @@ import kotlin.test.assertNotEquals
 import kotlin.test.assertTrue
 
 class KeyExchangeTest {
+    init {
+        initializeE2eeTests()
+    }
 
     // ---------------------------------------------------------------------------
     // QR payload

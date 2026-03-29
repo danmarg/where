@@ -16,6 +16,10 @@ class MemoryStorage : E2eeStorage {
 }
 
 class E2eeStoreTest {
+    init {
+        initializeE2eeTests()
+    }
+
     private lateinit var aliceStorage: MemoryStorage
     private lateinit var bobStorage: MemoryStorage
     private lateinit var aliceStore: E2eeStore

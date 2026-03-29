@@ -15,6 +15,7 @@ play-services-location = "21.3.0"
 accompanist-permissions = "0.37.3"
 zxing-core = "3.5.3"
 zxing-android = "4.3.0"
+libsodium = "0.9.5"
 
 [libraries]
 # Ktor server
@@ -58,6 +59,7 @@ zxing-android-embedded = { module = "com.journeyapps:zxing-android-embedded", ve
 
 # Crypto
 bouncycastle = { module = "org.bouncycastle:bcprov-jdk18on", version.ref = "bouncycastle" }
+libsodium-kmp = { module = "com.ionspin.kotlin:multiplatform-crypto-libsodium-bindings", version.ref = "libsodium" }
 
 # Logging
 logback-classic = { module = "ch.qos.logback:logback-classic", version.ref = "logback" }

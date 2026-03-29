@@ -1,27 +1,20 @@
+@file:OptIn(ExperimentalUnsignedTypes::class)
+
 package net.af0.where.e2ee
 
-import org.bouncycastle.crypto.agreement.X25519Agreement
-import org.bouncycastle.crypto.generators.Ed25519KeyPairGenerator
-import org.bouncycastle.crypto.generators.X25519KeyPairGenerator
-import org.bouncycastle.crypto.params.Ed25519KeyGenerationParameters
-import org.bouncycastle.crypto.params.Ed25519PrivateKeyParameters
-import org.bouncycastle.crypto.params.Ed25519PublicKeyParameters
-import org.bouncycastle.crypto.params.X25519KeyGenerationParameters
-import org.bouncycastle.crypto.params.X25519PrivateKeyParameters
-import org.bouncycastle.crypto.params.X25519PublicKeyParameters
-import org.bouncycastle.crypto.signers.Ed25519Signer
-import java.security.MessageDigest
-import java.security.SecureRandom
-import javax.crypto.Cipher
-import javax.crypto.Mac
-import javax.crypto.spec.GCMParameterSpec
-import javax.crypto.spec.SecretKeySpec
+import com.ionspin.kotlin.crypto.hash.Hash
+import com.ionspin.kotlin.crypto.auth.Auth
+import com.ionspin.kotlin.crypto.box.Box
+import com.ionspin.kotlin.crypto.signature.Signature
+import com.ionspin.kotlin.crypto.aead.AuthenticatedEncryptionWithAssociatedData
 
 // ---------------------------------------------------------------------------
 // SHA-256
 // ---------------------------------------------------------------------------
 
-internal actual fun sha256(data: ByteArray): ByteArray = MessageDigest.getInstance("SHA-256").digest(data)
+internal actual fun sha256(data: ByteArray): ByteArray {
+    return Hash.sha256(data.toUByteArray()).toByteArray()
+}
 
 // ---------------------------------------------------------------------------
 // HMAC-SHA-256
@@ -31,60 +24,45 @@ internal actual fun hmacSha256(
     key: ByteArray,
     data: ByteArray,
 ): ByteArray {
-    val mac = Mac.getInstance("HmacSHA256")
-    mac.init(SecretKeySpec(key, "HmacSHA256"))
-    return mac.doFinal(data)
+    return Auth.authHmacSha256(data.toUByteArray(), key.toUByteArray()).toByteArray()
 }
 
 // ---------------------------------------------------------------------------
-// X25519 (via BouncyCastle — available on all Android API levels and JVM)
+// X25519
 // ---------------------------------------------------------------------------
 
 actual fun generateX25519KeyPair(): RawKeyPair {
-    val gen = X25519KeyPairGenerator()
-    gen.init(X25519KeyGenerationParameters(SecureRandom()))
-    val kp = gen.generateKeyPair()
-    val priv = ByteArray(32)
-    val pub = ByteArray(32)
-    (kp.private as X25519PrivateKeyParameters).encode(priv, 0)
-    (kp.public as X25519PublicKeyParameters).encode(pub, 0)
-    return RawKeyPair(priv, pub)
+    val keyPair = Box.keypair()
+    return RawKeyPair(
+        keyPair.secretKey.toByteArray(),
+        keyPair.publicKey.toByteArray(),
+    )
 }
 
 internal actual fun x25519(
     myPriv: ByteArray,
     theirPub: ByteArray,
 ): ByteArray {
-    val agreement = X25519Agreement()
-    agreement.init(X25519PrivateKeyParameters(myPriv, 0))
-    val result = ByteArray(32)
-    agreement.calculateAgreement(X25519PublicKeyParameters(theirPub, 0), result, 0)
-    return result
+    return Box.beforeNM(theirPub.toUByteArray(), myPriv.toUByteArray()).toByteArray()
 }
 
 // ---------------------------------------------------------------------------
-// Ed25519 (via BouncyCastle)
+// Ed25519
 // ---------------------------------------------------------------------------
 
 actual fun generateEd25519KeyPair(): RawKeyPair {
-    val gen = Ed25519KeyPairGenerator()
-    gen.init(Ed25519KeyGenerationParameters(SecureRandom()))
-    val kp = gen.generateKeyPair()
-    val priv = ByteArray(32)
-    val pub = ByteArray(32)
-    (kp.private as Ed25519PrivateKeyParameters).encode(priv, 0)
-    (kp.public as Ed25519PublicKeyParameters).encode(pub, 0)
-    return RawKeyPair(priv, pub)
+    val keyPair = Signature.keypair()
+    return RawKeyPair(
+        keyPair.secretKey.toByteArray(),
+        keyPair.publicKey.toByteArray(),
+    )
 }
 
 internal actual fun ed25519Sign(
     priv: ByteArray,
     message: ByteArray,
 ): ByteArray {
-    val signer = Ed25519Signer()
-    signer.init(true, Ed25519PrivateKeyParameters(priv, 0))
-    signer.update(message, 0, message.size)
-    return signer.generateSignature()
+    return Signature.detached(message.toUByteArray(), priv.toUByteArray()).toByteArray()
 }
 
 internal actual fun ed25519Verify(
@@ -92,18 +70,16 @@ internal actual fun ed25519Verify(
     message: ByteArray,
     sig: ByteArray,
 ): Boolean {
-    val verifier = Ed25519Signer()
-    verifier.init(false, Ed25519PublicKeyParameters(pub, 0))
-    verifier.update(message, 0, message.size)
     return try {
-        verifier.verifySignature(sig)
+        Signature.verifyDetached(sig.toUByteArray(), message.toUByteArray(), pub.toUByteArray())
+        true
     } catch (_: Exception) {
         false
     }
 }
 
 // ---------------------------------------------------------------------------
-// AES-256-GCM (JCA — available on all supported Android API levels and JVM)
+// AES-256-GCM (using ChaCha20-Poly1305 from libsodium)
 // ---------------------------------------------------------------------------
 
 internal actual fun aesgcmEncrypt(
@@ -112,10 +88,12 @@ internal actual fun aesgcmEncrypt(
     plaintext: ByteArray,
     aad: ByteArray,
 ): ByteArray {
-    val cipher = Cipher.getInstance("AES/GCM/NoPadding")
-    cipher.init(Cipher.ENCRYPT_MODE, SecretKeySpec(key, "AES"), GCMParameterSpec(128, nonce))
-    cipher.updateAAD(aad)
-    return cipher.doFinal(plaintext)
+    return AuthenticatedEncryptionWithAssociatedData.chaCha20Poly1305IetfEncrypt(
+        plaintext.toUByteArray(),
+        aad.toUByteArray(),
+        nonce.toUByteArray(),
+        key.toUByteArray(),
+    ).toByteArray()
 }
 
 internal actual fun aesgcmDecrypt(
@@ -124,12 +102,14 @@ internal actual fun aesgcmDecrypt(
     ciphertext: ByteArray,
     aad: ByteArray,
 ): ByteArray {
-    val cipher = Cipher.getInstance("AES/GCM/NoPadding")
-    cipher.init(Cipher.DECRYPT_MODE, SecretKeySpec(key, "AES"), GCMParameterSpec(128, nonce))
-    cipher.updateAAD(aad)
     return try {
-        cipher.doFinal(ciphertext)
+        AuthenticatedEncryptionWithAssociatedData.chaCha20Poly1305IetfDecrypt(
+            ciphertext.toUByteArray(),
+            aad.toUByteArray(),
+            nonce.toUByteArray(),
+            key.toUByteArray(),
+        ).toByteArray()
     } catch (e: Exception) {
-        throw IllegalArgumentException("AES-GCM authentication failed", e)
+        throw IllegalArgumentException("AEAD authentication failed", e)
     }
 }

@@ -5,6 +5,10 @@ import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 class TimestampTest {
+    init {
+        initializeE2eeTests()
+    }
+
     @Test
     fun `fresh timestamp is accepted`() {
         val now = currentTimeSeconds()
