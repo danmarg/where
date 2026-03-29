@@ -33,14 +33,18 @@ jobs:
       - name: Install libsodium
         run: |
           sudo apt-get update
-          sudo apt-get install -y libsodium-dev
+          sudo apt-get install -y libsodium-dev libsodium23
 
       - name: Build Android Debug APK
+        env:
+          LD_LIBRARY_PATH: /usr/lib/x86_64-linux-gnu
         if: ${{ !env.IS_RELEASE }}
         run: ./gradlew :android:assembleDebug
 
       - name: Build Android Release APK
         if: ${{ env.IS_RELEASE }}
+        env:
+          LD_LIBRARY_PATH: /usr/lib/x86_64-linux-gnu
         run: ./gradlew :android:assembleRelease
 
       - name: Upload Android Debug APK
