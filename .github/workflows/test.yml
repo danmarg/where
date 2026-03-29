@@ -25,6 +25,11 @@ jobs:
         run: |
           echo "ANDROID_HOME=$ANDROID_SDK_ROOT" >> $GITHUB_ENV
 
+      - name: Install libsodium
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libsodium-dev
+
       - name: Run shared + server tests (JVM)
         run: ./gradlew :shared:jvmTest :server:test
 
