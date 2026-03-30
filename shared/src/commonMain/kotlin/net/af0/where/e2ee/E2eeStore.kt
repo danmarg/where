@@ -368,6 +368,8 @@ class E2eeStore(
             newEkPub = newEk.pub,
             ts = ts,
             routingToken = oldRoutingToken,
+            senderFp = entry.session.aliceFp,
+            recipientFp = entry.session.bobFp,
         )
 
         friends[friendId] = entry.copy(
@@ -408,8 +410,11 @@ class E2eeStore(
         val rotData = try {
             decryptEpochRotationCt(
                 rootKey = entry.session.rootKey,
+                epoch = payload.epoch,
                 ct = payload.ct,
                 routingToken = oldRoutingToken,
+                senderFp = entry.session.aliceFp,
+                recipientFp = entry.session.bobFp,
             )
         } catch (_: Exception) {
             throw IllegalArgumentException("EpochRotation AEAD verification failed")
@@ -441,6 +446,8 @@ class E2eeStore(
             epochSeen = payload.epoch,
             ts = ts,
             routingToken = newSession.routingToken,
+            senderFp = entry.session.aliceFp,
+            recipientFp = entry.session.bobFp,
         )
         return RatchetAckPayload(epochSeen = payload.epoch, ts = ts, ct = ackCt)
     }
@@ -460,8 +467,11 @@ class E2eeStore(
         val ackData = try {
             decryptRatchetAckCt(
                 rootKey = entry.session.rootKey,
+                epochSeen = payload.epochSeen,
                 ct = payload.ct,
                 routingToken = entry.session.routingToken,
+                senderFp = entry.session.aliceFp,
+                recipientFp = entry.session.bobFp,
             )
         } catch (_: Exception) { return false }
         return isTimestampFresh(ackData.ts)
