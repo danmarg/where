@@ -24,7 +24,22 @@ internal actual fun hmacSha256(
     key: ByteArray,
     data: ByteArray,
 ): ByteArray {
-    return Auth.authHmacSha256(data.toUByteArray(), key.toUByteArray()).toByteArray()
+    val blockSeparator = 64
+    var k = if (key.size > blockSeparator) {
+        sha256(key)
+    } else {
+        key
+    }
+
+    if (k.size < blockSeparator) {
+        k = k.copyOf(blockSeparator)
+    }
+
+    val ipad = ByteArray(blockSeparator) { i -> (k[i].toInt() xor 0x36).toByte() }
+    val opad = ByteArray(blockSeparator) { i -> (k[i].toInt() xor 0x5c).toByte() }
+
+    val innerHash = sha256(ipad + data)
+    return sha256(opad + innerHash)
 }
 
 // ---------------------------------------------------------------------------
