@@ -29,7 +29,7 @@ kotlin {
     }
 
     sourceSets {
-        // Intermediate source set shared by jvm and android (identical JCA+BouncyCastle crypto impl)
+        // Intermediate source set shared by jvm and android
         val jvmAndAndroidMain by creating {
             dependsOn(commonMain.get())
         }
@@ -54,7 +54,7 @@ kotlin {
         }
 
         jvmAndAndroidMain.dependencies {
-            // Crypto is handled by cryptography-kotlin in commonMain
+            // JVM/Android specific dependencies
         }
 
         androidMain.dependencies {

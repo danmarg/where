@@ -86,6 +86,7 @@ data class SessionState(
 }
 
 /** Plaintext location payload (before encryption / after decryption). */
+@Serializable
 data class LocationPlaintext(
     val lat: Double,
     val lng: Double,

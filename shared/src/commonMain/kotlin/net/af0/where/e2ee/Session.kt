@@ -2,12 +2,6 @@ package net.af0.where.e2ee
 
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
-import kotlinx.serialization.json.JsonObject
-import kotlinx.serialization.json.buildJsonObject
-import kotlinx.serialization.json.double
-import kotlinx.serialization.json.jsonPrimitive
-import kotlinx.serialization.json.long
-import kotlinx.serialization.json.put
 
 /**
  * High-level session operations: encrypt a location update, decrypt an incoming update,
@@ -20,9 +14,9 @@ object Session {
     private const val AAD_PREFIX = "Where-v1-Location"
     private const val PROTOCOL_VERSION = 1
     // §7.4: pad plaintext to a fixed block size for traffic-analysis resistance.
-    // 256 bytes guarantees the PKCS#7 pad count fits in one byte (range [1, 255])
-    // since encoded location JSON is always < 256 bytes.
-    private const val PADDING_SIZE = 256
+    // 512 bytes guarantees the original data length fits in two bytes (up to 65535)
+    // and encoded location JSON is always < 512 bytes.
+    private const val PADDING_SIZE = 512
 
     /**
      * Maximum allowed gap between the last received seq and the incoming seq.
@@ -57,13 +51,19 @@ object Session {
         val seq = state.sendSeq + 1
         val aad = buildLocationAad(senderFp, recipientFp, state.epoch, seq)
         val plaintext = padToFixedSize(encodeLocation(location), PADDING_SIZE)
-        val ct = aesgcmEncrypt(step.messageKey, step.messageNonce, plaintext, aad)
+        val ct = aeadEncrypt(step.messageKey, step.messageNonce, plaintext, aad)
 
         val newState =
             state.copy(
                 sendChainKey = step.newChainKey,
                 sendSeq = seq,
             )
+
+        // Security (§5.5, §11): zero out ephemeral keys after use
+        step.messageKey.fill(0)
+        step.messageNonce.fill(0)
+        plaintext.fill(0)
+
         return newState to ct
     }
 
@@ -110,14 +110,22 @@ object Session {
         val finalStep = step!!
 
         val aad = buildLocationAad(senderFp, recipientFp, state.epoch, seq)
-        val plaintext = aesgcmDecrypt(finalStep.messageKey, finalStep.messageNonce, ct, aad)
-        val location = decodeLocation(unpad(plaintext))
+        val plaintext = aeadDecrypt(finalStep.messageKey, finalStep.messageNonce, ct, aad)
+        val unpadded = unpad(plaintext)
+        val location = decodeLocation(unpadded)
 
         val newState =
             state.copy(
                 recvChainKey = chainKey,
                 recvSeq = seq,
             )
+
+        // Security (§5.5, §11): zero out ephemeral keys after use
+        finalStep.messageKey.fill(0)
+        finalStep.messageNonce.fill(0)
+        plaintext.fill(0)
+        unpadded.fill(0)
+
         return newState to location
     }
 
@@ -147,7 +155,7 @@ object Session {
         val dhOut = x25519(aliceNewEkPriv, bobOpkPub)
         val ratchetStep = kdfRk(state.rootKey, dhOut)
         val newToken = deriveRoutingToken(ratchetStep.newRootKey, newEpoch, senderFp, recipientFp)
-        return state.copy(
+        val newState = state.copy(
             rootKey = ratchetStep.newRootKey,
             sendChainKey = ratchetStep.newChainKey, // Alice's new send chain
             // recvChainKey is unchanged — Bob's outgoing chain has not rotated
@@ -156,6 +164,11 @@ object Session {
             myEkPriv = aliceNewEkPriv.copyOf(),
             myEkPub = aliceNewEkPub.copyOf(),
         )
+
+        // Security (§5.5, §11): zero out ephemeral keys after use
+        dhOut.fill(0)
+
+        return newState
     }
 
     /**
@@ -182,7 +195,7 @@ object Session {
         val dhOut = x25519(bobOpkPriv, aliceNewEkPub)
         val ratchetStep = kdfRk(state.rootKey, dhOut)
         val newToken = deriveRoutingToken(ratchetStep.newRootKey, newEpoch, senderFp, recipientFp)
-        return state.copy(
+        val newState = state.copy(
             rootKey = ratchetStep.newRootKey,
             recvChainKey = ratchetStep.newChainKey, // Bob's new recv chain (= Alice's new send)
             // sendChainKey is unchanged — Bob's own outgoing chain has not rotated
@@ -190,6 +203,11 @@ object Session {
             epoch = newEpoch,
             theirEkPub = aliceNewEkPub.copyOf(),
         )
+
+        // Security (§5.5, §11): zero out ephemeral keys after use
+        dhOut.fill(0)
+
+        return newState
     }
 
     // ---------------------------------------------------------------------------
@@ -209,48 +227,31 @@ object Session {
             intToBeBytes(epoch) +
             longToBeBytes(seq)
 
-    private fun encodeLocation(loc: LocationPlaintext): ByteArray =
-        buildJsonObject {
-            put("lat", loc.lat)
-            put("lng", loc.lng)
-            put("acc", loc.acc)
-            put("ts", loc.ts)
-        }.let { Json.encodeToString(it) }.encodeToByteArray()
+    private fun encodeLocation(loc: LocationPlaintext): ByteArray = Json.encodeToString(loc).encodeToByteArray()
 
-    private fun decodeLocation(bytes: ByteArray): LocationPlaintext {
-        val obj = Json.decodeFromString<JsonObject>(bytes.decodeToString())
-        return LocationPlaintext(
-            lat = obj["lat"]!!.jsonPrimitive.double,
-            lng = obj["lng"]!!.jsonPrimitive.double,
-            acc = obj["acc"]!!.jsonPrimitive.double,
-            ts = obj["ts"]!!.jsonPrimitive.long,
-        )
-    }
+    private fun decodeLocation(bytes: ByteArray): LocationPlaintext = Json.decodeFromString(bytes.decodeToString())
 
     /**
-     * PKCS#7 padding to a fixed size.
-     * The pad byte value equals the number of padding bytes appended, so unpadding
-     * is unambiguous even if the plaintext ends with a zero byte.
+     * Padding to a fixed size.
+     * The last two bytes of the padded block store the original data length (big-endian).
      */
     private fun padToFixedSize(
         data: ByteArray,
         size: Int,
     ): ByteArray {
-        require(data.size in 1 until size) { "plaintext (${data.size} bytes) must be in [1, ${size - 1}]" }
-        val padByte = (size - data.size).toByte()
-        return data.copyOf(size).also { padded ->
-            for (i in data.size until size) padded[i] = padByte
-        }
+        require(data.size <= size - 2) { "plaintext (${data.size} bytes) too large for PADDING_SIZE $size" }
+        val padded = data.copyOf(size)
+        padded[size - 2] = (data.size shr 8).toByte()
+        padded[size - 1] = (data.size and 0xFF).toByte()
+        return padded
     }
 
     private fun unpad(data: ByteArray): ByteArray {
-        require(data.isNotEmpty()) { "padded data is empty" }
-        val padCount = data.last().toInt() and 0xFF
-        require(padCount > 0 && padCount <= data.size) { "invalid PKCS#7 padding byte: $padCount" }
-        for (i in data.size - padCount until data.size) {
-            require(data[i] == padCount.toByte()) { "invalid PKCS#7 padding at index $i" }
-        }
-        return data.copyOfRange(0, data.size - padCount)
+        require(data.size >= 2) { "padded data too short" }
+        val size = data.size
+        val dataLen = ((data[size - 2].toInt() and 0xFF) shl 8) or (data[size - 1].toInt() and 0xFF)
+        require(dataLen >= 0 && dataLen <= size - 2) { "invalid data length in padding: $dataLen" }
+        return data.copyOfRange(0, dataLen)
     }
 }
 
@@ -276,7 +277,7 @@ internal fun buildEpochRotationCt(
 ): ByteArray {
     val kRot = hkdfSha256(rootKey, null, INFO_EPOCH_ROTATION.encodeToByteArray(), 32)
     val plaintext = intToBeBytes(epoch) + intToBeBytes(opkId) + newEkPub + longToBeBytes(ts)
-    return aesgcmEncrypt(kRot, ByteArray(12), plaintext, routingToken)
+    return aeadEncrypt(kRot, ByteArray(12), plaintext, routingToken)
 }
 
 /**
@@ -288,7 +289,7 @@ internal fun decryptEpochRotationCt(
     routingToken: ByteArray,
 ): EpochRotationPlaintext {
     val kRot = hkdfSha256(rootKey, null, INFO_EPOCH_ROTATION.encodeToByteArray(), 32)
-    val plaintext = aesgcmDecrypt(kRot, ByteArray(12), ct, routingToken)
+    val plaintext = aeadDecrypt(kRot, ByteArray(12), ct, routingToken)
     require(plaintext.size == 4 + 4 + 32 + 8) { "bad EpochRotation plaintext size: ${plaintext.size}" }
     val epoch = bytesToInt(plaintext, 0)
     val opkId = bytesToInt(plaintext, 4)
@@ -308,7 +309,7 @@ internal fun buildRatchetAckCt(
 ): ByteArray {
     val kAck = hkdfSha256(rootKey, null, INFO_RATCHET_ACK.encodeToByteArray(), 32)
     val plaintext = intToBeBytes(epochSeen) + longToBeBytes(ts)
-    return aesgcmEncrypt(kAck, ByteArray(12), plaintext, routingToken)
+    return aeadEncrypt(kAck, ByteArray(12), plaintext, routingToken)
 }
 
 /**
@@ -320,7 +321,7 @@ internal fun decryptRatchetAckCt(
     routingToken: ByteArray,
 ): RatchetAckPlaintext {
     val kAck = hkdfSha256(rootKey, null, INFO_RATCHET_ACK.encodeToByteArray(), 32)
-    val plaintext = aesgcmDecrypt(kAck, ByteArray(12), ct, routingToken)
+    val plaintext = aeadDecrypt(kAck, ByteArray(12), ct, routingToken)
     require(plaintext.size == 4 + 8) { "bad RatchetAck plaintext size: ${plaintext.size}" }
     val epochSeen = bytesToInt(plaintext, 0)
     val ts = bytesToLong(plaintext, 4)

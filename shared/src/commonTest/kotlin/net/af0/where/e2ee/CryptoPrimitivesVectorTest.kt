@@ -183,11 +183,11 @@ class CryptoPrimitivesVectorTest {
         val nonce = ByteArray(12) { (it + 1).toByte() }
         val aad = "sender:alice".encodeToByteArray()
 
-        val ctTag = aesgcmEncrypt(key, nonce, ByteArray(0), aad)
+        val ctTag = aeadEncrypt(key, nonce, ByteArray(0), aad)
         // ChaCha20-Poly1305 produces 16-byte tag
         assertTrue(ctTag.size == 16, "ChaCha20-Poly1305 empty plaintext must produce 16-byte tag")
 
-        val decrypted = aesgcmDecrypt(key, nonce, ctTag, aad)
+        val decrypted = aeadDecrypt(key, nonce, ctTag, aad)
         assertContentEquals(ByteArray(0), decrypted)
     }
 
@@ -198,24 +198,24 @@ class CryptoPrimitivesVectorTest {
         val aad = "sender:alice".encodeToByteArray()
         val plaintext = "37.7749,-122.4194".encodeToByteArray()
 
-        val ctTag = aesgcmEncrypt(key, nonce, plaintext, aad)
-        val decrypted = aesgcmDecrypt(key, nonce, ctTag, aad)
+        val ctTag = aeadEncrypt(key, nonce, plaintext, aad)
+        val decrypted = aeadDecrypt(key, nonce, ctTag, aad)
 
         assertContentEquals(plaintext, decrypted)
     }
 
     @Test
-    fun `aesgcm decryption fails on tag corruption`() {
+    fun `aead decryption fails on tag corruption`() {
         val key = ByteArray(32) { it.toByte() }
         val nonce = ByteArray(12)
         val pt = "test".encodeToByteArray()
-        val ctTag = aesgcmEncrypt(key, nonce, pt, ByteArray(0)).copyOf()
+        val ctTag = aeadEncrypt(key, nonce, pt, ByteArray(0)).copyOf()
         // Flip a bit in the tag (last 16 bytes)
         ctTag[ctTag.size - 1] = (ctTag[ctTag.size - 1].toInt() xor 1).toByte()
 
         val threw =
             try {
-                aesgcmDecrypt(key, nonce, ctTag, ByteArray(0))
+                aeadDecrypt(key, nonce, ctTag, ByteArray(0))
                 false
             } catch (_: Exception) {
                 true

@@ -9,11 +9,28 @@ package net.af0.where.e2ee
 /** SHA-256 hash. Returns 32 bytes. */
 internal expect fun sha256(data: ByteArray): ByteArray
 
-/** HMAC-SHA-256. Returns 32 bytes. */
-internal expect fun hmacSha256(
+/** HMAC-SHA-256 (RFC 2104). Returns 32 bytes. */
+internal fun hmacSha256(
     key: ByteArray,
     data: ByteArray,
-): ByteArray
+): ByteArray {
+    val blockSeparator = 64
+    var k = if (key.size > blockSeparator) {
+        sha256(key)
+    } else {
+        key
+    }
+
+    if (k.size < blockSeparator) {
+        k = k.copyOf(blockSeparator)
+    }
+
+    val ipad = ByteArray(blockSeparator) { i -> (k[i].toInt() xor 0x36).toByte() }
+    val opad = ByteArray(blockSeparator) { i -> (k[i].toInt() xor 0x5c).toByte() }
+
+    val innerHash = sha256(ipad + data)
+    return sha256(opad + innerHash)
+}
 
 /** Generate a fresh X25519 keypair from the platform CSPRNG. */
 expect fun generateX25519KeyPair(): RawKeyPair
@@ -57,14 +74,14 @@ internal expect fun ed25519Verify(
 ): Boolean
 
 /**
- * AES-256-GCM encrypt.
+ * AEAD encrypt (ChaCha20-Poly1305).
  * @param key   32-byte key
  * @param nonce 12-byte nonce
  * @param plaintext arbitrary plaintext
  * @param aad   additional authenticated data
- * @return ciphertext || 16-byte GCM tag (concatenated)
+ * @return ciphertext || 16-byte tag (concatenated)
  */
-internal expect fun aesgcmEncrypt(
+internal expect fun aeadEncrypt(
     key: ByteArray,
     nonce: ByteArray,
     plaintext: ByteArray,
@@ -72,15 +89,15 @@ internal expect fun aesgcmEncrypt(
 ): ByteArray
 
 /**
- * AES-256-GCM decrypt.
+ * AEAD decrypt (ChaCha20-Poly1305).
  * @param key   32-byte key
  * @param nonce 12-byte nonce
- * @param ciphertext ciphertext || 16-byte GCM tag
+ * @param ciphertext ciphertext || 16-byte tag
  * @param aad   additional authenticated data (must match what was used during encrypt)
  * @return plaintext, or throws if authentication fails
- * @throws IllegalArgumentException on GCM authentication failure
+ * @throws IllegalArgumentException on authentication failure
  */
-internal expect fun aesgcmDecrypt(
+internal expect fun aeadDecrypt(
     key: ByteArray,
     nonce: ByteArray,
     ciphertext: ByteArray,

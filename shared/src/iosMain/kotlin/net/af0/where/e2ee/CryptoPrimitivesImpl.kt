@@ -17,32 +17,6 @@ internal actual fun sha256(data: ByteArray): ByteArray {
 }
 
 // ---------------------------------------------------------------------------
-// HMAC-SHA-256
-// ---------------------------------------------------------------------------
-
-internal actual fun hmacSha256(
-    key: ByteArray,
-    data: ByteArray,
-): ByteArray {
-    val blockSeparator = 64
-    var k = if (key.size > blockSeparator) {
-        sha256(key)
-    } else {
-        key
-    }
-
-    if (k.size < blockSeparator) {
-        k = k.copyOf(blockSeparator)
-    }
-
-    val ipad = ByteArray(blockSeparator) { i -> (k[i].toInt() xor 0x36).toByte() }
-    val opad = ByteArray(blockSeparator) { i -> (k[i].toInt() xor 0x5c).toByte() }
-
-    val innerHash = sha256(ipad + data)
-    return sha256(opad + innerHash)
-}
-
-// ---------------------------------------------------------------------------
 // X25519
 // ---------------------------------------------------------------------------
 
@@ -94,10 +68,10 @@ internal actual fun ed25519Verify(
 }
 
 // ---------------------------------------------------------------------------
-// AES-256-GCM (using ChaCha20-Poly1305 from libsodium)
+// AEAD (ChaCha20-Poly1305 from libsodium)
 // ---------------------------------------------------------------------------
 
-internal actual fun aesgcmEncrypt(
+internal actual fun aeadEncrypt(
     key: ByteArray,
     nonce: ByteArray,
     plaintext: ByteArray,
@@ -111,7 +85,7 @@ internal actual fun aesgcmEncrypt(
     ).toByteArray()
 }
 
-internal actual fun aesgcmDecrypt(
+internal actual fun aeadDecrypt(
     key: ByteArray,
     nonce: ByteArray,
     ciphertext: ByteArray,
