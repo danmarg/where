@@ -43,6 +43,7 @@
             pkgs.kotlin
             pkgs.ktlint
             pkgs.gh
+            pkgs.libsodium
             androidSdk
           ] ++ pkgs.lib.optionals pkgs.stdenv.isDarwin [ pkgs.xcodegen ];
 
@@ -63,6 +64,8 @@
             export ANDROID_SDK_ROOT=''${ANDROID_SDK_ROOT:-$ANDROID_HOME}
             export ANDROID_AVD_HOME=''${ANDROID_AVD_HOME:-$HOME/.android/avd}
             export PATH=$ANDROID_HOME/cmdline-tools/latest/bin:$ANDROID_HOME/platform-tools:$ANDROID_HOME/emulator:$PATH
+            # Ensure libsodium is in the search path for JVM tests
+            export LD_LIBRARY_PATH=${pkgs.libsodium}/lib:$LD_LIBRARY_PATH
             # Ensure TMPDIR is set properly for nix
             export TMPDIR=''${TMPDIR:-/tmp}
             echo "Where dev environment"
