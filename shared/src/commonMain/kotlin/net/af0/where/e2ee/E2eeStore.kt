@@ -37,6 +37,9 @@ data class FriendEntry(
     /** Computed friend ID: hex(SHA-256(EK_A.pub)) — full 64 hex chars. */
     val id: String get() = session.aliceFp.toHex()
 
+    /** Safety number (e.g., for display in UI). */
+    val safetyNumber: String get() = formatSafetyNumber(safetyNumber(session.myEkPub, session.theirEkPub))
+
     override fun equals(other: Any?): Boolean {
         if (this === other) return true
         if (other !is FriendEntry) return false
@@ -361,12 +364,14 @@ class E2eeStore(
         )
 
         val oldRoutingToken = entry.session.routingToken
+        val nonce = randomBytes(12)
         val ct = buildEpochRotationCt(
             rootKey = entry.session.rootKey,
             epoch = newSession.epoch,
             opkId = opkId,
             newEkPub = newEk.pub,
             ts = ts,
+            nonce = nonce,
             routingToken = oldRoutingToken,
             senderFp = entry.session.aliceFp,
             recipientFp = entry.session.bobFp,
@@ -383,6 +388,7 @@ class E2eeStore(
             opkId = opkId,
             newEkPub = newEk.pub,
             ts = ts,
+            nonce = nonce,
             ct = ct,
         )
     }
@@ -411,6 +417,7 @@ class E2eeStore(
             decryptEpochRotationCt(
                 rootKey = entry.session.rootKey,
                 epoch = payload.epoch,
+                nonce = payload.nonce,
                 ct = payload.ct,
                 routingToken = oldRoutingToken,
                 senderFp = entry.session.aliceFp,
@@ -425,7 +432,8 @@ class E2eeStore(
 
         val opkPriv = entry.myOpkPrivs[payload.opkId] ?: return null // unknown OPK — skip
 
-        val newSession = Session.bobProcessEpochRotation(
+        // Step 1: Process Alice's rotation
+        val intermediateSession = Session.bobProcessAliceRotation(
             state = entry.session,
             aliceNewEkPub = payload.newEkPub,
             bobOpkPriv = opkPriv,
@@ -434,28 +442,42 @@ class E2eeStore(
             recipientFp = entry.session.bobFp,
         )
 
+        // Step 2: Refresh Bob's own send chain
+        val bobNewEk = generateX25519KeyPair()
+        val finalSession = Session.bobProcessOwnRotation(
+            state = intermediateSession,
+            bobNewEkPriv = bobNewEk.priv,
+            bobNewEkPub = bobNewEk.pub,
+        )
+
+        // Authenticate Ack using intermediate root key (the one Alice knows)
+        // and include Bob's new key in authenticated plaintext.
+        val ts = currentTimeSeconds()
+        val nonce = randomBytes(12)
+        val ackCt = buildRatchetAckCt(
+            rootKey = intermediateSession.rootKey,
+            epochSeen = payload.epoch,
+            ts = ts,
+            newEkPub = bobNewEk.pub,
+            nonce = nonce,
+            routingToken = intermediateSession.routingToken,
+            senderFp = entry.session.aliceFp,
+            recipientFp = entry.session.bobFp,
+        )
+
         friends[friendId] = entry.copy(
-            session = newSession,
+            session = finalSession,
             myOpkPrivs = entry.myOpkPrivs - payload.opkId, // delete consumed OPK
         )
         save()
 
-        val ts = currentTimeSeconds()
-        val ackCt = buildRatchetAckCt(
-            rootKey = newSession.rootKey,
-            epochSeen = payload.epoch,
-            ts = ts,
-            routingToken = newSession.routingToken,
-            senderFp = entry.session.aliceFp,
-            recipientFp = entry.session.bobFp,
-        )
-        return RatchetAckPayload(epochSeen = payload.epoch, ts = ts, ct = ackCt)
+        return RatchetAckPayload(epochSeen = payload.epoch, ts = ts, newEkPub = bobNewEk.pub, nonce = nonce, ct = ackCt)
     }
 
     /**
      * Alice: Verify Bob's [RatchetAckPayload].
      * Returns true if the AEAD and timestamp are valid; false otherwise.
-     * No state change is made — this is informational only.
+     * Updates Alice's receive chain if Bob provided a new ephemeral key.
      */
     fun processRatchetAck(
         friendId: String,
@@ -468,13 +490,24 @@ class E2eeStore(
             decryptRatchetAckCt(
                 rootKey = entry.session.rootKey,
                 epochSeen = payload.epochSeen,
+                nonce = payload.nonce,
                 ct = payload.ct,
                 routingToken = entry.session.routingToken,
                 senderFp = entry.session.aliceFp,
                 recipientFp = entry.session.bobFp,
             )
         } catch (_: Exception) { return false }
-        return isTimestampFresh(ackData.ts)
+
+        if (!isTimestampFresh(ackData.ts)) return false
+
+        // Perform the second half of the DH ratchet if Bob provided a new key.
+        if (ackData.newEkPub != null) {
+            val newSession = Session.aliceProcessRatchetAck(entry.session, ackData.newEkPub)
+            friends[friendId] = entry.copy(session = newSession)
+            save()
+        }
+
+        return true
     }
 
     companion object {

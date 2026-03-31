@@ -46,7 +46,7 @@ sealed class MailboxPayload {
  * @property v      Protocol version.
  * @property epoch  DH ratchet epoch (uint32).
  * @property seq    Monotone counter as a decimal string, to avoid JS uint64 precision loss.
- * @property ct     AES-256-GCM ciphertext + 16-byte tag (base64 on the wire).
+ * @property ct     ChaCha20-Poly1305 ciphertext + 16-byte tag (base64 on the wire).
  */
 @Serializable
 @SerialName("EncryptedLocation")
@@ -94,7 +94,8 @@ data class PreKeyBundlePayload(
  * @property opkId     ID of the Bob OPK Alice consumed for this ratchet step.
  * @property newEkPub  Alice's new X25519 ephemeral public key (32 bytes, base64).
  * @property ts        Unix timestamp in seconds (uint64).
- * @property ct        AEAD ciphertext authenticating the rotation (see [Session.buildEpochRotationCt]).
+ * @property nonce     12-byte random nonce for AEAD.
+ * @property ct        AEAD ciphertext authenticating the rotation (see [buildEpochRotationCt]).
  */
 @Serializable
 @SerialName("EpochRotation")
@@ -105,16 +106,20 @@ data class EpochRotationPayload(
     @SerialName("new_ek_pub")
     @Serializable(with = ByteArrayBase64Serializer::class) val newEkPub: ByteArray,
     val ts: Long,
+    @Serializable(with = ByteArrayBase64Serializer::class) val nonce: ByteArray,
     @Serializable(with = ByteArrayBase64Serializer::class) val ct: ByteArray,
 ) : MailboxPayload()
 
 /**
- * Optional acknowledgment from Bob after processing an EpochRotation (Bob → Alice, §9.3).
+ * Acknowledgment from Bob after processing an EpochRotation (Bob → Alice, §9.3).
+ * Includes Bob's new ephemeral key for a two-way DH ratchet.
  *
  * @property v          Protocol version.
  * @property epochSeen  The epoch number Bob successfully processed.
  * @property ts         Unix timestamp in seconds.
- * @property ct         AEAD ciphertext authenticating the ack (see [Session.buildRatchetAckCt]).
+ * @property newEkPub   Bob's new X25519 ephemeral public key (32 bytes).
+ * @property nonce      12-byte random nonce for AEAD.
+ * @property ct         AEAD ciphertext authenticating the ack (see [buildRatchetAckCt]).
  */
 @Serializable
 @SerialName("RatchetAck")
@@ -122,6 +127,9 @@ data class RatchetAckPayload(
     override val v: Int = 1,
     @SerialName("epoch_seen") val epochSeen: Int,
     val ts: Long,
+    @SerialName("new_ek_pub")
+    @Serializable(with = ByteArrayBase64Serializer::class) val newEkPub: ByteArray,
+    @Serializable(with = ByteArrayBase64Serializer::class) val nonce: ByteArray,
     @Serializable(with = ByteArrayBase64Serializer::class) val ct: ByteArray,
 ) : MailboxPayload()
 

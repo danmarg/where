@@ -164,11 +164,11 @@ object Session {
         val newState = state.copy(
             rootKey = ratchetStep.newRootKey,
             sendChainKey = ratchetStep.newChainKey, // Alice's new send chain
-            // recvChainKey is unchanged — Bob's outgoing chain has not rotated
             routingToken = newToken,
             epoch = newEpoch,
             myEkPriv = aliceNewEkPriv.copyOf(),
             myEkPub = aliceNewEkPub.copyOf(),
+            sendSeq = 0L,
         )
 
         // Security (§5.5, §11): zero out ephemeral keys after use
@@ -178,19 +178,18 @@ object Session {
     }
 
     /**
-     * Bob: process an EpochRotation by computing the matching DH step.
+     * Bob: process Alice's EpochRotation by computing the matching DH step.
      *
      * Updates Bob's receive chain key (= Alice's new send chain) so he can decrypt
-     * Alice's messages in the new epoch. Bob's own send chain is not affected.
+     * Alice's messages in the new epoch.
      *
      * @param state       Bob's current session state.
      * @param aliceNewEkPub Alice's new ephemeral public key (from EpochRotation message).
-     * @param bobOpkPriv  Bob's OPK private key for the consumed opk_id. MUST be deleted by
-     *                    caller immediately after this call.
+     * @param bobOpkPriv  Bob's OPK private key for the consumed opk_id.
      * @param senderFp    Alice's fingerprint.
      * @param recipientFp Bob's fingerprint.
      */
-    fun bobProcessEpochRotation(
+    fun bobProcessAliceRotation(
         state: SessionState,
         aliceNewEkPub: ByteArray,
         bobOpkPriv: ByteArray,
@@ -204,15 +203,58 @@ object Session {
         val newState = state.copy(
             rootKey = ratchetStep.newRootKey,
             recvChainKey = ratchetStep.newChainKey, // Bob's new recv chain (= Alice's new send)
-            // sendChainKey is unchanged — Bob's own outgoing chain has not rotated
             routingToken = newToken,
             epoch = newEpoch,
             theirEkPub = aliceNewEkPub.copyOf(),
+            recvSeq = 0L,
         )
 
         // Security (§5.5, §11): zero out ephemeral keys after use
         dhOut.fill(0)
 
+        return newState
+    }
+
+    /**
+     * Bob: perform his own DH rotation step to refresh his send chain.
+     */
+    fun bobProcessOwnRotation(
+        state: SessionState,
+        bobNewEkPriv: ByteArray,
+        bobNewEkPub: ByteArray,
+    ): SessionState {
+        val dhOut = x25519(bobNewEkPriv, state.theirEkPub)
+        val ratchetStep = kdfRk(state.rootKey, dhOut)
+        val newState = state.copy(
+            rootKey = ratchetStep.newRootKey,
+            sendChainKey = ratchetStep.newChainKey,
+            myEkPriv = bobNewEkPriv.copyOf(),
+            myEkPub = bobNewEkPub.copyOf(),
+            sendSeq = 0L,
+        )
+        dhOut.fill(0)
+        return newState
+    }
+
+    /**
+     * Alice: process Bob's RatchetAck and perform the second half of the DH ratchet.
+     *
+     * @param state       Alice's current session state.
+     * @param bobNewEkPub Bob's new ephemeral public key from RatchetAck.
+     */
+    fun aliceProcessRatchetAck(
+        state: SessionState,
+        bobNewEkPub: ByteArray,
+    ): SessionState {
+        val dhOut = x25519(state.myEkPriv, bobNewEkPub)
+        val ratchetStep = kdfRk(state.rootKey, dhOut)
+        val newState = state.copy(
+            rootKey = ratchetStep.newRootKey,
+            recvChainKey = ratchetStep.newChainKey, // Alice's new recv chain (= Bob's new send)
+            theirEkPub = bobNewEkPub.copyOf(),
+            recvSeq = 0L,
+        )
+        dhOut.fill(0)
         return newState
     }
 
@@ -294,12 +336,11 @@ object Session {
 // ---------------------------------------------------------------------------
 
 internal data class EpochRotationPlaintext(val epoch: Int, val opkId: Int, val newEkPub: ByteArray, val ts: Long)
-internal data class RatchetAckPlaintext(val epochSeen: Int, val ts: Long)
+internal data class RatchetAckPlaintext(val epochSeen: Int, val ts: Long, val newEkPub: ByteArray?)
 
 /**
  * Build the AEAD-encrypted EpochRotation payload blob.
  * K_rot is derived from the current root key via HKDF.
- * Nonce is epoch_be4 || zeros8 as per §9.3.
  */
 internal fun buildEpochRotationCt(
     rootKey: ByteArray,
@@ -307,6 +348,7 @@ internal fun buildEpochRotationCt(
     opkId: Int,
     newEkPub: ByteArray,
     ts: Long,
+    nonce: ByteArray,
     routingToken: ByteArray,
     senderFp: ByteArray,
     recipientFp: ByteArray,
@@ -315,7 +357,6 @@ internal fun buildEpochRotationCt(
     val salt = epochBe
     val kRot = hkdfSha256(rootKey, salt, INFO_EPOCH_ROTATION.encodeToByteArray(), 32)
     val plaintext = intToBeBytes(epoch) + intToBeBytes(opkId) + newEkPub + longToBeBytes(ts)
-    val nonce = epochBe + ByteArray(8)
     val aad = senderFp + recipientFp + routingToken
     return aeadEncrypt(kRot, nonce, plaintext, aad)
 }
@@ -326,6 +367,7 @@ internal fun buildEpochRotationCt(
 internal fun decryptEpochRotationCt(
     rootKey: ByteArray,
     epoch: Int,
+    nonce: ByteArray,
     ct: ByteArray,
     routingToken: ByteArray,
     senderFp: ByteArray,
@@ -334,15 +376,14 @@ internal fun decryptEpochRotationCt(
     val epochBe = intToBeBytes(epoch)
     val salt = epochBe
     val kRot = hkdfSha256(rootKey, salt, INFO_EPOCH_ROTATION.encodeToByteArray(), 32)
-    val nonce = epochBe + ByteArray(8)
     val aad = senderFp + recipientFp + routingToken
     val plaintext = aeadDecrypt(kRot, nonce, ct, aad)
     require(plaintext.size == 4 + 4 + 32 + 8) { "bad EpochRotation plaintext size: ${plaintext.size}" }
-    val epoch = bytesToInt(plaintext, 0)
+    val decodedEpoch = bytesToInt(plaintext, 0)
     val opkId = bytesToInt(plaintext, 4)
     val newEkPub = plaintext.copyOfRange(8, 40)
     val ts = bytesToLong(plaintext, 40)
-    return EpochRotationPlaintext(epoch, opkId, newEkPub, ts)
+    return EpochRotationPlaintext(decodedEpoch, opkId, newEkPub, ts)
 }
 
 /**
@@ -352,6 +393,8 @@ internal fun buildRatchetAckCt(
     rootKey: ByteArray,
     epochSeen: Int,
     ts: Long,
+    newEkPub: ByteArray?,
+    nonce: ByteArray,
     routingToken: ByteArray,
     senderFp: ByteArray,
     recipientFp: ByteArray,
@@ -359,8 +402,7 @@ internal fun buildRatchetAckCt(
     val epochBe = intToBeBytes(epochSeen)
     val salt = epochBe
     val kAck = hkdfSha256(rootKey, salt, INFO_RATCHET_ACK.encodeToByteArray(), 32)
-    val plaintext = intToBeBytes(epochSeen) + longToBeBytes(ts)
-    val nonce = epochBe + ByteArray(8)
+    val plaintext = intToBeBytes(epochSeen) + longToBeBytes(ts) + (newEkPub ?: ByteArray(32))
     val aad = senderFp + recipientFp + routingToken
     return aeadEncrypt(kAck, nonce, plaintext, aad)
 }
@@ -371,6 +413,7 @@ internal fun buildRatchetAckCt(
 internal fun decryptRatchetAckCt(
     rootKey: ByteArray,
     epochSeen: Int,
+    nonce: ByteArray,
     ct: ByteArray,
     routingToken: ByteArray,
     senderFp: ByteArray,
@@ -379,13 +422,14 @@ internal fun decryptRatchetAckCt(
     val epochBe = intToBeBytes(epochSeen)
     val salt = epochBe
     val kAck = hkdfSha256(rootKey, salt, INFO_RATCHET_ACK.encodeToByteArray(), 32)
-    val nonce = epochBe + ByteArray(8)
     val aad = senderFp + recipientFp + routingToken
     val plaintext = aeadDecrypt(kAck, nonce, ct, aad)
-    require(plaintext.size == 4 + 8) { "bad RatchetAck plaintext size: ${plaintext.size}" }
-    val epochSeen = bytesToInt(plaintext, 0)
+    require(plaintext.size == 4 + 8 + 32) { "bad RatchetAck plaintext size: ${plaintext.size}" }
+    val decodedEpochSeen = bytesToInt(plaintext, 0)
     val ts = bytesToLong(plaintext, 4)
-    return RatchetAckPlaintext(epochSeen, ts)
+    val newEkPub = plaintext.copyOfRange(12, 44)
+    val isAllZeros = newEkPub.all { it == 0.toByte() }
+    return RatchetAckPlaintext(decodedEpochSeen, ts, if (isAllZeros) null else newEkPub)
 }
 
 private fun bytesToInt(buf: ByteArray, offset: Int): Int =
