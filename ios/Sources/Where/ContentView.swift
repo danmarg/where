@@ -1,79 +1,64 @@
-import SwiftUI
-import Combine
 import CoreLocation
 import Shared
+import SwiftUI
 
 struct ContentView: View {
     @StateObject private var locationManager = LocationManager()
-    @StateObject private var syncService = LocationSyncService(userId: UserIdentity.userId)
-    @StateObject private var friendsStore = FriendsStore()
+    @StateObject private var syncService = LocationSyncService()
     @State private var showFriends = false
+    @State private var showScanner = false
     @State private var zoomTarget: CLLocationCoordinate2D? = nil
+    
+    @State private var newFriendName: String = ""
 
-    // Only show self + friends on the map
-    private var visibleUsers: [UserLocation] {
-        syncService.users.filter { user in
-            user.userId == UserIdentity.userId || friendsStore.friendIds.contains(user.userId)
+    private var visibleUsers: [Shared.UserLocation] {
+        var result: [Shared.UserLocation] = []
+        if syncService.isSharingLocation, let loc = locationManager.location {
+            result.append(Shared.UserLocation(
+                userId: syncService.myId,
+                lat: loc.coordinate.latitude,
+                lng: loc.coordinate.longitude,
+                timestamp: Int64(Date().timeIntervalSince1970)
+            ))
         }
+        for (friendId, loc) in syncService.friendLocations {
+            result.append(Shared.UserLocation(userId: friendId, lat: loc.lat, lng: loc.lng, timestamp: loc.ts))
+        }
+        return result
     }
 
     var body: some View {
         ZStack {
             WhereMapView(
                 users: visibleUsers,
-                ownUserId: UserIdentity.userId,
+                ownUserId: syncService.myId,
                 zoomTarget: zoomTarget,
                 onZoomConsumed: { zoomTarget = nil }
             )
             .ignoresSafeArea()
 
             VStack {
-                // Top bar: connection status + user count
-                HStack(spacing: 8) {
-                    Circle()
-                        .fill(statusColor)
-                        .frame(width: 8, height: 8)
-                    Text(statusText)
-                        .font(.caption)
-                        .foregroundStyle(.white)
-                    Spacer()
-                    if !friendsStore.friendIds.isEmpty {
-                        Text("\(visibleUsers.count) online")
-                            .font(.caption)
-                            .foregroundStyle(.white)
-                    }
-                }
-                .padding(.horizontal, 16)
-                .padding(.vertical, 8)
-                .background(.black.opacity(0.6))
-                .clipShape(Capsule())
-                .padding(.top, 12)
-                .padding(.horizontal, 16)
-
                 Spacer()
 
-                // Bottom controls
                 HStack(spacing: 12) {
-                    // Pause / resume sharing
                     Button {
-                        friendsStore.isSharingLocation.toggle()
+                        syncService.isSharingLocation.toggle()
                     } label: {
                         Label(
-                            friendsStore.isSharingLocation ? "Sharing" : "Paused",
-                            systemImage: friendsStore.isSharingLocation ? "location.fill" : "location.slash.fill"
+                            syncService.isSharingLocation ? "Sharing" : "Paused",
+                            systemImage: syncService.isSharingLocation ? "location.fill" : "location.slash.fill"
                         )
                         .font(.caption)
                         .padding(.horizontal, 14)
                         .padding(.vertical, 8)
-                        .background(friendsStore.isSharingLocation ? Color.blue.opacity(0.85) : Color.gray.opacity(0.85))
+                        .background(syncService.isSharingLocation ? Color.blue.opacity(0.85) : Color.gray.opacity(0.85))
                         .foregroundStyle(.white)
                         .clipShape(Capsule())
                     }
 
                     Spacer()
 
-                    // Your ID chip
-                    Text("You: \(UserIdentity.userId.prefix(8))")
+                    Text("You: \(syncService.myId.prefix(8))")
                         .font(.caption)
                         .padding(.horizontal, 14)
                         .padding(.vertical, 8)
@@ -83,11 +68,10 @@ struct ContentView: View {
 
                     Spacer()
 
-                    // Friends button
                     Button {
                         showFriends = true
                     } label: {
-                        Label("\(friendsStore.friendIds.count)", systemImage: "person.2.fill")
+                        Label("\(syncService.friends.count)", systemImage: "person.2.fill")
                             .font(.caption)
                             .padding(.horizontal, 14)
                             .padding(.vertical, 8)
@@ -101,44 +85,90 @@ struct ContentView: View {
             }
         }
         .sheet(isPresented: $showFriends) {
-            FriendsSheet(store: friendsStore) { friendId in
-                let user = syncService.users.first { $0.userId == friendId }
-                if let user {
-                    zoomTarget = CLLocationCoordinate2D(latitude: user.lat, longitude: user.lng)
+            FriendsSheet(
+                myId: syncService.myId,
+                displayName: $syncService.displayName,
+                friends: syncService.friends,
+                pausedFriendIds: syncService.pausedFriendIds,
+                onTogglePause: { syncService.togglePauseFriend(id: $0) },
+                onCreateInvite: {
+                    showFriends = false
+                    syncService.createInvite()
+                },
+                onScanQr: {
+                    showFriends = false
+                    showScanner = true
+                },
+                onRemove: { syncService.removeFriend(id: $0) },
+                onZoomTo: { friendId in
+                    if let loc = syncService.friendLocations[friendId] {
+                        zoomTarget = CLLocationCoordinate2D(latitude: loc.lat, longitude: loc.lng)
+                    }
+                }
+            )
+        }
+        .fullScreenCover(isPresented: $showScanner) {
+            QrScannerView(
+                onScan: { url in syncService.processQrUrl(url) },
+                onDismiss: { showScanner = false }
+            )
+            .ignoresSafeArea()
+        }
+        .sheet(isPresented: Binding(
+            get: { syncService.pendingInviteQr != nil },
+            set: { if !$0 { syncService.clearInvite() } }
+        )) {
+            if let qr = syncService.pendingInviteQr {
+                InviteSheet(qrPayload: qr, onDismiss: { syncService.clearInvite() })
+            }
+        }
+        .alert("Name this contact", isPresented: Binding(
+            get: { syncService.pendingQrForNaming != nil },
+            set: { if !$0 { syncService.pendingQrForNaming = nil } }
+        )) {
+            TextField("Friend's Name", text: $newFriendName)
+            Button("Add") {
+                if let qr = syncService.pendingQrForNaming {
+                    syncService.confirmQrScan(qr: qr, friendName: newFriendName.isEmpty ? "Friend" : newFriendName)
+                    newFriendName = ""
                 }
             }
+            Button("Cancel", role: .cancel) {
+                syncService.pendingQrForNaming = nil
+                newFriendName = ""
+            }
+        } message: {
+            Text("Enter a name for this friend.")
+        }
+        .alert("Name this contact", isPresented: $syncService.hasPendingInit) {
+            TextField("Friend's Name", text: $newFriendName)
+            Button("Save") {
+                syncService.confirmPendingInit(name: newFriendName.isEmpty ? "Friend" : newFriendName)
+                newFriendName = ""
+            }
+            Button("Skip", role: .cancel) {
+                syncService.confirmPendingInit(name: "Friend")
+                newFriendName = ""
+            }
+        } message: {
+            Text("A new friend has scanned your QR code.")
         }
         .onAppear {
             locationManager.requestPermissionAndStart()
-            syncService.connect()
         }
-        .onDisappear {
-            syncService.disconnect()
-        }
-        .onReceive(locationManager.$location) { newLocation in
-            guard let loc = newLocation, friendsStore.isSharingLocation else { return }
+        .onReceive(locationManager.$location) { loc in
+            guard let loc else { return }
             syncService.sendLocation(lat: loc.coordinate.latitude, lng: loc.coordinate.longitude)
         }
-        .onChange(of: friendsStore.isSharingLocation) { newValue in
-            if !newValue {
-                syncService.sendLocationRemove()
+        .onReceive(syncService.$pendingQrForNaming) { qr in
+            if let qr = qr {
+                newFriendName = qr.suggestedName
             }
         }
-    }
-
-    private var statusColor: Color {
-        switch syncService.connectionState {
-        case .connected: return .green
-        case .connecting: return .yellow
-        case .disconnected: return .red
-        }
-    }
-
-    private var statusText: String {
-        switch syncService.connectionState {
-        case .connected: return "Connected"
-        case .connecting: return "Connecting…"
-        case .disconnected: return "Disconnected"
+        .onReceive(syncService.$pendingInitPayload) { payload in
+            if let payload = payload {
+                newFriendName = payload.suggestedName
+            }
         }
     }
 }

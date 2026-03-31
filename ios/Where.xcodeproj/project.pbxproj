@@ -7,33 +7,77 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		0B55ED6589BBEEAFECFC9FFD /* MapKit in Frameworks */ = {isa = PBXBuildFile; fileRef = CFF6771BE7FE45B2F4F8952B /* MapKit */; };
+		1FFAFDE1493671FC1146F2E3 /* ServerConfig.swift in Sources */ = {isa = PBXBuildFile; fileRef = E54EC15388BAF720E7755291 /* ServerConfig.swift */; };
 		25C7C204409EE87B7316383F /* LocationSyncService.swift in Sources */ = {isa = PBXBuildFile; fileRef = D4B36665B05EA8E1F42A11EA /* LocationSyncService.swift */; };
 		296E222ADF2ED6BA05F597CC /* FriendsSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 28DD2FC8358389E8C9F6ABE6 /* FriendsSheet.swift */; };
+		3A351D2D318606B612957163 /* Security in Frameworks */ = {isa = PBXBuildFile; fileRef = 072A149EB28769F34BCED9D8 /* Security */; };
 		4A8A07DB9013B997E0C41EFB /* FriendsStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 87F9371D289CC150DF786A96 /* FriendsStore.swift */; };
 		5EF9E5113CEBF25BACE77F5E /* WhereMapView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2421CE3D6966994F4875E311 /* WhereMapView.swift */; };
 		60D8A627443A5ADF3F5C00CB /* WhereApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7A1BBBBE8782378C8B03BB4C /* WhereApp.swift */; };
 		6CB91DD32C87A081852B00C4 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D43663670EB5FB46B5C7C4EA /* ContentView.swift */; };
+		764133E6060A22FA3668CF7A /* UserDefaultsE2eeStorage.swift in Sources */ = {isa = PBXBuildFile; fileRef = CA7A89FD147B152B7C120CCC /* UserDefaultsE2eeStorage.swift */; };
+		ACE3C7F5E723E981710460E2 /* CoreLocation in Frameworks */ = {isa = PBXBuildFile; fileRef = 18F48F8FCFBE392E06CD2BB3 /* CoreLocation */; };
 		B60DEE3289B4F67659B77C8A /* LocationManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3ADAF0FD19742D151B957FD9 /* LocationManager.swift */; };
+		C6B7D5B6964E195E120267EE /* QrScannerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 220A8EA077B99368AF6DA3D4 /* QrScannerView.swift */; };
 		CAA74FF2347CA0BA2A825A66 /* UserIdentity.swift in Sources */ = {isa = PBXBuildFile; fileRef = 47183C59D3C1EE4A360DF7ED /* UserIdentity.swift */; };
+		D856CF3786D735F63CD21D1C /* Shared.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 38851FB1006A4C013C3B8A94 /* Shared.framework */; };
+		FC1918F51962F01656F21EE5 /* KotlinByteArrayUtils.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC2B156B7AAD99EBB5C7C775 /* KotlinByteArrayUtils.swift */; };
+		FD798F619BC7B55144C1A274 /* QrCodeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5DBE659D6FC99FBE57AB21DB /* QrCodeView.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
+		072A149EB28769F34BCED9D8 /* Security */ = {isa = PBXFileReference; path = Security; sourceTree = "<group>"; };
+		18F48F8FCFBE392E06CD2BB3 /* CoreLocation */ = {isa = PBXFileReference; path = CoreLocation; sourceTree = "<group>"; };
+		220A8EA077B99368AF6DA3D4 /* QrScannerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QrScannerView.swift; sourceTree = "<group>"; };
 		2421CE3D6966994F4875E311 /* WhereMapView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WhereMapView.swift; sourceTree = "<group>"; };
 		28DD2FC8358389E8C9F6ABE6 /* FriendsSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FriendsSheet.swift; sourceTree = "<group>"; };
+		38851FB1006A4C013C3B8A94 /* Shared.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Shared.framework; path = "$(SRCROOT)/../shared/build/xcode-frameworks/$(CONFIGURATION)/$(SDK_NAME)/Shared.framework"; sourceTree = BUILT_PRODUCTS_DIR; };
 		3ADAF0FD19742D151B957FD9 /* LocationManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocationManager.swift; sourceTree = "<group>"; };
 		47183C59D3C1EE4A360DF7ED /* UserIdentity.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UserIdentity.swift; sourceTree = "<group>"; };
+		5DBE659D6FC99FBE57AB21DB /* QrCodeView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QrCodeView.swift; sourceTree = "<group>"; };
 		7A1BBBBE8782378C8B03BB4C /* WhereApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WhereApp.swift; sourceTree = "<group>"; };
 		87F9371D289CC150DF786A96 /* FriendsStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FriendsStore.swift; sourceTree = "<group>"; };
+		AC2B156B7AAD99EBB5C7C775 /* KotlinByteArrayUtils.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KotlinByteArrayUtils.swift; sourceTree = "<group>"; };
+		CA7A89FD147B152B7C120CCC /* UserDefaultsE2eeStorage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UserDefaultsE2eeStorage.swift; sourceTree = "<group>"; };
+		CFF6771BE7FE45B2F4F8952B /* MapKit */ = {isa = PBXFileReference; path = MapKit; sourceTree = "<group>"; };
 		D43663670EB5FB46B5C7C4EA /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
 		D4B36665B05EA8E1F42A11EA /* LocationSyncService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocationSyncService.swift; sourceTree = "<group>"; };
+		E54EC15388BAF720E7755291 /* ServerConfig.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ServerConfig.swift; sourceTree = "<group>"; };
 		EA47D2499F3983EF98B459AB /* Where.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = Where.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
+/* Begin PBXFrameworksBuildPhase section */
+		EFB0479BA721AAE049851BE1 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				D856CF3786D735F63CD21D1C /* Shared.framework in Frameworks */,
+				3A351D2D318606B612957163 /* Security in Frameworks */,
+				0B55ED6589BBEEAFECFC9FFD /* MapKit in Frameworks */,
+				ACE3C7F5E723E981710460E2 /* CoreLocation in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
 /* Begin PBXGroup section */
+		04AE05A338521963D27F32FA /* Frameworks */ = {
+			isa = PBXGroup;
+			children = (
+				18F48F8FCFBE392E06CD2BB3 /* CoreLocation */,
+				CFF6771BE7FE45B2F4F8952B /* MapKit */,
+				072A149EB28769F34BCED9D8 /* Security */,
+				38851FB1006A4C013C3B8A94 /* Shared.framework */,
+			);
+			name = Frameworks;
+			sourceTree = "<group>";
+		};
 		177C19F85F562AB1BF838A33 = {
 			isa = PBXGroup;
 			children = (
 				B39C72AD8B5E1F0E3A409FD2 /* Where */,
+				04AE05A338521963D27F32FA /* Frameworks */,
 				C945058DA9DF7EA90A7EE8D7 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -44,8 +88,13 @@
 				D43663670EB5FB46B5C7C4EA /* ContentView.swift */,
 				28DD2FC8358389E8C9F6ABE6 /* FriendsSheet.swift */,
 				87F9371D289CC150DF786A96 /* FriendsStore.swift */,
+				AC2B156B7AAD99EBB5C7C775 /* KotlinByteArrayUtils.swift */,
 				3ADAF0FD19742D151B957FD9 /* LocationManager.swift */,
 				D4B36665B05EA8E1F42A11EA /* LocationSyncService.swift */,
+				5DBE659D6FC99FBE57AB21DB /* QrCodeView.swift */,
+				220A8EA077B99368AF6DA3D4 /* QrScannerView.swift */,
+				E54EC15388BAF720E7755291 /* ServerConfig.swift */,
+				CA7A89FD147B152B7C120CCC /* UserDefaultsE2eeStorage.swift */,
 				47183C59D3C1EE4A360DF7ED /* UserIdentity.swift */,
 				7A1BBBBE8782378C8B03BB4C /* WhereApp.swift */,
 				2421CE3D6966994F4875E311 /* WhereMapView.swift */,
@@ -69,7 +118,9 @@
 			isa = PBXNativeTarget;
 			buildConfigurationList = 179750A609FCACFE5552F4E1 /* Build configuration list for PBXNativeTarget "Where" */;
 			buildPhases = (
+				624159653114A75804EC2379 /* Build KMP Shared Framework */,
 				E7ED0F8B6CA06472498EA266 /* Sources */,
+				EFB0479BA721AAE049851BE1 /* Frameworks */,
 			);
 			buildRules = (
 			);
@@ -89,7 +140,7 @@
 			isa = PBXProject;
 			attributes = {
 				BuildIndependentTargetsInParallel = YES;
-				LastUpgradeCheck = 1600;
+				LastUpgradeCheck = 1430;
 			};
 			buildConfigurationList = 777AFC5049C583D110519BB8 /* Build configuration list for PBXProject "Where" */;
 			compatibilityVersion = "Xcode 14.0";
@@ -110,6 +161,28 @@
 		};
 /* End PBXProject section */
 
+/* Begin PBXShellScriptBuildPhase section */
+		624159653114A75804EC2379 /* Build KMP Shared Framework */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+			);
+			name = "Build KMP Shared Framework";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "cd \"$SRCROOT/..\"\n\n# Use system defaults for CI environments, or local overrides if available\nexport GRADLE_USER_HOME=\"${GRADLE_USER_HOME:-$HOME/.gradle}\"\nexport KONAN_DATA_DIR=\"${KONAN_DATA_DIR:-$HOME/.konan}\"\nexport TMPDIR=\"${TMPDIR:-/tmp}\"\n\n# Ensure JAVA_HOME is set (required for gradle)\nif [ -z \"$JAVA_HOME\" ]; then\n  if command -v /usr/libexec/java_home &> /dev/null; then\n    export JAVA_HOME=$(/usr/libexec/java_home)\n  fi\nfi\n\n# Ensure SDKROOT is set for iOS SDK headers\nif [ -z \"$SDKROOT\" ]; then\n  SDKROOT=$(xcrun --sdk iphoneos --show-sdk-path 2>/dev/null)\n  [ -z \"$SDKROOT\" ] && SDKROOT=$(xcrun --sdk iphonesimulator --show-sdk-path 2>/dev/null)\nfi\nexport SDKROOT\n\n# Run with nix if available (local dev), otherwise run directly (CI)\n# Pass SDKROOT via Gradle property for cinterop compilation\nif command -v nix &> /dev/null; then\n  nix develop --command ./gradlew :shared:embedAndSignAppleFrameworkForXcode -Dios.sdk.root=\"$SDKROOT\"\nelse\n  ./gradlew :shared:embedAndSignAppleFrameworkForXcode -Dios.sdk.root=\"$SDKROOT\"\nfi\n\n# If local.gradle.kts redirects the build dir, symlink xcode-frameworks to the standard location.\nLOCAL_GRADLE=\"$SRCROOT/../local.gradle.kts\"\nEXPECTED=\"$SRCROOT/../shared/build/xcode-frameworks\"\nif [ -f \"$LOCAL_GRADLE\" ] && [ ! -d \"$EXPECTED\" ]; then\n  BUILD_DIR_PATTERN=$(grep -o '\"[^\"]*\"' \"$LOCAL_GRADLE\" | tr -d '\"' | grep where-build | head -1)\n  ACTUAL=\"${BUILD_DIR_PATTERN/\\$\\{project.name\\}/shared}\"\n  if [ -d \"$ACTUAL/xcode-frameworks\" ]; then\n    mkdir -p \"$SRCROOT/../shared/build\"\n    ln -sfn \"$ACTUAL/xcode-frameworks\" \"$EXPECTED\"\n  fi\nfi\n";
+		};
+/* End PBXShellScriptBuildPhase section */
+
 /* Begin PBXSourcesBuildPhase section */
 		E7ED0F8B6CA06472498EA266 /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
@@ -118,8 +191,13 @@
 				6CB91DD32C87A081852B00C4 /* ContentView.swift in Sources */,
 				296E222ADF2ED6BA05F597CC /* FriendsSheet.swift in Sources */,
 				4A8A07DB9013B997E0C41EFB /* FriendsStore.swift in Sources */,
+				FC1918F51962F01656F21EE5 /* KotlinByteArrayUtils.swift in Sources */,
 				B60DEE3289B4F67659B77C8A /* LocationManager.swift in Sources */,
 				25C7C204409EE87B7316383F /* LocationSyncService.swift in Sources */,
+				FD798F619BC7B55144C1A274 /* QrCodeView.swift in Sources */,
+				C6B7D5B6964E195E120267EE /* QrScannerView.swift in Sources */,
+				1FFAFDE1493671FC1146F2E3 /* ServerConfig.swift in Sources */,
+				764133E6060A22FA3668CF7A /* UserDefaultsE2eeStorage.swift in Sources */,
 				CAA74FF2347CA0BA2A825A66 /* UserIdentity.swift in Sources */,
 				60D8A627443A5ADF3F5C00CB /* WhereApp.swift in Sources */,
 				5EF9E5113CEBF25BACE77F5E /* WhereMapView.swift in Sources */,
@@ -165,6 +243,7 @@
 				COPY_PHASE_STRIP = NO;
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
 				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_PREVIEWS = NO;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
 				ENABLE_USER_SCRIPT_SANDBOXING = NO;
 				GCC_C_LANGUAGE_STANDARD = gnu11;
@@ -176,9 +255,10 @@
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				LD = "$(DT_TOOLCHAIN_DIR)/usr/bin/clang";
 				MTL_ENABLE_DEBUG_INFO = NO;
 				MTL_FAST_MATH = YES;
-				OTHER_LDFLAGS = "$(inherited) -ld_classic";
+				OTHER_LDFLAGS = "$(inherited)";
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = iphoneos;
 				SWIFT_COMPILATION_MODE = wholemodule;
@@ -192,7 +272,12 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
+				FRAMEWORK_SEARCH_PATHS = (
+					"$(inherited) $(SRCROOT)/../shared/build/xcode-frameworks/$(CONFIGURATION)/$(SDK_NAME)",
+					"\".\"",
+				);
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_NSCameraUsageDescription = "Where needs the camera to scan friend invite QR codes.";
 				INFOPLIST_KEY_NSLocationAlwaysAndWhenInUseUsageDescription = "Where needs your location in the background to keep sharing it.";
 				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "Where needs your location to show it on the map.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
@@ -214,7 +299,12 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
+				FRAMEWORK_SEARCH_PATHS = (
+					"$(inherited) $(SRCROOT)/../shared/build/xcode-frameworks/$(CONFIGURATION)/$(SDK_NAME)",
+					"\".\"",
+				);
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_NSCameraUsageDescription = "Where needs the camera to scan friend invite QR codes.";
 				INFOPLIST_KEY_NSLocationAlwaysAndWhenInUseUsageDescription = "Where needs your location in the background to keep sharing it.";
 				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "Where needs your location to show it on the map.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
@@ -266,6 +356,7 @@
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				COPY_PHASE_STRIP = NO;
 				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_PREVIEWS = NO;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
 				ENABLE_TESTABILITY = YES;
 				ENABLE_USER_SCRIPT_SANDBOXING = NO;
@@ -284,10 +375,11 @@
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				LD = "$(DT_TOOLCHAIN_DIR)/usr/bin/clang";
 				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
 				MTL_FAST_MATH = YES;
 				ONLY_ACTIVE_ARCH = YES;
-				OTHER_LDFLAGS = "$(inherited) -ld_classic";
+				OTHER_LDFLAGS = "$(inherited)";
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = iphoneos;
 				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;

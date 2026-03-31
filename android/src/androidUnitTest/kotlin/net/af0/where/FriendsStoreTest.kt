@@ -2,18 +2,17 @@ package net.af0.where
 
 import android.app.Application
 import androidx.test.core.app.ApplicationProvider
+import org.junit.runner.RunWith
+import org.robolectric.RobolectricTestRunner
+import org.robolectric.annotation.Config
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
-import org.robolectric.annotation.Config
-import org.junit.runner.RunWith
-import org.robolectric.RobolectricTestRunner
 
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [33])
 class FriendsStoreTest {
-
     private val context: Application get() = ApplicationProvider.getApplicationContext()
     private val ownId = "owner-id"
 

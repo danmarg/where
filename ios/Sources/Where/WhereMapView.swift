@@ -3,7 +3,7 @@ import MapKit
 import Shared
 
 struct WhereMapView: UIViewRepresentable {
-    let users: [UserLocation]
+    let users: [Shared.UserLocation]
     let ownUserId: String
     var zoomTarget: CLLocationCoordinate2D? = nil
     var onZoomConsumed: () -> Void = {}
@@ -75,7 +75,7 @@ final class UserAnnotation: NSObject, MKAnnotation {
     let title: String?
     let isOwn: Bool
 
-    init(user: UserLocation, isOwn: Bool) {
+    init(user: Shared.UserLocation, isOwn: Bool) {
         self.userId = user.userId
         self.coordinate = CLLocationCoordinate2D(latitude: user.lat, longitude: user.lng)
         self.title = isOwn ? "You" : String(user.userId.prefix(8))

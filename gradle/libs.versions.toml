@@ -1,4 +1,5 @@
 [versions]
+bouncycastle = "1.80"
 kotlin = "2.1.20"
 kmp-plugin = "2.1.20"
 agp = "8.9.0"
@@ -7,10 +8,14 @@ kotlinx-coroutines = "1.10.1"
 kotlinx-serialization = "1.8.0"
 compose-bom = "2025.03.00"
 activity-compose = "1.10.1"
+androidx-fragment = "1.8.1"
 logback = "1.5.18"
 maps-compose = "6.4.4"
 play-services-location = "21.3.0"
 accompanist-permissions = "0.37.3"
+zxing-core = "3.5.3"
+zxing-android = "4.3.0"
+libsodium = "0.9.5"
 
 [libraries]
 # Ktor server
@@ -45,9 +50,16 @@ compose-ui-tooling-preview = { module = "androidx.compose.ui:ui-tooling-preview"
 compose-material3 = { module = "androidx.compose.material3:material3" }
 compose-material-icons-extended = { module = "androidx.compose.material:material-icons-extended" }
 activity-compose = { module = "androidx.activity:activity-compose", version.ref = "activity-compose" }
+androidx-fragment = { module = "androidx.fragment:fragment", version.ref = "androidx-fragment" }
 maps-compose = { module = "com.google.maps.android:maps-compose", version.ref = "maps-compose" }
 play-services-location = { module = "com.google.android.gms:play-services-location", version.ref = "play-services-location" }
 accompanist-permissions = { module = "com.google.accompanist:accompanist-permissions", version.ref = "accompanist-permissions" }
+zxing-core = { module = "com.google.zxing:core", version.ref = "zxing-core" }
+zxing-android-embedded = { module = "com.journeyapps:zxing-android-embedded", version.ref = "zxing-android" }
+
+# Crypto
+bouncycastle = { module = "org.bouncycastle:bcprov-jdk18on", version.ref = "bouncycastle" }
+libsodium-kmp = { module = "com.ionspin.kotlin:multiplatform-crypto-libsodium-bindings", version.ref = "libsodium" }
 
 # Logging
 logback-classic = { module = "ch.qos.logback:logback-classic", version.ref = "logback" }
@@ -59,3 +71,4 @@ kotlin-serialization = { id = "org.jetbrains.kotlin.plugin.serialization", versi
 android-application = { id = "com.android.application", version.ref = "agp" }
 android-library = { id = "com.android.library", version.ref = "agp" }
 compose-compiler = { id = "org.jetbrains.kotlin.plugin.compose", version.ref = "kotlin" }
+ktlint = { id = "org.jlleitschuh.gradle.ktlint", version = "12.2.0" }

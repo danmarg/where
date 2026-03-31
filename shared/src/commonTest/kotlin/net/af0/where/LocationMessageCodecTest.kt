@@ -7,7 +7,6 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 class LocationMessageCodecTest {
-
     @Test
     fun encodeLocationUpdateProducesCorrectJson() {
         val json = LocationMessageCodec.encodeLocationUpdate("alice", 37.7749, -122.4194, 1000L)

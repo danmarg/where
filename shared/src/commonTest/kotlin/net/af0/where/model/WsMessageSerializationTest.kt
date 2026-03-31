@@ -5,16 +5,20 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
 
-private val json = Json { classDiscriminator = "type"; ignoreUnknownKeys = true }
+private val json =
+    Json {
+        classDiscriminator = "type"
+        ignoreUnknownKeys = true
+    }
 
 class WsMessageSerializationTest {
-
-    private val sampleLocation = UserLocation(
-        userId = "alice",
-        lat = 37.7749,
-        lng = -122.4194,
-        timestamp = 1711180800000L
-    )
+    private val sampleLocation =
+        UserLocation(
+            userId = "alice",
+            lat = 37.7749,
+            lng = -122.4194,
+            timestamp = 1711180800000L,
+        )
 
     @Test
     fun locationUpdateRoundTrip() {
@@ -36,19 +40,21 @@ class WsMessageSerializationTest {
 
     @Test
     fun locationUpdateTypeDiscriminator() {
-        val encoded = json.encodeToString(
-            WsMessage.serializer(),
-            WsMessage.LocationUpdate(sampleLocation)
-        )
+        val encoded =
+            json.encodeToString(
+                WsMessage.serializer(),
+                WsMessage.LocationUpdate(sampleLocation),
+            )
         assert(encoded.contains("\"type\":\"location\"")) { "Expected type=location in: $encoded" }
     }
 
     @Test
     fun locationsBroadcastTypeDiscriminator() {
-        val encoded = json.encodeToString(
-            WsMessage.serializer(),
-            WsMessage.LocationsBroadcast(listOf(sampleLocation))
-        )
+        val encoded =
+            json.encodeToString(
+                WsMessage.serializer(),
+                WsMessage.LocationsBroadcast(listOf(sampleLocation)),
+            )
         assert(encoded.contains("\"type\":\"locations\"")) { "Expected type=locations in: $encoded" }
     }
 

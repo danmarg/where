@@ -19,7 +19,7 @@ kotlin {
     listOf(
         iosX64(),
         iosArm64(),
-        iosSimulatorArm64()
+        iosSimulatorArm64(),
     ).forEach { iosTarget ->
         iosTarget.binaries.framework {
             baseName = "Shared"
@@ -29,6 +29,20 @@ kotlin {
     }
 
     sourceSets {
+        // Intermediate source set shared by jvm and android (identical JCA+BouncyCastle crypto impl)
+        val jvmAndAndroidMain by creating {
+            dependsOn(commonMain.get())
+        }
+        jvmMain { dependsOn(jvmAndAndroidMain) }
+        androidMain { dependsOn(jvmAndAndroidMain) }
+
+        // Explicit iOS hierarchy wiring (required because the explicit dependsOn calls above
+        // disable Kotlin's default hierarchy template for all source sets)
+        val iosMain by creating { dependsOn(commonMain.get()) }
+        val iosX64Main by getting { dependsOn(iosMain) }
+        val iosArm64Main by getting { dependsOn(iosMain) }
+        val iosSimulatorArm64Main by getting { dependsOn(iosMain) }
+
         commonMain.dependencies {
             implementation(libs.ktor.client.core)
             implementation(libs.ktor.client.content.negotiation)
@@ -36,6 +50,11 @@ kotlin {
             implementation(libs.ktor.serialization.kotlinx.json)
             implementation(libs.kotlinx.coroutines.core)
             implementation(libs.kotlinx.serialization.json)
+            implementation(libs.libsodium.kmp)
+        }
+
+        jvmAndAndroidMain.dependencies {
+            // Crypto is handled by cryptography-kotlin in commonMain
         }
 
         androidMain.dependencies {
