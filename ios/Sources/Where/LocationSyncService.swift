@@ -202,7 +202,9 @@ final class LocationSyncService: ObservableObject {
         let savedPaused = UserDefaults.standard.stringArray(forKey: "paused_friends") ?? []
         pausedFriendIds = Set(savedPaused)
 
-        friends = e2eeStore.listFriends()
+        Task {
+            friends = await e2eeStore.listFriends()
+        }
         startPolling()
     }
 
@@ -225,16 +227,16 @@ final class LocationSyncService: ObservableObject {
         guard isSharingLocation else { return }
         let ts = Int64(Date().timeIntervalSince1970)
         let plaintext = Shared.LocationPlaintext(lat: lat, lng: lng, acc: 0.0, ts: ts)
-        let friendList = e2eeStore.listFriends()
         
         Task {
+            let friendList = await e2eeStore.listFriends()
             for friend in friendList {
                 if pausedFriendIds.contains(friend.id) { continue }
 
                 // Alice: rotate epoch when due, before encrypting the next message.
-                if e2eeStore.shouldRotateEpoch(friendId: friend.id) {
+                if await e2eeStore.shouldRotateEpoch(friendId: friend.id) {
                     let oldToken = toHex(friend.session.routingToken)
-                    if let rotPayload = e2eeStore.initiateEpochRotation(friendId: friend.id) {
+                    if let rotPayload = await e2eeStore.initiateEpochRotation(friendId: friend.id) {
                         let body = epochRotationBody(rotPayload)
                         if let bodyData = try? JSONSerialization.data(withJSONObject: body) {
                             await postToMailbox(token: oldToken, bodyData: bodyData)
@@ -243,14 +245,14 @@ final class LocationSyncService: ObservableObject {
                 }
 
                 // Re-fetch after potential rotation to use the current session/token.
-                guard let current = e2eeStore.getFriend(id: friend.id) else { continue }
+                guard let current = await e2eeStore.getFriend(id: friend.id) else { continue }
                 let result = Shared.Session.shared.encryptLocation(
                     state: current.session, location: plaintext,
                     senderFp: current.session.aliceFp, recipientFp: current.session.bobFp
                 )
                 let newSession = result.first!
                 let ct = result.second!
-                e2eeStore.updateSession(id: friend.id, newSession: newSession)
+                await e2eeStore.updateSession(id: friend.id, newSession: newSession)
                 let hexToken = toHex(current.session.routingToken)
                 let payload = encryptedLocationBody(epoch: newSession.epoch, seq: newSession.sendSeq, ct: toSwiftData(ct))
                 if let bodyData = try? JSONSerialization.data(withJSONObject: payload) {
@@ -261,13 +263,17 @@ final class LocationSyncService: ObservableObject {
     }
 
     func createInvite() {
-        let qr = e2eeStore.createInvite(suggestedName: displayName.isEmpty ? "Me" : displayName)
-        pendingInviteQr = qr
+        Task {
+            let qr = await e2eeStore.createInvite(suggestedName: displayName.isEmpty ? "Me" : displayName)
+            pendingInviteQr = qr
+        }
     }
 
     func clearInvite() {
-        e2eeStore.clearInvite()
-        pendingInviteQr = nil
+        Task {
+            await e2eeStore.clearInvite()
+            pendingInviteQr = nil
+        }
     }
 
     @discardableResult
@@ -284,23 +290,23 @@ final class LocationSyncService: ObservableObject {
             suggestedName: friendName,
             fingerprint: qr.fingerprint
         )
-        guard let result = try? e2eeStore.processScannedQr(qr: qrWithName, bobSuggestedName: displayName) else { return }
-        let initPayload = result.first!
-        let bobEntry = result.second!
-        friends = e2eeStore.listFriends()
+        Task {
+            guard let result = try? await e2eeStore.processScannedQr(qr: qrWithName, bobSuggestedName: displayName) else { return }
+            let initPayload = result.first!
+            let bobEntry = result.second!
+            friends = await e2eeStore.listFriends()
 
-        let discoveryHex = toHex(qrWithName.discoveryToken())
-        let payload: [String: Any] = [
-            "v": 1,
-            "type": "KeyExchangeInit",
-            "token": initPayload.token,
-            "ekPub": toSwiftData(initPayload.ekPub).base64EncodedString(),
-            "key_confirmation": toSwiftData(initPayload.keyConfirmation).base64EncodedString(),
-            "suggested_name": initPayload.suggestedName,
-        ]
+            let discoveryHex = toHex(qrWithName.discoveryToken())
+            let payload: [String: Any] = [
+                "v": 1,
+                "type": "KeyExchangeInit",
+                "token": initPayload.token,
+                "ekPub": toSwiftData(initPayload.ekPub).base64EncodedString(),
+                "key_confirmation": toSwiftData(initPayload.keyConfirmation).base64EncodedString(),
+                "suggested_name": initPayload.suggestedName,
+            ]
 
-        if let bodyData = try? JSONSerialization.data(withJSONObject: payload) {
-            Task {
+            if let bodyData = try? JSONSerialization.data(withJSONObject: payload) {
                 await postToMailbox(token: discoveryHex, bodyData: bodyData)
                 await postOpkBundle(friend: bobEntry)
             }
@@ -311,8 +317,10 @@ final class LocationSyncService: ObservableObject {
         guard let payload = pendingInitPayload else { return }
         pendingInitPayload = nil
         hasPendingInit = false
-        _ = try? e2eeStore.processKeyExchangeInit(payload: payload, bobName: name)
-        friends = e2eeStore.listFriends()
+        Task {
+            _ = try? await e2eeStore.processKeyExchangeInit(payload: payload, bobName: name)
+            friends = await e2eeStore.listFriends()
+        }
     }
 
     func togglePauseFriend(id: String) {
@@ -324,16 +332,18 @@ final class LocationSyncService: ObservableObject {
     }
 
     func removeFriend(id: String) {
-        e2eeStore.deleteFriend(id: id)
-        friends = e2eeStore.listFriends()
-        friendLocations.removeValue(forKey: id)
-        pausedFriendIds.remove(id)
+        Task {
+            await e2eeStore.deleteFriend(id: id)
+            friends = await e2eeStore.listFriends()
+            friendLocations.removeValue(forKey: id)
+            pausedFriendIds.remove(id)
+        }
     }
 
     // MARK: - Private helpers
 
     private func postOpkBundle(friend: Shared.FriendEntry) async {
-        guard let bundle = e2eeStore.generateOpkBundle(friendId: friend.id, count: 10) else { return }
+        guard let bundle = await e2eeStore.generateOpkBundle(friendId: friend.id, count: 10) else { return }
         let hexToken = toHex(friend.session.routingToken)
         let body = preKeyBundleBody(bundle)
         if let bodyData = try? JSONSerialization.data(withJSONObject: body) {
@@ -349,7 +359,7 @@ final class LocationSyncService: ObservableObject {
     }
 
     private func pollFriendLocations() async {
-        let friendList = e2eeStore.listFriends()
+        let friendList = await e2eeStore.listFriends()
         for friend in friendList {
             let hexToken = toHex(friend.session.routingToken)
             let messages = await pollMailbox(token: hexToken)
@@ -359,8 +369,8 @@ final class LocationSyncService: ObservableObject {
             // --- Epoch rotation first: changes session/token ---
             for msg in messages {
                 guard let rotPayload = parseEpochRotation(msg) else { continue }
-                if let ack = try? e2eeStore.processEpochRotation(friendId: friend.id, payload: rotPayload) {
-                    guard let newEntry = e2eeStore.getFriend(id: friend.id) else { continue }
+                if let ack = try? await e2eeStore.processEpochRotation(friendId: friend.id, payload: rotPayload) {
+                    guard let newEntry = await e2eeStore.getFriend(id: friend.id) else { continue }
                     let newToken = toHex(newEntry.session.routingToken)
                     let body = ratchetAckBody(ack)
                     if let bodyData = try? JSONSerialization.data(withJSONObject: body) {
@@ -373,11 +383,11 @@ final class LocationSyncService: ObservableObject {
             // --- Cache incoming OPK bundles ---
             for msg in messages {
                 guard let bundle = parsePreKeyBundle(msg) else { continue }
-                e2eeStore.storeOpkBundle(friendId: friend.id, bundle: bundle)
+                await e2eeStore.storeOpkBundle(friendId: friend.id, bundle: bundle)
             }
 
             // --- Decrypt location updates ---
-            var session = (e2eeStore.getFriend(id: friend.id) ?? friend).session
+            var session = (await e2eeStore.getFriend(id: friend.id) ?? friend).session
             var sessionChanged = false
             for msg in messages {
                 guard let loc = parseEncryptedLocation(msg) else { continue }
@@ -394,25 +404,25 @@ final class LocationSyncService: ObservableObject {
                 }
             }
             if sessionChanged {
-                e2eeStore.updateSession(id: friend.id, newSession: session)
+                await e2eeStore.updateSession(id: friend.id, newSession: session)
             }
 
             // --- Validate RatchetAck ---
             for msg in messages {
                 guard let ack = parseRatchetAck(msg) else { continue }
-                e2eeStore.processRatchetAck(friendId: friend.id, payload: ack)
+                await e2eeStore.processRatchetAck(friendId: friend.id, payload: ack)
             }
 
             // --- Bob: proactively replenish OPKs if running low ---
-            if e2eeStore.shouldReplenishOpks(friendId: friend.id),
-               let current = e2eeStore.getFriend(id: friend.id) {
+            if await e2eeStore.shouldReplenishOpks(friendId: friend.id),
+               let current = await e2eeStore.getFriend(id: friend.id) {
                 await postOpkBundle(friend: current)
             }
         }
     }
 
     private func pollPendingInvite() async {
-        guard let qr = e2eeStore.pendingQrPayload else { return }
+        guard let qr = await e2eeStore.pendingQrPayload else { return }
         let discoveryHex = toHex(qr.discoveryToken())
         let messages = await pollMailbox(token: discoveryHex)
         for msg in messages {
