@@ -37,7 +37,7 @@ class SessionTest {
         val loc = LocationPlaintext(lat = 37.7749, lng = -122.4194, acc = 15.0, ts = 1711152000L)
 
         val (aliceNew, ct) = Session.encryptLocation(aliceSession, loc, aliceSession.aliceFp, aliceSession.bobFp)
-        val (_, decrypted) = Session.decryptLocation(bobSession, ct, aliceNew.sendSeq, bobSession.aliceFp, bobSession.bobFp)!!
+        val (_, decrypted) = Session.decryptLocation(bobSession, ct, aliceNew.sendSeq, bobSession.aliceFp, bobSession.bobFp)
 
         assertEquals(loc.lat, decrypted.lat)
         assertEquals(loc.lng, decrypted.lng)
@@ -82,7 +82,7 @@ class SessionTest {
         var bSess = bobSession
         for (loc in locs) {
             val (newA, ct) = Session.encryptLocation(aSess, loc, aSess.aliceFp, aSess.bobFp)
-            val (newB, dec) = Session.decryptLocation(bSess, ct, newA.sendSeq, bSess.aliceFp, bSess.bobFp)!!
+            val (newB, dec) = Session.decryptLocation(bSess, ct, newA.sendSeq, bSess.aliceFp, bSess.bobFp)
             assertEquals(loc.lat, dec.lat)
             aSess = newA
             bSess = newB
@@ -94,21 +94,25 @@ class SessionTest {
     // ---------------------------------------------------------------------------
 
     @Test
-    fun `replay is dropped silently`() {
+    fun `replay is rejected`() {
         val (aliceSession, bobSession) = exchangeKeys()
         val loc = LocationPlaintext(1.0, 2.0, 3.0, 4L)
 
         val (aliceNew, ct) = Session.encryptLocation(aliceSession, loc, aliceSession.aliceFp, aliceSession.bobFp)
         val seq = aliceNew.sendSeq
 
-        val (bobNew, _) = Session.decryptLocation(bobSession, ct, seq, bobSession.aliceFp, bobSession.bobFp)!!
-        // Second delivery of the same seq must be dropped.
-        val result = Session.decryptLocation(bobNew, ct, seq, bobNew.aliceFp, bobNew.bobFp)
-        assertNull(result, "Replay should be dropped (return null)")
+        val (bobNew, _) = Session.decryptLocation(bobSession, ct, seq, bobSession.aliceFp, bobSession.bobFp)
+        // Second delivery of the same seq must be rejected.
+        try {
+            Session.decryptLocation(bobNew, ct, seq, bobNew.aliceFp, bobNew.bobFp)
+            kotlin.test.fail("Expected IllegalArgumentException for replay")
+        } catch (e: IllegalArgumentException) {
+            assertTrue(e.message?.contains("replay") == true)
+        }
     }
 
     @Test
-    fun `frame with lower seq than recvSeq is dropped`() {
+    fun `frame with lower seq than recvSeq is rejected`() {
         val (aliceSession, bobSession) = exchangeKeys()
         val loc = LocationPlaintext(0.0, 0.0, 0.0, 0L)
 
@@ -124,13 +128,17 @@ class SessionTest {
         // Deliver in order first.
         for ((seq, ct) in cts) {
             val res = Session.decryptLocation(bSess, ct, seq, bSess.aliceFp, bSess.bobFp)
-            assertNotNull(res)
             bSess = res.first
         }
 
-        // Re-deliver any of them — all should be dropped.
+        // Re-deliver any of them — all should be rejected.
         for ((seq, ct) in cts) {
-            assertNull(Session.decryptLocation(bSess, ct, seq, bSess.aliceFp, bSess.bobFp))
+            try {
+                Session.decryptLocation(bSess, ct, seq, bSess.aliceFp, bSess.bobFp)
+                kotlin.test.fail("Expected IllegalArgumentException for lower seq")
+            } catch (e: IllegalArgumentException) {
+                assertTrue(e.message?.contains("replay") == true)
+            }
         }
     }
 
@@ -225,7 +233,7 @@ class SessionTest {
         val loc = LocationPlaintext(lat = 48.8566, lng = 2.3522, acc = 5.0, ts = 1711155000L)
         // Alice's epoch is now 1; encrypt uses epoch from state.
         val (aliceAfter, ct) = Session.encryptLocation(aliceRotated, loc, aliceRotated.aliceFp, aliceRotated.bobFp)
-        val (_, decrypted) = Session.decryptLocation(bobRotated, ct, aliceAfter.sendSeq, bobRotated.aliceFp, bobRotated.bobFp)!!
+        val (_, decrypted) = Session.decryptLocation(bobRotated, ct, aliceAfter.sendSeq, bobRotated.aliceFp, bobRotated.bobFp)
 
         assertEquals(loc.lat, decrypted.lat)
         assertEquals(loc.lng, decrypted.lng)

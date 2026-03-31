@@ -89,17 +89,18 @@ object Session {
      * @param seq         Sequence number from the wire frame.
      * @param senderFp    32-byte fingerprint of the sender.
      * @param recipientFp 32-byte fingerprint of the recipient.
-     * @return Pair(newState, plaintext) or null if the frame is a replay.
-     * @throws IllegalArgumentException if GCM authentication fails or the seq gap is too large.
+     * @return Pair(newState, plaintext).
+     * @throws IllegalArgumentException if GCM authentication fails, the seq gap is too large, or seq is a replay.
      */
+    @Throws(IllegalArgumentException::class)
     fun decryptLocation(
         state: SessionState,
         ct: ByteArray,
         seq: Long,
         senderFp: ByteArray,
         recipientFp: ByteArray,
-    ): Pair<SessionState, LocationPlaintext>? {
-        if (seq <= state.recvSeq) return null // replay — drop silently
+    ): Pair<SessionState, LocationPlaintext> {
+        require(seq > state.recvSeq) { "replay — seq $seq must be greater than state.recvSeq ${state.recvSeq}" }
 
         val stepsNeeded = seq - state.recvSeq
         require(stepsNeeded <= MAX_DECRYPT_GAP) {
@@ -117,7 +118,14 @@ object Session {
 
         val aad = buildLocationAad(senderFp, recipientFp, state.epoch, seq)
         val plaintext = aeadDecrypt(finalStep.messageKey, finalStep.messageNonce, ct, aad)
-        val unpadded = unpad(plaintext)
+        val unpadded = try {
+            unpad(plaintext)
+        } catch (e: Exception) {
+            finalStep.messageKey.fill(0)
+            finalStep.messageNonce.fill(0)
+            plaintext.fill(0)
+            throw e
+        }
         val location = decodeLocation(unpadded)
 
         val newState =
