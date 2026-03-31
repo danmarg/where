@@ -1,12 +1,11 @@
 package net.af0.where
 
 import kotlinx.serialization.json.Json
-import net.af0.where.e2ee.MailboxPayload
 import net.af0.where.model.UserLocation
 import net.af0.where.model.WsMessage
 
 /**
- * Swift-friendly codec for the WebSocket and E2EE protocols. iOS uses URLSession for networking
+ * Swift-friendly codec for the WebSocket protocol. iOS uses URLSession for networking
  * but delegates all JSON encoding/decoding to this object so the protocol stays in KMP.
  */
 object LocationMessageCodec {
@@ -33,15 +32,4 @@ object LocationMessageCodec {
         val msg = runCatching { json.decodeFromString<WsMessage>(text) }.getOrNull() ?: return null
         return (msg as? WsMessage.LocationsBroadcast)?.users
     }
-
-    // ---------------------------------------------------------------------------
-    // E2EE Mailbox Payloads (§9)
-    // ---------------------------------------------------------------------------
-
-    /** Encode any MailboxPayload to a JSON string for POSTing to /inbox/{token}. */
-    fun encodeMailboxPayload(payload: MailboxPayload): String = json.encodeToString(MailboxPayload.serializer(), payload)
-
-    /** Decode a list of MailboxPayloads from a GET /inbox/{token} response. */
-    fun decodeMailboxPayloads(text: String): List<MailboxPayload>? =
-        runCatching { json.decodeFromString<List<MailboxPayload>>(text) }.getOrNull()
 }

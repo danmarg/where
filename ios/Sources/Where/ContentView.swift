@@ -165,5 +165,10 @@ struct ContentView: View {
                 newFriendName = qr.suggestedName
             }
         }
+        .onReceive(syncService.$pendingInitPayload) { payload in
+            if let payload = payload {
+                newFriendName = payload.suggestedName
+            }
+        }
     }
 }
