@@ -71,6 +71,24 @@ targets:
               ln -sfn "$ACTUAL/xcode-frameworks" "$EXPECTED"
             fi
           fi
+
+          # Create symlinks from non-versioned SDK names to versioned ones for Xcode compatibility.
+          # The Kotlin plugin generates frameworks in iphoneos26.4, iphonesimulator26.4, etc.,
+          # but Xcode's $(SDK_NAME) resolves to just "iphoneos" or "iphonesimulator".
+          FRAMEWORKS_DIR="$SRCROOT/../shared/build/xcode-frameworks"
+          for config_dir in "$FRAMEWORKS_DIR"/Debug "$FRAMEWORKS_DIR"/Release; do
+            if [ -d "$config_dir" ]; then
+              for versioned_dir in "$config_dir"/*; do
+                if [ -d "$versioned_dir" ]; then
+                  base_name=$(basename "$versioned_dir" | sed 's/[0-9.]*$//')
+                  unversioned_link="$config_dir/$base_name"
+                  if [ ! -e "$unversioned_link" ]; then
+                    ln -sfn "$(basename "$versioned_dir")" "$unversioned_link"
+                  fi
+                fi
+              done
+            fi
+          done
         name: Build KMP Shared Framework
         basedOnDependencyAnalysis: false
     settings:
