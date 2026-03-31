@@ -94,10 +94,10 @@ internal actual fun ed25519Verify(
 }
 
 // ---------------------------------------------------------------------------
-// AES-256-GCM (using ChaCha20-Poly1305 from libsodium)
+// AEAD (ChaCha20-Poly1305 from libsodium)
 // ---------------------------------------------------------------------------
 
-internal actual fun aesgcmEncrypt(
+internal actual fun aeadEncrypt(
     key: ByteArray,
     nonce: ByteArray,
     plaintext: ByteArray,
@@ -111,7 +111,7 @@ internal actual fun aesgcmEncrypt(
     ).toByteArray()
 }
 
-internal actual fun aesgcmDecrypt(
+internal actual fun aeadDecrypt(
     key: ByteArray,
     nonce: ByteArray,
     ciphertext: ByteArray,

@@ -35,11 +35,15 @@ object ByteArrayBase64Serializer : KSerializer<ByteArray> {
  *   json.encodeToString(MailboxPayload.serializer(), payload)
  */
 @Serializable
-sealed class MailboxPayload
+sealed class MailboxPayload {
+    /** Protocol version (§9). Always 1 for this release. */
+    abstract val v: Int
+}
 
 /**
  * An encrypted location frame (Alice → Bob, §9.1).
  *
+ * @property v      Protocol version.
  * @property epoch  DH ratchet epoch (uint32).
  * @property seq    Monotone counter as a decimal string, to avoid JS uint64 precision loss.
  * @property ct     AES-256-GCM ciphertext + 16-byte tag (base64 on the wire).
@@ -47,6 +51,7 @@ sealed class MailboxPayload
 @Serializable
 @SerialName("EncryptedLocation")
 data class EncryptedLocationPayload(
+    override val v: Int = 1,
     val epoch: Int,
     val seq: String,
     @Serializable(with = ByteArrayBase64Serializer::class) val ct: ByteArray,
@@ -67,12 +72,14 @@ data class OPKWire(
 /**
  * Bob's authenticated batch of One-Time Pre-Keys (Bob → Alice, §9.3).
  *
+ * @property v     Protocol version.
  * @property keys  OPKs in the bundle.
  * @property mac   HMAC-SHA-256 over the canonical binary encoding (see [PreKeyBundleOps]).
  */
 @Serializable
 @SerialName("PreKeyBundle")
 data class PreKeyBundlePayload(
+    override val v: Int = 1,
     val keys: List<OPKWire>,
     @Serializable(with = ByteArrayBase64Serializer::class) val mac: ByteArray,
 ) : MailboxPayload() {
@@ -82,6 +89,7 @@ data class PreKeyBundlePayload(
 /**
  * DH epoch rotation announcement (Alice → Bob, §9.3).
  *
+ * @property v         Protocol version.
  * @property epoch     New epoch number (uint32).
  * @property opkId     ID of the Bob OPK Alice consumed for this ratchet step.
  * @property newEkPub  Alice's new X25519 ephemeral public key (32 bytes, base64).
@@ -91,6 +99,7 @@ data class PreKeyBundlePayload(
 @Serializable
 @SerialName("EpochRotation")
 data class EpochRotationPayload(
+    override val v: Int = 1,
     val epoch: Int,
     @SerialName("opk_id") val opkId: Int,
     @SerialName("new_ek_pub")
@@ -102,6 +111,7 @@ data class EpochRotationPayload(
 /**
  * Optional acknowledgment from Bob after processing an EpochRotation (Bob → Alice, §9.3).
  *
+ * @property v          Protocol version.
  * @property epochSeen  The epoch number Bob successfully processed.
  * @property ts         Unix timestamp in seconds.
  * @property ct         AEAD ciphertext authenticating the ack (see [Session.buildRatchetAckCt]).
@@ -109,6 +119,7 @@ data class EpochRotationPayload(
 @Serializable
 @SerialName("RatchetAck")
 data class RatchetAckPayload(
+    override val v: Int = 1,
     @SerialName("epoch_seen") val epochSeen: Int,
     val ts: Long,
     @Serializable(with = ByteArrayBase64Serializer::class) val ct: ByteArray,
@@ -117,6 +128,7 @@ data class RatchetAckPayload(
 /**
  * Bob's KeyExchangeInit posted to the discovery token address (§4.2).
  *
+ * @property v               Protocol version.
  * @property token           Hex-encoded T_AB_0 (16 bytes) — the pairwise routing token Bob computed.
  * @property ekPub           Bob's X25519 ephemeral public key (32 bytes).
  * @property keyConfirmation HMAC-SHA-256(SK, "Where-v1-Confirm" || EK_A.pub || EK_B.pub).
@@ -125,6 +137,7 @@ data class RatchetAckPayload(
 @Serializable
 @SerialName("KeyExchangeInit")
 data class KeyExchangeInitPayload(
+    override val v: Int = 1,
     val token: String,
     @Serializable(with = ByteArrayBase64Serializer::class) val ekPub: ByteArray,
     @SerialName("key_confirmation")
