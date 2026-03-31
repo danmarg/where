@@ -20,9 +20,9 @@ object Session {
     private const val AAD_PREFIX = "Where-v1-Location"
     private const val PROTOCOL_VERSION = 1
     // §7.4: pad plaintext to a fixed block size for traffic-analysis resistance.
-    // 256 bytes guarantees the PKCS#7 pad count fits in one byte (range [1, 255])
-    // since encoded location JSON is always < 256 bytes.
-    private const val PADDING_SIZE = 256
+    // 512 bytes provides comfortable clearance while remaining a small fixed multiple
+    // of a cache line, as per the design doc.
+    private const val PADDING_SIZE = 512
 
     /**
      * Maximum allowed gap between the last received seq and the incoming seq.
@@ -57,13 +57,14 @@ object Session {
         val seq = state.sendSeq + 1
         val aad = buildLocationAad(senderFp, recipientFp, state.epoch, seq)
         val plaintext = padToFixedSize(encodeLocation(location), PADDING_SIZE)
-        val ct = aesgcmEncrypt(step.messageKey, step.messageNonce, plaintext, aad)
+        val ct = aeadEncrypt(step.messageKey, step.messageNonce, plaintext, aad)
 
         val newState =
             state.copy(
                 sendChainKey = step.newChainKey,
                 sendSeq = seq,
             )
+        step.messageKey.fill(0)
         return newState to ct
     }
 
@@ -110,7 +111,7 @@ object Session {
         val finalStep = step!!
 
         val aad = buildLocationAad(senderFp, recipientFp, state.epoch, seq)
-        val plaintext = aesgcmDecrypt(finalStep.messageKey, finalStep.messageNonce, ct, aad)
+        val plaintext = aeadDecrypt(finalStep.messageKey, finalStep.messageNonce, ct, aad)
         val location = decodeLocation(unpad(plaintext))
 
         val newState =
@@ -118,6 +119,7 @@ object Session {
                 recvChainKey = chainKey,
                 recvSeq = seq,
             )
+        finalStep.messageKey.fill(0)
         return newState to location
     }
 
@@ -228,27 +230,38 @@ object Session {
     }
 
     /**
-     * PKCS#7 padding to a fixed size.
-     * The pad byte value equals the number of padding bytes appended, so unpadding
-     * is unambiguous even if the plaintext ends with a zero byte.
+     * Padding to a fixed size.
+     * Uses 2 bytes (big-endian uint16) for the padding count, stored at the end.
+     * All padding bytes (including the count bytes) have the same value (the count).
      */
     private fun padToFixedSize(
         data: ByteArray,
         size: Int,
     ): ByteArray {
-        require(data.size in 1 until size) { "plaintext (${data.size} bytes) must be in [1, ${size - 1}]" }
-        val padByte = (size - data.size).toByte()
+        require(data.size > 0) { "plaintext must not be empty" }
+        // We need at least 2 bytes for the padding count
+        require(data.size <= size - 2) { "plaintext (${data.size} bytes) too large for PADDING_SIZE $size" }
+
+        val padCount = size - data.size
+        val padByte = (padCount and 0xFF).toByte()
+        val padHighByte = ((padCount shr 8) and 0xFF).toByte()
+
         return data.copyOf(size).also { padded ->
-            for (i in data.size until size) padded[i] = padByte
+            for (i in data.size until size - 2) padded[i] = padByte
+            padded[size - 2] = padHighByte
+            padded[size - 1] = padByte
         }
     }
 
     private fun unpad(data: ByteArray): ByteArray {
-        require(data.isNotEmpty()) { "padded data is empty" }
-        val padCount = data.last().toInt() and 0xFF
-        require(padCount > 0 && padCount <= data.size) { "invalid PKCS#7 padding byte: $padCount" }
-        for (i in data.size - padCount until data.size) {
-            require(data[i] == padCount.toByte()) { "invalid PKCS#7 padding at index $i" }
+        require(data.size >= 2) { "padded data too short" }
+        val padByte = data[data.size - 1].toInt() and 0xFF
+        val padHighByte = data[data.size - 2].toInt() and 0xFF
+        val padCount = (padHighByte shl 8) or padByte
+
+        require(padCount >= 2 && padCount <= data.size) { "invalid padding count: $padCount" }
+        for (i in data.size - padCount until data.size - 2) {
+            require(data[i].toInt() and 0xFF == padByte) { "invalid padding at index $i" }
         }
         return data.copyOfRange(0, data.size - padCount)
     }
@@ -264,7 +277,7 @@ internal data class RatchetAckPlaintext(val epochSeen: Int, val ts: Long)
 /**
  * Build the AEAD-encrypted EpochRotation payload blob.
  * K_rot is derived from the current root key via HKDF.
- * All-zero nonce is safe because K_rot is single-use per epoch.
+ * Nonce is epoch_be4 || zeros8 as per §9.3.
  */
 internal fun buildEpochRotationCt(
     rootKey: ByteArray,
@@ -273,10 +286,16 @@ internal fun buildEpochRotationCt(
     newEkPub: ByteArray,
     ts: Long,
     routingToken: ByteArray,
+    senderFp: ByteArray,
+    recipientFp: ByteArray,
 ): ByteArray {
-    val kRot = hkdfSha256(rootKey, null, INFO_EPOCH_ROTATION.encodeToByteArray(), 32)
+    val epochBe = intToBeBytes(epoch)
+    val salt = epochBe
+    val kRot = hkdfSha256(rootKey, salt, INFO_EPOCH_ROTATION.encodeToByteArray(), 32)
     val plaintext = intToBeBytes(epoch) + intToBeBytes(opkId) + newEkPub + longToBeBytes(ts)
-    return aesgcmEncrypt(kRot, ByteArray(12), plaintext, routingToken)
+    val nonce = epochBe + ByteArray(8)
+    val aad = senderFp + recipientFp + routingToken
+    return aeadEncrypt(kRot, nonce, plaintext, aad)
 }
 
 /**
@@ -284,11 +303,18 @@ internal fun buildEpochRotationCt(
  */
 internal fun decryptEpochRotationCt(
     rootKey: ByteArray,
+    epoch: Int,
     ct: ByteArray,
     routingToken: ByteArray,
+    senderFp: ByteArray,
+    recipientFp: ByteArray,
 ): EpochRotationPlaintext {
-    val kRot = hkdfSha256(rootKey, null, INFO_EPOCH_ROTATION.encodeToByteArray(), 32)
-    val plaintext = aesgcmDecrypt(kRot, ByteArray(12), ct, routingToken)
+    val epochBe = intToBeBytes(epoch)
+    val salt = epochBe
+    val kRot = hkdfSha256(rootKey, salt, INFO_EPOCH_ROTATION.encodeToByteArray(), 32)
+    val nonce = epochBe + ByteArray(8)
+    val aad = senderFp + recipientFp + routingToken
+    val plaintext = aeadDecrypt(kRot, nonce, ct, aad)
     require(plaintext.size == 4 + 4 + 32 + 8) { "bad EpochRotation plaintext size: ${plaintext.size}" }
     val epoch = bytesToInt(plaintext, 0)
     val opkId = bytesToInt(plaintext, 4)
@@ -305,10 +331,16 @@ internal fun buildRatchetAckCt(
     epochSeen: Int,
     ts: Long,
     routingToken: ByteArray,
+    senderFp: ByteArray,
+    recipientFp: ByteArray,
 ): ByteArray {
-    val kAck = hkdfSha256(rootKey, null, INFO_RATCHET_ACK.encodeToByteArray(), 32)
+    val epochBe = intToBeBytes(epochSeen)
+    val salt = epochBe
+    val kAck = hkdfSha256(rootKey, salt, INFO_RATCHET_ACK.encodeToByteArray(), 32)
     val plaintext = intToBeBytes(epochSeen) + longToBeBytes(ts)
-    return aesgcmEncrypt(kAck, ByteArray(12), plaintext, routingToken)
+    val nonce = epochBe + ByteArray(8)
+    val aad = senderFp + recipientFp + routingToken
+    return aeadEncrypt(kAck, nonce, plaintext, aad)
 }
 
 /**
@@ -316,11 +348,18 @@ internal fun buildRatchetAckCt(
  */
 internal fun decryptRatchetAckCt(
     rootKey: ByteArray,
+    epochSeen: Int,
     ct: ByteArray,
     routingToken: ByteArray,
+    senderFp: ByteArray,
+    recipientFp: ByteArray,
 ): RatchetAckPlaintext {
-    val kAck = hkdfSha256(rootKey, null, INFO_RATCHET_ACK.encodeToByteArray(), 32)
-    val plaintext = aesgcmDecrypt(kAck, ByteArray(12), ct, routingToken)
+    val epochBe = intToBeBytes(epochSeen)
+    val salt = epochBe
+    val kAck = hkdfSha256(rootKey, salt, INFO_RATCHET_ACK.encodeToByteArray(), 32)
+    val nonce = epochBe + ByteArray(8)
+    val aad = senderFp + recipientFp + routingToken
+    val plaintext = aeadDecrypt(kAck, nonce, ct, aad)
     require(plaintext.size == 4 + 8) { "bad RatchetAck plaintext size: ${plaintext.size}" }
     val epochSeen = bytesToInt(plaintext, 0)
     val ts = bytesToLong(plaintext, 4)
