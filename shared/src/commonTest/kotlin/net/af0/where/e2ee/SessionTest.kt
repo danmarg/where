@@ -178,7 +178,7 @@ class SessionTest {
                 recipientFp = aliceSession.bobFp,
             )
         val bobRotated =
-            Session.bobProcessEpochRotation(
+            Session.bobProcessAliceRotation(
                 state = bobSession,
                 aliceNewEkPub = aliceNewEk.pub,
                 bobOpkPriv = bobOpk.priv,
@@ -213,7 +213,7 @@ class SessionTest {
                 aliceSession.bobFp,
             )
         val bobRotated =
-            Session.bobProcessEpochRotation(
+            Session.bobProcessAliceRotation(
                 bobSession,
                 aliceNewEk.pub,
                 bobOpk.priv,
@@ -242,6 +242,7 @@ class SessionTest {
         val newEkPub = ByteArray(32) { (it + 64).toByte() }
         val senderFp = ByteArray(32) { it.toByte() }
         val recipientFp = ByteArray(32) { (it + 1).toByte() }
+        val nonce = ByteArray(12) { 0xAA.toByte() }
         val ts = 1711152000L
 
         val ct = buildEpochRotationCt(
@@ -250,6 +251,7 @@ class SessionTest {
             opkId = 7,
             newEkPub = newEkPub,
             ts = ts,
+            nonce = nonce,
             routingToken = routingToken,
             senderFp = senderFp,
             recipientFp = recipientFp,
@@ -258,6 +260,7 @@ class SessionTest {
         val plaintext = decryptEpochRotationCt(
             rootKey = rootKey,
             epoch = 3,
+            nonce = nonce,
             ct = ct,
             routingToken = routingToken,
             senderFp = senderFp,
@@ -278,11 +281,12 @@ class SessionTest {
         val newEkPub = ByteArray(32)
         val senderFp = ByteArray(32)
         val recipientFp = ByteArray(32)
+        val nonce = ByteArray(12)
 
-        val ct = buildEpochRotationCt(rootKey, 1, 1, newEkPub, 1000L, routingToken, senderFp, recipientFp)
+        val ct = buildEpochRotationCt(rootKey, 1, 1, newEkPub, 1000L, nonce, routingToken, senderFp, recipientFp)
 
         val threw = try {
-            decryptEpochRotationCt(wrongKey, 1, ct, routingToken, senderFp, recipientFp)
+            decryptEpochRotationCt(wrongKey, 1, nonce, ct, routingToken, senderFp, recipientFp)
             false
         } catch (_: Exception) { true }
         assertTrue(threw, "Expected AEAD to fail with wrong root key")
@@ -294,13 +298,16 @@ class SessionTest {
         val routingToken = ByteArray(16) { (it + 1).toByte() }
         val senderFp = ByteArray(32) { it.toByte() }
         val recipientFp = ByteArray(32) { (it + 1).toByte() }
+        val newEkPub = ByteArray(32) { (it + 5).toByte() }
+        val nonce = ByteArray(12) { 0xBB.toByte() }
         val ts = 1711152000L
 
-        val ct = buildRatchetAckCt(rootKey, epochSeen = 5, ts = ts, routingToken = routingToken, senderFp = senderFp, recipientFp = recipientFp)
-        val plaintext = decryptRatchetAckCt(rootKey, epochSeen = 5, ct = ct, routingToken = routingToken, senderFp = senderFp, recipientFp = recipientFp)
+        val ct = buildRatchetAckCt(rootKey, epochSeen = 5, ts = ts, newEkPub = newEkPub, nonce = nonce, routingToken = routingToken, senderFp = senderFp, recipientFp = recipientFp)
+        val plaintext = decryptRatchetAckCt(rootKey, epochSeen = 5, nonce = nonce, ct = ct, routingToken = routingToken, senderFp = senderFp, recipientFp = recipientFp)
 
         assertEquals(5, plaintext.epochSeen)
         assertEquals(ts, plaintext.ts)
+        assertContentEquals(newEkPub, plaintext.newEkPub)
     }
 
     @Test
@@ -310,11 +317,12 @@ class SessionTest {
         val wrongToken = ByteArray(16) { 0x02.toByte() }
         val senderFp = ByteArray(32)
         val recipientFp = ByteArray(32)
+        val nonce = ByteArray(12)
 
-        val ct = buildRatchetAckCt(rootKey, epochSeen = 1, ts = 1000L, routingToken = routingToken, senderFp = senderFp, recipientFp = recipientFp)
+        val ct = buildRatchetAckCt(rootKey, epochSeen = 1, ts = 1000L, newEkPub = null, nonce = nonce, routingToken = routingToken, senderFp = senderFp, recipientFp = recipientFp)
 
         val threw = try {
-            decryptRatchetAckCt(rootKey, epochSeen = 1, ct = wrongToken, routingToken = routingToken, senderFp = senderFp, recipientFp = recipientFp)
+            decryptRatchetAckCt(rootKey, epochSeen = 1, nonce = nonce, ct = ct, routingToken = wrongToken, senderFp = senderFp, recipientFp = recipientFp)
             false
         } catch (_: Exception) { true }
         assertTrue(threw, "Expected AEAD to fail with wrong routing token")
