@@ -37,23 +37,104 @@ private func urlToQrPayload(_ url: String) -> Shared.QrPayload? {
 // MARK: - HTTP mailbox helpers
 
 @MainActor
-private func postToMailbox(token: String, payload: Shared.MailboxPayload) async {
+private func postToMailbox(token: String, bodyData: Data) async {
     guard let url = URL(string: "\(ServerConfig.httpBaseUrl)/inbox/\(token)") else { return }
-    let jsonString = Shared.LocationMessageCodec.shared.encodeMailboxPayload(payload: payload)
     var req = URLRequest(url: url)
     req.httpMethod = "POST"
     req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-    req.httpBody = jsonString.data(using: .utf8)
+    req.httpBody = bodyData
     _ = try? await URLSession.shared.data(for: req)
 }
 
 @MainActor
-private func pollMailbox(token: String) async -> [Shared.MailboxPayload] {
+private func pollMailbox(token: String) async -> [[String: Any]] {
     guard let url = URL(string: "\(ServerConfig.httpBaseUrl)/inbox/\(token)") else { return [] }
     guard let (data, _) = try? await URLSession.shared.data(from: url),
-          let jsonString = String(data: data, encoding: .utf8)
+          let arr = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]]
     else { return [] }
-    return Shared.LocationMessageCodec.shared.decodeMailboxPayloads(text: jsonString) ?? []
+    return arr
+}
+
+// MARK: - Wire serialization helpers for new payload types
+
+private func preKeyBundleBody(_ bundle: Shared.PreKeyBundlePayload) -> [String: Any] {
+    let keys = bundle.keys.map { opk -> [String: Any] in
+        ["id": opk.id, "pub": toSwiftData(opk.pub).base64EncodedString()]
+    }
+    return [
+        "v": 1,
+        "type": "PreKeyBundle",
+        "keys": keys,
+        "mac": toSwiftData(bundle.mac).base64EncodedString(),
+    ]
+}
+
+private func epochRotationBody(_ payload: Shared.EpochRotationPayload) -> [String: Any] {
+    return [
+        "v": 1,
+        "type": "EpochRotation",
+        "epoch": payload.epoch,
+        "opk_id": payload.opkId,
+        "new_ek_pub": toSwiftData(payload.newEkPub).base64EncodedString(),
+        "ts": payload.ts,
+        "ct": toSwiftData(payload.ct).base64EncodedString(),
+    ]
+}
+
+private func ratchetAckBody(_ payload: Shared.RatchetAckPayload) -> [String: Any] {
+    return [
+        "v": 1,
+        "type": "RatchetAck",
+        "epoch_seen": payload.epochSeen,
+        "ts": payload.ts,
+        "ct": toSwiftData(payload.ct).base64EncodedString(),
+    ]
+}
+
+// JSONSerialization always produces `Int` (64-bit on iOS) for JSON integers,
+// never `Int32` or `Int64` directly.  Cast to `Int` first, then narrow.
+private func parseEpochRotation(_ msg: [String: Any]) -> Shared.EpochRotationPayload? {
+    guard (msg["v"] as? Int) == 1,
+          (msg["type"] as? String) == "EpochRotation",
+          let epochInt = msg["epoch"] as? Int,
+          let opkIdInt = msg["opk_id"] as? Int,
+          let newEkPubB64 = msg["new_ek_pub"] as? String, let newEkPubData = Data(base64Encoded: newEkPubB64),
+          let tsInt = msg["ts"] as? Int,
+          let ctB64 = msg["ct"] as? String, let ctData = Data(base64Encoded: ctB64)
+    else { return nil }
+    return Shared.EpochRotationPayload(
+        v: 1,
+        epoch: Int32(epochInt), opkId: Int32(opkIdInt),
+        newEkPub: kotlinByteArray(from: newEkPubData),
+        ts: Int64(tsInt), ct: kotlinByteArray(from: ctData)
+    )
+}
+
+private func parsePreKeyBundle(_ msg: [String: Any]) -> Shared.PreKeyBundlePayload? {
+    guard (msg["v"] as? Int) == 1,
+          (msg["type"] as? String) == "PreKeyBundle",
+          let keysArr = msg["keys"] as? [[String: Any]],
+          let macB64 = msg["mac"] as? String, let macData = Data(base64Encoded: macB64)
+    else { return nil }
+    var opkWires: [Shared.OPKWire] = []
+    for k in keysArr {
+        guard let idInt = k["id"] as? Int,
+              let pubB64 = k["pub"] as? String,
+              let pubData = Data(base64Encoded: pubB64)
+        else { return nil }
+        opkWires.append(Shared.OPKWire(id: Int32(idInt), pub: kotlinByteArray(from: pubData)))
+    }
+    return Shared.PreKeyBundlePayload(v: 1, keys: opkWires, mac: kotlinByteArray(from: macData))
+}
+
+private func parseRatchetAck(_ msg: [String: Any]) -> Shared.RatchetAckPayload? {
+    guard (msg["v"] as? Int) == 1,
+          (msg["type"] as? String) == "RatchetAck",
+          let epochSeenInt = msg["epoch_seen"] as? Int,
+          let tsInt = msg["ts"] as? Int,
+          let ctB64 = msg["ct"] as? String, let ctData = Data(base64Encoded: ctB64)
+    else { return nil }
+    return Shared.RatchetAckPayload(v: 1, epochSeen: Int32(epochSeenInt), ts: Int64(tsInt), ct: kotlinByteArray(from: ctData))
 }
 
 // MARK: - LocationSyncService
@@ -132,7 +213,10 @@ final class LocationSyncService: ObservableObject {
                 if e2eeStore.shouldRotateEpoch(friendId: friend.id) {
                     let oldToken = toHex(friend.session.routingToken)
                     if let rotPayload = e2eeStore.initiateEpochRotation(friendId: friend.id) {
-                        await postToMailbox(token: oldToken, payload: rotPayload)
+                        let body = epochRotationBody(rotPayload)
+                        if let bodyData = try? JSONSerialization.data(withJSONObject: body) {
+                            await postToMailbox(token: oldToken, bodyData: bodyData)
+                        }
                     }
                 }
 
@@ -146,12 +230,16 @@ final class LocationSyncService: ObservableObject {
                 let ct = result.second!
                 e2eeStore.updateSession(id: friend.id, newSession: newSession)
                 let hexToken = toHex(current.session.routingToken)
-                let payload = Shared.EncryptedLocationPayload(
-                    epoch: newSession.epoch,
-                    seq: String(newSession.sendSeq),
-                    ct: ct
-                )
-                await postToMailbox(token: hexToken, payload: payload)
+                let payload: [String: Any] = [
+                    "v": 1,
+                    "type": "EncryptedLocation",
+                    "epoch": Int(newSession.epoch),
+                    "seq": String(newSession.sendSeq),
+                    "ct": toSwiftData(ct).base64EncodedString(),
+                ]
+                if let bodyData = try? JSONSerialization.data(withJSONObject: payload) {
+                    await postToMailbox(token: hexToken, bodyData: bodyData)
+                }
             }
         }
     }
@@ -186,16 +274,20 @@ final class LocationSyncService: ObservableObject {
         friends = e2eeStore.listFriends()
 
         let discoveryHex = toHex(qrWithName.discoveryToken())
-        let payload = Shared.KeyExchangeInitPayload(
-            token: initPayload.token,
-            ekPub: initPayload.ekPub,
-            keyConfirmation: initPayload.keyConfirmation,
-            suggestedName: initPayload.suggestedName
-        )
+        let payload: [String: Any] = [
+            "v": 1,
+            "type": "KeyExchangeInit",
+            "token": initPayload.token,
+            "ekPub": toSwiftData(initPayload.ekPub).base64EncodedString(),
+            "key_confirmation": toSwiftData(initPayload.keyConfirmation).base64EncodedString(),
+            "suggested_name": initPayload.suggestedName,
+        ]
 
-        Task {
-            await postToMailbox(token: discoveryHex, payload: payload)
-            await postOpkBundle(friend: bobEntry)
+        if let bodyData = try? JSONSerialization.data(withJSONObject: payload) {
+            Task {
+                await postToMailbox(token: discoveryHex, bodyData: bodyData)
+                await postOpkBundle(friend: bobEntry)
+            }
         }
     }
 
@@ -227,7 +319,10 @@ final class LocationSyncService: ObservableObject {
     private func postOpkBundle(friend: Shared.FriendEntry) async {
         guard let bundle = e2eeStore.generateOpkBundle(friendId: friend.id, count: 10) else { return }
         let hexToken = toHex(friend.session.routingToken)
-        await postToMailbox(token: hexToken, payload: bundle)
+        let body = preKeyBundleBody(bundle)
+        if let bodyData = try? JSONSerialization.data(withJSONObject: body) {
+            await postToMailbox(token: hexToken, bodyData: bodyData)
+        }
     }
 
     // MARK: - Private polling
@@ -247,30 +342,42 @@ final class LocationSyncService: ObservableObject {
 
             // --- Epoch rotation first: changes session/token ---
             for msg in messages {
-                guard let rotPayload = msg as? Shared.EpochRotationPayload else { continue }
+                guard let rotPayload = parseEpochRotation(msg) else { continue }
                 if let ack = try? e2eeStore.processEpochRotation(friendId: friend.id, payload: rotPayload) {
                     guard let newEntry = e2eeStore.getFriend(id: friend.id) else { continue }
                     let newToken = toHex(newEntry.session.routingToken)
-                    await postToMailbox(token: newToken, payload: ack)
+                    let body = ratchetAckBody(ack)
+                    if let bodyData = try? JSONSerialization.data(withJSONObject: body) {
+                        await postToMailbox(token: newToken, bodyData: bodyData)
+                    }
                     await postOpkBundle(friend: newEntry)
                 }
             }
 
             // --- Cache incoming OPK bundles ---
             for msg in messages {
-                guard let bundle = msg as? Shared.PreKeyBundlePayload else { continue }
-                _ = e2eeStore.storeOpkBundle(friendId: friend.id, bundle: bundle)
+                guard let bundle = parsePreKeyBundle(msg) else { continue }
+                e2eeStore.storeOpkBundle(friendId: friend.id, bundle: bundle)
             }
 
             // --- Decrypt location updates ---
             var session = (e2eeStore.getFriend(id: friend.id) ?? friend).session
             var sessionChanged = false
             for msg in messages {
-                guard let locPayload = msg as? Shared.EncryptedLocationPayload,
-                      let seq = Int64(locPayload.seq)
+                guard (msg["v"] as? Int) == 1,
+                      (msg["type"] as? String) == "EncryptedLocation",
+                      let epochInt = msg["epoch"] as? Int,
+                      let seqStr = msg["seq"] as? String,
+                      let seq = Int64(seqStr),
+                      let ctB64 = msg["ct"] as? String,
+                      let ctData = Data(base64Encoded: ctB64)
                 else { continue }
+
+                if Int32(epochInt) != session.epoch { continue }
+
+                let ct = kotlinByteArray(from: ctData)
                 if let result = Shared.Session.shared.decryptLocation(
-                    state: session, ct: locPayload.ct, seq: seq, senderFp: senderFp, recipientFp: recipientFp
+                    state: session, ct: ct, seq: seq, senderFp: senderFp, recipientFp: recipientFp
                 ) {
                     session = result.first!
                     let loc = result.second!
@@ -284,8 +391,8 @@ final class LocationSyncService: ObservableObject {
 
             // --- Validate RatchetAck ---
             for msg in messages {
-                guard let ack = msg as? Shared.RatchetAckPayload else { continue }
-                _ = e2eeStore.processRatchetAck(friendId: friend.id, payload: ack)
+                guard let ack = parseRatchetAck(msg) else { continue }
+                e2eeStore.processRatchetAck(friendId: friend.id, payload: ack)
             }
 
             // --- Bob: proactively replenish OPKs if running low ---
@@ -301,7 +408,20 @@ final class LocationSyncService: ObservableObject {
         let discoveryHex = toHex(qr.discoveryToken())
         let messages = await pollMailbox(token: discoveryHex)
         for msg in messages {
-            guard let initPayload = msg as? Shared.KeyExchangeInitPayload else { continue }
+            guard (msg["v"] as? Int) == 1,
+                  (msg["type"] as? String) == "KeyExchangeInit",
+                  let token = msg["token"] as? String,
+                  let ekPubB64 = msg["ekPub"] as? String, let ekPub = Data(base64Encoded: ekPubB64),
+                  let keyConfB64 = msg["key_confirmation"] as? String, let keyConfData = Data(base64Encoded: keyConfB64)
+            else { continue }
+            let suggestedName = msg["suggested_name"] as? String ?? ""
+            let initPayload = Shared.KeyExchangeInitPayload(
+                v: 1,
+                token: token,
+                ekPub: kotlinByteArray(from: ekPub),
+                keyConfirmation: kotlinByteArray(from: keyConfData),
+                suggestedName: suggestedName
+            )
 
             // Found init payload! Show naming dialog instead of processing immediately.
             pendingInitPayload = initPayload
