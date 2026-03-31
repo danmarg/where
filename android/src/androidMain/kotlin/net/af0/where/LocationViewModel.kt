@@ -29,10 +29,8 @@ import net.af0.where.e2ee.Session
 import net.af0.where.e2ee.discoveryToken
 import net.af0.where.model.UserLocation
 
-class LocationViewModel(
-    app: Application,
-    private val locationSource: LocationSource = LocationRepository,
-) : AndroidViewModel(app) {
+class LocationViewModel(app: Application) : AndroidViewModel(app) {
+    private val locationSource: LocationSource = LocationRepository
     private val e2eeStore = E2eeStore(SharedPrefsE2eeStorage(app))
 
     private val sharingPrefs = app.getSharedPreferences("where_prefs", Context.MODE_PRIVATE)
