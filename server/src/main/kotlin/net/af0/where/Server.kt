@@ -55,6 +55,9 @@ class MailboxState {
     /** Per-token post timestamps used for rate limiting (sliding window). */
     private val postTimes = ConcurrentHashMap<String, ConcurrentLinkedQueue<Long>>()
 
+    /** Internal dummy queue to equalize timing of unknown vs empty mailboxes (§7.2). */
+    private val dummyQueue = ConcurrentLinkedQueue<MailboxEntry>()
+
     /**
      * Store [payload] under [token].
      *
@@ -89,8 +92,13 @@ class MailboxState {
      * Returns an empty list for unknown or empty tokens (§7.2: indistinguishable responses).
      */
     fun drain(token: String): List<JsonElement> {
-        val queue = mailboxes[token] ?: return emptyList()
         val now = System.currentTimeMillis()
+
+        // Constant-Time Invariant (§7.2, §10.2):
+        // Ensure mailbox lookup for empty/unknown tokens is indistinguishable from active tokens.
+        // By using a shared dummy queue for misses, we execute nearly identical code paths.
+        val queue = mailboxes[token] ?: dummyQueue
+
         val result = mutableListOf<JsonElement>()
         // Drain the entire queue; re-add nothing — this is a destructive read.
         generateSequence { queue.poll() }.forEach { entry ->
