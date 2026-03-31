@@ -110,13 +110,14 @@ private func parseEpochRotation(_ msg: [String: Any]) -> Shared.EpochRotationPay
           let opkIdInt = msg["opk_id"] as? Int,
           let newEkPubB64 = msg["new_ek_pub"] as? String, let newEkPubData = Data(base64Encoded: newEkPubB64),
           let tsInt = msg["ts"] as? Int,
+          let nonceB64 = msg["nonce"] as? String, let nonceData = Data(base64Encoded: nonceB64),
           let ctB64 = msg["ct"] as? String, let ctData = Data(base64Encoded: ctB64)
     else { return nil }
     return Shared.EpochRotationPayload(
         v: 1,
         epoch: Int32(epochInt), opkId: Int32(opkIdInt),
         newEkPub: kotlinByteArray(from: newEkPubData),
-        ts: Int64(tsInt), ct: kotlinByteArray(from: ctData)
+        ts: Int64(tsInt), nonce: kotlinByteArray(from: nonceData), ct: kotlinByteArray(from: ctData)
     )
 }
 
@@ -142,9 +143,11 @@ private func parseRatchetAck(_ msg: [String: Any]) -> Shared.RatchetAckPayload? 
           (msg["type"] as? String) == "RatchetAck",
           let epochSeenInt = msg["epoch_seen"] as? Int,
           let tsInt = msg["ts"] as? Int,
+          let newEkPubB64 = msg["new_ek_pub"] as? String, let newEkPubData = Data(base64Encoded: newEkPubB64),
+          let nonceB64 = msg["nonce"] as? String, let nonceData = Data(base64Encoded: nonceB64),
           let ctB64 = msg["ct"] as? String, let ctData = Data(base64Encoded: ctB64)
     else { return nil }
-    return Shared.RatchetAckPayload(v: 1, epochSeen: Int32(epochSeenInt), ts: Int64(tsInt), ct: kotlinByteArray(from: ctData))
+    return Shared.RatchetAckPayload(v: 1, epochSeen: Int32(epochSeenInt), ts: Int64(tsInt), newEkPub: kotlinByteArray(from: newEkPubData), nonce: kotlinByteArray(from: nonceData), ct: kotlinByteArray(from: ctData))
 }
 
 private func parseEncryptedLocation(_ msg: [String: Any]) -> (epoch: Int32, seq: Int64, ct: Data)? {
@@ -394,13 +397,16 @@ final class LocationSyncService: ObservableObject {
                 if loc.epoch != session.epoch { continue }
 
                 let ct = kotlinByteArray(from: loc.ct)
-                if let result = Shared.Session.shared.decryptLocation(
-                    state: session, ct: ct, seq: loc.seq, senderFp: senderFp, recipientFp: recipientFp
-                ) {
+                do {
+                    let result = try Shared.Session.shared.decryptLocation(
+                        state: session, ct: ct, seq: loc.seq, senderFp: senderFp, recipientFp: recipientFp
+                    )
                     session = result.first!
-                    let loc = result.second!
-                    friendLocations[friend.id] = (lat: loc.lat, lng: loc.lng, ts: loc.ts)
+                    let decryptedLoc = result.second!
+                    friendLocations[friend.id] = (lat: decryptedLoc.lat, lng: decryptedLoc.lng, ts: decryptedLoc.ts)
                     sessionChanged = true
+                } catch {
+                    print("Decryption failed: \(error)")
                 }
             }
             if sessionChanged {

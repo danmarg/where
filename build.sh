@@ -63,9 +63,16 @@ if [[ "$BUILD_FLAVOR" == "debug" ]]; then
   GRADLE_TASK="bundleDebug"
 else
   GRADLE_TASK="bundleRelease"
+  # Prompt for signing credentials for release builds
+  echo "=== Release Build Signing ==="
+  read -sp "Enter keystore password: " KEYSTORE_PASSWORD
+  echo ""
+  export KEYSTORE_FILE=~/where-release-key.jks
+  export KEYSTORE_PASSWORD
+  export KEY_PASSWORD=$KEYSTORE_PASSWORD  # Same as keystore password
 fi
 echo "=== Building Android $BUILD_FLAVOR AAB ==="
-if ! nix develop --command ./gradlew :android:$GRADLE_TASK; then
+if ! nix develop --command bash -c "KEYSTORE_FILE='$KEYSTORE_FILE' KEYSTORE_PASSWORD='$KEYSTORE_PASSWORD' KEY_PASSWORD='$KEY_PASSWORD' ./gradlew :android:$GRADLE_TASK"; then
   echo "Android build failed."
   exit 1
 fi
