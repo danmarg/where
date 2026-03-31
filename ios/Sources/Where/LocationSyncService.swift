@@ -55,7 +55,17 @@ private func pollMailbox(token: String) async -> [[String: Any]] {
     return arr
 }
 
-// MARK: - Wire serialization helpers for new payload types
+// MARK: - E2EE payload serialization
+
+private func encryptedLocationBody(epoch: Int32, seq: Int64, ct: Data) -> [String: Any] {
+    return [
+        "v": 1,
+        "type": "EncryptedLocation",
+        "epoch": Int(epoch),
+        "seq": String(seq),
+        "ct": ct.base64EncodedString(),
+    ]
+}
 
 private func preKeyBundleBody(_ bundle: Shared.PreKeyBundlePayload) -> [String: Any] {
     let keys = bundle.keys.map { opk -> [String: Any] in
@@ -135,6 +145,18 @@ private func parseRatchetAck(_ msg: [String: Any]) -> Shared.RatchetAckPayload? 
           let ctB64 = msg["ct"] as? String, let ctData = Data(base64Encoded: ctB64)
     else { return nil }
     return Shared.RatchetAckPayload(v: 1, epochSeen: Int32(epochSeenInt), ts: Int64(tsInt), ct: kotlinByteArray(from: ctData))
+}
+
+private func parseEncryptedLocation(_ msg: [String: Any]) -> (epoch: Int32, seq: Int64, ct: Data)? {
+    guard (msg["v"] as? Int) == 1,
+          (msg["type"] as? String) == "EncryptedLocation",
+          let epochInt = msg["epoch"] as? Int,
+          let seqStr = msg["seq"] as? String,
+          let seq = Int64(seqStr),
+          let ctB64 = msg["ct"] as? String,
+          let ctData = Data(base64Encoded: ctB64)
+    else { return nil }
+    return (Int32(epochInt), seq, ctData)
 }
 
 // MARK: - LocationSyncService
@@ -230,13 +252,7 @@ final class LocationSyncService: ObservableObject {
                 let ct = result.second!
                 e2eeStore.updateSession(id: friend.id, newSession: newSession)
                 let hexToken = toHex(current.session.routingToken)
-                let payload: [String: Any] = [
-                    "v": 1,
-                    "type": "EncryptedLocation",
-                    "epoch": Int(newSession.epoch),
-                    "seq": String(newSession.sendSeq),
-                    "ct": toSwiftData(ct).base64EncodedString(),
-                ]
+                let payload = encryptedLocationBody(epoch: newSession.epoch, seq: newSession.sendSeq, ct: toSwiftData(ct))
                 if let bodyData = try? JSONSerialization.data(withJSONObject: payload) {
                     await postToMailbox(token: hexToken, bodyData: bodyData)
                 }
@@ -364,20 +380,12 @@ final class LocationSyncService: ObservableObject {
             var session = (e2eeStore.getFriend(id: friend.id) ?? friend).session
             var sessionChanged = false
             for msg in messages {
-                guard (msg["v"] as? Int) == 1,
-                      (msg["type"] as? String) == "EncryptedLocation",
-                      let epochInt = msg["epoch"] as? Int,
-                      let seqStr = msg["seq"] as? String,
-                      let seq = Int64(seqStr),
-                      let ctB64 = msg["ct"] as? String,
-                      let ctData = Data(base64Encoded: ctB64)
-                else { continue }
+                guard let loc = parseEncryptedLocation(msg) else { continue }
+                if loc.epoch != session.epoch { continue }
 
-                if Int32(epochInt) != session.epoch { continue }
-
-                let ct = kotlinByteArray(from: ctData)
+                let ct = kotlinByteArray(from: loc.ct)
                 if let result = Shared.Session.shared.decryptLocation(
-                    state: session, ct: ct, seq: seq, senderFp: senderFp, recipientFp: recipientFp
+                    state: session, ct: ct, seq: loc.seq, senderFp: senderFp, recipientFp: recipientFp
                 ) {
                     session = result.first!
                     let loc = result.second!
