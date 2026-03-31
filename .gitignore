@@ -13,3 +13,4 @@ xcuserdata/
 *.xcworkspace/xcuserdata/
 DerivedData/
 .build/
+*.log

@@ -67,6 +67,27 @@ android {
     testOptions {
         unitTests.isIncludeAndroidResources = true
     }
+
+    signingConfigs {
+        create("release") {
+            val ksFile = System.getenv("KEYSTORE_FILE") ?: System.getProperty("KEYSTORE_FILE") ?: ""
+            val ksPassword = System.getenv("KEYSTORE_PASSWORD") ?: System.getProperty("KEYSTORE_PASSWORD") ?: ""
+            val kPassword = System.getenv("KEY_PASSWORD") ?: System.getProperty("KEY_PASSWORD") ?: ""
+
+            if (ksFile.isNotEmpty() && ksPassword.isNotEmpty() && kPassword.isNotEmpty()) {
+                storeFile = file(ksFile)
+                storePassword = ksPassword
+                keyAlias = "where"
+                keyPassword = kPassword
+            }
+        }
+    }
+
+    buildTypes {
+        release {
+            signingConfig = signingConfigs.getByName("release")
+        }
+    }
 }
 
 dependencies {
