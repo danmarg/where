@@ -88,4 +88,3 @@ iOS uses `ServerConfig.swift` for configuration.
 
 ### Simulator Fallbacks
 - **iOS/Android:** Since cameras don't work in the simulator, clicking "Scan" will open a manual input dialog. You can paste a `where://invite?q=...` URL here to simulate a scan.
-- **iOS Crypto:** The simulator uses "dummy" crypto (fixed keys) to prevent crashes. **Do not attempt to pair a simulator with a real device**, as the cryptographic handshake will fail. Use two simulators or two real devices.
