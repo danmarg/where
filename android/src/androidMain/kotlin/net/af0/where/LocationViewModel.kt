@@ -29,6 +29,11 @@ import net.af0.where.e2ee.Session
 import net.af0.where.e2ee.discoveryToken
 import net.af0.where.model.UserLocation
 
+sealed class ConnectionStatus {
+    object Ok : ConnectionStatus()
+    data class Error(val message: String) : ConnectionStatus()
+}
+
 class LocationViewModel(app: Application) : AndroidViewModel(app) {
     private val locationSource: LocationSource = LocationRepository
     private val e2eeStore = E2eeStore(SharedPrefsE2eeStorage(app))
@@ -67,6 +72,9 @@ class LocationViewModel(app: Application) : AndroidViewModel(app) {
 
     private val _pendingInitPayload = MutableStateFlow<KeyExchangeInitPayload?>(null)
     val pendingInitPayload: StateFlow<KeyExchangeInitPayload?> = _pendingInitPayload
+
+    private val _connectionStatus = MutableStateFlow<ConnectionStatus>(ConnectionStatus.Ok)
+    val connectionStatus: StateFlow<ConnectionStatus> = _connectionStatus
 
     val visibleUsers: StateFlow<List<UserLocation>> =
         combine(locationSource.lastLocation, _isSharingLocation, friendLocations) { myLoc, sharing, friendLocs ->
@@ -155,7 +163,9 @@ class LocationViewModel(app: Application) : AndroidViewModel(app) {
                 try {
                     val discoveryHex = qrWithName.discoveryToken().toHexStr()
                     E2eeMailboxClient.post(BuildConfig.SERVER_HTTP_URL, discoveryHex, initPayload)
-                } catch (_: Exception) {
+                    updateStatus(null)
+                } catch (e: Exception) {
+                    updateStatus(e)
                 }
                 // Bob posts his initial OPK bundle so Alice can initiate epoch rotation.
                 postOpkBundle(bobEntry)
@@ -183,7 +193,9 @@ class LocationViewModel(app: Application) : AndroidViewModel(app) {
             val bundle = e2eeStore.generateOpkBundle(friend.id) ?: return
             val hexToken = friend.session.routingToken.toHexStr()
             E2eeMailboxClient.post(BuildConfig.SERVER_HTTP_URL, hexToken, bundle)
-        } catch (_: Exception) {
+            updateStatus(null)
+        } catch (e: Exception) {
+            updateStatus(e)
         }
     }
 
@@ -200,13 +212,15 @@ class LocationViewModel(app: Application) : AndroidViewModel(app) {
         try {
             val discoveryHex = qr.discoveryToken().toHexStr()
             val messages = E2eeMailboxClient.poll(BuildConfig.SERVER_HTTP_URL, discoveryHex)
+            updateStatus(null)
             val initPayload = messages.filterIsInstance<KeyExchangeInitPayload>().firstOrNull() ?: return
 
             // Found init payload! Show naming dialog instead of processing immediately.
             _pendingInitPayload.value = initPayload
             _pendingInviteQr.value = null
             e2eeStore.clearInvite()
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+            updateStatus(e)
         }
     }
 
@@ -215,6 +229,7 @@ class LocationViewModel(app: Application) : AndroidViewModel(app) {
             try {
                 val hexToken = friend.session.routingToken.toHexStr()
                 val messages = E2eeMailboxClient.poll(BuildConfig.SERVER_HTTP_URL, hexToken)
+                updateStatus(null)
                 val senderFp = friend.session.aliceFp
                 val recipientFp = friend.session.bobFp
 
@@ -229,14 +244,18 @@ class LocationViewModel(app: Application) : AndroidViewModel(app) {
                     val newToken = e2eeStore.getFriend(friend.id)?.session?.routingToken?.toHexStr() ?: break
                     try {
                         E2eeMailboxClient.post(BuildConfig.SERVER_HTTP_URL, newToken, ack)
-                    } catch (_: Exception) {
+                        updateStatus(null)
+                    } catch (e: Exception) {
+                        updateStatus(e)
                     }
                     // Replenish OPKs on the new token so Alice can rotate again.
                     val bundle = e2eeStore.generateOpkBundle(friend.id)
                     if (bundle != null) {
                         try {
                             E2eeMailboxClient.post(BuildConfig.SERVER_HTTP_URL, newToken, bundle)
-                        } catch (_: Exception) {
+                            updateStatus(null)
+                        } catch (e: Exception) {
+                            updateStatus(e)
                         }
                     }
                 }
@@ -282,8 +301,8 @@ class LocationViewModel(app: Application) : AndroidViewModel(app) {
                     val current = e2eeStore.getFriend(friend.id) ?: continue
                     postOpkBundle(current)
                 }
-            } catch (_: Exception) {
-                // ignore transient poll failures
+            } catch (e: Exception) {
+                updateStatus(e)
             }
         }
     }
@@ -305,7 +324,9 @@ class LocationViewModel(app: Application) : AndroidViewModel(app) {
                         // Post rotation announcement to the OLD token so Bob can process it.
                         try {
                             E2eeMailboxClient.post(BuildConfig.SERVER_HTTP_URL, oldToken, rotPayload)
-                        } catch (_: Exception) {
+                            updateStatus(null)
+                        } catch (e: Exception) {
+                            updateStatus(e)
                         }
                     }
                 }
@@ -330,9 +351,25 @@ class LocationViewModel(app: Application) : AndroidViewModel(app) {
                             ct = ct,
                         ),
                 )
-            } catch (_: Exception) {
-                // ignore transient send failures
+                updateStatus(null)
+            } catch (e: Exception) {
+                updateStatus(e)
             }
+        }
+    }
+
+    private fun updateStatus(e: Throwable?) {
+        if (e == null) {
+            _connectionStatus.value = ConnectionStatus.Ok
+        } else {
+            val msg = when {
+                e.message?.contains("Unable to resolve host", ignoreCase = true) == true -> "not resolved"
+                e.message?.contains("timeout", ignoreCase = true) == true -> "timeout"
+                e.message?.contains("ConnectException", ignoreCase = true) == true -> "no connection"
+                e.message?.contains("Failed to post to mailbox: 500", ignoreCase = true) == true -> "server error 500"
+                else -> e.message?.take(32) ?: "unknown error"
+            }
+            _connectionStatus.value = ConnectionStatus.Error(msg)
         }
     }
 

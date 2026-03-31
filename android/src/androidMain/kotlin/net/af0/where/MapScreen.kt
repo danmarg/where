@@ -1,6 +1,7 @@
 package net.af0.where
 
 import android.os.Build
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.LocationOff
@@ -33,6 +34,7 @@ fun MapScreen(
     onTogglePause: (String) -> Unit,
     isSharing: Boolean,
     onToggleSharing: () -> Unit,
+    connectionStatus: ConnectionStatus,
     onCreateInvite: () -> Unit,
     onScanQr: () -> Unit,
     onRemoveFriend: (String) -> Unit,
@@ -183,18 +185,42 @@ fun MapScreen(
                 Text(if (isSharing) "Sharing" else "Paused", style = MaterialTheme.typography.labelMedium)
             }
 
-            // Your ID chip
+            // Your ID chip + Connection status
             Surface(
                 modifier = Modifier.weight(1f),
                 shape = MaterialTheme.shapes.medium,
                 color = Color.Black.copy(alpha = 0.7f),
             ) {
-                Text(
-                    text = "You: ${userId.take(8)}",
-                    color = Color.White,
+                Row(
                     modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
-                    style = MaterialTheme.typography.labelSmall,
-                )
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(8.dp)
+                            .background(
+                                color = if (connectionStatus is ConnectionStatus.Ok) Color.Green else Color(0xFFFFA500),
+                                shape = androidx.compose.foundation.shape.CircleShape
+                            )
+                    )
+                    Column {
+                        Text(
+                            text = "You: ${userId.take(8)}",
+                            color = Color.White,
+                            style = MaterialTheme.typography.labelSmall,
+                        )
+                        if (connectionStatus is ConnectionStatus.Error) {
+                            Text(
+                                text = connectionStatus.message,
+                                color = Color(0xFFFFA500),
+                                style = MaterialTheme.typography.labelSmall,
+                                maxLines = 1,
+                                overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
+                            )
+                        }
+                    }
+                }
             }
 
             // Friends button

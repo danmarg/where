@@ -37,21 +37,26 @@ private func urlToQrPayload(_ url: String) -> Shared.QrPayload? {
 // MARK: - HTTP mailbox helpers
 
 @MainActor
-private func postToMailbox(token: String, bodyData: Data) async {
+private func postToMailbox(token: String, bodyData: Data) async throws {
     guard let url = URL(string: "\(ServerConfig.httpBaseUrl)/inbox/\(token)") else { return }
     var req = URLRequest(url: url)
     req.httpMethod = "POST"
     req.setValue("application/json", forHTTPHeaderField: "Content-Type")
     req.httpBody = bodyData
-    _ = try? await URLSession.shared.data(for: req)
+    let (_, response) = try await URLSession.shared.data(for: req)
+    if let http = response as? HTTPURLResponse, http.statusCode != 200 && http.statusCode != 204 {
+        throw NSError(domain: "Where", code: http.statusCode, userInfo: [NSLocalizedDescriptionKey: "Server returned \(http.statusCode)"])
+    }
 }
 
 @MainActor
-private func pollMailbox(token: String) async -> [[String: Any]] {
+private func pollMailbox(token: String) async throws -> [[String: Any]] {
     guard let url = URL(string: "\(ServerConfig.httpBaseUrl)/inbox/\(token)") else { return [] }
-    guard let (data, _) = try? await URLSession.shared.data(from: url),
-          let arr = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]]
-    else { return [] }
+    let (data, response) = try await URLSession.shared.data(from: url)
+    if let http = response as? HTTPURLResponse, http.statusCode != 200 {
+        throw NSError(domain: "Where", code: http.statusCode, userInfo: [NSLocalizedDescriptionKey: "Server returned \(http.statusCode)"])
+    }
+    guard let arr = try JSONSerialization.jsonObject(with: data) as? [[String: Any]] else { return [] }
     return arr
 }
 
@@ -164,9 +169,15 @@ private func parseEncryptedLocation(_ msg: [String: Any]) -> (epoch: Int32, seq:
 
 // MARK: - LocationSyncService
 
+enum ConnectionStatus {
+    case ok
+    case error(message: String)
+}
+
 @MainActor
 final class LocationSyncService: ObservableObject {
     @Published var friendLocations: [String: (lat: Double, lng: Double, ts: Int64)] = [:]
+    @Published var connectionStatus: ConnectionStatus = .ok
     @Published var friends: [Shared.FriendEntry] = []
     @Published var pendingInviteQr: Shared.QrPayload? = nil
     @Published var isSharingLocation: Bool {
@@ -236,30 +247,36 @@ final class LocationSyncService: ObservableObject {
             for friend in friendList {
                 if pausedFriendIds.contains(friend.id) { continue }
 
-                // Alice: rotate epoch when due, before encrypting the next message.
-                if await e2eeStore.shouldRotateEpoch(friendId: friend.id) {
-                    let oldToken = toHex(friend.session.routingToken)
-                    if let rotPayload = await e2eeStore.initiateEpochRotation(friendId: friend.id) {
-                        let body = epochRotationBody(rotPayload)
-                        if let bodyData = try? JSONSerialization.data(withJSONObject: body) {
-                            await postToMailbox(token: oldToken, bodyData: bodyData)
+                do {
+                    // Alice: rotate epoch when due, before encrypting the next message.
+                    if await e2eeStore.shouldRotateEpoch(friendId: friend.id) {
+                        let oldToken = toHex(friend.session.routingToken)
+                        if let rotPayload = await e2eeStore.initiateEpochRotation(friendId: friend.id) {
+                            let body = epochRotationBody(rotPayload)
+                            if let bodyData = try? JSONSerialization.data(withJSONObject: body) {
+                                try await postToMailbox(token: oldToken, bodyData: bodyData)
+                                updateStatus(nil)
+                            }
                         }
                     }
-                }
 
-                // Re-fetch after potential rotation to use the current session/token.
-                guard let current = await e2eeStore.getFriend(id: friend.id) else { continue }
-                let result = Shared.Session.shared.encryptLocation(
-                    state: current.session, location: plaintext,
-                    senderFp: current.session.aliceFp, recipientFp: current.session.bobFp
-                )
-                let newSession = result.first!
-                let ct = result.second!
-                await e2eeStore.updateSession(id: friend.id, newSession: newSession)
-                let hexToken = toHex(current.session.routingToken)
-                let payload = encryptedLocationBody(epoch: newSession.epoch, seq: newSession.sendSeq, ct: toSwiftData(ct))
-                if let bodyData = try? JSONSerialization.data(withJSONObject: payload) {
-                    await postToMailbox(token: hexToken, bodyData: bodyData)
+                    // Re-fetch after potential rotation to use the current session/token.
+                    guard let current = await e2eeStore.getFriend(id: friend.id) else { continue }
+                    let result = Shared.Session.shared.encryptLocation(
+                        state: current.session, location: plaintext,
+                        senderFp: current.session.aliceFp, recipientFp: current.session.bobFp
+                    )
+                    let newSession = result.first!
+                    let ct = result.second!
+                    await e2eeStore.updateSession(id: friend.id, newSession: newSession)
+                    let hexToken = toHex(current.session.routingToken)
+                    let payload = encryptedLocationBody(epoch: newSession.epoch, seq: newSession.sendSeq, ct: toSwiftData(ct))
+                    if let bodyData = try? JSONSerialization.data(withJSONObject: payload) {
+                        try await postToMailbox(token: hexToken, bodyData: bodyData)
+                        updateStatus(nil)
+                    }
+                } catch {
+                    updateStatus(error)
                 }
             }
         }
@@ -310,7 +327,12 @@ final class LocationSyncService: ObservableObject {
             ]
 
             if let bodyData = try? JSONSerialization.data(withJSONObject: payload) {
-                await postToMailbox(token: discoveryHex, bodyData: bodyData)
+                do {
+                    try await postToMailbox(token: discoveryHex, bodyData: bodyData)
+                    updateStatus(nil)
+                } catch {
+                    updateStatus(error)
+                }
                 await postOpkBundle(friend: bobEntry)
             }
         }
@@ -350,7 +372,12 @@ final class LocationSyncService: ObservableObject {
         let hexToken = toHex(friend.session.routingToken)
         let body = preKeyBundleBody(bundle)
         if let bodyData = try? JSONSerialization.data(withJSONObject: body) {
-            await postToMailbox(token: hexToken, bodyData: bodyData)
+            do {
+                try await postToMailbox(token: hexToken, bodyData: bodyData)
+                updateStatus(nil)
+            } catch {
+                updateStatus(error)
+            }
         }
     }
 
@@ -365,7 +392,14 @@ final class LocationSyncService: ObservableObject {
         let friendList = await e2eeStore.listFriends()
         for friend in friendList {
             let hexToken = toHex(friend.session.routingToken)
-            let messages = await pollMailbox(token: hexToken)
+            let messages: [[String: Any]]
+            do {
+                messages = try await pollMailbox(token: hexToken)
+                updateStatus(nil)
+            } catch {
+                updateStatus(error)
+                continue
+            }
             let senderFp = friend.session.aliceFp
             let recipientFp = friend.session.bobFp
 
@@ -377,7 +411,12 @@ final class LocationSyncService: ObservableObject {
                     let newToken = toHex(newEntry.session.routingToken)
                     let body = ratchetAckBody(ack)
                     if let bodyData = try? JSONSerialization.data(withJSONObject: body) {
-                        await postToMailbox(token: newToken, bodyData: bodyData)
+                        do {
+                            try await postToMailbox(token: newToken, bodyData: bodyData)
+                            updateStatus(nil)
+                        } catch {
+                            updateStatus(error)
+                        }
                     }
                     await postOpkBundle(friend: newEntry)
                 }
@@ -430,7 +469,14 @@ final class LocationSyncService: ObservableObject {
     private func pollPendingInvite() async {
         guard let qr = await e2eeStore.pendingQrPayload else { return }
         let discoveryHex = toHex(qr.discoveryToken())
-        let messages = await pollMailbox(token: discoveryHex)
+        let messages: [[String: Any]]
+        do {
+            messages = try await pollMailbox(token: discoveryHex)
+            updateStatus(nil)
+        } catch {
+            updateStatus(error)
+            return
+        }
         for msg in messages {
             guard (msg["v"] as? Int) == 1,
                   (msg["type"] as? String) == "KeyExchangeInit",
@@ -453,6 +499,25 @@ final class LocationSyncService: ObservableObject {
             pendingInviteQr = nil
             e2eeStore.clearInvite()
             break
+        }
+    }
+
+    private func updateStatus(_ error: Error?) {
+        if let error = error {
+            let msg: String
+            let desc = error.localizedDescription.lowercased()
+            if desc.contains("timeout") {
+                msg = "timeout"
+            } else if desc.contains("not resolved") || desc.contains("connection") {
+                msg = "no connection"
+            } else if let nsError = error as NSError?, nsError.domain == "Where" {
+                msg = "server error \(nsError.code)"
+            } else {
+                msg = String(desc.prefix(32))
+            }
+            connectionStatus = .error(message: msg)
+        } else {
+            connectionStatus = .ok
         }
     }
 }
