@@ -248,20 +248,27 @@ class LocationViewModel(
                     e2eeStore.storeOpkBundle(friend.id, msg)
                 }
 
-                // --- Decrypt location updates in seq order ---
+                // --- Decrypt location updates in order: epoch then seq ---
                 var session = e2eeStore.getFriend(friend.id)?.session ?: continue
-                for (msg in messages.filterIsInstance<EncryptedLocationPayload>().sortedBy { it.seqAsLong() }) {
-                    val result =
-                        Session.decryptLocation(
-                            state = session,
-                            ct = msg.ct,
-                            seq = msg.seqAsLong(),
-                            senderFp = senderFp,
-                            recipientFp = recipientFp,
-                        ) ?: continue
-                    session = result.first
-                    val location = result.second
-                    friendLocations.value += (friend.id to UserLocation(friend.id, location.lat, location.lng, location.ts))
+                val sortedMessages = messages.filterIsInstance<EncryptedLocationPayload>()
+                    .sortedWith(compareBy({ it.epoch }, { it.seqAsLong() }))
+
+                for (msg in sortedMessages) {
+                    try {
+                        val result =
+                            Session.decryptLocation(
+                                state = session,
+                                ct = msg.ct,
+                                seq = msg.seqAsLong(),
+                                senderFp = senderFp,
+                                recipientFp = recipientFp,
+                            ) ?: continue
+                        session = result.first
+                        val location = result.second
+                        friendLocations.value += (friend.id to UserLocation(friend.id, location.lat, location.lng, location.ts))
+                    } catch (_: Exception) {
+                        // ignore bad messages to avoid dropping the entire batch
+                    }
                 }
                 if (session !== (e2eeStore.getFriend(friend.id)?.session)) {
                     e2eeStore.updateSession(friend.id, session)
