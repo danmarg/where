@@ -240,6 +240,8 @@ class SessionTest {
         val rootKey = ByteArray(32) { it.toByte() }
         val routingToken = ByteArray(16) { (it + 1).toByte() }
         val newEkPub = ByteArray(32) { (it + 64).toByte() }
+        val senderFp = ByteArray(32) { it.toByte() }
+        val recipientFp = ByteArray(32) { (it + 1).toByte() }
         val ts = 1711152000L
 
         val ct = buildEpochRotationCt(
@@ -249,12 +251,17 @@ class SessionTest {
             newEkPub = newEkPub,
             ts = ts,
             routingToken = routingToken,
+            senderFp = senderFp,
+            recipientFp = recipientFp,
         )
 
         val plaintext = decryptEpochRotationCt(
             rootKey = rootKey,
+            epoch = 3,
             ct = ct,
             routingToken = routingToken,
+            senderFp = senderFp,
+            recipientFp = recipientFp,
         )
 
         assertEquals(3, plaintext.epoch)
@@ -264,29 +271,33 @@ class SessionTest {
     }
 
     @Test
-    fun `EpochRotation AEAD fails with wrong routing token`() {
+    fun `EpochRotation AEAD fails with wrong root key`() {
         val rootKey = ByteArray(32) { it.toByte() }
+        val wrongKey = ByteArray(32) { (it + 1).toByte() }
         val routingToken = ByteArray(16) { 0x01.toByte() }
-        val wrongToken = ByteArray(16) { 0x02.toByte() }
         val newEkPub = ByteArray(32)
+        val senderFp = ByteArray(32)
+        val recipientFp = ByteArray(32)
 
-        val ct = buildEpochRotationCt(rootKey, 1, 1, newEkPub, 1000L, routingToken)
+        val ct = buildEpochRotationCt(rootKey, 1, 1, newEkPub, 1000L, routingToken, senderFp, recipientFp)
 
         val threw = try {
-            decryptEpochRotationCt(rootKey, ct, wrongToken)
+            decryptEpochRotationCt(wrongKey, 1, ct, routingToken, senderFp, recipientFp)
             false
         } catch (_: Exception) { true }
-        assertTrue(threw, "Expected AEAD to fail with wrong routing token")
+        assertTrue(threw, "Expected AEAD to fail with wrong root key")
     }
 
     @Test
     fun `RatchetAck AEAD round-trip`() {
         val rootKey = ByteArray(32) { it.toByte() }
         val routingToken = ByteArray(16) { (it + 1).toByte() }
+        val senderFp = ByteArray(32) { it.toByte() }
+        val recipientFp = ByteArray(32) { (it + 1).toByte() }
         val ts = 1711152000L
 
-        val ct = buildRatchetAckCt(rootKey, epochSeen = 5, ts = ts, routingToken = routingToken)
-        val plaintext = decryptRatchetAckCt(rootKey, ct, routingToken)
+        val ct = buildRatchetAckCt(rootKey, epochSeen = 5, ts = ts, routingToken = routingToken, senderFp = senderFp, recipientFp = recipientFp)
+        val plaintext = decryptRatchetAckCt(rootKey, epochSeen = 5, ct = ct, routingToken = routingToken, senderFp = senderFp, recipientFp = recipientFp)
 
         assertEquals(5, plaintext.epochSeen)
         assertEquals(ts, plaintext.ts)
@@ -297,11 +308,13 @@ class SessionTest {
         val rootKey = ByteArray(32) { it.toByte() }
         val routingToken = ByteArray(16) { 0x01.toByte() }
         val wrongToken = ByteArray(16) { 0x02.toByte() }
+        val senderFp = ByteArray(32)
+        val recipientFp = ByteArray(32)
 
-        val ct = buildRatchetAckCt(rootKey, epochSeen = 1, ts = 1000L, routingToken = routingToken)
+        val ct = buildRatchetAckCt(rootKey, epochSeen = 1, ts = 1000L, routingToken = routingToken, senderFp = senderFp, recipientFp = recipientFp)
 
         val threw = try {
-            decryptRatchetAckCt(rootKey, ct, wrongToken)
+            decryptRatchetAckCt(rootKey, epochSeen = 1, ct = wrongToken, routingToken = routingToken, senderFp = senderFp, recipientFp = recipientFp)
             false
         } catch (_: Exception) { true }
         assertTrue(threw, "Expected AEAD to fail with wrong routing token")

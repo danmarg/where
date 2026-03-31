@@ -89,6 +89,7 @@ class E2eeIntegrationTest {
             // Alice posts the ciphertext to Bob's mailbox
             val payload: MailboxPayload =
                 EncryptedLocationPayload(
+                    v = 1,
                     epoch = newAliceState.epoch,
                     seq = newAliceState.sendSeq.toString(),
                     ct = ct,
@@ -152,7 +153,7 @@ class E2eeIntegrationTest {
                     contentType(ContentType.Application.Json)
                     setBody(
                         json.encodeToString<MailboxPayload>(
-                            EncryptedLocationPayload(nextState.epoch, nextState.sendSeq.toString(), ct),
+                            EncryptedLocationPayload(1, nextState.epoch, nextState.sendSeq.toString(), ct),
                         ),
                     )
                 }
@@ -197,7 +198,7 @@ class E2eeIntegrationTest {
                 contentType(ContentType.Application.Json)
                 setBody(
                     json.encodeToString<MailboxPayload>(
-                        EncryptedLocationPayload(newAliceState.epoch, newAliceState.sendSeq.toString(), tampered),
+                        EncryptedLocationPayload(1, newAliceState.epoch, newAliceState.sendSeq.toString(), tampered),
                     ),
                 )
             }
@@ -236,7 +237,7 @@ class E2eeIntegrationTest {
                 contentType(ContentType.Application.Json)
                 setBody(
                     json.encodeToString<MailboxPayload>(
-                        EncryptedLocationPayload(newAliceState.epoch, newAliceState.sendSeq.toString(), ct),
+                        EncryptedLocationPayload(1, newAliceState.epoch, newAliceState.sendSeq.toString(), ct),
                     ),
                 )
             }
