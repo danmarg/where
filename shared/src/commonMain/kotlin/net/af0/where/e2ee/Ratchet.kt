@@ -45,11 +45,13 @@ internal fun kdfCk(chainKey: ByteArray): ChainStep {
             info = INFO_MSG_STEP.encodeToByteArray(),
             length = 76,
         )
-    return ChainStep(
+    val step = ChainStep(
         newChainKey = out.copyOfRange(0, 32),
         messageKey = out.copyOfRange(32, 64),
         messageNonce = out.copyOfRange(64, 76),
     )
+    out.fill(0)
+    return step
 }
 
 /**
