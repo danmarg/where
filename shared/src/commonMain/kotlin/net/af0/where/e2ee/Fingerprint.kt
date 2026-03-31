@@ -22,6 +22,23 @@ fun safetyNumber(
     return full.copyOfRange(0, 12)
 }
 
+/**
+ * Format 12-byte safety number as 6 groups of 4 decimal digits.
+ */
+fun formatSafetyNumber(sn: ByteArray): String {
+    require(sn.size == 12) { "safety number must be 12 bytes" }
+    val out = StringBuilder()
+    for (i in 0 until 6) {
+        val b0 = sn[i * 2].toInt() and 0xFF
+        val b1 = sn[i * 2 + 1].toInt() and 0xFF
+        val val16 = (b0 shl 8) or b1
+        // (b0 << 8 | b1) % 10000 gives 4 digits
+        out.append((val16 % 10000).toString().padStart(4, '0'))
+        if (i < 5) out.append(" ")
+    }
+    return out.toString()
+}
+
 private fun ByteArray.compare(other: ByteArray): Int {
     for (i in 0 until minOf(size, other.size)) {
         val a = this[i].toInt() and 0xFF

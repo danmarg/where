@@ -88,6 +88,7 @@ class MailboxMessageTest {
     @Test
     fun `EpochRotationPayload serialises and deserialises`() {
         val newEkPub = ByteArray(32) { 0xAA.toByte() }
+        val nonce = ByteArray(12) { 0xEE.toByte() }
         val ct = ByteArray(64) { 0xBB.toByte() }
         val original =
             EpochRotationPayload(
@@ -95,6 +96,7 @@ class MailboxMessageTest {
                 opkId = 101,
                 newEkPub = newEkPub,
                 ts = 1711152000L,
+                nonce = nonce,
                 ct = ct,
             )
         val encoded = json.encodeToString(MailboxPayload.serializer(), original)
@@ -104,6 +106,7 @@ class MailboxMessageTest {
         assertEquals(101, decoded.opkId)
         assertContentEquals(newEkPub, decoded.newEkPub)
         assertEquals(1711152000L, decoded.ts)
+        assertContentEquals(nonce, decoded.nonce)
         assertContentEquals(ct, decoded.ct)
     }
 
@@ -115,6 +118,7 @@ class MailboxMessageTest {
                 opkId = 5,
                 newEkPub = ByteArray(32),
                 ts = 0L,
+                nonce = ByteArray(12),
                 ct = ByteArray(32),
             )
         val encoded = json.encodeToString(MailboxPayload.serializer(), payload)
@@ -128,21 +132,26 @@ class MailboxMessageTest {
 
     @Test
     fun `RatchetAckPayload serialises and deserialises`() {
+        val newEkPub = ByteArray(32) { 0xDD.toByte() }
+        val nonce = ByteArray(12) { 0xEE.toByte() }
         val ct = ByteArray(32) { 0xCC.toByte() }
-        val original = RatchetAckPayload(epochSeen = 42, ts = 1711152001L, ct = ct)
+        val original = RatchetAckPayload(epochSeen = 42, ts = 1711152001L, newEkPub = newEkPub, nonce = nonce, ct = ct)
         val encoded = json.encodeToString(MailboxPayload.serializer(), original)
         val decoded = json.decodeFromString<MailboxPayload>(encoded)
         assertIs<RatchetAckPayload>(decoded)
         assertEquals(42, decoded.epochSeen)
         assertEquals(1711152001L, decoded.ts)
+        assertContentEquals(newEkPub, decoded.newEkPub)
+        assertContentEquals(nonce, decoded.nonce)
         assertContentEquals(ct, decoded.ct)
     }
 
     @Test
     fun `RatchetAckPayload uses snake_case field names`() {
-        val payload = RatchetAckPayload(epochSeen = 1, ts = 0L, ct = ByteArray(32))
+        val payload = RatchetAckPayload(epochSeen = 1, ts = 0L, newEkPub = ByteArray(32), nonce = ByteArray(12), ct = ByteArray(32))
         val encoded = json.encodeToString(MailboxPayload.serializer(), payload)
         assert(encoded.contains("\"epoch_seen\"")) { "Expected epoch_seen in: $encoded" }
+        assert(encoded.contains("\"new_ek_pub\"")) { "Expected new_ek_pub in: $encoded" }
     }
 
     // ---------------------------------------------------------------------------
@@ -155,8 +164,8 @@ class MailboxMessageTest {
             listOf(
                 EncryptedLocationPayload(epoch = 1, seq = "1", ct = ByteArray(32)),
                 PreKeyBundlePayload(keys = emptyList(), mac = ByteArray(32)),
-                EpochRotationPayload(epoch = 1, opkId = 1, newEkPub = ByteArray(32), ts = 0L, ct = ByteArray(32)),
-                RatchetAckPayload(epochSeen = 1, ts = 0L, ct = ByteArray(32)),
+                EpochRotationPayload(epoch = 1, opkId = 1, newEkPub = ByteArray(32), ts = 0L, nonce = ByteArray(12), ct = ByteArray(32)),
+                RatchetAckPayload(epochSeen = 1, ts = 0L, newEkPub = ByteArray(32), nonce = ByteArray(12), ct = ByteArray(32)),
             )
         for (payload in payloads) {
             val encoded = json.encodeToString(MailboxPayload.serializer(), payload)
