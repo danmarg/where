@@ -64,7 +64,12 @@ object Session {
                 sendChainKey = step.newChainKey,
                 sendSeq = seq,
             )
+
+        // Security (§5.5, §11): zero out ephemeral keys after use
         step.messageKey.fill(0)
+        step.messageNonce.fill(0)
+        plaintext.fill(0)
+
         return newState to ct
     }
 
@@ -112,14 +117,21 @@ object Session {
 
         val aad = buildLocationAad(senderFp, recipientFp, state.epoch, seq)
         val plaintext = aeadDecrypt(finalStep.messageKey, finalStep.messageNonce, ct, aad)
-        val location = decodeLocation(unpad(plaintext))
+        val unpadded = unpad(plaintext)
+        val location = decodeLocation(unpadded)
 
         val newState =
             state.copy(
                 recvChainKey = chainKey,
                 recvSeq = seq,
             )
+
+        // Security (§5.5, §11): zero out ephemeral keys after use
         finalStep.messageKey.fill(0)
+        finalStep.messageNonce.fill(0)
+        plaintext.fill(0)
+        unpadded.fill(0)
+
         return newState to location
     }
 
@@ -149,7 +161,7 @@ object Session {
         val dhOut = x25519(aliceNewEkPriv, bobOpkPub)
         val ratchetStep = kdfRk(state.rootKey, dhOut)
         val newToken = deriveRoutingToken(ratchetStep.newRootKey, newEpoch, senderFp, recipientFp)
-        return state.copy(
+        val newState = state.copy(
             rootKey = ratchetStep.newRootKey,
             sendChainKey = ratchetStep.newChainKey, // Alice's new send chain
             // recvChainKey is unchanged — Bob's outgoing chain has not rotated
@@ -158,6 +170,11 @@ object Session {
             myEkPriv = aliceNewEkPriv.copyOf(),
             myEkPub = aliceNewEkPub.copyOf(),
         )
+
+        // Security (§5.5, §11): zero out ephemeral keys after use
+        dhOut.fill(0)
+
+        return newState
     }
 
     /**
@@ -184,7 +201,7 @@ object Session {
         val dhOut = x25519(bobOpkPriv, aliceNewEkPub)
         val ratchetStep = kdfRk(state.rootKey, dhOut)
         val newToken = deriveRoutingToken(ratchetStep.newRootKey, newEpoch, senderFp, recipientFp)
-        return state.copy(
+        val newState = state.copy(
             rootKey = ratchetStep.newRootKey,
             recvChainKey = ratchetStep.newChainKey, // Bob's new recv chain (= Alice's new send)
             // sendChainKey is unchanged — Bob's own outgoing chain has not rotated
@@ -192,6 +209,11 @@ object Session {
             epoch = newEpoch,
             theirEkPub = aliceNewEkPub.copyOf(),
         )
+
+        // Security (§5.5, §11): zero out ephemeral keys after use
+        dhOut.fill(0)
+
+        return newState
     }
 
     // ---------------------------------------------------------------------------
