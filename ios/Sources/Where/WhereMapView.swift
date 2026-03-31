@@ -12,6 +12,12 @@ struct WhereMapView: UIViewRepresentable {
         let mapView = MKMapView()
         mapView.delegate = context.coordinator
         mapView.showsUserLocation = false
+        // Set initial world view; will zoom to actual location once user's location is available
+        let initialRegion = MKCoordinateRegion(
+            center: CLLocationCoordinate2D(latitude: 20, longitude: 0),
+            span: MKCoordinateSpan(latitudeDelta: 180, longitudeDelta: 360)
+        )
+        mapView.setRegion(initialRegion, animated: false)
         return mapView
     }
 
