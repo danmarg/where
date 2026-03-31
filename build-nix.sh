@@ -51,7 +51,7 @@ echo ""
 
 # Build server
 echo "=== Building server ==="
-if ! ./gradlew :server:build; then
+if ! nix develop --command ./gradlew :server:build; then
   echo "Server build failed."
   exit 1
 fi
@@ -72,7 +72,7 @@ else
   export KEY_PASSWORD=$KEYSTORE_PASSWORD  # Same as keystore password
 fi
 echo "=== Building Android $BUILD_FLAVOR AAB ==="
-if ! bash -c "KEYSTORE_FILE='$KEYSTORE_FILE' KEYSTORE_PASSWORD='$KEYSTORE_PASSWORD' KEY_PASSWORD='$KEY_PASSWORD' ./gradlew :android:$GRADLE_TASK"; then
+if ! nix develop --command bash -c "KEYSTORE_FILE='$KEYSTORE_FILE' KEYSTORE_PASSWORD='$KEYSTORE_PASSWORD' KEY_PASSWORD='$KEY_PASSWORD' ./gradlew :android:$GRADLE_TASK"; then
   echo "Android build failed."
   exit 1
 fi
@@ -86,7 +86,7 @@ echo "=== Building iOS for real device ==="
 if [ ! -f ios/Where.xcodeproj/project.pbxproj ]; then
   echo "Generating Xcode project..."
   cd ios
-  xcodegen
+  nix develop --command xcodegen
   cd ..
 fi
 
@@ -97,7 +97,7 @@ else
   XCODE_CONFIGURATION="Release"
 fi
 echo "=== Building iOS for real device ($XCODE_CONFIGURATION) ==="
-if ! bash -c "cd ios && WHERE_SERVER_HTTP_URL='$SERVER_URL' xcodebuild \
+if ! nix develop --command bash -c "cd ios && WHERE_SERVER_HTTP_URL='$SERVER_URL' xcodebuild \
   -project Where.xcodeproj \
   -scheme Where \
   -configuration $XCODE_CONFIGURATION \
@@ -124,7 +124,7 @@ echo ""
 echo "Server: ./gradlew :server:run"
 echo ""
 echo "Android AAB location:"
-android_build_dir=$(./gradlew -q :android:printBuildDir 2>/dev/null || echo "android/build")
+android_build_dir=$(nix develop --command ./gradlew -q :android:printBuildDir 2>/dev/null || echo "android/build")
 echo "  $android_build_dir/outputs/bundle/$BUILD_FLAVOR/android-$BUILD_FLAVOR.aab"
 echo "  Upload to Google Play Store or use bundletool to test"
 echo ""
