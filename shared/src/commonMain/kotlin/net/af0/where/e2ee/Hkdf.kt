@@ -28,12 +28,21 @@ internal fun hkdfSha256(
     var t = ByteArray(0)
     var pos = 0
     var i = 1
-    while (pos < length) {
-        t = hmacSha256(prk, t + info + byteArrayOf(i.toByte()))
-        val toCopy = minOf(t.size, length - pos)
-        t.copyInto(result, pos, 0, toCopy)
-        pos += toCopy
-        i++
+    try {
+        while (pos < length) {
+            val stepInput = t + info + byteArrayOf(i.toByte())
+            val nextT = hmacSha256(prk, stepInput)
+            stepInput.fill(0)
+            t.fill(0)
+            t = nextT
+            val toCopy = minOf(t.size, length - pos)
+            t.copyInto(result, pos, 0, toCopy)
+            pos += toCopy
+            i++
+        }
+    } finally {
+        prk.fill(0)
+        t.fill(0)
     }
     return result
 }
