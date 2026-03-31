@@ -158,8 +158,8 @@ class MainActivity : ComponentActivity() {
                     )
                 }
 
-                pendingInitPayload?.let { _ ->
-                    var name by remember { mutableStateOf("") }
+                pendingInitPayload?.let { payload ->
+                    var name by remember(payload) { mutableStateOf(payload.suggestedName) }
                     AlertDialog(
                         onDismissRequest = { viewModel.cancelPendingInit() },
                         title = { Text("Name this contact") },
