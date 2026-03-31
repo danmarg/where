@@ -18,3 +18,4 @@ rootProject.name = "where"
 include(":shared")
 include(":android")
 include(":server")
+include(":cli")

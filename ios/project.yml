@@ -3,12 +3,13 @@ options:
   bundleIdPrefix: net.af0
   deploymentTarget:
     iOS: "17.0"
-  xcodeVersion: "16"
 
 settings:
   SWIFT_VERSION: "6.0"
   ENABLE_USER_SCRIPT_SANDBOXING: NO
-  OTHER_LDFLAGS: $(inherited) -ld_classic
+  OTHER_LDFLAGS: $(inherited)
+  ENABLE_PREVIEWS: NO
+  LD: $(DT_TOOLCHAIN_DIR)/usr/bin/clang
 
 targets:
   Where:
@@ -22,10 +23,72 @@ targets:
         embed: false
         codeSign: false
         implicit: true
+      - framework: Security
+        embed: false
+      - framework: MapKit
+        embed: false
+      - framework: CoreLocation
+        embed: false
     preBuildScripts:
       - script: |
           cd "$SRCROOT/.."
-          ./gradlew :shared:embedAndSignAppleFrameworkForXcode
+
+          # Use system defaults for CI environments, or local overrides if available
+          export GRADLE_USER_HOME="${GRADLE_USER_HOME:-$HOME/.gradle}"
+          export KONAN_DATA_DIR="${KONAN_DATA_DIR:-$HOME/.konan}"
+          export TMPDIR="${TMPDIR:-/tmp}"
+
+          # Ensure JAVA_HOME is set (required for gradle)
+          if [ -z "$JAVA_HOME" ]; then
+            if command -v /usr/libexec/java_home &> /dev/null; then
+              export JAVA_HOME=$(/usr/libexec/java_home)
+            fi
+          fi
+
+          # Ensure SDKROOT is set for iOS SDK headers
+          if [ -z "$SDKROOT" ]; then
+            SDKROOT=$(xcrun --sdk iphoneos --show-sdk-path 2>/dev/null)
+            [ -z "$SDKROOT" ] && SDKROOT=$(xcrun --sdk iphonesimulator --show-sdk-path 2>/dev/null)
+          fi
+          export SDKROOT
+
+          # Run with nix if available (local dev), otherwise run directly (CI)
+          # Pass SDKROOT via Gradle property for cinterop compilation
+          if command -v nix &> /dev/null; then
+            nix develop --command ./gradlew :shared:embedAndSignAppleFrameworkForXcode -Dios.sdk.root="$SDKROOT"
+          else
+            ./gradlew :shared:embedAndSignAppleFrameworkForXcode -Dios.sdk.root="$SDKROOT"
+          fi
+
+          # If local.gradle.kts redirects the build dir, symlink xcode-frameworks to the standard location.
+          LOCAL_GRADLE="$SRCROOT/../local.gradle.kts"
+          EXPECTED="$SRCROOT/../shared/build/xcode-frameworks"
+          if [ -f "$LOCAL_GRADLE" ] && [ ! -d "$EXPECTED" ]; then
+            BUILD_DIR_PATTERN=$(grep -o '"[^"]*"' "$LOCAL_GRADLE" | tr -d '"' | grep where-build | head -1)
+            ACTUAL="${BUILD_DIR_PATTERN/\$\{project.name\}/shared}"
+            if [ -d "$ACTUAL/xcode-frameworks" ]; then
+              mkdir -p "$SRCROOT/../shared/build"
+              ln -sfn "$ACTUAL/xcode-frameworks" "$EXPECTED"
+            fi
+          fi
+
+          # Create symlinks from non-versioned SDK names to versioned ones for Xcode compatibility.
+          # The Kotlin plugin generates frameworks in iphoneos26.4, iphonesimulator26.4, etc.,
+          # but Xcode's $(SDK_NAME) resolves to just "iphoneos" or "iphonesimulator".
+          FRAMEWORKS_DIR="$SRCROOT/../shared/build/xcode-frameworks"
+          for config_dir in "$FRAMEWORKS_DIR"/Debug "$FRAMEWORKS_DIR"/Release; do
+            if [ -d "$config_dir" ]; then
+              for versioned_dir in "$config_dir"/*; do
+                if [ -d "$versioned_dir" ]; then
+                  base_name=$(basename "$versioned_dir" | sed 's/[0-9.]*$//')
+                  unversioned_link="$config_dir/$base_name"
+                  if [ ! -e "$unversioned_link" ]; then
+                    ln -sfn "$(basename "$versioned_dir")" "$unversioned_link"
+                  fi
+                fi
+              done
+            fi
+          done
         name: Build KMP Shared Framework
         basedOnDependencyAnalysis: false
     settings:
@@ -35,5 +98,9 @@ targets:
       INFOPLIST_KEY_UILaunchScreen_Generation: YES
       INFOPLIST_KEY_NSLocationWhenInUseUsageDescription: "Where needs your location to show it on the map."
       INFOPLIST_KEY_NSLocationAlwaysAndWhenInUseUsageDescription: "Where needs your location in the background to keep sharing it."
+      INFOPLIST_KEY_NSCameraUsageDescription: "Where needs the camera to scan friend invite QR codes."
       INFOPLIST_KEY_UIBackgroundModes: location
       FRAMEWORK_SEARCH_PATHS: $(inherited) $(SRCROOT)/../shared/build/xcode-frameworks/$(CONFIGURATION)/$(SDK_NAME)
+      DEVELOPMENT_TEAM: ""
+      CODE_SIGN_IDENTITY: Apple Development
+      CODE_SIGN_STYLE: Automatic

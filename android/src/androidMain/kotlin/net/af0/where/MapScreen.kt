@@ -13,11 +13,12 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import com.google.accompanist.permissions.*
+import com.google.android.gms.maps.CameraUpdateFactory
 import com.google.android.gms.maps.model.BitmapDescriptorFactory
 import com.google.android.gms.maps.model.CameraPosition
 import com.google.android.gms.maps.model.LatLng
-import com.google.android.gms.maps.CameraUpdateFactory
 import com.google.maps.android.compose.*
+import net.af0.where.e2ee.FriendEntry
 import net.af0.where.model.UserLocation
 
 @OptIn(ExperimentalPermissionsApi::class, ExperimentalMaterial3Api::class)
@@ -25,25 +26,34 @@ import net.af0.where.model.UserLocation
 fun MapScreen(
     userId: String,
     users: List<UserLocation>,
-    friendIds: Set<String>,
+    friends: List<FriendEntry>,
+    displayName: String,
+    onDisplayNameChange: (String) -> Unit,
+    pausedFriendIds: Set<String>,
+    onTogglePause: (String) -> Unit,
     isSharing: Boolean,
     onToggleSharing: () -> Unit,
-    onAddFriend: (String) -> Unit,
+    onCreateInvite: () -> Unit,
+    onScanQr: () -> Unit,
     onRemoveFriend: (String) -> Unit,
     onLocationPermissionGranted: () -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
-    val locationPermissions = rememberMultiplePermissionsState(
-        listOf(
-            android.Manifest.permission.ACCESS_FINE_LOCATION,
-            android.Manifest.permission.ACCESS_COARSE_LOCATION,
+    val locationPermissions =
+        rememberMultiplePermissionsState(
+            listOf(
+                android.Manifest.permission.ACCESS_FINE_LOCATION,
+                android.Manifest.permission.ACCESS_COARSE_LOCATION,
+            ),
         )
-    )
 
     // Background location must be requested separately on Android 10+.
-    val backgroundLocationPermission = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-        rememberPermissionState(android.Manifest.permission.ACCESS_BACKGROUND_LOCATION)
-    } else null
+    val backgroundLocationPermission =
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            rememberPermissionState(android.Manifest.permission.ACCESS_BACKGROUND_LOCATION)
+        } else {
+            null
+        }
     var showBackgroundRationale by remember { mutableStateOf(false) }
 
     LaunchedEffect(Unit) {
@@ -69,7 +79,7 @@ fun MapScreen(
             text = {
                 Text(
                     "Allow Where to access your location in the background so friends can " +
-                    "see your position even when the app is not open."
+                        "see your position even when the app is not open.",
                 )
             },
             confirmButton = {
@@ -105,9 +115,10 @@ fun MapScreen(
     val ownLocation = users.find { it.userId == userId }
     LaunchedEffect(ownLocation) {
         if (ownLocation != null && cameraPositionState.position == defaultPosition) {
-            cameraPositionState.position = CameraPosition.fromLatLngZoom(
-                LatLng(ownLocation.lat, ownLocation.lng), 14f
-            )
+            cameraPositionState.position =
+                CameraPosition.fromLatLngZoom(
+                    LatLng(ownLocation.lat, ownLocation.lng), 14f,
+                )
         }
     }
 
@@ -116,7 +127,7 @@ fun MapScreen(
         val user = users.find { it.userId == id }
         if (user != null) {
             cameraPositionState.animate(
-                CameraUpdateFactory.newLatLngZoom(LatLng(user.lat, user.lng), 15f)
+                CameraUpdateFactory.newLatLngZoom(LatLng(user.lat, user.lng), 15f),
             )
         }
         zoomToUserId = null
@@ -131,31 +142,37 @@ fun MapScreen(
                 val isMe = user.userId == userId
                 Marker(
                     state = MarkerState(position = LatLng(user.lat, user.lng)),
-                    title = if (isMe) "You" else user.userId.take(8),
-                    icon = BitmapDescriptorFactory.defaultMarker(
-                        if (isMe) BitmapDescriptorFactory.HUE_AZURE
-                        else BitmapDescriptorFactory.HUE_RED
-                    ),
+                    title = if (isMe) "You" else friends.find { it.id == user.userId }?.name ?: user.userId.take(8),
+                    icon =
+                        BitmapDescriptorFactory.defaultMarker(
+                            if (isMe) {
+                                BitmapDescriptorFactory.HUE_AZURE
+                            } else {
+                                BitmapDescriptorFactory.HUE_RED
+                            },
+                        ),
                 )
             }
         }
 
         // Bottom controls row
         Row(
-            modifier = Modifier
-                .align(Alignment.BottomCenter)
-                .padding(horizontal = 16.dp, vertical = 24.dp)
-                .fillMaxWidth(),
+            modifier =
+                Modifier
+                    .align(Alignment.BottomCenter)
+                    .padding(horizontal = 16.dp, vertical = 24.dp)
+                    .fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(8.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             // Pause / resume sharing
             FilledTonalButton(
                 onClick = onToggleSharing,
-                colors = ButtonDefaults.filledTonalButtonColors(
-                    containerColor = if (isSharing) Color(0xFF1565C0) else Color(0xFF555555),
-                    contentColor = Color.White,
-                ),
+                colors =
+                    ButtonDefaults.filledTonalButtonColors(
+                        containerColor = if (isSharing) Color(0xFF1565C0) else Color(0xFF555555),
+                        contentColor = Color.White,
+                    ),
             ) {
                 Icon(
                     if (isSharing) Icons.Default.LocationOn else Icons.Default.LocationOff,
@@ -184,7 +201,7 @@ fun MapScreen(
             FilledTonalButton(onClick = { showFriends = true }) {
                 Icon(Icons.Default.People, contentDescription = null, modifier = Modifier.size(16.dp))
                 Spacer(Modifier.width(4.dp))
-                Text("${friendIds.size}", style = MaterialTheme.typography.labelMedium)
+                Text("${friends.size}", style = MaterialTheme.typography.labelMedium)
             }
         }
     }
@@ -192,8 +209,13 @@ fun MapScreen(
     if (showFriends) {
         FriendsSheet(
             userId = userId,
-            friendIds = friendIds,
-            onAdd = onAddFriend,
+            friends = friends,
+            displayName = displayName,
+            onDisplayNameChange = onDisplayNameChange,
+            pausedFriendIds = pausedFriendIds,
+            onTogglePause = onTogglePause,
+            onCreateInvite = onCreateInvite,
+            onScanQr = onScanQr,
             onRemove = onRemoveFriend,
             onDismiss = { showFriends = false },
             onZoomTo = { zoomToUserId = it },

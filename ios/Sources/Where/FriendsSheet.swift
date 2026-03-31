@@ -1,93 +1,108 @@
+import Shared
 import SwiftUI
 
 struct FriendsSheet: View {
-    @ObservedObject var store: FriendsStore
-    var onZoomTo: (String) -> Void = { _ in }
-    @State private var newId: String = ""
-    @State private var showCopied = false
-    @Environment(\.dismiss) private var dismiss
+    let myId: String
+    @Binding var displayName: String
+    let friends: [Shared.FriendEntry]
+    let pausedFriendIds: Set<String>
+    let onTogglePause: (String) -> Void
+    let onCreateInvite: () -> Void
+    let onScanQr: () -> Void
+    let onRemove: (String) -> Void
+    let onZoomTo: (String) -> Void
+
+    @State private var friendToRemove: Shared.FriendEntry? = nil
 
     var body: some View {
         NavigationStack {
             List {
-                Section {
-                    HStack {
-                        Text(UserIdentity.userId)
-                            .font(.system(.caption, design: .monospaced))
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
-                            .truncationMode(.middle)
-                        Spacer()
-                        Button(showCopied ? "Copied!" : "Copy") {
-                            UIPasteboard.general.string = UserIdentity.userId
-                            showCopied = true
-                            Task {
-                                try? await Task.sleep(nanoseconds: 2_000_000_000)
-                                showCopied = false
-                            }
-                        }
+                Section("Your Name") {
+                    TextField("Alice", text: $displayName)
+                }
+
+                Section("Your ID") {
+                    Text(myId)
                         .font(.caption)
+                        .fontDesign(.monospaced)
+                        .foregroundStyle(.secondary)
+                }
+
+                Section {
+                    HStack(spacing: 12) {
+                        Button {
+                            onCreateInvite()
+                        } label: {
+                            Label("Invite", systemImage: "qrcode")
+                                .frame(maxWidth: .infinity)
+                        }
+                        .buttonStyle(.bordered)
+
+                        Button {
+                            onScanQr()
+                        } label: {
+                            Label("Scan", systemImage: "qrcode.viewfinder")
+                                .frame(maxWidth: .infinity)
+                        }
                         .buttonStyle(.bordered)
                     }
-                } header: {
-                    Text("Your ID — share this with friends")
-                } footer: {
-                    Text("Anyone who adds your ID will see your location on their map.")
-                        .font(.caption2)
                 }
 
-                Section("Add a friend") {
-                    HStack {
-                        TextField("Paste their ID", text: $newId)
-                            .font(.system(.caption, design: .monospaced))
-                            .autocorrectionDisabled()
-                            .textInputAutocapitalization(.never)
-                        Button("Add") {
-                            store.add(id: newId)
-                            newId = ""
-                        }
-                        .disabled(newId.trimmingCharacters(in: .whitespaces).isEmpty)
-                    }
-                }
-
-                if !store.friendIds.isEmpty {
-                    Section("Friends") {
-                        ForEach(Array(store.friendIds), id: \.self) { id in
-                            Button {
-                                onZoomTo(id)
-                                dismiss()
-                            } label: {
-                                HStack {
-                                    VStack(alignment: .leading, spacing: 2) {
-                                        Text(id.prefix(8))
-                                            .font(.system(.body, design: .monospaced))
-                                        Text(id)
-                                            .font(.system(.caption2, design: .monospaced))
-                                            .foregroundStyle(.secondary)
-                                            .lineLimit(1)
-                                            .truncationMode(.middle)
-                                    }
-                                    Spacer()
-                                    Image(systemName: "location.fill")
-                                        .foregroundStyle(.secondary)
+                if !friends.isEmpty {
+                    Section("Friends (\(friends.count))") {
+                        ForEach(friends, id: \.id) { friend in
+                            HStack {
+                                VStack(alignment: .leading) {
+                                    Text(friend.name)
+                                        .font(.body)
+                                    Text(friend.id.prefix(8))
                                         .font(.caption)
+                                        .fontDesign(.monospaced)
+                                        .foregroundStyle(.secondary)
                                 }
-                                .foregroundStyle(.primary)
+                                Spacer()
+                                
+                                let isPaused = pausedFriendIds.contains(friend.id)
+                                Button {
+                                    onTogglePause(friend.id)
+                                } label: {
+                                    Image(systemName: isPaused ? "play.circle" : "pause.circle")
+                                        .font(.title3)
+                                        .foregroundStyle(isPaused ? .blue : .gray)
+                                }
+                                .buttonStyle(.plain)
+                            }
+                            .contentShape(Rectangle())
+                            .onTapGesture { onZoomTo(friend.id) }
+                            .swipeActions {
+                                Button("Remove", role: .destructive) { 
+                                    friendToRemove = friend
+                                }
                             }
                         }
-                        .onDelete { offsets in
-                            let ids = Array(store.friendIds)
-                            offsets.forEach { store.remove(id: ids[$0]) }
-                        }
+                    }
+                } else {
+                    Section {
+                        Text("No friends yet. Tap Invite to share your QR code.")
+                            .foregroundStyle(.secondary)
+                            .font(.subheadline)
                     }
                 }
             }
             .navigationTitle("Friends")
             .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Done") { dismiss() }
+            .confirmationDialog(
+                "Remove \(friendToRemove?.name ?? "friend")?",
+                isPresented: Binding(get: { friendToRemove != nil }, set: { if !$0 { friendToRemove = nil } }),
+                titleVisibility: .visible
+            ) {
+                Button("Remove", role: .destructive) {
+                    if let friend = friendToRemove {
+                        onRemove(friend.id)
+                    }
                 }
+            } message: {
+                Text("This will permanently delete the key.")
             }
         }
     }

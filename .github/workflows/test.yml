@@ -21,8 +21,19 @@ jobs:
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
 
+      - name: Set ANDROID_HOME for Gradle
+        run: |
+          echo "ANDROID_HOME=$ANDROID_SDK_ROOT" >> $GITHUB_ENV
+
+      - name: Install libsodium
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libsodium-dev
+
       - name: Run shared + server tests (JVM)
-        run: ./gradlew :shared:jvmTest :server:test
+        run: |
+          export LD_LIBRARY_PATH=/usr/lib/x86_64-linux-gnu:$LD_LIBRARY_PATH
+          ./gradlew :shared:jvmTest :server:test
 
       - name: Run Android unit tests
         run: ./gradlew :android:testDebugUnitTest
