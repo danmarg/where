@@ -11,7 +11,7 @@ import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 @RunWith(RobolectricTestRunner::class)
-@Config(sdk = [33])
+@Config(sdk = [33], application = Application::class)
 class FriendsStoreTest {
     private val context: Application get() = ApplicationProvider.getApplicationContext()
     private val ownId = "owner-id"
