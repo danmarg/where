@@ -1,10 +1,9 @@
 import Foundation
 
-/// Central place to configure the server URL.
+/// Central place to configure the server URL for E2EE mailbox endpoints.
 ///
 /// - Simulator: use `localhost` (default).
-/// - Real device on the same network: change to your machine's LAN IP,
-///   e.g. `ws://192.168.1.10:8080/ws`.
+/// - Real device on the same network: set via WHERE_SERVER_HTTP_URL env var or use `http://where:8080`.
 /// - Production: point to your deployed server URL.
 enum ServerConfig {
     #if targetEnvironment(simulator)
