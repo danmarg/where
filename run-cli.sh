@@ -1,8 +1,27 @@
 #!/bin/bash
 set -e
-# Run the CLI tool using nix develop to ensure Java 21 is available.
-if [ $# -eq 0 ]; then
-  nix develop --command ./gradlew :cli:run --quiet
+cd "$(dirname "$0")"
+
+USE_NIX=false
+PASSTHROUGH_ARGS=()
+for arg in "$@"; do
+  if [[ "$arg" == "--nix" ]]; then
+    USE_NIX=true
+  else
+    PASSTHROUGH_ARGS+=("$arg")
+  fi
+done
+
+run() {
+  if $USE_NIX; then
+    nix develop --command "$@"
+  else
+    "$@"
+  fi
+}
+
+if [ ${#PASSTHROUGH_ARGS[@]} -eq 0 ]; then
+  run ./gradlew :cli:run --quiet
 else
-  nix develop --command ./gradlew :cli:run --quiet --args="$*"
+  run ./gradlew :cli:run --quiet --args="${PASSTHROUGH_ARGS[*]}"
 fi

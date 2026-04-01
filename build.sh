@@ -12,10 +12,16 @@ fi
 export TMPDIR="${TMPDIR:-/tmp}"
 
 # Parse arguments
+USE_NIX=false
 SERVER_URL=""
 BUILD_FLAVOR="debug"
+ANDROID_FORMAT="aab"  # aab or apk
 while [[ $# -gt 0 ]]; do
   case $1 in
+    --nix)
+      USE_NIX=true
+      shift
+      ;;
     --server-url)
       SERVER_URL="$2"
       shift 2
@@ -24,12 +30,24 @@ while [[ $# -gt 0 ]]; do
       BUILD_FLAVOR="$2"
       shift 2
       ;;
+    --apk)
+      ANDROID_FORMAT="apk"
+      shift
+      ;;
     *)
       echo "Unknown option: $1"
       exit 1
       ;;
   esac
 done
+
+run() {
+  if $USE_NIX; then
+    nix develop --command "$@"
+  else
+    "$@"
+  fi
+}
 
 # Validate flavor
 if [[ "$BUILD_FLAVOR" != "debug" && "$BUILD_FLAVOR" != "release" ]]; then
@@ -51,18 +69,26 @@ echo ""
 
 # Build server
 echo "=== Building server ==="
-if ! ./gradlew :server:build; then
+if ! run ./gradlew :server:build; then
   echo "Server build failed."
   exit 1
 fi
 echo "✓ Server built"
 echo ""
 
-# Build Android AAB (App Bundle)
+# Build Android APK or AAB
 if [[ "$BUILD_FLAVOR" == "debug" ]]; then
-  GRADLE_TASK="bundleDebug"
+  if [[ "$ANDROID_FORMAT" == "apk" ]]; then
+    GRADLE_TASK="assembleDebug"
+  else
+    GRADLE_TASK="bundleDebug"
+  fi
 else
-  GRADLE_TASK="bundleRelease"
+  if [[ "$ANDROID_FORMAT" == "apk" ]]; then
+    GRADLE_TASK="assembleRelease"
+  else
+    GRADLE_TASK="bundleRelease"
+  fi
   # Prompt for signing credentials for release builds
   echo "=== Release Build Signing ==="
   read -sp "Enter keystore password: " KEYSTORE_PASSWORD
@@ -71,12 +97,12 @@ else
   export KEYSTORE_PASSWORD
   export KEY_PASSWORD=$KEYSTORE_PASSWORD  # Same as keystore password
 fi
-echo "=== Building Android $BUILD_FLAVOR AAB ==="
-if ! bash -c "KEYSTORE_FILE='$KEYSTORE_FILE' KEYSTORE_PASSWORD='$KEYSTORE_PASSWORD' KEY_PASSWORD='$KEY_PASSWORD' ./gradlew :android:$GRADLE_TASK"; then
+echo "=== Building Android $BUILD_FLAVOR ${ANDROID_FORMAT^^} ==="
+if ! run bash -c "KEYSTORE_FILE='$KEYSTORE_FILE' KEYSTORE_PASSWORD='$KEYSTORE_PASSWORD' KEY_PASSWORD='$KEY_PASSWORD' ./gradlew :android:$GRADLE_TASK"; then
   echo "Android build failed."
   exit 1
 fi
-echo "✓ Android AAB built ($BUILD_FLAVOR)"
+echo "✓ Android ${ANDROID_FORMAT^^} built ($BUILD_FLAVOR)"
 echo ""
 
 # Build iOS for real device (iphoneos)
@@ -86,7 +112,7 @@ echo "=== Building iOS for real device ==="
 if [ ! -f ios/Where.xcodeproj/project.pbxproj ]; then
   echo "Generating Xcode project..."
   cd ios
-  xcodegen
+  run xcodegen
   cd ..
 fi
 
@@ -97,7 +123,7 @@ else
   XCODE_CONFIGURATION="Release"
 fi
 echo "=== Building iOS for real device ($XCODE_CONFIGURATION) ==="
-if ! bash -c "cd ios && WHERE_SERVER_HTTP_URL='$SERVER_URL' xcodebuild \
+if ! run bash -c "cd ios && WHERE_SERVER_HTTP_URL='$SERVER_URL' xcodebuild \
   -project Where.xcodeproj \
   -scheme Where \
   -configuration $XCODE_CONFIGURATION \
@@ -123,10 +149,16 @@ echo "=== Build complete ==="
 echo ""
 echo "Server: ./gradlew :server:run"
 echo ""
-echo "Android AAB location:"
-android_build_dir=$(./gradlew -q :android:printBuildDir 2>/dev/null || echo "android/build")
-echo "  $android_build_dir/outputs/bundle/$BUILD_FLAVOR/android-$BUILD_FLAVOR.aab"
-echo "  Upload to Google Play Store or use bundletool to test"
+android_build_dir=$(run ./gradlew -q :android:printBuildDir 2>/dev/null || echo "android/build")
+if [[ "$ANDROID_FORMAT" == "apk" ]]; then
+  echo "Android APK location:"
+  echo "  $android_build_dir/outputs/apk/$BUILD_FLAVOR/android-$BUILD_FLAVOR.apk"
+  echo "  Install directly with: adb install <path>"
+else
+  echo "Android AAB location:"
+  echo "  $android_build_dir/outputs/bundle/$BUILD_FLAVOR/android-$BUILD_FLAVOR.aab"
+  echo "  Upload to Google Play Store or use bundletool to test"
+fi
 echo ""
 echo "iOS app location (device):"
 echo "  ios/build/Build/Products/$XCODE_CONFIGURATION-iphoneos/Where.app"

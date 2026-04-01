@@ -3,6 +3,19 @@ set -e
 set -o pipefail
 cd "$(dirname "$0")"
 
+USE_NIX=false
+for arg in "$@"; do
+  [[ "$arg" == "--nix" ]] && USE_NIX=true
+done
+
+run() {
+  if $USE_NIX; then
+    nix develop --command "$@"
+  else
+    "$@"
+  fi
+}
+
 # Load machine-specific environment if it exists
 if [ -f .envrc ]; then
   source .envrc
@@ -14,7 +27,7 @@ export TMPDIR="${TMPDIR:-/tmp}"
 # Path defaults — override via environment variables or local.properties.
 ANDROID_SDK_BASE="${ANDROID_SDK_BASE:-$HOME/.android/sdk}"
 ANDROID_AVD_HOME="${ANDROID_AVD_HOME:-$HOME/.android/avd}"
-BUILD_DIR="${BUILD_DIR:-$(nix develop --command ./gradlew -q :android:printBuildDir 2>/dev/null || echo "android/build")}"
+BUILD_DIR="${BUILD_DIR:-$(run ./gradlew -q :android:printBuildDir 2>/dev/null || echo "android/build")}"
 
 # Also read from local.properties if the env vars are not set
 if [ -f local.properties ]; then
@@ -32,35 +45,35 @@ export PATH="$ANDROID_SDK_BASE/emulator:$ANDROID_SDK_BASE/platform-tools:$ANDROI
 # Read ANDROID_ADB_HOST from local.properties if set
 ADB_HOST=$(grep "^ANDROID_ADB_HOST=" local.properties 2>/dev/null | cut -d= -f2 | tr -d '[:space:]' || true)
 
+adb_cmd() { run adb "$@"; }
+
 if [ -n "$ADB_HOST" ]; then
-  ADB="nix develop --command adb -s $ADB_HOST:36869"
-  nix develop --command adb connect "$ADB_HOST:36869" 2>/dev/null || true
-else
-  ADB="nix develop --command adb"
+  adb_cmd() { run adb -s "$ADB_HOST:36869" "$@"; }
+  run adb connect "$ADB_HOST:36869" 2>/dev/null || true
 fi
 
 # Check for any connected device (physical or emulator)
-if $ADB devices | grep -q "device$"; then
+if adb_cmd devices | grep -q "device$"; then
   echo "Device connected."
 else
   echo "No device found. Starting emulator..."
   # Let the emulator auto-detect hardware acceleration (KVM on Linux, HAXM on macOS).
   # Use -gpu host to avoid HV_UNSUPPORTED on some Apple Silicon setups.
-  nix develop --command emulator -avd pixel9 -no-audio -no-boot-anim -gpu host &
+  run emulator -avd pixel9 -no-audio -no-boot-anim -gpu host &
   echo "Waiting for emulator to boot..."
-  nix develop --command adb wait-for-device
-  nix develop --command adb shell input keyevent 82  # unlock screen
+  run adb wait-for-device
+  run adb shell input keyevent 82  # unlock screen
 fi
 
 echo "Building APK..."
-if ! nix develop --command ./gradlew :android:assembleDebug; then
+if ! run ./gradlew :android:assembleDebug; then
   echo "Gradle build failed."
   exit 1
 fi
 
 APK_PATH="${BUILD_DIR}/android/outputs/apk/debug/android-debug.apk"
 echo "Installing APK from $APK_PATH..."
-$ADB install -r "$APK_PATH"
+adb_cmd install -r "$APK_PATH"
 
 echo "Launching app..."
-$ADB shell am start -n net.af0.where/.MainActivity
+adb_cmd shell am start -n net.af0.where/.MainActivity
