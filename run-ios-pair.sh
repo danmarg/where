@@ -3,6 +3,19 @@ set -e
 set -o pipefail
 cd "$(dirname "$0")"
 
+USE_NIX=false
+for arg in "$@"; do
+  [[ "$arg" == "--nix" ]] && USE_NIX=true
+done
+
+run() {
+  if $USE_NIX; then
+    nix develop --command "$@"
+  else
+    "$@"
+  fi
+}
+
 # Path defaults — override via environment variables or local.properties.
 APP_PATH="${APP_PATH:-ios/build/Build/Products/Debug-iphonesimulator/Where.app}"
 if [ -f local.properties ]; then
@@ -11,8 +24,8 @@ if [ -f local.properties ]; then
 fi
 
 # Dynamically fetch the iPhone 17 and iPhone 17 Pro simulator IDs
-SIM1_ID=$(nix develop --command xcrun simctl list devices | grep "iPhone 17" | grep -v "Pro" | grep -v "Max" | grep -v "e" | awk '{print $NF}' | tr -d '()')
-SIM2_ID=$(nix develop --command xcrun simctl list devices | grep "iPhone 17 Pro" | grep -v "Max" | awk '{print $NF}' | tr -d '()')
+SIM1_ID=$(run xcrun simctl list devices | grep "iPhone 17" | grep -v "Pro" | grep -v "Max" | grep -v "e" | awk '{print $NF}' | tr -d '()')
+SIM2_ID=$(run xcrun simctl list devices | grep "iPhone 17 Pro" | grep -v "Max" | awk '{print $NF}' | tr -d '()')
 
 if [ -z "$SIM1_ID" ]; then
   echo "Error: iPhone 17 simulator not found."
@@ -26,9 +39,9 @@ fi
 
 boot_if_needed() {
   local udid=$1 name=$2
-  if ! nix develop --command xcrun simctl list devices | grep "$udid" | grep -q Booted; then
+  if ! run xcrun simctl list devices | grep "$udid" | grep -q Booted; then
     echo "Booting $name..."
-    nix develop --command xcrun simctl boot "$udid"
+    run xcrun simctl boot "$udid"
   fi
 }
 
@@ -38,7 +51,7 @@ boot_if_needed "$SIM2_ID" "iPhone 17 Pro"
 open -a Simulator
 
 echo "Building iOS app..."
-if ! nix develop --command xcodebuild \
+if ! run xcodebuild \
   -project ios/Where.xcodeproj \
   -scheme Where \
   -destination "platform=iOS Simulator,name=iPhone 17" \
@@ -55,14 +68,14 @@ if grep -q "BUILD FAILED" ios_build_pair.log; then
 fi
 
 echo "Installing on both simulators..."
-nix develop --command xcrun simctl install "$SIM1_ID" "$APP_PATH"
-nix develop --command xcrun simctl install "$SIM2_ID" "$APP_PATH"
+run xcrun simctl install "$SIM1_ID" "$APP_PATH"
+run xcrun simctl install "$SIM2_ID" "$APP_PATH"
 
 echo "Launching on both simulators..."
-nix develop --command xcrun simctl launch "$SIM1_ID" net.af0.where
-nix develop --command xcrun simctl launch "$SIM2_ID" net.af0.where
+run xcrun simctl launch "$SIM1_ID" net.af0.where
+run xcrun simctl launch "$SIM2_ID" net.af0.where
 
 echo ""
 echo "Tip: set different locations with:"
-echo "  nix develop --command xcrun simctl location $SIM1_ID set 37.7749,-122.4194  # San Francisco"
-echo "  nix develop --command xcrun simctl location $SIM2_ID set 37.3352,-122.0096  # Cupertino"
+echo "  xcrun simctl location $SIM1_ID set 37.7749,-122.4194  # San Francisco"
+echo "  xcrun simctl location $SIM2_ID set 37.3352,-122.0096  # Cupertino"
