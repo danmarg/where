@@ -112,8 +112,9 @@ class ServerState(val debug: Boolean = false) {
 }
 
 fun main(args: Array<String>) {
+    val port = System.getenv("PORT")?.toInt() ?: 8080
     val debug = args.contains("--debug") || System.getenv("WHERE_DEBUG") == "true"
-    embeddedServer(Netty, port = 8080) {
+    embeddedServer(Netty, port = port, host = "0.0.0.0") {
         module(ServerState(debug))
     }.start(wait = true)
 }
