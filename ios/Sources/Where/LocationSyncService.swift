@@ -125,9 +125,7 @@ final class LocationSyncService: ObservableObject {
     func sendLocation(lat: Double, lng: Double) {
         guard isSharingLocation else { return }
         Task {
-            let pausedSet = Shared.KotlinMutableSet(size: Int32(pausedFriendIds.count))
-            for id in pausedFriendIds { pausedSet.add(element: id) }
-            _ = try? await locationClient.sendLocation(lat: lat, lng: lng, pausedFriendIds: pausedSet)
+            _ = try? await locationClient.sendLocation(lat: lat, lng: lng, pausedFriendIds: pausedFriendIds)
         }
     }
 
