@@ -58,13 +58,26 @@ struct ContentView: View {
 
                     Spacer()
 
-                    Text("You: \(syncService.myId.prefix(8))")
-                        .font(.caption)
-                        .padding(.horizontal, 14)
-                        .padding(.vertical, 8)
-                        .background(.black.opacity(0.7))
-                        .foregroundStyle(.white)
-                        .clipShape(Capsule())
+                    VStack(alignment: .leading, spacing: 2) {
+                        HStack(spacing: 6) {
+                            Circle()
+                                .fill(syncService.connectionStatus.isOk ? Color.green : Color.orange)
+                                .frame(width: 8, height: 8)
+                            Text("You: \(syncService.myId.prefix(8))")
+                                .font(.caption)
+                                .foregroundStyle(.white)
+                        }
+                        if case .error(let msg) = syncService.connectionStatus {
+                            Text(msg)
+                                .font(.system(size: 8))
+                                .foregroundStyle(.orange)
+                                .lineLimit(1)
+                        }
+                    }
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 8)
+                    .background(.black.opacity(0.7))
+                    .clipShape(Capsule())
 
                     Spacer()
 
@@ -170,5 +183,12 @@ struct ContentView: View {
                 newFriendName = payload.suggestedName
             }
         }
+    }
+}
+
+extension ConnectionStatus {
+    var isOk: Bool {
+        if case .ok = self { return true }
+        return false
     }
 }

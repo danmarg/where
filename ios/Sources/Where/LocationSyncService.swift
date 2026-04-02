@@ -37,29 +37,40 @@ private func urlToQrPayload(_ url: String) -> Shared.QrPayload? {
 // MARK: - HTTP mailbox helpers
 
 @MainActor
-private func postToMailbox(token: String, bodyData: Data) async {
+private func postToMailbox(token: String, bodyData: Data) async throws {
     guard let url = URL(string: "\(ServerConfig.httpBaseUrl)/inbox/\(token)") else { return }
     var req = URLRequest(url: url)
     req.httpMethod = "POST"
     req.setValue("application/json", forHTTPHeaderField: "Content-Type")
     req.httpBody = bodyData
-    _ = try? await URLSession.shared.data(for: req)
+    let (_, response) = try await URLSession.shared.data(for: req)
+    if let http = response as? HTTPURLResponse, http.statusCode != 200 && http.statusCode != 204 {
+        throw NSError(domain: "Where", code: http.statusCode, userInfo: [NSLocalizedDescriptionKey: "Server returned \(http.statusCode)"])
+    }
 }
 
 @MainActor
-private func pollMailbox(token: String) async -> [[String: Any]] {
+private func pollMailbox(token: String) async throws -> [[String: Any]] {
     guard let url = URL(string: "\(ServerConfig.httpBaseUrl)/inbox/\(token)") else { return [] }
-    guard let (data, _) = try? await URLSession.shared.data(from: url),
-          let arr = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]]
-    else { return [] }
+    let (data, response) = try await URLSession.shared.data(from: url)
+    if let http = response as? HTTPURLResponse, http.statusCode != 200 {
+        throw NSError(domain: "Where", code: http.statusCode, userInfo: [NSLocalizedDescriptionKey: "Server returned \(http.statusCode)"])
+    }
+    guard let arr = try JSONSerialization.jsonObject(with: data) as? [[String: Any]] else { return [] }
     return arr
 }
 
 // MARK: - LocationSyncService
 
+enum ConnectionStatus {
+    case ok
+    case error(message: String)
+}
+
 @MainActor
 final class LocationSyncService: ObservableObject {
     @Published var friendLocations: [String: (lat: Double, lng: Double, ts: Int64)] = [:]
+    @Published var connectionStatus: ConnectionStatus = .ok
     @Published var friends: [Shared.FriendEntry] = []
     @Published var pendingInviteQr: Shared.QrPayload? = nil
     @Published var isSharingLocation: Bool {
@@ -125,7 +136,12 @@ final class LocationSyncService: ObservableObject {
     func sendLocation(lat: Double, lng: Double) {
         guard isSharingLocation else { return }
         Task {
-            _ = try? await locationClient.sendLocation(lat: lat, lng: lng, pausedFriendIds: pausedFriendIds)
+            do {
+                try await locationClient.sendLocation(lat: lat, lng: lng, pausedFriendIds: pausedFriendIds)
+                updateStatus(nil)
+            } catch {
+                updateStatus(error)
+            }
         }
     }
 
@@ -174,8 +190,13 @@ final class LocationSyncService: ObservableObject {
             ]
 
             if let bodyData = try? JSONSerialization.data(withJSONObject: payload) {
-                await postToMailbox(token: discoveryHex, bodyData: bodyData)
-                _ = try? await locationClient.postOpkBundle(friendId: bobEntry.id)
+                do {
+                    try await postToMailbox(token: discoveryHex, bodyData: bodyData)
+                    try await locationClient.postOpkBundle(friendId: bobEntry.id)
+                    updateStatus(nil)
+                } catch {
+                    updateStatus(error)
+                }
             }
         }
     }
@@ -210,9 +231,14 @@ final class LocationSyncService: ObservableObject {
     // MARK: - Private polling
 
     private func pollAll() async {
-        let updates = (try? await locationClient.poll()) ?? []
-        for update in updates {
-            friendLocations[update.userId] = (lat: update.lat, lng: update.lng, ts: update.timestamp)
+        do {
+            let updates = try await locationClient.poll()
+            for update in updates {
+                friendLocations[update.userId] = (lat: update.lat, lng: update.lng, ts: update.timestamp)
+            }
+            updateStatus(nil)
+        } catch {
+            updateStatus(error)
         }
         await pollPendingInvite()
     }
@@ -220,7 +246,14 @@ final class LocationSyncService: ObservableObject {
     private func pollPendingInvite() async {
         guard let qr = await e2eeStore.pendingQrPayload else { return }
         let discoveryHex = toHex(qr.discoveryToken())
-        let messages = await pollMailbox(token: discoveryHex)
+        let messages: [[String: Any]]
+        do {
+            messages = try await pollMailbox(token: discoveryHex)
+            updateStatus(nil)
+        } catch {
+            updateStatus(error)
+            return
+        }
         for msg in messages {
             guard (msg["v"] as? Int) == 1,
                   (msg["type"] as? String) == "KeyExchangeInit",
@@ -243,6 +276,25 @@ final class LocationSyncService: ObservableObject {
             pendingInviteQr = nil
             await e2eeStore.clearInvite()
             break
+        }
+    }
+
+    private func updateStatus(_ error: Error?) {
+        if let error = error {
+            let msg: String
+            let desc = error.localizedDescription.lowercased()
+            if desc.contains("timeout") {
+                msg = "timeout"
+            } else if desc.contains("not resolved") || desc.contains("connection") {
+                msg = "no connection"
+            } else if let nsError = error as NSError?, nsError.domain == "Where" {
+                msg = "server error \(nsError.code)"
+            } else {
+                msg = String(desc.prefix(32))
+            }
+            connectionStatus = .error(message: msg)
+        } else {
+            connectionStatus = .ok
         }
     }
 }
