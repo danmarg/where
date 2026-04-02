@@ -106,18 +106,19 @@ class E2eeStoreTest {
     }
 
     @Test
-    fun testPendingInviteNotPersisted() {
-        aliceStore.createInvite("Alice")
+    fun testPendingInvitePersisted() {
+        val qr = aliceStore.createInvite("Alice")
 
-        // Reloading should have no pending invite — single-session design
+        // Reloading should have the pending invite persisted
         val reloadedAliceStore = E2eeStore(aliceStorage)
-        assertNull(reloadedAliceStore.pendingQrPayload)
+        assertNotNull(reloadedAliceStore.pendingQrPayload)
+        assertContentEquals(qr.ekPub, reloadedAliceStore.pendingQrPayload!!.ekPub)
 
-        // Processing an init against a reloaded store (no pending invite) must return null
-        val qr = bobStore.createInvite("Bob") // use bobStore to generate a QR as a stand-in
-        val (initPayload, _) = aliceStore.processScannedQr(qr) // alice acts as "Bob" here
-        val result = reloadedAliceStore.processKeyExchangeInit(initPayload, "Someone")
-        assertNull(result)
+        // Processing an init against a reloaded store must succeed
+        val (initPayload, _) = bobStore.processScannedQr(qr)
+        val result = reloadedAliceStore.processKeyExchangeInit(initPayload, "Bob")
+        assertNotNull(result)
+        assertEquals("Bob", result.name)
     }
 
     @Test
