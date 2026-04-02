@@ -369,33 +369,21 @@ final class LocationSyncService: ObservableObject {
             let senderFp = friend.session.aliceFp
             let recipientFp = friend.session.bobFp
 
-            // --- Epoch rotation first: changes session/token ---
-            for msg in messages {
-                guard let rotPayload = parseEpochRotation(msg) else { continue }
-                if let ack = try? await e2eeStore.processEpochRotation(friendId: friend.id, payload: rotPayload) {
-                    guard let newEntry = await e2eeStore.getFriend(id: friend.id) else { continue }
-                    let newToken = toHex(newEntry.session.routingToken)
-                    let body = ratchetAckBody(ack)
-                    if let bodyData = try? JSONSerialization.data(withJSONObject: body) {
-                        await postToMailbox(token: newToken, bodyData: bodyData)
-                    }
-                    await postOpkBundle(friend: newEntry)
-                }
-            }
-
             // --- Cache incoming OPK bundles ---
             for msg in messages {
                 guard let bundle = parsePreKeyBundle(msg) else { continue }
                 await e2eeStore.storeOpkBundle(friendId: friend.id, bundle: bundle)
             }
 
-            // --- Decrypt location updates ---
+            // --- Decrypt location updates BEFORE processing epoch rotation ---
+            // All EncryptedLocationPayloads on this token are from the current epoch.
+            // Processing EpochRotation first would advance the stored session to the new
+            // epoch, causing decryption to fail for messages in this same-token batch.
             var session = (await e2eeStore.getFriend(id: friend.id) ?? friend).session
+            let sortedLocs = messages.compactMap { parseEncryptedLocation($0) }
+                .sorted { $0.seq < $1.seq }
             var sessionChanged = false
-            for msg in messages {
-                guard let loc = parseEncryptedLocation(msg) else { continue }
-                if loc.epoch != session.epoch { continue }
-
+            for loc in sortedLocs {
                 let ct = kotlinByteArray(from: loc.ct)
                 do {
                     let result = try Shared.Session.shared.decryptLocation(
@@ -406,11 +394,33 @@ final class LocationSyncService: ObservableObject {
                     friendLocations[friend.id] = (lat: decryptedLoc.lat, lng: decryptedLoc.lng, ts: decryptedLoc.ts)
                     sessionChanged = true
                 } catch {
-                    print("Decryption failed: \(error)")
+                    // ignore bad messages to avoid dropping the entire batch
                 }
             }
             if sessionChanged {
                 await e2eeStore.updateSession(id: friend.id, newSession: session)
+            }
+
+            // --- Epoch rotation: changes session and routing token ---
+            var rotated = false
+            for msg in messages {
+                guard let rotPayload = parseEpochRotation(msg) else { continue }
+                if let ack = try? await e2eeStore.processEpochRotation(friendId: friend.id, payload: rotPayload) {
+                    guard let newEntry = await e2eeStore.getFriend(id: friend.id) else { continue }
+                    let newToken = toHex(newEntry.session.routingToken)
+                    let body = ratchetAckBody(ack)
+                    if let bodyData = try? JSONSerialization.data(withJSONObject: body) {
+                        await postToMailbox(token: newToken, bodyData: bodyData)
+                    }
+                    await postOpkBundle(friend: newEntry)
+                    rotated = true
+                }
+            }
+
+            // --- After rotation, immediately poll the new token ---
+            // Alice may have already posted new-epoch messages before Bob's next scheduled poll.
+            if rotated, let newEntry = await e2eeStore.getFriend(id: friend.id) {
+                await pollTokenForFriend(newEntry)
             }
 
             // --- Validate RatchetAck ---
@@ -424,6 +434,38 @@ final class LocationSyncService: ObservableObject {
                let current = await e2eeStore.getFriend(id: friend.id) {
                 await postOpkBundle(friend: current)
             }
+        }
+    }
+
+    /** Poll a single friend's current routing token and decrypt any location updates. */
+    private func pollTokenForFriend(_ friend: Shared.FriendEntry) async {
+        let hexToken = toHex(friend.session.routingToken)
+        let messages = await pollMailbox(token: hexToken)
+        let senderFp = friend.session.aliceFp
+        let recipientFp = friend.session.bobFp
+
+        for msg in messages {
+            guard let bundle = parsePreKeyBundle(msg) else { continue }
+            await e2eeStore.storeOpkBundle(friendId: friend.id, bundle: bundle)
+        }
+        guard var session = await e2eeStore.getFriend(id: friend.id)?.session else { return }
+        var sessionChanged = false
+        let sortedLocs = messages.compactMap { parseEncryptedLocation($0) }
+            .sorted { $0.seq < $1.seq }
+        for loc in sortedLocs {
+            let ct = kotlinByteArray(from: loc.ct)
+            do {
+                let result = try Shared.Session.shared.decryptLocation(
+                    state: session, ct: ct, seq: loc.seq, senderFp: senderFp, recipientFp: recipientFp
+                )
+                session = result.first!
+                let decryptedLoc = result.second!
+                friendLocations[friend.id] = (lat: decryptedLoc.lat, lng: decryptedLoc.lng, ts: decryptedLoc.ts)
+                sessionChanged = true
+            } catch { }
+        }
+        if sessionChanged {
+            await e2eeStore.updateSession(id: friend.id, newSession: session)
         }
     }
 
