@@ -27,6 +27,8 @@ import net.af0.where.e2ee.QrPayload
 import net.af0.where.e2ee.RatchetAckPayload
 import net.af0.where.e2ee.Session
 import net.af0.where.e2ee.discoveryToken
+import net.af0.where.e2ee.toHex
+import net.af0.where.e2ee.LocationClient
 import net.af0.where.model.UserLocation
 
 class LocationViewModel(app: Application) : AndroidViewModel(app) {
