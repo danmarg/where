@@ -218,6 +218,116 @@ class E2eeIntegrationTest {
             assertTrue(threw, "Decrypting a tampered ciphertext must throw")
         }
 
+    // -----------------------------------------------------------------------
+    // Epoch rotation
+    // -----------------------------------------------------------------------
+
+    @Test
+    fun `epoch rotation - token changes, old and new tokens are independently decryptable`() =
+        testApplication {
+            application { module(ServerState()) }
+
+            val (qr, aliceEkPriv) = KeyExchange.aliceCreateQrPayload("Alice")
+            val (initMsg, bobState0) = KeyExchange.bobProcessQr(qr, "Bob")
+            var aliceState = KeyExchange.aliceProcessInit(initMsg, aliceEkPriv, qr.ekPub)
+            var bobState = bobState0
+
+            val oldToken = aliceState.routingToken.toHex()
+
+            // Alice sends one message in epoch 0 to the old token
+            val loc0 = LocationPlaintext(lat = 51.5, lng = -0.1, acc = 5.0, ts = 1000L)
+            val (aliceState1, ct0) = Session.encryptLocation(aliceState, loc0, aliceState.aliceFp, aliceState.bobFp)
+            aliceState = aliceState1
+            client.post("/inbox/$oldToken") {
+                contentType(ContentType.Application.Json)
+                setBody(json.encodeToString<MailboxPayload>(EncryptedLocationPayload(1, aliceState.epoch, aliceState.sendSeq.toString(), ct0)))
+            }
+
+            // Alice rotates epoch (consumes a fresh Bob OPK keypair)
+            val aliceNewEk = generateX25519KeyPair()
+            val bobOpk = generateX25519KeyPair()
+            aliceState = Session.aliceEpochRotation(
+                aliceState, aliceNewEk.priv, aliceNewEk.pub, bobOpk.pub,
+                aliceState.aliceFp, aliceState.bobFp,
+            )
+            val newToken = aliceState.routingToken.toHex()
+            assertNotEquals(oldToken, newToken, "Routing token must change after epoch rotation")
+
+            // Alice sends one message in epoch 1 to the new token
+            val loc1 = LocationPlaintext(lat = 52.0, lng = -0.2, acc = 3.0, ts = 2000L)
+            val (aliceState2, ct1) = Session.encryptLocation(aliceState, loc1, aliceState.aliceFp, aliceState.bobFp)
+            client.post("/inbox/$newToken") {
+                contentType(ContentType.Application.Json)
+                setBody(json.encodeToString<MailboxPayload>(EncryptedLocationPayload(1, aliceState2.epoch, aliceState2.sendSeq.toString(), ct1)))
+            }
+
+            // Bob polls old token and decrypts the epoch-0 message with his pre-rotation state
+            val oldArr = json.decodeFromString<JsonArray>(client.get("/inbox/$oldToken").bodyAsText())
+            assertEquals(1, oldArr.size, "Old token should have one epoch-0 message")
+            val msg0 = json.decodeFromJsonElement<MailboxPayload>(oldArr[0])
+            assertIs<EncryptedLocationPayload>(msg0)
+            val (bobState1, decrypted0) = Session.decryptLocation(
+                bobState, msg0.ct, msg0.seqAsLong(), bobState.aliceFp, bobState.bobFp,
+            )
+            bobState = bobState1
+            assertEquals(loc0.lat, decrypted0.lat, 1e-9)
+            assertEquals(loc0.ts, decrypted0.ts)
+
+            // Bob applies epoch rotation to advance to epoch 1
+            bobState = Session.bobProcessAliceRotation(
+                bobState, aliceNewEk.pub, bobOpk.priv, 1, bobState.aliceFp, bobState.bobFp,
+            )
+            assertEquals(1, bobState.epoch)
+
+            // Bob polls new token and decrypts the epoch-1 message
+            val newArr = json.decodeFromString<JsonArray>(client.get("/inbox/$newToken").bodyAsText())
+            assertEquals(1, newArr.size, "New token should have one epoch-1 message")
+            val msg1 = json.decodeFromJsonElement<MailboxPayload>(newArr[0])
+            assertIs<EncryptedLocationPayload>(msg1)
+            val (_, decrypted1) = Session.decryptLocation(
+                bobState, msg1.ct, msg1.seqAsLong(), bobState.aliceFp, bobState.bobFp,
+            )
+            assertEquals(loc1.lat, decrypted1.lat, 1e-9)
+            assertEquals(loc1.ts, decrypted1.ts)
+        }
+
+    @Test
+    fun `epoch rotation ordering - old-epoch messages must be decrypted with pre-rotation session`() {
+        // Demonstrates the ordering requirement in the poll loop: when a poll batch from
+        // the old token contains both EncryptedLocationPayloads (epoch N) and an
+        // EpochRotation, the location messages must be decrypted BEFORE the session is
+        // advanced to epoch N+1. Decrypting an epoch-N message with the epoch-N+1
+        // session will fail because the recv chain key has been replaced.
+        val (qr, aliceEkPriv) = KeyExchange.aliceCreateQrPayload("Alice")
+        val (initMsg, bobState0) = KeyExchange.bobProcessQr(qr, "Bob")
+        var aliceState = KeyExchange.aliceProcessInit(initMsg, aliceEkPriv, qr.ekPub)
+
+        // Alice encrypts a location in epoch 0
+        val location = LocationPlaintext(lat = 1.0, lng = 2.0, acc = 1.0, ts = 1000L)
+        val (aliceState1, ct) = Session.encryptLocation(aliceState, location, aliceState.aliceFp, aliceState.bobFp)
+
+        // Bob advances to epoch 1 (simulating having processed an EpochRotation)
+        val aliceNewEk = generateX25519KeyPair()
+        val bobOpk = generateX25519KeyPair()
+        val bobStatePostRotation = Session.bobProcessAliceRotation(
+            bobState0, aliceNewEk.pub, bobOpk.priv, 1, bobState0.aliceFp, bobState0.bobFp,
+        )
+
+        // Correct: decrypt epoch-0 message with the epoch-0 (pre-rotation) state
+        val (_, decrypted) = Session.decryptLocation(
+            bobState0, ct, aliceState1.sendSeq, bobState0.aliceFp, bobState0.bobFp,
+        )
+        assertEquals(location.lat, decrypted.lat, 1e-9)
+        assertEquals(location.ts, decrypted.ts)
+
+        // Wrong: decrypt epoch-0 message with the epoch-1 (post-rotation) state — must fail
+        val threw = try {
+            Session.decryptLocation(bobStatePostRotation, ct, aliceState1.sendSeq, bobStatePostRotation.aliceFp, bobStatePostRotation.bobFp)
+            false
+        } catch (_: Exception) { true }
+        assertTrue(threw, "Decrypting an epoch-0 message with post-rotation state must throw")
+    }
+
     @Test
     fun `routing token isolation - wrong token mailbox is empty`() =
         testApplication {
