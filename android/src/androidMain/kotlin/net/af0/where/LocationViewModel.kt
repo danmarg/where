@@ -218,51 +218,26 @@ class LocationViewModel(app: Application) : AndroidViewModel(app) {
                 val senderFp = friend.session.aliceFp
                 val recipientFp = friend.session.bobFp
 
-                // --- Epoch rotation first: changes session/token for subsequent messages ---
-                for (msg in messages.filterIsInstance<EpochRotationPayload>()) {
-                    val ack = try {
-                        e2eeStore.processEpochRotation(friend.id, msg)
-                    } catch (_: IllegalArgumentException) {
-                        null // bad AEAD — discard
-                    } ?: continue
-
-                    val newToken = e2eeStore.getFriend(friend.id)?.session?.routingToken?.toHexStr() ?: break
-                    try {
-                        E2eeMailboxClient.post(BuildConfig.SERVER_HTTP_URL, newToken, ack)
-                    } catch (_: Exception) {
-                    }
-                    // Replenish OPKs on the new token so Alice can rotate again.
-                    val bundle = e2eeStore.generateOpkBundle(friend.id)
-                    if (bundle != null) {
-                        try {
-                            E2eeMailboxClient.post(BuildConfig.SERVER_HTTP_URL, newToken, bundle)
-                        } catch (_: Exception) {
-                        }
-                    }
-                }
-
                 // --- Cache incoming OPK bundles (Alice stores Bob's prekeys) ---
                 for (msg in messages.filterIsInstance<PreKeyBundlePayload>()) {
                     e2eeStore.storeOpkBundle(friend.id, msg)
                 }
 
-                // --- Decrypt location updates in order: epoch then seq ---
+                // --- Decrypt location updates BEFORE processing epoch rotation ---
+                // All EncryptedLocationPayloads on this token are from the current epoch.
+                // Processing EpochRotation first would advance the stored session to the new
+                // epoch, causing decryption to fail for messages in this same-token batch.
                 var session = e2eeStore.getFriend(friend.id)?.session ?: continue
-                val sortedMessages = messages.filterIsInstance<EncryptedLocationPayload>()
-                    .sortedWith(compareBy({ it.epoch }, { it.seqAsLong() }))
-
-                for (msg in sortedMessages) {
+                for (msg in messages.filterIsInstance<EncryptedLocationPayload>().sortedBy { it.seqAsLong() }) {
                     try {
-                        val result =
-                            Session.decryptLocation(
-                                state = session,
-                                ct = msg.ct,
-                                seq = msg.seqAsLong(),
-                                senderFp = senderFp,
-                                recipientFp = recipientFp,
-                            ) ?: continue
-                        session = result.first
-                        val location = result.second
+                        val (newSession, location) = Session.decryptLocation(
+                            state = session,
+                            ct = msg.ct,
+                            seq = msg.seqAsLong(),
+                            senderFp = senderFp,
+                            recipientFp = recipientFp,
+                        )
+                        session = newSession
                         friendLocations.value += (friend.id to UserLocation(friend.id, location.lat, location.lng, location.ts))
                     } catch (_: Exception) {
                         // ignore bad messages to avoid dropping the entire batch
@@ -270,6 +245,29 @@ class LocationViewModel(app: Application) : AndroidViewModel(app) {
                 }
                 if (session !== (e2eeStore.getFriend(friend.id)?.session)) {
                     e2eeStore.updateSession(friend.id, session)
+                }
+
+                // --- Epoch rotation: changes session and routing token ---
+                var rotated = false
+                for (msg in messages.filterIsInstance<EpochRotationPayload>()) {
+                    val ack = try {
+                        e2eeStore.processEpochRotation(friend.id, msg)
+                    } catch (_: IllegalArgumentException) {
+                        null // bad AEAD — discard
+                    } ?: continue
+                    rotated = true
+                    val newToken = e2eeStore.getFriend(friend.id)?.session?.routingToken?.toHexStr() ?: break
+                    try { E2eeMailboxClient.post(BuildConfig.SERVER_HTTP_URL, newToken, ack) } catch (_: Exception) { }
+                    val bundle = e2eeStore.generateOpkBundle(friend.id)
+                    if (bundle != null) {
+                        try { E2eeMailboxClient.post(BuildConfig.SERVER_HTTP_URL, newToken, bundle) } catch (_: Exception) { }
+                    }
+                }
+
+                // --- After rotation, immediately poll the new token ---
+                // Alice may have already posted new-epoch messages before Bob's next scheduled poll.
+                if (rotated) {
+                    e2eeStore.getFriend(friend.id)?.let { pollTokenForFriend(it) }
                 }
 
                 // --- Validate RatchetAck (informational for Alice) ---
@@ -286,6 +284,37 @@ class LocationViewModel(app: Application) : AndroidViewModel(app) {
                 // ignore transient poll failures
             }
         }
+    }
+
+    /** Poll a single friend's current routing token and decrypt any location updates. */
+    private suspend fun pollTokenForFriend(friend: FriendEntry) {
+        try {
+            val hexToken = friend.session.routingToken.toHexStr()
+            val messages = E2eeMailboxClient.poll(BuildConfig.SERVER_HTTP_URL, hexToken)
+            val senderFp = friend.session.aliceFp
+            val recipientFp = friend.session.bobFp
+
+            for (msg in messages.filterIsInstance<PreKeyBundlePayload>()) {
+                e2eeStore.storeOpkBundle(friend.id, msg)
+            }
+            var session = e2eeStore.getFriend(friend.id)?.session ?: return
+            for (msg in messages.filterIsInstance<EncryptedLocationPayload>().sortedBy { it.seqAsLong() }) {
+                try {
+                    val (newSession, location) = Session.decryptLocation(
+                        state = session,
+                        ct = msg.ct,
+                        seq = msg.seqAsLong(),
+                        senderFp = senderFp,
+                        recipientFp = recipientFp,
+                    )
+                    session = newSession
+                    friendLocations.value += (friend.id to UserLocation(friend.id, location.lat, location.lng, location.ts))
+                } catch (_: Exception) { }
+            }
+            if (session !== (e2eeStore.getFriend(friend.id)?.session)) {
+                e2eeStore.updateSession(friend.id, session)
+            }
+        } catch (_: Exception) { }
     }
 
     private suspend fun sendEncryptedLocation(

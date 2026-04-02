@@ -62,6 +62,8 @@ else
   run emulator -avd pixel9 -no-audio -no-boot-anim -gpu host &
   echo "Waiting for emulator to boot..."
   run adb wait-for-device
+  echo "Waiting for emulator to finish booting..."
+  until run adb shell getprop sys.boot_completed 2>/dev/null | grep -q "^1$"; do sleep 2; done
   run adb shell input keyevent 82  # unlock screen
 fi
 
@@ -71,7 +73,7 @@ if ! run ./gradlew :android:assembleDebug; then
   exit 1
 fi
 
-APK_PATH="${BUILD_DIR}/android/outputs/apk/debug/android-debug.apk"
+APK_PATH="${BUILD_DIR}/outputs/apk/debug/android-debug.apk"
 echo "Installing APK from $APK_PATH..."
 adb_cmd install -r "$APK_PATH"
 
