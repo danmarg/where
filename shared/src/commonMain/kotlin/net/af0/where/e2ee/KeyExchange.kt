@@ -165,10 +165,3 @@ object KeyExchange {
         return diff == 0
     }
 }
-
-internal fun ByteArray.toHex(): String = joinToString("") { (it.toInt() and 0xFF).toString(16).padStart(2, '0') }
-
-internal fun String.hexToByteArray(): ByteArray {
-    check(length % 2 == 0) { "hex string must have even length" }
-    return ByteArray(length / 2) { i -> substring(i * 2, i * 2 + 2).toInt(16).toByte() }
-}
