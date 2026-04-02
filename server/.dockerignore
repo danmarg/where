@@ -1,0 +1,8 @@
+# Docker ignore file for server module
+build/
+.gradle/
+*.class
+*.jar
+.idea/
+.vscode/
+*.log
