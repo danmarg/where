@@ -97,12 +97,12 @@ else
   export KEYSTORE_PASSWORD
   export KEY_PASSWORD=$KEYSTORE_PASSWORD  # Same as keystore password
 fi
-echo "=== Building Android $BUILD_FLAVOR ${ANDROID_FORMAT^^} ==="
+echo "=== Building Android $BUILD_FLAVOR ${ANDROID_FORMAT} ==="
 if ! run bash -c "KEYSTORE_FILE='$KEYSTORE_FILE' KEYSTORE_PASSWORD='$KEYSTORE_PASSWORD' KEY_PASSWORD='$KEY_PASSWORD' ./gradlew :android:$GRADLE_TASK"; then
   echo "Android build failed."
   exit 1
 fi
-echo "✓ Android ${ANDROID_FORMAT^^} built ($BUILD_FLAVOR)"
+echo "✓ Android ${ANDROID_FORMAT} built ($BUILD_FLAVOR)"
 echo ""
 
 # Build iOS for real device (iphoneos)
