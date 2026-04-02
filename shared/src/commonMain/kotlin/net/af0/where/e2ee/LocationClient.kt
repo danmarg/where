@@ -23,6 +23,7 @@ class LocationClient(
      */
     suspend fun poll(): List<UserLocation> {
         val allUpdates = mutableListOf<UserLocation>()
+        var lastError: Exception? = null
 
         // 1. Poll for pending invite responses (if we are Alice/Initiator)
         store.pendingQrPayload?.let { qr ->
@@ -33,24 +34,29 @@ class LocationClient(
                 // typically needs to prompt for a name. The caller can check
                 // store.pendingQrPayload and then call E2eeMailboxClient.poll themselves
                 // if they want to handle the naming flow.
-            } catch (_: Exception) {}
+            } catch (e: Exception) {
+                lastError = e
+            }
         }
 
         // 2. Poll each friend's current mailbox
         for (friend in store.listFriends()) {
-            val friendUpdates = pollFriend(friend.id)
-            allUpdates.addAll(friendUpdates)
+            try {
+                val friendUpdates = pollFriend(friend.id)
+                allUpdates.addAll(friendUpdates)
 
-            // 3. Proactively replenish OPKs if Bob is running low
-            if (store.shouldReplenishOpks(friend.id)) {
-                store.generateOpkBundle(friend.id)?.let { bundle ->
-                    try {
+                // 3. Proactively replenish OPKs if Bob is running low
+                if (store.shouldReplenishOpks(friend.id)) {
+                    store.generateOpkBundle(friend.id)?.let { bundle ->
                         E2eeMailboxClient.post(baseUrl, friend.session.routingToken.toHex(), bundle)
-                    } catch (_: Exception) {}
+                    }
                 }
+            } catch (e: Exception) {
+                lastError = e
             }
         }
 
+        lastError?.let { throw it }
         return allUpdates
     }
 
@@ -64,11 +70,7 @@ class LocationClient(
         var tokenToPoll = currentFriend.session.routingToken.toHex()
 
         while (true) {
-            val messages = try {
-                E2eeMailboxClient.poll(baseUrl, tokenToPoll)
-            } catch (e: Exception) {
-                emptyList()
-            }
+            val messages = E2eeMailboxClient.poll(baseUrl, tokenToPoll)
             if (messages.isEmpty()) break
 
             val result = store.processBatch(friendId, messages) ?: break
@@ -78,9 +80,7 @@ class LocationClient(
 
             // Post any required protocol responses (RatchetAcks, OPK bundles)
             for (out in result.outgoing) {
-                try {
-                    E2eeMailboxClient.post(baseUrl, out.token, out.payload)
-                } catch (_: Exception) {}
+                E2eeMailboxClient.post(baseUrl, out.token, out.payload)
             }
 
             // If an epoch rotation happened, we MUST poll the new token immediately
@@ -101,6 +101,7 @@ class LocationClient(
     ) {
         val ts = currentTimeSeconds()
         val plaintext = LocationPlaintext(lat = lat, lng = lng, acc = 0.0, ts = ts)
+        var lastError: Exception? = null
 
         for (friend in store.listFriends()) {
             if (friend.id in pausedFriendIds) continue
@@ -110,9 +111,7 @@ class LocationClient(
                 if (store.shouldRotateEpoch(friend.id)) {
                     val oldToken = friend.session.routingToken.toHex()
                     store.initiateEpochRotation(friend.id)?.let { rot ->
-                        try {
-                            E2eeMailboxClient.post(baseUrl, oldToken, rot)
-                        } catch (_: Exception) {}
+                        E2eeMailboxClient.post(baseUrl, oldToken, rot)
                     }
                 }
 
@@ -132,17 +131,19 @@ class LocationClient(
                     ct = ct
                 )
                 E2eeMailboxClient.post(baseUrl, current.session.routingToken.toHex(), payload)
-            } catch (_: Exception) {}
+            } catch (e: Exception) {
+                lastError = e
+            }
         }
+        
+        lastError?.let { throw it }
     }
 
     suspend fun postOpkBundle(friendId: String) {
         if (store.shouldReplenishOpks(friendId)) {
             store.generateOpkBundle(friendId)?.let { bundle ->
                 val friend = store.getFriend(friendId) ?: return
-                try {
-                    E2eeMailboxClient.post(baseUrl, friend.session.routingToken.toHex(), bundle)
-                } catch (_: Exception) {}
+                E2eeMailboxClient.post(baseUrl, friend.session.routingToken.toHex(), bundle)
             }
         }
     }

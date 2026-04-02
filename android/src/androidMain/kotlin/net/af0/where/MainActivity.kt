@@ -62,6 +62,7 @@ class MainActivity : ComponentActivity() {
                 val pendingInviteQr by viewModel.pendingInviteQr.collectAsState()
                 val pendingQrForNaming by viewModel.pendingQrForNaming.collectAsState()
                 val pendingInitPayload by viewModel.pendingInitPayload.collectAsState()
+                val connectionStatus by viewModel.connectionStatus.collectAsState()
 
                 var showSimulatorScanner by remember { mutableStateOf(false) }
 
@@ -75,6 +76,7 @@ class MainActivity : ComponentActivity() {
                     onTogglePause = { viewModel.togglePauseFriend(it) },
                     isSharing = isSharing,
                     onToggleSharing = { viewModel.toggleSharing() },
+                    connectionStatus = connectionStatus,
                     onCreateInvite = { viewModel.createInvite() },
                     onScanQr = {
                         if (android.os.Build.PRODUCT.contains("sdk") || 

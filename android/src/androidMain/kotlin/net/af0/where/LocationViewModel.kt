@@ -31,6 +31,11 @@ import net.af0.where.e2ee.toHex
 import net.af0.where.e2ee.LocationClient
 import net.af0.where.model.UserLocation
 
+sealed class ConnectionStatus {
+    object Ok : ConnectionStatus()
+    data class Error(val message: String) : ConnectionStatus()
+}
+
 class LocationViewModel(app: Application) : AndroidViewModel(app) {
     private val locationSource: LocationSource = LocationRepository
     private val e2eeStore = E2eeStore(SharedPrefsE2eeStorage(app))
@@ -70,6 +75,9 @@ class LocationViewModel(app: Application) : AndroidViewModel(app) {
 
     private val _pendingInitPayload = MutableStateFlow<KeyExchangeInitPayload?>(null)
     val pendingInitPayload: StateFlow<KeyExchangeInitPayload?> = _pendingInitPayload
+
+    private val _connectionStatus = MutableStateFlow<ConnectionStatus>(ConnectionStatus.Ok)
+    val connectionStatus: StateFlow<ConnectionStatus> = _connectionStatus
 
     val visibleUsers: StateFlow<List<UserLocation>> =
         combine(locationSource.lastLocation, _isSharingLocation, friendLocations) { myLoc, sharing, friendLocs ->
@@ -158,7 +166,9 @@ class LocationViewModel(app: Application) : AndroidViewModel(app) {
                 try {
                     val discoveryHex = qrWithName.discoveryToken().toHex()
                     E2eeMailboxClient.post(BuildConfig.SERVER_HTTP_URL, discoveryHex, initPayload)
-                } catch (_: Exception) {
+                    updateStatus(null)
+                } catch (e: Exception) {
+                    updateStatus(e)
                 }
                 // Bob posts his initial OPK bundle so Alice can initiate epoch rotation.
                 locationClient.postOpkBundle(bobEntry.id)
@@ -189,7 +199,10 @@ class LocationViewModel(app: Application) : AndroidViewModel(app) {
                     friendLocations.value += (update.userId to update)
                 }
                 pollPendingInvite()
-            } catch (_: Exception) {}
+                updateStatus(null)
+            } catch (e: Exception) {
+                updateStatus(e)
+            }
             delay(60_000)
         }
     }
@@ -199,13 +212,15 @@ class LocationViewModel(app: Application) : AndroidViewModel(app) {
         try {
             val discoveryHex = qr.discoveryToken().toHex()
             val messages = E2eeMailboxClient.poll(BuildConfig.SERVER_HTTP_URL, discoveryHex)
+            updateStatus(null)
             val initPayload = messages.filterIsInstance<KeyExchangeInitPayload>().firstOrNull() ?: return
 
             // Found init payload! Show naming dialog instead of processing immediately.
             _pendingInitPayload.value = initPayload
             _pendingInviteQr.value = null
             e2eeStore.clearInvite()
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+            updateStatus(e)
         }
     }
 
@@ -215,7 +230,25 @@ class LocationViewModel(app: Application) : AndroidViewModel(app) {
     ) {
         try {
             locationClient.sendLocation(lat, lng, _pausedFriendIds.value)
-        } catch (_: Exception) {}
+            updateStatus(null)
+        } catch (e: Exception) {
+            updateStatus(e)
+        }
+    }
+
+    private fun updateStatus(e: Throwable?) {
+        if (e == null) {
+            _connectionStatus.value = ConnectionStatus.Ok
+        } else {
+            val msg = when {
+                e.message?.contains("Unable to resolve host", ignoreCase = true) == true -> "not resolved"
+                e.message?.contains("timeout", ignoreCase = true) == true -> "timeout"
+                e.message?.contains("ConnectException", ignoreCase = true) == true -> "no connection"
+                e.message?.contains("Failed to post to mailbox: 500", ignoreCase = true) == true -> "server error 500"
+                else -> e.message?.take(32) ?: "unknown error"
+            }
+            _connectionStatus.value = ConnectionStatus.Error(msg)
+        }
     }
 
     private fun manageForegroundService(sharing: Boolean) {
