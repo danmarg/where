@@ -5,6 +5,7 @@ import io.ktor.serialization.kotlinx.json.*
 import io.ktor.server.application.*
 import io.ktor.server.engine.*
 import io.ktor.server.netty.*
+import io.ktor.server.plugins.*
 import io.ktor.server.plugins.calllogging.*
 import io.ktor.server.plugins.contentnegotiation.*
 import io.ktor.server.request.*
@@ -106,17 +107,34 @@ class MailboxState {
  * Encapsulates all mutable server state so each module() invocation (including in tests)
  * gets its own isolated state rather than sharing package-level globals.
  */
-class ServerState {
+class ServerState(val debug: Boolean = false) {
     val mailbox = MailboxState()
 }
 
-fun main() {
-    embeddedServer(Netty, port = 8080, module = Application::module).start(wait = true)
+fun main(args: Array<String>) {
+    val debug = args.contains("--debug") || System.getenv("WHERE_DEBUG") == "true"
+    embeddedServer(Netty, port = 8080) {
+        module(ServerState(debug))
+    }.start(wait = true)
 }
 
 fun Application.module(state: ServerState = ServerState()) {
     install(ContentNegotiation) { json(json) }
     install(CallLogging)
+
+    if (state.debug) {
+        intercept(ApplicationCallPipeline.Monitoring) {
+            val remote = call.request.local.remoteHost
+            val method = call.request.httpMethod.value
+            val uri = call.request.uri
+            application.log.info("DEBUG: [Connect] $remote -> $method $uri")
+            try {
+                proceed()
+            } finally {
+                application.log.info("DEBUG: [Disconnect] $remote -> $method $uri")
+            }
+        }
+    }
 
     routing {
         get("/health") {
@@ -133,16 +151,22 @@ fun Application.module(state: ServerState = ServerState()) {
                     call.respond(HttpStatusCode.BadRequest, "token required")
                     return@post
                 }
+            
+            if (state.debug) application.log.info("DEBUG: [Post] token=$token")
+            
             val body = call.receiveText()
             val payload = runCatching { json.parseToJsonElement(body) }.getOrNull()
             if (payload == null || payload == JsonNull) {
+                if (state.debug) application.log.info("DEBUG: [Post] token=$token - Invalid JSON")
                 call.respond(HttpStatusCode.BadRequest, "invalid json payload")
                 return@post
             }
             if (!state.mailbox.post(token, payload)) {
+                if (state.debug) application.log.info("DEBUG: [Post] token=$token - Rejected (full or rate-limited)")
                 call.respond(HttpStatusCode.TooManyRequests)
                 return@post
             }
+            if (state.debug) application.log.info("DEBUG: [Post] token=$token - Success")
             call.respond(HttpStatusCode.NoContent)
         }
 
@@ -152,7 +176,13 @@ fun Application.module(state: ServerState = ServerState()) {
                     call.respond(HttpStatusCode.BadRequest, "token required")
                     return@get
                 }
+            
+            if (state.debug) application.log.info("DEBUG: [Poll] token=$token")
+            
             val messages = state.mailbox.drain(token)
+            
+            if (state.debug) application.log.info("DEBUG: [Poll] token=$token - Returning ${messages.size} messages")
+            
             call.respond(JsonArray(messages))
         }
     }
