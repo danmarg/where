@@ -66,11 +66,12 @@ private fun Map<Int, ByteArray>.contentEquals(other: Map<Int, ByteArray>): Boole
 }
 
 /**
- * Alice's pending invite state. Not persisted.
+ * Alice's pending invite state.
  */
+@Serializable
 internal data class PendingInvite(
     val qrPayload: QrPayload,
-    val aliceEkPriv: ByteArray,
+    @Serializable(with = ByteArrayBase64Serializer::class) val aliceEkPriv: ByteArray,
 )
 
 class E2eeStore(
@@ -100,9 +101,11 @@ class E2eeStore(
                         )
                     entry.id to entry
                 }.toMutableMap()
+            pendingInvite = serialized.pendingInvite
         } catch (_: Exception) {
             // Error loading state, possibly corrupted; reset
             friends = mutableMapOf()
+            pendingInvite = null
         }
     }
 
@@ -121,6 +124,7 @@ class E2eeStore(
                             nextOpkId = f.nextOpkId,
                         )
                     },
+                pendingInvite = pendingInvite,
             )
         storage.putString(STORAGE_KEY, Json.encodeToString(serialized))
     }
@@ -135,12 +139,14 @@ class E2eeStore(
     fun createInvite(suggestedName: String): QrPayload {
         val (payload, ekPriv) = KeyExchange.aliceCreateQrPayload(suggestedName)
         pendingInvite = PendingInvite(payload, ekPriv)
+        save()
         return payload
     }
 
     /** Alice: Discard the current pending invite (e.g. user dismissed the QR screen). */
     fun clearInvite() {
         pendingInvite = null
+        save()
     }
 
     /**
@@ -510,6 +516,112 @@ class E2eeStore(
         return true
     }
 
+    // -----------------------------------------------------------------------
+    // Batch poll processing
+    // -----------------------------------------------------------------------
+
+    /**
+     * A message the caller should POST back to the server after processing a batch.
+     */
+    data class OutgoingMessage(val token: String, val payload: MailboxPayload)
+
+    /**
+     * Result of [processBatch].
+     *
+     * @property decryptedLocations Locations decrypted from this batch, in receive order.
+     * @property newToken Non-null when an [EpochRotationPayload] was processed. The caller
+     *   should immediately poll this token and call [processBatch] again on the result, so
+     *   that messages the sender already posted to the new epoch are not delayed by a full
+     *   poll interval.
+     * @property outgoing Payloads the caller must POST to the server, in order.
+     */
+    data class PollBatchResult(
+        val decryptedLocations: List<LocationPlaintext>,
+        val newToken: String?,
+        val outgoing: List<OutgoingMessage>,
+    )
+
+    /**
+     * Process one batch of mailbox messages for [friendId] in the correct order.
+     *
+     * **Ordering guarantee:** [EncryptedLocationPayload]s on a given token always belong
+     * to the current epoch. The function decrypts them *before* applying any
+     * [EpochRotationPayload] so that the session state is still on the correct epoch during
+     * decryption. Processing the rotation first would advance the chain key and break
+     * decryption of messages that arrived in the same batch.
+     *
+     * Typical client loop:
+     * ```
+     * var messages = mailboxClient.poll(token)
+     * while (true) {
+     *     val result = store.processBatch(friendId, messages) ?: break
+     *     result.decryptedLocations.forEach { /* update UI */ }
+     *     result.outgoing.forEach { mailboxClient.post(it.token, it.payload) }
+     *     val next = result.newToken ?: break
+     *     messages = mailboxClient.poll(next)
+     * }
+     * ```
+     *
+     * @return [PollBatchResult], or null if [friendId] is not found.
+     */
+    fun processBatch(friendId: String, messages: List<MailboxPayload>): PollBatchResult? {
+        friends[friendId] ?: return null
+
+        val decryptedLocations = mutableListOf<LocationPlaintext>()
+        val outgoing = mutableListOf<OutgoingMessage>()
+        var newToken: String? = null
+
+        // Step 1: Cache incoming OPK bundles (Alice stores Bob's prekeys).
+        for (msg in messages.filterIsInstance<PreKeyBundlePayload>()) {
+            storeOpkBundle(friendId, msg)
+        }
+
+        // Step 2: Decrypt location updates BEFORE processing epoch rotation.
+        // All EncryptedLocationPayloads on this token are from the current epoch.
+        val preRotationSession = friends[friendId]?.session ?: return PollBatchResult(emptyList(), null, emptyList())
+        var currentSession = preRotationSession
+        for (msg in messages.filterIsInstance<EncryptedLocationPayload>().sortedBy { it.seqAsLong() }) {
+            try {
+                val (newSession, loc) = Session.decryptLocation(
+                    state = currentSession,
+                    ct = msg.ct,
+                    seq = msg.seqAsLong(),
+                    senderFp = currentSession.aliceFp,
+                    recipientFp = currentSession.bobFp,
+                )
+                currentSession = newSession
+                decryptedLocations.add(loc)
+            } catch (_: Exception) {
+                // drop individually bad messages rather than aborting the whole batch
+            }
+        }
+        if (currentSession !== preRotationSession) {
+            updateSession(friendId, currentSession)
+        }
+
+        // Step 3: Process epoch rotation (after location decryption).
+        for (msg in messages.filterIsInstance<EpochRotationPayload>()) {
+            val ack = try {
+                processEpochRotation(friendId, msg)
+            } catch (_: IllegalArgumentException) {
+                null
+            } ?: continue
+            val rotatedToken = friends[friendId]?.session?.routingToken?.toHex() ?: continue
+            outgoing.add(OutgoingMessage(rotatedToken, ack))
+            generateOpkBundle(friendId)?.let { bundle ->
+                outgoing.add(OutgoingMessage(rotatedToken, bundle))
+            }
+            newToken = rotatedToken
+        }
+
+        // Step 4: Process RatchetAcks (Alice updating her receive chain).
+        for (msg in messages.filterIsInstance<RatchetAckPayload>()) {
+            processRatchetAck(friendId, msg)
+        }
+
+        return PollBatchResult(decryptedLocations, newToken, outgoing)
+    }
+
     companion object {
         private const val STORAGE_KEY = "e2ee_store"
 
@@ -554,5 +666,5 @@ internal data class SerializedFriendEntry(
 @Serializable
 internal data class SerializedStore(
     val friends: List<SerializedFriendEntry>,
-    // pendingInvite is intentionally not persisted: single-session design (see PendingInvite).
+    val pendingInvite: PendingInvite? = null,
 )
