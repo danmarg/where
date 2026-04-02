@@ -1,5 +1,6 @@
 package net.af0.where.cli
 
+import net.af0.where.initializeLibsodium
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.Json
 import net.af0.where.e2ee.*
@@ -69,6 +70,7 @@ fun urlToQrPayload(url: String): QrPayload? {
 }
 
 fun main(args: Array<String>) {
+    initializeLibsodium()
     if (args.isEmpty()) {
         println("Usage: where-cli <command> [options]")
         println("Commands:")
@@ -99,16 +101,19 @@ fun main(args: Array<String>) {
         host = args[hostIdx + 1]
     }
 
+    val locationClient = LocationClient(host, store)
+
     when (args[0]) {
         "invite" -> {
             val name = args.getOrNull(1) ?: "CLI User"
             val qr = store.createInvite(name)
             println("Invite URL: ${qrPayloadToUrl(qr)}")
             println("Discovery Token: ${qr.discoveryToken().toHex()}")
+            if ("--no-wait" in args) return
             println("Waiting for friend to join... (Ctrl+C to stop)")
             runBlocking {
                 while (store.listFriends().isEmpty()) {
-                    poll(store, host)
+                    poll(locationClient, store, host)
                     kotlinx.coroutines.delay(5000)
                 }
                 println("Friend joined!")
@@ -130,10 +135,7 @@ fun main(args: Array<String>) {
                     println("Joined ${qr.suggestedName} as $name")
                     
                     // Bob posts initial OPK bundle
-                    val bundle = store.generateOpkBundle(bobEntry.id)
-                    if (bundle != null) {
-                        E2eeMailboxClient.post(host, bobEntry.session.routingToken.toHex(), bundle)
-                    }
+                    locationClient.postOpkBundle(bobEntry.id)
                 } catch (e: Exception) {
                     println("Failed to join: ${e.message}")
                 }
@@ -150,10 +152,12 @@ fun main(args: Array<String>) {
             }
         }
         "poll" -> {
-            println("Polling for updates... (Ctrl+C to stop)")
+            val once = "--once" in args
+            if (!once) println("Polling for updates... (Ctrl+C to stop)")
             runBlocking {
                 while (true) {
-                    poll(store, host)
+                    poll(locationClient, store, host)
+                    if (once) break
                     kotlinx.coroutines.delay(5000)
                 }
             }
@@ -162,7 +166,7 @@ fun main(args: Array<String>) {
             val lat = args.getOrNull(1)?.toDoubleOrNull() ?: run { println("Lat required"); return }
             val lng = args.getOrNull(2)?.toDoubleOrNull() ?: run { println("Lng required"); return }
             runBlocking {
-                sendLocation(store, host, lat, lng)
+                locationClient.sendLocation(lat, lng)
             }
         }
         else -> {
@@ -171,7 +175,7 @@ fun main(args: Array<String>) {
     }
 }
 
-suspend fun poll(store: E2eeStore, host: String) {
+suspend fun poll(locationClient: LocationClient, store: E2eeStore, host: String) {
     // Poll for pending invites if Alice
     store.pendingQrPayload?.let { qr ->
         val discoveryHex = qr.discoveryToken().toHex()
@@ -187,104 +191,14 @@ suspend fun poll(store: E2eeStore, host: String) {
         }
     }
 
-    // Poll all friends
-    for (friend in store.listFriends()) {
-        val hexToken = friend.session.routingToken.toHex()
-        val messages = try {
-            E2eeMailboxClient.poll(host, hexToken)
-        } catch (e: Exception) {
-            println("Poll failed for ${friend.name}: ${e.message}")
-            emptyList()
+    // Poll all friends using shared LocationClient
+    try {
+        val updates = locationClient.poll()
+        for (update in updates) {
+            val friend = store.getFriend(update.userId)
+            println("Location from ${friend?.name ?: update.userId}: ${update.lat}, ${update.lng} at ${update.timestamp}")
         }
-
-        // Epoch rotation
-        for (msg in messages.filterIsInstance<EpochRotationPayload>()) {
-            println("Received EpochRotation from ${friend.name}")
-            val ack = try {
-                store.processEpochRotation(friend.id, msg)
-            } catch (e: Exception) {
-                println("Epoch rotation failed: ${e.message}")
-                null
-            } ?: continue
-
-            val newToken = store.getFriend(friend.id)?.session?.routingToken?.toHex() ?: break
-            E2eeMailboxClient.post(host, newToken, ack)
-            
-            // Replenish OPKs
-            val bundle = store.generateOpkBundle(friend.id)
-            if (bundle != null) {
-                E2eeMailboxClient.post(host, newToken, bundle)
-            }
-        }
-
-        // Cache OPKs
-        for (msg in messages.filterIsInstance<PreKeyBundlePayload>()) {
-            println("Received PreKeyBundle from ${friend.name}")
-            store.storeOpkBundle(friend.id, msg)
-        }
-
-        // Decrypt locations
-        var session = store.getFriend(friend.id)?.session ?: continue
-        var changed = false
-        for (msg in messages.filterIsInstance<EncryptedLocationPayload>().sortedBy { it.seqAsLong() }) {
-            val result = Session.decryptLocation(
-                state = session,
-                ct = msg.ct,
-                seq = msg.seqAsLong(),
-                senderFp = session.aliceFp,
-                recipientFp = session.bobFp
-            ) ?: continue
-            session = result.first
-            val loc = result.second
-            println("Location from ${friend.name}: ${loc.lat}, ${loc.lng} at ${loc.ts}")
-            changed = true
-        }
-        if (changed) {
-            store.updateSession(friend.id, session)
-        }
-
-        // RatchetAck
-        for (msg in messages.filterIsInstance<RatchetAckPayload>()) {
-            store.processRatchetAck(friend.id, msg)
-        }
-
-        // Replenish OPKs if needed
-        if (store.shouldReplenishOpks(friend.id)) {
-            store.generateOpkBundle(friend.id)?.let { bundle ->
-                E2eeMailboxClient.post(host, friend.session.routingToken.toHex(), bundle)
-            }
-        }
-    }
-}
-
-suspend fun sendLocation(store: E2eeStore, host: String, lat: Double, lng: Double) {
-    val ts = System.currentTimeMillis() / 1000
-    val plaintext = LocationPlaintext(lat = lat, lng = lng, acc = 0.0, ts = ts)
-    
-    for (friend in store.listFriends()) {
-        if (store.shouldRotateEpoch(friend.id)) {
-            val oldToken = friend.session.routingToken.toHex()
-            val rotPayload = store.initiateEpochRotation(friend.id)
-            if (rotPayload != null) {
-                E2eeMailboxClient.post(host, oldToken, rotPayload)
-            }
-        }
-
-        val current = store.getFriend(friend.id) ?: continue
-        val (newSession, ct) = Session.encryptLocation(
-            state = current.session,
-            location = plaintext,
-            senderFp = current.session.aliceFp,
-            recipientFp = current.session.bobFp
-        )
-        store.updateSession(friend.id, newSession)
-        
-        val payload = EncryptedLocationPayload(
-            epoch = newSession.epoch,
-            seq = newSession.sendSeq.toString(),
-            ct = ct
-        )
-        E2eeMailboxClient.post(host, current.session.routingToken.toHex(), payload)
-        println("Sent location to ${friend.name}")
+    } catch (e: Exception) {
+        println("Poll failed: ${e.message}")
     }
 }

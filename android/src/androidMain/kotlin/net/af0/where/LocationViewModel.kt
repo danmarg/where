@@ -32,6 +32,7 @@ import net.af0.where.model.UserLocation
 class LocationViewModel(app: Application) : AndroidViewModel(app) {
     private val locationSource: LocationSource = LocationRepository
     private val e2eeStore = E2eeStore(SharedPrefsE2eeStorage(app))
+    private val locationClient = LocationClient(BuildConfig.SERVER_HTTP_URL, e2eeStore)
 
     private val sharingPrefs = app.getSharedPreferences("where_prefs", Context.MODE_PRIVATE)
 
@@ -153,12 +154,12 @@ class LocationViewModel(app: Application) : AndroidViewModel(app) {
             _friends.value = e2eeStore.listFriends()
             viewModelScope.launch {
                 try {
-                    val discoveryHex = qrWithName.discoveryToken().toHexStr()
+                    val discoveryHex = qrWithName.discoveryToken().toHex()
                     E2eeMailboxClient.post(BuildConfig.SERVER_HTTP_URL, discoveryHex, initPayload)
                 } catch (_: Exception) {
                 }
                 // Bob posts his initial OPK bundle so Alice can initiate epoch rotation.
-                postOpkBundle(bobEntry)
+                locationClient.postOpkBundle(bobEntry.id)
             }
         } catch (_: Exception) {
         }
@@ -178,19 +179,15 @@ class LocationViewModel(app: Application) : AndroidViewModel(app) {
         _pendingInitPayload.value = null
     }
 
-    private suspend fun postOpkBundle(friend: FriendEntry) {
-        try {
-            val bundle = e2eeStore.generateOpkBundle(friend.id) ?: return
-            val hexToken = friend.session.routingToken.toHexStr()
-            E2eeMailboxClient.post(BuildConfig.SERVER_HTTP_URL, hexToken, bundle)
-        } catch (_: Exception) {
-        }
-    }
-
     private suspend fun pollLoop() {
         while (true) {
-            pollAllFriends()
-            pollPendingInvite()
+            try {
+                val updates = locationClient.poll()
+                for (update in updates) {
+                    friendLocations.value += (update.userId to update)
+                }
+                pollPendingInvite()
+            } catch (_: Exception) {}
             delay(60_000)
         }
     }
@@ -198,7 +195,7 @@ class LocationViewModel(app: Application) : AndroidViewModel(app) {
     private suspend fun pollPendingInvite() {
         val qr = e2eeStore.pendingQrPayload ?: return
         try {
-            val discoveryHex = qr.discoveryToken().toHexStr()
+            val discoveryHex = qr.discoveryToken().toHex()
             val messages = E2eeMailboxClient.poll(BuildConfig.SERVER_HTTP_URL, discoveryHex)
             val initPayload = messages.filterIsInstance<KeyExchangeInitPayload>().firstOrNull() ?: return
 
@@ -210,159 +207,13 @@ class LocationViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    private suspend fun pollAllFriends() {
-        for (friend in e2eeStore.listFriends()) {
-            try {
-                val hexToken = friend.session.routingToken.toHexStr()
-                val messages = E2eeMailboxClient.poll(BuildConfig.SERVER_HTTP_URL, hexToken)
-                val senderFp = friend.session.aliceFp
-                val recipientFp = friend.session.bobFp
-
-                // --- Cache incoming OPK bundles (Alice stores Bob's prekeys) ---
-                for (msg in messages.filterIsInstance<PreKeyBundlePayload>()) {
-                    e2eeStore.storeOpkBundle(friend.id, msg)
-                }
-
-                // --- Decrypt location updates BEFORE processing epoch rotation ---
-                // All EncryptedLocationPayloads on this token are from the current epoch.
-                // Processing EpochRotation first would advance the stored session to the new
-                // epoch, causing decryption to fail for messages in this same-token batch.
-                var session = e2eeStore.getFriend(friend.id)?.session ?: continue
-                for (msg in messages.filterIsInstance<EncryptedLocationPayload>().sortedBy { it.seqAsLong() }) {
-                    try {
-                        val (newSession, location) = Session.decryptLocation(
-                            state = session,
-                            ct = msg.ct,
-                            seq = msg.seqAsLong(),
-                            senderFp = senderFp,
-                            recipientFp = recipientFp,
-                        )
-                        session = newSession
-                        friendLocations.value += (friend.id to UserLocation(friend.id, location.lat, location.lng, location.ts))
-                    } catch (_: Exception) {
-                        // ignore bad messages to avoid dropping the entire batch
-                    }
-                }
-                if (session !== (e2eeStore.getFriend(friend.id)?.session)) {
-                    e2eeStore.updateSession(friend.id, session)
-                }
-
-                // --- Epoch rotation: changes session and routing token ---
-                var rotated = false
-                for (msg in messages.filterIsInstance<EpochRotationPayload>()) {
-                    val ack = try {
-                        e2eeStore.processEpochRotation(friend.id, msg)
-                    } catch (_: IllegalArgumentException) {
-                        null // bad AEAD — discard
-                    } ?: continue
-                    rotated = true
-                    val newToken = e2eeStore.getFriend(friend.id)?.session?.routingToken?.toHexStr() ?: break
-                    try { E2eeMailboxClient.post(BuildConfig.SERVER_HTTP_URL, newToken, ack) } catch (_: Exception) { }
-                    val bundle = e2eeStore.generateOpkBundle(friend.id)
-                    if (bundle != null) {
-                        try { E2eeMailboxClient.post(BuildConfig.SERVER_HTTP_URL, newToken, bundle) } catch (_: Exception) { }
-                    }
-                }
-
-                // --- After rotation, immediately poll the new token ---
-                // Alice may have already posted new-epoch messages before Bob's next scheduled poll.
-                if (rotated) {
-                    e2eeStore.getFriend(friend.id)?.let { pollTokenForFriend(it) }
-                }
-
-                // --- Validate RatchetAck (informational for Alice) ---
-                for (msg in messages.filterIsInstance<RatchetAckPayload>()) {
-                    e2eeStore.processRatchetAck(friend.id, msg)
-                }
-
-                // --- Bob: proactively replenish OPKs if running low ---
-                if (e2eeStore.shouldReplenishOpks(friend.id)) {
-                    val current = e2eeStore.getFriend(friend.id) ?: continue
-                    postOpkBundle(current)
-                }
-            } catch (_: Exception) {
-                // ignore transient poll failures
-            }
-        }
-    }
-
-    /** Poll a single friend's current routing token and decrypt any location updates. */
-    private suspend fun pollTokenForFriend(friend: FriendEntry) {
-        try {
-            val hexToken = friend.session.routingToken.toHexStr()
-            val messages = E2eeMailboxClient.poll(BuildConfig.SERVER_HTTP_URL, hexToken)
-            val senderFp = friend.session.aliceFp
-            val recipientFp = friend.session.bobFp
-
-            for (msg in messages.filterIsInstance<PreKeyBundlePayload>()) {
-                e2eeStore.storeOpkBundle(friend.id, msg)
-            }
-            var session = e2eeStore.getFriend(friend.id)?.session ?: return
-            for (msg in messages.filterIsInstance<EncryptedLocationPayload>().sortedBy { it.seqAsLong() }) {
-                try {
-                    val (newSession, location) = Session.decryptLocation(
-                        state = session,
-                        ct = msg.ct,
-                        seq = msg.seqAsLong(),
-                        senderFp = senderFp,
-                        recipientFp = recipientFp,
-                    )
-                    session = newSession
-                    friendLocations.value += (friend.id to UserLocation(friend.id, location.lat, location.lng, location.ts))
-                } catch (_: Exception) { }
-            }
-            if (session !== (e2eeStore.getFriend(friend.id)?.session)) {
-                e2eeStore.updateSession(friend.id, session)
-            }
-        } catch (_: Exception) { }
-    }
-
     private suspend fun sendEncryptedLocation(
         lat: Double,
         lng: Double,
     ) {
-        val ts = System.currentTimeMillis() / 1000
-        val plaintext = LocationPlaintext(lat = lat, lng = lng, acc = 0.0, ts = ts)
-        for (friend in e2eeStore.listFriends()) {
-            if (friend.id in _pausedFriendIds.value) continue
-            try {
-                // Alice: rotate epoch when due, before sending the next message.
-                if (e2eeStore.shouldRotateEpoch(friend.id)) {
-                    val oldToken = friend.session.routingToken.toHexStr()
-                    val rotPayload = e2eeStore.initiateEpochRotation(friend.id)
-                    if (rotPayload != null) {
-                        // Post rotation announcement to the OLD token so Bob can process it.
-                        try {
-                            E2eeMailboxClient.post(BuildConfig.SERVER_HTTP_URL, oldToken, rotPayload)
-                        } catch (_: Exception) {
-                        }
-                    }
-                }
-
-                // Re-fetch after potential rotation to use the current session/token.
-                val current = e2eeStore.getFriend(friend.id) ?: continue
-                val (newSession, ct) =
-                    Session.encryptLocation(
-                        state = current.session,
-                        location = plaintext,
-                        senderFp = current.session.aliceFp,
-                        recipientFp = current.session.bobFp,
-                    )
-                e2eeStore.updateSession(friend.id, newSession)
-                E2eeMailboxClient.post(
-                    baseUrl = BuildConfig.SERVER_HTTP_URL,
-                    token = current.session.routingToken.toHexStr(),
-                    payload =
-                        EncryptedLocationPayload(
-                            epoch = newSession.epoch,
-                            seq = newSession.sendSeq.toString(),
-                            ct = ct,
-                        ),
-                )
-            } catch (_: Exception) {
-                // ignore transient send failures
-            }
-        }
+        try {
+            locationClient.sendLocation(lat, lng, _pausedFriendIds.value)
+        } catch (_: Exception) {}
     }
 
     private fun manageForegroundService(sharing: Boolean) {
@@ -378,6 +229,4 @@ class LocationViewModel(app: Application) : AndroidViewModel(app) {
             getApplication<Application>().stopService(intent)
         }
     }
-
-    private fun ByteArray.toHexStr(): String = joinToString("") { (it.toInt() and 0xFF).toString(16).padStart(2, '0') }
 }

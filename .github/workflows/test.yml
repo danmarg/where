@@ -38,6 +38,11 @@ jobs:
       - name: Run Android unit tests
         run: ./gradlew :android:testDebugUnitTest
 
+      - name: Run E2E CLI test
+        run: |
+          chmod +x ./e2e-test.sh
+          ./e2e-test.sh
+
       - name: Upload test reports
         if: always()
         uses: actions/upload-artifact@v4
