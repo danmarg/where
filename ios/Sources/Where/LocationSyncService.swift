@@ -1,5 +1,16 @@
 import Foundation
 import Shared
+import os
+
+private let logger = Logger(subsystem: "net.af0.where", category: "LocationSync")
+
+@inline(__always)
+private func debugLog(_ msg: () -> String) {
+    #if DEBUG
+    let message = msg()
+    logger.debug("\(message)")
+    #endif
+}
 
 // MARK: - QR payload URL helpers
 
@@ -38,25 +49,34 @@ private func urlToQrPayload(_ url: String) -> Shared.QrPayload? {
 
 @MainActor
 private func postToMailbox(token: String, bodyData: Data) async throws {
-    guard let url = URL(string: "\(ServerConfig.httpBaseUrl)/inbox/\(token)") else { return }
+    guard let url = URL(string: "\(ServerConfig.httpBaseUrl)/inbox/\(token)") else {
+        logger.error("Invalid mailbox URL")
+        return
+    }
+    debugLog { "Posting to mailbox: \(url.absoluteString), bodySize=\(bodyData.count)" }
     var req = URLRequest(url: url)
     req.httpMethod = "POST"
     req.setValue("application/json", forHTTPHeaderField: "Content-Type")
     req.httpBody = bodyData
     let (_, response) = try await URLSession.shared.data(for: req)
     if let http = response as? HTTPURLResponse, http.statusCode != 200 && http.statusCode != 204 {
+        logger.error("Mailbox POST failed: \(http.statusCode)")
         throw NSError(domain: "Where", code: http.statusCode, userInfo: [NSLocalizedDescriptionKey: "Server returned \(http.statusCode)"])
     }
+    debugLog { "Mailbox POST succeeded: \((response as? HTTPURLResponse)?.statusCode ?? 0)" }
 }
 
 @MainActor
 private func pollMailbox(token: String) async throws -> [[String: Any]] {
     guard let url = URL(string: "\(ServerConfig.httpBaseUrl)/inbox/\(token)") else { return [] }
+    debugLog { "Polling mailbox: \(url.absoluteString)" }
     let (data, response) = try await URLSession.shared.data(from: url)
     if let http = response as? HTTPURLResponse, http.statusCode != 200 {
+        logger.error("Mailbox poll failed: \(http.statusCode)")
         throw NSError(domain: "Where", code: http.statusCode, userInfo: [NSLocalizedDescriptionKey: "Server returned \(http.statusCode)"])
     }
     guard let arr = try JSONSerialization.jsonObject(with: data) as? [[String: Any]] else { return [] }
+    debugLog { "Polled mailbox, got \(arr.count) messages" }
     return arr
 }
 
@@ -70,6 +90,7 @@ enum ConnectionStatus {
 @MainActor
 final class LocationSyncService: ObservableObject {
     @Published var friendLocations: [String: (lat: Double, lng: Double, ts: Int64)] = [:]
+    @Published var friendLastPing: [String: Date] = [:]  // Track last location update time
     @Published var connectionStatus: ConnectionStatus = .ok
     @Published var friends: [Shared.FriendEntry] = []
     @Published var pendingInviteQr: Shared.QrPayload? = nil
@@ -100,6 +121,7 @@ final class LocationSyncService: ObservableObject {
     }()
 
     init() {
+        logger.debug("LocationSyncService init: serverUrl=\(ServerConfig.httpBaseUrl)")
         let store = Shared.E2eeStore(storage: UserDefaultsE2eeStorage())
         self.e2eeStore = store
         self.locationClient = Shared.LocationClient(baseUrl: ServerConfig.httpBaseUrl, store: store)
@@ -123,7 +145,9 @@ final class LocationSyncService: ObservableObject {
         pollTask = Task { [weak self] in
             while !Task.isCancelled {
                 await self?.pollAll()
-                try? await Task.sleep(nanoseconds: 60_000_000_000)
+                let isPairing = await self?.e2eeStore.pendingQrPayload != nil || self?.hasPendingInit == true
+                let interval = isPairing ? 2_000_000_000 : 60_000_000_000  // 2s while pairing, 60s otherwise
+                try? await Task.sleep(nanoseconds: UInt64(interval))
             }
         }
     }
@@ -135,11 +159,14 @@ final class LocationSyncService: ObservableObject {
 
     func sendLocation(lat: Double, lng: Double) {
         guard isSharingLocation else { return }
+        logger.debug("Sending location: \(lat), \(lng)")
         Task {
             do {
                 try await locationClient.sendLocation(lat: lat, lng: lng, pausedFriendIds: pausedFriendIds)
+                logger.debug("Location sent successfully")
                 updateStatus(nil)
             } catch {
+                logger.error("Failed to send location: \(error.localizedDescription)")
                 updateStatus(error)
             }
         }
@@ -148,6 +175,7 @@ final class LocationSyncService: ObservableObject {
     func createInvite() {
         Task {
             let qr = await e2eeStore.createInvite(suggestedName: displayName.isEmpty ? "Me" : displayName)
+            debugLog { "Created invite: discovery=\(toHex(qr.discoveryToken()))" }
             pendingInviteQr = qr
         }
     }
@@ -173,8 +201,12 @@ final class LocationSyncService: ObservableObject {
             suggestedName: friendName,
             fingerprint: qr.fingerprint
         )
+        debugLog { "Scanning QR: discovery=\(toHex(qrWithName.discoveryToken())), friendName=\(friendName)" }
         Task {
-            guard let result = try? await e2eeStore.processScannedQr(qr: qrWithName, bobSuggestedName: displayName) else { return }
+            guard let result = try? await e2eeStore.processScannedQr(qr: qrWithName, bobSuggestedName: displayName) else {
+                logger.error("Failed to process scanned QR")
+                return
+            }
             let initPayload = result.first!
             let bobEntry = result.second!
             friends = await e2eeStore.listFriends()
@@ -191,10 +223,13 @@ final class LocationSyncService: ObservableObject {
 
             if let bodyData = try? JSONSerialization.data(withJSONObject: payload) {
                 do {
+                    debugLog { "Posting KeyExchangeInit to mailbox with token: \(discoveryHex)" }
                     try await postToMailbox(token: discoveryHex, bodyData: bodyData)
+                    debugLog { "KeyExchangeInit posted successfully" }
                     try await locationClient.postOpkBundle(friendId: bobEntry.id)
                     updateStatus(nil)
                 } catch {
+                    logger.error("Failed to post init: \(error.localizedDescription)")
                     updateStatus(error)
                 }
             }
@@ -231,13 +266,17 @@ final class LocationSyncService: ObservableObject {
     // MARK: - Private polling
 
     private func pollAll() async {
+        logger.debug("Polling for location updates")
         do {
             let updates = try await locationClient.poll()
+            logger.debug("Got \(updates.count) location updates")
             for update in updates {
                 friendLocations[update.userId] = (lat: update.lat, lng: update.lng, ts: update.timestamp)
+                friendLastPing[update.userId] = Date()
             }
             updateStatus(nil)
         } catch {
+            logger.error("Poll failed: \(error.localizedDescription)")
             updateStatus(error)
         }
         await pollPendingInvite()
@@ -246,11 +285,14 @@ final class LocationSyncService: ObservableObject {
     private func pollPendingInvite() async {
         guard let qr = await e2eeStore.pendingQrPayload else { return }
         let discoveryHex = toHex(qr.discoveryToken())
+        debugLog { "pollPendingInvite: discoveryHex=\(discoveryHex)" }
         let messages: [[String: Any]]
         do {
             messages = try await pollMailbox(token: discoveryHex)
+            debugLog { "pollPendingInvite: got \(messages.count) messages" }
             updateStatus(nil)
         } catch {
+            logger.error("pollPendingInvite error: \(error.localizedDescription)")
             updateStatus(error)
             return
         }

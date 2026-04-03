@@ -58,6 +58,7 @@ class MainActivity : ComponentActivity() {
                 val friends by viewModel.friends.collectAsState()
                 val displayName by viewModel.displayName.collectAsState()
                 val pausedFriendIds by viewModel.pausedFriendIds.collectAsState()
+                val friendLastPing by viewModel.friendLastPing.collectAsState()
                 val isSharing by viewModel.isSharingLocation.collectAsState()
                 val pendingInviteQr by viewModel.pendingInviteQr.collectAsState()
                 val pendingQrForNaming by viewModel.pendingQrForNaming.collectAsState()
@@ -79,8 +80,8 @@ class MainActivity : ComponentActivity() {
                     connectionStatus = connectionStatus,
                     onCreateInvite = { viewModel.createInvite() },
                     onScanQr = {
-                        if (android.os.Build.PRODUCT.contains("sdk") || 
-                            android.os.Build.MODEL.contains("Emulator") || 
+                        if (android.os.Build.PRODUCT.contains("sdk") ||
+                            android.os.Build.MODEL.contains("Emulator") ||
                             android.os.Build.DEVICE.contains("generic")) {
                             showSimulatorScanner = true
                         } else {
@@ -93,6 +94,8 @@ class MainActivity : ComponentActivity() {
                             )
                         }
                     },
+                    onPasteUrl = { viewModel.processQrUrl(it) },
+                    friendLastPing = friendLastPing,
                     onRemoveFriend = { viewModel.removeFriend(it) },
                     onLocationPermissionGranted = ::startLocationService,
                 )
