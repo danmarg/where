@@ -1,20 +1,18 @@
 package net.af0.where.cli
 
-import net.af0.where.initializeLibsodium
-import kotlinx.coroutines.runBlocking
-import kotlinx.serialization.json.Json
-import net.af0.where.e2ee.*
-import java.io.File
-import kotlin.system.exitProcess
+import com.google.zxing.BarcodeFormat
+import com.google.zxing.MultiFormatWriter
 import io.ktor.client.*
 import io.ktor.client.plugins.contentnegotiation.*
 import io.ktor.serialization.kotlinx.json.*
+import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.*
-import net.af0.where.model.UserLocation
+import kotlinx.serialization.json.Json
+import net.af0.where.e2ee.*
+import net.af0.where.initializeLibsodium
+import java.io.File
 import java.util.Base64
-import com.google.zxing.BarcodeFormat
-import com.google.zxing.MultiFormatWriter
-import com.google.zxing.common.BitMatrix
+import kotlin.system.exitProcess
 
 class FileE2eeStorage(private val file: File) : E2eeStorage {
     private val json = Json { prettyPrint = true }
@@ -32,7 +30,10 @@ class FileE2eeStorage(private val file: File) : E2eeStorage {
 
     override fun getString(key: String): String? = data[key]
 
-    override fun putString(key: String, value: String) {
+    override fun putString(
+        key: String,
+        value: String,
+    ) {
         data[key] = value
         file.writeText(json.encodeToString(data))
     }
@@ -50,11 +51,12 @@ fun qrPayloadToUrl(qr: QrPayload): String {
     // Mimic the iOS/Android URL format
     // {"ekPub": "...", "suggestedName": "...", "fingerprint": "..."}
     val ekPubB64 = Base64.getEncoder().encodeToString(qr.ekPub)
-    val map = mapOf(
-        "ekPub" to ekPubB64,
-        "suggestedName" to qr.suggestedName,
-        "fingerprint" to qr.fingerprint
-    )
+    val map =
+        mapOf(
+            "ekPub" to ekPubB64,
+            "suggestedName" to qr.suggestedName,
+            "fingerprint" to qr.fingerprint,
+        )
     val b64 = Base64.getUrlEncoder().withoutPadding().encodeToString(json.encodeToString(map).toByteArray())
     return "where://invite?q=$b64"
 }
@@ -88,7 +90,7 @@ fun urlToQrPayload(url: String): QrPayload? {
     return QrPayload(
         ekPub = ekPub,
         suggestedName = map["suggestedName"] ?: "Friend",
-        fingerprint = map["fingerprint"] ?: ""
+        fingerprint = map["fingerprint"] ?: "",
     )
 }
 
@@ -161,9 +163,17 @@ fun main(args: Array<String>) {
             }
         }
         "join" -> {
-            val url = args.getOrNull(1) ?: run { println("URL required"); return }
+            val url =
+                args.getOrNull(1) ?: run {
+                    println("URL required")
+                    return
+                }
             val name = args.getOrNull(2) ?: "Friend"
-            val qr = urlToQrPayload(url) ?: run { println("Invalid URL"); return }
+            val qr =
+                urlToQrPayload(url) ?: run {
+                    println("Invalid URL")
+                    return
+                }
 
             runBlocking {
                 val (initPayload, bobEntry) = store.processScannedQr(qr, name)
@@ -204,8 +214,16 @@ fun main(args: Array<String>) {
             }
         }
         "send" -> {
-            val lat = args.getOrNull(1)?.toDoubleOrNull() ?: run { println("Lat required"); return }
-            val lng = args.getOrNull(2)?.toDoubleOrNull() ?: run { println("Lng required"); return }
+            val lat =
+                args.getOrNull(1)?.toDoubleOrNull() ?: run {
+                    println("Lat required")
+                    return
+                }
+            val lng =
+                args.getOrNull(2)?.toDoubleOrNull() ?: run {
+                    println("Lng required")
+                    return
+                }
             runBlocking {
                 locationClient.sendLocation(lat, lng)
             }
@@ -216,7 +234,11 @@ fun main(args: Array<String>) {
     }
 }
 
-suspend fun poll(locationClient: LocationClient, store: E2eeStore, host: String) {
+suspend fun poll(
+    locationClient: LocationClient,
+    store: E2eeStore,
+    host: String,
+) {
     // Poll for pending invites if Alice
     store.pendingQrPayload?.let { qr ->
         val discoveryHex = qr.discoveryToken().toHex()
@@ -227,7 +249,9 @@ suspend fun poll(locationClient: LocationClient, store: E2eeStore, host: String)
             println("Received KeyExchangeInit from ${init.suggestedName}")
             try {
                 val entry = store.processKeyExchangeInit(init, init.suggestedName)
-                println("Established session with ${entry?.name}")
+                val friend = store.getFriend(entry?.id ?: "")
+                val sendToken = friend?.session?.sendToken?.toHex() ?: "?"
+                println("Established session with ${entry?.name}, sendToken=$sendToken")
             } catch (e: Exception) {
                 println("Failed to process KeyExchangeInit: ${e.message}")
             }
