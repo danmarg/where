@@ -31,9 +31,13 @@ struct ContentView: View {
         ZStack {
             WhereMapView(
                 users: visibleUsers,
+                friends: syncService.friends,
                 ownUserId: syncService.myId,
                 zoomTarget: zoomTarget,
-                onZoomConsumed: { zoomTarget = nil }
+                onZoomConsumed: { zoomTarget = nil },
+                onSelectFriend: { friendId in
+                    showFriends = true
+                }
             )
             .ignoresSafeArea()
 
@@ -78,6 +82,12 @@ struct ContentView: View {
                     .padding(.vertical, 8)
                     .background(.black.opacity(0.7))
                     .clipShape(Capsule())
+                    .contentShape(Capsule())
+                    .onTapGesture {
+                        if let loc = locationManager.location {
+                            zoomTarget = CLLocationCoordinate2D(latitude: loc.coordinate.latitude, longitude: loc.coordinate.longitude)
+                        }
+                    }
 
                     Spacer()
 
@@ -103,6 +113,7 @@ struct ContentView: View {
                 displayName: $syncService.displayName,
                 friends: syncService.friends,
                 pausedFriendIds: syncService.pausedFriendIds,
+                lastPingTimes: syncService.friendLastPing,
                 onTogglePause: { syncService.togglePauseFriend(id: $0) },
                 onCreateInvite: {
                     showFriends = false
@@ -112,11 +123,21 @@ struct ContentView: View {
                     showFriends = false
                     showScanner = true
                 },
+                onPasteUrl: { url in
+                    showFriends = false
+                    syncService.processQrUrl(url)
+                },
                 onRemove: { syncService.removeFriend(id: $0) },
                 onZoomTo: { friendId in
-                    if let loc = syncService.friendLocations[friendId] {
+                    if friendId == syncService.myId {
+                        // Zoom to own location
+                        if let loc = locationManager.location {
+                            zoomTarget = CLLocationCoordinate2D(latitude: loc.coordinate.latitude, longitude: loc.coordinate.longitude)
+                        }
+                    } else if let loc = syncService.friendLocations[friendId] {
                         zoomTarget = CLLocationCoordinate2D(latitude: loc.lat, longitude: loc.lng)
                     }
+                    showFriends = false
                 }
             )
         }

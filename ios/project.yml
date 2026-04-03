@@ -18,6 +18,9 @@ targets:
     deploymentTarget: "17.0"
     sources:
       - path: Sources/Where
+    configFiles:
+      Debug: Local.xcconfig
+      Release: Local.xcconfig
     dependencies:
       - framework: $(SRCROOT)/../shared/build/xcode-frameworks/$(CONFIGURATION)/$(SDK_NAME)/Shared.framework
         embed: false
@@ -92,7 +95,7 @@ targets:
         name: Build KMP Shared Framework
         basedOnDependencyAnalysis: false
     settings:
-      PRODUCT_BUNDLE_IDENTIFIER: net.af0.where
+      PRODUCT_BUNDLE_IDENTIFIER: net.af0.Where
       GENERATE_INFOPLIST_FILE: YES
       INFOPLIST_KEY_UIApplicationSceneManifest_Generation: YES
       INFOPLIST_KEY_UILaunchScreen_Generation: YES

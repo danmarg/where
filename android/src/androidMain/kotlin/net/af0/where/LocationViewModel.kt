@@ -5,6 +5,7 @@ import android.app.Application
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.util.Log
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
@@ -30,6 +31,8 @@ import net.af0.where.e2ee.discoveryToken
 import net.af0.where.e2ee.toHex
 import net.af0.where.e2ee.LocationClient
 import net.af0.where.model.UserLocation
+
+private const val TAG = "LocationViewModel"
 
 sealed class ConnectionStatus {
     object Ok : ConnectionStatus()
@@ -66,6 +69,8 @@ class LocationViewModel(app: Application) : AndroidViewModel(app) {
     val pausedFriendIds: StateFlow<Set<String>> = _pausedFriendIds
 
     private val friendLocations = MutableStateFlow(emptyMap<String, UserLocation>())
+    private val _friendLastPing = MutableStateFlow(emptyMap<String, Long>())
+    val friendLastPing: StateFlow<Map<String, Long>> = _friendLastPing
 
     private val _pendingInviteQr = MutableStateFlow<QrPayload?>(null)
     val pendingInviteQr: StateFlow<QrPayload?> = _pendingInviteQr
@@ -90,6 +95,7 @@ class LocationViewModel(app: Application) : AndroidViewModel(app) {
         }.stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
 
     init {
+        Log.d(TAG, "LocationViewModel init: server=${BuildConfig.SERVER_HTTP_URL}, userId=$userId")
         viewModelScope.launch { pollLoop() }
         viewModelScope.launch {
             var prevSharing = _isSharingLocation.value
@@ -194,13 +200,17 @@ class LocationViewModel(app: Application) : AndroidViewModel(app) {
     private suspend fun pollLoop() {
         while (true) {
             try {
+                Log.d(TAG, "Polling for location updates")
                 val updates = locationClient.poll()
+                Log.d(TAG, "Got ${updates.size} location updates")
                 for (update in updates) {
                     friendLocations.value += (update.userId to update)
+                    _friendLastPing.value += (update.userId to System.currentTimeMillis())
                 }
                 pollPendingInvite()
                 updateStatus(null)
             } catch (e: Exception) {
+                Log.e(TAG, "Poll failed: ${e.message}")
                 updateStatus(e)
             }
             delay(60_000)
@@ -229,9 +239,12 @@ class LocationViewModel(app: Application) : AndroidViewModel(app) {
         lng: Double,
     ) {
         try {
+            Log.d(TAG, "Sending location: $lat, $lng to server: ${BuildConfig.SERVER_HTTP_URL}")
             locationClient.sendLocation(lat, lng, _pausedFriendIds.value)
+            Log.d(TAG, "Location sent successfully")
             updateStatus(null)
         } catch (e: Exception) {
+            Log.e(TAG, "Failed to send location: ${e.message}")
             updateStatus(e)
         }
     }

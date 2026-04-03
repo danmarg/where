@@ -16,6 +16,8 @@ USE_NIX=false
 SERVER_URL="https://where-api.fly.dev"
 BUILD_FLAVOR="debug"
 ANDROID_FORMAT="aab"  # aab or apk
+IOS_TEAM_ID="${IOS_TEAM_ID:-}"
+DO_INSTALL=false
 while [[ $# -gt 0 ]]; do
   case $1 in
     --nix)
@@ -32,6 +34,14 @@ while [[ $# -gt 0 ]]; do
       ;;
     --apk)
       ANDROID_FORMAT="apk"
+      shift
+      ;;
+    --team-id)
+      IOS_TEAM_ID="$2"
+      shift 2
+      ;;
+    --install)
+      DO_INSTALL=true
       shift
       ;;
     *)
@@ -55,15 +65,6 @@ if [[ "$BUILD_FLAVOR" != "debug" && "$BUILD_FLAVOR" != "release" ]]; then
   exit 1
 fi
 
-# Default server URL from local.properties, or fallback
-if [ -z "$SERVER_URL" ]; then
-  if [ -f local.properties ]; then
-    SERVER_URL=$(grep "^SERVER_HTTP_URL=" local.properties 2>/dev/null | cut -d= -f2 | tr -d '[:space:]' || true)
-  fi
-  # Fallback to the build.gradle default
-  [ -z "$SERVER_URL" ] && SERVER_URL="http://where:8080"
-fi
-
 echo "Building with server URL: $SERVER_URL"
 echo ""
 
@@ -75,6 +76,17 @@ if ! run ./gradlew :server:build; then
 fi
 echo "✓ Server built"
 echo ""
+
+# Configure local.properties with SERVER_HTTP_URL
+if [ ! -f local.properties ]; then
+  touch local.properties
+fi
+# Update or add SERVER_HTTP_URL
+if grep -q "^SERVER_HTTP_URL=" local.properties; then
+  sed -i '' "s|^SERVER_HTTP_URL=.*|SERVER_HTTP_URL=$SERVER_URL|" local.properties
+else
+  echo "SERVER_HTTP_URL=$SERVER_URL" >> local.properties
+fi
 
 # Build Android APK or AAB
 if [[ "$BUILD_FLAVOR" == "debug" ]]; then
@@ -116,21 +128,30 @@ if [ ! -f ios/Where.xcodeproj/project.pbxproj ]; then
   cd ..
 fi
 
-# Build for iphoneos (real device) with code signing disabled
+# Build for iphoneos (real device)
 if [[ "$BUILD_FLAVOR" == "debug" ]]; then
   XCODE_CONFIGURATION="Debug"
 else
   XCODE_CONFIGURATION="Release"
 fi
-echo "=== Building iOS for real device ($XCODE_CONFIGURATION) ==="
+
+# Set up signing parameters
+if [ -z "$IOS_TEAM_ID" ]; then
+  echo "=== Building iOS for real device ($XCODE_CONFIGURATION) - unsigned ==="
+  SIGNING_FLAGS="CODE_SIGN_IDENTITY=\"\" CODE_SIGNING_REQUIRED=NO"
+else
+  echo "=== Building iOS for real device ($XCODE_CONFIGURATION) - signed with team $IOS_TEAM_ID ==="
+  SIGNING_FLAGS="CODE_SIGN_STYLE=Automatic DEVELOPMENT_TEAM=$IOS_TEAM_ID"
+fi
+
 if ! run bash -c "cd ios && WHERE_SERVER_HTTP_URL='$SERVER_URL' xcodebuild \
   -project Where.xcodeproj \
   -scheme Where \
   -configuration $XCODE_CONFIGURATION \
   -sdk iphoneos \
   -derivedDataPath build \
-  CODE_SIGN_IDENTITY=\"\" \
-  CODE_SIGNING_REQUIRED=NO \
+  $SIGNING_FLAGS \
+  -allowProvisioningUpdates \
   build 2>&1 | tee ../ios_build.log"; then
   echo "iOS build failed."
   exit 1
@@ -144,6 +165,52 @@ fi
 echo "✓ iOS app built ($XCODE_CONFIGURATION)"
 echo ""
 
+# Install to devices if requested
+if $DO_INSTALL; then
+  echo "=== Installing to devices ==="
+  echo ""
+
+  # Install Android APK via adb
+  if [[ "$ANDROID_FORMAT" == "apk" ]]; then
+    android_build_dir=$(run ./gradlew -q :android:printBuildDir 2>/dev/null || echo "android/build")
+    APK_PATH="$android_build_dir/outputs/apk/$BUILD_FLAVOR/android-$BUILD_FLAVOR.apk"
+    if [ -f "$APK_PATH" ]; then
+      echo "Installing Android APK..."
+      if adb install "$APK_PATH"; then
+        echo "✓ Android APK installed"
+      else
+        echo "⚠ adb install failed. Make sure a device is connected."
+      fi
+    else
+      echo "⚠ APK not found at $APK_PATH"
+    fi
+    echo ""
+  fi
+
+  # Install iOS app via ios-deploy
+  if [ ! -z "$IOS_TEAM_ID" ]; then
+    APP_BUNDLE="ios/build/Build/Products/${XCODE_CONFIGURATION}-iphoneos/Where.app"
+    if [ -d "$APP_BUNDLE" ]; then
+      if command -v ios-deploy &> /dev/null; then
+        echo "Installing iOS app..."
+        if ios-deploy --bundle "$APP_BUNDLE" --justlaunch; then
+          echo "✓ iOS app installed and launched"
+        else
+          echo "⚠ ios-deploy failed. Ensure device is connected and unlocked."
+        fi
+      else
+        echo "⚠ ios-deploy not installed. Install with:"
+        echo "  brew install ios-deploy"
+      fi
+    else
+      echo "⚠ iOS app bundle not found at $APP_BUNDLE"
+    fi
+  else
+    echo "⚠ iOS installation requires --team-id (app is unsigned)"
+  fi
+  echo ""
+fi
+
 # Summary
 echo "=== Build complete ==="
 echo ""
@@ -153,7 +220,9 @@ android_build_dir=$(run ./gradlew -q :android:printBuildDir 2>/dev/null || echo 
 if [[ "$ANDROID_FORMAT" == "apk" ]]; then
   echo "Android APK location:"
   echo "  $android_build_dir/outputs/apk/$BUILD_FLAVOR/android-$BUILD_FLAVOR.apk"
-  echo "  Install directly with: adb install <path>"
+  if ! $DO_INSTALL; then
+    echo "  Install with: adb install <path>"
+  fi
 else
   echo "Android AAB location:"
   echo "  $android_build_dir/outputs/bundle/$BUILD_FLAVOR/android-$BUILD_FLAVOR.aab"
@@ -162,6 +231,12 @@ fi
 echo ""
 echo "iOS app location (device):"
 echo "  ios/build/Build/Products/$XCODE_CONFIGURATION-iphoneos/Where.app"
-echo "  Use Xcode to sign and install to device"
+if [ -z "$IOS_TEAM_ID" ]; then
+  echo "  (unsigned - use Xcode to sign and install to device)"
+fi
 echo ""
-echo "To run the server: ./run-server.sh"
+if ! $DO_INSTALL; then
+  echo "To build and install: ./build.sh --install"
+  echo ""
+fi
+echo "To run the server: ./gradlew :server:run"

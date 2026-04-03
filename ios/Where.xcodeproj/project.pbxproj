@@ -27,8 +27,8 @@
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
-		072A149EB28769F34BCED9D8 /* Security */ = {isa = PBXFileReference; path = Security; sourceTree = "<group>"; };
-		18F48F8FCFBE392E06CD2BB3 /* CoreLocation */ = {isa = PBXFileReference; path = CoreLocation; sourceTree = "<group>"; };
+		072A149EB28769F34BCED9D8 /* Security */ = {isa = PBXFileReference; lastKnownFileType = text; path = Security; sourceTree = "<group>"; };
+		18F48F8FCFBE392E06CD2BB3 /* CoreLocation */ = {isa = PBXFileReference; lastKnownFileType = text; path = CoreLocation; sourceTree = "<group>"; };
 		220A8EA077B99368AF6DA3D4 /* QrScannerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QrScannerView.swift; sourceTree = "<group>"; };
 		2421CE3D6966994F4875E311 /* WhereMapView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WhereMapView.swift; sourceTree = "<group>"; };
 		28DD2FC8358389E8C9F6ABE6 /* FriendsSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FriendsSheet.swift; sourceTree = "<group>"; };
@@ -40,11 +40,12 @@
 		87F9371D289CC150DF786A96 /* FriendsStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FriendsStore.swift; sourceTree = "<group>"; };
 		AC2B156B7AAD99EBB5C7C775 /* KotlinByteArrayUtils.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KotlinByteArrayUtils.swift; sourceTree = "<group>"; };
 		CA7A89FD147B152B7C120CCC /* UserDefaultsE2eeStorage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UserDefaultsE2eeStorage.swift; sourceTree = "<group>"; };
-		CFF6771BE7FE45B2F4F8952B /* MapKit */ = {isa = PBXFileReference; path = MapKit; sourceTree = "<group>"; };
+		CFF6771BE7FE45B2F4F8952B /* MapKit */ = {isa = PBXFileReference; lastKnownFileType = text; path = MapKit; sourceTree = "<group>"; };
 		D43663670EB5FB46B5C7C4EA /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
 		D4B36665B05EA8E1F42A11EA /* LocationSyncService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocationSyncService.swift; sourceTree = "<group>"; };
 		E54EC15388BAF720E7755291 /* ServerConfig.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ServerConfig.swift; sourceTree = "<group>"; };
-		EA47D2499F3983EF98B459AB /* Where.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = Where.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		EA47D2499F3983EF98B459AB /* Where.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Where.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		EE1A058D7818BC3CADF5B72E /* Local.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Local.xcconfig; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -76,6 +77,7 @@
 		177C19F85F562AB1BF838A33 = {
 			isa = PBXGroup;
 			children = (
+				D750B7527BB93ABC5F965D20 /* ios */,
 				B39C72AD8B5E1F0E3A409FD2 /* Where */,
 				04AE05A338521963D27F32FA /* Frameworks */,
 				C945058DA9DF7EA90A7EE8D7 /* Products */,
@@ -111,6 +113,15 @@
 			name = Products;
 			sourceTree = "<group>";
 		};
+		D750B7527BB93ABC5F965D20 /* ios */ = {
+			isa = PBXGroup;
+			children = (
+				EE1A058D7818BC3CADF5B72E /* Local.xcconfig */,
+			);
+			name = ios;
+			path = .;
+			sourceTree = "<group>";
+		};
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
@@ -141,9 +152,13 @@
 			attributes = {
 				BuildIndependentTargetsInParallel = YES;
 				LastUpgradeCheck = 1430;
+				TargetAttributes = {
+					02B551C6DB1927ABD876665A = {
+						ProvisioningStyle = Automatic;
+					};
+				};
 			};
 			buildConfigurationList = 777AFC5049C583D110519BB8 /* Build configuration list for PBXProject "Where" */;
-			compatibilityVersion = "Xcode 14.0";
 			developmentRegion = en;
 			hasScannedForEncodings = 0;
 			knownRegions = (
@@ -153,6 +168,7 @@
 			mainGroup = 177C19F85F562AB1BF838A33;
 			minimizedProjectReferenceProxies = 1;
 			preferredProjectObjectVersion = 77;
+			productRefGroup = C945058DA9DF7EA90A7EE8D7 /* Products */;
 			projectDirPath = "";
 			projectRoot = "";
 			targets = (
@@ -179,7 +195,7 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
-			shellScript = "cd \"$SRCROOT/..\"\n\n# Use system defaults for CI environments, or local overrides if available\nexport GRADLE_USER_HOME=\"${GRADLE_USER_HOME:-$HOME/.gradle}\"\nexport KONAN_DATA_DIR=\"${KONAN_DATA_DIR:-$HOME/.konan}\"\nexport TMPDIR=\"${TMPDIR:-/tmp}\"\n\n# Ensure JAVA_HOME is set (required for gradle)\nif [ -z \"$JAVA_HOME\" ]; then\n  if command -v /usr/libexec/java_home &> /dev/null; then\n    export JAVA_HOME=$(/usr/libexec/java_home)\n  fi\nfi\n\n# Ensure SDKROOT is set for iOS SDK headers\nif [ -z \"$SDKROOT\" ]; then\n  SDKROOT=$(xcrun --sdk iphoneos --show-sdk-path 2>/dev/null)\n  [ -z \"$SDKROOT\" ] && SDKROOT=$(xcrun --sdk iphonesimulator --show-sdk-path 2>/dev/null)\nfi\nexport SDKROOT\n\n# Run with nix if available (local dev), otherwise run directly (CI)\n# Pass SDKROOT via Gradle property for cinterop compilation\nif command -v nix &> /dev/null; then\n  nix develop --command ./gradlew :shared:embedAndSignAppleFrameworkForXcode -Dios.sdk.root=\"$SDKROOT\"\nelse\n  ./gradlew :shared:embedAndSignAppleFrameworkForXcode -Dios.sdk.root=\"$SDKROOT\"\nfi\n\n# If local.gradle.kts redirects the build dir, symlink xcode-frameworks to the standard location.\nLOCAL_GRADLE=\"$SRCROOT/../local.gradle.kts\"\nEXPECTED=\"$SRCROOT/../shared/build/xcode-frameworks\"\nif [ -f \"$LOCAL_GRADLE\" ] && [ ! -d \"$EXPECTED\" ]; then\n  BUILD_DIR_PATTERN=$(grep -o '\"[^\"]*\"' \"$LOCAL_GRADLE\" | tr -d '\"' | grep where-build | head -1)\n  ACTUAL=\"${BUILD_DIR_PATTERN/\\$\\{project.name\\}/shared}\"\n  if [ -d \"$ACTUAL/xcode-frameworks\" ]; then\n    mkdir -p \"$SRCROOT/../shared/build\"\n    ln -sfn \"$ACTUAL/xcode-frameworks\" \"$EXPECTED\"\n  fi\nfi\n";
+			shellScript = "cd \"$SRCROOT/..\"\n\n# Use system defaults for CI environments, or local overrides if available\nexport GRADLE_USER_HOME=\"${GRADLE_USER_HOME:-$HOME/.gradle}\"\nexport KONAN_DATA_DIR=\"${KONAN_DATA_DIR:-$HOME/.konan}\"\nexport TMPDIR=\"${TMPDIR:-/tmp}\"\n\n# Ensure JAVA_HOME is set (required for gradle)\nif [ -z \"$JAVA_HOME\" ]; then\n  if command -v /usr/libexec/java_home &> /dev/null; then\n    export JAVA_HOME=$(/usr/libexec/java_home)\n  fi\nfi\n\n# Ensure SDKROOT is set for iOS SDK headers\nif [ -z \"$SDKROOT\" ]; then\n  SDKROOT=$(xcrun --sdk iphoneos --show-sdk-path 2>/dev/null)\n  [ -z \"$SDKROOT\" ] && SDKROOT=$(xcrun --sdk iphonesimulator --show-sdk-path 2>/dev/null)\nfi\nexport SDKROOT\n\n# Run with nix if available (local dev), otherwise run directly (CI)\n# Pass SDKROOT via Gradle property for cinterop compilation\nif command -v nix &> /dev/null; then\n  nix develop --command ./gradlew :shared:embedAndSignAppleFrameworkForXcode -Dios.sdk.root=\"$SDKROOT\"\nelse\n  ./gradlew :shared:embedAndSignAppleFrameworkForXcode -Dios.sdk.root=\"$SDKROOT\"\nfi\n\n# If local.gradle.kts redirects the build dir, symlink xcode-frameworks to the standard location.\nLOCAL_GRADLE=\"$SRCROOT/../local.gradle.kts\"\nEXPECTED=\"$SRCROOT/../shared/build/xcode-frameworks\"\nif [ -f \"$LOCAL_GRADLE\" ] && [ ! -d \"$EXPECTED\" ]; then\n  BUILD_DIR_PATTERN=$(grep -o '\"[^\"]*\"' \"$LOCAL_GRADLE\" | tr -d '\"' | grep where-build | head -1)\n  ACTUAL=\"${BUILD_DIR_PATTERN/\\$\\{project.name\\}/shared}\"\n  if [ -d \"$ACTUAL/xcode-frameworks\" ]; then\n    mkdir -p \"$SRCROOT/../shared/build\"\n    ln -sfn \"$ACTUAL/xcode-frameworks\" \"$EXPECTED\"\n  fi\nfi\n\n# Create symlinks from non-versioned SDK names to versioned ones for Xcode compatibility.\n# The Kotlin plugin generates frameworks in iphoneos26.4, iphonesimulator26.4, etc.,\n# but Xcode's $(SDK_NAME) resolves to just \"iphoneos\" or \"iphonesimulator\".\nFRAMEWORKS_DIR=\"$SRCROOT/../shared/build/xcode-frameworks\"\nfor config_dir in \"$FRAMEWORKS_DIR\"/Debug \"$FRAMEWORKS_DIR\"/Release; do\n  if [ -d \"$config_dir\" ]; then\n    for versioned_dir in \"$config_dir\"/*; do\n      if [ -d \"$versioned_dir\" ]; then\n        base_name=$(basename \"$versioned_dir\" | sed 's/[0-9.]*$//')\n        unversioned_link=\"$config_dir/$base_name\"\n        if [ ! -e \"$unversioned_link\" ]; then\n          ln -sfn \"$(basename \"$versioned_dir\")\" \"$unversioned_link\"\n        fi\n      fi\n    done\n  fi\ndone\n";
 		};
 /* End PBXShellScriptBuildPhase section */
 
@@ -269,11 +285,15 @@
 		};
 		4EA775B8CB3DB7C7CDBE0541 /* Release */ = {
 			isa = XCBuildConfiguration;
+			baseConfigurationReference = EE1A058D7818BC3CADF5B72E /* Local.xcconfig */;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
-				CODE_SIGN_IDENTITY = "iPhone Developer";
+				CODE_SIGN_IDENTITY = "Apple Development";
+				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = 5PM2V9LTHC;
 				FRAMEWORK_SEARCH_PATHS = (
-					"$(inherited) $(SRCROOT)/../shared/build/xcode-frameworks/$(CONFIGURATION)/$(SDK_NAME)",
+					"$(inherited)",
+					"$(SRCROOT)/../shared/build/xcode-frameworks/$(CONFIGURATION)/$(SDK_NAME)",
 					"\".\"",
 				);
 				GENERATE_INFOPLIST_FILE = YES;
@@ -288,7 +308,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				PRODUCT_BUNDLE_IDENTIFIER = net.af0.where;
+				PRODUCT_BUNDLE_IDENTIFIER = net.af0.Where;
 				SDKROOT = iphoneos;
 				TARGETED_DEVICE_FAMILY = "1,2";
 			};
@@ -296,11 +316,15 @@
 		};
 		BE3E750C639CC5D895A652D5 /* Debug */ = {
 			isa = XCBuildConfiguration;
+			baseConfigurationReference = EE1A058D7818BC3CADF5B72E /* Local.xcconfig */;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
-				CODE_SIGN_IDENTITY = "iPhone Developer";
+				CODE_SIGN_IDENTITY = "Apple Development";
+				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = 5PM2V9LTHC;
 				FRAMEWORK_SEARCH_PATHS = (
-					"$(inherited) $(SRCROOT)/../shared/build/xcode-frameworks/$(CONFIGURATION)/$(SDK_NAME)",
+					"$(inherited)",
+					"$(SRCROOT)/../shared/build/xcode-frameworks/$(CONFIGURATION)/$(SDK_NAME)",
 					"\".\"",
 				);
 				GENERATE_INFOPLIST_FILE = YES;
@@ -315,7 +339,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				PRODUCT_BUNDLE_IDENTIFIER = net.af0.where;
+				PRODUCT_BUNDLE_IDENTIFIER = net.af0.Where;
 				SDKROOT = iphoneos;
 				TARGETED_DEVICE_FAMILY = "1,2";
 			};

@@ -9,11 +9,11 @@ enum ServerConfig {
     #if targetEnvironment(simulator)
     static let httpBaseUrl = "http://localhost:8080"
     #else
-    // Read from environment variable set at build time (e.g., by build.sh).
-    // Falls back to local hostname if not provided.
     static let httpBaseUrl: String = {
+        // Read from environment variable set at build time (e.g., by Local.xcconfig or xcodebuild).
+        // Defaults to production server.
         ProcessInfo.processInfo.environment["WHERE_SERVER_HTTP_URL"]
-            ?? "http://where:8080"
+            ?? "https://where-api.fly.dev"
     }()
     #endif
 }
