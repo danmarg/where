@@ -29,7 +29,7 @@ class RatchetTest {
     }
 
     @Test
-    fun `kdfCk chain key, message key, and nonce are distinct`() {
+    fun kdfCk_chainKey_messageKey_and_nonce_are_distinct() {
         val chainKey = ByteArray(32) { it.toByte() }
         val step = kdfCk(chainKey)
         // Different outputs from a single KDF call must not be equal.
