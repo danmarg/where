@@ -47,9 +47,14 @@ class E2eeIntegrationTest {
         val aliceSession = KeyExchange.aliceProcessInit(initMsg, aliceEkPriv, qr.ekPub)
 
         assertContentEquals(
-            aliceSession.routingToken,
-            bobSession.routingToken,
-            "routing tokens must match",
+            aliceSession.sendToken,
+            bobSession.recvToken,
+            "Alice's send token must equal Bob's recv token",
+        )
+        assertContentEquals(
+            aliceSession.recvToken,
+            bobSession.sendToken,
+            "Alice's recv token must equal Bob's send token",
         )
         // Alice's send chain seeds Bob's receive chain, and vice versa.
         assertContentEquals(
@@ -80,7 +85,7 @@ class E2eeIntegrationTest {
             val (initMsg, bobSession) = KeyExchange.bobProcessQr(qr, "Bob")
             val aliceSession = KeyExchange.aliceProcessInit(initMsg, aliceEkPriv, qr.ekPub)
 
-            val token = aliceSession.routingToken.toHex()
+            val token = aliceSession.sendToken.toHex()
 
             // Alice encrypts a location update
             val location = LocationPlaintext(lat = 37.7749, lng = -122.4194, acc = 10.0, ts = 1_700_000_000L)
@@ -135,7 +140,7 @@ class E2eeIntegrationTest {
             val (qr, aliceEkPriv) = KeyExchange.aliceCreateQrPayload("Alice")
             val (initMsg, bobState) = KeyExchange.bobProcessQr(qr, "Bob")
             val aliceState0 = KeyExchange.aliceProcessInit(initMsg, aliceEkPriv, qr.ekPub)
-            val token = aliceState0.routingToken.toHex()
+            val token = aliceState0.sendToken.toHex()
 
             val locations =
                 listOf(
@@ -185,7 +190,7 @@ class E2eeIntegrationTest {
             val (qr, aliceEkPriv) = KeyExchange.aliceCreateQrPayload("Alice")
             val (initMsg, bobSession) = KeyExchange.bobProcessQr(qr, "Bob")
             val aliceSession = KeyExchange.aliceProcessInit(initMsg, aliceEkPriv, qr.ekPub)
-            val token = aliceSession.routingToken.toHex()
+            val token = aliceSession.sendToken.toHex()
 
             val location = LocationPlaintext(lat = 51.5, lng = -0.12, acc = 5.0, ts = 1_700_000_002L)
             val (newAliceState, ct) = Session.encryptLocation(aliceSession, location, aliceSession.aliceFp, aliceSession.bobFp)
@@ -232,7 +237,7 @@ class E2eeIntegrationTest {
             var aliceState = KeyExchange.aliceProcessInit(initMsg, aliceEkPriv, qr.ekPub)
             var bobState = bobState0
 
-            val oldToken = aliceState.routingToken.toHex()
+            val oldToken = aliceState.sendToken.toHex()
 
             // Alice sends one message in epoch 0 to the old token
             val loc0 = LocationPlaintext(lat = 51.5, lng = -0.1, acc = 5.0, ts = 1000L)
@@ -264,7 +269,7 @@ class E2eeIntegrationTest {
                     aliceState.aliceFp,
                     aliceState.bobFp,
                 )
-            val newToken = aliceState.routingToken.toHex()
+            val newToken = aliceState.sendToken.toHex()
             assertNotEquals(oldToken, newToken, "Routing token must change after epoch rotation")
 
             // Alice sends one message in epoch 1 to the new token
@@ -405,7 +410,7 @@ class E2eeIntegrationTest {
             val location = LocationPlaintext(lat = 48.8566, lng = 2.3522, acc = 15.0, ts = 1_700_000_003L)
             val (newAliceState, ct) = Session.encryptLocation(aliceSession, location, aliceSession.aliceFp, aliceSession.bobFp)
 
-            val correctToken = aliceSession.routingToken.toHex()
+            val correctToken = aliceSession.sendToken.toHex()
             val wrongToken = "ffffffffffffffffffffffffffffffff"
 
             client.post("/inbox/$correctToken") {
