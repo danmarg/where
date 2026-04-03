@@ -279,6 +279,8 @@ final class LocationSyncService: ObservableObject {
         guard let payload = pendingInitPayload else { return }
         pendingInitPayload = nil
         hasPendingInit = false
+        pendingInviteQr = nil
+        e2eeStore.clearInvite()
         triggerRapidPoll()
         Task {
             // Small delay to ensure Bob has finished posting his initial OPKs/location
@@ -294,6 +296,13 @@ final class LocationSyncService: ObservableObject {
             }
             await pollAll()
         }
+    }
+
+    func cancelPendingInit() {
+        pendingInitPayload = nil
+        hasPendingInit = false
+        pendingInviteQr = nil
+        e2eeStore.clearInvite()
     }
 
     func togglePauseFriend(id: String) {
@@ -370,7 +379,6 @@ final class LocationSyncService: ObservableObject {
             autoClearedInvite = true
             pendingInitPayload = initPayload
             hasPendingInit = true
-            pendingInviteQr = nil
             triggerRapidPoll()
             break
         }

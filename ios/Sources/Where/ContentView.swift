@@ -143,7 +143,11 @@ struct ContentView: View {
         }
         .fullScreenCover(isPresented: $showScanner) {
             QrScannerView(
-                onScan: { url in syncService.processQrUrl(url) },
+                onScan: { url in
+                    if syncService.processQrUrl(url) {
+                        showScanner = false
+                    }
+                },
                 onDismiss: { showScanner = false }
             )
             .ignoresSafeArea()
@@ -180,8 +184,8 @@ struct ContentView: View {
                 syncService.confirmPendingInit(name: newFriendName.isEmpty ? "Friend" : newFriendName)
                 newFriendName = ""
             }
-            Button("Skip", role: .cancel) {
-                syncService.confirmPendingInit(name: "Friend")
+            Button("Cancel", role: .cancel) {
+                syncService.cancelPendingInit()
                 newFriendName = ""
             }
         } message: {
