@@ -224,7 +224,10 @@ class LocationViewModel(app: Application) : AndroidViewModel(app) {
                 Log.e(TAG, "Poll failed: ${e.message}")
                 updateStatus(e)
             }
-            delay(60_000)
+            // Poll every 2 seconds while pairing (waiting for KeyExchangeInit), 60s otherwise
+            val isPairing = _pendingInviteQr.value != null || _pendingInitPayload.value != null
+            val interval = if (isPairing) 2_000L else 60_000L
+            delay(interval)
         }
     }
 
