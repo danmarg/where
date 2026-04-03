@@ -99,38 +99,59 @@ class LocationClient(
 
         for (friend in store.listFriends()) {
             if (friend.id in pausedFriendIds) continue
-
             try {
-                // 1. Rotate epoch if due (Alice-only)
-                if (store.shouldRotateEpoch(friend.id)) {
-                    val oldToken = friend.session.sendToken.toHex()
-                    store.initiateEpochRotation(friend.id)?.let { rot ->
-                        E2eeMailboxClient.post(baseUrl, oldToken, rot)
-                    }
-                }
-
-                // 2. Encrypt and post
-                val current = store.getFriend(friend.id) ?: continue
-                val (newSession, ct) = Session.encryptLocation(
-                    state = current.session,
-                    location = plaintext,
-                    senderFp = current.session.aliceFp,
-                    recipientFp = current.session.bobFp
-                )
-                store.updateSession(friend.id, newSession)
-
-                val payload = EncryptedLocationPayload(
-                    epoch = newSession.epoch,
-                    seq = newSession.sendSeq.toString(),
-                    ct = ct
-                )
-                E2eeMailboxClient.post(baseUrl, current.session.sendToken.toHex(), payload)
+                sendLocationToFriendInternal(friend.id, plaintext)
             } catch (e: Exception) {
                 lastError = e
             }
         }
         
         lastError?.let { throw it }
+    }
+
+    /**
+     * Encrypt and send a location update to a single specific friend.
+     */
+    suspend fun sendLocationToFriend(
+        friendId: String,
+        lat: Double,
+        lng: Double,
+    ) {
+        val ts = currentTimeSeconds()
+        val plaintext = LocationPlaintext(lat = lat, lng = lng, acc = 0.0, ts = ts)
+        sendLocationToFriendInternal(friendId, plaintext)
+    }
+
+    private suspend fun sendLocationToFriendInternal(
+        friendId: String,
+        plaintext: LocationPlaintext,
+    ) {
+        val friend = store.getFriend(friendId) ?: return
+
+        // 1. Rotate epoch if due (Alice-only)
+        if (store.shouldRotateEpoch(friend.id)) {
+            val oldToken = friend.session.sendToken.toHex()
+            store.initiateEpochRotation(friend.id)?.let { rot ->
+                E2eeMailboxClient.post(baseUrl, oldToken, rot)
+            }
+        }
+
+        // 2. Encrypt and post
+        val current = store.getFriend(friend.id) ?: return
+        val (newSession, ct) = Session.encryptLocation(
+            state = current.session,
+            location = plaintext,
+            senderFp = current.session.aliceFp,
+            recipientFp = current.session.bobFp
+        )
+        store.updateSession(friend.id, newSession)
+
+        val payload = EncryptedLocationPayload(
+            epoch = newSession.epoch,
+            seq = newSession.sendSeq.toString(),
+            ct = ct
+        )
+        E2eeMailboxClient.post(baseUrl, current.session.sendToken.toHex(), payload)
     }
 
     /**
