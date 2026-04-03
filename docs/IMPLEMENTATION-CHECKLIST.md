@@ -63,7 +63,8 @@ Split into client-crypto, client-app, and server.
   - On epoch boundary (every `T` minutes), pop one OPK.
   - `dh_out = X25519(my_ek_priv, Bob.OPK.pub)`.
   - `new_root_key, new_chain_key = KDF_RK(root_key, dh_out)`.
-  - `new_routing_token = HKDF-SHA-256(new_root_key, info="Where-v1-RoutingToken" || alice_fp || bob_fp)[0:16]`.
+  - `new_send_token = HKDF-SHA-256(new_root_key, info="Where-v1-RoutingToken" || alice_fp || bob_fp, salt=new_epoch || my_dir)[0:16]`.
+  - `new_recv_token = HKDF-SHA-256(new_root_key, info="Where-v1-RoutingToken" || alice_fp || bob_fp, salt=new_epoch || their_dir)[0:16]`.
   - Derive updated `K_rot = HKDF-SHA-256(new_root_key, info="Where-v1-EpochRotation")` and `K_ack`.
   - **Alice MUST continue polling the old (current) token** for `PreKeyBundle` and `RatchetAck` until `2 * T` expires.
   - **Send `EpochRotation`** on the **current (old) routing token**: AEAD-encrypt with `AES-256-GCM(key=K_rot, plaintext=canonical_blob, aad=routing_token_current)`. Canonical blob contains `epoch`, `opk_id`, `new_ek_pub`, `ts`.
