@@ -234,6 +234,8 @@ class LocationViewModel(app: Application) : AndroidViewModel(app) {
         val payload = _pendingInitPayload.value ?: return
         Log.d(TAG, "confirmPendingInit: name=$name")
         _pendingInitPayload.value = null
+        _pendingInviteQr.value = null
+        e2eeStore.clearInvite()
         triggerRapidPoll()
         try {
             val entry = e2eeStore.processKeyExchangeInit(payload, name)
@@ -258,6 +260,8 @@ class LocationViewModel(app: Application) : AndroidViewModel(app) {
 
     fun cancelPendingInit() {
         _pendingInitPayload.value = null
+        _pendingInviteQr.value = null
+        e2eeStore.clearInvite()
     }
 
     private suspend fun pollLoop() {
@@ -302,7 +306,6 @@ class LocationViewModel(app: Application) : AndroidViewModel(app) {
             // Found init payload! Show naming dialog instead of processing immediately.
             autoClearedInvite = true
             _pendingInitPayload.value = initPayload
-            _pendingInviteQr.value = null
         } catch (e: Exception) {
             updateStatus(e)
         }

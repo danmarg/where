@@ -187,7 +187,7 @@ class MainActivity : ComponentActivity() {
                         },
                         dismissButton = {
                             TextButton(onClick = { viewModel.cancelPendingInit() }) {
-                                Text("Skip")
+                                Text("Cancel")
                             }
                         }
                     )
