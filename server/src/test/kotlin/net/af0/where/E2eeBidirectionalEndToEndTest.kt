@@ -3,7 +3,6 @@ package net.af0.where
 import io.ktor.server.testing.*
 import kotlinx.coroutines.*
 import net.af0.where.e2ee.*
-import net.af0.where.model.UserLocation
 import kotlin.random.Random
 import kotlin.test.*
 
@@ -21,8 +20,9 @@ import kotlin.test.*
  *   WHERE_TEST_SERVER_URL=https://where-api.fly.dev ./gradlew :server:test --tests E2eeBidirectionalEndToEndTest
  */
 class E2eeBidirectionalEndToEndTest {
-    private fun getServerUrl(): String =
-        System.getenv("WHERE_TEST_SERVER_URL") ?: "http://localhost:8080"
+    private fun getServerUrl(): String {
+        return System.getenv("WHERE_TEST_SERVER_URL") ?: "http://localhost:8080"
+    }
 
     private fun isLocalhost(): Boolean = getServerUrl().contains("localhost")
 
@@ -31,33 +31,59 @@ class E2eeBidirectionalEndToEndTest {
         val store = E2eeStore(storage)
         var ownFp: ByteArray = ByteArray(0) // Set after key exchange
 
-        suspend fun sendLocation(friendId: String, lat: Double, lng: Double): ByteArray {
+        suspend fun sendLocation(
+            friendId: String,
+            lat: Double,
+            lng: Double,
+        ): ByteArray {
             val friend = store.getFriend(friendId) ?: return ByteArray(0)
-            val plaintext = LocationPlaintext(lat = lat, lng = lng, acc = 0.0, ts = System.currentTimeMillis() / 1000)
+            val plaintext =
+                LocationPlaintext(
+                    lat = lat,
+                    lng = lng,
+                    acc = 0.0,
+                    ts = System.currentTimeMillis() / 1000,
+                )
 
             // When sending, we are the sender (ownFp), friend is recipient
-            val (newSession, ct) = Session.encryptLocation(
-                state = friend.session,
-                location = plaintext,
-                senderFp = ownFp,
-                recipientFp = if (ownFp.contentEquals(friend.session.aliceFp)) friend.session.bobFp else friend.session.aliceFp,
-            )
+            val recipientFp =
+                if (ownFp.contentEquals(friend.session.aliceFp)) {
+                    friend.session.bobFp
+                } else {
+                    friend.session.aliceFp
+                }
+            val (newSession, ct) =
+                Session.encryptLocation(
+                    state = friend.session,
+                    location = plaintext,
+                    senderFp = ownFp,
+                    recipientFp = recipientFp,
+                )
             store.updateSession(friendId, newSession)
             return ct
         }
 
-        suspend fun receiveLocation(friendId: String, ct: ByteArray): LocationPlaintext? {
+        suspend fun receiveLocation(
+            friendId: String,
+            ct: ByteArray,
+        ): LocationPlaintext? {
             val friend = store.getFriend(friendId) ?: return null
             return try {
                 // When receiving, friend is the sender, we are recipient (ownFp)
-                val senderFp = if (ownFp.contentEquals(friend.session.aliceFp)) friend.session.bobFp else friend.session.aliceFp
-                val (newSession, location) = Session.decryptLocation(
-                    state = friend.session,
-                    ct = ct,
-                    seq = friend.session.recvSeq + 1,
-                    senderFp = senderFp,
-                    recipientFp = ownFp,
-                )
+                val senderFp =
+                    if (ownFp.contentEquals(friend.session.aliceFp)) {
+                        friend.session.bobFp
+                    } else {
+                        friend.session.aliceFp
+                    }
+                val (newSession, location) =
+                    Session.decryptLocation(
+                        state = friend.session,
+                        ct = ct,
+                        seq = friend.session.recvSeq + 1,
+                        senderFp = senderFp,
+                        recipientFp = ownFp,
+                    )
                 store.updateSession(friendId, newSession)
                 location
             } catch (e: Exception) {
@@ -127,15 +153,16 @@ class E2eeBidirectionalEndToEndTest {
 
             // Alice processes Bob's KeyExchangeInit (simulate receiving it)
             try {
-                val aliceResult = alice.store.processKeyExchangeInit(
-                    KeyExchangeInitPayload(
-                        token = initPayload.token,
-                        ekPub = initPayload.ekPub,
-                        keyConfirmation = initPayload.keyConfirmation,
-                        suggestedName = initPayload.suggestedName,
-                    ),
-                    initPayload.suggestedName,
-                )
+                val aliceResult =
+                    alice.store.processKeyExchangeInit(
+                        KeyExchangeInitPayload(
+                            token = initPayload.token,
+                            ekPub = initPayload.ekPub,
+                            keyConfirmation = initPayload.keyConfirmation,
+                            suggestedName = initPayload.suggestedName,
+                        ),
+                        initPayload.suggestedName,
+                    )
                 assertNotNull(aliceResult, "Alice should process Bob's init")
                 println("✓ Alice processed KeyExchangeInit and established session")
             } catch (e: Exception) {
@@ -153,7 +180,7 @@ class E2eeBidirectionalEndToEndTest {
             val aliceSession = alice.store.getFriend(aliceFriendId)?.session
             assertNotNull(aliceSession)
             alice.ownFp = aliceSession.aliceFp // Alice's full fingerprint
-            bob.ownFp = aliceSession.bobFp     // Bob's full fingerprint
+            bob.ownFp = aliceSession.bobFp // Bob's full fingerprint
 
             // Verify both sides have matching tokens
             val bobSession = bob.store.getFriend(aliceFriendId)?.session
@@ -221,11 +248,13 @@ class E2eeBidirectionalEndToEndTest {
             println("PHASE 7: Stress Test - Random Sends/Receives")
             println("─────────────────────────────────────────────────────────────")
 
-            val locations = listOf(
-                Pair(40.7128, -74.0060), // New York
-                Pair(48.8566, 2.3522),   // Paris
-                Pair(35.6762, 139.6503), // Tokyo
-            )
+            // Locations for stress test: New York, Paris, Tokyo
+            val locations =
+                listOf(
+                    Pair(40.7128, -74.0060),
+                    Pair(48.8566, 2.3522),
+                    Pair(35.6762, 139.6503),
+                )
 
             // Send locations from Alice with random timing
             val sentCts = mutableListOf<ByteArray>()
@@ -294,7 +323,10 @@ class E2eeBidirectionalEndToEndTest {
 
         override fun getString(key: String): String? = data[key]
 
-        override fun putString(key: String, value: String) {
+        override fun putString(
+            key: String,
+            value: String,
+        ) {
             data[key] = value
         }
     }
