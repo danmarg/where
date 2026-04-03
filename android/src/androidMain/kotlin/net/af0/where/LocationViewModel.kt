@@ -153,7 +153,12 @@ class LocationViewModel(app: Application) : AndroidViewModel(app) {
 
     /** Bob: parse scanned URL, but wait for user to name the friend. */
     fun processQrUrl(url: String): Boolean {
-        val qr = QrUtils.urlToPayload(url) ?: return false
+        Log.d(TAG, "processQrUrl: url=$url")
+        val qr = QrUtils.urlToPayload(url) ?: run {
+            Log.e(TAG, "processQrUrl: failed to parse URL")
+            return false
+        }
+        Log.d(TAG, "processQrUrl: parsed qr, suggestedName=${qr.suggestedName}")
         _pendingQrForNaming.value = qr
         return true
     }
@@ -163,23 +168,29 @@ class LocationViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun confirmQrScan(qr: QrPayload, friendName: String) {
+        Log.d(TAG, "confirmQrScan: friendName=$friendName")
         _pendingQrForNaming.value = null
         val qrWithName = qr.copy(suggestedName = friendName)
         try {
             val (initPayload, bobEntry) = e2eeStore.processScannedQr(qrWithName, _displayName.value.ifEmpty { "" })
+            val sendToken = bobEntry.session.sendToken.toHex()
+            Log.d(TAG, "confirmQrScan: processScannedQr succeeded, friendId=${bobEntry.id}, fingerprint=${bobEntry.id.take(8)}, sendToken=$sendToken")
             _friends.value = e2eeStore.listFriends()
             viewModelScope.launch {
                 try {
                     val discoveryHex = qrWithName.discoveryToken().toHex()
+                    Log.d(TAG, "confirmQrScan: posting KeyExchangeInit, discoveryHex=$discoveryHex")
                     E2eeMailboxClient.post(BuildConfig.SERVER_HTTP_URL, discoveryHex, initPayload)
+                    Log.d(TAG, "confirmQrScan: mailbox post succeeded")
                     updateStatus(null)
                 } catch (e: Exception) {
+                    Log.e(TAG, "confirmQrScan: mailbox post failed", e)
                     updateStatus(e)
                 }
-                // Bob posts his initial OPK bundle so Alice can initiate epoch rotation.
                 locationClient.postOpkBundle(bobEntry.id)
             }
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+            Log.e(TAG, "confirmQrScan: processScannedQr failed", e)
         }
     }
 
