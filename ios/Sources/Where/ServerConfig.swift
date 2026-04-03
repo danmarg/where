@@ -13,7 +13,7 @@ enum ServerConfig {
         // Read from environment variable set at build time (e.g., by Local.xcconfig or xcodebuild).
         // Defaults to production server.
         ProcessInfo.processInfo.environment["WHERE_SERVER_HTTP_URL"]
-            ?? "https://where-api.fly.dev"
+            ?? "https://where-api.af0.net"
     }()
     #endif
 }
