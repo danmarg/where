@@ -25,21 +25,7 @@ class LocationClient(
         val allUpdates = mutableListOf<UserLocation>()
         var lastError: Exception? = null
 
-        // 1. Poll for pending invite responses (if we are Alice/Initiator)
-        store.pendingQrPayload?.let { qr ->
-            try {
-                val discoveryHex = qr.discoveryToken().toHex()
-                val messages = E2eeMailboxClient.poll(baseUrl, discoveryHex)
-                // If there's a KeyExchangeInit, we don't process it here because the UI
-                // typically needs to prompt for a name. The caller can check
-                // store.pendingQrPayload and then call E2eeMailboxClient.poll themselves
-                // if they want to handle the naming flow.
-            } catch (e: Exception) {
-                lastError = e
-            }
-        }
-
-        // 2. Poll each friend's current mailbox
+        // 1. Poll each friend's current mailbox
         for (friend in store.listFriends()) {
             try {
                 val friendUpdates = pollFriend(friend.id)
