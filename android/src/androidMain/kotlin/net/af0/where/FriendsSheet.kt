@@ -1,19 +1,7 @@
 package net.af0.where
 
 import androidx.compose.foundation.clickable
-import java.util.concurrent.TimeUnit
 import androidx.compose.foundation.layout.Arrangement
-
-fun timeAgoString(lastPingMs: Long?): String {
-    if (lastPingMs == null) return "never"
-    val seconds = (System.currentTimeMillis() - lastPingMs) / 1000
-    return when {
-        seconds < 60 -> "just now"
-        seconds < 3600 -> "${seconds / 60}m ago"
-        seconds < 86400 -> "${seconds / 3600}h ago"
-        else -> "${seconds / 86400}d ago"
-    }
-}
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -47,6 +35,17 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import net.af0.where.e2ee.FriendEntry
+
+fun timeAgoString(lastPingMs: Long?): String {
+    if (lastPingMs == null) return "never"
+    val seconds = (System.currentTimeMillis() - lastPingMs) / 1000
+    return when {
+        seconds < 60 -> "just now"
+        seconds < 3600 -> "${seconds / 60}m ago"
+        seconds < 86400 -> "${seconds / 3600}h ago"
+        else -> "${seconds / 86400}d ago"
+    }
+}
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable

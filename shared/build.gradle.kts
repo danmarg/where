@@ -46,7 +46,6 @@ kotlin {
         commonMain.dependencies {
             implementation(libs.ktor.client.core)
             implementation(libs.ktor.client.content.negotiation)
-            implementation(libs.ktor.client.websockets)
             implementation(libs.ktor.serialization.kotlinx.json)
             implementation(libs.kotlinx.coroutines.core)
             implementation(libs.kotlinx.serialization.json)
@@ -73,7 +72,6 @@ kotlin {
         jvmTest.dependencies {
             implementation(libs.ktor.server.core)
             implementation(libs.ktor.server.netty)
-            implementation(libs.ktor.server.websockets)
             implementation(libs.ktor.client.cio)
             implementation(libs.kotlinx.coroutines.test)
             implementation(libs.logback.classic)
