@@ -13,7 +13,7 @@ export TMPDIR="${TMPDIR:-/tmp}"
 
 # Parse arguments
 USE_NIX=false
-SERVER_URL=""
+SERVER_URL="https://where-api.fly.dev"
 BUILD_FLAVOR="debug"
 ANDROID_FORMAT="aab"  # aab or apk
 while [[ $# -gt 0 ]]; do
