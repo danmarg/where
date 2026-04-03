@@ -25,8 +25,7 @@ import kotlin.test.*
  *   WHERE_TEST_SERVER_URL=https://where-api.fly.dev ./gradlew :server:test --tests E2eeBidirectionalEndToEndTest
  */
 class E2eeBidirectionalEndToEndTest {
-    private fun getServerUrl(): String =
-        System.getenv("WHERE_TEST_SERVER_URL") ?: "http://localhost:18080"
+    private fun getServerUrl(): String = System.getenv("WHERE_TEST_SERVER_URL") ?: "http://localhost:18080"
 
     private fun isLocalhost(): Boolean = getServerUrl().contains("localhost")
 
@@ -174,11 +173,15 @@ class E2eeBidirectionalEndToEndTest {
             println("PHASE 7: Stress Test — Interleaved Sends")
             println("─────────────────────────────────────────────────────────────")
 
-            val locations = listOf(
-                Pair(40.7128, -74.0060),  // New York
-                Pair(48.8566, 2.3522),    // Paris
-                Pair(35.6762, 139.6503),  // Tokyo
-            )
+            val locations =
+                listOf(
+                    // New York
+                    Pair(40.7128, -74.0060),
+                    // Paris
+                    Pair(48.8566, 2.3522),
+                    // Tokyo
+                    Pair(35.6762, 139.6503),
+                )
 
             for (i in 0..2) {
                 val (lat, lng) = locations[i % locations.size]
@@ -223,7 +226,14 @@ class E2eeBidirectionalEndToEndTest {
 
     private class MemoryE2eeStorage : E2eeStorage {
         private val data = mutableMapOf<String, String>()
+
         override fun getString(key: String): String? = data[key]
-        override fun putString(key: String, value: String) { data[key] = value }
+
+        override fun putString(
+            key: String,
+            value: String,
+        ) {
+            data[key] = value
+        }
     }
 }
