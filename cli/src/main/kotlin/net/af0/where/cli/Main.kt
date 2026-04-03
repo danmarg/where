@@ -47,7 +47,7 @@ fun String.hexToByteArray(): ByteArray {
 }
 
 fun qrPayloadToUrl(qr: QrPayload): String {
-    val json = Json { ignoreUnknownKeys = true }
+    val json = Json { ignoreUnknownKeys = true; encodeDefaults = true }
     // Mimic the iOS/Android URL format
     // {"ekPub": "...", "suggestedName": "...", "fingerprint": "..."}
     val ekPubB64 = Base64.getEncoder().encodeToString(qr.ekPub)
@@ -83,7 +83,7 @@ fun printQrCode(url: String) {
 
 fun urlToQrPayload(url: String): QrPayload? {
     val q = url.substringAfter("q=").substringBefore("&")
-    val json = Json { ignoreUnknownKeys = true }
+    val json = Json { ignoreUnknownKeys = true; encodeDefaults = true }
     val decoded = String(Base64.getUrlDecoder().decode(q))
     val map: Map<String, String> = json.decodeFromString(decoded)
     val ekPub = Base64.getDecoder().decode(map["ekPub"] ?: return null)

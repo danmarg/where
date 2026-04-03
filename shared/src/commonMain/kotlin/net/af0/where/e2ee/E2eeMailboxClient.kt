@@ -17,6 +17,7 @@ object E2eeMailboxClient {
         Json {
             classDiscriminator = "type"
             ignoreUnknownKeys = true
+            encodeDefaults = true
         }
 
     private val client =

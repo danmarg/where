@@ -14,7 +14,7 @@ import java.util.Base64
 private const val TAG = "QrUtils"
 
 object QrUtils {
-    private val json = Json { ignoreUnknownKeys = true }
+    private val json = Json { ignoreUnknownKeys = true; encodeDefaults = true }
 
     fun payloadToUrl(qr: QrPayload): String {
         val encoded =

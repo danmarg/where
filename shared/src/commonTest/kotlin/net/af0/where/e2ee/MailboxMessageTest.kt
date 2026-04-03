@@ -158,13 +158,14 @@ class MailboxMessageTest {
     // ---------------------------------------------------------------------------
 
     @Test
-    fun `all four payload types round-trip via sealed class deserializer`() {
+    fun `all five payload types round-trip via sealed class deserializer`() {
         val payloads: List<MailboxPayload> =
             listOf(
                 EncryptedLocationPayload(epoch = 1, seq = "1", ct = ByteArray(32)),
                 PreKeyBundlePayload(keys = emptyList(), mac = ByteArray(32)),
                 EpochRotationPayload(epoch = 1, opkId = 1, newEkPub = ByteArray(32), ts = 0L, nonce = ByteArray(12), ct = ByteArray(32)),
                 RatchetAckPayload(epochSeen = 1, ts = 0L, newEkPub = ByteArray(32), nonce = ByteArray(12), ct = ByteArray(32)),
+                KeyExchangeInitPayload(token = "deadbeef", ekPub = ByteArray(32), keyConfirmation = ByteArray(32), suggestedName = "Alice"),
             )
         for (payload in payloads) {
             val encoded = json.encodeToString(MailboxPayload.serializer(), payload)
