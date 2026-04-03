@@ -168,11 +168,13 @@ object Session {
         val newEpoch = state.epoch + 1
         val dhOut = x25519(aliceNewEkPriv, bobOpkPub)
         val ratchetStep = kdfRk(state.rootKey, dhOut)
-        val newToken = deriveRoutingToken(ratchetStep.newRootKey, newEpoch, senderFp, recipientFp)
+        val tokenAliceToBob = deriveRoutingToken(ratchetStep.newRootKey, newEpoch, senderFp = senderFp, recipientFp = recipientFp)
+        val tokenBobToAlice = deriveRoutingToken(ratchetStep.newRootKey, newEpoch, senderFp = recipientFp, recipientFp = senderFp)
         val newState = state.copy(
             rootKey = ratchetStep.newRootKey,
             sendChainKey = ratchetStep.newChainKey, // Alice's new send chain
-            routingToken = newToken,
+            sendToken = tokenAliceToBob,
+            recvToken = tokenBobToAlice,
             epoch = newEpoch,
             myEkPriv = aliceNewEkPriv.copyOf(),
             myEkPub = aliceNewEkPub.copyOf(),
@@ -207,11 +209,13 @@ object Session {
     ): SessionState {
         val dhOut = x25519(bobOpkPriv, aliceNewEkPub)
         val ratchetStep = kdfRk(state.rootKey, dhOut)
-        val newToken = deriveRoutingToken(ratchetStep.newRootKey, newEpoch, senderFp, recipientFp)
+        val tokenAliceToBob = deriveRoutingToken(ratchetStep.newRootKey, newEpoch, senderFp = senderFp, recipientFp = recipientFp)
+        val tokenBobToAlice = deriveRoutingToken(ratchetStep.newRootKey, newEpoch, senderFp = recipientFp, recipientFp = senderFp)
         val newState = state.copy(
             rootKey = ratchetStep.newRootKey,
             recvChainKey = ratchetStep.newChainKey, // Bob's new recv chain (= Alice's new send)
-            routingToken = newToken,
+            sendToken = tokenBobToAlice,
+            recvToken = tokenAliceToBob,
             epoch = newEpoch,
             theirEkPub = aliceNewEkPub.copyOf(),
             recvSeq = 0L,

@@ -45,10 +45,12 @@ class LocationClient(
                 val friendUpdates = pollFriend(friend.id)
                 allUpdates.addAll(friendUpdates)
 
-                // 3. Proactively replenish OPKs if Bob is running low
+                // 3. Proactively replenish OPKs if the local user (Bob) is running low.
+                //    Bob periodically generates fresh OPKs and publishes them so Alice can
+                //    rotate epochs without needing Bob to respond to her rotation request first.
                 if (store.shouldReplenishOpks(friend.id)) {
                     store.generateOpkBundle(friend.id)?.let { bundle ->
-                        E2eeMailboxClient.post(baseUrl, friend.session.routingToken.toHex(), bundle)
+                        E2eeMailboxClient.post(baseUrl, friend.session.sendToken.toHex(), bundle)
                     }
                 }
             } catch (e: Exception) {
@@ -67,13 +69,19 @@ class LocationClient(
     private suspend fun pollFriend(friendId: String): List<UserLocation> {
         val updates = mutableListOf<UserLocation>()
         var currentFriend = store.getFriend(friendId) ?: return emptyList()
-        var tokenToPoll = currentFriend.session.routingToken.toHex()
+        var tokenToPoll = currentFriend.session.recvToken.toHex()
 
         while (true) {
             val messages = E2eeMailboxClient.poll(baseUrl, tokenToPoll)
+            println("[LocationClient] pollFriend($friendId): got ${messages.size} messages, token=$tokenToPoll")
             if (messages.isEmpty()) break
 
-            val result = store.processBatch(friendId, messages) ?: break
+            val result = store.processBatch(friendId, messages)
+            if (result == null) {
+                println("[LocationClient] pollFriend($friendId): processBatch returned null")
+                break
+            }
+            println("[LocationClient] pollFriend($friendId): processBatch returned ${result.decryptedLocations.size} locations")
             updates.addAll(result.decryptedLocations.map { loc ->
                 UserLocation(userId = friendId, lat = loc.lat, lng = loc.lng, timestamp = loc.ts)
             })
@@ -109,7 +117,7 @@ class LocationClient(
             try {
                 // 1. Rotate epoch if due (Alice-only)
                 if (store.shouldRotateEpoch(friend.id)) {
-                    val oldToken = friend.session.routingToken.toHex()
+                    val oldToken = friend.session.sendToken.toHex()
                     store.initiateEpochRotation(friend.id)?.let { rot ->
                         E2eeMailboxClient.post(baseUrl, oldToken, rot)
                     }
@@ -130,7 +138,7 @@ class LocationClient(
                     seq = newSession.sendSeq.toString(),
                     ct = ct
                 )
-                E2eeMailboxClient.post(baseUrl, current.session.routingToken.toHex(), payload)
+                E2eeMailboxClient.post(baseUrl, current.session.sendToken.toHex(), payload)
             } catch (e: Exception) {
                 lastError = e
             }
@@ -139,11 +147,18 @@ class LocationClient(
         lastError?.let { throw it }
     }
 
+    /**
+     * Explicitly post a new OPK bundle for a friend.
+     *
+     * Called by Bob to replenish his OPK supply so Alice can rotate epochs without
+     * waiting for a RatchetAck response. Can be triggered manually (e.g., via UI)
+     * or automatically by [poll] when running low.
+     */
     suspend fun postOpkBundle(friendId: String) {
         if (store.shouldReplenishOpks(friendId)) {
             store.generateOpkBundle(friendId)?.let { bundle ->
                 val friend = store.getFriend(friendId) ?: return
-                E2eeMailboxClient.post(baseUrl, friend.session.routingToken.toHex(), bundle)
+                E2eeMailboxClient.post(baseUrl, friend.session.sendToken.toHex(), bundle)
             }
         }
     }

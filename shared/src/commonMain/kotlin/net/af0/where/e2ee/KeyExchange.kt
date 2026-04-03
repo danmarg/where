@@ -41,7 +41,10 @@ object KeyExchange {
         val aliceFp = fingerprint(qr.ekPub)
         val bobFp = fingerprint(ekB.pub)
 
-        val token = deriveRoutingToken(sk, epoch = 0, senderFp = aliceFp, recipientFp = bobFp)
+        // Bob derives his send token (token for Bob → Alice) and Alice's recv token
+        val tokenBobToAlice = deriveRoutingToken(sk, epoch = 0, senderFp = bobFp, recipientFp = aliceFp)
+        val tokenAliceToBob = deriveRoutingToken(sk, epoch = 0, senderFp = aliceFp, recipientFp = bobFp)
+
         val kBundle = hkdfSha256(
             ikm = sk,
             salt = null,
@@ -50,11 +53,12 @@ object KeyExchange {
         )
         val session = initSession(
             sk = sk,
-            isSender = false,
+            isAlice = false,
             myEkPriv = ekB.priv,
             myEkPub = ekB.pub,
             theirEkPub = qr.ekPub,
-            routingToken = token,
+            sendToken = tokenBobToAlice,
+            recvToken = tokenAliceToBob,
             aliceFp = aliceFp,
             bobFp = bobFp,
             kBundle = kBundle,
@@ -62,7 +66,7 @@ object KeyExchange {
 
         val keyConfirmation = buildKeyConfirmation(sk, qr.ekPub, ekB.pub)
         val msg = KeyExchangeInitMessage(
-            token = token.copyOf(),
+            token = tokenAliceToBob.copyOf(), // Bob sends to Alice's "AliceToBob" inbox for discovery
             ekPub = ekB.pub.copyOf(),
             keyConfirmation = keyConfirmation,
             suggestedName = suggestedName,
@@ -89,7 +93,10 @@ object KeyExchange {
 
         val aliceFp = fingerprint(aliceEkPub)
         val bobFp = fingerprint(msg.ekPub)
-        val token = deriveRoutingToken(sk, epoch = 0, senderFp = aliceFp, recipientFp = bobFp)
+        // Alice derives her send token (token for Alice → Bob) and Bob's recv token
+        val tokenAliceToBob = deriveRoutingToken(sk, epoch = 0, senderFp = aliceFp, recipientFp = bobFp)
+        val tokenBobToAlice = deriveRoutingToken(sk, epoch = 0, senderFp = bobFp, recipientFp = aliceFp)
+
         val kBundle = hkdfSha256(
             ikm = sk,
             salt = null,
@@ -98,11 +105,12 @@ object KeyExchange {
         )
         return initSession(
             sk = sk,
-            isSender = true,
+            isAlice = true,
             myEkPriv = aliceEkPriv.copyOf(),
             myEkPub = aliceEkPub.copyOf(),
             theirEkPub = msg.ekPub,
-            routingToken = token,
+            sendToken = tokenAliceToBob,
+            recvToken = tokenBobToAlice,
             aliceFp = aliceFp,
             bobFp = bobFp,
             kBundle = kBundle,
@@ -120,11 +128,12 @@ object KeyExchange {
      */
     internal fun initSession(
         sk: ByteArray,
-        isSender: Boolean,
+        isAlice: Boolean,
         myEkPriv: ByteArray,
         myEkPub: ByteArray,
         theirEkPub: ByteArray,
-        routingToken: ByteArray,
+        sendToken: ByteArray,
+        recvToken: ByteArray,
         aliceFp: ByteArray,
         bobFp: ByteArray,
         kBundle: ByteArray,
@@ -139,9 +148,10 @@ object KeyExchange {
         val chainKey1 = expanded.copyOfRange(64, 96)
         return SessionState(
             rootKey = expanded.copyOfRange(0, 32),
-            sendChainKey = if (isSender) chainKey0 else chainKey1,
-            recvChainKey = if (isSender) chainKey1 else chainKey0,
-            routingToken = routingToken.copyOf(),
+            sendChainKey = if (isAlice) chainKey0 else chainKey1,
+            recvChainKey = if (isAlice) chainKey1 else chainKey0,
+            sendToken = sendToken.copyOf(),
+            recvToken = recvToken.copyOf(),
             sendSeq = 0L,
             recvSeq = 0L,
             epoch = 0,
