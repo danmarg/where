@@ -1,5 +1,6 @@
 package net.af0.where.e2ee
 
+import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 
 /**
@@ -111,7 +112,9 @@ data class LocationPlaintext(
 @Serializable
 data class QrPayload(
     // Alice's ephemeral X25519 public key (32 bytes)
+    @SerialName("ek_pub")
     @Serializable(with = ByteArrayBase64Serializer::class) val ekPub: ByteArray,
+    @SerialName("suggested_name")
     val suggestedName: String,
     // hex(SHA-256(ekPub)[0:8])
     val fingerprint: String,
