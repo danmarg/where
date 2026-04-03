@@ -7,6 +7,8 @@ struct ContentView: View {
     @StateObject private var syncService = LocationSyncService()
     @State private var showFriends = false
     @State private var showScanner = false
+    @State private var scannedUrl: String? = nil
+    @State private var triggerNamingAfterInvite = false
     @State private var zoomTarget: CLLocationCoordinate2D? = nil
     
     @State private var newFriendName: String = ""
@@ -141,12 +143,16 @@ struct ContentView: View {
                 }
             )
         }
-        .fullScreenCover(isPresented: $showScanner) {
+        .fullScreenCover(isPresented: $showScanner, onDismiss: {
+            if let url = scannedUrl {
+                _ = syncService.processQrUrl(url)
+                scannedUrl = nil
+            }
+        }) {
             QrScannerView(
                 onScan: { url in
-                    if syncService.processQrUrl(url) {
-                        showScanner = false
-                    }
+                    scannedUrl = url
+                    showScanner = false
                 },
                 onDismiss: { showScanner = false }
             )
@@ -155,41 +161,45 @@ struct ContentView: View {
         .sheet(isPresented: Binding(
             get: { syncService.pendingInviteQr != nil },
             set: { if !$0 { syncService.clearInvite() } }
-        )) {
+        ), onDismiss: {
+            if triggerNamingAfterInvite {
+                triggerNamingAfterInvite = false
+            }
+        }) {
             if let qr = syncService.pendingInviteQr {
                 InviteSheet(qrPayload: qr, onDismiss: { syncService.clearInvite() })
             }
         }
         .alert("Name this contact", isPresented: Binding(
-            get: { syncService.pendingQrForNaming != nil },
-            set: { if !$0 { syncService.pendingQrForNaming = nil } }
+            get: { (syncService.pendingQrForNaming != nil || syncService.hasPendingInit) && !syncService.isInviteActive },
+            set: { if !$0 { 
+                syncService.pendingQrForNaming = nil
+                syncService.cancelPendingInit()
+            } }
         )) {
             TextField("Friend's Name", text: $newFriendName)
-            Button("Add") {
-                if let qr = syncService.pendingQrForNaming {
+            if let qr = syncService.pendingQrForNaming {
+                Button("Add") {
                     syncService.confirmQrScan(qr: qr, friendName: newFriendName.isEmpty ? "Friend" : newFriendName)
+                    newFriendName = ""
+                }
+            } else if syncService.hasPendingInit {
+                Button("Save") {
+                    syncService.confirmPendingInit(name: newFriendName.isEmpty ? "Friend" : newFriendName)
                     newFriendName = ""
                 }
             }
             Button("Cancel", role: .cancel) {
                 syncService.pendingQrForNaming = nil
-                newFriendName = ""
-            }
-        } message: {
-            Text("Enter a name for this friend.")
-        }
-        .alert("Name this contact", isPresented: $syncService.hasPendingInit) {
-            TextField("Friend's Name", text: $newFriendName)
-            Button("Save") {
-                syncService.confirmPendingInit(name: newFriendName.isEmpty ? "Friend" : newFriendName)
-                newFriendName = ""
-            }
-            Button("Cancel", role: .cancel) {
                 syncService.cancelPendingInit()
                 newFriendName = ""
             }
         } message: {
-            Text("A new friend has scanned your QR code.")
+            if syncService.pendingQrForNaming != nil {
+                Text("Enter a name for this friend.")
+            } else {
+                Text("A new friend has scanned your QR code.")
+            }
         }
         .onAppear {
             locationManager.requestPermissionAndStart()

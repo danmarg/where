@@ -113,6 +113,7 @@ final class LocationSyncService: ObservableObject {
     @Published var pendingQrForNaming: Shared.QrPayload? = nil
     @Published var pendingInitPayload: Shared.KeyExchangeInitPayload? = nil
     @Published var hasPendingInit: Bool = false
+    var isInviteActive: Bool { pendingInviteQr != nil }
 
     private var lastRapidPollTrigger: Date = Date(timeIntervalSince1970: 0)
     private var autoClearedInvite: Bool = false
@@ -216,7 +217,10 @@ final class LocationSyncService: ObservableObject {
 
     @discardableResult
     func processQrUrl(_ url: String) -> Bool {
-        guard let qr = urlToQrPayload(url) else { return false }
+        guard let qr = urlToQrPayload(url) else {
+            updateStatus(NSError(domain: "Where", code: 400, userInfo: [NSLocalizedDescriptionKey: "Invalid QR code"]))
+            return false
+        }
         pendingQrForNaming = qr
         return true
     }
@@ -231,10 +235,7 @@ final class LocationSyncService: ObservableObject {
         )
         debugLog { "Scanning QR: discovery=\(toHex(qrWithName.discoveryToken())), friendName=\(friendName)" }
         Task {
-            guard let result = try? e2eeStore.processScannedQr(qr: qrWithName, bobSuggestedName: displayName) else {
-                logger.error("Failed to process scanned QR")
-                return
-            }
+            let result = e2eeStore.processScannedQr(qr: qrWithName, bobSuggestedName: displayName)
             let initPayload = result.first!
             let bobEntry = result.second!
             friends = e2eeStore.listFriends()
@@ -261,7 +262,7 @@ final class LocationSyncService: ObservableObject {
                     try await locationClient.postOpkBundle(friendId: bobEntry.id)
 
                     // Trigger immediate location sync
-                    if let last = await LocationManager.shared.lastLocation {
+                    if let last = LocationManager.shared.lastLocation {
                         try? await locationClient.sendLocationToFriend(friendId: bobEntry.id, lat: last.coordinate.latitude, lng: last.coordinate.longitude)
                     }
                     await pollAll()
@@ -291,7 +292,7 @@ final class LocationSyncService: ObservableObject {
             
             // Trigger immediate location sync to ONLY the new friend
             if let entry = friends.first(where: { $0.name == name }), // Best effort to find the ID
-               let last = await LocationManager.shared.lastLocation {
+               let last = LocationManager.shared.lastLocation {
                 try? await locationClient.sendLocationToFriend(friendId: entry.id, lat: last.coordinate.latitude, lng: last.coordinate.longitude)
             }
             await pollAll()
@@ -379,6 +380,7 @@ final class LocationSyncService: ObservableObject {
             autoClearedInvite = true
             pendingInitPayload = initPayload
             hasPendingInit = true
+            pendingInviteQr = nil // Clear invite QR so the sheet dismisses
             triggerRapidPoll()
             break
         }

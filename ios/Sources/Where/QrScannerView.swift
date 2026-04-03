@@ -43,7 +43,6 @@ struct SimulatorQrScannerView: View {
 
                 Button("Simulate Scan") {
                     onScan(manualUrl)
-                    onDismiss()
                 }
                 .buttonStyle(.borderedProminent)
                 .disabled(manualUrl.isEmpty)
@@ -97,7 +96,6 @@ struct DataScannerRepresentable: UIViewControllerRepresentable {
                 if case .barcode(let barcode) = item, let payload = barcode.payloadStringValue {
                     dataScanner.stopScanning()
                     onScan(payload)
-                    onDismiss()
                     return
                 }
             }
