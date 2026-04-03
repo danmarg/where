@@ -13,7 +13,7 @@ export TMPDIR="${TMPDIR:-/tmp}"
 
 # Parse arguments
 USE_NIX=false
-SERVER_URL="https://where-api.fly.dev"
+SERVER_URL="https://where-api.af0.net"
 BUILD_FLAVOR="debug"
 ANDROID_FORMAT="aab"  # aab or apk
 IOS_TEAM_ID="${IOS_TEAM_ID:-}"
