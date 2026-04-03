@@ -55,7 +55,8 @@ class E2eeStoreTest {
 
         // Both sides must derive the same session keys
         assertContentEquals(bobEntry.session.rootKey, aliceEntry.session.rootKey)
-        assertContentEquals(bobEntry.session.routingToken, aliceEntry.session.routingToken)
+        assertContentEquals(bobEntry.session.sendToken, aliceEntry.session.recvToken, "Bob send = Alice recv")
+        assertContentEquals(bobEntry.session.recvToken, aliceEntry.session.sendToken, "Bob recv = Alice send")
     }
 
     @Test
@@ -247,8 +248,10 @@ class E2eeStoreTest {
 
         val bobAfter = bobStore.getFriend(bobEntry.id)!!
         assertEquals(1, bobAfter.session.epoch, "Bob's epoch must match Alice's")
-        assertContentEquals(aliceAfter.session.routingToken, bobAfter.session.routingToken,
-            "Routing tokens must match after rotation")
+        assertContentEquals(aliceAfter.session.sendToken, bobAfter.session.recvToken,
+            "Alice send = Bob recv after rotation")
+        assertContentEquals(aliceAfter.session.recvToken, bobAfter.session.sendToken,
+            "Alice recv = Bob send after rotation")
         assertContentEquals(aliceAfter.session.sendChainKey, bobAfter.session.recvChainKey,
             "Alice's new send chain must equal Bob's new recv chain")
 

@@ -67,12 +67,13 @@ class KeyExchangeTest {
     // ---------------------------------------------------------------------------
 
     @Test
-    fun `alice and bob derive the same routing token`() {
+    fun `alice and bob derive matching bidirectional tokens`() {
         val (qr, aliceEkPriv) = KeyExchange.aliceCreateQrPayload("Alice")
         val (msg, bobSession) = KeyExchange.bobProcessQr(qr, "Bob")
         val aliceSession = KeyExchange.aliceProcessInit(msg, aliceEkPriv, qr.ekPub)
 
-        assertContentEquals(aliceSession.routingToken, bobSession.routingToken)
+        assertContentEquals(aliceSession.sendToken, bobSession.recvToken, "Alice send = Bob recv")
+        assertContentEquals(aliceSession.recvToken, bobSession.sendToken, "Alice recv = Bob send")
     }
 
     @Test
@@ -218,11 +219,12 @@ class KeyExchangeTest {
     }
 
     @Test
-    fun `discovery token is distinct from session routing token`() {
+    fun `discovery token is distinct from session tokens`() {
         // Ensures the discovery address and the pairwise session address never collide.
         val (qr, aliceEkPriv) = KeyExchange.aliceCreateQrPayload("Alice")
         val (initMsg, _) = KeyExchange.bobProcessQr(qr, "Bob")
         val aliceSession = KeyExchange.aliceProcessInit(initMsg, aliceEkPriv, qr.ekPub)
-        assertNotEquals(qr.discoveryToken().toList(), aliceSession.routingToken.toList())
+        assertNotEquals(qr.discoveryToken().toList(), aliceSession.sendToken.toList(), "Discovery token ≠ send token")
+        assertNotEquals(qr.discoveryToken().toList(), aliceSession.recvToken.toList(), "Discovery token ≠ recv token")
     }
 }
