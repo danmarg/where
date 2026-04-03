@@ -297,7 +297,8 @@ final class LocationSyncService: ObservableObject {
             return
         }
         for msg in messages {
-            guard (msg["v"] as? Int) == 1,
+            let version = msg["v"] as? Int ?? 1
+            guard version == 1,
                   (msg["type"] as? String) == "KeyExchangeInit",
                   let token = msg["token"] as? String,
                   let ekPubB64 = msg["ekPub"] as? String, let ekPub = Data(base64Encoded: ekPubB64),
