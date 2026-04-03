@@ -1,19 +1,18 @@
 package net.af0.where.e2ee
 
 import kotlinx.serialization.json.Json
-import kotlin.test.Test
-import kotlin.test.assertContentEquals
-import kotlin.test.assertEquals
-import kotlin.test.assertIs
+import kotlin.experimental.ExperimentalNativeApi
+import kotlin.test.*
 
-/** Json instance matching the wire format used by all mailbox messages. */
-private val json =
-    Json {
-        classDiscriminator = "type"
-        ignoreUnknownKeys = true
-    }
-
+@OptIn(ExperimentalNativeApi::class)
 class MailboxMessageTest {
+    /** Json instance matching the wire format used by all mailbox messages. */
+    private val json =
+        Json {
+            classDiscriminator = "type"
+            ignoreUnknownKeys = true
+        }
+
     init {
         initializeE2eeTests()
     }
