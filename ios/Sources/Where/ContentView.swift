@@ -7,6 +7,7 @@ struct ContentView: View {
     @StateObject private var syncService = LocationSyncService()
     @State private var showFriends = false
     @State private var showScanner = false
+    @State private var showUserSettings = false
     @State private var scannedUrl: String? = nil
     @State private var zoomTarget: CLLocationCoordinate2D? = nil
     
@@ -68,7 +69,7 @@ struct ContentView: View {
                             Circle()
                                 .fill(syncService.connectionStatus.isOk ? Color.green : Color.orange)
                                 .frame(width: 8, height: 8)
-                            Text("You: \(syncService.myId.prefix(8))")
+                            Text(syncService.displayName.isEmpty ? "You" : syncService.displayName)
                                 .font(.caption)
                                 .foregroundStyle(.white)
                         }
@@ -85,9 +86,7 @@ struct ContentView: View {
                     .clipShape(Capsule())
                     .contentShape(Capsule())
                     .onTapGesture {
-                        if let loc = locationManager.location {
-                            zoomTarget = CLLocationCoordinate2D(latitude: loc.coordinate.latitude, longitude: loc.coordinate.longitude)
-                        }
+                        showUserSettings = true
                     }
 
                     Spacer()
@@ -107,6 +106,14 @@ struct ContentView: View {
                 .padding(.horizontal, 16)
                 .padding(.bottom, 32)
             }
+
+            if syncService.isExchanging {
+                Color.black.opacity(0.3)
+                    .ignoresSafeArea()
+                ProgressView()
+                    .progressViewStyle(CircularProgressViewStyle(tint: .white))
+                    .scaleEffect(1.5)
+            }
         }
         .sheet(isPresented: $showFriends) {
             FriendsSheet(
@@ -124,6 +131,7 @@ struct ContentView: View {
                     showFriends = false
                     showScanner = true
                 },
+                onRename: { id, name in syncService.renameFriend(id: id, newName: name) },
                 onPasteUrl: { url in
                     showFriends = false
                     syncService.processQrUrl(url)
@@ -164,6 +172,12 @@ struct ContentView: View {
             if let qr = syncService.pendingInviteQr {
                 InviteSheet(qrPayload: qr, onDismiss: { syncService.clearInvite() })
             }
+        }
+        .alert("You", isPresented: $showUserSettings) {
+            TextField("Your Name", text: $syncService.displayName)
+            Button("Close", role: .cancel) {}
+        } message: {
+            Text("Set your display name that friends will see.")
         }
         .alert("Name this contact", isPresented: Binding(
             get: { (syncService.pendingQrForNaming != nil || syncService.pendingInitPayload != nil) && !syncService.isInviteActive },
