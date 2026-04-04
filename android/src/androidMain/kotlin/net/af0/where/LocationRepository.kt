@@ -21,6 +21,8 @@ interface LocationSource {
     val connectionStatus: StateFlow<ConnectionStatus>
     val isAppInForeground: StateFlow<Boolean>
     val pendingInitPayload: StateFlow<KeyExchangeInitPayload?>
+    val isSharingLocation: StateFlow<Boolean>
+    val pausedFriendIds: StateFlow<Set<String>>
 
     fun onLocation(
         lat: Double,
@@ -33,6 +35,8 @@ interface LocationSource {
     fun onConnectionError(e: Throwable)
     fun setAppForeground(foreground: Boolean)
     fun onPendingInit(payload: KeyExchangeInitPayload?)
+    fun setSharingLocation(sharing: Boolean)
+    fun setPausedFriends(friendIds: Set<String>)
 }
 
 /**
@@ -57,6 +61,12 @@ object LocationRepository : LocationSource {
 
     private val _pendingInitPayload = MutableStateFlow<KeyExchangeInitPayload?>(null)
     override val pendingInitPayload: StateFlow<KeyExchangeInitPayload?> = _pendingInitPayload.asStateFlow()
+
+    private val _isSharingLocation = MutableStateFlow(true)
+    override val isSharingLocation: StateFlow<Boolean> = _isSharingLocation.asStateFlow()
+
+    private val _pausedFriendIds = MutableStateFlow<Set<String>>(emptySet())
+    override val pausedFriendIds: StateFlow<Set<String>> = _pausedFriendIds.asStateFlow()
 
     override fun onLocation(
         lat: Double,
@@ -96,6 +106,14 @@ object LocationRepository : LocationSource {
 
     override fun onPendingInit(payload: KeyExchangeInitPayload?) {
         _pendingInitPayload.value = payload
+    }
+
+    override fun setSharingLocation(sharing: Boolean) {
+        _isSharingLocation.value = sharing
+    }
+
+    override fun setPausedFriends(friendIds: Set<String>) {
+        _pausedFriendIds.value = friendIds
     }
 
     fun setInitialFriendLocations(locations: Map<String, UserLocation>, pings: Map<String, Long>) {
