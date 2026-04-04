@@ -47,6 +47,11 @@ private func urlToQrPayload(_ url: String) -> Shared.QrPayload? {
 
 // MARK: - HTTP mailbox helpers
 
+// Ephemeral session: no URLCache, no cookie storage, no disk persistence.
+private let noCacheSession: URLSession = {
+    URLSession(configuration: .ephemeral)
+}()
+
 @MainActor
 private func postToMailbox(token: String, bodyData: Data) async throws {
     guard let url = URL(string: "\(ServerConfig.httpBaseUrl)/inbox/\(token)") else {
@@ -59,7 +64,7 @@ private func postToMailbox(token: String, bodyData: Data) async throws {
     req.setValue("application/json", forHTTPHeaderField: "Content-Type")
     req.httpBody = bodyData
     req.cachePolicy = .reloadIgnoringLocalCacheData
-    let (_, response) = try await URLSession.shared.data(for: req)
+    let (_, response) = try await noCacheSession.data(for: req)
     if let http = response as? HTTPURLResponse, http.statusCode != 200 && http.statusCode != 204 {
         logger.error("Mailbox POST failed: \(http.statusCode)")
         throw NSError(domain: "Where", code: http.statusCode, userInfo: [NSLocalizedDescriptionKey: "Server returned \(http.statusCode)"])
@@ -73,7 +78,7 @@ private func pollMailbox(token: String) async throws -> [[String: Any]] {
     debugLog { "Polling mailbox: \(url.absoluteString)" }
     var req = URLRequest(url: url)
     req.cachePolicy = .reloadIgnoringLocalCacheData
-    let (data, response) = try await URLSession.shared.data(for: req)
+    let (data, response) = try await noCacheSession.data(for: req)
     if let http = response as? HTTPURLResponse, http.statusCode != 200 {
         logger.error("Mailbox poll failed: \(http.statusCode)")
         throw NSError(domain: "Where", code: http.statusCode, userInfo: [NSLocalizedDescriptionKey: "Server returned \(http.statusCode)"])
@@ -112,7 +117,6 @@ final class LocationSyncService: ObservableObject {
 
     @Published var pendingQrForNaming: Shared.QrPayload? = nil
     @Published var pendingInitPayload: Shared.KeyExchangeInitPayload? = nil
-    @Published var hasPendingInit: Bool = false
     var isInviteActive: Bool { pendingInviteQr != nil }
 
     private var lastRapidPollTrigger: Date = Date(timeIntervalSince1970: 0)
@@ -156,7 +160,7 @@ final class LocationSyncService: ObservableObject {
 
     private func isRapidPolling() async -> Bool {
         let now = Date()
-        let isPairing = e2eeStore.pendingQrPayload != nil || hasPendingInit
+        let isPairing = e2eeStore.pendingQrPayload != nil || pendingInitPayload != nil
         let recentlyTriggered = now.timeIntervalSince(lastRapidPollTrigger) < 5 * 60
         return isPairing || recentlyTriggered
     }
@@ -194,25 +198,21 @@ final class LocationSyncService: ObservableObject {
     }
 
     func createInvite() {
-        Task {
-            autoClearedInvite = false
-            let qr = e2eeStore.createInvite(suggestedName: displayName.isEmpty ? "Me" : displayName)
-            debugLog { "Created invite: discovery=\(toHex(qr.discoveryToken()))" }
-            pendingInviteQr = qr
-            triggerRapidPoll()
-            // Trigger an immediate poll
-            await pollPendingInvite()
-        }
+        autoClearedInvite = false
+        let qr = e2eeStore.createInvite(suggestedName: displayName.isEmpty ? "Me" : displayName)
+        debugLog { "Created invite: discovery=\(toHex(qr.discoveryToken()))" }
+        pendingInviteQr = qr
+        triggerRapidPoll()
+        // Restart the poll loop so it wakes immediately rather than waiting out any 60s sleep.
+        startPolling()
     }
 
     func clearInvite() {
-        Task {
-            if !autoClearedInvite {
-                e2eeStore.clearInvite()
-            }
-            pendingInviteQr = nil
-            autoClearedInvite = false
+        if !autoClearedInvite {
+            e2eeStore.clearInvite()
         }
+        pendingInviteQr = nil
+        autoClearedInvite = false
     }
 
     @discardableResult
@@ -236,8 +236,10 @@ final class LocationSyncService: ObservableObject {
         debugLog { "Scanning QR: discovery=\(toHex(qrWithName.discoveryToken())), friendName=\(friendName)" }
         Task {
             let result = e2eeStore.processScannedQr(qr: qrWithName, bobSuggestedName: displayName)
-            let initPayload = result.first!
-            let bobEntry = result.second!
+            guard let initPayload = result.first, let bobEntry = result.second else {
+                logger.error("confirmQrScan: processScannedQr returned nil components")
+                return
+            }
             friends = e2eeStore.listFriends()
 
             let discoveryHex = toHex(qrWithName.discoveryToken())
@@ -279,31 +281,33 @@ final class LocationSyncService: ObservableObject {
     func confirmPendingInit(name: String) {
         guard let payload = pendingInitPayload else { return }
         pendingInitPayload = nil
-        hasPendingInit = false
         pendingInviteQr = nil
-        e2eeStore.clearInvite()
+        if !autoClearedInvite { e2eeStore.clearInvite() }
+        autoClearedInvite = false
         triggerRapidPoll()
         Task {
             // Small delay to ensure Bob has finished posting his initial OPKs/location
             try? await Task.sleep(nanoseconds: 500_000_000)
-            
-            _ = try? e2eeStore.processKeyExchangeInit(payload: payload, bobName: name)
-            friends = e2eeStore.listFriends()
-            
-            // Trigger immediate location sync to ONLY the new friend
-            if let entry = friends.first(where: { $0.name == name }), // Best effort to find the ID
-               let last = LocationManager.shared.lastLocation {
-                try? await locationClient.sendLocationToFriend(friendId: entry.id, lat: last.coordinate.latitude, lng: last.coordinate.longitude)
+
+            if let entry = try? e2eeStore.processKeyExchangeInit(payload: payload, bobName: name) {
+                friends = e2eeStore.listFriends()
+                if let last = LocationManager.shared.lastLocation {
+                    try? await locationClient.sendLocationToFriend(friendId: entry.id, lat: last.coordinate.latitude, lng: last.coordinate.longitude)
+                }
             }
             await pollAll()
         }
     }
 
     func cancelPendingInit() {
+        // Guard: only act if Alice's invite flow is actually active.
+        // Prevents double-calls (binding set: fires after explicit Save/Cancel button)
+        // and prevents Bob's QR-scan cancel path from spuriously clearing Alice's invite store.
+        guard pendingInitPayload != nil || pendingInviteQr != nil else { return }
+        if !autoClearedInvite { e2eeStore.clearInvite() }
+        autoClearedInvite = false
         pendingInitPayload = nil
-        hasPendingInit = false
         pendingInviteQr = nil
-        e2eeStore.clearInvite()
     }
 
     func togglePauseFriend(id: String) {
@@ -377,9 +381,10 @@ final class LocationSyncService: ObservableObject {
             )
 
             // Found init payload! Show naming dialog instead of processing immediately.
+            // Set pendingInitPayload before clearing pendingInviteQr so the UI never
+            // sees a frame where both are nil and collapses the naming alert.
             autoClearedInvite = true
             pendingInitPayload = initPayload
-            hasPendingInit = true
             pendingInviteQr = nil // Clear invite QR so the sheet dismisses
             triggerRapidPoll()
             break

@@ -8,7 +8,6 @@ struct ContentView: View {
     @State private var showFriends = false
     @State private var showScanner = false
     @State private var scannedUrl: String? = nil
-    @State private var triggerNamingAfterInvite = false
     @State private var zoomTarget: CLLocationCoordinate2D? = nil
     
     @State private var newFriendName: String = ""
@@ -161,20 +160,17 @@ struct ContentView: View {
         .sheet(isPresented: Binding(
             get: { syncService.pendingInviteQr != nil },
             set: { if !$0 { syncService.clearInvite() } }
-        ), onDismiss: {
-            if triggerNamingAfterInvite {
-                triggerNamingAfterInvite = false
-            }
-        }) {
+        )) {
             if let qr = syncService.pendingInviteQr {
                 InviteSheet(qrPayload: qr, onDismiss: { syncService.clearInvite() })
             }
         }
         .alert("Name this contact", isPresented: Binding(
-            get: { (syncService.pendingQrForNaming != nil || syncService.hasPendingInit) && !syncService.isInviteActive },
-            set: { if !$0 { 
+            get: { (syncService.pendingQrForNaming != nil || syncService.pendingInitPayload != nil) && !syncService.isInviteActive },
+            set: { if !$0 {
                 syncService.pendingQrForNaming = nil
                 syncService.cancelPendingInit()
+                newFriendName = ""
             } }
         )) {
             TextField("Friend's Name", text: $newFriendName)
@@ -183,7 +179,7 @@ struct ContentView: View {
                     syncService.confirmQrScan(qr: qr, friendName: newFriendName.isEmpty ? "Friend" : newFriendName)
                     newFriendName = ""
                 }
-            } else if syncService.hasPendingInit {
+            } else if syncService.pendingInitPayload != nil {
                 Button("Save") {
                     syncService.confirmPendingInit(name: newFriendName.isEmpty ? "Friend" : newFriendName)
                     newFriendName = ""
@@ -209,14 +205,10 @@ struct ContentView: View {
             syncService.sendLocation(lat: loc.coordinate.latitude, lng: loc.coordinate.longitude)
         }
         .onReceive(syncService.$pendingQrForNaming) { qr in
-            if let qr = qr {
-                newFriendName = qr.suggestedName
-            }
+            if let qr = qr { newFriendName = qr.suggestedName } else { newFriendName = "" }
         }
         .onReceive(syncService.$pendingInitPayload) { payload in
-            if let payload = payload {
-                newFriendName = payload.suggestedName
-            }
+            if let payload = payload { newFriendName = payload.suggestedName } else { newFriendName = "" }
         }
     }
 }
