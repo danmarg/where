@@ -16,6 +16,7 @@ interface LocationSource {
     val friendLocations: StateFlow<Map<String, UserLocation>>
     val friendLastPing: StateFlow<Map<String, Long>>
     val connectionStatus: StateFlow<ConnectionStatus>
+    val isAppInForeground: StateFlow<Boolean>
 
     fun onLocation(
         lat: Double,
@@ -24,6 +25,7 @@ interface LocationSource {
 
     fun onFriendUpdate(update: UserLocation)
     fun onConnectionStatus(status: ConnectionStatus)
+    fun setAppForeground(foreground: Boolean)
 }
 
 /**
@@ -43,6 +45,9 @@ object LocationRepository : LocationSource {
     private val _connectionStatus = MutableStateFlow<ConnectionStatus>(ConnectionStatus.Ok)
     override val connectionStatus: StateFlow<ConnectionStatus> = _connectionStatus
 
+    private val _isAppInForeground = MutableStateFlow(false)
+    override val isAppInForeground: StateFlow<Boolean> = _isAppInForeground.asStateFlow()
+
     override fun onLocation(
         lat: Double,
         lng: Double,
@@ -57,6 +62,10 @@ object LocationRepository : LocationSource {
 
     override fun onConnectionStatus(status: ConnectionStatus) {
         _connectionStatus.value = status
+    }
+
+    override fun setAppForeground(foreground: Boolean) {
+        _isAppInForeground.value = foreground
     }
 
     fun setInitialFriendLocations(locations: Map<String, UserLocation>, pings: Map<String, Long>) {

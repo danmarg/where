@@ -101,6 +101,12 @@ class LocationService : Service() {
         if (shouldSend) {
             serviceScope.launch {
                 try {
+                    // Requirement: Just-in-time poll before sending in background to advance ratchet
+                    if (!LocationRepository.isAppInForeground.value) {
+                        Log.d(TAG, "Background JIT poll starting")
+                        doPoll(updateUi = false)
+                    }
+
                     Log.d(TAG, "Sending location: $lat, $lng")
                     locationClient.sendLocation(lat, lng, pausedFriendIds)
                     lastSentLocation = Pair(lat, lng)
@@ -116,8 +122,13 @@ class LocationService : Service() {
 
     private suspend fun pollLoop() {
         while (true) {
+            val isForeground = LocationRepository.isAppInForeground.value
             val rapid = isRapidPolling()
-            doPoll()
+
+            // Requirement: Only fetch friend locations in foreground.
+            if (isForeground || rapid) {
+                doPoll(updateUi = true)
+            }
 
             // Also check for stationary heartbeat in the poll loop in case location updates stop firing
             LocationRepository.lastLocation.value?.let { (lat, lng) ->
@@ -129,12 +140,14 @@ class LocationService : Service() {
         }
     }
 
-    private suspend fun doPoll() {
+    private suspend fun doPoll(updateUi: Boolean) {
         try {
             val updates = locationClient.poll()
-            for (update in updates) {
-                LocationRepository.onFriendUpdate(update)
-                e2eeStore.updateLastLocation(update.userId, update.lat, update.lng, System.currentTimeMillis() / 1000L)
+            if (updateUi) {
+                for (update in updates) {
+                    LocationRepository.onFriendUpdate(update)
+                    e2eeStore.updateLastLocation(update.userId, update.lat, update.lng, System.currentTimeMillis() / 1000L)
+                }
             }
             LocationRepository.onConnectionStatus(ConnectionStatus.Ok)
         } catch (e: Exception) {
