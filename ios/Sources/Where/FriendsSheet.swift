@@ -19,28 +19,20 @@ struct FriendsSheet: View {
     let onTogglePause: (String) -> Void
     let onCreateInvite: () -> Void
     let onScanQr: () -> Void
+    let onRename: (String, String) -> Void
     let onPasteUrl: (String) -> Void
     let onRemove: (String) -> Void
     let onZoomTo: (String) -> Void
 
     @State private var friendToRemove: Shared.FriendEntry? = nil
+    @State private var friendToRename: Shared.FriendEntry? = nil
+    @State private var newFriendName: String = ""
     @State private var showPasteField = false
     @State private var pastedUrl = ""
 
     var body: some View {
         NavigationStack {
             List {
-                Section("Your Name") {
-                    TextField("Alice", text: $displayName)
-                }
-
-                Section("Your ID") {
-                    Text(myId)
-                        .font(.caption)
-                        .fontDesign(.monospaced)
-                        .foregroundStyle(.secondary)
-                }
-
                 Section {
                     VStack(spacing: 12) {
                         HStack(spacing: 12) {
@@ -101,6 +93,10 @@ struct FriendsSheet: View {
                                 VStack(alignment: .leading, spacing: 2) {
                                     Text(friend.name)
                                         .font(.body)
+                                    Text(friend.safetyNumber)
+                                        .font(.caption2)
+                                        .fontDesign(.monospaced)
+                                        .foregroundStyle(.secondary)
                                     HStack(spacing: 8) {
                                         Text(friend.id.prefix(8))
                                             .font(.caption)
@@ -116,6 +112,16 @@ struct FriendsSheet: View {
                                 }
                                 Spacer()
                                 
+                                Button {
+                                    friendToRename = friend
+                                    newFriendName = friend.name
+                                } label: {
+                                    Image(systemName: "pencil")
+                                        .font(.title3)
+                                        .foregroundStyle(.gray)
+                                }
+                                .buttonStyle(.plain)
+
                                 let isPaused = pausedFriendIds.contains(friend.id)
                                 Button {
                                     onTogglePause(friend.id)
@@ -157,6 +163,17 @@ struct FriendsSheet: View {
                 }
             } message: {
                 Text("This will permanently delete the key.")
+            }
+            .alert("Rename Friend", isPresented: Binding(get: { friendToRename != nil }, set: { if !$0 { friendToRename = nil } })) {
+                TextField("Friend's Name", text: $newFriendName)
+                Button("Rename") {
+                    if let friend = friendToRename {
+                        onRename(friend.id, newFriendName)
+                    }
+                }
+                Button("Cancel", role: .cancel) {
+                    friendToRename = nil
+                }
             }
         }
     }
