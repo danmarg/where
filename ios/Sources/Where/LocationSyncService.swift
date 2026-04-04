@@ -282,18 +282,17 @@ final class LocationSyncService: ObservableObject {
         guard let payload = pendingInitPayload else { return }
         pendingInitPayload = nil
         pendingInviteQr = nil
-        if !autoClearedInvite { e2eeStore.clearInvite() }
         autoClearedInvite = false
         triggerRapidPoll()
+        // processKeyExchangeInit sets pendingInvite=null internally; call it immediately
+        // so nothing can clear pendingInvite before it runs.
+        let entry = try? e2eeStore.processKeyExchangeInit(payload: payload, bobName: name)
+        if entry != nil {
+            friends = e2eeStore.listFriends()
+        }
         Task {
-            // Small delay to ensure Bob has finished posting his initial OPKs/location
-            try? await Task.sleep(nanoseconds: 500_000_000)
-
-            if let entry = try? e2eeStore.processKeyExchangeInit(payload: payload, bobName: name) {
-                friends = e2eeStore.listFriends()
-                if let last = LocationManager.shared.lastLocation {
-                    try? await locationClient.sendLocationToFriend(friendId: entry.id, lat: last.coordinate.latitude, lng: last.coordinate.longitude)
-                }
+            if let entry, let last = LocationManager.shared.lastLocation {
+                try? await locationClient.sendLocationToFriend(friendId: entry.id, lat: last.coordinate.latitude, lng: last.coordinate.longitude)
             }
             await pollAll()
         }
