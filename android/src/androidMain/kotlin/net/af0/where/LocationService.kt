@@ -75,43 +75,42 @@ class LocationService : Service() {
         }
     }
 
-    private fun maybeSendLocation(lat: Double, lng: Double) {
-        val sharingPrefs = getSharedPreferences("where_prefs", Context.MODE_PRIVATE)
-        val isSharing = sharingPrefs.getBoolean("is_sharing", true)
+    private suspend fun maybeSendLocation(lat: Double, lng: Double) {
+        val isSharing = LocationRepository.isSharingLocation.value
         if (!isSharing) return
 
-        serviceScope.launch {
-            mutex.withLock {
-                val now = System.currentTimeMillis()
-                val pausedFriendIds = sharingPrefs.getString("paused_friends", "")
-                    ?.split(",")?.filter { it.isNotEmpty() }?.toSet() ?: emptySet()
+        mutex.withLock {
+            val now = System.currentTimeMillis()
+            val pausedFriendIds = LocationRepository.pausedFriendIds.value
 
-                val lastLoc = lastSentLocation
-                val distance = if (lastLoc != null) {
-                    val results = FloatArray(1)
-                    android.location.Location.distanceBetween(lastLoc.first, lastLoc.second, lat, lng, results)
-                    results[0]
-                } else {
-                    Float.MAX_VALUE
-                }
+            val lastLoc = lastSentLocation
+            val distance = if (lastLoc != null) {
+                val results = FloatArray(1)
+                android.location.Location.distanceBetween(lastLoc.first, lastLoc.second, lat, lng, results)
+                results[0]
+            } else {
+                Float.MAX_VALUE
+            }
 
-                val shouldSend = lastLoc == null ||
-                                (distance > 10 && now - lastSentTime > 1 * 60_000L) ||
-                                (now - lastSentTime > 5 * 60_000L)
+            // Thresholds: 1 min if moved > 10m, 5 min heartbeat
+            val shouldSend = lastLoc == null ||
+                            (distance > 10 && now - lastSentTime > 1 * 60_000L) ||
+                            (now - lastSentTime > 5 * 60_000L)
 
-                if (shouldSend) {
-                    try {
-                        doPollInternal()
+            if (shouldSend) {
+                try {
+                    // Always poll before sending, even in background.
+                    // It updates e2eeStore but only updates UI flows if appropriate.
+                    doPollInternal()
 
-                        Log.d(TAG, "Sending location: $lat, $lng")
-                        locationClient.sendLocation(lat, lng, pausedFriendIds)
-                        lastSentLocation = Pair(lat, lng)
-                        lastSentTime = now
-                        LocationRepository.onConnectionStatus(ConnectionStatus.Ok)
-                    } catch (e: Exception) {
-                        Log.e(TAG, "Failed to send location", e)
-                        LocationRepository.onConnectionError(e)
-                    }
+                    Log.d(TAG, "Sending location: $lat, $lng")
+                    locationClient.sendLocation(lat, lng, pausedFriendIds)
+                    lastSentLocation = Pair(lat, lng)
+                    lastSentTime = now
+                    LocationRepository.onConnectionStatus(ConnectionStatus.Ok)
+                } catch (e: Exception) {
+                    Log.e(TAG, "Failed to send location", e)
+                    LocationRepository.onConnectionError(e)
                 }
             }
         }

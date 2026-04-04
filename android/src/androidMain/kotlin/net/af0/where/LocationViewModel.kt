@@ -95,14 +95,23 @@ class LocationViewModel(app: Application) : AndroidViewModel(app) {
             }
         }
         LocationRepository.setInitialFriendLocations(initialLocations, initialLastPing)
+        LocationRepository.setSharingLocation(_isSharingLocation.value)
+        LocationRepository.setPausedFriends(_pausedFriendIds.value)
 
         viewModelScope.launch {
             var prevSharing = _isSharingLocation.value
             _isSharingLocation.collect { sharing ->
+                LocationRepository.setSharingLocation(sharing)
                 if (prevSharing != sharing) {
                     manageForegroundService(sharing)
                 }
                 prevSharing = sharing
+            }
+        }
+
+        viewModelScope.launch {
+            _pausedFriendIds.collect { ids ->
+                LocationRepository.setPausedFriends(ids)
             }
         }
 
