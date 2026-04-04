@@ -26,7 +26,7 @@ class LocationService : Service() {
     private var lastSentLat: Double? = null
     private var lastSentLng: Double? = null
     private var lastSentTime: Long = 0
-    private var pendingFriendId: String? = null
+    private val pendingFriendIds = java.util.concurrent.ConcurrentLinkedQueue<String>()
     private var isRegistered = false
 
     override fun onCreate() {
@@ -121,7 +121,7 @@ class LocationService : Service() {
                 }
             } ?: run {
                 if (friendId != null) {
-                    pendingFriendId = friendId
+                    pendingFriendIds.add(friendId)
                 }
             }
         }
@@ -161,22 +161,22 @@ class LocationService : Service() {
                 (isHeartbeat && now - lastSentTime > 300_000L)
 
         if (shouldSend) {
-            val sharingPrefs = getSharedPreferences("where_prefs", Context.MODE_PRIVATE)
-            val isSharing = sharingPrefs.getBoolean("is_sharing", true)
-            if (!isSharing) return
-
-            val pausedIds =
-                sharingPrefs.getString("paused_friends", "")
-                    ?.split(",")?.filter { it.isNotEmpty() }?.toSet() ?: emptySet()
-
             serviceScope.launch {
+                val sharingPrefs = getSharedPreferences("where_prefs", Context.MODE_PRIVATE)
+                val isSharing = sharingPrefs.getBoolean("is_sharing", true)
+                if (!isSharing) return@launch
+
+                val pausedIds =
+                    sharingPrefs.getString("paused_friends", "")
+                        ?.split(",")?.filter { it.isNotEmpty() }?.toSet() ?: emptySet()
+
                 try {
                     Log.d(TAG, "Sending background location: $lat, $lng (heartbeat=$isHeartbeat)")
 
-                    pendingFriendId?.let { id ->
-                        Log.d(TAG, "Processing pending forced publish to: $id")
+                    while (pendingFriendIds.isNotEmpty()) {
+                        val id = pendingFriendIds.poll() ?: break
+                        Log.d(TAG, "Processing queued forced publish to: $id")
                         locationClient.sendLocationToFriend(id, lat, lng)
-                        pendingFriendId = null
                     }
 
                     locationClient.sendLocation(lat, lng, pausedIds)

@@ -169,14 +169,18 @@ class E2eeStore(
      * Performs the single X25519 DH, creates the initial session, and saves the new friend.
      * Returns the wire payload ready to POST to [QrPayload.discoveryToken] and the new entry.
      */
-    fun processScannedQr(qr: QrPayload, bobSuggestedName: String = ""): Pair<KeyExchangeInitPayload, FriendEntry> {
+    fun processScannedQr(
+        qr: QrPayload,
+        bobSuggestedName: String = "",
+    ): Pair<KeyExchangeInitPayload, FriendEntry> {
         val (initMsg, session) = KeyExchange.bobProcessQr(qr, bobSuggestedName)
 
-        val entry = FriendEntry(
-            name = qr.suggestedName,
-            session = session,
-            isInitiator = false, // Bob scanned Alice's QR
-        )
+        val entry =
+            FriendEntry(
+                name = qr.suggestedName,
+                session = session,
+                isInitiator = false, // Bob scanned Alice's QR
+            )
         friends[entry.id] = entry
         save()
         val payload =
@@ -221,11 +225,12 @@ class E2eeStore(
                     aliceEkPriv = pending.aliceEkPriv,
                     aliceEkPub = pending.qrPayload.ekPub,
                 )
-            val entry = FriendEntry(
-                name = bobName,
-                session = session,
-                isInitiator = true, // Alice created the QR
-            )
+            val entry =
+                FriendEntry(
+                    name = bobName,
+                    session = session,
+                    isInitiator = true, // Alice created the QR
+                )
             friends[entry.id] = entry
             pendingInvite = null
             save()
@@ -241,7 +246,10 @@ class E2eeStore(
 
     fun listFriends(): List<FriendEntry> = friends.values.toList()
 
-    fun renameFriend(id: String, newName: String) {
+    fun renameFriend(
+        id: String,
+        newName: String,
+    ) {
         val entry = friends[id] ?: return
         friends[id] = entry.copy(name = newName)
         save()
@@ -292,23 +300,26 @@ class E2eeStore(
         if (entry.isInitiator) return null
 
         val startId = entry.nextOpkId
-        val newOpks = (0 until count).map { i ->
-            val kp = generateX25519KeyPair()
-            OPK(id = startId + i, pub = kp.pub) to kp.priv
-        }
+        val newOpks =
+            (0 until count).map { i ->
+                val kp = generateX25519KeyPair()
+                OPK(id = startId + i, pub = kp.pub) to kp.priv
+            }
 
         val opkList = newOpks.map { (opk, _) -> opk }
-        val mac = PreKeyBundleOps.buildMac(
-            token = entry.session.sendToken,
-            opks = opkList,
-            kBundle = entry.session.kBundle,
-        )
+        val mac =
+            PreKeyBundleOps.buildMac(
+                token = entry.session.sendToken,
+                opks = opkList,
+                kBundle = entry.session.kBundle,
+            )
 
         val newPrivMap = entry.myOpkPrivs + newOpks.associate { (opk, priv) -> opk.id to priv }
-        friends[friendId] = entry.copy(
-            myOpkPrivs = newPrivMap,
-            nextOpkId = startId + count,
-        )
+        friends[friendId] =
+            entry.copy(
+                myOpkPrivs = newPrivMap,
+                nextOpkId = startId + count,
+            )
         save()
 
         return PreKeyBundlePayload(
@@ -392,33 +403,36 @@ class E2eeStore(
         val (opkId, opkPub) = entry.theirOpkPubs.minBy { it.key }
 
         val newEk = generateX25519KeyPair()
-        val newSession = Session.aliceEpochRotation(
-            state = entry.session,
-            aliceNewEkPriv = newEk.priv,
-            aliceNewEkPub = newEk.pub,
-            bobOpkPub = opkPub,
-            senderFp = entry.session.aliceFp,
-            recipientFp = entry.session.bobFp,
-        )
+        val newSession =
+            Session.aliceEpochRotation(
+                state = entry.session,
+                aliceNewEkPriv = newEk.priv,
+                aliceNewEkPub = newEk.pub,
+                bobOpkPub = opkPub,
+                senderFp = entry.session.aliceFp,
+                recipientFp = entry.session.bobFp,
+            )
 
         val oldSendToken = entry.session.sendToken
         val nonce = randomBytes(12)
-        val ct = buildEpochRotationCt(
-            rootKey = entry.session.rootKey,
-            epoch = newSession.epoch,
-            opkId = opkId,
-            newEkPub = newEk.pub,
-            ts = ts,
-            nonce = nonce,
-            routingToken = oldSendToken,
-            senderFp = entry.session.aliceFp,
-            recipientFp = entry.session.bobFp,
-        )
+        val ct =
+            buildEpochRotationCt(
+                rootKey = entry.session.rootKey,
+                epoch = newSession.epoch,
+                opkId = opkId,
+                newEkPub = newEk.pub,
+                ts = ts,
+                nonce = nonce,
+                routingToken = oldSendToken,
+                senderFp = entry.session.aliceFp,
+                recipientFp = entry.session.bobFp,
+            )
 
-        friends[friendId] = entry.copy(
-            session = newSession,
-            theirOpkPubs = entry.theirOpkPubs - opkId, // consume the OPK
-        )
+        friends[friendId] =
+            entry.copy(
+                session = newSession,
+                theirOpkPubs = entry.theirOpkPubs - opkId, // consume the OPK
+            )
         save()
 
         return EpochRotationPayload(
@@ -451,19 +465,20 @@ class E2eeStore(
         if (entry.isInitiator) return null // Alice doesn't process her own rotations
 
         val oldRecvToken = entry.session.recvToken
-        val rotData = try {
-            decryptEpochRotationCt(
-                rootKey = entry.session.rootKey,
-                epoch = payload.epoch,
-                nonce = payload.nonce,
-                ct = payload.ct,
-                routingToken = oldRecvToken,
-                senderFp = entry.session.aliceFp,
-                recipientFp = entry.session.bobFp,
-            )
-        } catch (_: Exception) {
-            throw IllegalArgumentException("EpochRotation AEAD verification failed")
-        }
+        val rotData =
+            try {
+                decryptEpochRotationCt(
+                    rootKey = entry.session.rootKey,
+                    epoch = payload.epoch,
+                    nonce = payload.nonce,
+                    ct = payload.ct,
+                    routingToken = oldRecvToken,
+                    senderFp = entry.session.aliceFp,
+                    recipientFp = entry.session.bobFp,
+                )
+            } catch (_: Exception) {
+                throw IllegalArgumentException("EpochRotation AEAD verification failed")
+            }
         require(rotData.epoch == payload.epoch) { "epoch mismatch in EpochRotation" }
         require(rotData.opkId == payload.opkId) { "opkId mismatch in EpochRotation" }
         require(isTimestampFresh(rotData.ts)) { "EpochRotation timestamp outside freshness window" }
@@ -471,42 +486,46 @@ class E2eeStore(
         val opkPriv = entry.myOpkPrivs[payload.opkId] ?: return null // unknown OPK — skip
 
         // Step 1: Process Alice's rotation
-        val intermediateSession = Session.bobProcessAliceRotation(
-            state = entry.session,
-            aliceNewEkPub = payload.newEkPub,
-            bobOpkPriv = opkPriv,
-            newEpoch = payload.epoch,
-            senderFp = entry.session.aliceFp,
-            recipientFp = entry.session.bobFp,
-        )
+        val intermediateSession =
+            Session.bobProcessAliceRotation(
+                state = entry.session,
+                aliceNewEkPub = payload.newEkPub,
+                bobOpkPriv = opkPriv,
+                newEpoch = payload.epoch,
+                senderFp = entry.session.aliceFp,
+                recipientFp = entry.session.bobFp,
+            )
 
         // Step 2: Refresh Bob's own send chain
         val bobNewEk = generateX25519KeyPair()
-        val finalSession = Session.bobProcessOwnRotation(
-            state = intermediateSession,
-            bobNewEkPriv = bobNewEk.priv,
-            bobNewEkPub = bobNewEk.pub,
-        )
+        val finalSession =
+            Session.bobProcessOwnRotation(
+                state = intermediateSession,
+                bobNewEkPriv = bobNewEk.priv,
+                bobNewEkPub = bobNewEk.pub,
+            )
 
         // Authenticate Ack using intermediate root key (the one Alice knows)
         // and include Bob's new key in authenticated plaintext.
         val ts = currentTimeSeconds()
         val nonce = randomBytes(12)
-        val ackCt = buildRatchetAckCt(
-            rootKey = intermediateSession.rootKey,
-            epochSeen = payload.epoch,
-            ts = ts,
-            newEkPub = bobNewEk.pub,
-            nonce = nonce,
-            routingToken = finalSession.sendToken,
-            senderFp = entry.session.aliceFp,
-            recipientFp = entry.session.bobFp,
-        )
+        val ackCt =
+            buildRatchetAckCt(
+                rootKey = intermediateSession.rootKey,
+                epochSeen = payload.epoch,
+                ts = ts,
+                newEkPub = bobNewEk.pub,
+                nonce = nonce,
+                routingToken = finalSession.sendToken,
+                senderFp = entry.session.aliceFp,
+                recipientFp = entry.session.bobFp,
+            )
 
-        friends[friendId] = entry.copy(
-            session = finalSession,
-            myOpkPrivs = entry.myOpkPrivs - payload.opkId, // delete consumed OPK
-        )
+        friends[friendId] =
+            entry.copy(
+                session = finalSession,
+                myOpkPrivs = entry.myOpkPrivs - payload.opkId, // delete consumed OPK
+            )
         save()
 
         return RatchetAckPayload(epochSeen = payload.epoch, ts = ts, newEkPub = bobNewEk.pub, nonce = nonce, ct = ackCt)
@@ -524,17 +543,20 @@ class E2eeStore(
         val entry = friends[friendId] ?: return false
         if (!entry.isInitiator) return false
 
-        val ackData = try {
-            decryptRatchetAckCt(
-                rootKey = entry.session.rootKey,
-                epochSeen = payload.epochSeen,
-                nonce = payload.nonce,
-                ct = payload.ct,
-                routingToken = entry.session.recvToken,
-                senderFp = entry.session.aliceFp,
-                recipientFp = entry.session.bobFp,
-            )
-        } catch (_: Exception) { return false }
+        val ackData =
+            try {
+                decryptRatchetAckCt(
+                    rootKey = entry.session.rootKey,
+                    epochSeen = payload.epochSeen,
+                    nonce = payload.nonce,
+                    ct = payload.ct,
+                    routingToken = entry.session.recvToken,
+                    senderFp = entry.session.aliceFp,
+                    recipientFp = entry.session.bobFp,
+                )
+            } catch (_: Exception) {
+                return false
+            }
 
         if (!isTimestampFresh(ackData.ts)) return false
 
@@ -596,7 +618,10 @@ class E2eeStore(
      *
      * @return [PollBatchResult], or null if [friendId] is not found.
      */
-    fun processBatch(friendId: String, messages: List<MailboxPayload>): PollBatchResult? {
+    fun processBatch(
+        friendId: String,
+        messages: List<MailboxPayload>,
+    ): PollBatchResult? {
         friends[friendId] ?: return null
 
         val decryptedLocations = mutableListOf<LocationPlaintext>()
@@ -614,13 +639,14 @@ class E2eeStore(
         var currentSession = preRotationSession
         for (msg in messages.filterIsInstance<EncryptedLocationPayload>().sortedBy { it.seqAsLong() }) {
             try {
-                val (newSession, loc) = Session.decryptLocation(
-                    state = currentSession,
-                    ct = msg.ct,
-                    seq = msg.seqAsLong(),
-                    senderFp = currentSession.aliceFp,
-                    recipientFp = currentSession.bobFp,
-                )
+                val (newSession, loc) =
+                    Session.decryptLocation(
+                        state = currentSession,
+                        ct = msg.ct,
+                        seq = msg.seqAsLong(),
+                        senderFp = currentSession.aliceFp,
+                        recipientFp = currentSession.bobFp,
+                    )
                 currentSession = newSession
                 decryptedLocations.add(loc)
             } catch (_: Exception) {
@@ -633,11 +659,12 @@ class E2eeStore(
 
         // Step 3: Process epoch rotation (after location decryption).
         for (msg in messages.filterIsInstance<EpochRotationPayload>()) {
-            val ack = try {
-                processEpochRotation(friendId, msg)
-            } catch (_: IllegalArgumentException) {
-                null
-            } ?: continue
+            val ack =
+                try {
+                    processEpochRotation(friendId, msg)
+                } catch (_: IllegalArgumentException) {
+                    null
+                } ?: continue
             // After epoch rotation, Bob posts responses (Ack, new OPKs) to his new send token.
             val rotatedToken = friends[friendId]?.session?.sendToken?.toHex() ?: continue
             outgoing.add(OutgoingMessage(rotatedToken, ack))

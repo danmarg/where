@@ -82,7 +82,6 @@ fun FriendsSheet(
         ) {
             Text("Friends", style = MaterialTheme.typography.titleLarge)
 
-
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -207,7 +206,7 @@ fun FriendsSheet(
                             IconButton(onClick = { renameFriend = friend }) {
                                 Icon(Icons.Default.Edit, contentDescription = "Rename", modifier = Modifier.size(20.dp))
                             }
-                            
+
                             val isPaused = friend.id in pausedFriendIds
                             IconButton(onClick = { onTogglePause(friend.id) }) {
                                 Icon(

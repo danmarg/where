@@ -22,11 +22,12 @@ object KeyExchange {
     fun aliceCreateQrPayload(suggestedName: String): Pair<QrPayload, ByteArray> {
         val ek = generateX25519KeyPair()
         val fp = sha256(ek.pub).copyOfRange(0, 8).toHex()
-        val payload = QrPayload(
-            ekPub = ek.pub.copyOf(),
-            suggestedName = suggestedName,
-            fingerprint = fp,
-        )
+        val payload =
+            QrPayload(
+                ekPub = ek.pub.copyOf(),
+                suggestedName = suggestedName,
+                fingerprint = fp,
+            )
         return payload to ek.priv
     }
 
@@ -34,7 +35,10 @@ object KeyExchange {
      * Bob: single-term DH, derive SK, compute key_confirmation HMAC,
      * and return the KeyExchangeInit message plus the initial session state.
      */
-    fun bobProcessQr(qr: QrPayload, suggestedName: String): Pair<KeyExchangeInitMessage, SessionState> {
+    fun bobProcessQr(
+        qr: QrPayload,
+        suggestedName: String,
+    ): Pair<KeyExchangeInitMessage, SessionState> {
         val ekB = generateX25519KeyPair()
         val sk = x25519(ekB.priv, qr.ekPub)
 
@@ -45,32 +49,35 @@ object KeyExchange {
         val tokenBobToAlice = deriveRoutingToken(sk, epoch = 0, senderFp = bobFp, recipientFp = aliceFp)
         val tokenAliceToBob = deriveRoutingToken(sk, epoch = 0, senderFp = aliceFp, recipientFp = bobFp)
 
-        val kBundle = hkdfSha256(
-            ikm = sk,
-            salt = null,
-            info = INFO_BUNDLE_AUTH.encodeToByteArray(),
-            length = 32,
-        )
-        val session = initSession(
-            sk = sk,
-            isAlice = false,
-            myEkPriv = ekB.priv,
-            myEkPub = ekB.pub,
-            theirEkPub = qr.ekPub,
-            sendToken = tokenBobToAlice,
-            recvToken = tokenAliceToBob,
-            aliceFp = aliceFp,
-            bobFp = bobFp,
-            kBundle = kBundle,
-        )
+        val kBundle =
+            hkdfSha256(
+                ikm = sk,
+                salt = null,
+                info = INFO_BUNDLE_AUTH.encodeToByteArray(),
+                length = 32,
+            )
+        val session =
+            initSession(
+                sk = sk,
+                isAlice = false,
+                myEkPriv = ekB.priv,
+                myEkPub = ekB.pub,
+                theirEkPub = qr.ekPub,
+                sendToken = tokenBobToAlice,
+                recvToken = tokenAliceToBob,
+                aliceFp = aliceFp,
+                bobFp = bobFp,
+                kBundle = kBundle,
+            )
 
         val keyConfirmation = buildKeyConfirmation(sk, qr.ekPub, ekB.pub)
-        val msg = KeyExchangeInitMessage(
-            token = tokenAliceToBob.copyOf(), // Bob sends to Alice's "AliceToBob" inbox for discovery
-            ekPub = ekB.pub.copyOf(),
-            keyConfirmation = keyConfirmation,
-            suggestedName = suggestedName,
-        )
+        val msg =
+            KeyExchangeInitMessage(
+                token = tokenAliceToBob.copyOf(), // Bob sends to Alice's "AliceToBob" inbox for discovery
+                ekPub = ekB.pub.copyOf(),
+                keyConfirmation = keyConfirmation,
+                suggestedName = suggestedName,
+            )
         return msg to session
     }
 
@@ -97,12 +104,13 @@ object KeyExchange {
         val tokenAliceToBob = deriveRoutingToken(sk, epoch = 0, senderFp = aliceFp, recipientFp = bobFp)
         val tokenBobToAlice = deriveRoutingToken(sk, epoch = 0, senderFp = bobFp, recipientFp = aliceFp)
 
-        val kBundle = hkdfSha256(
-            ikm = sk,
-            salt = null,
-            info = INFO_BUNDLE_AUTH.encodeToByteArray(),
-            length = 32,
-        )
+        val kBundle =
+            hkdfSha256(
+                ikm = sk,
+                salt = null,
+                info = INFO_BUNDLE_AUTH.encodeToByteArray(),
+                length = 32,
+            )
         return initSession(
             sk = sk,
             isAlice = true,
@@ -138,12 +146,13 @@ object KeyExchange {
         bobFp: ByteArray,
         kBundle: ByteArray,
     ): SessionState {
-        val expanded = hkdfSha256(
-            ikm = sk,
-            salt = null,
-            info = INFO_SESSION.encodeToByteArray(),
-            length = 96,
-        )
+        val expanded =
+            hkdfSha256(
+                ikm = sk,
+                salt = null,
+                info = INFO_SESSION.encodeToByteArray(),
+                length = 96,
+            )
         val chainKey0 = expanded.copyOfRange(32, 64)
         val chainKey1 = expanded.copyOfRange(64, 96)
         return SessionState(
@@ -164,10 +173,18 @@ object KeyExchange {
         )
     }
 
-    internal fun buildKeyConfirmation(sk: ByteArray, ekAPub: ByteArray, ekBPub: ByteArray): ByteArray =
-        hmacSha256(sk, CONFIRM_PREFIX.encodeToByteArray() + ekAPub + ekBPub)
+    internal fun buildKeyConfirmation(
+        sk: ByteArray,
+        ekAPub: ByteArray,
+        ekBPub: ByteArray,
+    ): ByteArray = hmacSha256(sk, CONFIRM_PREFIX.encodeToByteArray() + ekAPub + ekBPub)
 
-    internal fun verifyKeyConfirmation(sk: ByteArray, ekAPub: ByteArray, ekBPub: ByteArray, expected: ByteArray): Boolean {
+    internal fun verifyKeyConfirmation(
+        sk: ByteArray,
+        ekAPub: ByteArray,
+        ekBPub: ByteArray,
+        expected: ByteArray,
+    ): Boolean {
         val computed = buildKeyConfirmation(sk, ekAPub, ekBPub)
         if (computed.size != expected.size) return false
         var diff = 0
