@@ -184,7 +184,13 @@ final class LocationSyncService: ObservableObject {
         pollTask?.cancel()
         pollTask = Task { [weak self] in
             while !Task.isCancelled {
-                await self?.pollAll()
+                let isForeground = UIApplication.shared.applicationState == .active
+                let rapid = await self?.isRapidPolling() == true
+
+                // Requirement: Only fetch friend locations in foreground.
+                if isForeground || rapid {
+                    await self?.pollAll(updateUi: true)
+                }
 
                 // On iOS, we also check for stationary heartbeats in the poll loop
                 // because CLLocationManager won't fire didUpdateLocations if the user hasn't moved.
@@ -192,7 +198,6 @@ final class LocationSyncService: ObservableObject {
                     self?.sendLocation(lat: last.coordinate.latitude, lng: last.coordinate.longitude)
                 }
 
-                let rapid = await self?.isRapidPolling() == true
                 let interval: UInt64 = rapid ? 2_000_000_000 : 60_000_000_000  // 2s while pairing, 60s otherwise
                 try? await Task.sleep(nanoseconds: interval)
             }
@@ -231,6 +236,11 @@ final class LocationSyncService: ObservableObject {
         }
 
         Task {
+            // Requirement: Just-in-time poll before sending in background to advance ratchet
+            if UIApplication.shared.applicationState != .active {
+                await self.pollAll(updateUi: false)
+            }
+
             do {
                 try await locationClient.sendLocation(lat: lat, lng: lng, pausedFriendIds: pausedFriendIds)
                 logger.debug("Location sent successfully")
@@ -380,7 +390,7 @@ final class LocationSyncService: ObservableObject {
 
     // MARK: - Private polling
 
-    private func pollAll() async {
+    private func pollAll(updateUi: Bool = true) async {
         logger.debug("Polling for location updates")
         let backgroundTask = UIApplication.shared.beginBackgroundTask(withName: "PollAll") {
             // End task if it takes too long
@@ -388,11 +398,13 @@ final class LocationSyncService: ObservableObject {
         do {
             let updates = try await locationClient.poll()
             logger.debug("Got \(updates.count) location updates")
-            for update in updates {
-                friendLocations[update.userId] = (lat: update.lat, lng: update.lng, ts: update.timestamp)
-                let now = Date()
-                friendLastPing[update.userId] = now
-                e2eeStore.updateLastLocation(id: update.userId, lat: update.lat, lng: update.lng, ts: Int64(now.timeIntervalSince1970))
+            if updateUi {
+                for update in updates {
+                    friendLocations[update.userId] = (lat: update.lat, lng: update.lng, ts: update.timestamp)
+                    let now = Date()
+                    friendLastPing[update.userId] = now
+                    e2eeStore.updateLastLocation(id: update.userId, lat: update.lat, lng: update.lng, ts: Int64(now.timeIntervalSince1970))
+                }
             }
             updateStatus(nil)
         } catch {
