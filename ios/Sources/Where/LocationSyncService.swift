@@ -1,6 +1,7 @@
 import Foundation
 import Shared
 import os
+import UIKit
 
 private let logger = Logger(subsystem: "net.af0.where", category: "LocationSync")
 
@@ -122,6 +123,9 @@ final class LocationSyncService: ObservableObject {
     private var lastRapidPollTrigger: Date = Date(timeIntervalSince1970: 0)
     private var autoClearedInvite: Bool = false
 
+    private var lastSentLocation: (lat: Double, lng: Double)? = nil
+    private var lastSentTime: Date = Date(timeIntervalSince1970: 0)
+
     let e2eeStore: Shared.E2eeStore
     let locationClient: Shared.LocationClient
     private var pollTask: Task<Void, Never>?
@@ -194,16 +198,42 @@ final class LocationSyncService: ObservableObject {
 
     func sendLocation(lat: Double, lng: Double) {
         guard isSharingLocation else { return }
+
+        let now = Date()
+        let distance: Double = {
+            guard let last = lastSentLocation else { return .greatestFiniteMagnitude }
+            let loc1 = CLLocation(latitude: last.lat, longitude: last.lng)
+            let loc2 = CLLocation(latitude: lat, longitude: lng)
+            return loc1.distance(from: loc2)
+        }()
+
+        // Send if:
+        // 1. Never sent before
+        // 2. Moved > 10 meters AND > 2 minutes since last send
+        // 3. > 10 minutes since last send (stationary ping)
+        let shouldSend = lastSentLocation == nil ||
+                        (distance > 10 && now.timeIntervalSince(lastSentTime) > 2 * 60) ||
+                        (now.timeIntervalSince(lastSentTime) > 10 * 60)
+
+        guard shouldSend else { return }
+
         logger.debug("Sending location: \(lat), \(lng)")
+        let backgroundTask = UIApplication.shared.beginBackgroundTask(withName: "SendLocation") {
+            // End task if it takes too long
+        }
+
         Task {
             do {
                 try await locationClient.sendLocation(lat: lat, lng: lng, pausedFriendIds: pausedFriendIds)
                 logger.debug("Location sent successfully")
+                lastSentLocation = (lat: lat, lng: lng)
+                lastSentTime = now
                 updateStatus(nil)
             } catch {
                 logger.error("Failed to send location: \(error.localizedDescription)")
                 updateStatus(error)
             }
+            UIApplication.shared.endBackgroundTask(backgroundTask)
         }
     }
 
@@ -344,6 +374,9 @@ final class LocationSyncService: ObservableObject {
 
     private func pollAll() async {
         logger.debug("Polling for location updates")
+        let backgroundTask = UIApplication.shared.beginBackgroundTask(withName: "PollAll") {
+            // End task if it takes too long
+        }
         do {
             let updates = try await locationClient.poll()
             logger.debug("Got \(updates.count) location updates")
@@ -359,6 +392,7 @@ final class LocationSyncService: ObservableObject {
             updateStatus(error)
         }
         await pollPendingInvite()
+        UIApplication.shared.endBackgroundTask(backgroundTask)
     }
 
     private func pollPendingInvite() async {
