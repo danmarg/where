@@ -153,7 +153,7 @@ final class LocationSyncService: ObservableObject {
             var initialLocations: [String: (lat: Double, lng: Double, ts: Int64)] = [:]
             var initialLastPing: [String: Date] = [:]
             for friend in friends {
-                if let lat = friend.lastLat?.doubleValue, let lng = friend.lastLng?.doubleValue, let ts = friend.lastTs?.longLongValue {
+                if let lat = friend.lastLat?.doubleValue, let lng = friend.lastLng?.doubleValue, let ts = friend.lastTs?.int64Value {
                     initialLocations[friend.id] = (lat: lat, lng: lng, ts: ts)
                     initialLastPing[friend.id] = Date(timeIntervalSince1970: TimeInterval(ts))
                 }
