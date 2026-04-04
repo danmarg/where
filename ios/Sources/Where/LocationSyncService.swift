@@ -3,10 +3,8 @@ import Shared
 import os
 import UIKit
 import CoreLocation
-import BackgroundTasks
 
 private let logger = Logger(subsystem: "net.af0.where", category: "LocationSync")
-private let BACKGROUND_TASK_ID = "net.af0.where.poll"
 
 @inline(__always)
 private func debugLog(_ msg: () -> String) {
@@ -107,7 +105,7 @@ final class LocationSyncService: ObservableObject {
     static let shared = LocationSyncService()
 
     @Published var friendLocations: [String: (lat: Double, lng: Double, ts: Int64)] = [:]
-    @Published var friendLastPing: [String: Date] = [:]  // Track last location update time
+    @Published var friendLastPing: [String: Date] = [:]
     @Published var connectionStatus: ConnectionStatus = .ok
     @Published var friends: [Shared.FriendEntry] = []
     @Published var pendingInviteQr: Shared.QrPayload? = nil
@@ -132,9 +130,7 @@ final class LocationSyncService: ObservableObject {
     private var lastSentLocation: (lat: Double, lng: Double)? = nil
     private var lastSentTime: Date = Date(timeIntervalSince1970: 0)
     private var isSending: Bool = false
-    private var pendingForcedSendAfterPairing: Bool = false
-
-    private var pendingLocationSend: (lat: Double, lng: Double, force: Bool)? = nil
+    var pendingForcedSendAfterPairing: Bool = false
 
     let e2eeStore: Shared.E2eeStore
     let locationClient: Shared.LocationClient
@@ -175,7 +171,6 @@ final class LocationSyncService: ObservableObject {
             self.friendLocations = initialLocations
             self.friendLastPing = initialLastPing
         }
-        registerBackgroundTask()
         startPolling()
     }
 
@@ -190,31 +185,18 @@ final class LocationSyncService: ObservableObject {
         return isPairing || recentlyTriggered
     }
 
+    // Poll loop: handles only inbound friend-location polling.
+    // Outbound location is sent by LocationManager's CoreLocation delegate whenever the
+    // device position changes, so we don't need to send it here. Since UIBackgroundModes
+    // contains "location", CoreLocation wakes the app in the background and delivers
+    // didUpdateLocations callbacks — no BGAppRefreshTask required.
     func startPolling() {
         pollTask?.cancel()
         pollTask = Task { [weak self] in
             while !Task.isCancelled {
-                let isForeground = await MainActor.run { UIApplication.shared.applicationState == .active }
                 let rapid = await self?.isRapidPolling() == true
-
-                await self?.pollAll(updateUi: isForeground || rapid)
-
-                if let last = LocationManager.shared.lastLocation {
-                    self?.sendLocation(lat: last.coordinate.latitude, lng: last.coordinate.longitude, isHeartbeat: true)
-                }
-
-                let interval: UInt64
-                if rapid {
-                    interval = 2_000_000_000      // 2s while pairing
-                } else if isForeground {
-                    interval = 60_000_000_000     // 60s while in foreground
-                } else {
-                    interval = 300_000_000_000    // 300s (5m) while in background
-                    // Schedule background task to continue polling if app gets suspended
-                    if isSharingLocation {
-                        scheduleBackgroundPoll()
-                    }
-                }
+                await self?.pollAll(updateUi: true)
+                let interval: UInt64 = rapid ? 2_000_000_000 : 60_000_000_000
                 try? await Task.sleep(nanoseconds: interval)
             }
         }
@@ -226,16 +208,14 @@ final class LocationSyncService: ObservableObject {
     }
 
     func sendLocation(lat: Double, lng: Double, isHeartbeat: Bool = false, force: Bool = false) {
+        // pendingForcedSendAfterPairing is read here so the CoreLocation delegate path
+        // (which calls sendLocation without force) still picks up post-pairing forced sends.
         let effectiveForce = force || pendingForcedSendAfterPairing
         guard isSharingLocation else { return }
 
-        // If already sending, queue this request (forced sends take priority)
-        if isSending {
-            if effectiveForce || pendingLocationSend == nil {
-                pendingLocationSend = (lat: lat, lng: lng, force: effectiveForce)
-            }
-            return
-        }
+        // If already sending, drop the request. CoreLocation will deliver another update
+        // shortly, at which point this send will be retried.
+        if isSending { return }
 
         let now = Date()
         let shouldSend = effectiveForce || lastSentLocation == nil ||
@@ -275,12 +255,6 @@ final class LocationSyncService: ObservableObject {
             }
             isSending = false
 
-            // Process any pending send that arrived while we were sending
-            if let pending = pendingLocationSend {
-                pendingLocationSend = nil
-                self.sendLocation(lat: pending.lat, lng: pending.lng, force: pending.force)
-            }
-
             if backgroundTask != .invalid {
                 UIApplication.shared.endBackgroundTask(backgroundTask)
                 backgroundTask = .invalid
@@ -294,7 +268,6 @@ final class LocationSyncService: ObservableObject {
         debugLog { "Created invite: discovery=\(toHex(qr.discoveryToken()))" }
         pendingInviteQr = qr
         triggerRapidPoll()
-        // Restart the poll loop so it wakes immediately rather than waiting out any 60s sleep.
         startPolling()
     }
 
@@ -353,23 +326,19 @@ final class LocationSyncService: ObservableObject {
                     debugLog { "Posting KeyExchangeInit to mailbox with token: \(discoveryHex)" }
                     try await postToMailbox(token: discoveryHex, bodyData: bodyData)
                     debugLog { "KeyExchangeInit posted successfully" }
-                    
-                    // Small delay to ensure Alice's poll sees it
+
                     try? await Task.sleep(nanoseconds: 500_000_000)
-                    
+
                     try await locationClient.postOpkBundle(friendId: bobEntry.id)
 
-                    // Trigger immediate location sync
                     if let last = LocationManager.shared.lastLocation {
                         self.sendLocation(lat: last.coordinate.latitude, lng: last.coordinate.longitude, force: true)
                     } else {
-                        // No location yet: queue it so next location update (from CoreLocation or heartbeat) sends immediately
                         self.pendingForcedSendAfterPairing = true
-                        // Request immediate location from CoreLocation if possible
                         LocationManager.shared.requestPermissionAndStart()
                     }
                     await pollAll(updateUi: true)
-                    
+
                     updateStatus(nil)
                 } catch {
                     logger.error("Failed to post init: \(error.localizedDescription)")
@@ -387,8 +356,6 @@ final class LocationSyncService: ObservableObject {
         lastRapidPollTrigger = Date(timeIntervalSince1970: 0)
         startPolling()
         isExchanging = true
-        // processKeyExchangeInit sets pendingInvite=null internally; call it immediately
-        // so nothing can clear pendingInvite before it runs.
         let entry = try? e2eeStore.processKeyExchangeInit(payload: payload, bobName: name)
         if entry != nil {
             friends = e2eeStore.listFriends()
@@ -396,15 +363,12 @@ final class LocationSyncService: ObservableObject {
         Task {
             defer { isExchanging = false }
             if let aliceEntry = entry {
-                // Upload OPK bundle to mirror Bob's side (confirmQrScan)
                 try? await locationClient.postOpkBundle(friendId: aliceEntry.id)
 
                 if let last = LocationManager.shared.lastLocation {
                     self.sendLocation(lat: last.coordinate.latitude, lng: last.coordinate.longitude, force: true)
                 } else {
-                    // No location yet: queue it so next location update (from CoreLocation or heartbeat) sends immediately
                     self.pendingForcedSendAfterPairing = true
-                    // Request immediate location from CoreLocation if possible
                     LocationManager.shared.requestPermissionAndStart()
                 }
             }
@@ -413,9 +377,6 @@ final class LocationSyncService: ObservableObject {
     }
 
     func cancelPendingInit() {
-        // Guard: only act if Alice's invite flow is actually active.
-        // Prevents double-calls (binding set: fires after explicit Save/Cancel button)
-        // and prevents Bob's QR-scan cancel path from spuriously clearing Alice's invite store.
         guard pendingInitPayload != nil || pendingInviteQr != nil else { return }
         if !autoClearedInvite { e2eeStore.clearInvite() }
         autoClearedInvite = false
@@ -461,7 +422,6 @@ final class LocationSyncService: ObservableObject {
             logger.debug("Got \(updates.count) location updates")
             for update in updates {
                 e2eeStore.updateLastLocation(id: update.userId, lat: update.lat, lng: update.lng, ts: Int64(Date().timeIntervalSince1970))
-                // Always update friendLocations (not just when updateUi=true) so UI is never stale
                 friendLocations[update.userId] = (lat: update.lat, lng: update.lng, ts: update.timestamp)
                 friendLastPing[update.userId] = Date()
             }
@@ -513,12 +473,9 @@ final class LocationSyncService: ObservableObject {
                 suggestedName: suggestedName
             )
 
-            // Found init payload! Show naming dialog instead of processing immediately.
-            // Set pendingInitPayload before clearing pendingInviteQr so the UI never
-            // sees a frame where both are nil and collapses the naming alert.
             autoClearedInvite = true
             pendingInitPayload = initPayload
-            pendingInviteQr = nil // Clear invite QR so the sheet dismisses
+            pendingInviteQr = nil
             triggerRapidPoll()
             break
         }
@@ -540,45 +497,6 @@ final class LocationSyncService: ObservableObject {
             connectionStatus = .error(message: msg)
         } else {
             connectionStatus = .ok
-        }
-    }
-
-    // MARK: - Background task handling
-
-    private func registerBackgroundTask() {
-        BGTaskScheduler.shared.register(
-            forTaskWithIdentifier: BACKGROUND_TASK_ID,
-            using: nil
-        ) { task in
-            guard let task = task as? BGAppRefreshTask else { return }
-            self.handleBackgroundPoll(task)
-        }
-    }
-
-    private func scheduleBackgroundPoll() {
-        let request = BGAppRefreshTaskRequest(identifier: BACKGROUND_TASK_ID)
-        request.earliestBeginDate = Date(timeIntervalSinceNow: 5 * 60) // Suggest 5m interval for polling
-        do {
-            try BGTaskScheduler.shared.submit(request)
-            debugLog { "Scheduled background poll task" }
-        } catch {
-            logger.error("Failed to schedule background poll: \(error)")
-        }
-    }
-
-    private func handleBackgroundPoll(_ task: BGAppRefreshTask) {
-        debugLog { "Background poll task executed" }
-        // Schedule next background task before this one finishes
-        scheduleBackgroundPoll()
-
-        Task {
-            do {
-                await pollAll(updateUi: true)
-                task.setTaskCompleted(success: true)
-            } catch {
-                logger.error("Background poll failed: \(error)")
-                task.setTaskCompleted(success: false)
-            }
         }
     }
 }
