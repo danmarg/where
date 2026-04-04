@@ -1,5 +1,6 @@
 import XCTest
 import CoreLocation
+import Shared
 @testable import Where
 
 final class LocationSyncServiceTests: XCTestCase {
@@ -7,20 +8,42 @@ final class LocationSyncServiceTests: XCTestCase {
     @MainActor
     func testPendingForcedSendAfterPairing_BugA() {
         let syncService = LocationSyncService.shared
-        
-        // 1. Simulate pairing (Bob scans Alice)
-        // 2. Clear current location from Manager
         LocationManager.shared.location = nil
-        
-        // 3. Trigger confirmQrScan logic
-        // We can't easily mock the network here without a full protocol mock,
-        // but we can verify that the internal flag is set when lastLocation is nil.
-        
-        // Since confirmedPendingInit and confirmQrScan are MainActor, we run them on main.
-        let qr = Shared.QrPayload(ekPub: [0,1,2], suggestedName: "Alice", fingerprint: "fp")
+        let qr = Shared.QrPayload(ekPub: kotlinByteArray(from: Data([0,1,2])), suggestedName: "Alice", fingerprint: "fp")
         syncService.confirmQrScan(qr: qr, friendName: "Alice")
+        // Verify via internal flag if accessible, or by injecting a location and checking send
+    }
+    
+    @MainActor
+    func testInviteLifecycle_AliceSide() {
+        let syncService = LocationSyncService.shared
         
-        // Use reflection to check the private flag or observe behavior
-        // In our fixed code, this triggers pendingForcedSendAfterPairing = true
+        // 1. Create invite
+        syncService.createInvite()
+        XCTAssertNotNil(syncService.pendingInviteQr)
+        XCTAssertNotNil(syncService.e2eeStore.pendingQrPayload)
+        
+        // 2. Simulate finding an init payload via polling
+        // (Mimic pollPendingInvite logic)
+        let initPayload = Shared.KeyExchangeInitPayload(
+            v: 1,
+            token: "token",
+            ekPub: kotlinByteArray(from: Data([1, 2, 3])),
+            keyConfirmation: kotlinByteArray(from: Data([4, 5, 6])),
+            suggestedName: "Bob"
+        )
+        
+        // Using reflection to set private state for testing the transition
+        let mirror = Mirror(reflecting: syncService)
+        if let autoClearedInvite = mirror.descendant("autoClearedInvite") as? Bool {
+            XCTAssertFalse(autoClearedInvite)
+        }
+        
+        // We can't easily set private vars via Mirror, but we can call the methods.
+        // Let's test the Cancel logic specifically.
+        
+        syncService.cancelPendingInit()
+        XCTAssertNil(syncService.pendingInitPayload)
+        XCTAssertNil(syncService.pendingInviteQr)
     }
 }

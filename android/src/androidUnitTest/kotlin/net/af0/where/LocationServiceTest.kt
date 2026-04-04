@@ -55,7 +55,7 @@ class LocationServiceTest {
             action = LocationService.ACTION_FORCE_PUBLISH
             putExtra(LocationService.EXTRA_FRIEND_ID, friendId)
         }
-        controller.startCommand(intent, 0, 1)
+        controller.withIntent(intent).startCommand(0, 1)
 
         // 2. Verify it is queued in pendingFriendId
         assertEquals(friendId, getServicePendingFriendId(service), "Friend ID should be queued when location is null")
@@ -69,13 +69,10 @@ class LocationServiceTest {
 
         assertTrue(getServiceIsRegistered(service))
 
-        // Trigger startCommand multiple times (mimicking multiple publishes)
-        val intent = Intent(context, LocationService::class.java)
-        controller.startCommand(intent, 0, 1)
-        controller.startCommand(intent, 0, 2)
+        // Trigger startCommand multiple times
+        controller.startCommand(0, 1)
+        controller.startCommand(0, 2)
 
-        // This test mainly verifies that our isRegistered flag prevents re-entry logic
-        // that would have caused duplicate listeners in the FusedLocationProvider.
         assertTrue(getServiceIsRegistered(service))
     }
 }
