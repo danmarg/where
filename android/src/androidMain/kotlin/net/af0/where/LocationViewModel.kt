@@ -99,6 +99,21 @@ class LocationViewModel(app: Application) : AndroidViewModel(app) {
 
     init {
         Log.d(TAG, "LocationViewModel init: server=${BuildConfig.SERVER_HTTP_URL}, userId=$userId")
+        val savedFriends = e2eeStore.listFriends()
+        val initialLocations = mutableMapOf<String, UserLocation>()
+        val initialLastPing = mutableMapOf<String, Long>()
+        for (friend in savedFriends) {
+            val lat = friend.lastLat
+            val lng = friend.lastLng
+            val ts = friend.lastTs
+            if (lat != null && lng != null && ts != null) {
+                initialLocations[friend.id] = UserLocation(friend.id, lat, lng, ts)
+                initialLastPing[friend.id] = ts * 1000L
+            }
+        }
+        friendLocations.value = initialLocations
+        _friendLastPing.value = initialLastPing
+
         viewModelScope.launch { pollLoop() }
         viewModelScope.launch {
             var prevSharing = _isSharingLocation.value
@@ -295,7 +310,9 @@ class LocationViewModel(app: Application) : AndroidViewModel(app) {
             Log.d(TAG, "Got ${updates.size} location updates")
             for (update in updates) {
                 friendLocations.value += (update.userId to update)
-                _friendLastPing.value += (update.userId to System.currentTimeMillis())
+                val now = System.currentTimeMillis()
+                _friendLastPing.value += (update.userId to now)
+                e2eeStore.updateLastLocation(update.userId, update.lat, update.lng, now / 1000L)
             }
             pollPendingInvite()
             // Ensure friends list is up to date in case it changed elsewhere
