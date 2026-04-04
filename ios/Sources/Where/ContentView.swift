@@ -3,7 +3,7 @@ import Shared
 import SwiftUI
 
 struct ContentView: View {
-    @StateObject private var locationManager = LocationManager()
+    @ObservedObject private var locationManager = LocationManager.shared
     @StateObject private var syncService = LocationSyncService()
     @State private var showFriends = false
     @State private var showScanner = false
