@@ -1,21 +1,45 @@
 package net.af0.where
 
+import android.Manifest
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.Service
+import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.os.IBinder
+import android.util.Log
+import androidx.core.content.ContextCompat
 import com.google.android.gms.location.*
+import kotlinx.coroutines.*
+import kotlinx.coroutines.flow.collectLatest
+import net.af0.where.e2ee.E2eeStore
+import net.af0.where.e2ee.LocationClient
+import net.af0.where.e2ee.toHex
+
+private const val TAG = "LocationService"
 
 class LocationService : Service() {
     private lateinit var fusedClient: FusedLocationProviderClient
     private lateinit var locationCallback: LocationCallback
+    private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
+    private lateinit var e2eeStore: E2eeStore
+    private lateinit var locationClient: LocationClient
+
+    private var lastSentLocation: Pair<Double, Double>? = null
+    private var lastSentTime: Long = 0
+    private var isRapidPolling = false
 
     override fun onCreate() {
         super.onCreate()
+        Log.d(TAG, "LocationService onCreate")
         createNotificationChannel()
         startForeground(NOTIFICATION_ID, buildNotification())
+
+        e2eeStore = E2eeStore(SharedPrefsE2eeStorage(this))
+        locationClient = LocationClient(BuildConfig.SERVER_HTTP_URL, e2eeStore)
 
         fusedClient = LocationServices.getFusedLocationProviderClient(this)
         locationCallback =
@@ -34,6 +58,89 @@ class LocationService : Service() {
             }
         } catch (_: SecurityException) {
         }
+
+        serviceScope.launch {
+            pollLoop()
+        }
+
+        serviceScope.launch {
+            LocationRepository.lastLocation.collectLatest { loc ->
+                if (loc != null) {
+                    maybeSendLocation(loc.first, loc.second)
+                }
+            }
+        }
+    }
+
+    private fun maybeSendLocation(lat: Double, lng: Double) {
+        val sharingPrefs = getSharedPreferences("where_prefs", Context.MODE_PRIVATE)
+        val isSharing = sharingPrefs.getBoolean("is_sharing", true)
+        if (!isSharing) return
+
+        val now = System.currentTimeMillis()
+        val pausedFriendIds = sharingPrefs.getString("paused_friends", "")
+            ?.split(",")?.filter { it.isNotEmpty() }?.toSet() ?: emptySet()
+
+        val lastLoc = lastSentLocation
+        val distance = if (lastLoc != null) {
+            val results = FloatArray(1)
+            android.location.Location.distanceBetween(lastLoc.first, lastLoc.second, lat, lng, results)
+            results[0]
+        } else {
+            Float.MAX_VALUE
+        }
+
+        // Send if:
+        // 1. Never sent before
+        // 2. Moved > 10 meters AND > 2 minutes since last send
+        // 3. > 10 minutes since last send (stationary ping)
+        val shouldSend = lastLoc == null ||
+                        (distance > 10 && now - lastSentTime > 2 * 60_000L) ||
+                        (now - lastSentTime > 10 * 60_000L)
+
+        if (shouldSend) {
+            serviceScope.launch {
+                try {
+                    Log.d(TAG, "Sending location: $lat, $lng")
+                    locationClient.sendLocation(lat, lng, pausedFriendIds)
+                    lastSentLocation = Pair(lat, lng)
+                    lastSentTime = now
+                    LocationRepository.onConnectionStatus(ConnectionStatus.Ok)
+                } catch (e: Exception) {
+                    Log.e(TAG, "Failed to send location", e)
+                    LocationRepository.onConnectionStatus(ConnectionStatus.Error(e.message ?: "unknown error"))
+                }
+            }
+        }
+    }
+
+    private suspend fun pollLoop() {
+        while (true) {
+            val rapid = isRapidPolling()
+            doPoll()
+            val interval = if (rapid) 2_000L else 60_000L
+            delay(interval)
+        }
+    }
+
+    private suspend fun doPoll() {
+        try {
+            val updates = locationClient.poll()
+            for (update in updates) {
+                LocationRepository.onFriendUpdate(update)
+                e2eeStore.updateLastLocation(update.userId, update.lat, update.lng, System.currentTimeMillis() / 1000L)
+            }
+            LocationRepository.onConnectionStatus(ConnectionStatus.Ok)
+        } catch (e: Exception) {
+            Log.e(TAG, "Poll failed", e)
+            LocationRepository.onConnectionStatus(ConnectionStatus.Error(e.message ?: "unknown error"))
+        }
+    }
+
+    private fun isRapidPolling(): Boolean {
+        // For simplicity in this PR, we can check if there are any active invites or pending pairs.
+        // In a real app, we might want a more sophisticated way to signal this from the UI to the service.
+        return e2eeStore.pendingQrPayload != null
     }
 
     override fun onStartCommand(
@@ -44,7 +151,6 @@ class LocationService : Service() {
         val request =
             LocationRequest.Builder(
                 Priority.PRIORITY_BALANCED_POWER_ACCURACY,
-                // 30 seconds
                 30_000L,
             ).setMinUpdateIntervalMillis(15_000L).build()
 
@@ -58,6 +164,7 @@ class LocationService : Service() {
 
     override fun onDestroy() {
         fusedClient.removeLocationUpdates(locationCallback)
+        serviceScope.cancel()
         super.onDestroy()
     }
 

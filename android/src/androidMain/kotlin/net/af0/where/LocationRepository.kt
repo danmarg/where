@@ -5,17 +5,25 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import net.af0.where.model.UserLocation
 
+sealed class ConnectionStatus {
+    object Ok : ConnectionStatus()
+    data class Error(val message: String) : ConnectionStatus()
+}
+
 /** Minimal interface over the shared location state, making it injectable for tests. */
 interface LocationSource {
     val lastLocation: StateFlow<Pair<Double, Double>?>
-    val users: StateFlow<List<UserLocation>>
+    val friendLocations: StateFlow<Map<String, UserLocation>>
+    val friendLastPing: StateFlow<Map<String, Long>>
+    val connectionStatus: StateFlow<ConnectionStatus>
 
     fun onLocation(
         lat: Double,
         lng: Double,
     )
 
-    fun onUsersUpdate(users: List<UserLocation>)
+    fun onFriendUpdate(update: UserLocation)
+    fun onConnectionStatus(status: ConnectionStatus)
 }
 
 /**
@@ -26,8 +34,14 @@ object LocationRepository : LocationSource {
     private val _lastLocation = MutableStateFlow<Pair<Double, Double>?>(null)
     override val lastLocation: StateFlow<Pair<Double, Double>?> = _lastLocation.asStateFlow()
 
-    private val _users = MutableStateFlow<List<UserLocation>>(emptyList())
-    override val users: StateFlow<List<UserLocation>> = _users.asStateFlow()
+    private val _friendLocations = MutableStateFlow<Map<String, UserLocation>>(emptyMap())
+    override val friendLocations: StateFlow<Map<String, UserLocation>> = _friendLocations.asStateFlow()
+
+    private val _friendLastPing = MutableStateFlow<Map<String, Long>>(emptyMap())
+    override val friendLastPing: StateFlow<Map<String, Long>> = _friendLastPing.asStateFlow()
+
+    private val _connectionStatus = MutableStateFlow<ConnectionStatus>(ConnectionStatus.Ok)
+    override val connectionStatus: StateFlow<ConnectionStatus> = _connectionStatus
 
     override fun onLocation(
         lat: Double,
@@ -36,7 +50,17 @@ object LocationRepository : LocationSource {
         _lastLocation.value = Pair(lat, lng)
     }
 
-    override fun onUsersUpdate(users: List<UserLocation>) {
-        _users.value = users
+    override fun onFriendUpdate(update: UserLocation) {
+        _friendLocations.value += (update.userId to update)
+        _friendLastPing.value += (update.userId to System.currentTimeMillis())
+    }
+
+    override fun onConnectionStatus(status: ConnectionStatus) {
+        _connectionStatus.value = status
+    }
+
+    fun setInitialFriendLocations(locations: Map<String, UserLocation>, pings: Map<String, Long>) {
+        _friendLocations.value = locations
+        _friendLastPing.value = pings
     }
 }

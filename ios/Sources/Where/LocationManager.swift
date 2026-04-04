@@ -16,6 +16,8 @@ final class LocationManager: NSObject, ObservableObject, @preconcurrency CLLocat
         manager.delegate = self
         manager.desiredAccuracy = kCLLocationAccuracyHundredMeters
         manager.distanceFilter = 50 // meters
+        manager.allowsBackgroundLocationUpdates = true
+        manager.pausesLocationUpdatesAutomatically = false
     }
 
     func requestPermissionAndStart() {
