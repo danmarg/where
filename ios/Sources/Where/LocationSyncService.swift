@@ -1,6 +1,8 @@
 import Foundation
 import Shared
 import os
+import UIKit
+import CoreLocation
 
 private let logger = Logger(subsystem: "net.af0.where", category: "LocationSync")
 
@@ -123,6 +125,10 @@ final class LocationSyncService: ObservableObject {
     private var lastRapidPollTrigger: Date = Date(timeIntervalSince1970: 0)
     private var autoClearedInvite: Bool = false
 
+    private var lastSentLocation: (lat: Double, lng: Double)? = nil
+    private var lastSentTime: Date = Date(timeIntervalSince1970: 0)
+    private var isSending: Bool = false
+
     let e2eeStore: Shared.E2eeStore
     let locationClient: Shared.LocationClient
     private var pollTask: Task<Void, Never>?
@@ -180,8 +186,15 @@ final class LocationSyncService: ObservableObject {
         pollTask?.cancel()
         pollTask = Task { [weak self] in
             while !Task.isCancelled {
-                await self?.pollAll()
+                let isForeground = UIApplication.shared.applicationState == .active
                 let rapid = await self?.isRapidPolling() == true
+
+                await self?.pollAll(updateUi: isForeground || rapid)
+
+                if let last = LocationManager.shared.lastLocation {
+                    self?.sendLocation(lat: last.coordinate.latitude, lng: last.coordinate.longitude, isHeartbeat: true)
+                }
+
                 let interval: UInt64 = rapid ? 2_000_000_000 : 60_000_000_000  // 2s while pairing, 60s otherwise
                 try? await Task.sleep(nanoseconds: interval)
             }
@@ -193,17 +206,41 @@ final class LocationSyncService: ObservableObject {
         pollTask = nil
     }
 
-    func sendLocation(lat: Double, lng: Double) {
-        guard isSharingLocation else { return }
-        logger.debug("Sending location: \(lat), \(lng)")
+    func sendLocation(lat: Double, lng: Double, isHeartbeat: Bool = false) {
+        guard isSharingLocation, !isSending else { return }
+
+        let now = Date()
+        let shouldSend = lastSentLocation == nil ||
+                        (!isHeartbeat && now.timeIntervalSince(lastSentTime) > 1 * 60) ||
+                        (isHeartbeat && now.timeIntervalSince(lastSentTime) > 5 * 60)
+
+        guard shouldSend else { return }
+
+        isSending = true
+        logger.debug("Sending location: \(lat), \(lng) (heartbeat=\(isHeartbeat))")
+        var backgroundTask = UIBackgroundTaskIdentifier.invalid
+        backgroundTask = UIApplication.shared.beginBackgroundTask(withName: "SendLocation") {
+            if backgroundTask != .invalid {
+                UIApplication.shared.endBackgroundTask(backgroundTask)
+                backgroundTask = .invalid
+            }
+        }
+
         Task {
             do {
                 try await locationClient.sendLocation(lat: lat, lng: lng, pausedFriendIds: pausedFriendIds)
                 logger.debug("Location sent successfully")
+                lastSentLocation = (lat: lat, lng: lng)
+                lastSentTime = Date()
                 updateStatus(nil)
             } catch {
                 logger.error("Failed to send location: \(error.localizedDescription)")
                 updateStatus(error)
+            }
+            isSending = false
+            if backgroundTask != .invalid {
+                UIApplication.shared.endBackgroundTask(backgroundTask)
+                backgroundTask = .invalid
             }
         }
     }
@@ -283,7 +320,7 @@ final class LocationSyncService: ObservableObject {
                     if let last = LocationManager.shared.lastLocation {
                         try? await locationClient.sendLocationToFriend(friendId: bobEntry.id, lat: last.coordinate.latitude, lng: last.coordinate.longitude)
                     }
-                    await pollAll()
+                    await pollAll(updateUi: true)
                     
                     updateStatus(nil)
                 } catch {
@@ -313,7 +350,7 @@ final class LocationSyncService: ObservableObject {
             if let entry, let last = LocationManager.shared.lastLocation {
                 try? await locationClient.sendLocationToFriend(friendId: entry.id, lat: last.coordinate.latitude, lng: last.coordinate.longitude)
             }
-            await pollAll()
+            await pollAll(updateUi: true)
         }
     }
 
@@ -352,23 +389,37 @@ final class LocationSyncService: ObservableObject {
 
     // MARK: - Private polling
 
-    private func pollAll() async {
+    private func pollAll(updateUi: Bool = true) async {
         logger.debug("Polling for location updates")
+        var backgroundTask = UIBackgroundTaskIdentifier.invalid
+        backgroundTask = UIApplication.shared.beginBackgroundTask(withName: "PollAll") {
+            if backgroundTask != .invalid {
+                UIApplication.shared.endBackgroundTask(backgroundTask)
+                backgroundTask = .invalid
+            }
+        }
         do {
             let updates = try await locationClient.poll()
             logger.debug("Got \(updates.count) location updates")
             for update in updates {
-                friendLocations[update.userId] = (lat: update.lat, lng: update.lng, ts: update.timestamp)
-                let now = Date()
-                friendLastPing[update.userId] = now
-                e2eeStore.updateLastLocation(id: update.userId, lat: update.lat, lng: update.lng, ts: Int64(now.timeIntervalSince1970))
+                e2eeStore.updateLastLocation(id: update.userId, lat: update.lat, lng: update.lng, ts: Int64(Date().timeIntervalSince1970))
+                if updateUi {
+                    friendLocations[update.userId] = (lat: update.lat, lng: update.lng, ts: update.timestamp)
+                    friendLastPing[update.userId] = Date()
+                }
+            }
+            if updateUi {
+                await pollPendingInvite()
             }
             updateStatus(nil)
         } catch {
             logger.error("Poll failed: \(error.localizedDescription)")
             updateStatus(error)
         }
-        await pollPendingInvite()
+        if backgroundTask != .invalid {
+            UIApplication.shared.endBackgroundTask(backgroundTask)
+            backgroundTask = .invalid
+        }
     }
 
     private func pollPendingInvite() async {

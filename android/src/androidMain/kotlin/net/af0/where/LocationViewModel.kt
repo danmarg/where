@@ -119,17 +119,8 @@ class LocationViewModel(app: Application) : AndroidViewModel(app) {
 
         viewModelScope.launch { pollLoop() }
         viewModelScope.launch {
-            var prevSharing = _isSharingLocation.value
-            combine(locationSource.lastLocation, _isSharingLocation) { loc, sharing ->
-                loc to sharing
-            }.collect { (loc, sharing) ->
-                if (loc != null && sharing) {
-                    sendEncryptedLocation(loc.first, loc.second)
-                }
-                if (prevSharing != sharing) {
-                    manageForegroundService(sharing)
-                }
-                prevSharing = sharing
+            _isSharingLocation.collect { sharing ->
+                manageForegroundService(sharing)
             }
         }
     }
@@ -364,21 +355,6 @@ class LocationViewModel(app: Application) : AndroidViewModel(app) {
             _pendingInitPayload.value = initPayload
             _pendingInviteQr.value = null
         } catch (e: Exception) {
-            updateStatus(e)
-        }
-    }
-
-    private suspend fun sendEncryptedLocation(
-        lat: Double,
-        lng: Double,
-    ) {
-        try {
-            Log.d(TAG, "Sending location: $lat, $lng to server: ${BuildConfig.SERVER_HTTP_URL}")
-            locationClient.sendLocation(lat, lng, _pausedFriendIds.value)
-            Log.d(TAG, "Location sent successfully")
-            updateStatus(null)
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to send location: ${e.message}")
             updateStatus(e)
         }
     }
