@@ -51,3 +51,44 @@ jobs:
           path: |
             **/build/reports/tests/
           retention-days: 7
+
+  test-ios:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+          cache: gradle
+
+      - name: Install libsodium (macOS)
+        run: brew install libsodium
+
+      - name: Build shared framework
+        run: ./gradlew :shared:embedAndSignAppleFrameworkForXcode --quiet
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate Xcode Project
+        run: cd ios && xcodegen
+
+      - name: Run iOS Unit Tests
+        run: |
+          cd ios
+          xcodebuild test \
+            -scheme Where \
+            -destination 'platform=iOS Simulator,name=iPhone 15,OS=latest' \
+            -resultBundlePath TestResults.xcresult \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGNING_REQUIRED=NO
+
+      - name: Upload iOS Test Results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-test-results
+          path: ios/TestResults.xcresult
+          retention-days: 7

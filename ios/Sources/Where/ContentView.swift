@@ -4,7 +4,7 @@ import SwiftUI
 
 struct ContentView: View {
     @ObservedObject private var locationManager = LocationManager.shared
-    @StateObject private var syncService = LocationSyncService()
+    @StateObject private var syncService = LocationSyncService.shared
     @State private var showFriends = false
     @State private var showScanner = false
     @State private var showUserSettings = false
@@ -213,10 +213,6 @@ struct ContentView: View {
         }
         .onAppear {
             locationManager.requestPermissionAndStart()
-        }
-        .onReceive(locationManager.$location) { loc in
-            guard let loc else { return }
-            syncService.sendLocation(lat: loc.coordinate.latitude, lng: loc.coordinate.longitude)
         }
         .onReceive(syncService.$pendingQrForNaming) { qr in
             if let qr = qr { newFriendName = qr.suggestedName } else { newFriendName = "" }

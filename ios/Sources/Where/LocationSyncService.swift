@@ -102,6 +102,8 @@ enum ConnectionStatus {
 
 @MainActor
 final class LocationSyncService: ObservableObject {
+    static let shared = LocationSyncService()
+
     @Published var friendLocations: [String: (lat: Double, lng: Double, ts: Int64)] = [:]
     @Published var friendLastPing: [String: Date] = [:]  // Track last location update time
     @Published var connectionStatus: ConnectionStatus = .ok
@@ -128,6 +130,7 @@ final class LocationSyncService: ObservableObject {
     private var lastSentLocation: (lat: Double, lng: Double)? = nil
     private var lastSentTime: Date = Date(timeIntervalSince1970: 0)
     private var isSending: Bool = false
+    private var pendingForcedSendAfterPairing: Bool = false
 
     let e2eeStore: Shared.E2eeStore
     let locationClient: Shared.LocationClient
@@ -214,17 +217,24 @@ final class LocationSyncService: ObservableObject {
     }
 
     func sendLocation(lat: Double, lng: Double, isHeartbeat: Bool = false, force: Bool = false) {
-        guard isSharingLocation, !isSending else { return }
+        let effectiveForce = force || pendingForcedSendAfterPairing
+        guard isSharingLocation else { return }
+        
+        if !effectiveForce && isSending { return }
 
         let now = Date()
-        let shouldSend = force || lastSentLocation == nil ||
+        let shouldSend = effectiveForce || lastSentLocation == nil ||
                         (!isHeartbeat && now.timeIntervalSince(lastSentTime) > 1 * 60) ||
                         (isHeartbeat && now.timeIntervalSince(lastSentTime) > 5 * 60)
 
         guard shouldSend else { return }
 
         isSending = true
-        logger.debug("Sending location: \(lat), \(lng) (heartbeat=\(isHeartbeat), force=\(force))")
+        if effectiveForce {
+            pendingForcedSendAfterPairing = false
+        }
+        
+        logger.debug("Sending location: \(lat), \(lng) (heartbeat=\(isHeartbeat), force=\(force), effectiveForce=\(effectiveForce))")
         var backgroundTask = UIBackgroundTaskIdentifier.invalid
         backgroundTask = UIApplication.shared.beginBackgroundTask(withName: "SendLocation") {
             if backgroundTask != .invalid {
@@ -326,6 +336,8 @@ final class LocationSyncService: ObservableObject {
                     // Trigger immediate location sync
                     if let last = LocationManager.shared.lastLocation {
                         self.sendLocation(lat: last.coordinate.latitude, lng: last.coordinate.longitude, force: true)
+                    } else {
+                        self.pendingForcedSendAfterPairing = true
                     }
                     await pollAll(updateUi: true)
                     
@@ -354,8 +366,12 @@ final class LocationSyncService: ObservableObject {
         }
         Task {
             defer { isExchanging = false }
-            if let entry, let last = LocationManager.shared.lastLocation {
-                self.sendLocation(lat: last.coordinate.latitude, lng: last.coordinate.longitude, force: true)
+            if entry != nil {
+                if let last = LocationManager.shared.lastLocation {
+                    self.sendLocation(lat: last.coordinate.latitude, lng: last.coordinate.longitude, force: true)
+                } else {
+                    self.pendingForcedSendAfterPairing = true
+                }
             }
             await pollAll(updateUi: true)
         }

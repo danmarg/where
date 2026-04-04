@@ -63,16 +63,32 @@ echo "=== E2E Test: Alice polls to complete key exchange ==="
 ALICE_POLL_OUT=$(./cli/build/install/cli/bin/cli poll --state e2e_alice.json --once)
 echo "$ALICE_POLL_OUT"
 
-echo "=== E2E Test: Alice sends location ==="
+echo "=== E2E Test: Alice sends first location ==="
 ./cli/build/install/cli/bin/cli send 37.7749 -122.4194 --state e2e_alice.json
 
-echo "=== E2E Test: Bob polls for location ==="
+echo "=== E2E Test: Alice sends second location immediately (should be throttled) ==="
+ALICE_SEND2=$(./cli/build/install/cli/bin/cli send 37.7750 -122.4195 --state e2e_alice.json)
+echo "$ALICE_SEND2"
+if ! echo "$ALICE_SEND2" | grep -q "Throttled"; then
+  echo "Error: Second send was NOT throttled!"
+  exit 1
+fi
+
+echo "=== E2E Test: Alice sends third location with --force (Bug B/C fix) ==="
+ALICE_SEND3=$(./cli/build/install/cli/bin/cli send 37.7751 -122.4196 --state e2e_alice.json --force)
+echo "$ALICE_SEND3"
+if ! echo "$ALICE_SEND3" | grep -q "successfully"; then
+  echo "Error: Forced send failed!"
+  exit 1
+fi
+
+echo "=== E2E Test: Bob polls for latest location ==="
 BOB_OUT=$(./cli/build/install/cli/bin/cli poll --state e2e_bob.json --once)
 echo "$BOB_OUT"
 
-if echo "$BOB_OUT" | grep -q "Location from Alice: 37.7749, -122.4194"; then
+if echo "$BOB_OUT" | grep -q "Location from Alice: 37.7751, -122.4196"; then
   echo ""
-  echo "✅ E2E Test Passed!"
+  echo "✅ E2E Test Passed (including Throttle & Force verification)!"
   TEST_STATUS="passed"
   exit 0
 else

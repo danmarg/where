@@ -47,7 +47,11 @@ fun String.hexToByteArray(): ByteArray {
 }
 
 fun qrPayloadToUrl(qr: QrPayload): String {
-    val json = Json { ignoreUnknownKeys = true; encodeDefaults = true }
+    val json =
+        Json {
+            ignoreUnknownKeys = true
+            encodeDefaults = true
+        }
     // Mimic the iOS/Android URL format
     // {"ekPub": "...", "suggestedName": "...", "fingerprint": "..."}
     val ekPubB64 = Base64.getEncoder().encodeToString(qr.ekPub)
@@ -83,7 +87,11 @@ fun printQrCode(url: String) {
 
 fun urlToQrPayload(url: String): QrPayload? {
     val q = url.substringAfter("q=").substringBefore("&")
-    val json = Json { ignoreUnknownKeys = true; encodeDefaults = true }
+    val json =
+        Json {
+            ignoreUnknownKeys = true
+            encodeDefaults = true
+        }
     val decoded = String(Base64.getUrlDecoder().decode(q))
     val map: Map<String, String> = json.decodeFromString(decoded)
     val ekPub = Base64.getDecoder().decode(map["ekPub"] ?: return null)
@@ -224,8 +232,26 @@ fun main(args: Array<String>) {
                     println("Lng required")
                     return
                 }
+            val force = "--force" in args
+
+            val lastSentStr = storage.getString("last_sent_time")
+            val lastSent = lastSentStr?.toLongOrNull() ?: 0L
+            val now = System.currentTimeMillis()
+
+            // Mirror the Android fix: 15s throttle for non-heartbeat.
+            if (!force && now - lastSent < 15_000L) {
+                println("Throttled: Last update was only ${(now - lastSent) / 1000}s ago. Use --force to override.")
+                return
+            }
+
             runBlocking {
-                locationClient.sendLocation(lat, lng)
+                try {
+                    locationClient.sendLocation(lat, lng)
+                    storage.putString("last_sent_time", now.toString())
+                    println("Location sent successfully.")
+                } catch (e: Exception) {
+                    println("Failed to send location: ${e.message}")
+                }
             }
         }
         else -> {
