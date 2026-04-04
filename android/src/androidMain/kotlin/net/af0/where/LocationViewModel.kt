@@ -11,6 +11,8 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
@@ -275,16 +277,34 @@ class LocationViewModel(
                     if (_isSharingLocation.value) {
                         // Send our location directly to the new friend without going through the
                         // service. Using the same locationClient instance avoids ratchet divergence.
-                        locationSource.lastLocation.value?.let { (lat, lng) ->
+                        val loc = locationSource.lastLocation.value
+                        if (loc != null) {
                             try {
                                 Log.d(TAG, "confirmQrScan: force-sending location to ${bobEntry.id}")
-                                locationClient.sendLocationToFriend(bobEntry.id, lat, lng)
-                                lastSentLat = lat
-                                lastSentLng = lng
+                                locationClient.sendLocationToFriend(bobEntry.id, loc.first, loc.second)
+                                lastSentLat = loc.first
+                                lastSentLng = loc.second
                                 lastSentTime = System.currentTimeMillis()
                             } catch (e: Exception) {
                                 Log.e(TAG, "confirmQrScan: force send failed", e)
                                 updateStatus(e)
+                            }
+                        } else {
+                            // Location not available yet; defer until the first GPS fix.
+                            viewModelScope.launch {
+                                val (lat, lng) = withTimeoutOrNull(30_000L) {
+                                    locationSource.lastLocation.first { it != null }
+                                } ?: return@launch
+                                try {
+                                    Log.d(TAG, "confirmQrScan: deferred force-send to ${bobEntry.id}")
+                                    locationClient.sendLocationToFriend(bobEntry.id, lat, lng)
+                                    lastSentLat = lat
+                                    lastSentLng = lng
+                                    lastSentTime = System.currentTimeMillis()
+                                } catch (e: Exception) {
+                                    Log.e(TAG, "confirmQrScan: deferred force send failed", e)
+                                    updateStatus(e)
+                                }
                             }
                         }
                     }
@@ -325,16 +345,33 @@ class LocationViewModel(
                         // encrypted messages to be undecryptable until the next heartbeat.)
                         locationClient.postOpkBundle(entry.id)
                         if (_isSharingLocation.value) {
-                            locationSource.lastLocation.value?.let { (lat, lng) ->
+                            val loc = locationSource.lastLocation.value
+                            if (loc != null) {
                                 try {
                                     Log.d(TAG, "confirmPendingInit: force-sending location to ${entry.id}")
-                                    locationClient.sendLocationToFriend(entry.id, lat, lng)
-                                    lastSentLat = lat
-                                    lastSentLng = lng
+                                    locationClient.sendLocationToFriend(entry.id, loc.first, loc.second)
+                                    lastSentLat = loc.first
+                                    lastSentLng = loc.second
                                     lastSentTime = System.currentTimeMillis()
                                 } catch (e: Exception) {
                                     Log.e(TAG, "confirmPendingInit: force send failed", e)
                                     updateStatus(e)
+                                }
+                            } else {
+                                viewModelScope.launch {
+                                    val (lat, lng) = withTimeoutOrNull(30_000L) {
+                                        locationSource.lastLocation.first { it != null }
+                                    } ?: return@launch
+                                    try {
+                                        Log.d(TAG, "confirmPendingInit: deferred force-send to ${entry.id}")
+                                        locationClient.sendLocationToFriend(entry.id, lat, lng)
+                                        lastSentLat = lat
+                                        lastSentLng = lng
+                                        lastSentTime = System.currentTimeMillis()
+                                    } catch (e: Exception) {
+                                        Log.e(TAG, "confirmPendingInit: deferred force send failed", e)
+                                        updateStatus(e)
+                                    }
                                 }
                             }
                         }

@@ -185,17 +185,22 @@ final class LocationSyncService: ObservableObject {
         return isPairing || recentlyTriggered
     }
 
-    // Poll loop: handles only inbound friend-location polling.
-    // Outbound location is sent by LocationManager's CoreLocation delegate whenever the
-    // device position changes, so we don't need to send it here. Since UIBackgroundModes
-    // contains "location", CoreLocation wakes the app in the background and delivers
-    // didUpdateLocations callbacks — no BGAppRefreshTask required.
+    // Poll loop: handles inbound friend-location polling and the outbound heartbeat.
+    // Movement-driven sends are handled by LocationManager's CoreLocation delegate.
+    // Since UIBackgroundModes contains "location", CoreLocation wakes the app in the
+    // background and delivers didUpdateLocations callbacks — no BGAppRefreshTask required.
+    // However, when the device is stationary CoreLocation may not fire for extended periods,
+    // so the poll loop also triggers a heartbeat send (throttled to 5 minutes by sendLocation).
     func startPolling() {
         pollTask?.cancel()
         pollTask = Task { [weak self] in
             while !Task.isCancelled {
                 let rapid = await self?.isRapidPolling() == true
                 await self?.pollAll(updateUi: true)
+                // Heartbeat: ensure we send at least once every 5 minutes when stationary.
+                if let loc = LocationManager.shared.lastLocation {
+                    self?.sendLocation(lat: loc.coordinate.latitude, lng: loc.coordinate.longitude, isHeartbeat: true)
+                }
                 let interval: UInt64 = rapid ? 2_000_000_000 : 60_000_000_000
                 try? await Task.sleep(nanoseconds: interval)
             }
@@ -213,9 +218,9 @@ final class LocationSyncService: ObservableObject {
         let effectiveForce = force || pendingForcedSendAfterPairing
         guard isSharingLocation else { return }
 
-        // If already sending, drop the request. CoreLocation will deliver another update
-        // shortly, at which point this send will be retried.
-        if isSending { return }
+        // If already sending, drop the request — unless we're forcing (post-pairing send).
+        // CoreLocation will deliver another update shortly for non-forced calls.
+        if isSending && !effectiveForce { return }
 
         let now = Date()
         let shouldSend = effectiveForce || lastSentLocation == nil ||
