@@ -196,6 +196,16 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    override fun onResume() {
+        super.onResume()
+        LocationRepository.setAppForeground(true)
+    }
+
+    override fun onPause() {
+        super.onPause()
+        LocationRepository.setAppForeground(false)
+    }
+
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         intent.data?.toString()?.let { viewModel.processQrUrl(it) }
