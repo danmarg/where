@@ -1,7 +1,6 @@
 package net.af0.where
 
 import android.app.Application
-import android.content.Intent
 import androidx.test.core.app.ApplicationProvider
 import org.junit.Before
 import org.junit.Test
@@ -10,7 +9,6 @@ import org.robolectric.Robolectric
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
 import org.robolectric.shadows.ShadowLog
-import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 
 @RunWith(RobolectricTestRunner::class)
@@ -21,47 +19,16 @@ class LocationServiceTest {
     @Before
     fun setup() {
         ShadowLog.stream = System.out
-        // Reset the singleton repository
         val field = LocationRepository::class.java.getDeclaredField("_lastLocation")
         field.isAccessible = true
         val flow = field.get(LocationRepository) as kotlinx.coroutines.flow.MutableStateFlow<Pair<Double, Double>?>
         flow.value = null
     }
 
-    private fun getServicePendingFriendIds(service: LocationService): java.util.concurrent.ConcurrentLinkedQueue<String>? {
-        val field = LocationService::class.java.getDeclaredField("pendingFriendIds")
-        field.isAccessible = true
-        return field.get(service) as java.util.concurrent.ConcurrentLinkedQueue<String>?
-    }
-
     private fun getServiceIsRegistered(service: LocationService): Boolean {
         val field = LocationService::class.java.getDeclaredField("isRegistered")
         field.isAccessible = true
         return field.get(service) as Boolean
-    }
-
-    @Test
-    fun testActionForcePublishQueuesWhenLocationIsNull_BugA() {
-        val controller = Robolectric.buildService(LocationService::class.java)
-        val service = controller.get()
-        controller.create()
-
-        // Verify registration happened in onCreate
-        assertTrue(getServiceIsRegistered(service), "Should be registered in onCreate")
-
-        // 1. Send ACTION_FORCE_PUBLISH while LocationRepository.lastLocation is null
-        val friendId = "bob-123"
-        val intent =
-            Intent(context, LocationService::class.java).apply {
-                action = LocationService.ACTION_FORCE_PUBLISH
-                putExtra(LocationService.EXTRA_FRIEND_ID, friendId)
-            }
-        controller.withIntent(intent).startCommand(0, 1)
-
-        // 2. Verify it is queued in pendingFriendIds
-        val queue = getServicePendingFriendIds(service)
-        assertNotNull(queue)
-        assertTrue(queue!!.contains(friendId), "Friend ID should be queued when location is null")
     }
 
     @Test
@@ -72,7 +39,7 @@ class LocationServiceTest {
 
         assertTrue(getServiceIsRegistered(service))
 
-        // Trigger startCommand multiple times
+        // Multiple startCommand calls must not attempt to re-register location updates.
         controller.startCommand(0, 1)
         controller.startCommand(0, 2)
 

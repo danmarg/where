@@ -36,10 +36,22 @@ sealed class ConnectionStatus {
 
 class LocationViewModel(
     app: Application,
-    private val e2eeStore: E2eeStore = E2eeStore(SharedPrefsE2eeStorage(app)),
-    private val locationClient: LocationClient = LocationClient(BuildConfig.SERVER_HTTP_URL, e2eeStore),
+    e2eeStore: E2eeStore? = null,
+    locationClient: LocationClient? = null,
     startPolling: Boolean = true,
 ) : AndroidViewModel(app) {
+    // Use the Application-level singletons so LocationService and this ViewModel share the same
+    // E2EE state. Fall back to creating new instances when running under test (app is not
+    // WhereApplication in unit tests).
+    private val e2eeStore: E2eeStore =
+        e2eeStore
+            ?: (app as? WhereApplication)?.e2eeStore
+            ?: E2eeStore(SharedPrefsE2eeStorage(app))
+    private val locationClient: LocationClient =
+        locationClient
+            ?: (app as? WhereApplication)?.locationClient
+            ?: LocationClient(BuildConfig.SERVER_HTTP_URL, this.e2eeStore)
+
     private val locationSource: LocationSource = LocationRepository
 
     private val sharingPrefs = app.getSharedPreferences("where_prefs", Context.MODE_PRIVATE)
@@ -58,7 +70,7 @@ class LocationViewModel(
     private val _displayName = MutableStateFlow(sharingPrefs.getString("display_name", "") ?: "")
     val displayName: StateFlow<String> = _displayName
 
-    private val _friends = MutableStateFlow(e2eeStore.listFriends())
+    private val _friends = MutableStateFlow(this.e2eeStore.listFriends())
     val friends: StateFlow<List<FriendEntry>> = _friends
 
     private val _pausedFriendIds =
@@ -90,6 +102,11 @@ class LocationViewModel(
     private var autoClearedInvite = false
     private var isPolling = true
 
+    // Throttle state for outbound location broadcasts.
+    private var lastSentLat: Double? = null
+    private var lastSentLng: Double? = null
+    private var lastSentTime: Long = 0L
+
     val visibleUsers: StateFlow<List<UserLocation>> =
         combine(locationSource.lastLocation, _isSharingLocation, friendLocations) { myLoc, sharing, friendLocs ->
             buildList {
@@ -102,7 +119,7 @@ class LocationViewModel(
 
     init {
         Log.d(TAG, "LocationViewModel init: server=${BuildConfig.SERVER_HTTP_URL}, userId=$userId")
-        val savedFriends = e2eeStore.listFriends()
+        val savedFriends = this.e2eeStore.listFriends()
         val initialLocations = mutableMapOf<String, UserLocation>()
         val initialLastPing = mutableMapOf<String, Long>()
         for (friend in savedFriends) {
@@ -119,6 +136,14 @@ class LocationViewModel(
 
         if (startPolling) {
             viewModelScope.launch { pollLoop() }
+            // Send location whenever FusedLocation delivers a new position.
+            viewModelScope.launch {
+                locationSource.lastLocation.collect { loc ->
+                    if (loc != null && _isSharingLocation.value) {
+                        sendLocationIfNeeded(loc.first, loc.second, isHeartbeat = false)
+                    }
+                }
+            }
         }
         viewModelScope.launch {
             _isSharingLocation.collect { sharing ->
@@ -248,12 +273,20 @@ class LocationViewModel(
                     }
                     locationClient.postOpkBundle(bobEntry.id)
                     if (_isSharingLocation.value) {
-                        val intent =
-                            Intent(getApplication(), LocationService::class.java).apply {
-                                action = LocationService.ACTION_FORCE_PUBLISH
-                                putExtra(LocationService.EXTRA_FRIEND_ID, bobEntry.id)
+                        // Send our location directly to the new friend without going through the
+                        // service. Using the same locationClient instance avoids ratchet divergence.
+                        locationSource.lastLocation.value?.let { (lat, lng) ->
+                            try {
+                                Log.d(TAG, "confirmQrScan: force-sending location to ${bobEntry.id}")
+                                locationClient.sendLocationToFriend(bobEntry.id, lat, lng)
+                                lastSentLat = lat
+                                lastSentLng = lng
+                                lastSentTime = System.currentTimeMillis()
+                            } catch (e: Exception) {
+                                Log.e(TAG, "confirmQrScan: force send failed", e)
+                                updateStatus(e)
                             }
-                        getApplication<Application>().startForegroundService(intent)
+                        }
                     }
 
                     _friends.value = e2eeStore.listFriends()
@@ -285,17 +318,26 @@ class LocationViewModel(
             if (entry != null) {
                 Log.d(TAG, "confirmPendingInit: processKeyExchangeInit succeeded, friendId=${entry.id}")
                 _friends.value = e2eeStore.listFriends()
-                if (_isSharingLocation.value) {
-                    val intent =
-                        Intent(getApplication(), LocationService::class.java).apply {
-                            action = LocationService.ACTION_FORCE_PUBLISH
-                            putExtra(LocationService.EXTRA_FRIEND_ID, entry.id)
-                        }
-                    getApplication<Application>().startForegroundService(intent)
-                }
-
                 viewModelScope.launch {
                     try {
+                        // Upload OPK bundle so Bob can decrypt our future location messages.
+                        // (Bug 5: this was missing from confirmPendingInit, causing Alice's
+                        // encrypted messages to be undecryptable until the next heartbeat.)
+                        locationClient.postOpkBundle(entry.id)
+                        if (_isSharingLocation.value) {
+                            locationSource.lastLocation.value?.let { (lat, lng) ->
+                                try {
+                                    Log.d(TAG, "confirmPendingInit: force-sending location to ${entry.id}")
+                                    locationClient.sendLocationToFriend(entry.id, lat, lng)
+                                    lastSentLat = lat
+                                    lastSentLng = lng
+                                    lastSentTime = System.currentTimeMillis()
+                                } catch (e: Exception) {
+                                    Log.e(TAG, "confirmPendingInit: force send failed", e)
+                                    updateStatus(e)
+                                }
+                            }
+                        }
                         doPoll()
                     } finally {
                         _isExchanging.value = false
@@ -323,6 +365,10 @@ class LocationViewModel(
         while (isPolling) {
             val rapid = isRapidPolling()
             doPoll()
+            // Heartbeat: send location to all friends every 5 minutes even without movement.
+            locationSource.lastLocation.value?.let { (lat, lng) ->
+                sendLocationIfNeeded(lat, lng, isHeartbeat = true)
+            }
             val interval = if (rapid) 2_000L else 60_000L
             val steps = (interval / 500L).toInt()
             for (i in 0 until steps) {
@@ -370,6 +416,34 @@ class LocationViewModel(
             _pendingInitPayload.value = initPayload
             _pendingInviteQr.value = null
         } catch (e: Exception) {
+            updateStatus(e)
+        }
+    }
+
+    // Sends our location to all non-paused friends, subject to throttling.
+    // isHeartbeat=true uses a 5-minute minimum interval (called from poll loop);
+    // isHeartbeat=false uses a 15-second minimum interval (called from location updates).
+    private suspend fun sendLocationIfNeeded(
+        lat: Double,
+        lng: Double,
+        isHeartbeat: Boolean,
+        force: Boolean = false,
+    ) {
+        if (!_isSharingLocation.value) return
+        val now = System.currentTimeMillis()
+        val shouldSend =
+            force || lastSentLat == null ||
+                (!isHeartbeat && now - lastSentTime > 15_000L) ||
+                (isHeartbeat && now - lastSentTime > 300_000L)
+        if (!shouldSend) return
+        try {
+            locationClient.sendLocation(lat, lng, _pausedFriendIds.value)
+            lastSentLat = lat
+            lastSentLng = lng
+            lastSentTime = now
+            updateStatus(null)
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to send location: ${e.message}")
             updateStatus(e)
         }
     }
