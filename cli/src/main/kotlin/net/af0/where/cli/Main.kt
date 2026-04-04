@@ -1,17 +1,18 @@
 package net.af0.where.cli
 
-import net.af0.where.initializeLibsodium
-import kotlinx.coroutines.runBlocking
-import kotlinx.serialization.json.Json
-import net.af0.where.e2ee.*
-import java.io.File
-import kotlin.system.exitProcess
+import com.google.zxing.BarcodeFormat
+import com.google.zxing.MultiFormatWriter
 import io.ktor.client.*
 import io.ktor.client.plugins.contentnegotiation.*
 import io.ktor.serialization.kotlinx.json.*
+import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.*
-import net.af0.where.model.UserLocation
+import kotlinx.serialization.json.Json
+import net.af0.where.e2ee.*
+import net.af0.where.initializeLibsodium
+import java.io.File
 import java.util.Base64
+import kotlin.system.exitProcess
 
 class FileE2eeStorage(private val file: File) : E2eeStorage {
     private val json = Json { prettyPrint = true }
@@ -29,7 +30,10 @@ class FileE2eeStorage(private val file: File) : E2eeStorage {
 
     override fun getString(key: String): String? = data[key]
 
-    override fun putString(key: String, value: String) {
+    override fun putString(
+        key: String,
+        value: String,
+    ) {
         data[key] = value
         file.writeText(json.encodeToString(data))
     }
@@ -43,29 +47,50 @@ fun String.hexToByteArray(): ByteArray {
 }
 
 fun qrPayloadToUrl(qr: QrPayload): String {
-    val json = Json { ignoreUnknownKeys = true }
+    val json = Json { ignoreUnknownKeys = true; encodeDefaults = true }
     // Mimic the iOS/Android URL format
     // {"ekPub": "...", "suggestedName": "...", "fingerprint": "..."}
     val ekPubB64 = Base64.getEncoder().encodeToString(qr.ekPub)
-    val map = mapOf(
-        "ekPub" to ekPubB64,
-        "suggestedName" to qr.suggestedName,
-        "fingerprint" to qr.fingerprint
-    )
+    val map =
+        mapOf(
+            "ekPub" to ekPubB64,
+            "suggestedName" to qr.suggestedName,
+            "fingerprint" to qr.fingerprint,
+        )
     val b64 = Base64.getUrlEncoder().withoutPadding().encodeToString(json.encodeToString(map).toByteArray())
     return "where://invite?q=$b64"
 }
 
+fun printQrCode(url: String) {
+    try {
+        val writer = MultiFormatWriter()
+        val bitMatrix = writer.encode(url, BarcodeFormat.QR_CODE, 10, 10)
+        println("\n" + "═".repeat(bitMatrix.width * 2 + 4))
+        println("║ " + " ".repeat(bitMatrix.width * 2) + " ║")
+        for (y in 0 until bitMatrix.height) {
+            print("║ ")
+            for (x in 0 until bitMatrix.width) {
+                print(if (bitMatrix[x, y]) "██" else "  ")
+            }
+            println(" ║")
+        }
+        println("║ " + " ".repeat(bitMatrix.width * 2) + " ║")
+        println("═".repeat(bitMatrix.width * 2 + 4) + "\n")
+    } catch (e: Exception) {
+        println("(Could not generate QR code: ${e.message})")
+    }
+}
+
 fun urlToQrPayload(url: String): QrPayload? {
     val q = url.substringAfter("q=").substringBefore("&")
-    val json = Json { ignoreUnknownKeys = true }
+    val json = Json { ignoreUnknownKeys = true; encodeDefaults = true }
     val decoded = String(Base64.getUrlDecoder().decode(q))
     val map: Map<String, String> = json.decodeFromString(decoded)
     val ekPub = Base64.getDecoder().decode(map["ekPub"] ?: return null)
     return QrPayload(
         ekPub = ekPub,
         suggestedName = map["suggestedName"] ?: "Friend",
-        fingerprint = map["fingerprint"] ?: ""
+        fingerprint = map["fingerprint"] ?: "",
     )
 }
 
@@ -104,13 +129,28 @@ fun main(args: Array<String>) {
     val locationClient = LocationClient(host, store)
 
     when (args[0]) {
+        "whoami" -> {
+            val friends = store.listFriends()
+            if (friends.isEmpty()) {
+                println("No friends yet. Your ID will be your session fingerprint after pairing.")
+            } else {
+                // Your ID is the other side's stored fingerprint for you (symmetrical)
+                val friend = friends.first()
+                val mySession = friend.session
+                val myFp = if (friend.isInitiator) mySession.aliceFp else mySession.bobFp
+                println("Your ID: ${myFp.toHex()}")
+            }
+        }
         "invite" -> {
             val name = args.getOrNull(1) ?: "CLI User"
             val qr = store.createInvite(name)
-            println("Invite URL: ${qrPayloadToUrl(qr)}")
+            val url = qrPayloadToUrl(qr)
+            println("Invite URL: $url")
+            printQrCode(url)
             println("Discovery Token: ${qr.discoveryToken().toHex()}")
             if ("--no-wait" in args) return
-            println("Waiting for friend to join... (Ctrl+C to stop)")
+            println("\nPress Enter to start waiting for friend to join... (Ctrl+C to stop)")
+            readLine()
             runBlocking {
                 while (store.listFriends().isEmpty()) {
                     poll(locationClient, store, host)
@@ -123,17 +163,28 @@ fun main(args: Array<String>) {
             }
         }
         "join" -> {
-            val url = args.getOrNull(1) ?: run { println("URL required"); return }
+            val url =
+                args.getOrNull(1) ?: run {
+                    println("URL required")
+                    return
+                }
             val name = args.getOrNull(2) ?: "Friend"
-            val qr = urlToQrPayload(url) ?: run { println("Invalid URL"); return }
-            
+            val qr =
+                urlToQrPayload(url) ?: run {
+                    println("Invalid URL")
+                    return
+                }
+
             runBlocking {
                 val (initPayload, bobEntry) = store.processScannedQr(qr, name)
                 val discoveryHex = qr.discoveryToken().toHex()
+                println("Bob discovery token: $discoveryHex")
+                println("Bob ID: ${bobEntry.id}")
                 try {
                     E2eeMailboxClient.post(host, discoveryHex, initPayload)
+                    println("Posted KeyExchangeInit to mailbox")
                     println("Joined ${qr.suggestedName} as $name")
-                    
+
                     // Bob posts initial OPK bundle
                     locationClient.postOpkBundle(bobEntry.id)
                 } catch (e: Exception) {
@@ -163,8 +214,16 @@ fun main(args: Array<String>) {
             }
         }
         "send" -> {
-            val lat = args.getOrNull(1)?.toDoubleOrNull() ?: run { println("Lat required"); return }
-            val lng = args.getOrNull(2)?.toDoubleOrNull() ?: run { println("Lng required"); return }
+            val lat =
+                args.getOrNull(1)?.toDoubleOrNull() ?: run {
+                    println("Lat required")
+                    return
+                }
+            val lng =
+                args.getOrNull(2)?.toDoubleOrNull() ?: run {
+                    println("Lng required")
+                    return
+                }
             runBlocking {
                 locationClient.sendLocation(lat, lng)
             }
@@ -175,16 +234,24 @@ fun main(args: Array<String>) {
     }
 }
 
-suspend fun poll(locationClient: LocationClient, store: E2eeStore, host: String) {
+suspend fun poll(
+    locationClient: LocationClient,
+    store: E2eeStore,
+    host: String,
+) {
     // Poll for pending invites if Alice
     store.pendingQrPayload?.let { qr ->
         val discoveryHex = qr.discoveryToken().toHex()
+        println("Alice polling mailbox with token: $discoveryHex")
         val messages = E2eeMailboxClient.poll(host, discoveryHex)
+        println("Alice got ${messages.size} messages from mailbox")
         messages.filterIsInstance<KeyExchangeInitPayload>().firstOrNull()?.let { init ->
             println("Received KeyExchangeInit from ${init.suggestedName}")
             try {
                 val entry = store.processKeyExchangeInit(init, init.suggestedName)
-                println("Established session with ${entry?.name}")
+                val friend = store.getFriend(entry?.id ?: "")
+                val sendToken = friend?.session?.sendToken?.toHex() ?: "?"
+                println("Established session with ${entry?.name}, sendToken=$sendToken")
             } catch (e: Exception) {
                 println("Failed to process KeyExchangeInit: ${e.message}")
             }

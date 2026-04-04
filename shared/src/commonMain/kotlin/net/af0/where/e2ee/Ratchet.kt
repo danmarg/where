@@ -55,10 +55,14 @@ internal fun kdfCk(chainKey: ByteArray): ChainStep {
 }
 
 /**
- * Derive the routing token for a given epoch from the root key.
+ * Derive the routing token for a given epoch and direction from the root key.
+ *
+ * The direction is implicit in the (senderFp, recipientFp) pair: each party uses themselves
+ * as sender and the peer as recipient. This eliminates the boolean ambiguity and makes
+ * the direction semantically clear at each call site.
  *
  * info = "Where-v1-RoutingToken" || senderFp (32 bytes) || recipientFp (32 bytes)
- * salt = epoch encoded as 4-byte big-endian uint32
+ * salt = epoch (4 bytes)
  *
  * Returns 16 bytes.
  */

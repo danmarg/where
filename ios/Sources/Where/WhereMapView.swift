@@ -4,9 +4,11 @@ import Shared
 
 struct WhereMapView: UIViewRepresentable {
     let users: [Shared.UserLocation]
+    let friends: [Shared.FriendEntry]
     let ownUserId: String
     var zoomTarget: CLLocationCoordinate2D? = nil
     var onZoomConsumed: () -> Void = {}
+    var onSelectFriend: (String) -> Void = { _ in }
 
     func makeUIView(context: Context) -> MKMapView {
         let mapView = MKMapView()
@@ -35,7 +37,9 @@ struct WhereMapView: UIViewRepresentable {
             if let pin = existingById[user.userId] {
                 pin.coordinate = CLLocationCoordinate2D(latitude: user.lat, longitude: user.lng)
             } else {
-                mapView.addAnnotation(UserAnnotation(user: user, isOwn: user.userId == ownUserId))
+                let friend = friends.first { $0.id == user.userId }
+                let friendName = friend?.name ?? String(user.userId.prefix(8))
+                mapView.addAnnotation(UserAnnotation(user: user, friendName: friendName, isOwn: user.userId == ownUserId))
             }
         }
 
@@ -57,10 +61,16 @@ struct WhereMapView: UIViewRepresentable {
         }
     }
 
-    func makeCoordinator() -> Coordinator { Coordinator() }
+    func makeCoordinator() -> Coordinator {
+        let coordinator = Coordinator()
+        coordinator.parentView = self
+        return coordinator
+    }
 
     final class Coordinator: NSObject, MKMapViewDelegate {
         var hasCentered = false
+        var parentView: WhereMapView?
+
         func mapView(_ mapView: MKMapView, viewFor annotation: MKAnnotation) -> MKAnnotationView? {
             guard let userAnnotation = annotation as? UserAnnotation else { return nil }
             let id = "pin"
@@ -70,7 +80,18 @@ struct WhereMapView: UIViewRepresentable {
             view.markerTintColor = userAnnotation.isOwn ? .systemBlue : .systemRed
             view.glyphText = userAnnotation.isOwn ? "Me" : nil
             view.canShowCallout = true
+
+            if !userAnnotation.isOwn {
+                let detailButton = UIButton(type: .detailDisclosure)
+                view.rightCalloutAccessoryView = detailButton
+            }
+
             return view
+        }
+
+        func mapView(_ mapView: MKMapView, annotationView view: MKAnnotationView, calloutAccessoryControlTapped control: UIControl) {
+            guard let userAnnotation = view.annotation as? UserAnnotation else { return }
+            parentView?.onSelectFriend(userAnnotation.userId)
         }
     }
 }
@@ -79,12 +100,14 @@ final class UserAnnotation: NSObject, MKAnnotation {
     let userId: String
     @objc dynamic var coordinate: CLLocationCoordinate2D
     let title: String?
+    let subtitle: String?
     let isOwn: Bool
 
-    init(user: Shared.UserLocation, isOwn: Bool) {
+    init(user: Shared.UserLocation, friendName: String, isOwn: Bool) {
         self.userId = user.userId
         self.coordinate = CLLocationCoordinate2D(latitude: user.lat, longitude: user.lng)
-        self.title = isOwn ? "You" : String(user.userId.prefix(8))
+        self.title = isOwn ? "You" : friendName
+        self.subtitle = isOwn ? nil : user.userId.prefix(8).description
         self.isOwn = isOwn
     }
 }

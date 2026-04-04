@@ -3,7 +3,10 @@ import Combine
 
 @MainActor
 final class LocationManager: NSObject, ObservableObject, @preconcurrency CLLocationManagerDelegate {
+    static let shared = LocationManager()
+
     @Published var location: CLLocation?
+    var lastLocation: CLLocation? { location }
     @Published var authorizationStatus: CLAuthorizationStatus = .notDetermined
 
     private let manager = CLLocationManager()
