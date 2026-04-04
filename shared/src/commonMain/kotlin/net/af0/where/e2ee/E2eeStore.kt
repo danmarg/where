@@ -241,6 +241,12 @@ class E2eeStore(
 
     fun listFriends(): List<FriendEntry> = friends.values.toList()
 
+    fun renameFriend(id: String, newName: String) {
+        val entry = friends[id] ?: return
+        friends[id] = entry.copy(name = newName)
+        save()
+    }
+
     fun deleteFriend(id: String) {
         if (friends.remove(id) != null) {
             save()
