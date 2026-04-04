@@ -33,6 +33,8 @@ final class LocationManager: NSObject, ObservableObject, @preconcurrency CLLocat
     }
 
     private func startUpdating() {
+        manager.allowsBackgroundLocationUpdates = (manager.authorizationStatus == .authorizedAlways)
+        manager.pausesLocationUpdatesAutomatically = false
         manager.startUpdatingLocation()
     }
 
