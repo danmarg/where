@@ -14,9 +14,12 @@ import androidx.core.content.ContextCompat
 import com.google.android.gms.location.*
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import net.af0.where.e2ee.E2eeStore
 import net.af0.where.e2ee.LocationClient
 import net.af0.where.e2ee.toHex
+import net.af0.where.e2ee.discoveryToken
 
 private const val TAG = "LocationService"
 
@@ -30,7 +33,7 @@ class LocationService : Service() {
 
     private var lastSentLocation: Pair<Double, Double>? = null
     private var lastSentTime: Long = 0
-    private var isRapidPolling = false
+    private val mutex = Mutex()
 
     override fun onCreate() {
         super.onCreate()
@@ -77,44 +80,38 @@ class LocationService : Service() {
         val isSharing = sharingPrefs.getBoolean("is_sharing", true)
         if (!isSharing) return
 
-        val now = System.currentTimeMillis()
-        val pausedFriendIds = sharingPrefs.getString("paused_friends", "")
-            ?.split(",")?.filter { it.isNotEmpty() }?.toSet() ?: emptySet()
+        serviceScope.launch {
+            mutex.withLock {
+                val now = System.currentTimeMillis()
+                val pausedFriendIds = sharingPrefs.getString("paused_friends", "")
+                    ?.split(",")?.filter { it.isNotEmpty() }?.toSet() ?: emptySet()
 
-        val lastLoc = lastSentLocation
-        val distance = if (lastLoc != null) {
-            val results = FloatArray(1)
-            android.location.Location.distanceBetween(lastLoc.first, lastLoc.second, lat, lng, results)
-            results[0]
-        } else {
-            Float.MAX_VALUE
-        }
+                val lastLoc = lastSentLocation
+                val distance = if (lastLoc != null) {
+                    val results = FloatArray(1)
+                    android.location.Location.distanceBetween(lastLoc.first, lastLoc.second, lat, lng, results)
+                    results[0]
+                } else {
+                    Float.MAX_VALUE
+                }
 
-        // Send if:
-        // 1. Never sent before
-        // 2. Moved > 10 meters AND > 1 minute since last send
-        // 3. > 5 minutes since last send (stationary heartbeat)
-        val shouldSend = lastLoc == null ||
-                        (distance > 10 && now - lastSentTime > 1 * 60_000L) ||
-                        (now - lastSentTime > 5 * 60_000L)
+                val shouldSend = lastLoc == null ||
+                                (distance > 10 && now - lastSentTime > 1 * 60_000L) ||
+                                (now - lastSentTime > 5 * 60_000L)
 
-        if (shouldSend) {
-            serviceScope.launch {
-                try {
-                    // Requirement: Just-in-time poll before sending in background to advance ratchet
-                    if (!LocationRepository.isAppInForeground.value) {
-                        Log.d(TAG, "Background JIT poll starting")
-                        doPoll(updateUi = false)
+                if (shouldSend) {
+                    try {
+                        doPollInternal()
+
+                        Log.d(TAG, "Sending location: $lat, $lng")
+                        locationClient.sendLocation(lat, lng, pausedFriendIds)
+                        lastSentLocation = Pair(lat, lng)
+                        lastSentTime = now
+                        LocationRepository.onConnectionStatus(ConnectionStatus.Ok)
+                    } catch (e: Exception) {
+                        Log.e(TAG, "Failed to send location", e)
+                        LocationRepository.onConnectionError(e)
                     }
-
-                    Log.d(TAG, "Sending location: $lat, $lng")
-                    locationClient.sendLocation(lat, lng, pausedFriendIds)
-                    lastSentLocation = Pair(lat, lng)
-                    lastSentTime = now
-                    LocationRepository.onConnectionStatus(ConnectionStatus.Ok)
-                } catch (e: Exception) {
-                    Log.e(TAG, "Failed to send location", e)
-                    LocationRepository.onConnectionStatus(ConnectionStatus.Error(e.message ?: "unknown error"))
                 }
             }
         }
@@ -125,12 +122,10 @@ class LocationService : Service() {
             val isForeground = LocationRepository.isAppInForeground.value
             val rapid = isRapidPolling()
 
-            // Requirement: Only fetch friend locations in foreground.
             if (isForeground || rapid) {
-                doPoll(updateUi = true)
+                doPollInternal()
             }
 
-            // Also check for stationary heartbeat in the poll loop in case location updates stop firing
             LocationRepository.lastLocation.value?.let { (lat, lng) ->
                 maybeSendLocation(lat, lng)
             }
@@ -140,24 +135,49 @@ class LocationService : Service() {
         }
     }
 
-    private suspend fun doPoll(updateUi: Boolean) {
+    private suspend fun doPollInternal() {
         try {
             val updates = locationClient.poll()
-            if (updateUi) {
-                for (update in updates) {
+            val isForeground = LocationRepository.isAppInForeground.value
+            val rapid = isRapidPolling()
+
+            for (update in updates) {
+                e2eeStore.updateLastLocation(update.userId, update.lat, update.lng, System.currentTimeMillis() / 1000L)
+                if (isForeground || rapid) {
                     LocationRepository.onFriendUpdate(update)
-                    e2eeStore.updateLastLocation(update.userId, update.lat, update.lng, System.currentTimeMillis() / 1000L)
                 }
+            }
+
+            if (isForeground || rapid) {
+                pollPendingInviteInternal()
             }
             LocationRepository.onConnectionStatus(ConnectionStatus.Ok)
         } catch (e: Exception) {
             Log.e(TAG, "Poll failed", e)
-            LocationRepository.onConnectionStatus(ConnectionStatus.Error(e.message ?: "unknown error"))
+            LocationRepository.onConnectionError(e)
+        }
+    }
+
+    private suspend fun pollPendingInviteInternal() {
+        val qr = e2eeStore.pendingQrPayload ?: run {
+            LocationRepository.onPendingInit(null)
+            return
+        }
+        try {
+            val discoveryHex = qr.discoveryToken().toHex()
+            val messages = net.af0.where.e2ee.E2eeMailboxClient.poll(BuildConfig.SERVER_HTTP_URL, discoveryHex)
+            val initPayload = messages.filterIsInstance<net.af0.where.e2ee.KeyExchangeInitPayload>().firstOrNull()
+            if (initPayload != null) {
+                LocationRepository.onPendingInit(initPayload)
+            }
+        } catch (e: Exception) {
+            LocationRepository.onConnectionError(e)
         }
     }
 
     private fun isRapidPolling(): Boolean {
-        return e2eeStore.pendingQrPayload != null
+        val isPairing = e2eeStore.pendingQrPayload != null || LocationRepository.pendingInitPayload.value != null
+        return isPairing
     }
 
     override fun onStartCommand(

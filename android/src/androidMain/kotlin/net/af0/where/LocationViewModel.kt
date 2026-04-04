@@ -1,10 +1,8 @@
 package net.af0.where
 
-import android.Manifest
 import android.app.Application
 import android.content.Context
 import android.content.Intent
-import android.content.pm.PackageManager
 import android.util.Log
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.AndroidViewModel
@@ -67,8 +65,7 @@ class LocationViewModel(app: Application) : AndroidViewModel(app) {
     private val _pendingQrForNaming = MutableStateFlow<QrPayload?>(null)
     val pendingQrForNaming: StateFlow<QrPayload?> = _pendingQrForNaming
 
-    private val _pendingInitPayload = MutableStateFlow<KeyExchangeInitPayload?>(null)
-    val pendingInitPayload: StateFlow<KeyExchangeInitPayload?> = _pendingInitPayload
+    val pendingInitPayload: StateFlow<KeyExchangeInitPayload?> = locationSource.pendingInitPayload
 
     private var lastRapidPollTrigger = 0L
     private var autoClearedInvite = false
@@ -99,7 +96,6 @@ class LocationViewModel(app: Application) : AndroidViewModel(app) {
         }
         LocationRepository.setInitialFriendLocations(initialLocations, initialLastPing)
 
-        viewModelScope.launch { pollLoop() }
         viewModelScope.launch {
             var prevSharing = _isSharingLocation.value
             _isSharingLocation.collect { sharing ->
@@ -109,6 +105,16 @@ class LocationViewModel(app: Application) : AndroidViewModel(app) {
                 prevSharing = sharing
             }
         }
+
+        viewModelScope.launch {
+            pendingInitPayload.collect { payload ->
+                if (payload != null && _pendingInviteQr.value != null) {
+                    autoClearedInvite = true
+                    _pendingInviteQr.value = null
+                }
+            }
+        }
+
         // Always try to start service on init if sharing is on
         manageForegroundService(_isSharingLocation.value)
     }
@@ -119,7 +125,7 @@ class LocationViewModel(app: Application) : AndroidViewModel(app) {
 
     private fun isRapidPolling(): Boolean {
         val now = System.currentTimeMillis()
-        val isPairing = _pendingInviteQr.value != null || _pendingInitPayload.value != null || _pendingQrForNaming.value != null
+        val isPairing = _pendingInviteQr.value != null || pendingInitPayload.value != null || _pendingQrForNaming.value != null
         val recentlyTriggered = now - lastRapidPollTrigger < 5 * 60_000L
         return isPairing || recentlyTriggered
     }
@@ -145,6 +151,7 @@ class LocationViewModel(app: Application) : AndroidViewModel(app) {
     fun removeFriend(id: String) {
         e2eeStore.deleteFriend(id)
         _friends.value = e2eeStore.listFriends()
+        LocationRepository.onFriendRemoved(id)
         if (id in _pausedFriendIds.value) {
             val newPaused = _pausedFriendIds.value - id
             _pausedFriendIds.value = newPaused
@@ -156,9 +163,6 @@ class LocationViewModel(app: Application) : AndroidViewModel(app) {
         autoClearedInvite = false
         _pendingInviteQr.value = e2eeStore.createInvite(_displayName.value.ifEmpty { "Me" })
         triggerRapidPoll()
-        viewModelScope.launch {
-            pollPendingInvite()
-        }
     }
 
     fun clearInvite() {
@@ -167,6 +171,7 @@ class LocationViewModel(app: Application) : AndroidViewModel(app) {
         }
         _pendingInviteQr.value = null
         autoClearedInvite = false
+        LocationRepository.onPendingInit(null)
     }
 
     fun processQrUrl(url: String): Boolean {
@@ -199,7 +204,7 @@ class LocationViewModel(app: Application) : AndroidViewModel(app) {
                         delay(500)
                     } catch (e: Exception) {
                         Log.e(TAG, "confirmQrScan: mailbox post failed", e)
-                        LocationRepository.onConnectionStatus(ConnectionStatus.Error(e.message ?: "unknown error"))
+                        LocationRepository.onConnectionError(e)
                         return@launch
                     }
                     locationClient.postOpkBundle(bobEntry.id)
@@ -210,11 +215,12 @@ class LocationViewModel(app: Application) : AndroidViewModel(app) {
                     // Poll immediately after pairing
                     val updates = locationClient.poll()
                     for (update in updates) {
+                        e2eeStore.updateLastLocation(update.userId, update.lat, update.lng, System.currentTimeMillis() / 1000L)
                         LocationRepository.onFriendUpdate(update)
                     }
                 } catch (e: Exception) {
                     Log.e(TAG, "confirmQrScan inner failure: ${e.message}")
-                    LocationRepository.onConnectionStatus(ConnectionStatus.Error(e.message ?: "unknown error"))
+                    LocationRepository.onConnectionError(e)
                 }
             }
         } catch (e: Exception) {
@@ -223,8 +229,8 @@ class LocationViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun confirmPendingInit(name: String) {
-        val payload = _pendingInitPayload.value ?: return
-        _pendingInitPayload.value = null
+        val payload = pendingInitPayload.value ?: return
+        LocationRepository.onPendingInit(null)
         _pendingInviteQr.value = null
         if (!autoClearedInvite) e2eeStore.clearInvite()
         autoClearedInvite = false
@@ -239,6 +245,7 @@ class LocationViewModel(app: Application) : AndroidViewModel(app) {
                     }
                     val updates = locationClient.poll()
                     for (update in updates) {
+                        e2eeStore.updateLastLocation(update.userId, update.lat, update.lng, System.currentTimeMillis() / 1000L)
                         LocationRepository.onFriendUpdate(update)
                     }
                 }
@@ -249,47 +256,20 @@ class LocationViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun cancelPendingInit() {
-        if (_pendingInitPayload.value == null && _pendingInviteQr.value == null) return
+        if (pendingInitPayload.value == null && _pendingInviteQr.value == null) return
         if (!autoClearedInvite) e2eeStore.clearInvite()
         autoClearedInvite = false
-        _pendingInitPayload.value = null
+        LocationRepository.onPendingInit(null)
         _pendingInviteQr.value = null
-    }
-
-    private suspend fun pollLoop() {
-        while (true) {
-            val rapid = isRapidPolling()
-            if (rapid) {
-                // UI-driven rapid poll for invites
-                pollPendingInvite()
-            }
-            // Rapid polling when UI is active and pairing
-            val interval = if (rapid) 2_000L else 10_000L
-            delay(interval)
-        }
-    }
-
-    private suspend fun pollPendingInvite() {
-        val qr = e2eeStore.pendingQrPayload ?: return
-        try {
-            val discoveryHex = qr.discoveryToken().toHex()
-            val messages = E2eeMailboxClient.poll(BuildConfig.SERVER_HTTP_URL, discoveryHex)
-            val initPayload = messages.filterIsInstance<KeyExchangeInitPayload>().firstOrNull() ?: return
-            autoClearedInvite = true
-            _pendingInitPayload.value = initPayload
-            _pendingInviteQr.value = null
-        } catch (e: Exception) {
-            LocationRepository.onConnectionStatus(ConnectionStatus.Error(e.message ?: "unknown error"))
-        }
     }
 
     private fun manageForegroundService(sharing: Boolean) {
         val intent = Intent(getApplication(), LocationService::class.java)
         val hasLocationPermission =
-            ContextCompat.checkSelfPermission(getApplication(), Manifest.permission.ACCESS_FINE_LOCATION) ==
-                PackageManager.PERMISSION_GRANTED ||
-                ContextCompat.checkSelfPermission(getApplication(), Manifest.permission.ACCESS_COARSE_LOCATION) ==
-                PackageManager.PERMISSION_GRANTED
+            ContextCompat.checkSelfPermission(getApplication(), android.Manifest.permission.ACCESS_FINE_LOCATION) ==
+                android.content.pm.PackageManager.PERMISSION_GRANTED ||
+                ContextCompat.checkSelfPermission(getApplication(), android.Manifest.permission.ACCESS_COARSE_LOCATION) ==
+                android.content.pm.PackageManager.PERMISSION_GRANTED
         if (sharing && hasLocationPermission) {
             getApplication<Application>().startForegroundService(intent)
         } else if (!sharing) {
