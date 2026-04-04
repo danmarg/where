@@ -247,12 +247,14 @@ class LocationViewModel(
                         return@launch
                     }
                     locationClient.postOpkBundle(bobEntry.id)
-                    val intent =
-                        Intent(getApplication(), LocationService::class.java).apply {
-                            action = LocationService.ACTION_FORCE_PUBLISH
-                            putExtra(LocationService.EXTRA_FRIEND_ID, bobEntry.id)
-                        }
-                    getApplication<Application>().startForegroundService(intent)
+                    if (_isSharingLocation.value) {
+                        val intent =
+                            Intent(getApplication(), LocationService::class.java).apply {
+                                action = LocationService.ACTION_FORCE_PUBLISH
+                                putExtra(LocationService.EXTRA_FRIEND_ID, bobEntry.id)
+                            }
+                        getApplication<Application>().startForegroundService(intent)
+                    }
 
                     _friends.value = e2eeStore.listFriends()
                     doPoll()
@@ -283,12 +285,14 @@ class LocationViewModel(
             if (entry != null) {
                 Log.d(TAG, "confirmPendingInit: processKeyExchangeInit succeeded, friendId=${entry.id}")
                 _friends.value = e2eeStore.listFriends()
-                val intent =
-                    Intent(getApplication(), LocationService::class.java).apply {
-                        action = LocationService.ACTION_FORCE_PUBLISH
-                        putExtra(LocationService.EXTRA_FRIEND_ID, entry.id)
-                    }
-                getApplication<Application>().startForegroundService(intent)
+                if (_isSharingLocation.value) {
+                    val intent =
+                        Intent(getApplication(), LocationService::class.java).apply {
+                            action = LocationService.ACTION_FORCE_PUBLISH
+                            putExtra(LocationService.EXTRA_FRIEND_ID, entry.id)
+                        }
+                    getApplication<Application>().startForegroundService(intent)
+                }
 
                 viewModelScope.launch {
                     try {

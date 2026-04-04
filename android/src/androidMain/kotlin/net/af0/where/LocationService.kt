@@ -168,37 +168,39 @@ class LocationService : Service() {
                 (!isHeartbeat && now - lastSentTime > 15_000L) ||
                 (isHeartbeat && now - lastSentTime > 300_000L)
 
-        if (shouldSend) {
-            serviceScope.launch {
-                val sharingPrefs = getSharedPreferences("where_prefs", Context.MODE_PRIVATE)
-                val isSharing = sharingPrefs.getBoolean("is_sharing", true)
-                if (!isSharing) return@launch
+        serviceScope.launch {
+            val sharingPrefs = getSharedPreferences("where_prefs", Context.MODE_PRIVATE)
+            val isSharing = sharingPrefs.getBoolean("is_sharing", true)
+            if (!isSharing) return@launch
 
-                val pausedIds =
-                    sharingPrefs.getString("paused_friends", "")
-                        ?.split(",")?.filter { it.isNotEmpty() }?.toSet() ?: emptySet()
+            val pausedIds =
+                sharingPrefs.getString("paused_friends", "")
+                    ?.split(",")?.filter { it.isNotEmpty() }?.toSet() ?: emptySet()
 
-                try {
+            try {
+                // Always drain queued single-friend forced publishes (these are not throttled)
+                val hadPendingFriends = pendingFriendIds.isNotEmpty()
+                while (pendingFriendIds.isNotEmpty()) {
+                    val id = pendingFriendIds.poll() ?: break
+                    Log.d(TAG, "Processing queued forced publish to: $id")
+                    locationClient.sendLocationToFriend(id, lat, lng)
+                }
+
+                // Only broadcast to all friends if shouldSend is true and not just handling pending sends
+                if (shouldSend && (!hadPendingFriends || force)) {
                     Log.d(TAG, "Sending background location: $lat, $lng (heartbeat=$isHeartbeat)")
-
-                    // Drain queued single-friend forced publishes (don't broadcast to all when draining queue)
-                    val hadPendingFriends = pendingFriendIds.isNotEmpty()
-                    while (pendingFriendIds.isNotEmpty()) {
-                        val id = pendingFriendIds.poll() ?: break
-                        Log.d(TAG, "Processing queued forced publish to: $id")
-                        locationClient.sendLocationToFriend(id, lat, lng)
-                    }
-
-                    // Only broadcast to all friends if not just handling pending single-friend sends
-                    if (!hadPendingFriends || force) {
-                        locationClient.sendLocation(lat, lng, pausedIds)
-                    }
+                    locationClient.sendLocation(lat, lng, pausedIds)
                     lastSentLat = lat
                     lastSentLng = lng
                     lastSentTime = now
-                } catch (e: Exception) {
-                    Log.e(TAG, "Failed to send background location", e)
+                } else if (hadPendingFriends && !shouldSend) {
+                    // We drained pending friends but didn't broadcast; still update lastSent to throttle future broadcasts
+                    lastSentLat = lat
+                    lastSentLng = lng
+                    lastSentTime = now
                 }
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to send background location", e)
             }
         }
     }
