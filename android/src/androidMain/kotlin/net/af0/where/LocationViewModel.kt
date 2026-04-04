@@ -38,7 +38,7 @@ class LocationViewModel(
     app: Application,
     private val e2eeStore: E2eeStore = E2eeStore(SharedPrefsE2eeStorage(app)),
     private val locationClient: LocationClient = LocationClient(BuildConfig.SERVER_HTTP_URL, e2eeStore),
-    startPolling: Boolean = true
+    startPolling: Boolean = true,
 ) : AndroidViewModel(app) {
     private val locationSource: LocationSource = LocationRepository
 

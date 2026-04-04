@@ -14,7 +14,11 @@ import java.util.Base64
 private const val TAG = "QrUtils"
 
 object QrUtils {
-    private val json = Json { ignoreUnknownKeys = true; encodeDefaults = true }
+    private val json =
+        Json {
+            ignoreUnknownKeys = true
+            encodeDefaults = true
+        }
 
     fun payloadToUrl(qr: QrPayload): String {
         val encoded =
@@ -25,10 +29,11 @@ object QrUtils {
 
     fun urlToPayload(url: String): QrPayload? {
         if (BuildConfig.DEBUG) Log.d(TAG, "urlToPayload: url=$url")
-        val q = url.substringAfter("?q=", "").ifEmpty {
-            if (BuildConfig.DEBUG) Log.d(TAG, "urlToPayload: no q= parameter found")
-            return null
-        }
+        val q =
+            url.substringAfter("?q=", "").ifEmpty {
+                if (BuildConfig.DEBUG) Log.d(TAG, "urlToPayload: no q= parameter found")
+                return null
+            }
         if (BuildConfig.DEBUG) Log.d(TAG, "urlToPayload: q=$q")
         return try {
             val decoded = Base64.getUrlDecoder().decode(q).decodeToString()
