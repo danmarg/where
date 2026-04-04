@@ -23,9 +23,12 @@ class LocationService : Service() {
     private lateinit var locationClient: LocationClient
     private lateinit var e2eeStore: E2eeStore
 
+    @Volatile
     private var lastSentLat: Double? = null
+    @Volatile
     private var lastSentLng: Double? = null
-    private var lastSentTime: Long = 0
+    @Volatile
+    private var lastSentTime: Long = System.currentTimeMillis()
     private val pendingFriendIds = java.util.concurrent.ConcurrentLinkedQueue<String>()
     private var isRegistered = false
 
@@ -75,12 +78,17 @@ class LocationService : Service() {
 
         // Heartbeat timer: ensure we send and poll at least every 5 minutes.
         // Polling is required even in background to stay in sync with E2EE protocol messages
-        // (RatchetAcks, EpochRotations) from friends.
+        // (RatchetAcks, EpochRotations) from friends and to persist friend location updates.
         serviceScope.launch {
             while (isActive) {
                 try {
                     Log.d(TAG, "Periodic background protocol sync (poll)")
-                    locationClient.poll()
+                    val updates = locationClient.poll()
+                    // Persist poll results so ViewModel sees them when it polls next
+                    val now = System.currentTimeMillis()
+                    for (update in updates) {
+                        e2eeStore.updateLastLocation(update.userId, update.lat, update.lng, now / 1000L)
+                    }
                 } catch (e: Exception) {
                     Log.e(TAG, "Background poll failed", e)
                 }
@@ -173,13 +181,18 @@ class LocationService : Service() {
                 try {
                     Log.d(TAG, "Sending background location: $lat, $lng (heartbeat=$isHeartbeat)")
 
+                    // Drain queued single-friend forced publishes (don't broadcast to all when draining queue)
+                    val hadPendingFriends = pendingFriendIds.isNotEmpty()
                     while (pendingFriendIds.isNotEmpty()) {
                         val id = pendingFriendIds.poll() ?: break
                         Log.d(TAG, "Processing queued forced publish to: $id")
                         locationClient.sendLocationToFriend(id, lat, lng)
                     }
 
-                    locationClient.sendLocation(lat, lng, pausedIds)
+                    // Only broadcast to all friends if not just handling pending single-friend sends
+                    if (!hadPendingFriends || force) {
+                        locationClient.sendLocation(lat, lng, pausedIds)
+                    }
                     lastSentLat = lat
                     lastSentLng = lng
                     lastSentTime = now
