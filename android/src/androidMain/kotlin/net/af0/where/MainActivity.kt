@@ -163,7 +163,7 @@ class MainActivity : ComponentActivity() {
                     )
                 }
 
-                pendingInitPayload?.let { payload ->
+                pendingInitPayload?.takeIf { pendingInviteQr == null }?.let { payload ->
                     var name by remember(payload) { mutableStateOf(payload.suggestedName) }
                     AlertDialog(
                         onDismissRequest = { viewModel.cancelPendingInit() },

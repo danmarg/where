@@ -213,6 +213,7 @@ class LocationViewModel(app: Application) : AndroidViewModel(app) {
                     } catch (e: Exception) {
                         Log.e(TAG, "confirmQrScan: mailbox post failed", e)
                         updateStatus(e)
+                        return@launch  // Alice never got the KeyExchangeInit; don't post OPKs or location
                     }
                     locationClient.postOpkBundle(bobEntry.id)
                     // Trigger immediate location sync so Alice sees us right away
@@ -236,7 +237,8 @@ class LocationViewModel(app: Application) : AndroidViewModel(app) {
         Log.d(TAG, "confirmPendingInit: name=$name")
         _pendingInitPayload.value = null
         _pendingInviteQr.value = null
-        e2eeStore.clearInvite()
+        if (!autoClearedInvite) e2eeStore.clearInvite()
+        autoClearedInvite = false
         triggerRapidPoll()
         try {
             val entry = e2eeStore.processKeyExchangeInit(payload, name)
@@ -260,9 +262,12 @@ class LocationViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun cancelPendingInit() {
+        // Guard: only act if Alice's invite flow is actually active.
+        if (_pendingInitPayload.value == null && _pendingInviteQr.value == null) return
+        if (!autoClearedInvite) e2eeStore.clearInvite()
+        autoClearedInvite = false
         _pendingInitPayload.value = null
         _pendingInviteQr.value = null
-        e2eeStore.clearInvite()
     }
 
     private suspend fun pollLoop() {
@@ -314,9 +319,11 @@ class LocationViewModel(app: Application) : AndroidViewModel(app) {
 
             Log.d(TAG, "pollPendingInvite: received KeyExchangeInit from ${initPayload.suggestedName}")
             // Found init payload! Show naming dialog instead of processing immediately.
+            // Set _pendingInitPayload before clearing _pendingInviteQr so isRapidPolling()
+            // never sees both as null between the two assignments.
             autoClearedInvite = true
             _pendingInitPayload.value = initPayload
-            _pendingInviteQr.value = null // Clear invite QR so the dialog dismisses
+            _pendingInviteQr.value = null
         } catch (e: Exception) {
             updateStatus(e)
         }
