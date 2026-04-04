@@ -55,13 +55,22 @@ class LocationService : Service() {
         } catch (_: SecurityException) {
         }
 
-        // Heartbeat timer: ensure we send at least every 5 minutes so friends see a recent "last seen".
+        // Heartbeat timer: ensure we send and poll at least every 5 minutes.
+        // Polling is required even in background to stay in sync with E2EE protocol messages
+        // (RatchetAcks, EpochRotations) from friends.
         serviceScope.launch {
             while (isActive) {
-                delay(60_000L)
+                try {
+                    Log.d(TAG, "Periodic background protocol sync (poll)")
+                    locationClient.poll()
+                } catch (e: Exception) {
+                    Log.e(TAG, "Background poll failed", e)
+                }
+
                 LocationRepository.lastLocation.value?.let { (lat, lng) ->
                     handleNewLocation(lat, lng, isHeartbeat = true)
                 }
+                delay(300_000L) // 5 minutes
             }
         }
     }
