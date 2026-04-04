@@ -284,7 +284,7 @@ final class LocationSyncService: ObservableObject {
 
     func confirmQrScan(qr: Shared.QrPayload, friendName: String) {
         pendingQrForNaming = nil
-        triggerRapidPoll()
+        lastRapidPollTrigger = Date(timeIntervalSince1970: 0)
         startPolling()
         let qrWithName = Shared.QrPayload(
             ekPub: qr.ekPub,
@@ -343,7 +343,7 @@ final class LocationSyncService: ObservableObject {
         pendingInitPayload = nil
         pendingInviteQr = nil
         autoClearedInvite = false
-        triggerRapidPoll()
+        lastRapidPollTrigger = Date(timeIntervalSince1970: 0)
         startPolling()
         isExchanging = true
         // processKeyExchangeInit sets pendingInvite=null internally; call it immediately
