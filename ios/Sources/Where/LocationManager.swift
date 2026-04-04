@@ -15,7 +15,7 @@ final class LocationManager: NSObject, ObservableObject, @preconcurrency CLLocat
         super.init()
         manager.delegate = self
         manager.desiredAccuracy = kCLLocationAccuracyHundredMeters
-        manager.distanceFilter = 50 // meters
+        manager.distanceFilter = 10 // meters — low value ensures updates when stationary, rely on heartbeat throttle for battery
     }
 
     func requestPermissionAndStart() {

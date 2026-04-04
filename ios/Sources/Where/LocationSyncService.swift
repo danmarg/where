@@ -363,7 +363,10 @@ final class LocationSyncService: ObservableObject {
                     if let last = LocationManager.shared.lastLocation {
                         self.sendLocation(lat: last.coordinate.latitude, lng: last.coordinate.longitude, force: true)
                     } else {
+                        // No location yet: queue it so next location update (from CoreLocation or heartbeat) sends immediately
                         self.pendingForcedSendAfterPairing = true
+                        // Request immediate location from CoreLocation if possible
+                        LocationManager.shared.requestPermissionAndStart()
                     }
                     await pollAll(updateUi: true)
                     
@@ -399,7 +402,10 @@ final class LocationSyncService: ObservableObject {
                 if let last = LocationManager.shared.lastLocation {
                     self.sendLocation(lat: last.coordinate.latitude, lng: last.coordinate.longitude, force: true)
                 } else {
+                    // No location yet: queue it so next location update (from CoreLocation or heartbeat) sends immediately
                     self.pendingForcedSendAfterPairing = true
+                    // Request immediate location from CoreLocation if possible
+                    LocationManager.shared.requestPermissionAndStart()
                 }
             }
             await pollAll(updateUi: true)
@@ -455,10 +461,9 @@ final class LocationSyncService: ObservableObject {
             logger.debug("Got \(updates.count) location updates")
             for update in updates {
                 e2eeStore.updateLastLocation(id: update.userId, lat: update.lat, lng: update.lng, ts: Int64(Date().timeIntervalSince1970))
-                if updateUi {
-                    friendLocations[update.userId] = (lat: update.lat, lng: update.lng, ts: update.timestamp)
-                    friendLastPing[update.userId] = Date()
-                }
+                // Always update friendLocations (not just when updateUi=true) so UI is never stale
+                friendLocations[update.userId] = (lat: update.lat, lng: update.lng, ts: update.timestamp)
+                friendLastPing[update.userId] = Date()
             }
             if updateUi {
                 await pollPendingInvite()
@@ -545,15 +550,14 @@ final class LocationSyncService: ObservableObject {
             forTaskWithIdentifier: BACKGROUND_TASK_ID,
             using: nil
         ) { task in
-            guard let task = task as? BGProcessingTask else { return }
+            guard let task = task as? BGAppRefreshTask else { return }
             self.handleBackgroundPoll(task)
         }
     }
 
     private func scheduleBackgroundPoll() {
-        let request = BGProcessingTaskRequest(identifier: BACKGROUND_TASK_ID)
-        request.requiresNetworkConnectivity = true
-        request.requiresExternalPower = false
+        let request = BGAppRefreshTaskRequest(identifier: BACKGROUND_TASK_ID)
+        request.earliestBeginDate = Date(timeIntervalSinceNow: 5 * 60) // Suggest 5m interval for polling
         do {
             try BGTaskScheduler.shared.submit(request)
             debugLog { "Scheduled background poll task" }
@@ -562,7 +566,7 @@ final class LocationSyncService: ObservableObject {
         }
     }
 
-    private func handleBackgroundPoll(_ task: BGProcessingTask) {
+    private func handleBackgroundPoll(_ task: BGAppRefreshTask) {
         debugLog { "Background poll task executed" }
         // Schedule next background task before this one finishes
         scheduleBackgroundPoll()
