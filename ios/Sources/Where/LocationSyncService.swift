@@ -195,7 +195,14 @@ final class LocationSyncService: ObservableObject {
                     self?.sendLocation(lat: last.coordinate.latitude, lng: last.coordinate.longitude, isHeartbeat: true)
                 }
 
-                let interval: UInt64 = rapid ? 2_000_000_000 : 60_000_000_000  // 2s while pairing, 60s otherwise
+                let interval: UInt64
+                if rapid {
+                    interval = 2_000_000_000      // 2s while pairing
+                } else if isForeground {
+                    interval = 60_000_000_000     // 60s while in foreground
+                } else {
+                    interval = 300_000_000_000    // 300s (5m) while in background
+                }
                 try? await Task.sleep(nanoseconds: interval)
             }
         }
