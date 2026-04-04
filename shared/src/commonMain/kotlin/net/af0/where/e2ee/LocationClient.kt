@@ -1,5 +1,7 @@
 package net.af0.where.e2ee
 
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import net.af0.where.model.UserLocation
 
 /**
@@ -13,15 +15,19 @@ class LocationClient(
     private val baseUrl: String,
     private val store: E2eeStore,
 ) {
+    private val pollMutex = Mutex()
+
     /**
      * Poll all friends and the pending invite (if any).
      *
      * Processes all incoming control messages (OPKs, Ratchets, Acks) and
      * automatically posts required responses back to the server.
      *
+     * Poll calls are serialized to prevent concurrent ratchet state mutations.
+     *
      * @return List of new [UserLocation] updates received since the last poll.
      */
-    suspend fun poll(): List<UserLocation> {
+    suspend fun poll(): List<UserLocation> = pollMutex.withLock {
         val allUpdates = mutableListOf<UserLocation>()
         var lastError: Exception? = null
 
@@ -45,7 +51,7 @@ class LocationClient(
         }
 
         lastError?.let { throw it }
-        return allUpdates
+        allUpdates
     }
 
     /**
