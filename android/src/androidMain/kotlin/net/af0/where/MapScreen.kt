@@ -2,15 +2,19 @@ package net.af0.where
 
 import android.os.Build
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.LocationOff
 import androidx.compose.material.icons.filled.LocationOn
 import androidx.compose.material.icons.filled.People
+import androidx.compose.material.icons.filled.Place
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import com.google.accompanist.permissions.*
@@ -144,18 +148,34 @@ fun MapScreen(
         ) {
             users.forEach { user ->
                 val isMe = user.userId == userId
-                Marker(
-                    state = MarkerState(position = LatLng(user.lat, user.lng)),
-                    title = if (isMe) "You" else friends.find { it.id == user.userId }?.name ?: user.userId.take(8),
-                    icon =
-                        BitmapDescriptorFactory.defaultMarker(
-                            if (isMe) {
-                                BitmapDescriptorFactory.HUE_AZURE
-                            } else {
-                                BitmapDescriptorFactory.HUE_RED
-                            },
-                        ),
-                )
+                val name = if (isMe) "You" else friends.find { it.id == user.userId }?.name ?: user.userId.take(8)
+                key(user.userId) {
+                    MarkerComposable(
+                        state = MarkerState(position = LatLng(user.lat, user.lng)),
+                        anchor = Offset(0.5f, 1f),
+                    ) {
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            Surface(
+                                shape = MaterialTheme.shapes.small,
+                                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.9f),
+                                contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                                shadowElevation = 2.dp,
+                            ) {
+                                Text(
+                                    text = name,
+                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                                    style = MaterialTheme.typography.labelSmall,
+                                )
+                            }
+                            Icon(
+                                imageVector = Icons.Default.Place,
+                                contentDescription = null,
+                                tint = if (isMe) Color.Blue else Color.Red,
+                                modifier = Modifier.size(36.dp),
+                            )
+                        }
+                    }
+                }
             }
         }
 
@@ -189,7 +209,10 @@ fun MapScreen(
 
             // Your ID chip + Connection status
             Surface(
-                modifier = Modifier.weight(1f),
+                modifier =
+                    Modifier
+                        .weight(1f)
+                        .clickable { zoomToUserId = userId },
                 shape = MaterialTheme.shapes.medium,
                 color = Color.Black.copy(alpha = 0.7f),
             ) {

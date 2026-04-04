@@ -28,18 +28,36 @@ struct WhereMapView: UIViewRepresentable {
         let existingById = Dictionary(uniqueKeysWithValues: existing.map { ($0.userId, $0) })
         let newById = Dictionary(uniqueKeysWithValues: users.map { ($0.userId, $0) })
 
+        // Group users by location to handle overlaps
+        var locationGroups: [String: [Shared.UserLocation]] = [:]
+        for user in users {
+            let key = String(format: "%.6f,%.6f", user.lat, user.lng)
+            locationGroups[key, default: []].append(user)
+        }
+
         // Remove stale annotations
         let toRemove = existing.filter { newById[$0.userId] == nil }
         mapView.removeAnnotations(toRemove)
 
         // Update existing or add new annotations
-        for user in users {
-            if let pin = existingById[user.userId] {
-                pin.coordinate = CLLocationCoordinate2D(latitude: user.lat, longitude: user.lng)
-            } else {
-                let friend = friends.first { $0.id == user.userId }
-                let friendName = friend?.name ?? String(user.userId.prefix(8))
-                mapView.addAnnotation(UserAnnotation(user: user, friendName: friendName, isOwn: user.userId == ownUserId))
+        for (_, group) in locationGroups {
+            for (index, user) in group.enumerated() {
+                var coord = CLLocationCoordinate2D(latitude: user.lat, longitude: user.lng)
+                if group.count > 1 {
+                    // Apply a small circular offset if multiple users are at the same spot
+                    let angle = 2.0 * .pi * Double(index) / Double(group.count)
+                    let radius = 0.00005 // Approx 5 meters at the equator
+                    coord.latitude += radius * cos(angle)
+                    coord.longitude += radius * sin(angle)
+                }
+
+                if let pin = existingById[user.userId] {
+                    pin.coordinate = coord
+                } else {
+                    let friend = friends.first { $0.id == user.userId }
+                    let friendName = friend?.name ?? String(user.userId.prefix(8))
+                    mapView.addAnnotation(UserAnnotation(user: user, coordinate: coord, friendName: friendName, isOwn: user.userId == ownUserId))
+                }
             }
         }
 
@@ -103,9 +121,9 @@ final class UserAnnotation: NSObject, MKAnnotation {
     let subtitle: String?
     let isOwn: Bool
 
-    init(user: Shared.UserLocation, friendName: String, isOwn: Bool) {
+    init(user: Shared.UserLocation, coordinate: CLLocationCoordinate2D, friendName: String, isOwn: Bool) {
         self.userId = user.userId
-        self.coordinate = CLLocationCoordinate2D(latitude: user.lat, longitude: user.lng)
+        self.coordinate = coordinate
         self.title = isOwn ? "You" : friendName
         self.subtitle = isOwn ? nil : user.userId.prefix(8).description
         self.isOwn = isOwn
