@@ -29,6 +29,7 @@
 /* Begin PBXFileReference section */
 		072A149EB28769F34BCED9D8 /* Security */ = {isa = PBXFileReference; lastKnownFileType = text; path = Security; sourceTree = "<group>"; };
 		18F48F8FCFBE392E06CD2BB3 /* CoreLocation */ = {isa = PBXFileReference; lastKnownFileType = text; path = CoreLocation; sourceTree = "<group>"; };
+		1D232AA64C61387DE75E8145 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		220A8EA077B99368AF6DA3D4 /* QrScannerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QrScannerView.swift; sourceTree = "<group>"; };
 		2421CE3D6966994F4875E311 /* WhereMapView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WhereMapView.swift; sourceTree = "<group>"; };
 		28DD2FC8358389E8C9F6ABE6 /* FriendsSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FriendsSheet.swift; sourceTree = "<group>"; };
@@ -90,6 +91,7 @@
 				D43663670EB5FB46B5C7C4EA /* ContentView.swift */,
 				28DD2FC8358389E8C9F6ABE6 /* FriendsSheet.swift */,
 				87F9371D289CC150DF786A96 /* FriendsStore.swift */,
+				1D232AA64C61387DE75E8145 /* Info.plist */,
 				AC2B156B7AAD99EBB5C7C775 /* KotlinByteArrayUtils.swift */,
 				3ADAF0FD19742D151B957FD9 /* LocationManager.swift */,
 				D4B36665B05EA8E1F42A11EA /* LocationSyncService.swift */,
@@ -273,13 +275,7 @@
 					"$(SRCROOT)/../shared/build/xcode-frameworks/$(CONFIGURATION)/$(SDK_NAME)",
 					"\".\"",
 				);
-				GENERATE_INFOPLIST_FILE = YES;
-				INFOPLIST_KEY_NSCameraUsageDescription = "Where needs the camera to scan friend invite QR codes.";
-				INFOPLIST_KEY_NSLocationAlwaysAndWhenInUseUsageDescription = "Where needs your location in the background to keep sharing it.";
-				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "Where needs your location to show it on the map.";
-				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
-				INFOPLIST_KEY_UIBackgroundModes = location;
-				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				INFOPLIST_FILE = Sources/Where/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -304,13 +300,7 @@
 					"$(SRCROOT)/../shared/build/xcode-frameworks/$(CONFIGURATION)/$(SDK_NAME)",
 					"\".\"",
 				);
-				GENERATE_INFOPLIST_FILE = YES;
-				INFOPLIST_KEY_NSCameraUsageDescription = "Where needs the camera to scan friend invite QR codes.";
-				INFOPLIST_KEY_NSLocationAlwaysAndWhenInUseUsageDescription = "Where needs your location in the background to keep sharing it.";
-				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "Where needs your location to show it on the map.";
-				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
-				INFOPLIST_KEY_UIBackgroundModes = location;
-				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				INFOPLIST_FILE = Sources/Where/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
