@@ -197,14 +197,6 @@ class MainActivity : ComponentActivity() {
                                     modifier = Modifier.fillMaxWidth(),
                                     singleLine = true,
                                 )
-                                Spacer(Modifier.height(16.dp))
-                                Text("Your ID", style = MaterialTheme.typography.labelMedium)
-                                Text(
-                                    text = viewModel.userId,
-                                    style = MaterialTheme.typography.bodySmall,
-                                    fontFamily = FontFamily.Monospace,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                )
                             }
                         },
                         confirmButton = {

@@ -117,6 +117,7 @@ final class LocationSyncService: ObservableObject {
 
     @Published var pendingQrForNaming: Shared.QrPayload? = nil
     @Published var pendingInitPayload: Shared.KeyExchangeInitPayload? = nil
+    @Published var isExchanging: Bool = false
     var isInviteActive: Bool { pendingInviteQr != nil }
 
     private var lastRapidPollTrigger: Date = Date(timeIntervalSince1970: 0)
@@ -247,7 +248,9 @@ final class LocationSyncService: ObservableObject {
             fingerprint: qr.fingerprint
         )
         debugLog { "Scanning QR: discovery=\(toHex(qrWithName.discoveryToken())), friendName=\(friendName)" }
+        isExchanging = true
         Task {
+            defer { isExchanging = false }
             let result = e2eeStore.processScannedQr(qr: qrWithName, bobSuggestedName: displayName)
             guard let initPayload = result.first, let bobEntry = result.second else {
                 logger.error("confirmQrScan: processScannedQr returned nil components")
@@ -298,6 +301,7 @@ final class LocationSyncService: ObservableObject {
         autoClearedInvite = false
         triggerRapidPoll()
         startPolling()
+        isExchanging = true
         // processKeyExchangeInit sets pendingInvite=null internally; call it immediately
         // so nothing can clear pendingInvite before it runs.
         let entry = try? e2eeStore.processKeyExchangeInit(payload: payload, bobName: name)
@@ -305,6 +309,7 @@ final class LocationSyncService: ObservableObject {
             friends = e2eeStore.listFriends()
         }
         Task {
+            defer { isExchanging = false }
             if let entry, let last = LocationManager.shared.lastLocation {
                 try? await locationClient.sendLocationToFriend(friendId: entry.id, lat: last.coordinate.latitude, lng: last.coordinate.longitude)
             }
@@ -321,6 +326,11 @@ final class LocationSyncService: ObservableObject {
         autoClearedInvite = false
         pendingInitPayload = nil
         pendingInviteQr = nil
+    }
+
+    func renameFriend(id: String, newName: String) {
+        e2eeStore.renameFriend(id: id, newName: newName)
+        friends = e2eeStore.listFriends()
     }
 
     func togglePauseFriend(id: String) {
