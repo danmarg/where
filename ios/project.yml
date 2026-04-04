@@ -32,15 +32,20 @@ targets:
         embed: false
       - framework: CoreLocation
         embed: false
+    info:
+      path: Sources/Where/Info.plist
+      properties:
+        NSLocationWhenInUseUsageDescription: "Where needs your location to show it on the map."
+        NSLocationAlwaysAndWhenInUseUsageDescription: "Where needs your location in the background to keep sharing it."
+        NSCameraUsageDescription: "Where needs the camera to scan friend invite QR codes."
+        UIBackgroundModes:
+          - location
+        UIApplicationSceneManifest:
+          UIApplicationSupportsMultipleScenes: true
+          UISceneConfigurations: {}
+        UILaunchScreen: {}
     settings:
       PRODUCT_BUNDLE_IDENTIFIER: net.af0.Where
-      GENERATE_INFOPLIST_FILE: YES
-      INFOPLIST_KEY_UIApplicationSceneManifest_Generation: YES
-      INFOPLIST_KEY_UILaunchScreen_Generation: YES
-      INFOPLIST_KEY_NSLocationWhenInUseUsageDescription: "Where needs your location to show it on the map."
-      INFOPLIST_KEY_NSLocationAlwaysAndWhenInUseUsageDescription: "Where needs your location in the background to keep sharing it."
-      INFOPLIST_KEY_NSCameraUsageDescription: "Where needs the camera to scan friend invite QR codes."
-      INFOPLIST_KEY_UIBackgroundModes: location
       FRAMEWORK_SEARCH_PATHS: $(inherited) $(SRCROOT)/../shared/build/xcode-frameworks/$(CONFIGURATION)/$(SDK_NAME)
       DEVELOPMENT_TEAM: ""
       CODE_SIGN_IDENTITY: Apple Development
