@@ -158,5 +158,6 @@ data class KeyExchangeInitPayload(
         return token == other.token && ekPub.contentEquals(other.ekPub) &&
             keyConfirmation.contentEquals(other.keyConfirmation) && suggestedName == other.suggestedName
     }
+
     override fun hashCode(): Int = token.hashCode()
 }

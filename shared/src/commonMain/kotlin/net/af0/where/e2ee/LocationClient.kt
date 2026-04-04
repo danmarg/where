@@ -68,9 +68,11 @@ class LocationClient(
                 break
             }
             println("[LocationClient] pollFriend($friendId): processBatch returned ${result.decryptedLocations.size} locations")
-            updates.addAll(result.decryptedLocations.map { loc ->
-                UserLocation(userId = friendId, lat = loc.lat, lng = loc.lng, timestamp = loc.ts)
-            })
+            updates.addAll(
+                result.decryptedLocations.map { loc ->
+                    UserLocation(userId = friendId, lat = loc.lat, lng = loc.lng, timestamp = loc.ts)
+                },
+            )
 
             // Post any required protocol responses (RatchetAcks, OPK bundles)
             for (out in result.outgoing) {
@@ -105,7 +107,7 @@ class LocationClient(
                 lastError = e
             }
         }
-        
+
         lastError?.let { throw it }
     }
 
@@ -138,19 +140,21 @@ class LocationClient(
 
         // 2. Encrypt and post
         val current = store.getFriend(friend.id) ?: return
-        val (newSession, ct) = Session.encryptLocation(
-            state = current.session,
-            location = plaintext,
-            senderFp = current.session.aliceFp,
-            recipientFp = current.session.bobFp
-        )
+        val (newSession, ct) =
+            Session.encryptLocation(
+                state = current.session,
+                location = plaintext,
+                senderFp = current.session.aliceFp,
+                recipientFp = current.session.bobFp,
+            )
         store.updateSession(friend.id, newSession)
 
-        val payload = EncryptedLocationPayload(
-            epoch = newSession.epoch,
-            seq = newSession.sendSeq.toString(),
-            ct = ct
-        )
+        val payload =
+            EncryptedLocationPayload(
+                epoch = newSession.epoch,
+                seq = newSession.sendSeq.toString(),
+                ct = ct,
+            )
         E2eeMailboxClient.post(baseUrl, current.session.sendToken.toHex(), payload)
     }
 

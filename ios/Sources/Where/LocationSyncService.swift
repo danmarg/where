@@ -224,7 +224,7 @@ final class LocationSyncService: ObservableObject {
 
         let now = Date()
         let shouldSend = effectiveForce || lastSentLocation == nil ||
-                        (!isHeartbeat && now.timeIntervalSince(lastSentTime) > 1 * 60) ||
+                        (!isHeartbeat && now.timeIntervalSince(lastSentTime) > 15) ||
                         (isHeartbeat && now.timeIntervalSince(lastSentTime) > 5 * 60)
 
         guard shouldSend else { return }

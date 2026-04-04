@@ -248,12 +248,21 @@ class E2eeStoreTest {
 
         val bobAfter = bobStore.getFriend(bobEntry.id)!!
         assertEquals(1, bobAfter.session.epoch, "Bob's epoch must match Alice's")
-        assertContentEquals(aliceAfter.session.sendToken, bobAfter.session.recvToken,
-            "Alice send = Bob recv after rotation")
-        assertContentEquals(aliceAfter.session.recvToken, bobAfter.session.sendToken,
-            "Alice recv = Bob send after rotation")
-        assertContentEquals(aliceAfter.session.sendChainKey, bobAfter.session.recvChainKey,
-            "Alice's new send chain must equal Bob's new recv chain")
+        assertContentEquals(
+            aliceAfter.session.sendToken,
+            bobAfter.session.recvToken,
+            "Alice send = Bob recv after rotation",
+        )
+        assertContentEquals(
+            aliceAfter.session.recvToken,
+            bobAfter.session.sendToken,
+            "Alice recv = Bob send after rotation",
+        )
+        assertContentEquals(
+            aliceAfter.session.sendChainKey,
+            bobAfter.session.recvChainKey,
+            "Alice's new send chain must equal Bob's new recv chain",
+        )
 
         // Alice validates Bob's ack
         assertTrue(aliceStore.processRatchetAck(aliceEntry.id, ack!!))
@@ -275,18 +284,25 @@ class E2eeStoreTest {
         // Alice sends a location after rotation
         val aliceCurrent = aliceStore.getFriend(aliceEntry.id)!!
         val loc = net.af0.where.e2ee.LocationPlaintext(lat = 51.5, lng = -0.1, acc = 5.0, ts = 1_000_000L)
-        val (newAliceSess, ct) = Session.encryptLocation(
-            aliceCurrent.session, loc,
-            aliceCurrent.session.aliceFp, aliceCurrent.session.bobFp
-        )
+        val (newAliceSess, ct) =
+            Session.encryptLocation(
+                aliceCurrent.session,
+                loc,
+                aliceCurrent.session.aliceFp,
+                aliceCurrent.session.bobFp,
+            )
         aliceStore.updateSession(aliceEntry.id, newAliceSess)
 
         // Bob decrypts
         val bobCurrent = bobStore.getFriend(bobEntry.id)!!
-        val result = Session.decryptLocation(
-            bobCurrent.session, ct, newAliceSess.sendSeq,
-            bobCurrent.session.aliceFp, bobCurrent.session.bobFp
-        )
+        val result =
+            Session.decryptLocation(
+                bobCurrent.session,
+                ct,
+                newAliceSess.sendSeq,
+                bobCurrent.session.aliceFp,
+                bobCurrent.session.bobFp,
+            )
         assertNotNull(result, "Decryption must succeed after epoch rotation")
         assertEquals(loc.lat, result!!.second.lat, 1e-9)
     }
@@ -316,7 +332,10 @@ class E2eeStoreTest {
         }
         aliceStore.updateSession(aliceEntry.id, sess)
 
-        assertTrue(aliceStore.shouldRotateEpoch(aliceEntry.id), "Should rotate after ${ E2eeStore.EPOCH_ROTATION_INTERVAL} sends with OPKs available")
+        assertTrue(
+            aliceStore.shouldRotateEpoch(aliceEntry.id),
+            "Should rotate after ${ E2eeStore.EPOCH_ROTATION_INTERVAL} sends with OPKs available",
+        )
     }
 
     @Test

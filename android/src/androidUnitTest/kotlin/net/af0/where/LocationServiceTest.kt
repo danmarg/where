@@ -10,7 +10,7 @@ import org.robolectric.Robolectric
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
 import org.robolectric.shadows.ShadowLog
-import kotlin.test.assertEquals
+import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 
 @RunWith(RobolectricTestRunner::class)
@@ -28,10 +28,10 @@ class LocationServiceTest {
         flow.value = null
     }
 
-    private fun getServicePendingFriendId(service: LocationService): String? {
-        val field = LocationService::class.java.getDeclaredField("pendingFriendId")
+    private fun getServicePendingFriendIds(service: LocationService): java.util.concurrent.ConcurrentLinkedQueue<String>? {
+        val field = LocationService::class.java.getDeclaredField("pendingFriendIds")
         field.isAccessible = true
-        return field.get(service) as String?
+        return field.get(service) as java.util.concurrent.ConcurrentLinkedQueue<String>?
     }
 
     private fun getServiceIsRegistered(service: LocationService): Boolean {
@@ -51,14 +51,17 @@ class LocationServiceTest {
 
         // 1. Send ACTION_FORCE_PUBLISH while LocationRepository.lastLocation is null
         val friendId = "bob-123"
-        val intent = Intent(context, LocationService::class.java).apply {
-            action = LocationService.ACTION_FORCE_PUBLISH
-            putExtra(LocationService.EXTRA_FRIEND_ID, friendId)
-        }
+        val intent =
+            Intent(context, LocationService::class.java).apply {
+                action = LocationService.ACTION_FORCE_PUBLISH
+                putExtra(LocationService.EXTRA_FRIEND_ID, friendId)
+            }
         controller.withIntent(intent).startCommand(0, 1)
 
-        // 2. Verify it is queued in pendingFriendId
-        assertEquals(friendId, getServicePendingFriendId(service), "Friend ID should be queued when location is null")
+        // 2. Verify it is queued in pendingFriendIds
+        val queue = getServicePendingFriendIds(service)
+        assertNotNull(queue)
+        assertTrue(queue!!.contains(friendId), "Friend ID should be queued when location is null")
     }
 
     @Test

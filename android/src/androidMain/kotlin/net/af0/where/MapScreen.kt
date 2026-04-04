@@ -19,7 +19,6 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import com.google.accompanist.permissions.*
 import com.google.android.gms.maps.CameraUpdateFactory
-import com.google.android.gms.maps.model.BitmapDescriptorFactory
 import com.google.android.gms.maps.model.CameraPosition
 import com.google.android.gms.maps.model.LatLng
 import com.google.maps.android.compose.*
@@ -150,11 +149,12 @@ fun MapScreen(
         ) {
             users.forEach { user ->
                 val isMe = user.userId == userId
-                val name = if (isMe) {
-                    if (displayName.isNotEmpty()) displayName else "You"
-                } else {
-                    friends.find { it.id == user.userId }?.name ?: user.userId.take(8)
-                }
+                val name =
+                    if (isMe) {
+                        if (displayName.isNotEmpty()) displayName else "You"
+                    } else {
+                        friends.find { it.id == user.userId }?.name ?: user.userId.take(8)
+                    }
                 key(user.userId) {
                     MarkerComposable(
                         state = MarkerState(position = LatLng(user.lat, user.lng)),
@@ -225,15 +225,16 @@ fun MapScreen(
                 Row(
                     modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
                     verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
                 ) {
                     Box(
-                        modifier = Modifier
-                            .size(8.dp)
-                            .background(
-                                color = if (connectionStatus is ConnectionStatus.Ok) Color.Green else Color(0xFFFFA500),
-                                shape = androidx.compose.foundation.shape.CircleShape
-                            )
+                        modifier =
+                            Modifier
+                                .size(8.dp)
+                                .background(
+                                    color = if (connectionStatus is ConnectionStatus.Ok) Color.Green else Color(0xFFFFA500),
+                                    shape = androidx.compose.foundation.shape.CircleShape,
+                                ),
                     )
                     Column {
                         Text(
@@ -247,7 +248,7 @@ fun MapScreen(
                                 color = Color(0xFFFFA500),
                                 style = MaterialTheme.typography.labelSmall,
                                 maxLines = 1,
-                                overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
+                                overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
                             )
                         }
                     }
