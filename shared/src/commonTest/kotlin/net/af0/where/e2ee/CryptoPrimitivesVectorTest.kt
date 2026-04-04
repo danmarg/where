@@ -85,7 +85,7 @@ class CryptoPrimitivesVectorTest {
     // -----------------------------------------------------------------------
 
     @Test
-    fun `x25519 DH is symmetric (both parties derive same secret)`() {
+    fun x25519_DH_is_symmetric() {
         // Test that X25519 key agreement is symmetric: both parties independently
         // derive the same shared secret. This is library-agnostic (works with libsodium,
         // BouncyCastle, or any standards-compliant X25519 implementation).
@@ -98,7 +98,7 @@ class CryptoPrimitivesVectorTest {
         assertContentEquals(
             aliceShared,
             bobShared,
-            "Both parties must derive the same shared secret (DH must be symmetric)",
+            "Shared secrets must match"
         )
     }
 

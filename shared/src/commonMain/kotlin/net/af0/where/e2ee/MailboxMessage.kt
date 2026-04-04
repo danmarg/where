@@ -147,6 +147,7 @@ data class RatchetAckPayload(
 data class KeyExchangeInitPayload(
     override val v: Int = 1,
     val token: String,
+    @SerialName("ek_pub")
     @Serializable(with = ByteArrayBase64Serializer::class) val ekPub: ByteArray,
     @SerialName("key_confirmation")
     @Serializable(with = ByteArrayBase64Serializer::class) val keyConfirmation: ByteArray,

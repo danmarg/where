@@ -36,6 +36,17 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import net.af0.where.e2ee.FriendEntry
 
+fun timeAgoString(lastPingMs: Long?): String {
+    if (lastPingMs == null) return "never"
+    val seconds = (System.currentTimeMillis() - lastPingMs) / 1000
+    return when {
+        seconds < 60 -> "just now"
+        seconds < 3600 -> "${seconds / 60}m ago"
+        seconds < 86400 -> "${seconds / 3600}h ago"
+        else -> "${seconds / 86400}d ago"
+    }
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun FriendsSheet(
@@ -44,14 +55,18 @@ fun FriendsSheet(
     displayName: String,
     onDisplayNameChange: (String) -> Unit,
     pausedFriendIds: Set<String>,
+    friendLastPing: Map<String, Long>,
     onTogglePause: (String) -> Unit,
     onCreateInvite: () -> Unit,
     onScanQr: () -> Unit,
+    onPasteUrl: (String) -> Unit,
     onRemove: (String) -> Unit,
     onDismiss: () -> Unit,
     onZoomTo: (String) -> Unit = {},
 ) {
     var confirmDeleteFriend by remember { mutableStateOf<FriendEntry?>(null) }
+    var showPasteField by remember { mutableStateOf(false) }
+    var pastedUrl by remember { mutableStateOf("") }
 
     ModalBottomSheet(onDismissRequest = onDismiss) {
         Column(
@@ -106,6 +121,55 @@ fun FriendsSheet(
                 }
             }
 
+            if (showPasteField) {
+                Column(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    OutlinedTextField(
+                        value = pastedUrl,
+                        onValueChange = { pastedUrl = it },
+                        label = { Text("Paste where://invite?...") },
+                        modifier = Modifier.fillMaxWidth(),
+                        singleLine = true,
+                    )
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        FilledTonalButton(
+                            onClick = {
+                                if (pastedUrl.isNotEmpty()) {
+                                    onDismiss()
+                                    onPasteUrl(pastedUrl)
+                                    pastedUrl = ""
+                                    showPasteField = false
+                                }
+                            },
+                            modifier = Modifier.weight(1f),
+                        ) {
+                            Text("Go")
+                        }
+                        FilledTonalButton(
+                            onClick = {
+                                pastedUrl = ""
+                                showPasteField = false
+                            },
+                            modifier = Modifier.weight(1f),
+                        ) {
+                            Text("Cancel")
+                        }
+                    }
+                }
+            } else {
+                FilledTonalButton(
+                    onClick = { showPasteField = true },
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Text("Paste URL")
+                }
+            }
+
             if (friends.isNotEmpty()) {
                 Text("Friends (${friends.size})", style = MaterialTheme.typography.labelMedium)
                 LazyColumn(verticalArrangement = Arrangement.spacedBy(4.dp)) {
@@ -126,12 +190,24 @@ fun FriendsSheet(
                                     friend.name,
                                     style = MaterialTheme.typography.bodyLarge,
                                 )
-                                Text(
-                                    friend.id.take(8),
-                                    style = MaterialTheme.typography.bodySmall,
-                                    fontFamily = FontFamily.Monospace,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                )
+                                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    Text(
+                                        friend.id.take(8),
+                                        style = MaterialTheme.typography.bodySmall,
+                                        fontFamily = FontFamily.Monospace,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                    Text(
+                                        "•",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                    Text(
+                                        timeAgoString(friendLastPing[friend.id]),
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                }
                             }
                             
                             val isPaused = friend.id in pausedFriendIds

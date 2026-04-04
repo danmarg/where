@@ -197,8 +197,9 @@ class SessionTest {
 
         assertEquals(1, aliceRotated.epoch)
         assertEquals(1, bobRotated.epoch)
-        assertContentEquals(aliceRotated.routingToken, bobRotated.routingToken)
-        assertNotEquals(aliceSession.routingToken.toList(), aliceRotated.routingToken.toList())
+        assertContentEquals(aliceRotated.sendToken, bobRotated.recvToken, "Alice send = Bob recv after rotation")
+        assertContentEquals(aliceRotated.recvToken, bobRotated.sendToken, "Alice recv = Bob send after rotation")
+        assertNotEquals(aliceSession.sendToken.toList(), aliceRotated.sendToken.toList(), "Token changed after rotation")
         assertContentEquals(aliceRotated.rootKey, bobRotated.rootKey)
         // After epoch rotation Alice's new send chain must equal Bob's new recv chain.
         assertContentEquals(aliceRotated.sendChainKey, bobRotated.recvChainKey)

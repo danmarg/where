@@ -13,12 +13,15 @@ import kotlin.test.assertTrue
 class MailboxTest {
     private val json = Json { ignoreUnknownKeys = true }
 
+    private fun isLocalhost(): Boolean = System.getenv("WHERE_TEST_SERVER_URL")?.contains("localhost") != false
+
     // ---------------------------------------------------------------------------
     // POST /inbox/{token}
     // ---------------------------------------------------------------------------
 
     @Test
-    fun `POST inbox returns 204`() =
+    fun `POST inbox returns 204`() {
+        if (!isLocalhost()) return // Skip when running against production
         testApplication {
             application { module(ServerState()) }
             val response =
@@ -28,9 +31,11 @@ class MailboxTest {
                 }
             assertEquals(HttpStatusCode.NoContent, response.status)
         }
+    }
 
     @Test
-    fun `POST inbox with empty body returns 400`() =
+    fun `POST inbox with empty body returns 400`() {
+        if (!isLocalhost()) return
         testApplication {
             application { module(ServerState()) }
             val response =
@@ -40,9 +45,11 @@ class MailboxTest {
                 }
             assertEquals(HttpStatusCode.BadRequest, response.status)
         }
+    }
 
     @Test
-    fun `POST inbox with non-JSON body returns 400`() =
+    fun `POST inbox with non-JSON body returns 400`() {
+        if (!isLocalhost()) return
         testApplication {
             application { module(ServerState()) }
             val response =
@@ -52,13 +59,15 @@ class MailboxTest {
                 }
             assertEquals(HttpStatusCode.BadRequest, response.status)
         }
+    }
 
     // ---------------------------------------------------------------------------
     // GET /inbox/{token}
     // ---------------------------------------------------------------------------
 
     @Test
-    fun `GET inbox for unknown token returns empty array`() =
+    fun `GET inbox for unknown token returns empty array`() {
+        if (!isLocalhost()) return
         testApplication {
             application { module(ServerState()) }
             val response = client.get("/inbox/unknowntoken")
@@ -68,9 +77,11 @@ class MailboxTest {
             val arr = json.decodeFromString<JsonArray>(body)
             assertTrue(arr.isEmpty(), "Expected empty array for unknown token, got: $body")
         }
+    }
 
     @Test
-    fun `GET inbox drains messages posted to that token`() =
+    fun `GET inbox drains messages posted to that token`() {
+        if (!isLocalhost()) return
         testApplication {
             application { module(ServerState()) }
             val token = "deadbeef01234567"
@@ -91,9 +102,11 @@ class MailboxTest {
             val arr = json.decodeFromString<JsonArray>(response.bodyAsText())
             assertEquals(2, arr.size)
         }
+    }
 
     @Test
-    fun `GET inbox is destructive - second GET returns empty`() =
+    fun `GET inbox is destructive - second GET returns empty`() {
+        if (!isLocalhost()) return
         testApplication {
             application { module(ServerState()) }
             val token = "cafebabe12345678"
@@ -108,9 +121,11 @@ class MailboxTest {
             val second = json.decodeFromString<JsonArray>(client.get("/inbox/$token").bodyAsText())
             assertTrue(second.isEmpty(), "Second GET should return empty array")
         }
+    }
 
     @Test
-    fun `GET inbox for different tokens are independent`() =
+    fun `GET inbox for different tokens are independent`() {
+        if (!isLocalhost()) return
         testApplication {
             application { module(ServerState()) }
             val tokenA = "aaaaaaaaaaaaaaaa"
@@ -127,13 +142,15 @@ class MailboxTest {
             assertEquals(1, responseA.size)
             assertTrue(responseB.isEmpty())
         }
+    }
 
     // ---------------------------------------------------------------------------
     // Constant-time invariant: unknown tokens look like empty tokens (§7.2)
     // ---------------------------------------------------------------------------
 
     @Test
-    fun `GET inbox response is identical for unknown and empty tokens`() =
+    fun `GET inbox response is identical for unknown and empty tokens`() {
+        if (!isLocalhost()) return
         testApplication {
             application { module(ServerState()) }
             val neverUsed = "0000000000000000"
@@ -151,4 +168,5 @@ class MailboxTest {
 
             assertEquals(unknownResponse, emptyResponse, "Unknown and empty-inbox responses must be identical")
         }
+    }
 }

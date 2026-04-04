@@ -3,10 +3,11 @@ import Shared
 import SwiftUI
 
 struct ContentView: View {
-    @StateObject private var locationManager = LocationManager()
+    @ObservedObject private var locationManager = LocationManager.shared
     @StateObject private var syncService = LocationSyncService()
     @State private var showFriends = false
     @State private var showScanner = false
+    @State private var scannedUrl: String? = nil
     @State private var zoomTarget: CLLocationCoordinate2D? = nil
     
     @State private var newFriendName: String = ""
@@ -31,9 +32,13 @@ struct ContentView: View {
         ZStack {
             WhereMapView(
                 users: visibleUsers,
+                friends: syncService.friends,
                 ownUserId: syncService.myId,
                 zoomTarget: zoomTarget,
-                onZoomConsumed: { zoomTarget = nil }
+                onZoomConsumed: { zoomTarget = nil },
+                onSelectFriend: { friendId in
+                    showFriends = true
+                }
             )
             .ignoresSafeArea()
 
@@ -78,6 +83,12 @@ struct ContentView: View {
                     .padding(.vertical, 8)
                     .background(.black.opacity(0.7))
                     .clipShape(Capsule())
+                    .contentShape(Capsule())
+                    .onTapGesture {
+                        if let loc = locationManager.location {
+                            zoomTarget = CLLocationCoordinate2D(latitude: loc.coordinate.latitude, longitude: loc.coordinate.longitude)
+                        }
+                    }
 
                     Spacer()
 
@@ -103,6 +114,7 @@ struct ContentView: View {
                 displayName: $syncService.displayName,
                 friends: syncService.friends,
                 pausedFriendIds: syncService.pausedFriendIds,
+                lastPingTimes: syncService.friendLastPing,
                 onTogglePause: { syncService.togglePauseFriend(id: $0) },
                 onCreateInvite: {
                     showFriends = false
@@ -112,17 +124,35 @@ struct ContentView: View {
                     showFriends = false
                     showScanner = true
                 },
+                onPasteUrl: { url in
+                    showFriends = false
+                    syncService.processQrUrl(url)
+                },
                 onRemove: { syncService.removeFriend(id: $0) },
                 onZoomTo: { friendId in
-                    if let loc = syncService.friendLocations[friendId] {
+                    if friendId == syncService.myId {
+                        // Zoom to own location
+                        if let loc = locationManager.location {
+                            zoomTarget = CLLocationCoordinate2D(latitude: loc.coordinate.latitude, longitude: loc.coordinate.longitude)
+                        }
+                    } else if let loc = syncService.friendLocations[friendId] {
                         zoomTarget = CLLocationCoordinate2D(latitude: loc.lat, longitude: loc.lng)
                     }
+                    showFriends = false
                 }
             )
         }
-        .fullScreenCover(isPresented: $showScanner) {
+        .fullScreenCover(isPresented: $showScanner, onDismiss: {
+            if let url = scannedUrl {
+                _ = syncService.processQrUrl(url)
+                scannedUrl = nil
+            }
+        }) {
             QrScannerView(
-                onScan: { url in syncService.processQrUrl(url) },
+                onScan: { url in
+                    scannedUrl = url
+                    showScanner = false
+                },
                 onDismiss: { showScanner = false }
             )
             .ignoresSafeArea()
@@ -136,35 +166,36 @@ struct ContentView: View {
             }
         }
         .alert("Name this contact", isPresented: Binding(
-            get: { syncService.pendingQrForNaming != nil },
-            set: { if !$0 { syncService.pendingQrForNaming = nil } }
+            get: { (syncService.pendingQrForNaming != nil || syncService.pendingInitPayload != nil) && !syncService.isInviteActive },
+            set: { if !$0 {
+                syncService.pendingQrForNaming = nil
+                syncService.cancelPendingInit()
+                newFriendName = ""
+            } }
         )) {
             TextField("Friend's Name", text: $newFriendName)
-            Button("Add") {
-                if let qr = syncService.pendingQrForNaming {
+            if let qr = syncService.pendingQrForNaming {
+                Button("Add") {
                     syncService.confirmQrScan(qr: qr, friendName: newFriendName.isEmpty ? "Friend" : newFriendName)
+                    newFriendName = ""
+                }
+            } else if syncService.pendingInitPayload != nil {
+                Button("Save") {
+                    syncService.confirmPendingInit(name: newFriendName.isEmpty ? "Friend" : newFriendName)
                     newFriendName = ""
                 }
             }
             Button("Cancel", role: .cancel) {
                 syncService.pendingQrForNaming = nil
+                syncService.cancelPendingInit()
                 newFriendName = ""
             }
         } message: {
-            Text("Enter a name for this friend.")
-        }
-        .alert("Name this contact", isPresented: $syncService.hasPendingInit) {
-            TextField("Friend's Name", text: $newFriendName)
-            Button("Save") {
-                syncService.confirmPendingInit(name: newFriendName.isEmpty ? "Friend" : newFriendName)
-                newFriendName = ""
+            if syncService.pendingQrForNaming != nil {
+                Text("Enter a name for this friend.")
+            } else {
+                Text("A new friend has scanned your QR code.")
             }
-            Button("Skip", role: .cancel) {
-                syncService.confirmPendingInit(name: "Friend")
-                newFriendName = ""
-            }
-        } message: {
-            Text("A new friend has scanned your QR code.")
         }
         .onAppear {
             locationManager.requestPermissionAndStart()
@@ -174,14 +205,10 @@ struct ContentView: View {
             syncService.sendLocation(lat: loc.coordinate.latitude, lng: loc.coordinate.longitude)
         }
         .onReceive(syncService.$pendingQrForNaming) { qr in
-            if let qr = qr {
-                newFriendName = qr.suggestedName
-            }
+            if let qr = qr { newFriendName = qr.suggestedName } else { newFriendName = "" }
         }
         .onReceive(syncService.$pendingInitPayload) { payload in
-            if let payload = payload {
-                newFriendName = payload.suggestedName
-            }
+            if let payload = payload { newFriendName = payload.suggestedName } else { newFriendName = "" }
         }
     }
 }

@@ -267,7 +267,7 @@ class E2eeStore(
 
         val opkList = newOpks.map { (opk, _) -> opk }
         val mac = PreKeyBundleOps.buildMac(
-            token = entry.session.routingToken,
+            token = entry.session.sendToken,
             opks = opkList,
             kBundle = entry.session.kBundle,
         )
@@ -299,7 +299,7 @@ class E2eeStore(
 
         val opks = bundle.toOPKList()
         if (!PreKeyBundleOps.verify(
-                token = entry.session.routingToken,
+                token = entry.session.recvToken,
                 opks = opks,
                 mac = bundle.mac,
                 kBundle = entry.session.kBundle,
@@ -369,7 +369,7 @@ class E2eeStore(
             recipientFp = entry.session.bobFp,
         )
 
-        val oldRoutingToken = entry.session.routingToken
+        val oldSendToken = entry.session.sendToken
         val nonce = randomBytes(12)
         val ct = buildEpochRotationCt(
             rootKey = entry.session.rootKey,
@@ -378,7 +378,7 @@ class E2eeStore(
             newEkPub = newEk.pub,
             ts = ts,
             nonce = nonce,
-            routingToken = oldRoutingToken,
+            routingToken = oldSendToken,
             senderFp = entry.session.aliceFp,
             recipientFp = entry.session.bobFp,
         )
@@ -418,14 +418,14 @@ class E2eeStore(
         val entry = friends[friendId] ?: return null
         if (entry.isInitiator) return null // Alice doesn't process her own rotations
 
-        val oldRoutingToken = entry.session.routingToken
+        val oldRecvToken = entry.session.recvToken
         val rotData = try {
             decryptEpochRotationCt(
                 rootKey = entry.session.rootKey,
                 epoch = payload.epoch,
                 nonce = payload.nonce,
                 ct = payload.ct,
-                routingToken = oldRoutingToken,
+                routingToken = oldRecvToken,
                 senderFp = entry.session.aliceFp,
                 recipientFp = entry.session.bobFp,
             )
@@ -466,7 +466,7 @@ class E2eeStore(
             ts = ts,
             newEkPub = bobNewEk.pub,
             nonce = nonce,
-            routingToken = intermediateSession.routingToken,
+            routingToken = finalSession.sendToken,
             senderFp = entry.session.aliceFp,
             recipientFp = entry.session.bobFp,
         )
@@ -498,7 +498,7 @@ class E2eeStore(
                 epochSeen = payload.epochSeen,
                 nonce = payload.nonce,
                 ct = payload.ct,
-                routingToken = entry.session.routingToken,
+                routingToken = entry.session.recvToken,
                 senderFp = entry.session.aliceFp,
                 recipientFp = entry.session.bobFp,
             )
@@ -606,7 +606,8 @@ class E2eeStore(
             } catch (_: IllegalArgumentException) {
                 null
             } ?: continue
-            val rotatedToken = friends[friendId]?.session?.routingToken?.toHex() ?: continue
+            // After epoch rotation, Bob posts responses (Ack, new OPKs) to his new send token.
+            val rotatedToken = friends[friendId]?.session?.sendToken?.toHex() ?: continue
             outgoing.add(OutgoingMessage(rotatedToken, ack))
             generateOpkBundle(friendId)?.let { bundle ->
                 outgoing.add(OutgoingMessage(rotatedToken, bundle))

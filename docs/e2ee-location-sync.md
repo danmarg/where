@@ -27,7 +27,7 @@
 
 ### 1.1 Motivation: Unencrypted Baseline
 
-Without E2EE, each client connects to a Ktor WebSocket server at `/ws?userId=<uuid>`. When a client sends a location update, the server fans out the full user-location map to all connected clients as a JSON `WsMessage.LocationBroadcast`. Each client filters the received list to show only users in its local friends list.
+Without E2EE, each client connects to a Ktor server. When a client sends a location update, the server fans out the full user-location map to all connected clients. Each client filters the received list to show only users in its local friends list.
 
 **What the server learns without E2EE:**
 - The precise GPS coordinates of every connected user at all times.
@@ -62,7 +62,7 @@ This document does **not** cover:
 
 | Attacker | Assumed Capabilities |
 |---|---|
-| Passive network attacker | Can observe all WebSocket frames (mitigated by TLS, included for defense-in-depth) |
+| Passive network attacker | Can observe all network packets (mitigated by TLS, included for defense-in-depth) |
 | Compromised server | Has full access to the server process, memory, database, and all received ciphertext |
 | Honest-but-curious server | Reads all metadata and routing information but does not actively modify messages |
 | Malicious friend | A user who was legitimately added as a friend but later turns adversarial |
@@ -182,7 +182,7 @@ discovery_token_A = HKDF-SHA-256(IKM  = Alice.EK_A.pub,
 
 - Alice begins polling `GET /inbox/{hex(discovery_token_A)}` immediately.
 - Bob derives the same `discovery_token_A` from the scanned `ek_pub` and POSTs his `KeyExchangeInit` there.
-- Once Alice retrieves and processes the `KeyExchangeInit`, she switches to polling `T_AB_0` for all subsequent messages.
+- Once Alice retrieves and processes the `KeyExchangeInit`, she switches to polling `recv_token` for all subsequent messages.
 - The discovery token is single-use and ephemeral: implementations MUST discard it after `aliceProcessInit` completes.
 
 **Key Agreement:**
@@ -200,10 +200,15 @@ bob_fp   = SHA-256(EK_B.pub)   // 32 bytes
 // Safety Number (for out-of-band verification)
 safety_number = SHA-256(lower_EK.pub || higher_EK.pub)   // sorted lexicographically
 
-// Derive initial bootstrap routing token from SK
+// Derive initial bootstrap routing tokens from SK
 info_token = "Where-v1-RoutingToken" || alice_fp || bob_fp
+// AliceToBob token (Alice posts, Bob polls)
 T_AB_0 = HKDF-SHA-256(IKM  = SK,
-                       salt = 0x00000000,   // epoch=0, 4 bytes big-endian uint32
+                       salt = 0x00000000 || 0x00,   // epoch=0 (4 bytes), direction=0 (AliceToBob, 1 byte)
+                       info = info_token)[0:16]
+// BobToAlice token (Bob posts, Alice polls)
+T_BA_0 = HKDF-SHA-256(IKM  = SK,
+                       salt = 0x00000000 || 0x01,   // epoch=0 (4 bytes), direction=1 (BobToAlice, 1 byte)
                        info = info_token)[0:16]
 ```
 
@@ -236,7 +241,7 @@ Alice receives the `KeyExchangeInit` and:
 1. Derives `SK = X25519(Alice.EK_A.priv, Bob.EK_B.pub)`.
 2. Recomputes the expected `key_confirmation = HMAC-SHA-256(SK, "Where-v1-Confirm" || EK_A.pub || EK_B.pub)`.
 3. **Aborts and discards** if the MAC does not match — this indicates `EK_B.pub` was corrupted or substituted in transit.
-4. Derives `alice_fp`, `bob_fp`, `T_AB_0` using the same formulas above.
+4. Derives `alice_fp`, `bob_fp`, `T_AB_0`, `T_BA_0` using the same formulas above.
 5. **Deletes `EK_A.priv` immediately.**
 6. Prompts user to name Bob (pre-filled with `suggested_name` from `KeyExchangeInit`).
 7. Stores the session.
@@ -341,7 +346,7 @@ Bob periodically generates a batch of fresh ephemeral X25519 keypairs (e.g., 20 
     {"id": 102, "pub": "<base64_opk2_pub>"},
     ...
   ],
-  "mac": "<base64, HMAC-SHA-256(K_bundle, v || routing_token || canonical_keys_blob)>"
+  "mac": "<base64, HMAC-SHA-256(K_bundle, v || send_token || canonical_keys_blob)>"
 }
 ```
 
@@ -354,14 +359,14 @@ Alice polls the mailbox and caches Bob's OPKs. When Alice reaches an epoch bound
 2. `(new_root_key, new_send_CK) = KDF_RK(root_key, dh_out)`.
 3. Alice derives `K_rot = HKDF-SHA-256(root_key, salt=epoch_be4, info="Where-v1-RotationAuth")[0:32]` **from the pre-rotation root key**.
 4. Alice constructs the `EpochRotation` payload and AEAD-encrypts it under `K_rot` (see §9.3 for wire format).
-5. Alice posts the encrypted `EpochRotation` on the **old (pre-rotation) routing token**.
+5. Alice posts the encrypted `EpochRotation` on the **old (pre-rotation) send_token**.
 
 **3. Consumption (Bob):**
 When Bob retrieves and decrypts the `EpochRotation`:
 1. He derives `K_rot` from his current root key (must match Alice's pre-rotation root key) and decrypts.
 2. He identifies the `opk_id` used by Alice and retrieves the corresponding private key.
 3. He computes `dh_out = X25519(Bob.OPK.priv, Alice.NewEK_A.pub)`.
-4. He derives `new_root_key` and `new_routing_token`.
+4. He derives `new_root_key`, `new_send_token`, and `new_recv_token`.
 5. **Bob MUST delete the OPK private key immediately after use.**
 
 This provides true asynchronous PCS: Alice can "heal" the session at any time using a pre-key Bob provided earlier, even if Bob is currently offline.
@@ -397,7 +402,7 @@ This provides true asynchronous PCS: Alice can "heal" the session at any time us
 | Message-count (K=20) | Per message | Bilateral per epoch (asynchronous)¹ | ~288 EpochRotation messages | Same PCS as time-based |
 | Hybrid OPK (T=10 min) | Per message | Bilateral per epoch (asynchronous)¹ | ~288 location + periodic PreKeyBundle | True per-epoch bilateral PCS; recommended |
 
-¹ *Bilateral PCS:* Both Alice and Bob contribute fresh ephemeral keys on every DH ratchet step (Alice's new `EK_A` + Bob's consumed `OPK`). Because neither contribution is a long-term key, there is no static material whose future compromise retroactively breaks historical epochs. If Alice runs out of cached OPKs, the DH ratchet stalls (symmetric per-message forward secrecy continues uninterrupted). See §5.3.1.
+¹ *Bilateral PCS:* Both Alice and Bob contribute fresh ephemeral keys on every DH ratchet step (Alice's new `EK_A` + Bob's consumed `OPK`). Because neither contribution is a long-term key, there is no static material whose future compromise retroactively breaks historical epochs. If Alice runs out of cached OPKs, the DH ratchet stalled (symmetric per-message forward secrecy continues uninterrupted). See §5.3.1.
 
 ### 5.5 Message Key Deletion Policy
 
@@ -438,8 +443,8 @@ When Alice sends a location update:
 2. For each friend `F_i` in her friend list:
    - Derive `MK_i` from Alice→F_i ratchet chain.
    - Encrypt: `CT_i = ChaCha20-Poly1305(key=MK_i, plaintext=loc, aad=encode(alice_fp_i, bob_fp_i, epoch_i, seq_i))` where `alice_fp_i = SHA-256(EK_A_i.pub)` and `bob_fp_i = SHA-256(EK_B_i.pub)` — the session fingerprints for friendship i (see §8.3).
-   - Send `(routing_token_i, CT_i, epoch_i, seq_i)` to the server.
-3. The server routes each `(routing_token_i, CT_i)` frame to the corresponding mailbox.
+   - Send `(send_token_i, CT_i, epoch_i, seq_i)` to the server.
+3. The server routes each `(send_token_i, CT_i)` frame to the corresponding mailbox.
 
 **Bandwidth:** For N friends, Alice sends N encrypted frames per location update. At 30-second intervals with 20 friends and ~100 bytes per ciphertext, this is ~2,000 bytes per update — entirely within mobile data budgets.
 
@@ -539,15 +544,16 @@ Alice and Bob each maintain, for each friendship session:
 SessionState {
   root_key:        [32]byte   // current root key
   send_chain_key:  [32]byte   // CK for Alice→B direction
-  recv_chain_key:  [32]byte   // Reserved — not used in current unidirectional protocol
-  routing_token:   [16]byte   // T_AB derived during key exchange, rotates each epoch
+  recv_chain_key:  [32]byte   // CK for B→Alice direction
+  send_token:      [16]byte   // token this client posts to
+  recv_token:      [16]byte   // token this client polls from
   send_seq:        uint64     // monotonically increasing counter
   recv_seq:        uint64     // highest received seq (for replay rejection)
   epoch:           uint32     // increments on each DH step
-  my_ek_pub:       [32]byte   // current epoch's ephemeral public key (Alice only; for EpochRotation announcement)
-  alice_fp:        [32]byte   // SHA-256(EK_A.pub) — session fingerprint, stable for session lifetime
-  bob_fp:          [32]byte   // SHA-256(EK_B.pub) — session fingerprint, stable for session lifetime
-  k_bundle:        [32]byte   // HKDF(SK, "Where-v1-BundleAuth") — stable, cached once at bootstrap
+  my_ek_pub:       [32]byte   // current epoch's ephemeral public key
+  alice_fp:        [32]byte   // SHA-256(EK_A.pub)
+  bob_fp:          [32]byte   // SHA-256(EK_B.pub)
+  k_bundle:        [32]byte   // HKDF(SK, "Where-v1-BundleAuth")
 }
 ```
 
@@ -565,27 +571,27 @@ Note: `my_ek_priv` (Alice's current epoch private key) lives only in memory unti
 ```
 Output: 64 bytes split as `[0:32] = new_root_key`, `[32:64] = new_chain_key`.
 
-After each DH ratchet step, the routing token for this friendship pair MUST be re-derived from the new root key:
+After each DH ratchet step, the routing tokens for this friendship pair MUST be re-derived from the new root key:
 ```
 info_token = "Where-v1-RoutingToken" || alice_fp || bob_fp
-new_routing_token = HKDF-SHA-256(
-    salt = new_epoch (big-endian uint32, 4 bytes),
+new_send_token = HKDF-SHA-256(
+    salt = new_epoch (4 bytes) || direction (1 byte),
     ikm  = new_root_key,
     info = info_token
 )[0:16]
 ```
-This ensures the routing token rotates with every epoch, preventing the server from correlating historical traffic for a friendship pair via a static token. The initial bootstrap token `T_AB_0` (§4.2) is replaced by the epoch-1 token after the first ratchet step completes. Implementations SHOULD discard `T_AB_0` after the first successful DH ratchet and never reuse it.
+This ensures the routing tokens rotate with every epoch, preventing the server from correlating historical traffic for a friendship pair via static tokens. Direction is 0 for Alice->Bob and 1 for Bob->Alice.
 
 **Token Transition Protocol:**
-When the routing token changes, the ordering of events is strictly sequenced:
+When the routing tokens change, the ordering of events is strictly sequenced:
 
-1. Alice MUST send the `EpochRotation` message on the **old (current) token**. Bob has not yet derived `new_routing_token` and cannot poll it; posting `EpochRotation` to the new token would make it undeliverable.
-2. Alice begins posting all frames *after* the `EpochRotation` to the `new_routing_token`.
-3. Alice MUST continue polling the **old (current) token** for `RatchetAck` (optional) and any incoming `PreKeyBundle` updates until the `2 * T` window expires.
-4. Bob, upon receiving the `EpochRotation` on the old token and deriving `new_routing_token`, MUST immediately start polling **both** the old and new tokens.
-5. Bob stops polling the old token only after he successfully receives at least one valid `EncryptedLocation` frame on the new token, or after a safety timeout of `2 * T` (2 epoch periods, e.g. 20 min).
+1. Alice MUST send the `EpochRotation` message on the **old (current) send_token**.
+2. Alice begins posting all frames *after* the `EpochRotation` to the `new_send_token`.
+3. Alice MUST continue polling the **old (current) recv_token** until `2 * T` expires.
+4. Bob, upon receiving the `EpochRotation` on his `recv_token` and deriving `new_send_token` and `new_recv_token`, MUST immediately start polling **both** the old and new `recv_token`.
+5. Bob stops polling the old `recv_token` only after he successfully receives at least one valid `EncryptedLocation` frame on the new `recv_token`, or after a safety timeout of `2 * T`.
 
-**Out-of-order delivery during transition:** A `GET /inbox/{old_token}` response may contain both the `EpochRotation` and subsequent `EncryptedLocation` frames in the same batch. Bob MUST process `EpochRotation` messages before `EncryptedLocation` frames of higher epoch within any batch. If Bob polls `new_routing_token` during the dual-polling window and receives `EncryptedLocation` frames before having processed the corresponding `EpochRotation`, he MUST buffer those frames. The buffer MUST NOT exceed 64 frames per friendship pair; discard after `2 * T` without a matching `EpochRotation`.
+**Out-of-order delivery during transition:** A `GET /inbox/{old_recv_token}` response may contain both the `EpochRotation` and subsequent `EncryptedLocation` frames in the same batch. Bob MUST process `EpochRotation` messages before `EncryptedLocation` frames of higher epoch within any batch. If Bob polls `new_recv_token` during the dual-polling window and receives `EncryptedLocation` frames before having processed the corresponding `EpochRotation`, he MUST buffer those frames. The buffer MUST NOT exceed 64 frames per friendship pair; discard after `2 * T` without a matching `EpochRotation`.
 
 **KDF_CK (symmetric ratchet step):**
 ```
@@ -631,7 +637,7 @@ K_bundle = HKDF-SHA-256(ikm  = SK,
                          salt = 0x00...00,
                          info = "Where-v1-BundleAuth")[0:32]
 mac = HMAC-SHA-256(key=K_bundle,
-                   data = v_be4 || routing_token || canonical_keys_blob)
+                   data = v_be4 || send_token || canonical_keys_blob)
 ```
 
 where `canonical_keys_blob` is the array of `(opk_id_be4 || opk_pub_32bytes)` tuples, length-prefixed with a 4-byte big-endian count.
@@ -687,7 +693,7 @@ All messages are JSON-encoded. Every message MUST include a top-level `"v"` fiel
 {
   "v": 1,
   "type": "Post",
-  "token": "<routing_token_T>",
+  "token": "<send_token_T>",
   "payload": {
     "type": "EncryptedLocation",
     "epoch": 42,
@@ -729,7 +735,7 @@ aad = "Where-v1-Location" (18 bytes, UTF-8)
 {
   "v": 1,
   "type": "Poll",
-  "token": "<routing_token_T>"
+  "token": "<recv_token_T>"
 }
 ```
 
@@ -754,7 +760,7 @@ Alice MUST verify `key_confirmation` before accepting the session. Abort and dis
 {
   "v": 1,
   "type": "Post",
-  "token": "<routing_token_T>",
+  "token": "<send_token_T>",
   "payload": {
     "type": "PreKeyBundle",
     "keys": [
@@ -762,7 +768,7 @@ Alice MUST verify `key_confirmation` before accepting the session. Abort and dis
       {"id": 102, "pub": "<base64_opk2_pub>"},
       ...
     ],
-    "mac": "<base64, HMAC-SHA-256(K_bundle, v_be4 || routing_token || canonical_keys_blob)>"
+    "mac": "<base64, HMAC-SHA-256(K_bundle, v_be4 || send_token || canonical_keys_blob)>"
   }
 }
 ```
@@ -771,12 +777,12 @@ where `K_bundle = HKDF(SK, salt=0, info="Where-v1-BundleAuth")[0:32]` and `canon
 
 Alice MUST verify the MAC using her cached `K_bundle` before storing any OPKs.
 
-**EpochRotation** (Alice → Bob, sent on the OLD routing token when advancing the DH ratchet):
+**EpochRotation** (Alice → Bob, sent on the OLD send_token when advancing the DH ratchet):
 ```json
 {
   "v": 1,
   "type": "Post",
-  "token": "<old_routing_token_T>",
+  "token": "<old_send_token_T>",
   "payload": {
     "type": "EpochRotation",
     "epoch": 43,
@@ -798,12 +804,12 @@ and `K_rot = HKDF(pre_rotation_root_key, salt=epoch_be4, info="Where-v1-Rotation
 
 Bob MUST decrypt using `K_rot` derived from his current root key. If decryption fails (bad key or corrupted), discard the message — do NOT advance the ratchet.
 
-**RatchetAck** (Bob → Alice, optional acknowledgment of rotation, sent on the NEW routing token):
+**RatchetAck** (Bob → Alice, optional acknowledgment of rotation, sent on the NEW send_token):
 ```json
 {
   "v": 1,
   "type": "Post",
-  "token": "<new_routing_token_T>",
+  "token": "<new_send_token_T>",
   "payload": {
     "type": "RatchetAck",
     "epoch_seen": 43,
@@ -854,7 +860,7 @@ val mailboxes: ConcurrentHashMap<RoutingToken, Queue<EncryptedMessage>>
    - Drain and return all messages in the queue.
    - **Constant-Time Invariant:** The server MUST return an identical response (HTTP 200 OK with `[]`) for non-existent tokens. To prevent timing side-channels, the lookup logic must ensure that the time taken to respond for a "hit" (active token) versus a "miss" (empty/unknown token) is indistinguishable to an attacker.
 
-The server exposes only the mailbox API (`POST /inbox/{token}` and `GET /inbox/{token}`). There is no WebSocket or user-addressed REST endpoint.
+The server exposes only the mailbox API (`POST /inbox/{token}` and `GET /inbox/{token}`).
 
 ### 10.3 What Stays the Same
 
@@ -887,7 +893,7 @@ With this design:
 **Library recommendations:**
 - **Kotlin Multiplatform:** Use [ionspin/kotlin-multiplatform-libsodium](https://github.com/ionspin/kotlin-multiplatform-libsodium) for all cryptographic primitives (X25519, ChaCha20-Poly1305, SHA-256, HMAC-SHA-256, Ed25519). Libsodium provides a unified API across JVM, Android, and iOS, eliminating platform-specific implementation variance. All crypto operations are common-code `expect/actual` implementations.
 - **Android / Kotlin:** Libsodium bindings use `libsodium.so` (statically linked). Store root keys in Android Keystore where supported; a Keystore-backed wrapper key can protect the master key material.
-- **iOS / Swift:** Libsodium bindings use the native `libsodium` framework (iOS includes sodium.dylib). Key material persists in the Secure Enclave-backed Keychain. SwiftUI calls `LocationSyncService` (native URLSession WebSocket) which invokes the KMP shared module for crypto.
+- **iOS / Swift:** Libsodium bindings use the native `libsodium` framework (iOS includes sodium.dylib). Key material persists in the Secure Enclave-backed Keychain. SwiftUI calls the KMP shared module for crypto operations.
 
 ---
 
@@ -902,4 +908,3 @@ With this design:
 4. **Server-Side Message Buffering TTL Tuning.** The current default TTL is 30–60 minutes (§10.2). The optimal value balances offline tolerance against server memory footprint and should be informed by real-world usage data.
 
 5. **Session Expiry and Staleness Handling.** If Alice stops sharing (app uninstalled, account deleted, extended offline period), Bob's client continues polling indefinitely against a token that will never receive new messages. Bob's client SHOULD implement exponential back-off after a configurable number of consecutive empty responses (e.g., back off after 10 empty polls, doubling the interval up to a maximum of 30 min), and SHOULD surface a "no recent location" staleness indicator to the user after a threshold (e.g., 2 hours without a new frame).
-

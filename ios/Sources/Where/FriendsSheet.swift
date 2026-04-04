@@ -1,18 +1,31 @@
 import Shared
 import SwiftUI
 
+func timeAgoString(_ date: Date?) -> String {
+    guard let date = date else { return "never" }
+    let seconds = Date().timeIntervalSince(date)
+    if seconds < 60 { return "just now" }
+    if seconds < 3600 { return "\(Int(seconds / 60))m ago" }
+    if seconds < 86400 { return "\(Int(seconds / 3600))h ago" }
+    return "\(Int(seconds / 86400))d ago"
+}
+
 struct FriendsSheet: View {
     let myId: String
     @Binding var displayName: String
     let friends: [Shared.FriendEntry]
     let pausedFriendIds: Set<String>
+    let lastPingTimes: [String: Date]
     let onTogglePause: (String) -> Void
     let onCreateInvite: () -> Void
     let onScanQr: () -> Void
+    let onPasteUrl: (String) -> Void
     let onRemove: (String) -> Void
     let onZoomTo: (String) -> Void
 
     @State private var friendToRemove: Shared.FriendEntry? = nil
+    @State private var showPasteField = false
+    @State private var pastedUrl = ""
 
     var body: some View {
         NavigationStack {
@@ -29,22 +42,55 @@ struct FriendsSheet: View {
                 }
 
                 Section {
-                    HStack(spacing: 12) {
-                        Button {
-                            onCreateInvite()
-                        } label: {
-                            Label("Invite", systemImage: "qrcode")
-                                .frame(maxWidth: .infinity)
-                        }
-                        .buttonStyle(.bordered)
+                    VStack(spacing: 12) {
+                        HStack(spacing: 12) {
+                            Button {
+                                onCreateInvite()
+                            } label: {
+                                Label("Invite", systemImage: "qrcode")
+                                    .frame(maxWidth: .infinity)
+                            }
+                            .buttonStyle(.bordered)
 
-                        Button {
-                            onScanQr()
-                        } label: {
-                            Label("Scan", systemImage: "qrcode.viewfinder")
-                                .frame(maxWidth: .infinity)
+                            Button {
+                                onScanQr()
+                            } label: {
+                                Label("Scan", systemImage: "qrcode.viewfinder")
+                                    .frame(maxWidth: .infinity)
+                            }
+                            .buttonStyle(.bordered)
                         }
-                        .buttonStyle(.bordered)
+
+                        if showPasteField {
+                            HStack(spacing: 8) {
+                                TextField("Paste where://invite?...", text: $pastedUrl)
+                                    .textFieldStyle(.roundedBorder)
+                                    .font(.caption)
+                                    .autocorrectionDisabled()
+                                    .textInputAutocapitalization(.never)
+
+                                Button("Go") {
+                                    if !pastedUrl.isEmpty {
+                                        onPasteUrl(pastedUrl)
+                                        pastedUrl = ""
+                                        showPasteField = false
+                                    }
+                                }
+                                .buttonStyle(.bordered)
+
+                                Button("Cancel") {
+                                    pastedUrl = ""
+                                    showPasteField = false
+                                }
+                                .buttonStyle(.bordered)
+                            }
+                        } else {
+                            Button("Paste URL") {
+                                showPasteField = true
+                            }
+                            .frame(maxWidth: .infinity)
+                            .buttonStyle(.bordered)
+                        }
                     }
                 }
 
@@ -52,13 +98,21 @@ struct FriendsSheet: View {
                     Section("Friends (\(friends.count))") {
                         ForEach(friends, id: \.id) { friend in
                             HStack {
-                                VStack(alignment: .leading) {
+                                VStack(alignment: .leading, spacing: 2) {
                                     Text(friend.name)
                                         .font(.body)
-                                    Text(friend.id.prefix(8))
-                                        .font(.caption)
-                                        .fontDesign(.monospaced)
-                                        .foregroundStyle(.secondary)
+                                    HStack(spacing: 8) {
+                                        Text(friend.id.prefix(8))
+                                            .font(.caption)
+                                            .fontDesign(.monospaced)
+                                            .foregroundStyle(.secondary)
+                                        Text("•")
+                                            .font(.caption)
+                                            .foregroundStyle(.secondary)
+                                        Text(timeAgoString(lastPingTimes[friend.id]))
+                                            .font(.caption)
+                                            .foregroundStyle(.secondary)
+                                    }
                                 }
                                 Spacer()
                                 

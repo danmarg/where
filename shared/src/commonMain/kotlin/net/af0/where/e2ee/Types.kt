@@ -1,5 +1,6 @@
 package net.af0.where.e2ee
 
+import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 
 /**
@@ -22,7 +23,8 @@ data class RawKeyPair(val priv: ByteArray, val pub: ByteArray) {
  *   recvChainKey  – 32-byte symmetric chain key; advanced on every location receive.
  *                   Independent from sendChainKey; initialized to the peer's send chain
  *                   so that send and receive ratchets never share key material.
- *   routingToken  – 16-byte opaque token used as the mailbox address.
+ *   sendToken     – 16-byte opaque token (mailbox address) for outgoing messages.
+ *   recvToken     – 16-byte opaque token (mailbox address) for incoming messages.
  *   sendSeq       – Monotonically increasing counter; MUST NOT wrap (session must be
  *                   invalidated and re-keyed if it reaches Long.MAX_VALUE).
  *   recvSeq       – Highest seq received from the peer (for replay rejection).
@@ -39,7 +41,8 @@ data class SessionState(
     @Serializable(with = ByteArrayBase64Serializer::class) val rootKey: ByteArray,
     @Serializable(with = ByteArrayBase64Serializer::class) val sendChainKey: ByteArray,
     @Serializable(with = ByteArrayBase64Serializer::class) val recvChainKey: ByteArray,
-    @Serializable(with = ByteArrayBase64Serializer::class) val routingToken: ByteArray,
+    @Serializable(with = ByteArrayBase64Serializer::class) val sendToken: ByteArray,
+    @Serializable(with = ByteArrayBase64Serializer::class) val recvToken: ByteArray,
     val sendSeq: Long,
     val recvSeq: Long,
     val epoch: Int,
@@ -55,7 +58,8 @@ data class SessionState(
         return rootKey.contentEquals(other.rootKey) &&
             sendChainKey.contentEquals(other.sendChainKey) &&
             recvChainKey.contentEquals(other.recvChainKey) &&
-            routingToken.contentEquals(other.routingToken) &&
+            sendToken.contentEquals(other.sendToken) &&
+            recvToken.contentEquals(other.recvToken) &&
             sendSeq == other.sendSeq &&
             recvSeq == other.recvSeq &&
             epoch == other.epoch &&
@@ -71,7 +75,8 @@ data class SessionState(
         var h = rootKey.contentHashCode()
         h = 31 * h + sendChainKey.contentHashCode()
         h = 31 * h + recvChainKey.contentHashCode()
-        h = 31 * h + routingToken.contentHashCode()
+        h = 31 * h + sendToken.contentHashCode()
+        h = 31 * h + recvToken.contentHashCode()
         h = 31 * h + sendSeq.hashCode()
         h = 31 * h + recvSeq.hashCode()
         h = 31 * h + epoch
@@ -107,7 +112,9 @@ data class LocationPlaintext(
 @Serializable
 data class QrPayload(
     // Alice's ephemeral X25519 public key (32 bytes)
+    @SerialName("ek_pub")
     @Serializable(with = ByteArrayBase64Serializer::class) val ekPub: ByteArray,
+    @SerialName("suggested_name")
     val suggestedName: String,
     // hex(SHA-256(ekPub)[0:8])
     val fingerprint: String,

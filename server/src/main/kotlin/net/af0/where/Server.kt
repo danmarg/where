@@ -152,9 +152,9 @@ fun Application.module(state: ServerState = ServerState()) {
                     call.respond(HttpStatusCode.BadRequest, "token required")
                     return@post
                 }
-            
+
             if (state.debug) application.log.info("DEBUG: [Post] token=$token")
-            
+
             val body = call.receiveText()
             val payload = runCatching { json.parseToJsonElement(body) }.getOrNull()
             if (payload == null || payload == JsonNull) {
@@ -177,13 +177,13 @@ fun Application.module(state: ServerState = ServerState()) {
                     call.respond(HttpStatusCode.BadRequest, "token required")
                     return@get
                 }
-            
+
             if (state.debug) application.log.info("DEBUG: [Poll] token=$token")
-            
+
             val messages = state.mailbox.drain(token)
-            
+
             if (state.debug) application.log.info("DEBUG: [Poll] token=$token - Returning ${messages.size} messages")
-            
+
             call.respond(JsonArray(messages))
         }
     }
