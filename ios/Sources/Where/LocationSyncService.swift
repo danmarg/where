@@ -2,6 +2,7 @@ import Foundation
 import Shared
 import os
 import UIKit
+import CoreLocation
 
 private let logger = Logger(subsystem: "net.af0.where", category: "LocationSync")
 
@@ -184,6 +185,13 @@ final class LocationSyncService: ObservableObject {
         pollTask = Task { [weak self] in
             while !Task.isCancelled {
                 await self?.pollAll()
+
+                // On iOS, we also check for stationary heartbeats in the poll loop
+                // because CLLocationManager won't fire didUpdateLocations if the user hasn't moved.
+                if let last = LocationManager.shared.lastLocation {
+                    self?.sendLocation(lat: last.coordinate.latitude, lng: last.coordinate.longitude)
+                }
+
                 let rapid = await self?.isRapidPolling() == true
                 let interval: UInt64 = rapid ? 2_000_000_000 : 60_000_000_000  // 2s while pairing, 60s otherwise
                 try? await Task.sleep(nanoseconds: interval)
@@ -209,11 +217,11 @@ final class LocationSyncService: ObservableObject {
 
         // Send if:
         // 1. Never sent before
-        // 2. Moved > 10 meters AND > 2 minutes since last send
-        // 3. > 10 minutes since last send (stationary ping)
+        // 2. Moved > 10 meters AND > 1 minute since last send
+        // 3. > 5 minutes since last send (stationary heartbeat)
         let shouldSend = lastSentLocation == nil ||
-                        (distance > 10 && now.timeIntervalSince(lastSentTime) > 2 * 60) ||
-                        (now.timeIntervalSince(lastSentTime) > 10 * 60)
+                        (distance > 10 && now.timeIntervalSince(lastSentTime) > 1 * 60) ||
+                        (now.timeIntervalSince(lastSentTime) > 5 * 60)
 
         guard shouldSend else { return }
 

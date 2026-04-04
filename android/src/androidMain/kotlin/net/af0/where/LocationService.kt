@@ -92,11 +92,11 @@ class LocationService : Service() {
 
         // Send if:
         // 1. Never sent before
-        // 2. Moved > 10 meters AND > 2 minutes since last send
-        // 3. > 10 minutes since last send (stationary ping)
+        // 2. Moved > 10 meters AND > 1 minute since last send
+        // 3. > 5 minutes since last send (stationary heartbeat)
         val shouldSend = lastLoc == null ||
-                        (distance > 10 && now - lastSentTime > 2 * 60_000L) ||
-                        (now - lastSentTime > 10 * 60_000L)
+                        (distance > 10 && now - lastSentTime > 1 * 60_000L) ||
+                        (now - lastSentTime > 5 * 60_000L)
 
         if (shouldSend) {
             serviceScope.launch {
@@ -118,6 +118,12 @@ class LocationService : Service() {
         while (true) {
             val rapid = isRapidPolling()
             doPoll()
+
+            // Also check for stationary heartbeat in the poll loop in case location updates stop firing
+            LocationRepository.lastLocation.value?.let { (lat, lng) ->
+                maybeSendLocation(lat, lng)
+            }
+
             val interval = if (rapid) 2_000L else 60_000L
             delay(interval)
         }
@@ -138,8 +144,6 @@ class LocationService : Service() {
     }
 
     private fun isRapidPolling(): Boolean {
-        // For simplicity in this PR, we can check if there are any active invites or pending pairs.
-        // In a real app, we might want a more sophisticated way to signal this from the UI to the service.
         return e2eeStore.pendingQrPayload != null
     }
 
