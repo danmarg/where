@@ -213,18 +213,18 @@ final class LocationSyncService: ObservableObject {
         pollTask = nil
     }
 
-    func sendLocation(lat: Double, lng: Double, isHeartbeat: Bool = false) {
+    func sendLocation(lat: Double, lng: Double, isHeartbeat: Bool = false, force: Bool = false) {
         guard isSharingLocation, !isSending else { return }
 
         let now = Date()
-        let shouldSend = lastSentLocation == nil ||
+        let shouldSend = force || lastSentLocation == nil ||
                         (!isHeartbeat && now.timeIntervalSince(lastSentTime) > 1 * 60) ||
                         (isHeartbeat && now.timeIntervalSince(lastSentTime) > 5 * 60)
 
         guard shouldSend else { return }
 
         isSending = true
-        logger.debug("Sending location: \(lat), \(lng) (heartbeat=\(isHeartbeat))")
+        logger.debug("Sending location: \(lat), \(lng) (heartbeat=\(isHeartbeat), force=\(force))")
         var backgroundTask = UIBackgroundTaskIdentifier.invalid
         backgroundTask = UIApplication.shared.beginBackgroundTask(withName: "SendLocation") {
             if backgroundTask != .invalid {
@@ -325,7 +325,7 @@ final class LocationSyncService: ObservableObject {
 
                     // Trigger immediate location sync
                     if let last = LocationManager.shared.lastLocation {
-                        try? await locationClient.sendLocationToFriend(friendId: bobEntry.id, lat: last.coordinate.latitude, lng: last.coordinate.longitude)
+                        self.sendLocation(lat: last.coordinate.latitude, lng: last.coordinate.longitude, force: true)
                     }
                     await pollAll(updateUi: true)
                     
@@ -355,7 +355,7 @@ final class LocationSyncService: ObservableObject {
         Task {
             defer { isExchanging = false }
             if let entry, let last = LocationManager.shared.lastLocation {
-                try? await locationClient.sendLocationToFriend(friendId: entry.id, lat: last.coordinate.latitude, lng: last.coordinate.longitude)
+                self.sendLocation(lat: last.coordinate.latitude, lng: last.coordinate.longitude, force: true)
             }
             await pollAll(updateUi: true)
         }

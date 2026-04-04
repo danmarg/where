@@ -83,18 +83,23 @@ class LocationService : Service() {
         if (intent?.action == ACTION_FORCE_PUBLISH) {
             val friendId = intent.getStringExtra(EXTRA_FRIEND_ID)
             LocationRepository.lastLocation.value?.let { (lat, lng) ->
-                serviceScope.launch {
-                    try {
-                        if (friendId != null) {
+                if (friendId != null) {
+                    // Send specifically to this friend, but also update lastSent state
+                    // to prevent an immediate redundant publish to everyone from heartbeats.
+                    serviceScope.launch {
+                        try {
                             Log.d(TAG, "Forced publish to friend: $friendId")
                             locationClient.sendLocationToFriend(friendId, lat, lng)
-                        } else {
-                            Log.d(TAG, "Forced publish to all")
-                            handleNewLocation(lat, lng, isHeartbeat = false, force = true)
+                            lastSentLat = lat
+                            lastSentLng = lng
+                            lastSentTime = System.currentTimeMillis()
+                        } catch (e: Exception) {
+                            Log.e(TAG, "Forced publish to friend failed", e)
                         }
-                    } catch (e: Exception) {
-                        Log.e(TAG, "Forced publish failed", e)
                     }
+                } else {
+                    Log.d(TAG, "Forced publish to all")
+                    handleNewLocation(lat, lng, isHeartbeat = false, force = true)
                 }
             }
         }
