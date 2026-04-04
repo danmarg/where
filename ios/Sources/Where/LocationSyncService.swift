@@ -3,8 +3,10 @@ import Shared
 import os
 import UIKit
 import CoreLocation
+import BackgroundTasks
 
 private let logger = Logger(subsystem: "net.af0.where", category: "LocationSync")
+private let BACKGROUND_TASK_ID = "net.af0.where.poll"
 
 @inline(__always)
 private func debugLog(_ msg: () -> String) {
@@ -132,6 +134,8 @@ final class LocationSyncService: ObservableObject {
     private var isSending: Bool = false
     private var pendingForcedSendAfterPairing: Bool = false
 
+    private var pendingLocationSend: (lat: Double, lng: Double, force: Bool)? = nil
+
     let e2eeStore: Shared.E2eeStore
     let locationClient: Shared.LocationClient
     private var pollTask: Task<Void, Never>?
@@ -171,6 +175,7 @@ final class LocationSyncService: ObservableObject {
             self.friendLocations = initialLocations
             self.friendLastPing = initialLastPing
         }
+        registerBackgroundTask()
         startPolling()
     }
 
@@ -189,7 +194,7 @@ final class LocationSyncService: ObservableObject {
         pollTask?.cancel()
         pollTask = Task { [weak self] in
             while !Task.isCancelled {
-                let isForeground = UIApplication.shared.applicationState == .active
+                let isForeground = await MainActor.run { UIApplication.shared.applicationState == .active }
                 let rapid = await self?.isRapidPolling() == true
 
                 await self?.pollAll(updateUi: isForeground || rapid)
@@ -205,6 +210,10 @@ final class LocationSyncService: ObservableObject {
                     interval = 60_000_000_000     // 60s while in foreground
                 } else {
                     interval = 300_000_000_000    // 300s (5m) while in background
+                    // Schedule background task to continue polling if app gets suspended
+                    if isSharingLocation {
+                        scheduleBackgroundPoll()
+                    }
                 }
                 try? await Task.sleep(nanoseconds: interval)
             }
@@ -219,8 +228,14 @@ final class LocationSyncService: ObservableObject {
     func sendLocation(lat: Double, lng: Double, isHeartbeat: Bool = false, force: Bool = false) {
         let effectiveForce = force || pendingForcedSendAfterPairing
         guard isSharingLocation else { return }
-        
-        if !effectiveForce && isSending { return }
+
+        // If already sending, queue this request (forced sends take priority)
+        if isSending {
+            if effectiveForce || pendingLocationSend == nil {
+                pendingLocationSend = (lat: lat, lng: lng, force: effectiveForce)
+            }
+            return
+        }
 
         let now = Date()
         let shouldSend = effectiveForce || lastSentLocation == nil ||
@@ -229,12 +244,16 @@ final class LocationSyncService: ObservableObject {
 
         guard shouldSend else { return }
 
-        isSending = true
         if effectiveForce {
             pendingForcedSendAfterPairing = false
         }
-        
+
         logger.debug("Sending location: \(lat), \(lng) (heartbeat=\(isHeartbeat), force=\(force), effectiveForce=\(effectiveForce))")
+        performLocationSend(lat: lat, lng: lng)
+    }
+
+    private func performLocationSend(lat: Double, lng: Double) {
+        isSending = true
         var backgroundTask = UIBackgroundTaskIdentifier.invalid
         backgroundTask = UIApplication.shared.beginBackgroundTask(withName: "SendLocation") {
             if backgroundTask != .invalid {
@@ -255,6 +274,13 @@ final class LocationSyncService: ObservableObject {
                 updateStatus(error)
             }
             isSending = false
+
+            // Process any pending send that arrived while we were sending
+            if let pending = pendingLocationSend {
+                pendingLocationSend = nil
+                self.sendLocation(lat: pending.lat, lng: pending.lng, force: pending.force)
+            }
+
             if backgroundTask != .invalid {
                 UIApplication.shared.endBackgroundTask(backgroundTask)
                 backgroundTask = .invalid
@@ -366,7 +392,10 @@ final class LocationSyncService: ObservableObject {
         }
         Task {
             defer { isExchanging = false }
-            if entry != nil {
+            if let aliceEntry = entry {
+                // Upload OPK bundle to mirror Bob's side (confirmQrScan)
+                try? await locationClient.postOpkBundle(friendId: aliceEntry.id)
+
                 if let last = LocationManager.shared.lastLocation {
                     self.sendLocation(lat: last.coordinate.latitude, lng: last.coordinate.longitude, force: true)
                 } else {
@@ -506,6 +535,46 @@ final class LocationSyncService: ObservableObject {
             connectionStatus = .error(message: msg)
         } else {
             connectionStatus = .ok
+        }
+    }
+
+    // MARK: - Background task handling
+
+    private func registerBackgroundTask() {
+        BGTaskScheduler.shared.register(
+            forTaskWithIdentifier: BACKGROUND_TASK_ID,
+            using: nil
+        ) { task in
+            guard let task = task as? BGProcessingTask else { return }
+            self.handleBackgroundPoll(task)
+        }
+    }
+
+    private func scheduleBackgroundPoll() {
+        let request = BGProcessingTaskRequest(identifier: BACKGROUND_TASK_ID)
+        request.requiresNetworkConnectivity = true
+        request.requiresExternalPower = false
+        do {
+            try BGTaskScheduler.shared.submit(request)
+            debugLog { "Scheduled background poll task" }
+        } catch {
+            logger.error("Failed to schedule background poll: \(error)")
+        }
+    }
+
+    private func handleBackgroundPoll(_ task: BGProcessingTask) {
+        debugLog { "Background poll task executed" }
+        // Schedule next background task before this one finishes
+        scheduleBackgroundPoll()
+
+        Task {
+            do {
+                await pollAll(updateUi: true)
+                task.setTaskCompleted(success: true)
+            } catch {
+                logger.error("Background poll failed: \(error)")
+                task.setTaskCompleted(success: false)
+            }
         }
     }
 }
