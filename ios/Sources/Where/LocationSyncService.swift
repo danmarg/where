@@ -150,6 +150,16 @@ final class LocationSyncService: ObservableObject {
 
         Task {
             friends = e2eeStore.listFriends()
+            var initialLocations: [String: (lat: Double, lng: Double, ts: Int64)] = [:]
+            var initialLastPing: [String: Date] = [:]
+            for friend in friends {
+                if let lat = friend.lastLat?.doubleValue, let lng = friend.lastLng?.doubleValue, let ts = friend.lastTs?.int64Value {
+                    initialLocations[friend.id] = (lat: lat, lng: lng, ts: ts)
+                    initialLastPing[friend.id] = Date(timeIntervalSince1970: TimeInterval(ts))
+                }
+            }
+            self.friendLocations = initialLocations
+            self.friendLastPing = initialLastPing
         }
         startPolling()
     }
@@ -339,7 +349,9 @@ final class LocationSyncService: ObservableObject {
             logger.debug("Got \(updates.count) location updates")
             for update in updates {
                 friendLocations[update.userId] = (lat: update.lat, lng: update.lng, ts: update.timestamp)
-                friendLastPing[update.userId] = Date()
+                let now = Date()
+                friendLastPing[update.userId] = now
+                e2eeStore.updateLastLocation(id: update.userId, lat: update.lat, lng: update.lng, ts: Int64(now.timeIntervalSince1970))
             }
             updateStatus(nil)
         } catch {
