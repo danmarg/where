@@ -123,7 +123,8 @@ class LocationViewModel(app: Application) : AndroidViewModel(app) {
     private fun isRapidPolling(): Boolean {
         val now = System.currentTimeMillis()
         // Alice is pairing if she has a pending invite QR or Bob's KeyExchangeInit waiting for naming
-        val isPairing = _pendingInviteQr.value != null || _pendingInitPayload.value != null
+        // Bob is pairing if he has scanned a QR but not yet named the friend
+        val isPairing = _pendingInviteQr.value != null || _pendingInitPayload.value != null || _pendingQrForNaming.value != null
         // Bob is pairing if he recently scanned a QR (within 5 minutes)
         val recentlyTriggered = now - lastRapidPollTrigger < 5 * 60_000L
         return isPairing || recentlyTriggered
@@ -184,6 +185,7 @@ class LocationViewModel(app: Application) : AndroidViewModel(app) {
         }
         Log.d(TAG, "processQrUrl: parsed qr, suggestedName=${qr.suggestedName}")
         _pendingQrForNaming.value = qr
+        triggerRapidPoll()
         return true
     }
 

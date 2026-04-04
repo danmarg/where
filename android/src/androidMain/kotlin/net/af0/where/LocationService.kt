@@ -25,6 +25,15 @@ class LocationService : Service() {
                     LocationRepository.onLocation(loc.latitude, loc.longitude)
                 }
             }
+
+        try {
+            fusedClient.lastLocation.addOnSuccessListener { loc ->
+                if (loc != null) {
+                    LocationRepository.onLocation(loc.latitude, loc.longitude)
+                }
+            }
+        } catch (_: SecurityException) {
+        }
     }
 
     override fun onStartCommand(
