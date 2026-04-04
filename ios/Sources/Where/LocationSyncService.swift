@@ -187,13 +187,8 @@ final class LocationSyncService: ObservableObject {
                 let isForeground = UIApplication.shared.applicationState == .active
                 let rapid = await self?.isRapidPolling() == true
 
-                // Requirement: Only fetch friend locations in foreground.
-                if isForeground || rapid {
-                    await self?.pollAll(updateUi: true)
-                }
+                await self?.pollAll(updateUi: isForeground || rapid)
 
-                // On iOS, we also check for stationary heartbeats in the poll loop
-                // because CLLocationManager won't fire didUpdateLocations if the user hasn't moved.
                 if let last = LocationManager.shared.lastLocation {
                     self?.sendLocation(lat: last.coordinate.latitude, lng: last.coordinate.longitude)
                 }
@@ -220,10 +215,6 @@ final class LocationSyncService: ObservableObject {
             return loc1.distance(from: loc2)
         }()
 
-        // Send if:
-        // 1. Never sent before
-        // 2. Moved > 10 meters AND > 1 minute since last send
-        // 3. > 5 minutes since last send (stationary heartbeat)
         let shouldSend = lastSentLocation == nil ||
                         (distance > 10 && now.timeIntervalSince(lastSentTime) > 1 * 60) ||
                         (now.timeIntervalSince(lastSentTime) > 5 * 60)
@@ -231,15 +222,18 @@ final class LocationSyncService: ObservableObject {
         guard shouldSend else { return }
 
         logger.debug("Sending location: \(lat), \(lng)")
-        let backgroundTask = UIApplication.shared.beginBackgroundTask(withName: "SendLocation") {
-            // End task if it takes too long
+        var backgroundTask = UIBackgroundTaskIdentifier.invalid
+        backgroundTask = UIApplication.shared.beginBackgroundTask(withName: "SendLocation") {
+            if backgroundTask != .invalid {
+                UIApplication.shared.endBackgroundTask(backgroundTask)
+                backgroundTask = .invalid
+            }
         }
 
         Task {
-            // Requirement: Just-in-time poll before sending in background to advance ratchet
-            if UIApplication.shared.applicationState != .active {
-                await self.pollAll(updateUi: false)
-            }
+            let isForeground = UIApplication.shared.applicationState == .active
+            let rapid = await self.isRapidPolling()
+            await self.pollAll(updateUi: isForeground || rapid)
 
             do {
                 try await locationClient.sendLocation(lat: lat, lng: lng, pausedFriendIds: pausedFriendIds)
@@ -251,7 +245,10 @@ final class LocationSyncService: ObservableObject {
                 logger.error("Failed to send location: \(error.localizedDescription)")
                 updateStatus(error)
             }
-            UIApplication.shared.endBackgroundTask(backgroundTask)
+            if backgroundTask != .invalid {
+                UIApplication.shared.endBackgroundTask(backgroundTask)
+                backgroundTask = .invalid
+            }
         }
     }
 
@@ -261,7 +258,6 @@ final class LocationSyncService: ObservableObject {
         debugLog { "Created invite: discovery=\(toHex(qr.discoveryToken()))" }
         pendingInviteQr = qr
         triggerRapidPoll()
-        // Restart the poll loop so it wakes immediately rather than waiting out any 60s sleep.
         startPolling()
     }
 
@@ -318,18 +314,12 @@ final class LocationSyncService: ObservableObject {
                     debugLog { "Posting KeyExchangeInit to mailbox with token: \(discoveryHex)" }
                     try await postToMailbox(token: discoveryHex, bodyData: bodyData)
                     debugLog { "KeyExchangeInit posted successfully" }
-                    
-                    // Small delay to ensure Alice's poll sees it
                     try? await Task.sleep(nanoseconds: 500_000_000)
-                    
                     try await locationClient.postOpkBundle(friendId: bobEntry.id)
-
-                    // Trigger immediate location sync
                     if let last = LocationManager.shared.lastLocation {
                         try? await locationClient.sendLocationToFriend(friendId: bobEntry.id, lat: last.coordinate.latitude, lng: last.coordinate.longitude)
                     }
                     await pollAll()
-                    
                     updateStatus(nil)
                 } catch {
                     logger.error("Failed to post init: \(error.localizedDescription)")
@@ -346,8 +336,6 @@ final class LocationSyncService: ObservableObject {
         autoClearedInvite = false
         triggerRapidPoll()
         startPolling()
-        // processKeyExchangeInit sets pendingInvite=null internally; call it immediately
-        // so nothing can clear pendingInvite before it runs.
         let entry = try? e2eeStore.processKeyExchangeInit(payload: payload, bobName: name)
         if entry != nil {
             friends = e2eeStore.listFriends()
@@ -361,9 +349,6 @@ final class LocationSyncService: ObservableObject {
     }
 
     func cancelPendingInit() {
-        // Guard: only act if Alice's invite flow is actually active.
-        // Prevents double-calls (binding set: fires after explicit Save/Cancel button)
-        // and prevents Bob's QR-scan cancel path from spuriously clearing Alice's invite store.
         guard pendingInitPayload != nil || pendingInviteQr != nil else { return }
         if !autoClearedInvite { e2eeStore.clearInvite() }
         autoClearedInvite = false
@@ -384,6 +369,7 @@ final class LocationSyncService: ObservableObject {
             e2eeStore.deleteFriend(id: id)
             friends = e2eeStore.listFriends()
             friendLocations.removeValue(forKey: id)
+            friendLastPing.removeValue(forKey: id)
             pausedFriendIds.remove(id)
         }
     }
@@ -392,27 +378,35 @@ final class LocationSyncService: ObservableObject {
 
     private func pollAll(updateUi: Bool = true) async {
         logger.debug("Polling for location updates")
-        let backgroundTask = UIApplication.shared.beginBackgroundTask(withName: "PollAll") {
-            // End task if it takes too long
+        var backgroundTask = UIBackgroundTaskIdentifier.invalid
+        backgroundTask = UIApplication.shared.beginBackgroundTask(withName: "PollAll") {
+            if backgroundTask != .invalid {
+                UIApplication.shared.endBackgroundTask(backgroundTask)
+                backgroundTask = .invalid
+            }
         }
         do {
             let updates = try await locationClient.poll()
             logger.debug("Got \(updates.count) location updates")
-            if updateUi {
-                for update in updates {
+            for update in updates {
+                e2eeStore.updateLastLocation(id: update.userId, lat: update.lat, lng: update.lng, ts: Int64(Date().timeIntervalSince1970))
+                if updateUi {
                     friendLocations[update.userId] = (lat: update.lat, lng: update.lng, ts: update.timestamp)
-                    let now = Date()
-                    friendLastPing[update.userId] = now
-                    e2eeStore.updateLastLocation(id: update.userId, lat: update.lat, lng: update.lng, ts: Int64(now.timeIntervalSince1970))
+                    friendLastPing[update.userId] = Date()
                 }
+            }
+            if updateUi {
+                await pollPendingInvite()
             }
             updateStatus(nil)
         } catch {
             logger.error("Poll failed: \(error.localizedDescription)")
             updateStatus(error)
         }
-        await pollPendingInvite()
-        UIApplication.shared.endBackgroundTask(backgroundTask)
+        if backgroundTask != .invalid {
+            UIApplication.shared.endBackgroundTask(backgroundTask)
+            backgroundTask = .invalid
+        }
     }
 
     private func pollPendingInvite() async {
@@ -449,12 +443,9 @@ final class LocationSyncService: ObservableObject {
                 suggestedName: suggestedName
             )
 
-            // Found init payload! Show naming dialog instead of processing immediately.
-            // Set pendingInitPayload before clearing pendingInviteQr so the UI never
-            // sees a frame where both are nil and collapses the naming alert.
             autoClearedInvite = true
             pendingInitPayload = initPayload
-            pendingInviteQr = nil // Clear invite QR so the sheet dismisses
+            pendingInviteQr = nil
             triggerRapidPoll()
             break
         }
