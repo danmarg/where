@@ -210,7 +210,7 @@ class LocationViewModel(app: Application) : AndroidViewModel(app) {
     fun confirmQrScan(qr: QrPayload, friendName: String) {
         Log.d(TAG, "confirmQrScan: friendName=$friendName")
         _pendingQrForNaming.value = null
-        triggerRapidPoll()
+        lastRapidPollTrigger = 0L
         val qrWithName = qr.copy(suggestedName = friendName)
         try {
             val (initPayload, bobEntry) = e2eeStore.processScannedQr(qrWithName, _displayName.value.ifEmpty { "" })
@@ -260,7 +260,7 @@ class LocationViewModel(app: Application) : AndroidViewModel(app) {
         _pendingInviteQr.value = null
         if (!autoClearedInvite) e2eeStore.clearInvite()
         autoClearedInvite = false
-        triggerRapidPoll()
+        lastRapidPollTrigger = 0L
         _isExchanging.value = true
         try {
             val entry = e2eeStore.processKeyExchangeInit(payload, name)
