@@ -80,6 +80,25 @@ class LocationService : Service() {
         flags: Int,
         startId: Int,
     ): Int {
+        if (intent?.action == ACTION_FORCE_PUBLISH) {
+            val friendId = intent.getStringExtra(EXTRA_FRIEND_ID)
+            LocationRepository.lastLocation.value?.let { (lat, lng) ->
+                serviceScope.launch {
+                    try {
+                        if (friendId != null) {
+                            Log.d(TAG, "Forced publish to friend: $friendId")
+                            locationClient.sendLocationToFriend(friendId, lat, lng)
+                        } else {
+                            Log.d(TAG, "Forced publish to all")
+                            handleNewLocation(lat, lng, isHeartbeat = false, force = true)
+                        }
+                    } catch (e: Exception) {
+                        Log.e(TAG, "Forced publish failed", e)
+                    }
+                }
+            }
+        }
+
         val request =
             LocationRequest.Builder(
                 Priority.PRIORITY_BALANCED_POWER_ACCURACY,
@@ -97,11 +116,11 @@ class LocationService : Service() {
         return START_STICKY
     }
 
-    private fun handleNewLocation(lat: Double, lng: Double, isHeartbeat: Boolean) {
+    private fun handleNewLocation(lat: Double, lng: Double, isHeartbeat: Boolean, force: Boolean = false) {
         val now = System.currentTimeMillis()
         
         // Trust the OS distance filter for movements. Just prevent rapid-fire jitter.
-        val shouldSend = lastSentLat == null || 
+        val shouldSend = force || lastSentLat == null || 
                         (!isHeartbeat && now - lastSentTime > 60_000L) ||
                         (isHeartbeat && now - lastSentTime > 300_000L)
 
@@ -155,5 +174,8 @@ class LocationService : Service() {
     companion object {
         private const val CHANNEL_ID = "where_location"
         private const val NOTIFICATION_ID = 1
+
+        const val ACTION_FORCE_PUBLISH = "net.af0.where.ACTION_FORCE_PUBLISH"
+        const val EXTRA_FRIEND_ID = "friend_id"
     }
 }
