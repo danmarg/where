@@ -126,6 +126,7 @@ final class LocationSyncService: ObservableObject {
 
     private var lastSentLocation: (lat: Double, lng: Double)? = nil
     private var lastSentTime: Date = Date(timeIntervalSince1970: 0)
+    private var isSending: Bool = false
 
     let e2eeStore: Shared.E2eeStore
     let locationClient: Shared.LocationClient
@@ -205,7 +206,7 @@ final class LocationSyncService: ObservableObject {
     }
 
     func sendLocation(lat: Double, lng: Double) {
-        guard isSharingLocation else { return }
+        guard isSharingLocation, !isSending else { return }
 
         let now = Date()
         let distance: Double = {
@@ -221,6 +222,7 @@ final class LocationSyncService: ObservableObject {
 
         guard shouldSend else { return }
 
+        isSending = true
         logger.debug("Sending location: \(lat), \(lng)")
         var backgroundTask = UIBackgroundTaskIdentifier.invalid
         backgroundTask = UIApplication.shared.beginBackgroundTask(withName: "SendLocation") {
@@ -239,12 +241,13 @@ final class LocationSyncService: ObservableObject {
                 try await locationClient.sendLocation(lat: lat, lng: lng, pausedFriendIds: pausedFriendIds)
                 logger.debug("Location sent successfully")
                 lastSentLocation = (lat: lat, lng: lng)
-                lastSentTime = now
+                lastSentTime = Date()
                 updateStatus(nil)
             } catch {
                 logger.error("Failed to send location: \(error.localizedDescription)")
                 updateStatus(error)
             }
+            isSending = false
             if backgroundTask != .invalid {
                 UIApplication.shared.endBackgroundTask(backgroundTask)
                 backgroundTask = .invalid
