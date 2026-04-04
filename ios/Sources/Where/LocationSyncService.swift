@@ -160,7 +160,7 @@ final class LocationSyncService: ObservableObject {
 
     private func isRapidPolling() async -> Bool {
         let now = Date()
-        let isPairing = e2eeStore.pendingQrPayload != nil || pendingInitPayload != nil
+        let isPairing = e2eeStore.pendingQrPayload != nil || pendingInitPayload != nil || pendingQrForNaming != nil
         let recentlyTriggered = now.timeIntervalSince(lastRapidPollTrigger) < 5 * 60
         return isPairing || recentlyTriggered
     }
@@ -222,12 +222,15 @@ final class LocationSyncService: ObservableObject {
             return false
         }
         pendingQrForNaming = qr
+        triggerRapidPoll()
+        startPolling()
         return true
     }
 
     func confirmQrScan(qr: Shared.QrPayload, friendName: String) {
         pendingQrForNaming = nil
         triggerRapidPoll()
+        startPolling()
         let qrWithName = Shared.QrPayload(
             ekPub: qr.ekPub,
             suggestedName: friendName,
@@ -284,6 +287,7 @@ final class LocationSyncService: ObservableObject {
         pendingInviteQr = nil
         autoClearedInvite = false
         triggerRapidPoll()
+        startPolling()
         // processKeyExchangeInit sets pendingInvite=null internally; call it immediately
         // so nothing can clear pendingInvite before it runs.
         let entry = try? e2eeStore.processKeyExchangeInit(payload: payload, bobName: name)
