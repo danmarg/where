@@ -27,6 +27,9 @@ kotlin {
             implementation(kotlin("test"))
             implementation(libs.robolectric)
             implementation(libs.androidx.test.core)
+            implementation(libs.mockk)
+            implementation(libs.kotlinx.coroutines.test)
+            implementation(libs.libsodium.kmp.jvm)
         }
     }
 }
