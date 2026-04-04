@@ -11,6 +11,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.QrCode
@@ -60,11 +61,13 @@ fun FriendsSheet(
     onCreateInvite: () -> Unit,
     onScanQr: () -> Unit,
     onPasteUrl: (String) -> Unit,
+    onRename: (String, String) -> Unit,
     onRemove: (String) -> Unit,
     onDismiss: () -> Unit,
     onZoomTo: (String) -> Unit = {},
 ) {
     var confirmDeleteFriend by remember { mutableStateOf<FriendEntry?>(null) }
+    var renameFriend by remember { mutableStateOf<FriendEntry?>(null) }
     var showPasteField by remember { mutableStateOf(false) }
     var pastedUrl by remember { mutableStateOf("") }
 
@@ -79,21 +82,6 @@ fun FriendsSheet(
         ) {
             Text("Friends", style = MaterialTheme.typography.titleLarge)
 
-            OutlinedTextField(
-                value = displayName,
-                onValueChange = onDisplayNameChange,
-                label = { Text("Your Name") },
-                modifier = Modifier.fillMaxWidth(),
-                singleLine = true,
-            )
-
-            Text("Your ID", style = MaterialTheme.typography.labelMedium)
-            Text(
-                text = userId,
-                style = MaterialTheme.typography.bodySmall,
-                fontFamily = FontFamily.Monospace,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
 
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -190,6 +178,12 @@ fun FriendsSheet(
                                     friend.name,
                                     style = MaterialTheme.typography.bodyLarge,
                                 )
+                                Text(
+                                    friend.safetyNumber,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    fontFamily = FontFamily.Monospace,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
                                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                                     Text(
                                         friend.id.take(8),
@@ -208,6 +202,10 @@ fun FriendsSheet(
                                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                                     )
                                 }
+                            }
+
+                            IconButton(onClick = { renameFriend = friend }) {
+                                Icon(Icons.Default.Edit, contentDescription = "Rename", modifier = Modifier.size(20.dp))
                             }
                             
                             val isPaused = friend.id in pausedFriendIds
@@ -255,6 +253,37 @@ fun FriendsSheet(
             },
             dismissButton = {
                 TextButton(onClick = { confirmDeleteFriend = null }) {
+                    Text("Cancel")
+                }
+            },
+        )
+    }
+
+    renameFriend?.let { friend ->
+        var newName by remember { mutableStateOf(friend.name) }
+        AlertDialog(
+            onDismissRequest = { renameFriend = null },
+            title = { Text("Rename Friend") },
+            text = {
+                OutlinedTextField(
+                    value = newName,
+                    onValueChange = { newName = it },
+                    label = { Text("Friend's Name") },
+                    singleLine = true,
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        onRename(friend.id, newName)
+                        renameFriend = null
+                    },
+                ) {
+                    Text("Rename")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { renameFriend = null }) {
                     Text("Cancel")
                 }
             },

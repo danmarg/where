@@ -81,6 +81,9 @@ class LocationViewModel(app: Application) : AndroidViewModel(app) {
     private val _pendingInitPayload = MutableStateFlow<KeyExchangeInitPayload?>(null)
     val pendingInitPayload: StateFlow<KeyExchangeInitPayload?> = _pendingInitPayload
 
+    private val _isExchanging = MutableStateFlow(false)
+    val isExchanging: StateFlow<Boolean> = _isExchanging
+
     private val _connectionStatus = MutableStateFlow<ConnectionStatus>(ConnectionStatus.Ok)
     val connectionStatus: StateFlow<ConnectionStatus> = _connectionStatus
 
@@ -163,6 +166,11 @@ class LocationViewModel(app: Application) : AndroidViewModel(app) {
         sharingPrefs.edit().putString("paused_friends", new.joinToString(",")).apply()
     }
 
+    fun renameFriend(id: String, newName: String) {
+        e2eeStore.renameFriend(id, newName)
+        _friends.value = e2eeStore.listFriends()
+    }
+
     fun removeFriend(id: String) {
         e2eeStore.deleteFriend(id)
         _friends.value = e2eeStore.listFriends()
@@ -218,6 +226,7 @@ class LocationViewModel(app: Application) : AndroidViewModel(app) {
             val sendToken = bobEntry.session.sendToken.toHex()
             Log.d(TAG, "confirmQrScan: processScannedQr succeeded, friendId=${bobEntry.id}, fingerprint=${bobEntry.id.take(8)}, sendToken=$sendToken")
             _friends.value = e2eeStore.listFriends()
+            _isExchanging.value = true
             viewModelScope.launch {
                 try {
                     val discoveryHex = qrWithName.discoveryToken().toHex()
@@ -230,6 +239,7 @@ class LocationViewModel(app: Application) : AndroidViewModel(app) {
                     } catch (e: Exception) {
                         Log.e(TAG, "confirmQrScan: mailbox post failed", e)
                         updateStatus(e)
+                        _isExchanging.value = false
                         return@launch  // Alice never got the KeyExchangeInit; don't post OPKs or location
                     }
                     locationClient.postOpkBundle(bobEntry.id)
@@ -242,10 +252,13 @@ class LocationViewModel(app: Application) : AndroidViewModel(app) {
                 } catch (e: Exception) {
                     Log.e(TAG, "confirmQrScan inner failure: ${e.message}")
                     updateStatus(e)
+                } finally {
+                    _isExchanging.value = false
                 }
             }
         } catch (e: Exception) {
             Log.e(TAG, "confirmQrScan: processScannedQr failed", e)
+            _isExchanging.value = false
         }
     }
 
@@ -257,6 +270,7 @@ class LocationViewModel(app: Application) : AndroidViewModel(app) {
         if (!autoClearedInvite) e2eeStore.clearInvite()
         autoClearedInvite = false
         triggerRapidPoll()
+        _isExchanging.value = true
         try {
             val entry = e2eeStore.processKeyExchangeInit(payload, name)
             if (entry != null) {
@@ -265,16 +279,22 @@ class LocationViewModel(app: Application) : AndroidViewModel(app) {
                 Log.d(TAG, "confirmPendingInit: friend list now has ${_friends.value.size} items")
                 // Alice sends her location immediately after saving Bob
                 viewModelScope.launch {
-                    locationSource.lastLocation.value?.let { (lat, lng) ->
-                        locationClient.sendLocationToFriend(entry.id, lat, lng)
+                    try {
+                        locationSource.lastLocation.value?.let { (lat, lng) ->
+                            locationClient.sendLocationToFriend(entry.id, lat, lng)
+                        }
+                        doPoll()
+                    } finally {
+                        _isExchanging.value = false
                     }
-                    doPoll()
                 }
             } else {
                 Log.e(TAG, "confirmPendingInit: processKeyExchangeInit returned null")
+                _isExchanging.value = false
             }
         } catch (e: Exception) {
             Log.e(TAG, "confirmPendingInit: processKeyExchangeInit failed", e)
+            _isExchanging.value = false
         }
     }
 
