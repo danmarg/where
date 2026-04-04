@@ -33,6 +33,9 @@ data class FriendEntry(
     val myOpkPrivs: Map<Int, ByteArray> = emptyMap(),
     val theirOpkPubs: Map<Int, ByteArray> = emptyMap(),
     val nextOpkId: Int = 1,
+    val lastLat: Double? = null,
+    val lastLng: Double? = null,
+    val lastTs: Long? = null,
 ) {
     /** Computed friend ID: hex(SHA-256(EK_A.pub)) — full 64 hex chars. */
     val id: String get() = session.aliceFp.toHex()
@@ -48,7 +51,10 @@ data class FriendEntry(
             isInitiator == other.isInitiator &&
             myOpkPrivs.contentEquals(other.myOpkPrivs) &&
             theirOpkPubs.contentEquals(other.theirOpkPubs) &&
-            nextOpkId == other.nextOpkId
+            nextOpkId == other.nextOpkId &&
+            lastLat == other.lastLat &&
+            lastLng == other.lastLng &&
+            lastTs == other.lastTs
     }
 
     override fun hashCode(): Int {
@@ -56,6 +62,9 @@ data class FriendEntry(
         result = 31 * result + session.hashCode()
         result = 31 * result + isInitiator.hashCode()
         result = 31 * result + nextOpkId
+        result = 31 * result + (lastLat?.hashCode() ?: 0)
+        result = 31 * result + (lastLng?.hashCode() ?: 0)
+        result = 31 * result + (lastTs?.hashCode() ?: 0)
         return result
     }
 }
@@ -98,6 +107,9 @@ class E2eeStore(
                             myOpkPrivs = s.myOpkPrivs.associate { it.id to it.key },
                             theirOpkPubs = s.theirOpkPubs.associate { it.id to it.key },
                             nextOpkId = s.nextOpkId,
+                            lastLat = s.lastLat,
+                            lastLng = s.lastLng,
+                            lastTs = s.lastTs,
                         )
                     entry.id to entry
                 }.toMutableMap()
@@ -122,6 +134,9 @@ class E2eeStore(
                             myOpkPrivs = f.myOpkPrivs.map { (id, key) -> SerializedOpkEntry(id, key) },
                             theirOpkPubs = f.theirOpkPubs.map { (id, key) -> SerializedOpkEntry(id, key) },
                             nextOpkId = f.nextOpkId,
+                            lastLat = f.lastLat,
+                            lastLng = f.lastLng,
+                            lastTs = f.lastTs,
                         )
                     },
                 pendingInvite = pendingInvite,
@@ -238,6 +253,17 @@ class E2eeStore(
     ) {
         val entry = friends[id] ?: return
         friends[id] = entry.copy(session = newSession)
+        save()
+    }
+
+    fun updateLastLocation(
+        id: String,
+        lat: Double,
+        lng: Double,
+        ts: Long,
+    ) {
+        val entry = friends[id] ?: return
+        friends[id] = entry.copy(lastLat = lat, lastLng = lng, lastTs = ts)
         save()
     }
 
@@ -662,6 +688,9 @@ internal data class SerializedFriendEntry(
     val myOpkPrivs: List<SerializedOpkEntry> = emptyList(),
     val theirOpkPubs: List<SerializedOpkEntry> = emptyList(),
     val nextOpkId: Int = 1,
+    val lastLat: Double? = null,
+    val lastLng: Double? = null,
+    val lastTs: Long? = null,
 )
 
 @Serializable
