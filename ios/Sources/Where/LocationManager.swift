@@ -40,7 +40,10 @@ final class LocationManager: NSObject, ObservableObject, @preconcurrency CLLocat
 
     nonisolated func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
         guard let loc = locations.last else { return }
-        Task { @MainActor in self.location = loc }
+        Task { @MainActor in
+            self.location = loc
+            LocationSyncService.shared.sendLocation(lat: loc.coordinate.latitude, lng: loc.coordinate.longitude)
+        }
     }
 
     nonisolated func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {

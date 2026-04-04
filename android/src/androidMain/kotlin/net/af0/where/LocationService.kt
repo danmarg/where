@@ -18,7 +18,7 @@ private const val TAG = "LocationService"
 class LocationService : Service() {
     private lateinit var fusedClient: FusedLocationProviderClient
     private lateinit var locationCallback: LocationCallback
-    
+
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private lateinit var locationClient: LocationClient
     private lateinit var e2eeStore: E2eeStore
@@ -26,6 +26,8 @@ class LocationService : Service() {
     private var lastSentLat: Double? = null
     private var lastSentLng: Double? = null
     private var lastSentTime: Long = 0
+    private var pendingFriendId: String? = null
+    private var isRegistered = false
 
     override fun onCreate() {
         super.onCreate()
@@ -53,6 +55,22 @@ class LocationService : Service() {
                 }
             }
         } catch (_: SecurityException) {
+        }
+
+        val request =
+            LocationRequest.Builder(
+                Priority.PRIORITY_BALANCED_POWER_ACCURACY,
+                30_000L,
+            )
+                .setMinUpdateIntervalMillis(15_000L)
+                .setMinUpdateDistanceMeters(10f)
+                .build()
+
+        try {
+            fusedClient.requestLocationUpdates(request, locationCallback, mainLooper)
+            isRegistered = true
+        } catch (_: SecurityException) {
+            stopSelf()
         }
 
         // Heartbeat timer: ensure we send and poll at least every 5 minutes.
@@ -101,45 +119,66 @@ class LocationService : Service() {
                     Log.d(TAG, "Forced publish to all")
                     handleNewLocation(lat, lng, isHeartbeat = false, force = true)
                 }
+            } ?: run {
+                if (friendId != null) {
+                    pendingFriendId = friendId
+                }
             }
         }
 
-        val request =
-            LocationRequest.Builder(
-                Priority.PRIORITY_BALANCED_POWER_ACCURACY,
-                30_000L,
-            )
-            .setMinUpdateIntervalMillis(15_000L)
-            .setMinUpdateDistanceMeters(10f) // OS filter: trust this for "significant movement"
-            .build()
+        if (!isRegistered) {
+            val request =
+                LocationRequest.Builder(
+                    Priority.PRIORITY_BALANCED_POWER_ACCURACY,
+                    30_000L,
+                )
+                    .setMinUpdateIntervalMillis(15_000L)
+                    .setMinUpdateDistanceMeters(10f)
+                    .build()
 
-        try {
-            fusedClient.requestLocationUpdates(request, locationCallback, mainLooper)
-        } catch (_: SecurityException) {
-            stopSelf()
+            try {
+                fusedClient.requestLocationUpdates(request, locationCallback, mainLooper)
+                isRegistered = true
+            } catch (_: SecurityException) {
+                stopSelf()
+            }
         }
+
         return START_STICKY
     }
 
-    private fun handleNewLocation(lat: Double, lng: Double, isHeartbeat: Boolean, force: Boolean = false) {
+    private fun handleNewLocation(
+        lat: Double,
+        lng: Double,
+        isHeartbeat: Boolean,
+        force: Boolean = false,
+    ) {
         val now = System.currentTimeMillis()
-        
-        // Trust the OS distance filter for movements. Just prevent rapid-fire jitter.
-        val shouldSend = force || lastSentLat == null || 
-                        (!isHeartbeat && now - lastSentTime > 60_000L) ||
-                        (isHeartbeat && now - lastSentTime > 300_000L)
+
+        val shouldSend =
+            force || lastSentLat == null ||
+                (!isHeartbeat && now - lastSentTime > 15_000L) ||
+                (isHeartbeat && now - lastSentTime > 300_000L)
 
         if (shouldSend) {
             val sharingPrefs = getSharedPreferences("where_prefs", Context.MODE_PRIVATE)
             val isSharing = sharingPrefs.getBoolean("is_sharing", true)
             if (!isSharing) return
 
-            val pausedIds = sharingPrefs.getString("paused_friends", "")
-                ?.split(",")?.filter { it.isNotEmpty() }?.toSet() ?: emptySet()
+            val pausedIds =
+                sharingPrefs.getString("paused_friends", "")
+                    ?.split(",")?.filter { it.isNotEmpty() }?.toSet() ?: emptySet()
 
             serviceScope.launch {
                 try {
                     Log.d(TAG, "Sending background location: $lat, $lng (heartbeat=$isHeartbeat)")
+
+                    pendingFriendId?.let { id ->
+                        Log.d(TAG, "Processing pending forced publish to: $id")
+                        locationClient.sendLocationToFriend(id, lat, lng)
+                        pendingFriendId = null
+                    }
+
                     locationClient.sendLocation(lat, lng, pausedIds)
                     lastSentLat = lat
                     lastSentLng = lng

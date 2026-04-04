@@ -50,3 +50,14 @@ targets:
       DEVELOPMENT_TEAM: ""
       CODE_SIGN_IDENTITY: Apple Development
       CODE_SIGN_STYLE: Automatic
+
+  WhereTests:
+    type: bundle.unit-test
+    platform: iOS
+    deploymentTarget: "17.0"
+    sources:
+      - path: Tests
+    dependencies:
+      - target: Where
+    settings:
+      PRODUCT_BUNDLE_IDENTIFIER: net.af0.WhereTests
