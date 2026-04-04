@@ -235,9 +235,12 @@ class LocationViewModel(app: Application) : AndroidViewModel(app) {
                     }
                     locationClient.postOpkBundle(bobEntry.id)
                     // Trigger immediate location sync so Alice sees us right away
-                    locationSource.lastLocation.value?.let { (lat, lng) ->
-                        locationClient.sendLocationToFriend(bobEntry.id, lat, lng)
+                    val intent = Intent(getApplication(), LocationService::class.java).apply {
+                        action = LocationService.ACTION_FORCE_PUBLISH
+                        putExtra(LocationService.EXTRA_FRIEND_ID, bobEntry.id)
                     }
+                    getApplication<Application>().startForegroundService(intent)
+
                     _friends.value = e2eeStore.listFriends() // Refresh again to be sure
                     doPoll()
                 } catch (e: Exception) {
@@ -269,11 +272,14 @@ class LocationViewModel(app: Application) : AndroidViewModel(app) {
                 _friends.value = e2eeStore.listFriends()
                 Log.d(TAG, "confirmPendingInit: friend list now has ${_friends.value.size} items")
                 // Alice sends her location immediately after saving Bob
+                val intent = Intent(getApplication(), LocationService::class.java).apply {
+                    action = LocationService.ACTION_FORCE_PUBLISH
+                    putExtra(LocationService.EXTRA_FRIEND_ID, entry.id)
+                }
+                getApplication<Application>().startForegroundService(intent)
+
                 viewModelScope.launch {
                     try {
-                        locationSource.lastLocation.value?.let { (lat, lng) ->
-                            locationClient.sendLocationToFriend(entry.id, lat, lng)
-                        }
                         doPoll()
                     } finally {
                         _isExchanging.value = false
