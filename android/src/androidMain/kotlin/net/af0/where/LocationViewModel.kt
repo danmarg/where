@@ -2,7 +2,6 @@ package net.af0.where
 
 import android.Manifest
 import android.app.Application
-import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Looper
@@ -73,29 +72,18 @@ class LocationViewModel(
 
     private val locationSource: LocationSource = LocationRepository
 
-    private val sharingPrefs = app.getSharedPreferences("where_prefs", Context.MODE_PRIVATE)
+    val userId: String by lazy { UserPrefs.getUserId(getApplication()) }
 
-    val userId: String by lazy {
-        sharingPrefs.getString("user_id", null) ?: run {
-            val id = java.util.UUID.randomUUID().toString().replace("-", "")
-            sharingPrefs.edit().putString("user_id", id).apply()
-            id
-        }
-    }
-
-    private val _isSharingLocation = MutableStateFlow(sharingPrefs.getBoolean("is_sharing", true))
+    private val _isSharingLocation = MutableStateFlow(UserPrefs.isSharing(app))
     val isSharingLocation: StateFlow<Boolean> = _isSharingLocation
 
-    private val _displayName = MutableStateFlow(sharingPrefs.getString("display_name", "") ?: "")
+    private val _displayName = MutableStateFlow(UserPrefs.getDisplayName(app))
     val displayName: StateFlow<String> = _displayName
 
     private val _friends = MutableStateFlow(this.e2eeStore.listFriends())
     val friends: StateFlow<List<FriendEntry>> = _friends
 
-    private val _pausedFriendIds =
-        MutableStateFlow(
-            sharingPrefs.getString("paused_friends", "")?.split(",")?.filter { it.isNotEmpty() }?.toSet() ?: emptySet(),
-        )
+    private val _pausedFriendIds = MutableStateFlow(UserPrefs.getPausedFriends(app))
     val pausedFriendIds: StateFlow<Set<String>> = _pausedFriendIds
 
     private val friendLocations = MutableStateFlow(emptyMap<String, UserLocation>())
@@ -181,20 +169,20 @@ class LocationViewModel(
 
     fun setDisplayName(name: String) {
         _displayName.value = name
-        sharingPrefs.edit().putString("display_name", name).apply()
+        UserPrefs.setDisplayName(getApplication(), name)
     }
 
     fun toggleSharing() {
         val new = !_isSharingLocation.value
         _isSharingLocation.value = new
-        sharingPrefs.edit().putBoolean("is_sharing", new).apply()
+        UserPrefs.setSharing(getApplication(), new)
     }
 
     fun togglePauseFriend(id: String) {
         val current = _pausedFriendIds.value
         val new = if (id in current) current - id else current + id
         _pausedFriendIds.value = new
-        sharingPrefs.edit().putString("paused_friends", new.joinToString(",")).apply()
+        UserPrefs.setPausedFriends(getApplication(), new)
     }
 
     fun renameFriend(
@@ -212,7 +200,7 @@ class LocationViewModel(
         if (id in _pausedFriendIds.value) {
             val newPaused = _pausedFriendIds.value - id
             _pausedFriendIds.value = newPaused
-            sharingPrefs.edit().putString("paused_friends", newPaused.joinToString(",")).apply()
+            UserPrefs.setPausedFriends(getApplication(), newPaused)
         }
     }
 
