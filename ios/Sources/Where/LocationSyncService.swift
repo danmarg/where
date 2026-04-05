@@ -221,7 +221,7 @@ final class LocationSyncService: ObservableObject {
         startPolling()
     }
 
-    fileprivate func isRapidPolling() async -> Bool {
+    func isRapidPolling() async -> Bool {
         let now = Date()
         // Kotlin suspend functions returning optional types appear as T?? in Swift.
         // We use ?? nil to flatten them to T?.
@@ -260,7 +260,7 @@ final class LocationSyncService: ObservableObject {
             // Use an iterator to catch all signals, including those during pollAll.
             // Since this Task inherits MainActor isolation, we can safely access self weakly.
             guard let signals = self?.pollSignals else { return }
-            var signalIterator = signals.makeAsyncIterator()
+            let signalIterator = AsyncIteratorBox(signals.makeAsyncIterator())
 
             while !Task.isCancelled {
                 // Re-bind self for each loop iteration to prevent retain cycles while ensuring
@@ -277,7 +277,7 @@ final class LocationSyncService: ObservableObject {
                 let intervalSeconds = isRapid ? 2.0 : 60.0
 
                 // Use the local self for timeout management.
-                try? await isolatedSelf.withTimeout(seconds: intervalSeconds) {
+                try? await isolatedSelf.withTimeout(seconds: intervalSeconds) { @Sendable in
                     _ = await signalIterator.next()
                 }
             }
@@ -612,7 +612,7 @@ final class LocationSyncService: ObservableObject {
         }
     }
 
-    private func withTimeout(seconds: Double, body: @escaping () async -> Void) async throws {
+    private func withTimeout(seconds: Double, body: @Sendable @escaping () async -> Void) async throws {
         try await withThrowingTaskGroup(of: Void.self) { group in
             group.addTask {
                 await body()
@@ -676,6 +676,12 @@ final class LocationSyncService: ObservableObject {
                 endOp(idToEnd)
             }
         }
+    }
+
+    private final class AsyncIteratorBox: @unchecked Sendable {
+        private var iterator: AsyncStream<Void>.Iterator
+        init(_ iterator: AsyncStream<Void>.Iterator) { self.iterator = iterator }
+        func next() async -> Void? { await iterator.next() }
     }
 
     private func updateStatus(_ error: Error?) {
