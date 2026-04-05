@@ -3,6 +3,7 @@ import Shared
 import os
 import UIKit
 import CoreLocation
+import Combine
 
 private let logger = Logger(subsystem: "net.af0.where", category: "LocationSync")
 
@@ -128,9 +129,11 @@ final class LocationSyncService: ObservableObject {
     @Published var pendingQrForNaming: Shared.QrPayload? = nil
     @Published var pendingInitPayload: Shared.KeyExchangeInitPayload? = nil
     @Published var isExchanging: Bool = false
+    @Published var visibleUsers: [Shared.UserLocation] = []
     var isInviteActive: Bool { if case .pending = inviteState { return true } else { return false } }
 
     private var lastRapidPollTrigger: Date = Date(timeIntervalSince1970: 0)
+    private var visibleUsersCancellables = Set<AnyCancellable>()
 
     private var lastSentLocation: (lat: Double, lng: Double)? = nil
     private var lastSentTime: Date = Date(timeIntervalSince1970: 0)
@@ -175,7 +178,17 @@ final class LocationSyncService: ObservableObject {
             }
             self.friendLocations = initialLocations
             self.friendLastPing = initialLastPing
+            self.updateVisibleUsers()
         }
+
+        // Subscribe to updates on friendLocations, isSharingLocation, and user location
+        // to keep visibleUsers in sync.
+        Publishers.CombineLatest3($friendLocations, $isSharingLocation, LocationManager.shared.$location)
+            .sink { [weak self] _, _, _ in
+                self?.updateVisibleUsers()
+            }
+            .store(in: &visibleUsersCancellables)
+
         startPolling()
     }
 
@@ -188,6 +201,22 @@ final class LocationSyncService: ObservableObject {
         let isPairing = e2eeStore.pendingQrPayload != nil || pendingInitPayload != nil || pendingQrForNaming != nil
         let recentlyTriggered = now.timeIntervalSince(lastRapidPollTrigger) < 5 * 60
         return isPairing || recentlyTriggered
+    }
+
+    private func updateVisibleUsers() {
+        var result: [Shared.UserLocation] = []
+        if isSharingLocation, let loc = LocationManager.shared.location {
+            result.append(Shared.UserLocation(
+                userId: myId,
+                lat: loc.coordinate.latitude,
+                lng: loc.coordinate.longitude,
+                timestamp: Int64(loc.timestamp.timeIntervalSince1970)
+            ))
+        }
+        for (friendId, locData) in friendLocations {
+            result.append(Shared.UserLocation(userId: friendId, lat: locData.lat, lng: locData.lng, timestamp: locData.ts))
+        }
+        visibleUsers = result
     }
 
     // Poll loop: handles inbound friend-location polling and the outbound heartbeat.
