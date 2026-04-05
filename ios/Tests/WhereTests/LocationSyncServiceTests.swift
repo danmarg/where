@@ -29,14 +29,24 @@ class LocationSyncServiceTests: XCTestCase {
 
         // Initial send
         service.sendLocation(lat: lat, lng: lng)
+        // Wait for the task to start and increment sendCount
+        for _ in 0..<100 {
+            if sendCount == 1 { break }
+            try? await Task.sleep(nanoseconds: 10_000_000)
+        }
         XCTAssertEqual(sendCount, 1)
 
         // Immediate second send should be throttled
         service.sendLocation(lat: lat + 0.1, lng: lng + 0.1)
+        try? await Task.sleep(nanoseconds: 100_000_000)
         XCTAssertEqual(sendCount, 1)
 
         // Forced send should bypass throttle
         service.sendLocation(lat: lat + 0.2, lng: lng + 0.2, force: true)
+        for _ in 0..<100 {
+            if sendCount == 2 { break }
+            try? await Task.sleep(nanoseconds: 10_000_000)
+        }
         XCTAssertEqual(sendCount, 2)
     }
 
