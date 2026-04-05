@@ -229,15 +229,18 @@ final class LocationSyncService: ObservableObject {
 
         guard shouldSend else { return }
 
+        // Capture whether the pairing flag contributed before clearing it.
+        // We clear optimistically to prevent concurrent forced sends; on failure we restore it.
+        let wasForcedByPairing = pendingForcedSendAfterPairing
         if effectiveForce {
             pendingForcedSendAfterPairing = false
         }
 
         logger.debug("Sending location: \(lat), \(lng) (heartbeat=\(isHeartbeat), force=\(force), effectiveForce=\(effectiveForce))")
-        performLocationSend(lat: lat, lng: lng)
+        performLocationSend(lat: lat, lng: lng, wasForcedByPairing: wasForcedByPairing)
     }
 
-    private func performLocationSend(lat: Double, lng: Double) {
+    private func performLocationSend(lat: Double, lng: Double, wasForcedByPairing: Bool = false) {
         isSending = true
         var backgroundTask = UIBackgroundTaskIdentifier.invalid
         backgroundTask = UIApplication.shared.beginBackgroundTask(withName: "SendLocation") {
@@ -256,6 +259,10 @@ final class LocationSyncService: ObservableObject {
                 updateStatus(nil)
             } catch {
                 logger.error("Failed to send location: \(error.localizedDescription)")
+                // Restore the pairing flag so the next location callback retries the send.
+                if wasForcedByPairing {
+                    pendingForcedSendAfterPairing = true
+                }
                 updateStatus(error)
             }
             isSending = false
@@ -416,6 +423,14 @@ final class LocationSyncService: ObservableObject {
     private func pollAll(updateUi: Bool = true) async {
         logger.debug("Polling for location updates")
         var backgroundTask = UIBackgroundTaskIdentifier.invalid
+        // defer guarantees the background task identifier is returned to the OS even if
+        // the enclosing Task is cancelled mid-flight (e.g. by startPolling() restarting).
+        defer {
+            if backgroundTask != .invalid {
+                UIApplication.shared.endBackgroundTask(backgroundTask)
+                backgroundTask = .invalid
+            }
+        }
         backgroundTask = UIApplication.shared.beginBackgroundTask(withName: "PollAll") {
             if backgroundTask != .invalid {
                 UIApplication.shared.endBackgroundTask(backgroundTask)
@@ -437,10 +452,6 @@ final class LocationSyncService: ObservableObject {
         } catch {
             logger.error("Poll failed: \(error.localizedDescription)")
             updateStatus(error)
-        }
-        if backgroundTask != .invalid {
-            UIApplication.shared.endBackgroundTask(backgroundTask)
-            backgroundTask = .invalid
         }
     }
 

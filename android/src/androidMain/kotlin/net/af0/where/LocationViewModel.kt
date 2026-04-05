@@ -290,11 +290,16 @@ class LocationViewModel(
                                 updateStatus(e)
                             }
                         } else {
-                            // Location not available yet; defer until the first GPS fix.
-                            viewModelScope.launch {
-                                val (lat, lng) = withTimeoutOrNull(30_000L) {
-                                    locationSource.lastLocation.first { it != null }
-                                } ?: return@launch
+                            // Location not available yet; wait inline so the outer finally
+                            // covers this path and _isExchanging is always restored.
+                            val deferred = withTimeoutOrNull(30_000L) {
+                                locationSource.lastLocation.first { it != null }
+                            }
+                            if (deferred == null) {
+                                Log.e(TAG, "confirmQrScan: timed out waiting for location")
+                                updateStatus(Exception("Location unavailable for initial send"))
+                            } else {
+                                val (lat, lng) = deferred
                                 try {
                                     Log.d(TAG, "confirmQrScan: deferred force-send to ${bobEntry.id}")
                                     locationClient.sendLocationToFriend(bobEntry.id, lat, lng)
@@ -358,10 +363,16 @@ class LocationViewModel(
                                     updateStatus(e)
                                 }
                             } else {
-                                viewModelScope.launch {
-                                    val (lat, lng) = withTimeoutOrNull(30_000L) {
-                                        locationSource.lastLocation.first { it != null }
-                                    } ?: return@launch
+                                // Wait inline so the outer finally covers this path and
+                                // _isExchanging is always restored.
+                                val deferred = withTimeoutOrNull(30_000L) {
+                                    locationSource.lastLocation.first { it != null }
+                                }
+                                if (deferred == null) {
+                                    Log.e(TAG, "confirmPendingInit: timed out waiting for location")
+                                    updateStatus(Exception("Location unavailable for initial send"))
+                                } else {
+                                    val (lat, lng) = deferred
                                     try {
                                         Log.d(TAG, "confirmPendingInit: deferred force-send to ${entry.id}")
                                         locationClient.sendLocationToFriend(entry.id, lat, lng)
