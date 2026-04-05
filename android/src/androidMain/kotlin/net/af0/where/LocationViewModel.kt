@@ -86,7 +86,7 @@ class LocationViewModel(
     private val _pausedFriendIds = MutableStateFlow(UserPrefs.getPausedFriends(app))
     val pausedFriendIds: StateFlow<Set<String>> = _pausedFriendIds
 
-    private val friendLocations = MutableStateFlow(emptyMap<String, UserLocation>())
+    internal val friendLocations = MutableStateFlow(emptyMap<String, UserLocation>())
     private val _friendLastPing = MutableStateFlow(emptyMap<String, Long>())
     val friendLastPing: StateFlow<Map<String, Long>> = _friendLastPing
 
