@@ -33,7 +33,7 @@ import com.journeyapps.barcodescanner.ScanContract
 import com.journeyapps.barcodescanner.ScanOptions
 
 class MainActivity : ComponentActivity() {
-    private val viewModel: LocationViewModel by viewModels()
+    private val viewModel: LocationViewModel by viewModels { LocationViewModel.Factory }
 
     private val scanLauncher =
         registerForActivityResult(ScanContract()) { result ->
