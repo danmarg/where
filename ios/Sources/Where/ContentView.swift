@@ -5,12 +5,13 @@ import SwiftUI
 struct ContentView: View {
     @ObservedObject private var locationManager = LocationManager.shared
     @StateObject private var syncService = LocationSyncService.shared
+    @Environment(\.scenePhase) private var scenePhase
     @State private var showFriends = false
     @State private var showScanner = false
     @State private var showUserSettings = false
     @State private var scannedUrl: String? = nil
     @State private var zoomTarget: CLLocationCoordinate2D? = nil
-    
+
     @State private var newFriendName: String = ""
 
     var body: some View {
@@ -197,6 +198,13 @@ struct ContentView: View {
         }
         .onAppear {
             locationManager.requestPermissionAndStart()
+        }
+        .onChange(of: scenePhase) { oldPhase, newPhase in
+            if newPhase == .background {
+                syncService.stopPolling()
+            } else if newPhase == .active {
+                syncService.startPolling()
+            }
         }
         .onReceive(syncService.$pendingQrForNaming) { qr in
             if let qr = qr { newFriendName = qr.suggestedName } else { newFriendName = "" }
