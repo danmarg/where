@@ -57,6 +57,8 @@ class LocationViewModel(
     e2eeStore: E2eeStore? = null,
     locationClient: LocationClient? = null,
     startPolling: Boolean = true,
+    private val clock: () -> Long = { System.currentTimeMillis() },
+    private val locationSource: LocationSource = LocationRepository,
 ) : AndroidViewModel(app) {
     // Use the Application-level singletons so LocationService and this ViewModel share the same
     // E2EE state. Fall back to creating new instances when running under test (app is not
@@ -69,8 +71,6 @@ class LocationViewModel(
         locationClient
             ?: (app as? WhereApplication)?.locationClient
             ?: LocationClient(BuildConfig.SERVER_HTTP_URL, this.e2eeStore)
-
-    private val locationSource: LocationSource = LocationRepository
 
     val userId: String by lazy { UserPrefs.getUserId(getApplication()) }
 
@@ -111,7 +111,7 @@ class LocationViewModel(
         combine(locationSource.lastLocation, _isSharingLocation, friendLocations) { myLoc, sharing, friendLocs ->
             buildList {
                 if (myLoc != null && sharing) {
-                    add(UserLocation(userId, myLoc.first, myLoc.second, System.currentTimeMillis() / 1000))
+                    add(UserLocation(userId, myLoc.first, myLoc.second, clock() / 1000))
                 }
                 addAll(friendLocs.values)
             }
@@ -157,11 +157,11 @@ class LocationViewModel(
     }
 
     private fun triggerRapidPoll() {
-        _pollingState.update { it.copy(lastRapidPollTrigger = System.currentTimeMillis()) }
+        _pollingState.update { it.copy(lastRapidPollTrigger = clock()) }
     }
 
     private fun isRapidPolling(): Boolean {
-        val now = System.currentTimeMillis()
+        val now = clock()
         val isPairing = _inviteState.value is InviteState.Pending || _pendingInitPayload.value != null || _pendingQrForNaming.value != null
         val recentlyTriggered = now - _pollingState.value.lastRapidPollTrigger < 5 * 60_000L
         return isPairing || recentlyTriggered
@@ -280,7 +280,7 @@ class LocationViewModel(
                             try {
                                 Log.d(TAG, "confirmQrScan: force-sending location to ${bobEntry.id}")
                                 locationClient.sendLocationToFriend(bobEntry.id, loc.first, loc.second)
-                                _pollingState.update { it.copy(lastSentLat = loc.first, lastSentLng = loc.second, lastSentTime = System.currentTimeMillis()) }
+                                _pollingState.update { it.copy(lastSentLat = loc.first, lastSentLng = loc.second, lastSentTime = clock()) }
                             } catch (e: Exception) {
                                 Log.e(TAG, "confirmQrScan: force send failed", e)
                                 updateStatus(e)
@@ -299,7 +299,7 @@ class LocationViewModel(
                                 try {
                                     Log.d(TAG, "confirmQrScan: deferred force-send to ${bobEntry.id}")
                                     locationClient.sendLocationToFriend(bobEntry.id, lat, lng)
-                                    _pollingState.update { it.copy(lastSentLat = lat, lastSentLng = lng, lastSentTime = System.currentTimeMillis()) }
+                                    _pollingState.update { it.copy(lastSentLat = lat, lastSentLng = lng, lastSentTime = clock()) }
                                 } catch (e: Exception) {
                                     Log.e(TAG, "confirmQrScan: deferred force send failed", e)
                                     updateStatus(e)
@@ -351,7 +351,7 @@ class LocationViewModel(
                                 try {
                                     Log.d(TAG, "confirmPendingInit: force-sending location to ${entry.id}")
                                     locationClient.sendLocationToFriend(entry.id, loc.first, loc.second)
-                                    _pollingState.update { it.copy(lastSentLat = loc.first, lastSentLng = loc.second, lastSentTime = System.currentTimeMillis()) }
+                                    _pollingState.update { it.copy(lastSentLat = loc.first, lastSentLng = loc.second, lastSentTime = clock()) }
                                 } catch (e: Exception) {
                                     Log.e(TAG, "confirmPendingInit: force send failed", e)
                                     updateStatus(e)
@@ -370,7 +370,7 @@ class LocationViewModel(
                                     try {
                                         Log.d(TAG, "confirmPendingInit: deferred force-send to ${entry.id}")
                                         locationClient.sendLocationToFriend(entry.id, lat, lng)
-                                        _pollingState.update { it.copy(lastSentLat = lat, lastSentLng = lng, lastSentTime = System.currentTimeMillis()) }
+                                        _pollingState.update { it.copy(lastSentLat = lat, lastSentLng = lng, lastSentTime = clock()) }
                                     } catch (e: Exception) {
                                         Log.e(TAG, "confirmPendingInit: deferred force send failed", e)
                                         updateStatus(e)
@@ -425,7 +425,7 @@ class LocationViewModel(
             Log.d(TAG, "Got ${updates.size} location updates")
             for (update in updates) {
                 friendLocations.value += (update.userId to update)
-                val now = System.currentTimeMillis()
+                val now = clock()
                 _friendLastPing.value += (update.userId to now)
                 e2eeStore.updateLastLocation(update.userId, update.lat, update.lng, now / 1000L)
             }
@@ -464,14 +464,14 @@ class LocationViewModel(
     // Sends our location to all non-paused friends, subject to throttling.
     // isHeartbeat=true uses a 5-minute minimum interval (called from poll loop);
     // isHeartbeat=false uses a 15-second minimum interval (called from location updates).
-    private suspend fun sendLocationIfNeeded(
+    internal suspend fun sendLocationIfNeeded(
         lat: Double,
         lng: Double,
         isHeartbeat: Boolean,
         force: Boolean = false,
     ) {
         if (!_isSharingLocation.value) return
-        val now = System.currentTimeMillis()
+        val now = clock()
         val state = _pollingState.value
         val shouldSend =
             force || state.lastSentLat == null ||
