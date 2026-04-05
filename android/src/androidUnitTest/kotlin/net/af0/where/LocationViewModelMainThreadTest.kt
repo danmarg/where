@@ -1,11 +1,11 @@
 package net.af0.where
 
+import android.app.Application
 import android.os.Looper
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
-import android.app.Application
 import kotlin.test.assertTrue
 
 /**
@@ -17,7 +17,6 @@ import kotlin.test.assertTrue
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [33], application = Application::class)
 class LocationViewModelMainThreadTest {
-
     /**
      * Verify that we are running on the main looper in unit tests.
      *
@@ -28,7 +27,7 @@ class LocationViewModelMainThreadTest {
     fun testMainThreadIsAvailable() {
         assertTrue(
             Looper.myLooper() == Looper.getMainLooper(),
-            "Tests should run on the main looper"
+            "Tests should run on the main looper",
         )
     }
 
@@ -51,19 +50,20 @@ class LocationViewModelMainThreadTest {
         // background threads, which could corrupt UI state.
 
         val vmClass = LocationViewModel::class.java
-        val methods = listOf(
-            "setDisplayName",
-            "toggleSharing",
-            "togglePauseFriend",
-            "renameFriend",
-            "removeFriend"
-        )
+        val methods =
+            listOf(
+                "setDisplayName",
+                "toggleSharing",
+                "togglePauseFriend",
+                "renameFriend",
+                "removeFriend",
+            )
 
         // Verify that these methods exist (compile-time guarantee)
         for (method in methods) {
             assertTrue(
                 vmClass.declaredMethods.any { m -> m.name == method },
-                "LocationViewModel should have method: $method"
+                "LocationViewModel should have method: $method",
             )
         }
     }
