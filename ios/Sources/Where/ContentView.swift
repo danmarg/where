@@ -110,18 +110,18 @@ struct ContentView: View {
                 onTogglePause: { syncService.togglePauseFriend(id: $0) },
                 onCreateInvite: {
                     showFriends = false
-                    syncService.createInvite()
+                    Task { await syncService.createInvite() }
                 },
                 onScanQr: {
                     showFriends = false
                     showScanner = true
                 },
-                onRename: { id, name in syncService.renameFriend(id: id, newName: name) },
+                onRename: { id, name in Task { await syncService.renameFriend(id: id, newName: name) } },
                 onPasteUrl: { url in
                     showFriends = false
                     syncService.processQrUrl(url)
                 },
-                onRemove: { syncService.removeFriend(id: $0) },
+                onRemove: { id in Task { await syncService.removeFriend(id: id) } },
                 onZoomTo: { friendId in
                     if friendId == syncService.myId {
                         // Zoom to own location
@@ -152,10 +152,10 @@ struct ContentView: View {
         }
         .sheet(isPresented: Binding(
             get: { if case .pending = syncService.inviteState { return true } else { return false } },
-            set: { if !$0 { syncService.clearInvite() } }
+            set: { if !$0 { Task { await syncService.clearInvite() } } }
         )) {
             if case .pending(let qr) = syncService.inviteState {
-                InviteSheet(qrPayload: qr, onDismiss: { syncService.clearInvite() })
+                InviteSheet(qrPayload: qr, onDismiss: { Task { await syncService.clearInvite() } })
             }
         }
         .alert("You", isPresented: $showUserSettings) {
@@ -168,25 +168,27 @@ struct ContentView: View {
             get: { (syncService.pendingQrForNaming != nil || syncService.pendingInitPayload != nil) && !syncService.isInviteActive },
             set: { if !$0 {
                 syncService.pendingQrForNaming = nil
-                syncService.cancelPendingInit()
+                Task { await syncService.cancelPendingInit() }
                 newFriendName = ""
             } }
         )) {
             TextField("Friend's Name", text: $newFriendName)
             if let qr = syncService.pendingQrForNaming {
                 Button("Add") {
-                    syncService.confirmQrScan(qr: qr, friendName: newFriendName.isEmpty ? "Friend" : newFriendName)
+                    let name = newFriendName.isEmpty ? "Friend" : newFriendName
+                    Task { await syncService.confirmQrScan(qr: qr, friendName: name) }
                     newFriendName = ""
                 }
             } else if syncService.pendingInitPayload != nil {
                 Button("Save") {
-                    syncService.confirmPendingInit(name: newFriendName.isEmpty ? "Friend" : newFriendName)
+                    let name = newFriendName.isEmpty ? "Friend" : newFriendName
+                    Task { await syncService.confirmPendingInit(name: name) }
                     newFriendName = ""
                 }
             }
             Button("Cancel", role: .cancel) {
                 syncService.pendingQrForNaming = nil
-                syncService.cancelPendingInit()
+                Task { await syncService.cancelPendingInit() }
                 newFriendName = ""
             }
         } message: {
