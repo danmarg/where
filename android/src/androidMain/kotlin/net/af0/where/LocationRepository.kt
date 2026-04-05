@@ -41,6 +41,7 @@ interface LocationSource {
     fun onPendingInit(payload: KeyExchangeInitPayload?)
     fun setSharingLocation(sharing: Boolean)
     fun setPausedFriends(friendIds: Set<String>)
+    fun setInitialFriendLocations(locations: Map<String, UserLocation>, pings: Map<String, Long>)
 }
 
 /**
@@ -123,7 +124,7 @@ object LocationRepository : LocationSource {
         _pausedFriendIds.value = friendIds
     }
 
-    fun setInitialFriendLocations(locations: Map<String, UserLocation>, pings: Map<String, Long>) {
+    override fun setInitialFriendLocations(locations: Map<String, UserLocation>, pings: Map<String, Long>) {
         // Merge with current state to avoid overwriting live updates that arrived before initial load
         _friendLocations.update { locations + it }
         _friendLastPing.update { pings + it }
