@@ -205,7 +205,7 @@ class MainActivity : ComponentActivity() {
                     )
                 }
 
-                pendingInitPayload?.takeIf { inviteState is InviteState.None }?.let { payload ->
+                pendingInitPayload?.let { payload ->
                     var name by remember(payload) { mutableStateOf(payload.suggestedName) }
                     AlertDialog(
                         onDismissRequest = { viewModel.cancelPendingInit() },
