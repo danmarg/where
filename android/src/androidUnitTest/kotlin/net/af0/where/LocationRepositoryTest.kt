@@ -14,7 +14,6 @@ import kotlin.test.assertTrue
  * do not lose updates or produce torn reads due to race conditions.
  */
 class LocationRepositoryTest {
-
     @Before
     fun resetRepository() {
         // Reset the repository to a known state before each test
@@ -60,7 +59,7 @@ class LocationRepositoryTest {
         assertNotNull(finalLocation, "Final location should not be null after concurrent updates")
         assertTrue(
             finalLocation in submittedLocations,
-            "Final location $finalLocation should be one of the submitted locations"
+            "Final location $finalLocation should be one of the submitted locations",
         )
     }
 
@@ -84,12 +83,13 @@ class LocationRepositoryTest {
         val observedLocations = mutableSetOf<Pair<Double, Double>?>()
 
         // Continuously sample the StateFlow while updates are in flight
-        val samplingThread = Thread {
-            while (!Thread.currentThread().isInterrupted) {
-                observedLocations.add(LocationRepository.lastLocation.value)
-                Thread.yield()
+        val samplingThread =
+            Thread {
+                while (!Thread.currentThread().isInterrupted) {
+                    observedLocations.add(LocationRepository.lastLocation.value)
+                    Thread.yield()
+                }
             }
-        }
         samplingThread.start()
 
         // Submit 100 location updates concurrently
@@ -121,7 +121,7 @@ class LocationRepositoryTest {
             if (observed != null) {
                 assertTrue(
                     observed in submittedLocations,
-                    "Observed location $observed should be one of the submitted locations, not a torn read"
+                    "Observed location $observed should be one of the submitted locations, not a torn read",
                 )
             }
         }
@@ -130,7 +130,7 @@ class LocationRepositoryTest {
         val nonNullObservations = observedLocations.filterNotNull()
         assertTrue(
             nonNullObservations.isNotEmpty(),
-            "Should have observed at least some non-null location updates"
+            "Should have observed at least some non-null location updates",
         )
     }
 }
