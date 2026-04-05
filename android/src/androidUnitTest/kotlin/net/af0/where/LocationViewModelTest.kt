@@ -4,6 +4,7 @@ import android.app.Application
 import android.content.Context
 import android.content.SharedPreferences
 import android.text.TextUtils
+import app.cash.turbine.turbineScope
 import io.mockk.every
 import io.mockk.mockk
 import io.mockk.mockkStatic
@@ -1030,5 +1031,52 @@ class LocationViewModelTest {
 
             assertTrue(aliceId in vm.pausedFriendIds.value, "Alice should still be paused")
             assertTrue(charlieId in vm.friendLocations.value.keys, "Charlie should still be in locations")
+        }
+
+    @Test
+    fun testDoPoll_Consistency() =
+        runTest {
+            val store = E2eeStore(FakeE2eeStorage())
+            val client = mockk<LocationClient>(relaxed = true)
+            var currentTime = 1000L
+
+            viewModel =
+                LocationViewModel(
+                    app,
+                    e2eeStore = store,
+                    locationClient = client,
+                    startPolling = false,
+                    clock = { currentTime },
+                    locationSource = FakeLocationSource(),
+                )
+            val vm = viewModel!!
+
+            val friendId = "friend1"
+            val update = UserLocation(friendId, 1.0, 2.0, 1000L)
+            io.mockk.coEvery { client.poll() } returns listOf(update)
+
+            // Use Turbine to verify no intermediate inconsistent state
+            turbineScope {
+                val locationsTurbine = vm.friendLocations.testIn(this)
+                val pingsTurbine = vm.friendLastPing.testIn(this)
+
+                // Initial states
+                assertEquals(emptyMap(), locationsTurbine.awaitItem())
+                assertEquals(emptyMap(), pingsTurbine.awaitItem())
+
+                vm.doPoll()
+
+                // Both should be updated
+                val finalLocations = locationsTurbine.awaitItem()
+                val finalPings = pingsTurbine.awaitItem()
+
+                assertTrue(finalLocations.containsKey(friendId))
+                assertTrue(finalPings.containsKey(friendId))
+                assertEquals(1.0, (finalLocations[friendId] as UserLocation).lat)
+                assertEquals(currentTime, finalPings[friendId])
+
+                locationsTurbine.cancel()
+                pingsTurbine.cancel()
+            }
         }
 }

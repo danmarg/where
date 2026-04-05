@@ -175,7 +175,8 @@ object Session {
         val newState =
             state.copy(
                 rootKey = ratchetStep.newRootKey,
-                sendChainKey = ratchetStep.newChainKey, // Alice's new send chain
+                // Alice's new send chain
+                sendChainKey = ratchetStep.newChainKey,
                 sendToken = tokenAliceToBob,
                 recvToken = tokenBobToAlice,
                 epoch = newEpoch,
@@ -217,7 +218,8 @@ object Session {
         val newState =
             state.copy(
                 rootKey = ratchetStep.newRootKey,
-                recvChainKey = ratchetStep.newChainKey, // Bob's new recv chain (= Alice's new send)
+                // Bob's new recv chain (= Alice's new send)
+                recvChainKey = ratchetStep.newChainKey,
                 sendToken = tokenBobToAlice,
                 recvToken = tokenAliceToBob,
                 epoch = newEpoch,
@@ -268,7 +270,8 @@ object Session {
         val newState =
             state.copy(
                 rootKey = ratchetStep.newRootKey,
-                recvChainKey = ratchetStep.newChainKey, // Alice's new recv chain (= Bob's new send)
+                // Alice's new recv chain (= Bob's new send)
+                recvChainKey = ratchetStep.newChainKey,
                 theirEkPub = bobNewEkPub.copyOf(),
                 recvSeq = 0L,
             )

@@ -7,13 +7,27 @@ struct QrCodeView: View {
     let content: String
     var size: CGFloat = 240
 
+    @State private var cachedImage: UIImage? = nil
+
     var body: some View {
-        if let image = generateQrImage(content) {
-            Image(uiImage: image)
-                .interpolation(.none)
-                .resizable()
-                .scaledToFit()
-                .frame(width: size, height: size)
+        Group {
+            if let image = cachedImage {
+                Image(uiImage: image)
+                    .interpolation(.none)
+                    .resizable()
+                    .scaledToFit()
+                    .frame(width: size, height: size)
+            }
+        }
+        .onAppear {
+            if cachedImage == nil {
+                cachedImage = generateQrImage(content)
+            }
+        }
+        .onChange(of: content) { oldValue, newValue in
+            if oldValue != newValue {
+                cachedImage = generateQrImage(newValue)
+            }
         }
     }
 
@@ -34,8 +48,7 @@ struct InviteSheet: View {
     let onDismiss: () -> Void
 
     @State private var showShareSheet = false
-
-    private var qrUrl: String { qrPayloadToUrl(qrPayload) }
+    @State private var cachedQrUrl: String = ""
 
     var body: some View {
         NavigationStack {
@@ -49,7 +62,7 @@ struct InviteSheet: View {
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
 
-                QrCodeView(content: qrUrl)
+                QrCodeView(content: cachedQrUrl)
                     .padding()
                     .background(Color.white)
                     .cornerRadius(12)
@@ -64,8 +77,13 @@ struct InviteSheet: View {
             }
             .padding(32)
         }
+        .onAppear {
+            if cachedQrUrl.isEmpty {
+                cachedQrUrl = qrPayloadToUrl(qrPayload)
+            }
+        }
         .sheet(isPresented: $showShareSheet) {
-            ShareSheet(items: [qrUrl])
+            ShareSheet(items: [cachedQrUrl])
         }
     }
 }

@@ -66,8 +66,11 @@ jobs:
       - name: Install libsodium (macOS)
         run: brew install libsodium
 
-      - name: Build shared framework
-        run: ./gradlew :shared:embedAndSignAppleFrameworkForXcode --quiet
+      - name: Build shared framework (Debug)
+        run: ./gradlew :shared:assembleSharedDebugXCFramework --quiet
+
+      - name: Build shared framework (Release)
+        run: ./gradlew :shared:assembleSharedReleaseXCFramework --quiet
 
       - name: Install XcodeGen
         run: brew install xcodegen
@@ -80,7 +83,7 @@ jobs:
           cd ios
           xcodebuild test \
             -scheme Where \
-            -destination 'platform=iOS Simulator,name=iPhone 15,OS=latest' \
+            -destination 'platform=iOS Simulator,name=iPhone 16,OS=latest' \
             -resultBundlePath TestResults.xcresult \
             CODE_SIGN_IDENTITY="" \
             CODE_SIGNING_REQUIRED=NO
