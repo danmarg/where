@@ -1,27 +1,16 @@
 package net.af0.where
 
-import android.Manifest
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.Service
-import android.content.Context
 import android.content.Intent
-import android.content.pm.PackageManager
 import android.os.IBinder
-import android.util.Log
-import androidx.core.content.ContextCompat
-import com.google.android.gms.location.*
-import kotlinx.coroutines.*
-import kotlinx.coroutines.flow.collectLatest
-import kotlinx.coroutines.sync.Mutex
-import kotlinx.coroutines.sync.withLock
-import net.af0.where.e2ee.E2eeStore
-import net.af0.where.e2ee.LocationClient
-import net.af0.where.e2ee.toHex
-import net.af0.where.e2ee.discoveryToken
-
-private const val TAG = "LocationService"
+import com.google.android.gms.location.LocationCallback
+import com.google.android.gms.location.LocationRequest
+import com.google.android.gms.location.LocationResult
+import com.google.android.gms.location.LocationServices
+import com.google.android.gms.location.Priority
 
 private const val TAG = "LocationService"
 
@@ -34,23 +23,12 @@ private const val TAG = "LocationService"
 class LocationService : Service() {
     private lateinit var fusedClient: com.google.android.gms.location.FusedLocationProviderClient
     private lateinit var locationCallback: LocationCallback
-    private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
-
-    private lateinit var e2eeStore: E2eeStore
-    private lateinit var locationClient: LocationClient
-
-    private var lastSentLocation: Pair<Double, Double>? = null
-    private var lastSentTime: Long = 0
-    private val mutex = Mutex()
+    private var isRegistered = false
 
     override fun onCreate() {
         super.onCreate()
-        Log.d(TAG, "LocationService onCreate")
         createNotificationChannel()
         startForeground(NOTIFICATION_ID, buildNotification())
-
-        e2eeStore = E2eeStore(SharedPrefsE2eeStorage(this))
-        locationClient = LocationClient(BuildConfig.SERVER_HTTP_URL, e2eeStore)
 
         fusedClient = LocationServices.getFusedLocationProviderClient(this)
         locationCallback =
@@ -68,121 +46,18 @@ class LocationService : Service() {
         } catch (_: SecurityException) {
         }
 
-        serviceScope.launch {
-            pollLoop()
-        }
+        val request =
+            LocationRequest.Builder(Priority.PRIORITY_BALANCED_POWER_ACCURACY, 30_000L)
+                .setMinUpdateIntervalMillis(15_000L)
+                .setMinUpdateDistanceMeters(10f)
+                .build()
 
-        serviceScope.launch {
-            LocationRepository.lastLocation.collectLatest { loc ->
-                if (loc != null) {
-                    maybeSendLocation(loc.first, loc.second)
-                }
-            }
-        }
-    }
-
-    private suspend fun maybeSendLocation(lat: Double, lng: Double) {
-        val isSharing = LocationRepository.isSharingLocation.value
-        if (!isSharing) return
-
-        mutex.withLock {
-            val now = System.currentTimeMillis()
-            val pausedFriendIds = LocationRepository.pausedFriendIds.value
-
-            val lastLoc = lastSentLocation
-            val distance = if (lastLoc != null) {
-                val results = FloatArray(1)
-                android.location.Location.distanceBetween(lastLoc.first, lastLoc.second, lat, lng, results)
-                results[0]
-            } else {
-                Float.MAX_VALUE
-            }
-
-            // Thresholds: 1 min if moved > 10m, 5 min heartbeat
-            val shouldSend = lastLoc == null ||
-                            (distance > 10 && now - lastSentTime > 1 * 60_000L) ||
-                            (now - lastSentTime > 5 * 60_000L)
-
-            if (shouldSend) {
-                try {
-                    // Always poll before sending, even in background.
-                    // It updates e2eeStore but only updates UI flows if appropriate.
-                    doPollInternal()
-
-                    Log.d(TAG, "Sending location: $lat, $lng")
-                    locationClient.sendLocation(lat, lng, pausedFriendIds)
-                    lastSentLocation = Pair(lat, lng)
-                    lastSentTime = now
-                    LocationRepository.onConnectionStatus(ConnectionStatus.Ok)
-                } catch (e: Exception) {
-                    Log.e(TAG, "Failed to send location", e)
-                    LocationRepository.onConnectionError(e)
-                }
-            }
-        }
-    }
-
-    private suspend fun pollLoop() {
-        while (true) {
-            val isForeground = LocationRepository.isAppInForeground.value
-            val rapid = isRapidPolling()
-
-            if (isForeground || rapid) {
-                doPollInternal()
-            }
-
-            LocationRepository.lastLocation.value?.let { (lat, lng) ->
-                maybeSendLocation(lat, lng)
-            }
-
-            val interval = if (rapid) 2_000L else 60_000L
-            delay(interval)
-        }
-    }
-
-    private suspend fun doPollInternal() {
         try {
-            val updates = locationClient.poll()
-            val isForeground = LocationRepository.isAppInForeground.value
-            val rapid = isRapidPolling()
-
-            for (update in updates) {
-                e2eeStore.updateLastLocation(update.userId, update.lat, update.lng, System.currentTimeMillis() / 1000L)
-                if (isForeground || rapid) {
-                    LocationRepository.onFriendUpdate(update)
-                }
-            }
-
-            if (isForeground || rapid) {
-                pollPendingInviteInternal()
-            }
-            LocationRepository.onConnectionStatus(ConnectionStatus.Ok)
-        } catch (e: Exception) {
-            Log.e(TAG, "Poll failed", e)
-            LocationRepository.onConnectionError(e)
+            fusedClient.requestLocationUpdates(request, locationCallback, mainLooper)
+            isRegistered = true
+        } catch (_: SecurityException) {
+            stopSelf()
         }
-    }
-
-    private suspend fun pollPendingInviteInternal() {
-        val qr = e2eeStore.pendingQrPayload ?: run {
-            LocationRepository.onPendingInit(null)
-            return
-        }
-        try {
-            val discoveryHex = qr.discoveryToken().toHex()
-            val messages = net.af0.where.e2ee.E2eeMailboxClient.poll(BuildConfig.SERVER_HTTP_URL, discoveryHex)
-            val initPayload = messages.filterIsInstance<net.af0.where.e2ee.KeyExchangeInitPayload>().firstOrNull()
-            if (initPayload != null) {
-                LocationRepository.onPendingInit(initPayload)
-            }
-        } catch (e: Exception) {
-            LocationRepository.onConnectionError(e)
-        }
-    }
-
-    private fun isRapidPolling(): Boolean {
-        val isPairing = e2eeStore.pendingQrPayload != null || LocationRepository.pendingInitPayload.value != null
-        return isPairing
     }
 
     override fun onStartCommand(
@@ -190,23 +65,24 @@ class LocationService : Service() {
         flags: Int,
         startId: Int,
     ): Int {
-        val request =
-            LocationRequest.Builder(
-                Priority.PRIORITY_BALANCED_POWER_ACCURACY,
-                30_000L,
-            ).setMinUpdateIntervalMillis(15_000L).build()
-
-        try {
-            fusedClient.requestLocationUpdates(request, locationCallback, mainLooper)
-        } catch (_: SecurityException) {
-            stopSelf()
+        if (!isRegistered) {
+            val request =
+                LocationRequest.Builder(Priority.PRIORITY_BALANCED_POWER_ACCURACY, 30_000L)
+                    .setMinUpdateIntervalMillis(15_000L)
+                    .setMinUpdateDistanceMeters(10f)
+                    .build()
+            try {
+                fusedClient.requestLocationUpdates(request, locationCallback, mainLooper)
+                isRegistered = true
+            } catch (_: SecurityException) {
+                stopSelf()
+            }
         }
         return START_STICKY
     }
 
     override fun onDestroy() {
         fusedClient.removeLocationUpdates(locationCallback)
-        serviceScope.cancel()
         super.onDestroy()
     }
 
