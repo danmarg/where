@@ -152,6 +152,10 @@ final class LocationSyncService: ObservableObject {
         return id
     }()
 
+    deinit {
+        stopPolling()
+    }
+
     init(e2eeStore: Shared.E2eeStore? = nil, locationClient: Shared.LocationClient? = nil) {
         logger.debug("LocationSyncService init: serverUrl=\(ServerConfig.httpBaseUrl)")
         let store = e2eeStore ?? Shared.E2eeStore(storage: UserDefaultsE2eeStorage())
@@ -236,6 +240,11 @@ final class LocationSyncService: ObservableObject {
                 try? await Task.sleep(nanoseconds: interval)
             }
         }
+    }
+
+    func stopPolling() {
+        pollTask?.cancel()
+        pollTask = nil
     }
 
     private func triggerRapidPoll() {

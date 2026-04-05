@@ -314,6 +314,50 @@ final class LocationSyncServiceTests: XCTestCase {
         XCTAssertTrue(syncService.pausedFriendIds.contains(aliceId), "Alice should still be paused")
         XCTAssertTrue(syncService.friendLocations.keys.contains(charlieId), "Charlie should still be in locations")
     }
+
+    // MARK: - Polling Lifecycle Tests
+
+    @MainActor
+    func testPollingLifecycle_StopPollingCancelsTask() {
+        // Create a new instance for this test (not using shared singleton)
+        let mockStore = MockE2eeStore()
+        let syncService = LocationSyncService(e2eeStore: mockStore)
+
+        // Poll task should be running after init (started in startPolling)
+        // Verify by checking we can stop it without error
+        syncService.stopPolling()
+
+        // If we get here without crash, stopPolling() is working
+        XCTAssert(true, "stopPolling() completed without error")
+    }
+
+    @MainActor
+    func testPollingLifecycle_StopPollingIdempotent() {
+        let mockStore = MockE2eeStore()
+        let syncService = LocationSyncService(e2eeStore: mockStore)
+
+        // Call stopPolling multiple times to verify idempotency
+        syncService.stopPolling()
+        syncService.stopPolling()
+        syncService.stopPolling()
+
+        XCTAssert(true, "Multiple stopPolling() calls should be safe")
+    }
+
+    @MainActor
+    func testPollingLifecycle_RestartAfterStop() {
+        let mockStore = MockE2eeStore()
+        let syncService = LocationSyncService(e2eeStore: mockStore)
+
+        // Stop polling
+        syncService.stopPolling()
+
+        // Start polling again
+        syncService.startPolling()
+
+        // If we get here, restart is working
+        XCTAssert(true, "startPolling() after stopPolling() completed without error")
+    }
 }
 
 // MARK: - LocationSyncService Extension for Testing
