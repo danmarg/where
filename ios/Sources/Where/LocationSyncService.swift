@@ -142,12 +142,17 @@ final class LocationSyncService: ObservableObject {
     var pendingForcedSendAfterPairing: Bool = false
     private var currentSendTask: Task<Void, Never>? = nil
 
-    // Injected for testing. Closures are marked Sendable but MainActor-bound for UIBackgroundTask management.
-    var beginBackgroundTask: @MainActor @Sendable (String, @Sendable @escaping () -> Void) -> UIBackgroundTaskIdentifier = { name, handler in
-        UIApplication.shared.beginBackgroundTask(withName: name, expirationHandler: handler)
+    // Injected for testing. Closures are @Sendable and use MainActor.assumeIsolated internally
+    // to interact with UIApplication.shared, which is required for background tasks in Swift 6.
+    var beginBackgroundTask: @Sendable (String, @Sendable @escaping () -> Void) -> UIBackgroundTaskIdentifier = { name, handler in
+        MainActor.assumeIsolated {
+            UIApplication.shared.beginBackgroundTask(withName: name, expirationHandler: handler)
+        }
     }
-    var endBackgroundTask: @MainActor @Sendable (UIBackgroundTaskIdentifier) -> Void = { identifier in
-        UIApplication.shared.endBackgroundTask(identifier)
+    var endBackgroundTask: @Sendable (UIBackgroundTaskIdentifier) -> Void = { identifier in
+        MainActor.assumeIsolated {
+            UIApplication.shared.endBackgroundTask(identifier)
+        }
     }
 
     let e2eeStore: Shared.E2eeStore
@@ -218,7 +223,10 @@ final class LocationSyncService: ObservableObject {
 
     fileprivate func isRapidPolling() async -> Bool {
         let now = Date()
-        let isPairing = (try? await e2eeStore.pendingQrPayload()) != nil || pendingInitPayload != nil || pendingQrForNaming != nil
+        // Kotlin suspend functions returning optional types appear as T?? in Swift.
+        // We use ?? nil to flatten them to T?.
+        let pending = try? await e2eeStore.pendingQrPayload()
+        let isPairing = (pending ?? nil) != nil || pendingInitPayload != nil || pendingQrForNaming != nil
         let recentlyTriggered = now.timeIntervalSince(lastRapidPollTrigger) < 5 * 60
         return isPairing || recentlyTriggered
     }
@@ -323,11 +331,15 @@ final class LocationSyncService: ObservableObject {
             // Re-check isSharingLocation inside Task if needed,
             // but for simplicity we rely on the main-actor throttle check above.
 
-            // Structured background task management. identifiers are assigned on the main actor.
-            let backgroundTask = BackgroundTaskBox(end: { [weak self] id in
-                Task { @MainActor in self?.endBackgroundTask(id) }
+            // Capture the end operation closure before entering the BackgroundTaskBox.
+            // This avoids direct self capture in closures that might be called concurrently.
+            let endOp = self.endBackgroundTask
+
+            // Structured background task management.
+            let backgroundTask = BackgroundTaskBox(end: { id in
+                endOp(id)
             })
-            let id = await self.beginBackgroundTask("SendLocation") {
+            let id = self.beginBackgroundTask("SendLocation") {
                 backgroundTask.end()
             }
             backgroundTask.identifier = id
@@ -464,7 +476,8 @@ final class LocationSyncService: ObservableObject {
 
         defer { isExchanging = false }
         do {
-            if let entry = try await e2eeStore.processKeyExchangeInit(payload: payload, bobName: name) {
+            let result = try await e2eeStore.processKeyExchangeInit(payload: payload, bobName: name)
+            if let entry = result ?? nil {
                 friends = try await e2eeStore.listFriends()
                 try await locationClient.postOpkBundle(friendId: entry.id)
 
@@ -522,11 +535,14 @@ final class LocationSyncService: ObservableObject {
 
     private func pollAll(updateUi: Bool = true) async {
         logger.debug("Polling for location updates")
-        // Structured background task management. identifiers are assigned on the main actor.
-        let backgroundTask = BackgroundTaskBox(end: { [weak self] id in
-            Task { @MainActor in self?.endBackgroundTask(id) }
+        // Capture the end operation closure before entering the BackgroundTaskBox.
+        let endOp = self.endBackgroundTask
+
+        // Structured background task management.
+        let backgroundTask = BackgroundTaskBox(end: { id in
+            endOp(id)
         })
-        let id = await self.beginBackgroundTask("PollAll") {
+        let id = self.beginBackgroundTask("PollAll") {
             backgroundTask.end()
         }
         backgroundTask.identifier = id
@@ -553,7 +569,8 @@ final class LocationSyncService: ObservableObject {
     }
 
     private func pollPendingInvite() async {
-        guard let qr = try? await e2eeStore.pendingQrPayload() else { return }
+        let pending = try? await e2eeStore.pendingQrPayload()
+        guard let qr = pending ?? nil else { return }
         let discoveryHex = toHex(qr.discoveryToken())
         debugLog { "pollPendingInvite: discoveryHex=\(discoveryHex)" }
         let messages: [[String: Any]]
