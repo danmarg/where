@@ -247,7 +247,14 @@ final class LocationSyncService: ObservableObject {
         startPolling()
     }
 
+    @MainActor
     func sendLocation(lat: Double, lng: Double, isHeartbeat: Bool = false, force: Bool = false) {
+        // INVARIANT: This function is synchronous on the main actor. isSending is set to
+        // true before any Task is spawned, so a second main-actor call always sees
+        // isSending == true and exits. The inner Task resets isSending = false on the
+        // main actor after the await. No interleaving is possible while this invariant holds.
+        MainActor.assertIsolated()
+
         // pendingForcedSendAfterPairing is read here so the CoreLocation delegate path
         // (which calls sendLocation without force) still picks up post-pairing forced sends.
         let effectiveForce = force || pendingForcedSendAfterPairing
