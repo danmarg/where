@@ -34,11 +34,6 @@
 	<key>UIBackgroundModes</key>
 	<array>
 		<string>location</string>
-		<string>processing</string>
-	</array>
-	<key>BGTaskSchedulerPermittedIdentifiers</key>
-	<array>
-		<string>net.af0.where.poll</string>
 	</array>
 	<key>UILaunchScreen</key>
 	<dict/>

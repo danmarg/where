@@ -3,6 +3,7 @@ package net.af0.where
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import net.af0.where.model.UserLocation
 
 /** Minimal interface over the shared location state, making it injectable for tests. */
@@ -33,10 +34,10 @@ object LocationRepository : LocationSource {
         lat: Double,
         lng: Double,
     ) {
-        _lastLocation.value = Pair(lat, lng)
+        _lastLocation.update { Pair(lat, lng) }
     }
 
     override fun onUsersUpdate(users: List<UserLocation>) {
-        _users.value = users
+        _users.update { users }
     }
 }

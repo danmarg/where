@@ -100,6 +100,12 @@ enum ConnectionStatus {
     case error(message: String)
 }
 
+enum InviteState {
+    case none
+    case pending(Shared.QrPayload)
+    case consumed(Shared.QrPayload)
+}
+
 @MainActor
 final class LocationSyncService: ObservableObject {
     static let shared = LocationSyncService()
@@ -108,7 +114,7 @@ final class LocationSyncService: ObservableObject {
     @Published var friendLastPing: [String: Date] = [:]
     @Published var connectionStatus: ConnectionStatus = .ok
     @Published var friends: [Shared.FriendEntry] = []
-    @Published var pendingInviteQr: Shared.QrPayload? = nil
+    @Published var inviteState: InviteState = .none
     @Published var isSharingLocation: Bool {
         didSet { UserDefaults.standard.set(isSharingLocation, forKey: "where_is_sharing") }
     }
@@ -122,10 +128,9 @@ final class LocationSyncService: ObservableObject {
     @Published var pendingQrForNaming: Shared.QrPayload? = nil
     @Published var pendingInitPayload: Shared.KeyExchangeInitPayload? = nil
     @Published var isExchanging: Bool = false
-    var isInviteActive: Bool { pendingInviteQr != nil }
+    var isInviteActive: Bool { if case .pending = inviteState { return true } else { return false } }
 
     private var lastRapidPollTrigger: Date = Date(timeIntervalSince1970: 0)
-    private var autoClearedInvite: Bool = false
 
     private var lastSentLocation: (lat: Double, lng: Double)? = nil
     private var lastSentTime: Date = Date(timeIntervalSince1970: 0)
@@ -275,20 +280,18 @@ final class LocationSyncService: ObservableObject {
     }
 
     func createInvite() {
-        autoClearedInvite = false
         let qr = e2eeStore.createInvite(suggestedName: displayName.isEmpty ? "Me" : displayName)
         debugLog { "Created invite: discovery=\(toHex(qr.discoveryToken()))" }
-        pendingInviteQr = qr
+        inviteState = .pending(qr)
         triggerRapidPoll()
         startPolling()
     }
 
     func clearInvite() {
-        if !autoClearedInvite {
+        if case .pending = inviteState {
             e2eeStore.clearInvite()
         }
-        pendingInviteQr = nil
-        autoClearedInvite = false
+        inviteState = .none
     }
 
     @discardableResult
@@ -363,8 +366,10 @@ final class LocationSyncService: ObservableObject {
     func confirmPendingInit(name: String) {
         guard let payload = pendingInitPayload else { return }
         pendingInitPayload = nil
-        pendingInviteQr = nil
-        autoClearedInvite = false
+        if case .pending = inviteState {
+            e2eeStore.clearInvite()
+        }
+        inviteState = .none
         lastRapidPollTrigger = Date(timeIntervalSince1970: 0)
         startPolling()
         isExchanging = true
@@ -389,11 +394,10 @@ final class LocationSyncService: ObservableObject {
     }
 
     func cancelPendingInit() {
-        guard pendingInitPayload != nil || pendingInviteQr != nil else { return }
-        if !autoClearedInvite { e2eeStore.clearInvite() }
-        autoClearedInvite = false
+        guard pendingInitPayload != nil || (if case .none = inviteState { false } else { true }) else { return }
+        e2eeStore.clearInvite()
         pendingInitPayload = nil
-        pendingInviteQr = nil
+        inviteState = .none
     }
 
     func renameFriend(id: String, newName: String) {
@@ -410,12 +414,10 @@ final class LocationSyncService: ObservableObject {
     }
 
     func removeFriend(id: String) {
-        Task {
-            e2eeStore.deleteFriend(id: id)
-            friends = e2eeStore.listFriends()
-            friendLocations.removeValue(forKey: id)
-            pausedFriendIds.remove(id)
-        }
+        e2eeStore.deleteFriend(id: id)
+        friends = e2eeStore.listFriends()
+        friendLocations.removeValue(forKey: id)
+        pausedFriendIds.remove(id)
     }
 
     // MARK: - Private polling
@@ -489,9 +491,10 @@ final class LocationSyncService: ObservableObject {
                 suggestedName: suggestedName
             )
 
-            autoClearedInvite = true
+            if case .pending(let currentQr) = inviteState {
+                inviteState = .consumed(currentQr)
+            }
             pendingInitPayload = initPayload
-            pendingInviteQr = nil
             triggerRapidPoll()
             break
         }
