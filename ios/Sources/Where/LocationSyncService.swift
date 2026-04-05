@@ -244,31 +244,27 @@ final class LocationSyncService: ObservableObject {
         // Idempotency guard: do not create a second loop if one is alive.
         if let existing = pollTask, !existing.isCancelled { return }
         pollTask = Task { [weak self] in
-            // Use a local scope to get the iterator without capturing self strongly for the task duration.
-            var it: AsyncStream<Void>.Iterator?
-            if let signals = await MainActor.run(body: { self?.pollSignals }) {
-                it = signals.makeAsyncIterator()
-            }
-            guard var signalIterator = it else { return }
+            // Use an iterator to catch all signals, including those during pollAll.
+            // Since this Task inherits MainActor isolation, we can safely access self weakly.
+            guard let signals = self?.pollSignals else { return }
+            var signalIterator = signals.makeAsyncIterator()
 
             while !Task.isCancelled {
-                // Check self weakly inside the loop to avoid retain cycle.
-                // Re-binding self strongly only for the duration of one loop iteration.
-                guard let self = await MainActor.run(body: { self }) else { return }
+                // Re-bind self for each loop iteration to prevent retain cycles while ensuring
+                // safety for the duration of the iteration.
+                guard let isolatedSelf = self else { return }
 
-                await self.pollAll(updateUi: true)
+                await isolatedSelf.pollAll(updateUi: true)
                 // Heartbeat: ensure we send at least once every 5 minutes when stationary.
                 if let loc = LocationManager.shared.lastLocation {
-                    self.sendLocation(lat: loc.coordinate.latitude, lng: loc.coordinate.longitude, isHeartbeat: true)
+                    isolatedSelf.sendLocation(lat: loc.coordinate.latitude, lng: loc.coordinate.longitude, isHeartbeat: true)
                 }
 
-                let isRapid = await self.isRapidPolling()
+                let isRapid = await isolatedSelf.isRapidPolling()
                 let intervalSeconds = isRapid ? 2.0 : 60.0
 
-                // Wait for either the interval to pass or a wake-up signal.
-                // Using a persistent iterator ensures we catch signals that arrived
-                // during pollAll without missing them.
-                try? await self.withTimeout(seconds: intervalSeconds) {
+                // Use the local self for timeout management.
+                try? await isolatedSelf.withTimeout(seconds: intervalSeconds) {
                     _ = await signalIterator.next()
                 }
             }
@@ -594,12 +590,16 @@ final class LocationSyncService: ObservableObject {
                 return _identifier
             }
             set {
+                var idToEnd: UIBackgroundTaskIdentifier = .invalid
                 lock.lock()
                 _identifier = newValue
-                let shouldEndNow = isExpired && !isEnded && newValue != .invalid
+                if isExpired && !isEnded && newValue != .invalid {
+                    isEnded = true
+                    idToEnd = newValue
+                }
                 lock.unlock()
-                if shouldEndNow {
-                    end()
+                if idToEnd != .invalid {
+                    endOp(idToEnd)
                 }
             }
         }
@@ -609,10 +609,11 @@ final class LocationSyncService: ObservableObject {
         }
 
         func end() {
+            var idToEnd: UIBackgroundTaskIdentifier = .invalid
             lock.lock()
-            let idToEnd = (!isEnded && _identifier != .invalid) ? _identifier : .invalid
-            if idToEnd != .invalid {
+            if !isEnded && _identifier != .invalid {
                 isEnded = true
+                idToEnd = _identifier
             }
             isExpired = true
             lock.unlock()
