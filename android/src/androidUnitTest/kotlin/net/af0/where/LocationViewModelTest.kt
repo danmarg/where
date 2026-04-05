@@ -120,7 +120,15 @@ private class FakeLocationSource : LocationSource {
     }
 
     override fun onConnectionError(e: Throwable) {
-        _connectionStatus.value = ConnectionStatus.Error(e.message ?: "error")
+        val msg =
+            when {
+                e.message?.contains("Unable to resolve host", ignoreCase = true) == true -> "not resolved"
+                e.message?.contains("timeout", ignoreCase = true) == true -> "timeout"
+                e.message?.contains("ConnectException", ignoreCase = true) == true -> "no connection"
+                e.message?.contains("Failed to post to mailbox: 500", ignoreCase = true) == true -> "server error 500"
+                else -> e.message?.take(32) ?: "unknown error"
+            }
+        _connectionStatus.value = ConnectionStatus.Error(msg)
     }
 
     override fun setAppForeground(foreground: Boolean) {
@@ -137,6 +145,11 @@ private class FakeLocationSource : LocationSource {
 
     override fun setPausedFriends(friendIds: Set<String>) {
         _pausedFriendIds.value = friendIds
+    }
+
+    override fun setInitialFriendLocations(locations: Map<String, UserLocation>, pings: Map<String, Long>) {
+        _friendLocations.value += locations
+        _friendLastPing.value += pings
     }
 }
 
