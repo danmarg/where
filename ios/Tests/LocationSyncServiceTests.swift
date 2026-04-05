@@ -17,12 +17,16 @@ final class LocationSyncServiceTests: XCTestCase {
     @MainActor
     func testInviteLifecycle_AliceSide() {
         let syncService = LocationSyncService.shared
-        
+
         // 1. Create invite
         syncService.createInvite()
-        XCTAssertNotNil(syncService.pendingInviteQr)
+        if case .pending = syncService.inviteState {
+            XCTAssert(true)
+        } else {
+            XCTFail("inviteState should be pending after createInvite")
+        }
         XCTAssertNotNil(syncService.e2eeStore.pendingQrPayload)
-        
+
         // 2. Simulate finding an init payload via polling
         // (Mimic pollPendingInvite logic)
         let initPayload = Shared.KeyExchangeInitPayload(
@@ -32,18 +36,15 @@ final class LocationSyncServiceTests: XCTestCase {
             keyConfirmation: kotlinByteArray(from: Data([4, 5, 6])),
             suggestedName: "Bob"
         )
-        
-        // Using reflection to set private state for testing the transition
-        let mirror = Mirror(reflecting: syncService)
-        if let autoClearedInvite = mirror.descendant("autoClearedInvite") as? Bool {
-            XCTAssertFalse(autoClearedInvite)
-        }
-        
-        // We can't easily set private vars via Mirror, but we can call the methods.
-        // Let's test the Cancel logic specifically.
-        
+
+        // We can't easily simulate the polling transition, but we can test the Cancel logic.
+
         syncService.cancelPendingInit()
         XCTAssertNil(syncService.pendingInitPayload)
-        XCTAssertNil(syncService.pendingInviteQr)
+        if case .none = syncService.inviteState {
+            XCTAssert(true)
+        } else {
+            XCTFail("inviteState should be none after cancelPendingInit")
+        }
     }
 }

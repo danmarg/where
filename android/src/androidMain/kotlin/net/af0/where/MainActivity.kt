@@ -65,7 +65,7 @@ class MainActivity : ComponentActivity() {
                 val pausedFriendIds by viewModel.pausedFriendIds.collectAsState()
                 val friendLastPing by viewModel.friendLastPing.collectAsState()
                 val isSharing by viewModel.isSharingLocation.collectAsState()
-                val pendingInviteQr by viewModel.pendingInviteQr.collectAsState()
+                val inviteState by viewModel.inviteState.collectAsState()
                 val pendingQrForNaming by viewModel.pendingQrForNaming.collectAsState()
                 val pendingInitPayload by viewModel.pendingInitPayload.collectAsState()
                 val isExchanging by viewModel.isExchanging.collectAsState()
@@ -152,8 +152,8 @@ class MainActivity : ComponentActivity() {
                     )
                 }
 
-                pendingInviteQr?.let { qr ->
-                    InviteSheet(qrPayload = qr, onDismiss = { viewModel.clearInvite() })
+                (inviteState as? InviteState.Pending)?.let { state ->
+                    InviteSheet(qrPayload = state.qr, onDismiss = { viewModel.clearInvite() })
                 }
 
                 pendingQrForNaming?.let { qr ->
@@ -205,7 +205,7 @@ class MainActivity : ComponentActivity() {
                     )
                 }
 
-                pendingInitPayload?.takeIf { pendingInviteQr == null }?.let { payload ->
+                pendingInitPayload?.takeIf { inviteState is InviteState.None }?.let { payload ->
                     var name by remember(payload) { mutableStateOf(payload.suggestedName) }
                     AlertDialog(
                         onDismissRequest = { viewModel.cancelPendingInit() },
