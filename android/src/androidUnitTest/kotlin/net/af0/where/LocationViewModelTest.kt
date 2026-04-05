@@ -28,6 +28,7 @@ import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
@@ -345,5 +346,214 @@ class LocationViewModelTest {
             // Sharing is disabled, so any send should be rejected
             vm.sendLocationIfNeeded(lat = 37.7749, lng = -122.4194, isHeartbeat = false)
             assertEquals(0, testClient.sendLocationCallCount, "Sending when sharing is disabled should not send")
+        }
+
+    // ============ Rapid Poll Transition Tests ============
+
+    @Test
+    fun testRapidPolling_WithPendingInvite() =
+        runTest {
+            // Start clock far in the future so initial lastRapidPollTrigger (0L) is outside 5-min window
+            var currentTime = 1_000_000_000L
+            viewModel =
+                LocationViewModel(
+                    app,
+                    e2eeStore = E2eeStore(FakeE2eeStorage()),
+                    startPolling = false,
+                    clock = { currentTime },
+                    locationSource = FakeLocationSource(),
+                )
+            val vm = viewModel!!
+
+            // Before creating invite, should not be rapid polling
+            assertFalse(vm.isRapidPolling(), "Should not be rapid polling initially")
+
+            // Create invite (sets inviteState to Pending and triggers rapid poll)
+            vm.createInvite()
+
+            // Now should be rapid polling
+            assertTrue(vm.isRapidPolling(), "Should be rapid polling while invite pending")
+
+            // Clear invite
+            vm.clearInvite()
+
+            // Still rapid polling due to recent trigger (within 5 min window)
+            assertTrue(vm.isRapidPolling(), "Should still be rapid polling within 5 min window after trigger")
+
+            // Advance clock past 5 min threshold
+            currentTime += (5 * 60_000L)
+
+            // Now should stop rapid polling
+            assertFalse(vm.isRapidPolling(), "Should stop rapid polling after 5 min window expires")
+        }
+
+    @Test
+    fun testRapidPolling_WithPendingInitPayload() =
+        runTest {
+            // Start clock far in the future so initial lastRapidPollTrigger (0L) is outside 5-min window
+            var currentTime = 1_000_000_000L
+            viewModel =
+                LocationViewModel(
+                    app,
+                    e2eeStore = E2eeStore(FakeE2eeStorage()),
+                    startPolling = false,
+                    clock = { currentTime },
+                    locationSource = FakeLocationSource(),
+                )
+            val vm = viewModel!!
+
+            // Initially not rapid polling
+            assertFalse(vm.isRapidPolling())
+
+            // Simulate setting pending init payload via reflection (represents Bob's side receiving Alice's invite)
+            val pendingInitField = LocationViewModel::class.java.getDeclaredField("_pendingInitPayload")
+            pendingInitField.isAccessible = true
+            @Suppress("UNCHECKED_CAST")
+            val pendingInitFlow = pendingInitField.get(vm) as MutableStateFlow<KeyExchangeInitPayload?>
+            val initPayload = KeyExchangeInitPayload(
+                v = 1,
+                token = "test_token",
+                ekPub = byteArrayOf(1, 2, 3),
+                keyConfirmation = byteArrayOf(4, 5, 6),
+                suggestedName = "Alice",
+            )
+            pendingInitFlow.value = initPayload
+
+            // Now should be rapid polling
+            assertTrue(vm.isRapidPolling(), "Should be rapid polling while pending init payload exists")
+
+            // Cancel pending init
+            vm.cancelPendingInit()
+
+            // Should no longer be rapid polling
+            assertFalse(vm.isRapidPolling(), "Should stop rapid polling after canceling pending init")
+        }
+
+    @Test
+    fun testRapidPolling_WithPendingQrForNaming() =
+        runTest {
+            // Start clock far in the future so initial lastRapidPollTrigger (0L) is outside 5-min window
+            var currentTime = 1_000_000_000L
+            viewModel =
+                LocationViewModel(
+                    app,
+                    e2eeStore = E2eeStore(FakeE2eeStorage()),
+                    startPolling = false,
+                    clock = { currentTime },
+                    locationSource = FakeLocationSource(),
+                )
+            val vm = viewModel!!
+
+            // Initially not rapid polling
+            assertFalse(vm.isRapidPolling())
+
+            // Simulate setting pending QR via reflection (represents Bob's side after scanning Alice's QR)
+            val pendingQrField = LocationViewModel::class.java.getDeclaredField("_pendingQrForNaming")
+            pendingQrField.isAccessible = true
+            @Suppress("UNCHECKED_CAST")
+            val pendingQrFlow = pendingQrField.get(vm) as MutableStateFlow<QrPayload?>
+            val qr = QrPayload(byteArrayOf(1, 2, 3), "Alice", "fingerprint123")
+            pendingQrFlow.value = qr
+
+            // Now should be rapid polling
+            assertTrue(vm.isRapidPolling(), "Should be rapid polling while pending QR exists")
+
+            // Cancel QR scan
+            vm.cancelQrScan()
+
+            // Should no longer be rapid polling
+            assertFalse(vm.isRapidPolling(), "Should stop rapid polling after canceling QR scan")
+        }
+
+    @Test
+    fun testRapidPolling_RecentTrigger() =
+        runTest {
+            // Start clock far in the future so initial lastRapidPollTrigger (0L) is outside 5-min window
+            var currentTime = 1_000_000_000L
+            viewModel =
+                LocationViewModel(
+                    app,
+                    e2eeStore = E2eeStore(FakeE2eeStorage()),
+                    startPolling = false,
+                    clock = { currentTime },
+                    locationSource = FakeLocationSource(),
+                )
+            val vm = viewModel!!
+
+            // Initially not rapid polling
+            assertFalse(vm.isRapidPolling())
+
+            // Create invite to trigger rapid polling
+            vm.createInvite()
+            assertTrue(vm.isRapidPolling(), "Invite pending should trigger rapid polling")
+
+            // Clear invite - still rapid polling due to recent trigger
+            vm.clearInvite()
+            assertTrue(vm.isRapidPolling(), "Should still be rapid polling within 5 min window after clearing invite")
+
+            // Advance clock by 100 seconds (within 5 min window)
+            currentTime += 100_000L
+
+            // Should still be rapid polling due to recent trigger
+            assertTrue(vm.isRapidPolling(), "Should be rapid polling within 5 min window after trigger")
+
+            // Advance clock past 5 min threshold
+            currentTime += (5 * 60_000L)
+
+            // Now should not be rapid polling
+            assertFalse(vm.isRapidPolling(), "Should stop rapid polling after 5 min window expires")
+        }
+
+    @Test
+    fun testRapidPolling_MultiplePairingStates() =
+        runTest {
+            // Start clock far in the future so initial lastRapidPollTrigger (0L) is outside 5-min window
+            var currentTime = 1_000_000_000L
+            viewModel =
+                LocationViewModel(
+                    app,
+                    e2eeStore = E2eeStore(FakeE2eeStorage()),
+                    startPolling = false,
+                    clock = { currentTime },
+                    locationSource = FakeLocationSource(),
+                )
+            val vm = viewModel!!
+
+            // Create invite (Alice side)
+            vm.createInvite()
+            assertTrue(vm.isRapidPolling(), "Invite pending → rapid polling")
+
+            // Simulate received init payload (representing Bob's response)
+            val pendingInitField = LocationViewModel::class.java.getDeclaredField("_pendingInitPayload")
+            pendingInitField.isAccessible = true
+            @Suppress("UNCHECKED_CAST")
+            val pendingInitFlow = pendingInitField.get(vm) as MutableStateFlow<KeyExchangeInitPayload?>
+            val initPayload = KeyExchangeInitPayload(
+                v = 1,
+                token = "test_token",
+                ekPub = byteArrayOf(1, 2, 3),
+                keyConfirmation = byteArrayOf(4, 5, 6),
+                suggestedName = "Bob",
+            )
+            pendingInitFlow.value = initPayload
+
+            // Still rapid polling (now due to pending init)
+            assertTrue(vm.isRapidPolling(), "Pending init → rapid polling")
+
+            // Clear invite
+            vm.clearInvite()
+
+            // Still rapid polling (pending init is still set)
+            assertTrue(vm.isRapidPolling(), "Pending init still present → rapid polling")
+
+            // Cancel pending init - still rapid polling due to recent trigger (from createInvite)
+            vm.cancelPendingInit()
+            assertTrue(vm.isRapidPolling(), "Both cleared but within 5 min window → still rapid polling")
+
+            // Advance clock past 5 min window
+            currentTime += (5 * 60_000L)
+
+            // Now should stop rapid polling
+            assertFalse(vm.isRapidPolling(), "All cleared and 5 min window expired → no rapid polling")
         }
 }

@@ -192,7 +192,7 @@ final class LocationSyncService: ObservableObject {
         startPolling()
     }
 
-    private func isRapidPolling() async -> Bool {
+    fileprivate func isRapidPolling() async -> Bool {
         let now = Date()
         let isPairing = e2eeStore.pendingQrPayload != nil || pendingInitPayload != nil || pendingQrForNaming != nil
         let recentlyTriggered = now.timeIntervalSince(lastRapidPollTrigger) < 5 * 60
