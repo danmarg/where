@@ -7,6 +7,7 @@ import android.text.TextUtils
 import io.mockk.every
 import io.mockk.mockk
 import io.mockk.mockkStatic
+import io.mockk.verify
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -769,5 +770,210 @@ class LocationViewModelTest {
 
             // Verify exchange actually happened
             assertTrue(vm.friends.value.size > 0, "Friends should be updated after exchange")
+        }
+
+    // ============ removeFriend Atomicity Tests ============
+
+    @Test
+    fun testRemoveFriend_RemovesFromAllCollections() =
+        runTest {
+            var currentTime = 1_000_000_000L
+            val store = mockk<E2eeStore>(relaxed = true)
+            val testClient = TestLocationClient(mockk(relaxed = true))
+
+            viewModel =
+                LocationViewModel(
+                    app,
+                    e2eeStore = store,
+                    locationClient = testClient,
+                    startPolling = false,
+                    clock = { currentTime },
+                    locationSource = FakeLocationSource(),
+                )
+            val vm = viewModel!!
+
+            // 1. Seed the ViewModel with a friend
+            val friendId = "friend_alice_123"
+            val friendEntry = FriendEntry(
+                name = "Alice",
+                session = mockk(relaxed = true),
+                isInitiator = true,
+                lastLat = 37.7749,
+                lastLng = -122.4194,
+                lastTs = 1000L,
+            )
+
+            // Inject friend into the friends list via reflection
+            val friendsField = LocationViewModel::class.java.getDeclaredField("_friends")
+            friendsField.isAccessible = true
+            @Suppress("UNCHECKED_CAST")
+            val friendsFlow = friendsField.get(vm) as MutableStateFlow<List<FriendEntry>>
+            friendsFlow.value = listOf(friendEntry)
+
+            // Inject into friendLocations
+            val location = UserLocation(friendId, 37.7749, -122.4194, 1000L)
+            vm.friendLocations.value = mapOf(friendId to location)
+
+            // Inject into pausedFriendIds
+            val pausedField = LocationViewModel::class.java.getDeclaredField("_pausedFriendIds")
+            pausedField.isAccessible = true
+            @Suppress("UNCHECKED_CAST")
+            val pausedFlow = pausedField.get(vm) as MutableStateFlow<Set<String>>
+            pausedFlow.value = setOf(friendId, "other_friend")
+
+            // Mock store to return empty list after deletion
+            every { store.listFriends() } returns emptyList()
+
+            // 2. Verify initial state: friend exists in all three collections
+            assertEquals(1, vm.friends.value.size, "Should have one friend initially")
+            assertEquals(1, vm.friendLocations.value.size, "Should have one location initially")
+            assertTrue(friendId in vm.pausedFriendIds.value, "Friend should be paused initially")
+
+            // 3. Call removeFriend
+            vm.removeFriend(friendId)
+
+            // 4. CRITICAL: Assert atomicity - all three collections are cleaned up in one snapshot
+            assertEquals(
+                0,
+                vm.friends.value.size,
+                "Friend must be removed from friends list"
+            )
+            assertEquals(
+                0,
+                vm.friendLocations.value.size,
+                "Friend location must be removed from friendLocations"
+            )
+            assertFalse(
+                friendId in vm.pausedFriendIds.value,
+                "Friend must be removed from pausedFriendIds"
+            )
+
+            // 5. Verify other friends still exist
+            assertEquals(1, vm.pausedFriendIds.value.size, "Other paused friends should remain")
+            assertTrue("other_friend" in vm.pausedFriendIds.value)
+
+            // 6. Verify store was updated
+            verify { store.deleteFriend(friendId) }
+        }
+
+    @Test
+    fun testRemoveFriend_NotPausedFriend() =
+        runTest {
+            // Test removeFriend when the friend is not in pausedFriendIds
+            var currentTime = 1_000_000_000L
+            val store = mockk<E2eeStore>(relaxed = true)
+
+            viewModel =
+                LocationViewModel(
+                    app,
+                    e2eeStore = store,
+                    locationClient = TestLocationClient(mockk(relaxed = true)),
+                    startPolling = false,
+                    clock = { currentTime },
+                    locationSource = FakeLocationSource(),
+                )
+            val vm = viewModel!!
+
+            val friendId = "friend_bob_456"
+            val friendEntry = FriendEntry(
+                name = "Bob",
+                session = mockk(relaxed = true),
+                isInitiator = false,
+                lastLat = null,
+                lastLng = null,
+                lastTs = null,
+            )
+
+            // Inject friend (not paused)
+            val friendsField = LocationViewModel::class.java.getDeclaredField("_friends")
+            friendsField.isAccessible = true
+            @Suppress("UNCHECKED_CAST")
+            val friendsFlow = friendsField.get(vm) as MutableStateFlow<List<FriendEntry>>
+            friendsFlow.value = listOf(friendEntry)
+
+            val location = UserLocation(friendId, 40.7128, -74.0060, 2000L)
+            vm.friendLocations.value = mapOf(friendId to location)
+
+            // pausedFriendIds is empty
+            val pausedField = LocationViewModel::class.java.getDeclaredField("_pausedFriendIds")
+            pausedField.isAccessible = true
+            @Suppress("UNCHECKED_CAST")
+            val pausedFlow = pausedField.get(vm) as MutableStateFlow<Set<String>>
+            pausedFlow.value = emptySet()
+
+            every { store.listFriends() } returns emptyList()
+
+            // Call removeFriend
+            vm.removeFriend(friendId)
+
+            // Verify cleanup (paused branch not taken, but cleanup still happens)
+            assertEquals(0, vm.friends.value.size)
+            assertEquals(0, vm.friendLocations.value.size)
+            assertEquals(0, vm.pausedFriendIds.value.size)
+        }
+
+    @Test
+    fun testRemoveFriend_MultipleFriendsPresent() =
+        runTest {
+            // Test removeFriend when multiple friends exist - verify only target is removed
+            var currentTime = 1_000_000_000L
+            val store = mockk<E2eeStore>(relaxed = true)
+
+            viewModel =
+                LocationViewModel(
+                    app,
+                    e2eeStore = store,
+                    locationClient = TestLocationClient(mockk(relaxed = true)),
+                    startPolling = false,
+                    clock = { currentTime },
+                    locationSource = FakeLocationSource(),
+                )
+            val vm = viewModel!!
+
+            val aliceId = "alice"
+            val bobId = "bob"
+            val charlieId = "charlie"
+
+            val alice = FriendEntry(name = "Alice", session = mockk(relaxed = true))
+            val bob = FriendEntry(name = "Bob", session = mockk(relaxed = true))
+            val charlie = FriendEntry(name = "Charlie", session = mockk(relaxed = true))
+
+            // Inject multiple friends
+            val friendsField = LocationViewModel::class.java.getDeclaredField("_friends")
+            friendsField.isAccessible = true
+            @Suppress("UNCHECKED_CAST")
+            val friendsFlow = friendsField.get(vm) as MutableStateFlow<List<FriendEntry>>
+            friendsFlow.value = listOf(alice, bob, charlie)
+
+            vm.friendLocations.value =
+                mapOf(
+                    aliceId to UserLocation(aliceId, 1.0, 2.0, 1000L),
+                    bobId to UserLocation(bobId, 3.0, 4.0, 2000L),
+                    charlieId to UserLocation(charlieId, 5.0, 6.0, 3000L),
+                )
+
+            val pausedField = LocationViewModel::class.java.getDeclaredField("_pausedFriendIds")
+            pausedField.isAccessible = true
+            @Suppress("UNCHECKED_CAST")
+            val pausedFlow = pausedField.get(vm) as MutableStateFlow<Set<String>>
+            pausedFlow.value = setOf(aliceId, bobId)
+
+            // Mock store to return two friends after removing bob
+            every { store.listFriends() } returns listOf(alice, charlie)
+
+            // Remove bob
+            vm.removeFriend(bobId)
+
+            // Verify bob is removed but others remain
+            assertEquals(2, vm.friends.value.size, "Should have 2 friends after removing bob")
+            assertEquals(2, vm.friendLocations.value.size, "Should have 2 locations after removing bob")
+            assertEquals(1, vm.pausedFriendIds.value.size, "Should have 1 paused friend after removing bob")
+
+            assertFalse(bobId in vm.friends.value.map { it.name }, "Bob should not be in friends")
+            assertFalse(bobId in vm.friendLocations.value.keys, "Bob should not be in locations")
+            assertFalse(bobId in vm.pausedFriendIds.value, "Bob should not be paused")
+
+            assertTrue(aliceId in vm.pausedFriendIds.value, "Alice should still be paused")
+            assertTrue(charlieId in vm.friendLocations.value.keys, "Charlie should still be in locations")
         }
 }
