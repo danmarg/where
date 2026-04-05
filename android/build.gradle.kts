@@ -27,6 +27,10 @@ kotlin {
             implementation(kotlin("test"))
             implementation(libs.robolectric)
             implementation(libs.androidx.test.core)
+            implementation(libs.mockk)
+            implementation(libs.kotlinx.coroutines.test)
+            implementation(libs.libsodium.kmp.jvm)
+            implementation("app.cash.turbine:turbine:1.1.0")
         }
     }
 }

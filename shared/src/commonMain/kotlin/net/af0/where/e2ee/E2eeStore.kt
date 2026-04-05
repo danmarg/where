@@ -1,5 +1,8 @@
 package net.af0.where.e2ee
 
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.encodeToString
@@ -89,6 +92,11 @@ class E2eeStore(
     private var friends = mutableMapOf<String, FriendEntry>()
     private var pendingInvite: PendingInvite? = null
 
+    // Mutex to serialize all access to friends and pendingInvite.
+    // This prevents TOCTOU races where a key rotation and outgoing message
+    // could concurrently access and update the same session state.
+    private val stateLock = Mutex()
+
     init {
         load()
     }
@@ -145,23 +153,26 @@ class E2eeStore(
     }
 
     /** The QR payload currently being displayed, or null if no invite is active. */
-    val pendingQrPayload: QrPayload? get() = pendingInvite?.qrPayload
+    suspend fun pendingQrPayload(): QrPayload? = stateLock.withLock { pendingInvite?.qrPayload }
 
     /**
      * Alice: Create a new invite QR payload and store the ephemeral private key.
      * Replaces any previously active invite.
      */
-    fun createInvite(suggestedName: String): QrPayload {
-        val (payload, ekPriv) = KeyExchange.aliceCreateQrPayload(suggestedName)
-        pendingInvite = PendingInvite(payload, ekPriv)
-        save()
-        return payload
-    }
+    suspend fun createInvite(suggestedName: String): QrPayload =
+        stateLock.withLock {
+            val (payload, ekPriv) = KeyExchange.aliceCreateQrPayload(suggestedName)
+            pendingInvite = PendingInvite(payload, ekPriv)
+            save()
+            payload
+        }
 
     /** Alice: Discard the current pending invite (e.g. user dismissed the QR screen). */
-    fun clearInvite() {
-        pendingInvite = null
-        save()
+    suspend fun clearInvite() {
+        stateLock.withLock {
+            pendingInvite = null
+            save()
+        }
     }
 
     /**
@@ -169,25 +180,31 @@ class E2eeStore(
      * Performs the single X25519 DH, creates the initial session, and saves the new friend.
      * Returns the wire payload ready to POST to [QrPayload.discoveryToken] and the new entry.
      */
-    fun processScannedQr(qr: QrPayload, bobSuggestedName: String = ""): Pair<KeyExchangeInitPayload, FriendEntry> {
-        val (initMsg, session) = KeyExchange.bobProcessQr(qr, bobSuggestedName)
+    suspend fun processScannedQr(
+        qr: QrPayload,
+        bobSuggestedName: String = "",
+    ): Pair<KeyExchangeInitPayload, FriendEntry> =
+        stateLock.withLock {
+            val (initMsg, session) = KeyExchange.bobProcessQr(qr, bobSuggestedName)
 
-        val entry = FriendEntry(
-            name = qr.suggestedName,
-            session = session,
-            isInitiator = false, // Bob scanned Alice's QR
-        )
-        friends[entry.id] = entry
-        save()
-        val payload =
-            KeyExchangeInitPayload(
-                token = initMsg.token.toHex(),
-                ekPub = initMsg.ekPub,
-                keyConfirmation = initMsg.keyConfirmation,
-                suggestedName = initMsg.suggestedName,
-            )
-        return payload to entry
-    }
+            val entry =
+                FriendEntry(
+                    name = qr.suggestedName,
+                    session = session,
+                    // Bob scanned Alice's QR
+                    isInitiator = false,
+                )
+            friends[entry.id] = entry
+            save()
+            val payload =
+                KeyExchangeInitPayload(
+                    token = initMsg.token.toHex(),
+                    ekPub = initMsg.ekPub,
+                    keyConfirmation = initMsg.keyConfirmation,
+                    suggestedName = initMsg.suggestedName,
+                )
+            payload to entry
+        }
 
     /**
      * Alice: Process Bob's KeyExchangeInit payload received from the discovery inbox.
@@ -200,71 +217,91 @@ class E2eeStore(
      * @throws IllegalArgumentException if key_confirmation fails — this is a
      *         crypto failure that callers should surface (not silently discard).
      */
-    @Throws(IllegalArgumentException::class)
-    fun processKeyExchangeInit(
+    @Throws(IllegalArgumentException::class, CancellationException::class)
+    suspend fun processKeyExchangeInit(
         payload: KeyExchangeInitPayload,
         bobName: String,
-    ): FriendEntry? {
-        val pending = pendingInvite ?: return null
-        val msg =
-            KeyExchangeInitMessage(
-                token = payload.token.hexToByteArray(),
-                ekPub = payload.ekPub,
-                keyConfirmation = payload.keyConfirmation,
-                suggestedName = payload.suggestedName,
-            )
-
-        return try {
-            val session =
-                KeyExchange.aliceProcessInit(
-                    msg = msg,
-                    aliceEkPriv = pending.aliceEkPriv,
-                    aliceEkPub = pending.qrPayload.ekPub,
+    ): FriendEntry? =
+        stateLock.withLock {
+            val pending = pendingInvite ?: return@withLock null
+            val msg =
+                KeyExchangeInitMessage(
+                    token = payload.token.hexToByteArray(),
+                    ekPub = payload.ekPub,
+                    keyConfirmation = payload.keyConfirmation,
+                    suggestedName = payload.suggestedName,
                 )
-            val entry = FriendEntry(
-                name = bobName,
-                session = session,
-                isInitiator = true, // Alice created the QR
-            )
-            friends[entry.id] = entry
-            pendingInvite = null
+
+            try {
+                val session =
+                    KeyExchange.aliceProcessInit(
+                        msg = msg,
+                        aliceEkPriv = pending.aliceEkPriv,
+                        aliceEkPub = pending.qrPayload.ekPub,
+                    )
+                val entry =
+                    FriendEntry(
+                        name = bobName,
+                        session = session,
+                        // Alice created the QR
+                        isInitiator = true,
+                    )
+                friends[entry.id] = entry
+                pendingInvite = null
+                save()
+                entry
+            } catch (e: IllegalArgumentException) {
+                throw e // key_confirmation failure — surface to caller
+            } catch (_: Exception) {
+                null // transient parse/format error — treat as "not ready yet"
+            }
+        }
+
+    suspend fun getFriend(id: String): FriendEntry? = stateLock.withLock { friends[id] }
+
+    suspend fun listFriends(): List<FriendEntry> = stateLock.withLock { friends.values.toList() }
+
+    suspend fun renameFriend(
+        id: String,
+        newName: String,
+    ) {
+        stateLock.withLock {
+            val entry = friends[id] ?: return@withLock
+            friends[id] = entry.copy(name = newName)
             save()
-            entry
-        } catch (e: IllegalArgumentException) {
-            throw e // key_confirmation failure — surface to caller
-        } catch (_: Exception) {
-            null // transient parse/format error — treat as "not ready yet"
         }
     }
 
-    fun getFriend(id: String): FriendEntry? = friends[id]
-
-    fun listFriends(): List<FriendEntry> = friends.values.toList()
-
-    fun deleteFriend(id: String) {
-        if (friends.remove(id) != null) {
-            save()
+    suspend fun deleteFriend(id: String) {
+        stateLock.withLock {
+            if (friends.remove(id) != null) {
+                save()
+            }
         }
     }
 
-    fun updateSession(
+    suspend fun updateSession(
         id: String,
         newSession: SessionState,
     ) {
-        val entry = friends[id] ?: return
-        friends[id] = entry.copy(session = newSession)
-        save()
+        stateLock.withLock {
+            val entry = friends[id] ?: return@withLock
+            friends[id] = entry.copy(session = newSession)
+            save()
+        }
     }
 
-    fun updateLastLocation(
+    suspend fun updateLastLocation(
         id: String,
         lat: Double,
         lng: Double,
         ts: Long,
     ) {
-        val entry = friends[id] ?: return
-        friends[id] = entry.copy(lastLat = lat, lastLng = lng, lastTs = ts)
-        save()
+        stateLock.withLock {
+            val entry = friends[id] ?: return@withLock
+            friends[id] = entry.copy(lastLat = lat, lastLng = lng, lastTs = ts)
+            save()
+        }
     }
 
     // -----------------------------------------------------------------------
@@ -277,77 +314,83 @@ class E2eeStore(
      *
      * Returns null if the friend is not found or this device is not Bob (isInitiator = true).
      */
-    fun generateOpkBundle(
+    suspend fun generateOpkBundle(
         friendId: String,
         count: Int = OPK_BATCH_SIZE,
-    ): PreKeyBundlePayload? {
-        val entry = friends[friendId] ?: return null
-        // Only Bob (non-initiator) maintains OPK private keys.
-        if (entry.isInitiator) return null
+    ): PreKeyBundlePayload? =
+        stateLock.withLock {
+            val entry = friends[friendId] ?: return@withLock null
+            // Only Bob (non-initiator) maintains OPK private keys.
+            if (entry.isInitiator) return@withLock null
 
-        val startId = entry.nextOpkId
-        val newOpks = (0 until count).map { i ->
-            val kp = generateX25519KeyPair()
-            OPK(id = startId + i, pub = kp.pub) to kp.priv
+            val startId = entry.nextOpkId
+            val newOpks =
+                (0 until count).map { i ->
+                    val kp = generateX25519KeyPair()
+                    OPK(id = startId + i, pub = kp.pub) to kp.priv
+                }
+
+            val opkList = newOpks.map { (opk, _) -> opk }
+            val mac =
+                PreKeyBundleOps.buildMac(
+                    token = entry.session.sendToken,
+                    opks = opkList,
+                    kBundle = entry.session.kBundle,
+                )
+
+            val newPrivMap = entry.myOpkPrivs + newOpks.associate { (opk, priv) -> opk.id to priv }
+            friends[friendId] =
+                entry.copy(
+                    myOpkPrivs = newPrivMap,
+                    nextOpkId = startId + count,
+                )
+            save()
+
+            PreKeyBundlePayload(
+                keys = opkList.map { OPKWire(it.id, it.pub) },
+                mac = mac,
+            )
         }
-
-        val opkList = newOpks.map { (opk, _) -> opk }
-        val mac = PreKeyBundleOps.buildMac(
-            token = entry.session.sendToken,
-            opks = opkList,
-            kBundle = entry.session.kBundle,
-        )
-
-        val newPrivMap = entry.myOpkPrivs + newOpks.associate { (opk, priv) -> opk.id to priv }
-        friends[friendId] = entry.copy(
-            myOpkPrivs = newPrivMap,
-            nextOpkId = startId + count,
-        )
-        save()
-
-        return PreKeyBundlePayload(
-            keys = opkList.map { OPKWire(it.id, it.pub) },
-            mac = mac,
-        )
-    }
 
     /**
      * Alice: Verify and cache an incoming [PreKeyBundlePayload] from Bob.
      * Returns true if the MAC was valid and the keys were stored.
      */
-    fun storeOpkBundle(
+    suspend fun storeOpkBundle(
         friendId: String,
         bundle: PreKeyBundlePayload,
-    ): Boolean {
-        val entry = friends[friendId] ?: return false
-        // Only Alice (initiator) caches Bob's OPK public keys.
-        if (!entry.isInitiator) return false
+    ): Boolean =
+        stateLock.withLock {
+            val entry = friends[friendId] ?: return@withLock false
+            // Only Alice (initiator) caches Bob's OPK public keys.
+            if (!entry.isInitiator) return@withLock false
 
-        val opks = bundle.toOPKList()
-        if (!PreKeyBundleOps.verify(
-                token = entry.session.recvToken,
-                opks = opks,
-                mac = bundle.mac,
-                kBundle = entry.session.kBundle,
-            )
-        ) {
-            return false
+            val opks = bundle.toOPKList()
+            if (!PreKeyBundleOps.verify(
+                    token = entry.session.recvToken,
+                    opks = opks,
+                    mac = bundle.mac,
+                    kBundle = entry.session.kBundle,
+                )
+            ) {
+                return@withLock false
+            }
+
+            val newPubMap = entry.theirOpkPubs + opks.associate { it.id to it.pub }
+            friends[friendId] = entry.copy(theirOpkPubs = newPubMap)
+            save()
+            true
         }
-
-        val newPubMap = entry.theirOpkPubs + opks.associate { it.id to it.pub }
-        friends[friendId] = entry.copy(theirOpkPubs = newPubMap)
-        save()
-        return true
-    }
 
     /**
      * Returns true if Bob should replenish his OPK supply for this friend.
      * Bob replenishes when his remaining OPKs fall below [OPK_REPLENISH_THRESHOLD].
      */
-    fun shouldReplenishOpks(friendId: String): Boolean {
-        val entry = friends[friendId] ?: return false
-        return !entry.isInitiator && entry.myOpkPrivs.size < OPK_REPLENISH_THRESHOLD
-    }
+    suspend fun shouldReplenishOpks(friendId: String): Boolean =
+        stateLock.withLock {
+            val entry = friends[friendId] ?: return@withLock false
+            !entry.isInitiator && entry.myOpkPrivs.size < OPK_REPLENISH_THRESHOLD
+        }
 
     // -----------------------------------------------------------------------
     // Epoch rotation
@@ -359,13 +402,14 @@ class E2eeStore(
      * Alice rotates every [EPOCH_ROTATION_INTERVAL] sends, as long as she has at
      * least one cached OPK from Bob.
      */
-    fun shouldRotateEpoch(friendId: String): Boolean {
-        val entry = friends[friendId] ?: return false
-        return entry.isInitiator &&
-            entry.theirOpkPubs.isNotEmpty() &&
-            entry.session.sendSeq > 0 &&
-            entry.session.sendSeq % EPOCH_ROTATION_INTERVAL == 0L
-    }
+    suspend fun shouldRotateEpoch(friendId: String): Boolean =
+        stateLock.withLock {
+            val entry = friends[friendId] ?: return@withLock false
+            entry.isInitiator &&
+                entry.theirOpkPubs.isNotEmpty() &&
+                entry.session.sendSeq > 0 &&
+                entry.session.sendSeq % EPOCH_ROTATION_INTERVAL == 0L
+        }
 
     /**
      * Alice: Consume one cached OPK, perform a DH epoch rotation, and return the
@@ -378,52 +422,57 @@ class E2eeStore(
      *
      * Returns null if the friend is not found, is not the initiator, or has no cached OPKs.
      */
-    fun initiateEpochRotation(friendId: String): EpochRotationPayload? {
-        val entry = friends[friendId] ?: return null
-        if (!entry.isInitiator || entry.theirOpkPubs.isEmpty()) return null
+    suspend fun initiateEpochRotation(friendId: String): EpochRotationPayload? =
+        stateLock.withLock {
+            val entry = friends[friendId] ?: return@withLock null
+            if (!entry.isInitiator || entry.theirOpkPubs.isEmpty()) return@withLock null
 
-        val ts = currentTimeSeconds()
-        val (opkId, opkPub) = entry.theirOpkPubs.minBy { it.key }
+            val ts = currentTimeSeconds()
+            val (opkId, opkPub) = entry.theirOpkPubs.minBy { it.key }
 
-        val newEk = generateX25519KeyPair()
-        val newSession = Session.aliceEpochRotation(
-            state = entry.session,
-            aliceNewEkPriv = newEk.priv,
-            aliceNewEkPub = newEk.pub,
-            bobOpkPub = opkPub,
-            senderFp = entry.session.aliceFp,
-            recipientFp = entry.session.bobFp,
-        )
+            val newEk = generateX25519KeyPair()
+            val newSession =
+                Session.aliceEpochRotation(
+                    state = entry.session,
+                    aliceNewEkPriv = newEk.priv,
+                    aliceNewEkPub = newEk.pub,
+                    bobOpkPub = opkPub,
+                    senderFp = entry.session.aliceFp,
+                    recipientFp = entry.session.bobFp,
+                )
 
-        val oldSendToken = entry.session.sendToken
-        val nonce = randomBytes(12)
-        val ct = buildEpochRotationCt(
-            rootKey = entry.session.rootKey,
-            epoch = newSession.epoch,
-            opkId = opkId,
-            newEkPub = newEk.pub,
-            ts = ts,
-            nonce = nonce,
-            routingToken = oldSendToken,
-            senderFp = entry.session.aliceFp,
-            recipientFp = entry.session.bobFp,
-        )
+            val oldSendToken = entry.session.sendToken
+            val nonce = randomBytes(12)
+            val ct =
+                buildEpochRotationCt(
+                    rootKey = entry.session.rootKey,
+                    epoch = newSession.epoch,
+                    opkId = opkId,
+                    newEkPub = newEk.pub,
+                    ts = ts,
+                    nonce = nonce,
+                    routingToken = oldSendToken,
+                    senderFp = entry.session.aliceFp,
+                    recipientFp = entry.session.bobFp,
+                )
 
-        friends[friendId] = entry.copy(
-            session = newSession,
-            theirOpkPubs = entry.theirOpkPubs - opkId, // consume the OPK
-        )
-        save()
+            friends[friendId] =
+                entry.copy(
+                    session = newSession,
+                    // consume the OPK
+                    theirOpkPubs = entry.theirOpkPubs - opkId,
+                )
+            save()
 
-        return EpochRotationPayload(
-            epoch = newSession.epoch,
-            opkId = opkId,
-            newEkPub = newEk.pub,
-            ts = ts,
-            nonce = nonce,
-            ct = ct,
-        )
-    }
+            EpochRotationPayload(
+                epoch = newSession.epoch,
+                opkId = opkId,
+                newEkPub = newEk.pub,
+                ts = ts,
+                nonce = nonce,
+                ct = ct,
+            )
+        }
 
     /**
      * Bob: Verify and process an [EpochRotationPayload] from Alice.
@@ -436,111 +485,122 @@ class E2eeStore(
      * non-security parse error occurs. Throws [IllegalArgumentException] on
      * cryptographic failures (bad AEAD, stale timestamp).
      */
-    @Throws(IllegalArgumentException::class)
-    fun processEpochRotation(
+    @Throws(IllegalArgumentException::class, CancellationException::class)
+    suspend fun processEpochRotation(
         friendId: String,
         payload: EpochRotationPayload,
-    ): RatchetAckPayload? {
-        val entry = friends[friendId] ?: return null
-        if (entry.isInitiator) return null // Alice doesn't process her own rotations
+    ): RatchetAckPayload? =
+        stateLock.withLock {
+            val entry = friends[friendId] ?: return@withLock null
+            if (entry.isInitiator) return@withLock null // Alice doesn't process her own rotations
 
-        val oldRecvToken = entry.session.recvToken
-        val rotData = try {
-            decryptEpochRotationCt(
-                rootKey = entry.session.rootKey,
-                epoch = payload.epoch,
-                nonce = payload.nonce,
-                ct = payload.ct,
-                routingToken = oldRecvToken,
-                senderFp = entry.session.aliceFp,
-                recipientFp = entry.session.bobFp,
-            )
-        } catch (_: Exception) {
-            throw IllegalArgumentException("EpochRotation AEAD verification failed")
+            val oldRecvToken = entry.session.recvToken
+            val rotData =
+                try {
+                    decryptEpochRotationCt(
+                        rootKey = entry.session.rootKey,
+                        epoch = payload.epoch,
+                        nonce = payload.nonce,
+                        ct = payload.ct,
+                        routingToken = oldRecvToken,
+                        senderFp = entry.session.aliceFp,
+                        recipientFp = entry.session.bobFp,
+                    )
+                } catch (_: Exception) {
+                    throw IllegalArgumentException("EpochRotation AEAD verification failed")
+                }
+            require(rotData.epoch == payload.epoch) { "epoch mismatch in EpochRotation" }
+            require(rotData.opkId == payload.opkId) { "opkId mismatch in EpochRotation" }
+            require(isTimestampFresh(rotData.ts)) { "EpochRotation timestamp outside freshness window" }
+
+            val opkPriv = entry.myOpkPrivs[payload.opkId] ?: return@withLock null // unknown OPK — skip
+
+            // Step 1: Process Alice's rotation
+            val intermediateSession =
+                Session.bobProcessAliceRotation(
+                    state = entry.session,
+                    aliceNewEkPub = payload.newEkPub,
+                    bobOpkPriv = opkPriv,
+                    newEpoch = payload.epoch,
+                    senderFp = entry.session.aliceFp,
+                    recipientFp = entry.session.bobFp,
+                )
+
+            // Step 2: Refresh Bob's own send chain
+            val bobNewEk = generateX25519KeyPair()
+            val finalSession =
+                Session.bobProcessOwnRotation(
+                    state = intermediateSession,
+                    bobNewEkPriv = bobNewEk.priv,
+                    bobNewEkPub = bobNewEk.pub,
+                )
+
+            // Authenticate Ack using intermediate root key (the one Alice knows)
+            // and include Bob's new key in authenticated plaintext.
+            val ts = currentTimeSeconds()
+            val nonce = randomBytes(12)
+            val ackCt =
+                buildRatchetAckCt(
+                    rootKey = intermediateSession.rootKey,
+                    epochSeen = payload.epoch,
+                    ts = ts,
+                    newEkPub = bobNewEk.pub,
+                    nonce = nonce,
+                    routingToken = finalSession.sendToken,
+                    senderFp = entry.session.aliceFp,
+                    recipientFp = entry.session.bobFp,
+                )
+
+            friends[friendId] =
+                entry.copy(
+                    session = finalSession,
+                    // delete consumed OPK
+                    myOpkPrivs = entry.myOpkPrivs - payload.opkId,
+                )
+            save()
+
+            RatchetAckPayload(epochSeen = payload.epoch, ts = ts, newEkPub = bobNewEk.pub, nonce = nonce, ct = ackCt)
         }
-        require(rotData.epoch == payload.epoch) { "epoch mismatch in EpochRotation" }
-        require(rotData.opkId == payload.opkId) { "opkId mismatch in EpochRotation" }
-        require(isTimestampFresh(rotData.ts)) { "EpochRotation timestamp outside freshness window" }
-
-        val opkPriv = entry.myOpkPrivs[payload.opkId] ?: return null // unknown OPK — skip
-
-        // Step 1: Process Alice's rotation
-        val intermediateSession = Session.bobProcessAliceRotation(
-            state = entry.session,
-            aliceNewEkPub = payload.newEkPub,
-            bobOpkPriv = opkPriv,
-            newEpoch = payload.epoch,
-            senderFp = entry.session.aliceFp,
-            recipientFp = entry.session.bobFp,
-        )
-
-        // Step 2: Refresh Bob's own send chain
-        val bobNewEk = generateX25519KeyPair()
-        val finalSession = Session.bobProcessOwnRotation(
-            state = intermediateSession,
-            bobNewEkPriv = bobNewEk.priv,
-            bobNewEkPub = bobNewEk.pub,
-        )
-
-        // Authenticate Ack using intermediate root key (the one Alice knows)
-        // and include Bob's new key in authenticated plaintext.
-        val ts = currentTimeSeconds()
-        val nonce = randomBytes(12)
-        val ackCt = buildRatchetAckCt(
-            rootKey = intermediateSession.rootKey,
-            epochSeen = payload.epoch,
-            ts = ts,
-            newEkPub = bobNewEk.pub,
-            nonce = nonce,
-            routingToken = finalSession.sendToken,
-            senderFp = entry.session.aliceFp,
-            recipientFp = entry.session.bobFp,
-        )
-
-        friends[friendId] = entry.copy(
-            session = finalSession,
-            myOpkPrivs = entry.myOpkPrivs - payload.opkId, // delete consumed OPK
-        )
-        save()
-
-        return RatchetAckPayload(epochSeen = payload.epoch, ts = ts, newEkPub = bobNewEk.pub, nonce = nonce, ct = ackCt)
-    }
 
     /**
      * Alice: Verify Bob's [RatchetAckPayload].
      * Returns true if the AEAD and timestamp are valid; false otherwise.
      * Updates Alice's receive chain if Bob provided a new ephemeral key.
      */
-    fun processRatchetAck(
+    suspend fun processRatchetAck(
         friendId: String,
         payload: RatchetAckPayload,
-    ): Boolean {
-        val entry = friends[friendId] ?: return false
-        if (!entry.isInitiator) return false
+    ): Boolean =
+        stateLock.withLock {
+            val entry = friends[friendId] ?: return@withLock false
+            if (!entry.isInitiator) return@withLock false
 
-        val ackData = try {
-            decryptRatchetAckCt(
-                rootKey = entry.session.rootKey,
-                epochSeen = payload.epochSeen,
-                nonce = payload.nonce,
-                ct = payload.ct,
-                routingToken = entry.session.recvToken,
-                senderFp = entry.session.aliceFp,
-                recipientFp = entry.session.bobFp,
-            )
-        } catch (_: Exception) { return false }
+            val ackData =
+                try {
+                    decryptRatchetAckCt(
+                        rootKey = entry.session.rootKey,
+                        epochSeen = payload.epochSeen,
+                        nonce = payload.nonce,
+                        ct = payload.ct,
+                        routingToken = entry.session.recvToken,
+                        senderFp = entry.session.aliceFp,
+                        recipientFp = entry.session.bobFp,
+                    )
+                } catch (_: Exception) {
+                    return@withLock false
+                }
 
-        if (!isTimestampFresh(ackData.ts)) return false
+            if (!isTimestampFresh(ackData.ts)) return@withLock false
 
-        // Perform the second half of the DH ratchet if Bob provided a new key.
-        if (ackData.newEkPub != null) {
-            val newSession = Session.aliceProcessRatchetAck(entry.session, ackData.newEkPub)
-            friends[friendId] = entry.copy(session = newSession)
-            save()
+            // Perform the second half of the DH ratchet if Bob provided a new key.
+            if (ackData.newEkPub != null) {
+                val newSession = Session.aliceProcessRatchetAck(entry.session, ackData.newEkPub)
+                friends[friendId] = entry.copy(session = newSession)
+                save()
+            }
+
+            true
         }
-
-        return true
-    }
 
     // -----------------------------------------------------------------------
     // Batch poll processing
@@ -590,64 +650,200 @@ class E2eeStore(
      *
      * @return [PollBatchResult], or null if [friendId] is not found.
      */
-    fun processBatch(friendId: String, messages: List<MailboxPayload>): PollBatchResult? {
-        friends[friendId] ?: return null
+    suspend fun processBatch(
+        friendId: String,
+        messages: List<MailboxPayload>,
+    ): PollBatchResult? =
+        stateLock.withLock {
+            friends[friendId] ?: return@withLock null
 
-        val decryptedLocations = mutableListOf<LocationPlaintext>()
-        val outgoing = mutableListOf<OutgoingMessage>()
-        var newToken: String? = null
+            val decryptedLocations = mutableListOf<LocationPlaintext>()
+            val outgoing = mutableListOf<OutgoingMessage>()
+            var newToken: String? = null
 
-        // Step 1: Cache incoming OPK bundles (Alice stores Bob's prekeys).
-        for (msg in messages.filterIsInstance<PreKeyBundlePayload>()) {
-            storeOpkBundle(friendId, msg)
-        }
+            // Step 1: Cache incoming OPK bundles (Alice stores Bob's prekeys).
+            for (msg in messages.filterIsInstance<PreKeyBundlePayload>()) {
+                val opks = msg.toOPKList()
+                val entry = friends[friendId] ?: continue
+                if (!entry.isInitiator) continue
+                if (!PreKeyBundleOps.verify(
+                        token = entry.session.recvToken,
+                        opks = opks,
+                        mac = msg.mac,
+                        kBundle = entry.session.kBundle,
+                    )
+                ) {
+                    continue
+                }
+                val newPubMap = entry.theirOpkPubs + opks.associate { it.id to it.pub }
+                friends[friendId] = entry.copy(theirOpkPubs = newPubMap)
+            }
 
-        // Step 2: Decrypt location updates BEFORE processing epoch rotation.
-        // All EncryptedLocationPayloads on this token are from the current epoch.
-        val preRotationSession = friends[friendId]?.session ?: return PollBatchResult(emptyList(), null, emptyList())
-        var currentSession = preRotationSession
-        for (msg in messages.filterIsInstance<EncryptedLocationPayload>().sortedBy { it.seqAsLong() }) {
-            try {
-                val (newSession, loc) = Session.decryptLocation(
-                    state = currentSession,
-                    ct = msg.ct,
-                    seq = msg.seqAsLong(),
-                    senderFp = currentSession.aliceFp,
-                    recipientFp = currentSession.bobFp,
+            // Step 2: Decrypt location updates BEFORE processing epoch rotation.
+            // All EncryptedLocationPayloads on this token are from the current epoch.
+            val preRotationSession = friends[friendId]?.session ?: return@withLock PollBatchResult(emptyList(), null, emptyList())
+            var currentSession = preRotationSession
+            for (msg in messages.filterIsInstance<EncryptedLocationPayload>().sortedBy { it.seqAsLong() }) {
+                try {
+                    val (newSession, loc) =
+                        Session.decryptLocation(
+                            state = currentSession,
+                            ct = msg.ct,
+                            seq = msg.seqAsLong(),
+                            senderFp = currentSession.aliceFp,
+                            recipientFp = currentSession.bobFp,
+                        )
+                    currentSession = newSession
+                    decryptedLocations.add(loc)
+                } catch (_: Exception) {
+                    // drop individually bad messages rather than aborting the whole batch
+                }
+            }
+            if (currentSession !== preRotationSession) {
+                val entry = friends[friendId] ?: return@withLock PollBatchResult(decryptedLocations, null, emptyList())
+                friends[friendId] = entry.copy(session = currentSession)
+            }
+
+            // Step 3: Process epoch rotation (after location decryption).
+            for (msg in messages.filterIsInstance<EpochRotationPayload>()) {
+                val entry = friends[friendId] ?: continue
+                if (entry.isInitiator) continue // Alice doesn't process her own rotations
+
+                val oldRecvToken = entry.session.recvToken
+                val rotData =
+                    try {
+                        decryptEpochRotationCt(
+                            rootKey = entry.session.rootKey,
+                            epoch = msg.epoch,
+                            nonce = msg.nonce,
+                            ct = msg.ct,
+                            routingToken = oldRecvToken,
+                            senderFp = entry.session.aliceFp,
+                            recipientFp = entry.session.bobFp,
+                        )
+                    } catch (_: Exception) {
+                        continue
+                    }
+                if (rotData.epoch != msg.epoch || rotData.opkId != msg.opkId || !isTimestampFresh(rotData.ts)) continue
+
+                val opkPriv = entry.myOpkPrivs[msg.opkId] ?: continue
+
+                // Step 3a: Process Alice's rotation
+                val intermediateSession =
+                    Session.bobProcessAliceRotation(
+                        state = entry.session,
+                        aliceNewEkPub = msg.newEkPub,
+                        bobOpkPriv = opkPriv,
+                        newEpoch = msg.epoch,
+                        senderFp = entry.session.aliceFp,
+                        recipientFp = entry.session.bobFp,
+                    )
+
+                // Step 3b: Refresh Bob's own send chain
+                val bobNewEk = generateX25519KeyPair()
+                val finalSession =
+                    Session.bobProcessOwnRotation(
+                        state = intermediateSession,
+                        bobNewEkPriv = bobNewEk.priv,
+                        bobNewEkPub = bobNewEk.pub,
+                    )
+
+                // Authenticate Ack using intermediate root key (the one Alice knows)
+                // and include Bob's new key in authenticated plaintext.
+                val ts = currentTimeSeconds()
+                val nonce = randomBytes(12)
+                val ackCt =
+                    buildRatchetAckCt(
+                        rootKey = intermediateSession.rootKey,
+                        epochSeen = msg.epoch,
+                        ts = ts,
+                        newEkPub = bobNewEk.pub,
+                        nonce = nonce,
+                        routingToken = finalSession.sendToken,
+                        senderFp = entry.session.aliceFp,
+                        recipientFp = entry.session.bobFp,
+                    )
+
+                friends[friendId] =
+                    entry.copy(
+                        session = finalSession,
+                        // delete consumed OPK
+                        myOpkPrivs = entry.myOpkPrivs - msg.opkId,
+                    )
+                val rotatedToken = finalSession.sendToken.toHex()
+                outgoing.add(
+                    OutgoingMessage(
+                        rotatedToken,
+                        RatchetAckPayload(epochSeen = msg.epoch, ts = ts, newEkPub = bobNewEk.pub, nonce = nonce, ct = ackCt),
+                    ),
                 )
-                currentSession = newSession
-                decryptedLocations.add(loc)
-            } catch (_: Exception) {
-                // drop individually bad messages rather than aborting the whole batch
+
+                // Generate new OPK bundle for this friend
+                val freshEntry = friends[friendId] ?: continue
+                val startId = freshEntry.nextOpkId
+                val count = OPK_BATCH_SIZE
+                val newOpks =
+                    (0 until count).map { i ->
+                        val kp = generateX25519KeyPair()
+                        OPK(id = startId + i, pub = kp.pub) to kp.priv
+                    }
+                val opkList = newOpks.map { (opk, _) -> opk }
+                val mac =
+                    PreKeyBundleOps.buildMac(
+                        token = freshEntry.session.sendToken,
+                        opks = opkList,
+                        kBundle = freshEntry.session.kBundle,
+                    )
+                val newPrivMap = freshEntry.myOpkPrivs + newOpks.associate { (opk, priv) -> opk.id to priv }
+                friends[friendId] =
+                    freshEntry.copy(
+                        myOpkPrivs = newPrivMap,
+                        nextOpkId = startId + count,
+                    )
+                outgoing.add(
+                    OutgoingMessage(
+                        rotatedToken,
+                        PreKeyBundlePayload(
+                            keys = opkList.map { OPKWire(it.id, it.pub) },
+                            mac = mac,
+                        ),
+                    ),
+                )
+                newToken = rotatedToken
             }
-        }
-        if (currentSession !== preRotationSession) {
-            updateSession(friendId, currentSession)
-        }
 
-        // Step 3: Process epoch rotation (after location decryption).
-        for (msg in messages.filterIsInstance<EpochRotationPayload>()) {
-            val ack = try {
-                processEpochRotation(friendId, msg)
-            } catch (_: IllegalArgumentException) {
-                null
-            } ?: continue
-            // After epoch rotation, Bob posts responses (Ack, new OPKs) to his new send token.
-            val rotatedToken = friends[friendId]?.session?.sendToken?.toHex() ?: continue
-            outgoing.add(OutgoingMessage(rotatedToken, ack))
-            generateOpkBundle(friendId)?.let { bundle ->
-                outgoing.add(OutgoingMessage(rotatedToken, bundle))
+            // Step 4: Process RatchetAcks (Alice updating her receive chain).
+            for (msg in messages.filterIsInstance<RatchetAckPayload>()) {
+                val entry = friends[friendId] ?: continue
+                if (!entry.isInitiator) continue
+
+                val ackData =
+                    try {
+                        decryptRatchetAckCt(
+                            rootKey = entry.session.rootKey,
+                            epochSeen = msg.epochSeen,
+                            nonce = msg.nonce,
+                            ct = msg.ct,
+                            routingToken = entry.session.recvToken,
+                            senderFp = entry.session.aliceFp,
+                            recipientFp = entry.session.bobFp,
+                        )
+                    } catch (_: Exception) {
+                        continue
+                    }
+
+                if (!isTimestampFresh(ackData.ts)) continue
+
+                // Perform the second half of the DH ratchet if Bob provided a new key.
+                if (ackData.newEkPub != null) {
+                    val newSession = Session.aliceProcessRatchetAck(entry.session, ackData.newEkPub)
+                    friends[friendId] = entry.copy(session = newSession)
+                }
             }
-            newToken = rotatedToken
-        }
 
-        // Step 4: Process RatchetAcks (Alice updating her receive chain).
-        for (msg in messages.filterIsInstance<RatchetAckPayload>()) {
-            processRatchetAck(friendId, msg)
+            save()
+            PollBatchResult(decryptedLocations, newToken, outgoing)
         }
-
-        return PollBatchResult(decryptedLocations, newToken, outgoing)
-    }
 
     companion object {
         private const val STORAGE_KEY = "e2ee_store"

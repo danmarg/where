@@ -19,7 +19,6 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import com.google.accompanist.permissions.*
 import com.google.android.gms.maps.CameraUpdateFactory
-import com.google.android.gms.maps.model.BitmapDescriptorFactory
 import com.google.android.gms.maps.model.CameraPosition
 import com.google.android.gms.maps.model.LatLng
 import com.google.maps.android.compose.*
@@ -43,7 +42,9 @@ fun MapScreen(
     onScanQr: () -> Unit,
     onPasteUrl: (String) -> Unit,
     friendLastPing: Map<String, Long>,
+    onRenameFriend: (String, String) -> Unit,
     onRemoveFriend: (String) -> Unit,
+    onShowSettings: () -> Unit,
     onLocationPermissionGranted: () -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
@@ -148,7 +149,12 @@ fun MapScreen(
         ) {
             users.forEach { user ->
                 val isMe = user.userId == userId
-                val name = if (isMe) "You" else friends.find { it.id == user.userId }?.name ?: user.userId.take(8)
+                val name =
+                    if (isMe) {
+                        if (displayName.isNotEmpty()) displayName else "You"
+                    } else {
+                        friends.find { it.id == user.userId }?.name ?: user.userId.take(8)
+                    }
                 key(user.userId) {
                     MarkerComposable(
                         state = MarkerState(position = LatLng(user.lat, user.lng)),
@@ -207,31 +213,32 @@ fun MapScreen(
                 Text(if (isSharing) "Sharing" else "Paused", style = MaterialTheme.typography.labelMedium)
             }
 
-            // Your ID chip + Connection status
+            // Your Name chip + Connection status
             Surface(
                 modifier =
                     Modifier
                         .weight(1f)
-                        .clickable { zoomToUserId = userId },
+                        .clickable { onShowSettings() },
                 shape = MaterialTheme.shapes.medium,
                 color = Color.Black.copy(alpha = 0.7f),
             ) {
                 Row(
                     modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
                     verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
                 ) {
                     Box(
-                        modifier = Modifier
-                            .size(8.dp)
-                            .background(
-                                color = if (connectionStatus is ConnectionStatus.Ok) Color.Green else Color(0xFFFFA500),
-                                shape = androidx.compose.foundation.shape.CircleShape
-                            )
+                        modifier =
+                            Modifier
+                                .size(8.dp)
+                                .background(
+                                    color = if (connectionStatus is ConnectionStatus.Ok) Color.Green else Color(0xFFFFA500),
+                                    shape = androidx.compose.foundation.shape.CircleShape,
+                                ),
                     )
                     Column {
                         Text(
-                            text = "You: ${userId.take(8)}",
+                            text = if (displayName.isNotEmpty()) displayName else "You",
                             color = Color.White,
                             style = MaterialTheme.typography.labelSmall,
                         )
@@ -241,7 +248,7 @@ fun MapScreen(
                                 color = Color(0xFFFFA500),
                                 style = MaterialTheme.typography.labelSmall,
                                 maxLines = 1,
-                                overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
+                                overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
                             )
                         }
                     }
@@ -269,6 +276,7 @@ fun MapScreen(
             onCreateInvite = onCreateInvite,
             onScanQr = onScanQr,
             onPasteUrl = onPasteUrl,
+            onRename = onRenameFriend,
             onRemove = onRemoveFriend,
             onDismiss = { showFriends = false },
             onZoomTo = { zoomToUserId = it },

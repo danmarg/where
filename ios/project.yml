@@ -21,11 +21,25 @@ targets:
     configFiles:
       Debug: Local.xcconfig
       Release: Local.xcconfig
+    preBuildScripts:
+      - name: Build Shared XCFramework
+        script: |
+          if [ -f "../gradlew" ]; then
+            cd ..
+            ./gradlew :shared:assembleSharedXCFramework
+          fi
+        inputFilePaths:
+          - ../shared/src
+          - ../gradle
+          - ../build.gradle.kts
+          - ../settings.gradle.kts
+          - ../gradle/libs.versions.toml
+          - ../gradlew
+        outputFilePaths:
+          - ../shared/build/XCFrameworks/debug/Shared.xcframework
     dependencies:
-      - framework: $(SRCROOT)/../shared/build/xcode-frameworks/$(CONFIGURATION)/$(SDK_NAME)/Shared.framework
+      - framework: ../shared/build/XCFrameworks/debug/Shared.xcframework
         embed: false
-        codeSign: false
-        implicit: true
       - framework: Security
         embed: false
       - framework: MapKit
@@ -50,3 +64,15 @@ targets:
       DEVELOPMENT_TEAM: ""
       CODE_SIGN_IDENTITY: Apple Development
       CODE_SIGN_STYLE: Automatic
+
+  WhereTests:
+    type: bundle.unit-test
+    platform: iOS
+    deploymentTarget: "17.0"
+    sources:
+      - path: Tests
+    dependencies:
+      - target: Where
+    settings:
+      PRODUCT_BUNDLE_IDENTIFIER: net.af0.WhereTests
+      GENERATE_INFOPLIST_FILE: YES

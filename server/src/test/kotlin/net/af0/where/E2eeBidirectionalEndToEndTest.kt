@@ -224,6 +224,22 @@ class E2eeBidirectionalEndToEndTest {
         }
     }
 
+    @Test
+    fun `mailbox POST failure during Bob exchange`() {
+        runBlocking {
+            initializeLibsodium()
+            val bobStore = E2eeStore(MemoryE2eeStorage())
+            val qr = QrPayload(byteArrayOf(1, 2, 3), "Alice", "fp")
+            val (initPayload, _) = bobStore.processScannedQr(qr, "Bob")
+
+            // Use a non-existent host to trigger a failure
+            val badUrl = "http://localhost:1"
+            assertFailsWith<Exception> {
+                E2eeMailboxClient.post(badUrl, "discovery-token", initPayload)
+            }
+        }
+    }
+
     private class MemoryE2eeStorage : E2eeStorage {
         private val data = mutableMapOf<String, String>()
 

@@ -19,6 +19,7 @@ import kotlinx.serialization.json.put
 object Session {
     private const val AAD_PREFIX = "Where-v1-Location"
     private const val PROTOCOL_VERSION = 1
+
     // §7.4: pad plaintext to a fixed block size for traffic-analysis resistance.
     // 512 bytes provides comfortable clearance while remaining a small fixed multiple
     // of a cache line, as per the design doc.
@@ -118,14 +119,15 @@ object Session {
 
         val aad = buildLocationAad(senderFp, recipientFp, state.epoch, seq)
         val plaintext = aeadDecrypt(finalStep.messageKey, finalStep.messageNonce, ct, aad)
-        val unpadded = try {
-            unpad(plaintext)
-        } catch (e: Exception) {
-            finalStep.messageKey.fill(0)
-            finalStep.messageNonce.fill(0)
-            plaintext.fill(0)
-            throw e
-        }
+        val unpadded =
+            try {
+                unpad(plaintext)
+            } catch (e: Exception) {
+                finalStep.messageKey.fill(0)
+                finalStep.messageNonce.fill(0)
+                plaintext.fill(0)
+                throw e
+            }
         val location = decodeLocation(unpadded)
 
         val newState =
@@ -170,16 +172,18 @@ object Session {
         val ratchetStep = kdfRk(state.rootKey, dhOut)
         val tokenAliceToBob = deriveRoutingToken(ratchetStep.newRootKey, newEpoch, senderFp = senderFp, recipientFp = recipientFp)
         val tokenBobToAlice = deriveRoutingToken(ratchetStep.newRootKey, newEpoch, senderFp = recipientFp, recipientFp = senderFp)
-        val newState = state.copy(
-            rootKey = ratchetStep.newRootKey,
-            sendChainKey = ratchetStep.newChainKey, // Alice's new send chain
-            sendToken = tokenAliceToBob,
-            recvToken = tokenBobToAlice,
-            epoch = newEpoch,
-            myEkPriv = aliceNewEkPriv.copyOf(),
-            myEkPub = aliceNewEkPub.copyOf(),
-            sendSeq = 0L,
-        )
+        val newState =
+            state.copy(
+                rootKey = ratchetStep.newRootKey,
+                // Alice's new send chain
+                sendChainKey = ratchetStep.newChainKey,
+                sendToken = tokenAliceToBob,
+                recvToken = tokenBobToAlice,
+                epoch = newEpoch,
+                myEkPriv = aliceNewEkPriv.copyOf(),
+                myEkPub = aliceNewEkPub.copyOf(),
+                sendSeq = 0L,
+            )
 
         // Security (§5.5, §11): zero out ephemeral keys after use
         dhOut.fill(0)
@@ -211,15 +215,17 @@ object Session {
         val ratchetStep = kdfRk(state.rootKey, dhOut)
         val tokenAliceToBob = deriveRoutingToken(ratchetStep.newRootKey, newEpoch, senderFp = senderFp, recipientFp = recipientFp)
         val tokenBobToAlice = deriveRoutingToken(ratchetStep.newRootKey, newEpoch, senderFp = recipientFp, recipientFp = senderFp)
-        val newState = state.copy(
-            rootKey = ratchetStep.newRootKey,
-            recvChainKey = ratchetStep.newChainKey, // Bob's new recv chain (= Alice's new send)
-            sendToken = tokenBobToAlice,
-            recvToken = tokenAliceToBob,
-            epoch = newEpoch,
-            theirEkPub = aliceNewEkPub.copyOf(),
-            recvSeq = 0L,
-        )
+        val newState =
+            state.copy(
+                rootKey = ratchetStep.newRootKey,
+                // Bob's new recv chain (= Alice's new send)
+                recvChainKey = ratchetStep.newChainKey,
+                sendToken = tokenBobToAlice,
+                recvToken = tokenAliceToBob,
+                epoch = newEpoch,
+                theirEkPub = aliceNewEkPub.copyOf(),
+                recvSeq = 0L,
+            )
 
         // Security (§5.5, §11): zero out ephemeral keys after use
         dhOut.fill(0)
@@ -237,13 +243,14 @@ object Session {
     ): SessionState {
         val dhOut = x25519(bobNewEkPriv, state.theirEkPub)
         val ratchetStep = kdfRk(state.rootKey, dhOut)
-        val newState = state.copy(
-            rootKey = ratchetStep.newRootKey,
-            sendChainKey = ratchetStep.newChainKey,
-            myEkPriv = bobNewEkPriv.copyOf(),
-            myEkPub = bobNewEkPub.copyOf(),
-            sendSeq = 0L,
-        )
+        val newState =
+            state.copy(
+                rootKey = ratchetStep.newRootKey,
+                sendChainKey = ratchetStep.newChainKey,
+                myEkPriv = bobNewEkPriv.copyOf(),
+                myEkPub = bobNewEkPub.copyOf(),
+                sendSeq = 0L,
+            )
         dhOut.fill(0)
         return newState
     }
@@ -260,12 +267,14 @@ object Session {
     ): SessionState {
         val dhOut = x25519(state.myEkPriv, bobNewEkPub)
         val ratchetStep = kdfRk(state.rootKey, dhOut)
-        val newState = state.copy(
-            rootKey = ratchetStep.newRootKey,
-            recvChainKey = ratchetStep.newChainKey, // Alice's new recv chain (= Bob's new send)
-            theirEkPub = bobNewEkPub.copyOf(),
-            recvSeq = 0L,
-        )
+        val newState =
+            state.copy(
+                rootKey = ratchetStep.newRootKey,
+                // Alice's new recv chain (= Bob's new send)
+                recvChainKey = ratchetStep.newChainKey,
+                theirEkPub = bobNewEkPub.copyOf(),
+                recvSeq = 0L,
+            )
         dhOut.fill(0)
         return newState
     }
@@ -348,6 +357,7 @@ object Session {
 // ---------------------------------------------------------------------------
 
 internal data class EpochRotationPlaintext(val epoch: Int, val opkId: Int, val newEkPub: ByteArray, val ts: Long)
+
 internal data class RatchetAckPlaintext(val epochSeen: Int, val ts: Long, val newEkPub: ByteArray?)
 
 /**
@@ -444,18 +454,24 @@ internal fun decryptRatchetAckCt(
     return RatchetAckPlaintext(decodedEpochSeen, ts, if (isAllZeros) null else newEkPub)
 }
 
-private fun bytesToInt(buf: ByteArray, offset: Int): Int =
+private fun bytesToInt(
+    buf: ByteArray,
+    offset: Int,
+): Int =
     ((buf[offset].toInt() and 0xFF) shl 24) or
-    ((buf[offset+1].toInt() and 0xFF) shl 16) or
-    ((buf[offset+2].toInt() and 0xFF) shl 8) or
-    (buf[offset+3].toInt() and 0xFF)
+        ((buf[offset + 1].toInt() and 0xFF) shl 16) or
+        ((buf[offset + 2].toInt() and 0xFF) shl 8) or
+        (buf[offset + 3].toInt() and 0xFF)
 
-private fun bytesToLong(buf: ByteArray, offset: Int): Long =
+private fun bytesToLong(
+    buf: ByteArray,
+    offset: Int,
+): Long =
     ((buf[offset].toLong() and 0xFF) shl 56) or
-    ((buf[offset+1].toLong() and 0xFF) shl 48) or
-    ((buf[offset+2].toLong() and 0xFF) shl 40) or
-    ((buf[offset+3].toLong() and 0xFF) shl 32) or
-    ((buf[offset+4].toLong() and 0xFF) shl 24) or
-    ((buf[offset+5].toLong() and 0xFF) shl 16) or
-    ((buf[offset+6].toLong() and 0xFF) shl 8) or
-    (buf[offset+7].toLong() and 0xFF)
+        ((buf[offset + 1].toLong() and 0xFF) shl 48) or
+        ((buf[offset + 2].toLong() and 0xFF) shl 40) or
+        ((buf[offset + 3].toLong() and 0xFF) shl 32) or
+        ((buf[offset + 4].toLong() and 0xFF) shl 24) or
+        ((buf[offset + 5].toLong() and 0xFF) shl 16) or
+        ((buf[offset + 6].toLong() and 0xFF) shl 8) or
+        (buf[offset + 7].toLong() and 0xFF)

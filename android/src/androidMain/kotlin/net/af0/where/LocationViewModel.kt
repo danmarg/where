@@ -1,19 +1,25 @@
 package net.af0.where
 
 import android.app.Application
-import android.content.Context
 import android.content.Intent
 import android.util.Log
+import androidx.annotation.MainThread
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import net.af0.where.e2ee.E2eeMailboxClient
 import net.af0.where.e2ee.E2eeStore
 import net.af0.where.e2ee.FriendEntry
@@ -31,50 +37,73 @@ class LocationViewModel(app: Application) : AndroidViewModel(app) {
     private val e2eeStore = E2eeStore(SharedPrefsE2eeStorage(app))
     private val locationClient = LocationClient(BuildConfig.SERVER_HTTP_URL, e2eeStore)
 
-    private val sharingPrefs = app.getSharedPreferences("where_prefs", Context.MODE_PRIVATE)
+    data class Pending(val qr: QrPayload) : InviteState
 
-    val userId: String by lazy {
-        sharingPrefs.getString("user_id", null) ?: run {
-            val id = java.util.UUID.randomUUID().toString().replace("-", "")
-            sharingPrefs.edit().putString("user_id", id).apply()
-            id
-        }
-    }
+    data class Consumed(val qr: QrPayload) : InviteState
+}
 
-    private val _isSharingLocation = MutableStateFlow(sharingPrefs.getBoolean("is_sharing", true))
+data class PollingState(
+    val isPolling: Boolean = true,
+    val lastRapidPollTrigger: Long = 0L,
+    val lastSentLat: Double? = null,
+    val lastSentLng: Double? = null,
+    val lastSentTime: Long = 0L,
+)
+
+class LocationViewModel(
+    app: Application,
+    e2eeStore: E2eeStore? = null,
+    locationClient: LocationClient? = null,
+    startPolling: Boolean = true,
+    private val clock: () -> Long = { System.currentTimeMillis() },
+    private val locationSource: LocationSource = LocationRepository,
+) : AndroidViewModel(app) {
+    // Use the Application-level singletons so LocationService and this ViewModel share the same
+    // E2EE state. Fall back to creating new instances when running under test (app is not
+    // WhereApplication in unit tests).
+    private val e2eeStore: E2eeStore =
+        e2eeStore
+            ?: (app as? WhereApplication)?.e2eeStore
+            ?: E2eeStore(SharedPrefsE2eeStorage(app))
+    private val locationClient: LocationClient =
+        locationClient
+            ?: (app as? WhereApplication)?.locationClient
+            ?: LocationClient(BuildConfig.SERVER_HTTP_URL, this.e2eeStore)
+
+    val userId: String by lazy { UserPrefs.getUserId(getApplication()) }
+
+    private val _isSharingLocation = MutableStateFlow(UserPrefs.isSharing(app))
     val isSharingLocation: StateFlow<Boolean> = _isSharingLocation
 
-    private val _displayName = MutableStateFlow(sharingPrefs.getString("display_name", "") ?: "")
+    private val _displayName = MutableStateFlow(UserPrefs.getDisplayName(app))
     val displayName: StateFlow<String> = _displayName
 
-    private val _friends = MutableStateFlow(e2eeStore.listFriends())
+    private val _friends = MutableStateFlow(emptyList<FriendEntry>())
     val friends: StateFlow<List<FriendEntry>> = _friends
 
-    private val _pausedFriendIds = MutableStateFlow(
-        sharingPrefs.getString("paused_friends", "")?.split(",")?.filter { it.isNotEmpty() }?.toSet() ?: emptySet()
-    )
+    private val _pausedFriendIds = MutableStateFlow(UserPrefs.getPausedFriends(app))
     val pausedFriendIds: StateFlow<Set<String>> = _pausedFriendIds
 
     val friendLocations: StateFlow<Map<String, UserLocation>> = locationSource.friendLocations
     val friendLastPing: StateFlow<Map<String, Long>> = locationSource.friendLastPing
     val connectionStatus: StateFlow<ConnectionStatus> = locationSource.connectionStatus
 
-    private val _pendingInviteQr = MutableStateFlow<QrPayload?>(null)
-    val pendingInviteQr: StateFlow<QrPayload?> = _pendingInviteQr
+    private val _inviteState = MutableStateFlow<InviteState>(InviteState.None)
+    val inviteState: StateFlow<InviteState> = _inviteState
 
     private val _pendingQrForNaming = MutableStateFlow<QrPayload?>(null)
     val pendingQrForNaming: StateFlow<QrPayload?> = _pendingQrForNaming
 
     val pendingInitPayload: StateFlow<KeyExchangeInitPayload?> = locationSource.pendingInitPayload
 
-    private var lastRapidPollTrigger = 0L
-    private var autoClearedInvite = false
+    private val pollingStateInternal = MutableStateFlow(PollingState())
+    private val pollWakeSignal = Channel<Unit>(Channel.CONFLATED)
 
     val visibleUsers: StateFlow<List<UserLocation>> =
         combine(locationSource.lastLocation, _isSharingLocation, friendLocations) { myLoc, sharing, friendLocs ->
             buildList {
                 if (myLoc != null && sharing) {
-                    add(UserLocation(userId, myLoc.first, myLoc.second, System.currentTimeMillis() / 1000))
+                    add(UserLocation(userId, myLoc.first, myLoc.second, clock() / 1000))
                 }
                 addAll(friendLocs.values)
             }
@@ -105,7 +134,6 @@ class LocationViewModel(app: Application) : AndroidViewModel(app) {
                 if (prevSharing != sharing) {
                     manageForegroundService(sharing)
                 }
-                prevSharing = sharing
             }
         }
 
@@ -129,7 +157,8 @@ class LocationViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     private fun triggerRapidPoll() {
-        lastRapidPollTrigger = System.currentTimeMillis()
+        pollingStateInternal.update { it.copy(lastRapidPollTrigger = clock()) }
+        pollWakeSignal.trySend(Unit)
     }
 
     private fun isRapidPolling(): Boolean {
@@ -140,21 +169,35 @@ class LocationViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun setDisplayName(name: String) {
+        check(Looper.myLooper() == Looper.getMainLooper()) { "setDisplayName must be called on the main thread" }
         _displayName.value = name
-        sharingPrefs.edit().putString("display_name", name).apply()
+        UserPrefs.setDisplayName(getApplication(), name)
     }
 
     fun toggleSharing() {
+        check(Looper.myLooper() == Looper.getMainLooper()) { "toggleSharing must be called on the main thread" }
         val new = !_isSharingLocation.value
         _isSharingLocation.value = new
-        sharingPrefs.edit().putBoolean("is_sharing", new).apply()
+        UserPrefs.setSharing(getApplication(), new)
     }
 
     fun togglePauseFriend(id: String) {
+        check(Looper.myLooper() == Looper.getMainLooper()) { "togglePauseFriend must be called on the main thread" }
         val current = _pausedFriendIds.value
         val new = if (id in current) current - id else current + id
         _pausedFriendIds.value = new
-        sharingPrefs.edit().putString("paused_friends", new.joinToString(",")).apply()
+        UserPrefs.setPausedFriends(getApplication(), new)
+    }
+
+    fun renameFriend(
+        id: String,
+        newName: String,
+    ) {
+        check(Looper.myLooper() == Looper.getMainLooper()) { "renameFriend must be called on the main thread" }
+        viewModelScope.launch {
+            e2eeStore.renameFriend(id, newName)
+            _friends.value = e2eeStore.listFriends()
+        }
     }
 
     fun removeFriend(id: String) {
@@ -175,8 +218,11 @@ class LocationViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun clearInvite() {
-        if (!autoClearedInvite) {
-            e2eeStore.clearInvite()
+        val current = _inviteState.value
+        if (current is InviteState.Pending) {
+            viewModelScope.launch {
+                e2eeStore.clearInvite()
+            }
         }
         _pendingInviteQr.value = null
         autoClearedInvite = false
@@ -200,7 +246,7 @@ class LocationViewModel(app: Application) : AndroidViewModel(app) {
 
     fun confirmQrScan(qr: QrPayload, friendName: String) {
         _pendingQrForNaming.value = null
-        triggerRapidPoll()
+        pollingStateInternal.update { it.copy(lastRapidPollTrigger = 0L) }
         val qrWithName = qr.copy(suggestedName = friendName)
         try {
             val (initPayload, bobEntry) = e2eeStore.processScannedQr(qrWithName, _displayName.value.ifEmpty { "" })
@@ -231,9 +277,10 @@ class LocationViewModel(app: Application) : AndroidViewModel(app) {
                     Log.e(TAG, "confirmQrScan inner failure: ${e.message}")
                     LocationRepository.onConnectionError(e)
                 }
+            } catch (e: Exception) {
+                Log.e(TAG, "confirmQrScan: processScannedQr failed", e)
+                _isExchanging.value = false
             }
-        } catch (e: Exception) {
-            Log.e(TAG, "confirmQrScan: processScannedQr failed", e)
         }
     }
 
@@ -259,8 +306,6 @@ class LocationViewModel(app: Application) : AndroidViewModel(app) {
                     }
                 }
             }
-        } catch (e: Exception) {
-            Log.e(TAG, "confirmPendingInit: processKeyExchangeInit failed", e)
         }
     }
 
@@ -273,6 +318,7 @@ class LocationViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     private fun manageForegroundService(sharing: Boolean) {
+        check(Looper.myLooper() == Looper.getMainLooper())
         val intent = Intent(getApplication(), LocationService::class.java)
         val hasLocationPermission =
             ContextCompat.checkSelfPermission(getApplication(), android.Manifest.permission.ACCESS_FINE_LOCATION) ==
@@ -284,5 +330,20 @@ class LocationViewModel(app: Application) : AndroidViewModel(app) {
         } else if (!sharing) {
             getApplication<Application>().stopService(intent)
         }
+    }
+
+    companion object {
+        val Factory: androidx.lifecycle.ViewModelProvider.Factory =
+            object : androidx.lifecycle.ViewModelProvider.Factory {
+                @Suppress("UNCHECKED_CAST")
+                override fun <T : androidx.lifecycle.ViewModel> create(
+                    modelClass: Class<T>,
+                    extras: androidx.lifecycle.viewmodel.CreationExtras,
+                ): T {
+                    val application =
+                        checkNotNull(extras[androidx.lifecycle.ViewModelProvider.AndroidViewModelFactory.APPLICATION_KEY])
+                    return LocationViewModel(application) as T
+                }
+            }
     }
 }

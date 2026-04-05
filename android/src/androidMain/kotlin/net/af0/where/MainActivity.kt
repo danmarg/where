@@ -7,20 +7,25 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.viewModels
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
-import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
@@ -28,7 +33,7 @@ import com.journeyapps.barcodescanner.ScanContract
 import com.journeyapps.barcodescanner.ScanOptions
 
 class MainActivity : ComponentActivity() {
-    private val viewModel: LocationViewModel by viewModels()
+    private val viewModel: LocationViewModel by viewModels { LocationViewModel.Factory }
 
     private val scanLauncher =
         registerForActivityResult(ScanContract()) { result ->
@@ -60,12 +65,14 @@ class MainActivity : ComponentActivity() {
                 val pausedFriendIds by viewModel.pausedFriendIds.collectAsState()
                 val friendLastPing by viewModel.friendLastPing.collectAsState()
                 val isSharing by viewModel.isSharingLocation.collectAsState()
-                val pendingInviteQr by viewModel.pendingInviteQr.collectAsState()
+                val inviteState by viewModel.inviteState.collectAsState()
                 val pendingQrForNaming by viewModel.pendingQrForNaming.collectAsState()
                 val pendingInitPayload by viewModel.pendingInitPayload.collectAsState()
+                val isExchanging by viewModel.isExchanging.collectAsState()
                 val connectionStatus by viewModel.connectionStatus.collectAsState()
 
                 var showSimulatorScanner by remember { mutableStateOf(false) }
+                var showUserSettings by remember { mutableStateOf(false) }
 
                 MapScreen(
                     userId = viewModel.userId,
@@ -82,7 +89,8 @@ class MainActivity : ComponentActivity() {
                     onScanQr = {
                         if (android.os.Build.PRODUCT.contains("sdk") ||
                             android.os.Build.MODEL.contains("Emulator") ||
-                            android.os.Build.DEVICE.contains("generic")) {
+                            android.os.Build.DEVICE.contains("generic")
+                        ) {
                             showSimulatorScanner = true
                         } else {
                             scanLauncher.launch(
@@ -96,9 +104,20 @@ class MainActivity : ComponentActivity() {
                     },
                     onPasteUrl = { viewModel.processQrUrl(it) },
                     friendLastPing = friendLastPing,
+                    onRenameFriend = { id, name -> viewModel.renameFriend(id, name) },
                     onRemoveFriend = { viewModel.removeFriend(it) },
+                    onShowSettings = { showUserSettings = true },
                     onLocationPermissionGranted = ::startLocationService,
                 )
+
+                if (isExchanging) {
+                    Box(
+                        modifier = Modifier.fillMaxSize().background(androidx.compose.ui.graphics.Color.Black.copy(alpha = 0.3f)),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        CircularProgressIndicator()
+                    }
+                }
 
                 if (showSimulatorScanner) {
                     var manualUrl by remember { mutableStateOf("where://invite?q=...") }
@@ -129,12 +148,12 @@ class MainActivity : ComponentActivity() {
                             TextButton(onClick = { showSimulatorScanner = false }) {
                                 Text("Cancel")
                             }
-                        }
+                        },
                     )
                 }
 
-                pendingInviteQr?.let { qr ->
-                    InviteSheet(qrPayload = qr, onDismiss = { viewModel.clearInvite() })
+                (inviteState as? InviteState.Pending)?.let { state ->
+                    InviteSheet(qrPayload = state.qr, onDismiss = { viewModel.clearInvite() })
                 }
 
                 pendingQrForNaming?.let { qr ->
@@ -159,11 +178,34 @@ class MainActivity : ComponentActivity() {
                             TextButton(onClick = { viewModel.cancelQrScan() }) {
                                 Text("Cancel")
                             }
-                        }
+                        },
                     )
                 }
 
-                pendingInitPayload?.takeIf { pendingInviteQr == null }?.let { payload ->
+                if (showUserSettings) {
+                    AlertDialog(
+                        onDismissRequest = { showUserSettings = false },
+                        title = { Text("You") },
+                        text = {
+                            Column {
+                                OutlinedTextField(
+                                    value = displayName,
+                                    onValueChange = { viewModel.setDisplayName(it) },
+                                    label = { Text("Your Name") },
+                                    modifier = Modifier.fillMaxWidth(),
+                                    singleLine = true,
+                                )
+                            }
+                        },
+                        confirmButton = {
+                            TextButton(onClick = { showUserSettings = false }) {
+                                Text("Close")
+                            }
+                        },
+                    )
+                }
+
+                pendingInitPayload?.let { payload ->
                     var name by remember(payload) { mutableStateOf(payload.suggestedName) }
                     AlertDialog(
                         onDismissRequest = { viewModel.cancelPendingInit() },
@@ -189,7 +231,7 @@ class MainActivity : ComponentActivity() {
                             TextButton(onClick = { viewModel.cancelPendingInit() }) {
                                 Text("Cancel")
                             }
-                        }
+                        },
                     )
                 }
             }

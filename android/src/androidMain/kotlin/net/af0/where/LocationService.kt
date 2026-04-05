@@ -23,8 +23,16 @@ import net.af0.where.e2ee.discoveryToken
 
 private const val TAG = "LocationService"
 
+private const val TAG = "LocationService"
+
+/**
+ * Foreground service that keeps the process alive and emits GPS coordinates into
+ * LocationRepository. All E2EE protocol work (polling, sending location over the
+ * encrypted channel) is handled by LocationViewModel, which continues running while
+ * this service keeps the process alive.
+ */
 class LocationService : Service() {
-    private lateinit var fusedClient: FusedLocationProviderClient
+    private lateinit var fusedClient: com.google.android.gms.location.FusedLocationProviderClient
     private lateinit var locationCallback: LocationCallback
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
@@ -49,15 +57,13 @@ class LocationService : Service() {
             object : LocationCallback() {
                 override fun onLocationResult(result: LocationResult) {
                     val loc = result.lastLocation ?: return
-                    LocationRepository.onLocation(loc.latitude, loc.longitude)
+                    locationSource.onLocation(loc.latitude, loc.longitude)
                 }
             }
 
         try {
             fusedClient.lastLocation.addOnSuccessListener { loc ->
-                if (loc != null) {
-                    LocationRepository.onLocation(loc.latitude, loc.longitude)
-                }
+                if (loc != null) locationSource.onLocation(loc.latitude, loc.longitude)
             }
         } catch (_: SecurityException) {
         }
@@ -224,6 +230,9 @@ class LocationService : Service() {
             .build()
 
     companion object {
+        /** Overridable in tests; defaults to the production singleton. */
+        var locationSource: LocationSource = LocationRepository
+
         private const val CHANNEL_ID = "where_location"
         private const val NOTIFICATION_ID = 1
     }
