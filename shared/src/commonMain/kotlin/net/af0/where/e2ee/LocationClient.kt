@@ -171,7 +171,7 @@ open class LocationClient(
      * waiting for a RatchetAck response. Can be triggered manually (e.g., via UI)
      * or automatically by [poll] when running low.
      */
-    suspend fun postOpkBundle(friendId: String) {
+    open suspend fun postOpkBundle(friendId: String) {
         if (store.shouldReplenishOpks(friendId)) {
             store.generateOpkBundle(friendId)?.let { bundle ->
                 val friend = store.getFriend(friendId) ?: return
