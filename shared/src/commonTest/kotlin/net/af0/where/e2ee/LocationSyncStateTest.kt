@@ -1,5 +1,6 @@
 package net.af0.where.e2ee
 
+import kotlinx.coroutines.runBlocking
 import kotlin.test.*
 
 /**
@@ -60,26 +61,27 @@ class LocationSyncStateTest {
     }
 
     @Test
-    fun testColdStartForcedSend_BugA() {
-        // Alice creates invite
-        val qr = aliceStore.createInvite("Alice")
+    fun testColdStartForcedSend_BugA() =
+        runBlocking {
+            // Alice creates invite
+            val qr = aliceStore.createInvite("Alice")
 
-        // Bob scans QR but HAS NO GPS FIX YET (cold start)
-        val (initPayload, bobEntry) = bobStore.processScannedQr(qr)
-        val friendId = bobEntry.id
+            // Bob scans QR but HAS NO GPS FIX YET (cold start)
+            val (initPayload, bobEntry) = bobStore.processScannedQr(qr)
+            val friendId = bobEntry.id
 
-        // Mimic Bug A fix: mark for forced send when location arrives
-        pendingForcedFriendId = friendId
+            // Mimic Bug A fix: mark for forced send when location arrives
+            pendingForcedFriendId = friendId
 
-        assertEquals(0, sentLocations.size, "No location sent yet because GPS is null")
+            assertEquals(0, sentLocations.size, "No location sent yet because GPS is null")
 
-        // Now GPS fix arrives 5 seconds later
-        mockSendLocation(friendId, 37.7, -122.4, force = false)
+            // Now GPS fix arrives 5 seconds later
+            mockSendLocation(friendId, 37.7, -122.4, force = false)
 
-        assertEquals(1, sentLocations.size, "Forced send should fire as soon as GPS fix arrives")
-        assertEquals(friendId, sentLocations[0].first)
-        assertNull(pendingForcedFriendId, "Pending flag should be cleared")
-    }
+            assertEquals(1, sentLocations.size, "Forced send should fire as soon as GPS fix arrives")
+            assertEquals(friendId, sentLocations[0].first)
+            assertNull(pendingForcedFriendId, "Pending flag should be cleared")
+        }
 
     @Test
     fun testForcedSendBypassesIsSending_BugB() {

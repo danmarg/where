@@ -27,32 +27,33 @@ open class LocationClient(
      *
      * @return List of new [UserLocation] updates received since the last poll.
      */
-    suspend fun poll(): List<UserLocation> = pollMutex.withLock {
-        val allUpdates = mutableListOf<UserLocation>()
-        var lastError: Exception? = null
+    suspend fun poll(): List<UserLocation> =
+        pollMutex.withLock {
+            val allUpdates = mutableListOf<UserLocation>()
+            var lastError: Exception? = null
 
-        // 1. Poll each friend's current mailbox
-        for (friend in store.listFriends()) {
-            try {
-                val friendUpdates = pollFriend(friend.id)
-                allUpdates.addAll(friendUpdates)
+            // 1. Poll each friend's current mailbox
+            for (friend in store.listFriends()) {
+                try {
+                    val friendUpdates = pollFriend(friend.id)
+                    allUpdates.addAll(friendUpdates)
 
-                // 3. Proactively replenish OPKs if the local user (Bob) is running low.
-                //    Bob periodically generates fresh OPKs and publishes them so Alice can
-                //    rotate epochs without needing Bob to respond to her rotation request first.
-                if (store.shouldReplenishOpks(friend.id)) {
-                    store.generateOpkBundle(friend.id)?.let { bundle ->
-                        E2eeMailboxClient.post(baseUrl, friend.session.sendToken.toHex(), bundle)
+                    // 3. Proactively replenish OPKs if the local user (Bob) is running low.
+                    //    Bob periodically generates fresh OPKs and publishes them so Alice can
+                    //    rotate epochs without needing Bob to respond to her rotation request first.
+                    if (store.shouldReplenishOpks(friend.id)) {
+                        store.generateOpkBundle(friend.id)?.let { bundle ->
+                            E2eeMailboxClient.post(baseUrl, friend.session.sendToken.toHex(), bundle)
+                        }
                     }
+                } catch (e: Exception) {
+                    lastError = e
                 }
-            } catch (e: Exception) {
-                lastError = e
             }
-        }
 
-        lastError?.let { throw it }
-        allUpdates
-    }
+            lastError?.let { throw it }
+            allUpdates
+        }
 
     /**
      * Poll a specific friend's mailbox, handling all protocol messages and

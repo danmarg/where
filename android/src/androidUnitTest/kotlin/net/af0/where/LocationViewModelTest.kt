@@ -7,7 +7,6 @@ import android.text.TextUtils
 import io.mockk.every
 import io.mockk.mockk
 import io.mockk.mockkStatic
-import io.mockk.verify
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -51,7 +50,11 @@ private open class TestLocationClient(store: E2eeStore) : LocationClient("http:/
 
     fun clear() = calls.clear()
 
-    override suspend fun sendLocation(lat: Double, lng: Double, pausedFriendIds: Set<String>) {
+    override suspend fun sendLocation(
+        lat: Double,
+        lng: Double,
+        pausedFriendIds: Set<String>,
+    ) {
         calls.add(SendCall(lat, lng, pausedFriendIds))
         // Don't call super - we're mocking
     }
@@ -76,7 +79,10 @@ private class FakeLocationSource : LocationSource {
     private val _users = MutableStateFlow<List<UserLocation>>(emptyList())
     override val users: StateFlow<List<UserLocation>> = _users
 
-    override fun onLocation(lat: Double, lng: Double) {
+    override fun onLocation(
+        lat: Double,
+        lng: Double,
+    ) {
         _lastLocation.value = lat to lng
     }
 
@@ -151,8 +157,9 @@ class LocationViewModelTest {
 
             // 1. Create invite
             vm.createInvite()
+            advanceUntilIdle()
             assertTrue(vm.inviteState.value is InviteState.Pending)
-            assertNotNull(store.pendingQrPayload)
+            assertNotNull(store.pendingQrPayload())
 
             // 2. Simulate finding an init payload via polling
             val initPayload =
@@ -175,10 +182,11 @@ class LocationViewModelTest {
 
             // 3. Alice cancels naming Bob
             vm.cancelPendingInit()
+            advanceUntilIdle()
 
             assertNull(vm.pendingInitPayload.value)
             assertTrue(vm.inviteState.value is InviteState.None)
-            assertNull(store.pendingQrPayload, "Store should be cleared when Alice cancels")
+            assertNull(store.pendingQrPayload(), "Store should be cleared when Alice cancels")
         }
 
     @Test
@@ -382,12 +390,14 @@ class LocationViewModelTest {
 
             // Create invite (sets inviteState to Pending and triggers rapid poll)
             vm.createInvite()
+            advanceUntilIdle()
 
             // Now should be rapid polling
             assertTrue(vm.isRapidPolling(), "Should be rapid polling while invite pending")
 
             // Clear invite
             vm.clearInvite()
+            advanceUntilIdle()
 
             // Still rapid polling due to recent trigger (within 5 min window)
             assertTrue(vm.isRapidPolling(), "Should still be rapid polling within 5 min window after trigger")
@@ -422,13 +432,14 @@ class LocationViewModelTest {
             pendingInitField.isAccessible = true
             @Suppress("UNCHECKED_CAST")
             val pendingInitFlow = pendingInitField.get(vm) as MutableStateFlow<KeyExchangeInitPayload?>
-            val initPayload = KeyExchangeInitPayload(
-                v = 1,
-                token = "test_token",
-                ekPub = byteArrayOf(1, 2, 3),
-                keyConfirmation = byteArrayOf(4, 5, 6),
-                suggestedName = "Alice",
-            )
+            val initPayload =
+                KeyExchangeInitPayload(
+                    v = 1,
+                    token = "test_token",
+                    ekPub = byteArrayOf(1, 2, 3),
+                    keyConfirmation = byteArrayOf(4, 5, 6),
+                    suggestedName = "Alice",
+                )
             pendingInitFlow.value = initPayload
 
             // Now should be rapid polling
@@ -497,10 +508,12 @@ class LocationViewModelTest {
 
             // Create invite to trigger rapid polling
             vm.createInvite()
+            advanceUntilIdle()
             assertTrue(vm.isRapidPolling(), "Invite pending should trigger rapid polling")
 
             // Clear invite - still rapid polling due to recent trigger
             vm.clearInvite()
+            advanceUntilIdle()
             assertTrue(vm.isRapidPolling(), "Should still be rapid polling within 5 min window after clearing invite")
 
             // Advance clock by 100 seconds (within 5 min window)
@@ -533,6 +546,7 @@ class LocationViewModelTest {
 
             // Create invite (Alice side)
             vm.createInvite()
+            advanceUntilIdle()
             assertTrue(vm.isRapidPolling(), "Invite pending → rapid polling")
 
             // Simulate received init payload (representing Bob's response)
@@ -540,13 +554,14 @@ class LocationViewModelTest {
             pendingInitField.isAccessible = true
             @Suppress("UNCHECKED_CAST")
             val pendingInitFlow = pendingInitField.get(vm) as MutableStateFlow<KeyExchangeInitPayload?>
-            val initPayload = KeyExchangeInitPayload(
-                v = 1,
-                token = "test_token",
-                ekPub = byteArrayOf(1, 2, 3),
-                keyConfirmation = byteArrayOf(4, 5, 6),
-                suggestedName = "Bob",
-            )
+            val initPayload =
+                KeyExchangeInitPayload(
+                    v = 1,
+                    token = "test_token",
+                    ekPub = byteArrayOf(1, 2, 3),
+                    keyConfirmation = byteArrayOf(4, 5, 6),
+                    suggestedName = "Bob",
+                )
             pendingInitFlow.value = initPayload
 
             // Still rapid polling (now due to pending init)
@@ -581,16 +596,17 @@ class LocationViewModelTest {
             fakeLocationSource.onLocation(37.7749, -122.4194)
 
             // Mock the store to return a friend when processKeyExchangeInit is called
-            val newFriend = FriendEntry(
-                name = "Bob",
-                session = mockk(relaxed = true),
-                isInitiator = false,
-                lastLat = null,
-                lastLng = null,
-                lastTs = null,
-            )
+            val newFriend =
+                FriendEntry(
+                    name = "Bob",
+                    session = mockk(relaxed = true),
+                    isInitiator = false,
+                    lastLat = null,
+                    lastLng = null,
+                    lastTs = null,
+                )
             io.mockk.coEvery { store.processKeyExchangeInit(any(), any()) } returns newFriend
-            every { store.listFriends() } returns listOf(newFriend)
+            io.mockk.coEvery { store.listFriends() } returns listOf(newFriend)
 
             viewModel =
                 LocationViewModel(
@@ -643,7 +659,7 @@ class LocationViewModelTest {
             assertFalse(vm.isExchanging.value, "isExchanging should be false after coroutine completes")
             assertTrue(
                 vm.friends.value.size > 0,
-                "friends list should be updated after successful exchange"
+                "friends list should be updated after successful exchange",
             )
         }
 
@@ -658,16 +674,17 @@ class LocationViewModelTest {
             fakeLocationSource.onLocation(37.7749, -122.4194)
 
             // Mock store to return a friend
-            val newFriend = FriendEntry(
-                name = "Alice",
-                session = mockk(relaxed = true),
-                isInitiator = true,
-                lastLat = null,
-                lastLng = null,
-                lastTs = null,
-            )
+            val newFriend =
+                FriendEntry(
+                    name = "Alice",
+                    session = mockk(relaxed = true),
+                    isInitiator = true,
+                    lastLat = null,
+                    lastLng = null,
+                    lastTs = null,
+                )
             io.mockk.coEvery { store.processScannedQr(any(), any()) } returns Pair(mockk(relaxed = true), newFriend)
-            every { store.listFriends() } returns listOf(newFriend)
+            io.mockk.coEvery { store.listFriends() } returns emptyList()
 
             viewModel =
                 LocationViewModel(
@@ -684,11 +701,12 @@ class LocationViewModelTest {
             assertFalse(vm.isExchanging.value, "Should not be exchanging initially")
 
             // 2. Simulate Bob scanning Alice's QR code
-            val qr = QrPayload(
-                ekPub = byteArrayOf(1, 2, 3),
-                suggestedName = "Alice",
-                fingerprint = "alice_fp",
-            )
+            val qr =
+                QrPayload(
+                    ekPub = byteArrayOf(1, 2, 3),
+                    suggestedName = "Alice",
+                    fingerprint = "alice_fp",
+                )
 
             // 3. Call confirmQrScan (synchronous sets isExchanging = true before async work)
             vm.confirmQrScan(qr = qr, friendName = "Alice")
@@ -714,16 +732,17 @@ class LocationViewModelTest {
             fakeLocationSource.onLocation(37.7749, -122.4194)
 
             // Mock store to successfully process the exchange
-            val newFriend = FriendEntry(
-                name = "Bob",
-                session = mockk(relaxed = true),
-                isInitiator = false,
-                lastLat = null,
-                lastLng = null,
-                lastTs = null,
-            )
+            val newFriend =
+                FriendEntry(
+                    name = "Bob",
+                    session = mockk(relaxed = true),
+                    isInitiator = false,
+                    lastLat = null,
+                    lastLng = null,
+                    lastTs = null,
+                )
             io.mockk.coEvery { store.processKeyExchangeInit(any(), any()) } returns newFriend
-            every { store.listFriends() } returns listOf(newFriend)
+            io.mockk.coEvery { store.listFriends() } returns listOf(newFriend)
 
             viewModel =
                 LocationViewModel(
@@ -737,13 +756,14 @@ class LocationViewModelTest {
             val vm = viewModel!!
 
             // Setup pending init
-            val initPayload = KeyExchangeInitPayload(
-                v = 1,
-                token = "test",
-                ekPub = byteArrayOf(1, 2, 3),
-                keyConfirmation = byteArrayOf(4, 5, 6),
-                suggestedName = "Bob",
-            )
+            val initPayload =
+                KeyExchangeInitPayload(
+                    v = 1,
+                    token = "test",
+                    ekPub = byteArrayOf(1, 2, 3),
+                    keyConfirmation = byteArrayOf(4, 5, 6),
+                    suggestedName = "Bob",
+                )
             val pendingInitField = LocationViewModel::class.java.getDeclaredField("_pendingInitPayload")
             pendingInitField.isAccessible = true
             @Suppress("UNCHECKED_CAST")
@@ -765,7 +785,7 @@ class LocationViewModelTest {
             // CRITICAL: After successful completion, finally block must reset isExchanging to false
             assertFalse(
                 vm.isExchanging.value,
-                "isExchanging MUST be false after exchange completes (finally block)"
+                "isExchanging MUST be false after exchange completes (finally block)",
             )
 
             // Verify exchange actually happened
@@ -794,14 +814,15 @@ class LocationViewModelTest {
 
             // 1. Seed the ViewModel with a friend
             val friendId = "friend_alice_123"
-            val friendEntry = FriendEntry(
-                name = "Alice",
-                session = mockk(relaxed = true),
-                isInitiator = true,
-                lastLat = 37.7749,
-                lastLng = -122.4194,
-                lastTs = 1000L,
-            )
+            val friendEntry =
+                FriendEntry(
+                    name = "Alice",
+                    session = mockk(relaxed = true),
+                    isInitiator = true,
+                    lastLat = 37.7749,
+                    lastLng = -122.4194,
+                    lastTs = 1000L,
+                )
 
             // Inject friend into the friends list via reflection
             val friendsField = LocationViewModel::class.java.getDeclaredField("_friends")
@@ -822,7 +843,7 @@ class LocationViewModelTest {
             pausedFlow.value = setOf(friendId, "other_friend")
 
             // Mock store to return empty list after deletion
-            every { store.listFriends() } returns emptyList()
+            io.mockk.coEvery { store.listFriends() } returns emptyList()
 
             // 2. Verify initial state: friend exists in all three collections
             assertEquals(1, vm.friends.value.size, "Should have one friend initially")
@@ -831,21 +852,22 @@ class LocationViewModelTest {
 
             // 3. Call removeFriend
             vm.removeFriend(friendId)
+            advanceUntilIdle()
 
             // 4. CRITICAL: Assert atomicity - all three collections are cleaned up in one snapshot
             assertEquals(
                 0,
                 vm.friends.value.size,
-                "Friend must be removed from friends list"
+                "Friend must be removed from friends list",
             )
             assertEquals(
                 0,
                 vm.friendLocations.value.size,
-                "Friend location must be removed from friendLocations"
+                "Friend location must be removed from friendLocations",
             )
             assertFalse(
                 friendId in vm.pausedFriendIds.value,
-                "Friend must be removed from pausedFriendIds"
+                "Friend must be removed from pausedFriendIds",
             )
 
             // 5. Verify other friends still exist
@@ -853,7 +875,7 @@ class LocationViewModelTest {
             assertTrue("other_friend" in vm.pausedFriendIds.value)
 
             // 6. Verify store was updated
-            verify { store.deleteFriend(friendId) }
+            io.mockk.coVerify { store.deleteFriend(friendId) }
         }
 
     @Test
@@ -875,14 +897,15 @@ class LocationViewModelTest {
             val vm = viewModel!!
 
             val friendId = "friend_bob_456"
-            val friendEntry = FriendEntry(
-                name = "Bob",
-                session = mockk(relaxed = true),
-                isInitiator = false,
-                lastLat = null,
-                lastLng = null,
-                lastTs = null,
-            )
+            val friendEntry =
+                FriendEntry(
+                    name = "Bob",
+                    session = mockk(relaxed = true),
+                    isInitiator = false,
+                    lastLat = null,
+                    lastLng = null,
+                    lastTs = null,
+                )
 
             // Inject friend (not paused)
             val friendsField = LocationViewModel::class.java.getDeclaredField("_friends")
@@ -901,10 +924,11 @@ class LocationViewModelTest {
             val pausedFlow = pausedField.get(vm) as MutableStateFlow<Set<String>>
             pausedFlow.value = emptySet()
 
-            every { store.listFriends() } returns emptyList()
+            io.mockk.coEvery { store.listFriends() } returns emptyList()
 
             // Call removeFriend
             vm.removeFriend(friendId)
+            advanceUntilIdle()
 
             // Verify cleanup (paused branch not taken, but cleanup still happens)
             assertEquals(0, vm.friends.value.size)
@@ -919,6 +943,9 @@ class LocationViewModelTest {
             var currentTime = 1_000_000_000L
             val store = mockk<E2eeStore>(relaxed = true)
 
+            // Mock listFriends() to return empty list during init()
+            io.mockk.coEvery { store.listFriends() } returns emptyList()
+
             viewModel =
                 LocationViewModel(
                     app,
@@ -929,14 +956,38 @@ class LocationViewModelTest {
                     locationSource = FakeLocationSource(),
                 )
             val vm = viewModel!!
+            advanceUntilIdle() // Let init() block complete
 
-            val aliceId = "alice"
-            val bobId = "bob"
-            val charlieId = "charlie"
+            val alice =
+                FriendEntry(
+                    name = "Alice",
+                    session =
+                        mockk(relaxed = true) {
+                            every { aliceFp } returns byteArrayOf(0, 1)
+                        },
+                )
+            val bob =
+                FriendEntry(
+                    name = "Bob",
+                    session =
+                        mockk(relaxed = true) {
+                            every { aliceFp } returns byteArrayOf(2, 3)
+                        },
+                )
+            val charlie =
+                FriendEntry(
+                    name = "Charlie",
+                    session =
+                        mockk(relaxed = true) {
+                            every { aliceFp } returns byteArrayOf(4, 5)
+                        },
+                )
 
-            val alice = FriendEntry(name = "Alice", session = mockk(relaxed = true))
-            val bob = FriendEntry(name = "Bob", session = mockk(relaxed = true))
-            val charlie = FriendEntry(name = "Charlie", session = mockk(relaxed = true))
+            // Mock the ID explicitly to match what FriendEntry.id returns based on the session
+            // The hex string for [0, 1] is "0001"
+            val aliceId = alice.id
+            val bobId = bob.id
+            val charlieId = charlie.id
 
             // Inject multiple friends
             val friendsField = LocationViewModel::class.java.getDeclaredField("_friends")
@@ -947,10 +998,11 @@ class LocationViewModelTest {
 
             vm.friendLocations.value =
                 mapOf(
-                    aliceId to UserLocation(aliceId, 1.0, 2.0, 1000L),
-                    bobId to UserLocation(bobId, 3.0, 4.0, 2000L),
-                    charlieId to UserLocation(charlieId, 5.0, 6.0, 3000L),
+                    alice.id to UserLocation(alice.id, 1.0, 2.0, 1000L),
+                    bob.id to UserLocation(bob.id, 3.0, 4.0, 2000L),
+                    charlie.id to UserLocation(charlie.id, 5.0, 6.0, 3000L),
                 )
+            println("Initial friendLocations: ${vm.friendLocations.value}") // Added logging
 
             val pausedField = LocationViewModel::class.java.getDeclaredField("_pausedFriendIds")
             pausedField.isAccessible = true
@@ -958,20 +1010,23 @@ class LocationViewModelTest {
             val pausedFlow = pausedField.get(vm) as MutableStateFlow<Set<String>>
             pausedFlow.value = setOf(aliceId, bobId)
 
-            // Mock store to return two friends after removing bob
-            every { store.listFriends() } returns listOf(alice, charlie)
+            // Update mock to return two friends after removing bob
+            io.mockk.coEvery { store.listFriends() } returns listOf(alice, charlie)
 
             // Remove bob
-            vm.removeFriend(bobId)
+            vm.removeFriend(bob.id)
+            advanceUntilIdle()
+
+            println("After removing friend, friendLocations: ${vm.friendLocations.value}") // Added logging
 
             // Verify bob is removed but others remain
             assertEquals(2, vm.friends.value.size, "Should have 2 friends after removing bob")
             assertEquals(2, vm.friendLocations.value.size, "Should have 2 locations after removing bob")
             assertEquals(1, vm.pausedFriendIds.value.size, "Should have 1 paused friend after removing bob")
 
-            assertFalse(bobId in vm.friends.value.map { it.name }, "Bob should not be in friends")
-            assertFalse(bobId in vm.friendLocations.value.keys, "Bob should not be in locations")
-            assertFalse(bobId in vm.pausedFriendIds.value, "Bob should not be paused")
+            assertFalse(bob.id in vm.friends.value.map { it.id }, "Bob should not be in friends")
+            assertFalse(bob.id in vm.friendLocations.value.keys, "Bob should not be in locations")
+            assertFalse(bob.id in vm.pausedFriendIds.value, "Bob should not be paused")
 
             assertTrue(aliceId in vm.pausedFriendIds.value, "Alice should still be paused")
             assertTrue(charlieId in vm.friendLocations.value.keys, "Charlie should still be in locations")
