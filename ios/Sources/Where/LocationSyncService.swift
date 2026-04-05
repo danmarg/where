@@ -96,12 +96,12 @@ private func pollMailbox(token: String) async throws -> [[String: Any]] {
 
 // MARK: - LocationSyncService
 
-enum ConnectionStatus {
+enum ConnectionStatus: Sendable {
     case ok
     case error(message: String)
 }
 
-enum InviteState {
+enum InviteState: Sendable {
     case none
     case pending(Shared.QrPayload)
     case consumed(Shared.QrPayload)
@@ -142,11 +142,11 @@ final class LocationSyncService: ObservableObject {
     var pendingForcedSendAfterPairing: Bool = false
     private var currentSendTask: Task<Void, Never>? = nil
 
-    // Injected for testing
-    var beginBackgroundTask: @Sendable (String, @escaping @Sendable () -> Void) -> UIBackgroundTaskIdentifier = { name, handler in
+    // Injected for testing. Closures are marked Sendable but MainActor-bound for UIBackgroundTask management.
+    var beginBackgroundTask: @MainActor @Sendable (String, @Sendable @escaping () -> Void) -> UIBackgroundTaskIdentifier = { name, handler in
         UIApplication.shared.beginBackgroundTask(withName: name, expirationHandler: handler)
     }
-    var endBackgroundTask: @Sendable (UIBackgroundTaskIdentifier) -> Void = { identifier in
+    var endBackgroundTask: @MainActor @Sendable (UIBackgroundTaskIdentifier) -> Void = { identifier in
         UIApplication.shared.endBackgroundTask(identifier)
     }
 
@@ -323,11 +323,14 @@ final class LocationSyncService: ObservableObject {
             // Re-check isSharingLocation inside Task if needed,
             // but for simplicity we rely on the main-actor throttle check above.
 
-            // Structured background task management
-            let backgroundTask = BackgroundTaskBox(end: self.endBackgroundTask)
-            backgroundTask.identifier = self.beginBackgroundTask("SendLocation") {
+            // Structured background task management. identifiers are assigned on the main actor.
+            let backgroundTask = BackgroundTaskBox(end: { [weak self] id in
+                Task { @MainActor in self?.endBackgroundTask(id) }
+            })
+            let id = await self.beginBackgroundTask("SendLocation") {
                 backgroundTask.end()
             }
+            backgroundTask.identifier = id
 
             guard backgroundTask.identifier != .invalid else {
                 logger.error("Failed to begin background task for SendLocation")
@@ -519,10 +522,14 @@ final class LocationSyncService: ObservableObject {
 
     private func pollAll(updateUi: Bool = true) async {
         logger.debug("Polling for location updates")
-        let backgroundTask = BackgroundTaskBox(end: self.endBackgroundTask)
-        backgroundTask.identifier = self.beginBackgroundTask("PollAll") {
+        // Structured background task management. identifiers are assigned on the main actor.
+        let backgroundTask = BackgroundTaskBox(end: { [weak self] id in
+            Task { @MainActor in self?.endBackgroundTask(id) }
+        })
+        let id = await self.beginBackgroundTask("PollAll") {
             backgroundTask.end()
         }
+        backgroundTask.identifier = id
 
         defer {
             backgroundTask.end()
@@ -609,7 +616,7 @@ final class LocationSyncService: ObservableObject {
         private var _identifier: UIBackgroundTaskIdentifier = .invalid
         private var isEnded = false
         private var isExpired = false
-        private let endOp: (UIBackgroundTaskIdentifier) -> Void
+        private let endOp: @Sendable (UIBackgroundTaskIdentifier) -> Void
 
         var identifier: UIBackgroundTaskIdentifier {
             get {
@@ -634,7 +641,7 @@ final class LocationSyncService: ObservableObject {
             }
         }
 
-        init(end: @escaping (UIBackgroundTaskIdentifier) -> Void) {
+        init(end: @Sendable @escaping (UIBackgroundTaskIdentifier) -> Void) {
             self.endOp = end
         }
 
