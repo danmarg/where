@@ -11,6 +11,7 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -110,6 +111,7 @@ class LocationViewModel(
     val connectionStatus: StateFlow<ConnectionStatus> = _connectionStatus
 
     private val pollingStateInternal = MutableStateFlow(PollingState())
+    private val pollWakeSignal = Channel<Unit>(Channel.CONFLATED)
 
     val visibleUsers: StateFlow<List<UserLocation>> =
         combine(locationSource.lastLocation, _isSharingLocation, friendLocations) { myLoc, sharing, friendLocs ->
@@ -165,6 +167,7 @@ class LocationViewModel(
 
     private fun triggerRapidPoll() {
         pollingStateInternal.update { it.copy(lastRapidPollTrigger = clock()) }
+        pollWakeSignal.trySend(Unit)
     }
 
     internal fun isRapidPolling(): Boolean {
@@ -210,12 +213,15 @@ class LocationViewModel(
         check(Looper.myLooper() == Looper.getMainLooper()) { "removeFriend must be called on the main thread" }
         viewModelScope.launch {
             e2eeStore.deleteFriend(id)
-            _friends.value = e2eeStore.listFriends()
-            friendLocations.value -= id
-            if (id in _pausedFriendIds.value) {
-                val newPaused = _pausedFriendIds.value - id
-                _pausedFriendIds.value = newPaused
-                UserPrefs.setPausedFriends(getApplication(), newPaused)
+            val updatedFriends = e2eeStore.listFriends()
+            withContext(Dispatchers.Main.immediate) {
+                _friends.value = updatedFriends
+                friendLocations.value -= id
+                if (id in _pausedFriendIds.value) {
+                    val newPaused = _pausedFriendIds.value - id
+                    _pausedFriendIds.value = newPaused
+                    UserPrefs.setPausedFriends(getApplication(), newPaused)
+                }
             }
         }
     }
@@ -297,7 +303,13 @@ class LocationViewModel(
                             try {
                                 Log.d(TAG, "confirmQrScan: force-sending location to ${bobEntry.id}")
                                 locationClient.sendLocationToFriend(bobEntry.id, loc.first, loc.second)
-                                pollingStateInternal.update { it.copy(lastSentLat = loc.first, lastSentLng = loc.second, lastSentTime = clock()) }
+                                pollingStateInternal.update {
+                                    it.copy(
+                                        lastSentLat = loc.first,
+                                        lastSentLng = loc.second,
+                                        lastSentTime = clock(),
+                                    )
+                                }
                             } catch (e: Exception) {
                                 Log.e(TAG, "confirmQrScan: force send failed", e)
                                 updateStatus(e)
@@ -317,7 +329,13 @@ class LocationViewModel(
                                 try {
                                     Log.d(TAG, "confirmQrScan: deferred force-send to ${bobEntry.id}")
                                     locationClient.sendLocationToFriend(bobEntry.id, lat, lng)
-                                    pollingStateInternal.update { it.copy(lastSentLat = lat, lastSentLng = lng, lastSentTime = clock()) }
+                                    pollingStateInternal.update {
+                                        it.copy(
+                                            lastSentLat = lat,
+                                            lastSentLng = lng,
+                                            lastSentTime = clock(),
+                                        )
+                                    }
                                 } catch (e: Exception) {
                                     Log.e(TAG, "confirmQrScan: deferred force send failed", e)
                                     updateStatus(e)
@@ -358,17 +376,20 @@ class LocationViewModel(
                 if (entry != null) {
                     Log.d(TAG, "confirmPendingInit: processKeyExchangeInit succeeded, friendId=${entry.id}")
                     _friends.value = e2eeStore.listFriends()
+                    triggerRapidPoll()
                     try {
                         // Upload OPK bundle so Bob can decrypt our future location messages.
                         // (Bug 5: this was missing from confirmPendingInit, causing Alice's
                         // encrypted messages to be undecryptable until the next heartbeat.)
                         locationClient.postOpkBundle(entry.id)
+                        Log.d(TAG, "confirmPendingInit: postOpkBundle succeeded")
                         if (_isSharingLocation.value) {
                             val loc = locationSource.lastLocation.value
                             if (loc != null) {
                                 try {
-                                    Log.d(TAG, "confirmPendingInit: force-sending location to ${entry.id}")
+                                    Log.d(TAG, "confirmPendingInit: force-sending location to ${entry.id}: lat=${loc.first}, lng=${loc.second}")
                                     locationClient.sendLocationToFriend(entry.id, loc.first, loc.second)
+                                    Log.d(TAG, "confirmPendingInit: sendLocationToFriend succeeded")
                                     pollingStateInternal.update {
                                         it.copy(
                                             lastSentLat = loc.first,
@@ -393,9 +414,16 @@ class LocationViewModel(
                                 } else {
                                     val (lat, lng) = deferred
                                     try {
-                                        Log.d(TAG, "confirmPendingInit: deferred force-send to ${entry.id}")
+                                        Log.d(TAG, "confirmPendingInit: deferred force-send to ${entry.id}: lat=$lat, lng=$lng")
                                         locationClient.sendLocationToFriend(entry.id, lat, lng)
-                                        pollingStateInternal.update { it.copy(lastSentLat = lat, lastSentLng = lng, lastSentTime = clock()) }
+                                        Log.d(TAG, "confirmPendingInit: deferred sendLocationToFriend succeeded")
+                                        pollingStateInternal.update {
+                                            it.copy(
+                                                lastSentLat = lat,
+                                                lastSentLng = lng,
+                                                lastSentTime = clock(),
+                                            )
+                                        }
                                     } catch (e: Exception) {
                                         Log.e(TAG, "confirmPendingInit: deferred force send failed", e)
                                         updateStatus(e)
@@ -434,16 +462,13 @@ class LocationViewModel(
         while (pollingStateInternal.value.isPolling) {
             val rapid = isRapidPolling()
             doPoll()
-            // Heartbeat: send location to all friends every 5 minutes even without movement.
+            // Heartbeat: ensure we send at least once every 5 minutes when stationary.
             locationSource.lastLocation.value?.let { (lat, lng) ->
                 sendLocationIfNeeded(lat, lng, isHeartbeat = true)
             }
             val interval = if (rapid) 2_000L else 60_000L
-            val steps = (interval / 500L).toInt()
-            for (i in 0 until steps) {
-                if (!pollingStateInternal.value.isPolling) break
-                delay(500)
-                if (!rapid && isRapidPolling()) break
+            withTimeoutOrNull(interval) {
+                pollWakeSignal.receive()
             }
         }
     }
@@ -551,5 +576,20 @@ class LocationViewModel(
         } else if (!sharing) {
             getApplication<Application>().stopService(intent)
         }
+    }
+
+    companion object {
+        val Factory: androidx.lifecycle.ViewModelProvider.Factory =
+            object : androidx.lifecycle.ViewModelProvider.Factory {
+                @Suppress("UNCHECKED_CAST")
+                override fun <T : androidx.lifecycle.ViewModel> create(
+                    modelClass: Class<T>,
+                    extras: androidx.lifecycle.viewmodel.CreationExtras,
+                ): T {
+                    val application =
+                        checkNotNull(extras[androidx.lifecycle.ViewModelProvider.AndroidViewModelFactory.APPLICATION_KEY])
+                    return LocationViewModel(application) as T
+                }
+            }
     }
 }
