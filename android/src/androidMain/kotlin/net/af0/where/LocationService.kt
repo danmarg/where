@@ -35,13 +35,13 @@ class LocationService : Service() {
             object : LocationCallback() {
                 override fun onLocationResult(result: LocationResult) {
                     val loc = result.lastLocation ?: return
-                    LocationRepository.onLocation(loc.latitude, loc.longitude)
+                    locationSource.onLocation(loc.latitude, loc.longitude)
                 }
             }
 
         try {
             fusedClient.lastLocation.addOnSuccessListener { loc ->
-                if (loc != null) LocationRepository.onLocation(loc.latitude, loc.longitude)
+                if (loc != null) locationSource.onLocation(loc.latitude, loc.longitude)
             }
         } catch (_: SecurityException) {
         }
@@ -106,6 +106,9 @@ class LocationService : Service() {
             .build()
 
     companion object {
+        /** Overridable in tests; defaults to the production singleton. */
+        var locationSource: LocationSource = LocationRepository
+
         private const val CHANNEL_ID = "where_location"
         private const val NOTIFICATION_ID = 1
     }
