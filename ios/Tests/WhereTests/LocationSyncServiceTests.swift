@@ -1,6 +1,7 @@
 import XCTest
 import Combine
 import UIKit
+@preconcurrency import Shared
 @testable import Where
 
 class LocationSyncServiceTests: XCTestCase {
@@ -51,7 +52,7 @@ class LocationSyncServiceTests: XCTestCase {
     }
 
     class MockLocationClient: Shared.LocationClient, @unchecked Sendable {
-        var sendLocationCallback: (() -> Void)?
+        var sendLocationCallback: (@Sendable () -> Void)?
         override func sendLocation(lat: Double, lng: Double, pausedFriendIds: Set<String>) async throws {
             sendLocationCallback?()
         }
@@ -73,24 +74,58 @@ class LocationSyncServiceTests: XCTestCase {
     }
 
     @MainActor
-    func testBackgroundTaskExpiry() {
-        var expiryHandler: (() -> Void)?
-        var endCalled = false
+    func testBackgroundTaskExpiry() async {
+        let expiryHandlerBox = ExpiryHandlerBox()
+        let endCalledBox = EndCalledBox()
 
         service.beginBackgroundTask = { name, handler in
-            expiryHandler = handler
+            expiryHandlerBox.setHandler(handler)
             return .init(rawValue: 123)
         }
         service.endBackgroundTask = { id in
             if id.rawValue == 123 {
-                endCalled = true
+                endCalledBox.setCalled()
             }
         }
 
         service.sendLocation(lat: 0, lng: 0, force: true)
 
-        XCTAssertNotNil(expiryHandler)
-        expiryHandler?()
-        XCTAssertTrue(endCalled)
+        // Wait a bit for the task to start
+        try? await Task.sleep(nanoseconds: 100_000_000)
+
+        let handler = expiryHandlerBox.getHandler()
+        XCTAssertNotNil(handler)
+        handler?()
+        XCTAssertTrue(endCalledBox.getCalled())
+    }
+
+    private final class ExpiryHandlerBox: @unchecked Sendable {
+        private let lock = NSLock()
+        private var handler: (@Sendable () -> Void)?
+        func setHandler(_ h: @Sendable @escaping () -> Void) {
+            lock.lock()
+            defer { lock.unlock() }
+            handler = h
+        }
+        func getHandler() -> (@Sendable () -> Void)? {
+            lock.lock()
+            defer { lock.unlock() }
+            return handler
+        }
+    }
+
+    private final class EndCalledBox: @unchecked Sendable {
+        private let lock = NSLock()
+        private var called = false
+        func setCalled() {
+            lock.lock()
+            defer { lock.unlock() }
+            called = true
+        }
+        func getCalled() -> Bool {
+            lock.lock()
+            defer { lock.unlock() }
+            return called
+        }
     }
 }
