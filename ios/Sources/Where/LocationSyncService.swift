@@ -1,5 +1,5 @@
 import Foundation
-import Shared
+@preconcurrency import Shared
 import os
 import UIKit
 import CoreLocation
@@ -96,12 +96,12 @@ private func pollMailbox(token: String) async throws -> [[String: Any]] {
 
 // MARK: - LocationSyncService
 
-enum ConnectionStatus {
+enum ConnectionStatus: Sendable {
     case ok
     case error(message: String)
 }
 
-enum InviteState {
+enum InviteState: Sendable {
     case none
     case pending(Shared.QrPayload)
     case consumed(Shared.QrPayload)
@@ -133,12 +133,27 @@ final class LocationSyncService: ObservableObject {
     var isInviteActive: Bool { if case .pending = inviteState { return true } else { return false } }
 
     private var lastRapidPollTrigger: Date = Date(timeIntervalSince1970: 0)
+    private let pollSignals: AsyncStream<Void>
+    private let pollSignalContinuation: AsyncStream<Void>.Continuation
     private var visibleUsersCancellables = Set<AnyCancellable>()
 
     private var lastSentLocation: (lat: Double, lng: Double)? = nil
     private var lastSentTime: Date = Date(timeIntervalSince1970: 0)
-    private var isSending: Bool = false
     var pendingForcedSendAfterPairing: Bool = false
+    private var currentSendTask: Task<Void, Never>? = nil
+
+    // Injected for testing. Closures are @Sendable and use MainActor.assumeIsolated internally
+    // to interact with UIApplication.shared, which is required for background tasks in Swift 6.
+    var beginBackgroundTask: @Sendable (String, @Sendable @escaping () -> Void) -> UIBackgroundTaskIdentifier = { name, handler in
+        MainActor.assumeIsolated {
+            UIApplication.shared.beginBackgroundTask(withName: name, expirationHandler: handler)
+        }
+    }
+    var endBackgroundTask: @Sendable (UIBackgroundTaskIdentifier) -> Void = { identifier in
+        MainActor.assumeIsolated {
+            UIApplication.shared.endBackgroundTask(identifier)
+        }
+    }
 
     let e2eeStore: Shared.E2eeStore
     let locationClient: Shared.LocationClient
@@ -153,12 +168,18 @@ final class LocationSyncService: ObservableObject {
     }()
 
     deinit {
-        stopPolling()
+        let task = pollTask
+        task?.cancel()
     }
 
     init(e2eeStore: Shared.E2eeStore? = nil, locationClient: Shared.LocationClient? = nil) {
         logger.debug("LocationSyncService init: serverUrl=\(ServerConfig.httpBaseUrl)")
-        let store = e2eeStore ?? Shared.E2eeStore(storage: UserDefaultsE2eeStorage())
+
+        let (stream, continuation) = AsyncStream<Void>.makeStream()
+        self.pollSignals = stream
+        self.pollSignalContinuation = continuation
+
+        let store = e2eeStore ?? Shared.E2eeStore(storage: KeychainE2eeStorage())
         self.e2eeStore = store
         self.locationClient = locationClient ?? Shared.LocationClient(baseUrl: ServerConfig.httpBaseUrl, store: store)
 
@@ -170,19 +191,23 @@ final class LocationSyncService: ObservableObject {
         let savedPaused = UserDefaults.standard.stringArray(forKey: "paused_friends") ?? []
         pausedFriendIds = Set(savedPaused)
 
-        Task {
-            friends = e2eeStore.listFriends()
-            var initialLocations: [String: (lat: Double, lng: Double, ts: Int64)] = [:]
-            var initialLastPing: [String: Date] = [:]
-            for friend in friends {
-                if let lat = friend.lastLat?.doubleValue, let lng = friend.lastLng?.doubleValue, let ts = friend.lastTs?.int64Value {
-                    initialLocations[friend.id] = (lat: lat, lng: lng, ts: ts)
-                    initialLastPing[friend.id] = Date(timeIntervalSince1970: TimeInterval(ts))
+        Task { @MainActor in
+            do {
+                self.friends = try await store.listFriends()
+                var initialLocations: [String: (lat: Double, lng: Double, ts: Int64)] = [:]
+                var initialLastPing: [String: Date] = [:]
+                for friend in self.friends {
+                    if let lat = friend.lastLat?.doubleValue, let lng = friend.lastLng?.doubleValue, let ts = friend.lastTs?.int64Value {
+                        initialLocations[friend.id] = (lat: lat, lng: lng, ts: ts)
+                        initialLastPing[friend.id] = Date(timeIntervalSince1970: TimeInterval(ts))
+                    }
                 }
+                self.friendLocations = initialLocations
+                self.friendLastPing = initialLastPing
+                self.updateVisibleUsers()
+            } catch {
+                logger.error("Failed to load initial friends: \(error.localizedDescription)")
             }
-            self.friendLocations = initialLocations
-            self.friendLastPing = initialLastPing
-            self.updateVisibleUsers()
         }
 
         // Subscribe to updates on friendLocations, isSharingLocation, and user location
@@ -196,9 +221,12 @@ final class LocationSyncService: ObservableObject {
         startPolling()
     }
 
-    fileprivate func isRapidPolling() async -> Bool {
+    func isRapidPolling() async -> Bool {
         let now = Date()
-        let isPairing = e2eeStore.pendingQrPayload != nil || pendingInitPayload != nil || pendingQrForNaming != nil
+        // Kotlin suspend functions returning optional types appear as T?? in Swift.
+        // We use ?? nil to flatten them to T?.
+        let pending = try? await e2eeStore.pendingQrPayload()
+        let isPairing = (pending ?? nil) != nil || pendingInitPayload != nil || pendingQrForNaming != nil
         let recentlyTriggered = now.timeIntervalSince(lastRapidPollTrigger) < 5 * 60
         return isPairing || recentlyTriggered
     }
@@ -229,15 +257,29 @@ final class LocationSyncService: ObservableObject {
         // Idempotency guard: do not create a second loop if one is alive.
         if let existing = pollTask, !existing.isCancelled { return }
         pollTask = Task { [weak self] in
+            // Use an iterator to catch all signals, including those during pollAll.
+            // Since this Task inherits MainActor isolation, we can safely access self weakly.
+            guard let signals = self?.pollSignals else { return }
+            let signalIterator = AsyncIteratorBox(signals.makeAsyncIterator())
+
             while !Task.isCancelled {
-                guard let self else { return }
-                await self.pollAll(updateUi: true)
+                // Re-bind self for each loop iteration to prevent retain cycles while ensuring
+                // safety for the duration of the iteration.
+                guard let isolatedSelf = self else { return }
+
+                await isolatedSelf.pollAll(updateUi: true)
                 // Heartbeat: ensure we send at least once every 5 minutes when stationary.
                 if let loc = LocationManager.shared.lastLocation {
-                    self.sendLocation(lat: loc.coordinate.latitude, lng: loc.coordinate.longitude, isHeartbeat: true)
+                    isolatedSelf.sendLocation(lat: loc.coordinate.latitude, lng: loc.coordinate.longitude, isHeartbeat: true)
                 }
-                let interval: UInt64 = (await self.isRapidPolling()) ? 2_000_000_000 : 60_000_000_000
-                try? await Task.sleep(nanoseconds: interval)
+
+                let isRapid = await isolatedSelf.isRapidPolling()
+                let intervalSeconds = isRapid ? 2.0 : 60.0
+
+                // Use the local self for timeout management.
+                try? await isolatedSelf.withTimeout(seconds: intervalSeconds) { @Sendable in
+                    _ = await signalIterator.next()
+                }
             }
         }
     }
@@ -248,20 +290,12 @@ final class LocationSyncService: ObservableObject {
     }
 
     private func triggerRapidPoll() {
-        // Explicit restart: breaks the current sleep so the interval
-        // is re-evaluated immediately.
         lastRapidPollTrigger = Date()
-        pollTask?.cancel()
-        pollTask = nil
-        startPolling()
+        pollSignalContinuation.yield()
     }
 
     @MainActor
     func sendLocation(lat: Double, lng: Double, isHeartbeat: Bool = false, force: Bool = false) {
-        // INVARIANT: This function is synchronous on the main actor. isSending is set to
-        // true before any Task is spawned, so a second main-actor call always sees
-        // isSending == true and exits. The inner Task resets isSending = false on the
-        // main actor after the await. No interleaving is possible while this invariant holds.
         MainActor.assertIsolated()
 
         // pendingForcedSendAfterPairing is read here so the CoreLocation delegate path
@@ -269,9 +303,8 @@ final class LocationSyncService: ObservableObject {
         let effectiveForce = force || pendingForcedSendAfterPairing
         guard isSharingLocation else { return }
 
-        // If already sending, drop the request — unless we're forcing (post-pairing send).
-        // CoreLocation will deliver another update shortly for non-forced calls.
-        if isSending && !effectiveForce { return }
+        // If a task is already in-flight, skip this update unless it's forced.
+        if currentSendTask != nil && !effectiveForce { return }
 
         let now = Date()
         let shouldSend = effectiveForce || lastSentLocation == nil ||
@@ -279,6 +312,11 @@ final class LocationSyncService: ObservableObject {
                         (isHeartbeat && now.timeIntervalSince(lastSentTime) > 5 * 60)
 
         guard shouldSend else { return }
+
+        // Update throttle markers immediately *before* spawning the task to ensure
+        // concurrent triggers are correctly throttled.
+        lastSentLocation = (lat: lat, lng: lng)
+        lastSentTime = now
 
         // Capture whether the pairing flag contributed before clearing it.
         // We clear optimistically to prevent concurrent forced sends; on failure we restore it.
@@ -288,25 +326,39 @@ final class LocationSyncService: ObservableObject {
         }
 
         logger.debug("Sending location: \(lat), \(lng) (heartbeat=\(isHeartbeat), force=\(force), effectiveForce=\(effectiveForce))")
-        performLocationSend(lat: lat, lng: lng, wasForcedByPairing: wasForcedByPairing)
-    }
 
-    private func performLocationSend(lat: Double, lng: Double, wasForcedByPairing: Bool = false) {
-        isSending = true
-        var backgroundTask = UIBackgroundTaskIdentifier.invalid
-        backgroundTask = UIApplication.shared.beginBackgroundTask(withName: "SendLocation") {
-            if backgroundTask != .invalid {
-                UIApplication.shared.endBackgroundTask(backgroundTask)
-                backgroundTask = .invalid
+        currentSendTask = Task {
+            // Re-check isSharingLocation inside Task if needed,
+            // but for simplicity we rely on the main-actor throttle check above.
+
+            // Capture the end operation closure before entering the BackgroundTaskBox.
+            // This avoids direct self capture in closures that might be called concurrently.
+            let endOp = self.endBackgroundTask
+
+            // Structured background task management.
+            let backgroundTask = BackgroundTaskBox(end: { id in
+                endOp(id)
+            })
+            let id = self.beginBackgroundTask("SendLocation") {
+                backgroundTask.end()
             }
-        }
+            backgroundTask.identifier = id
 
-        Task {
+            guard backgroundTask.identifier != .invalid else {
+                logger.error("Failed to begin background task for SendLocation")
+                return
+            }
+
+            defer {
+                backgroundTask.end()
+                Task { @MainActor in
+                    currentSendTask = nil
+                }
+            }
+
             do {
                 try await locationClient.sendLocation(lat: lat, lng: lng, pausedFriendIds: pausedFriendIds)
                 logger.debug("Location sent successfully")
-                lastSentLocation = (lat: lat, lng: lng)
-                lastSentTime = Date()
                 updateStatus(nil)
             } catch {
                 logger.error("Failed to send location: \(error.localizedDescription)")
@@ -316,25 +368,28 @@ final class LocationSyncService: ObservableObject {
                 }
                 updateStatus(error)
             }
-            isSending = false
-
-            if backgroundTask != .invalid {
-                UIApplication.shared.endBackgroundTask(backgroundTask)
-                backgroundTask = .invalid
-            }
         }
     }
 
-    func createInvite() {
-        let qr = e2eeStore.createInvite(suggestedName: displayName.isEmpty ? "Me" : displayName)
-        debugLog { "Created invite: discovery=\(toHex(qr.discoveryToken()))" }
-        inviteState = .pending(qr)
-        triggerRapidPoll()
+    func createInvite() async {
+        do {
+            let qr = try await e2eeStore.createInvite(suggestedName: displayName.isEmpty ? "Me" : displayName)
+            debugLog { "Created invite: discovery=\(toHex(qr.discoveryToken()))" }
+            inviteState = .pending(qr)
+            triggerRapidPoll()
+        } catch {
+            logger.error("Failed to create invite: \(error.localizedDescription)")
+            updateStatus(error)
+        }
     }
 
-    func clearInvite() {
+    func clearInvite() async {
         if case .pending = inviteState {
-            e2eeStore.clearInvite()
+            do {
+                try await e2eeStore.clearInvite()
+            } catch {
+                logger.error("Failed to clear invite: \(error.localizedDescription)")
+            }
         }
         inviteState = .none
     }
@@ -350,7 +405,7 @@ final class LocationSyncService: ObservableObject {
         return true
     }
 
-    func confirmQrScan(qr: Shared.QrPayload, friendName: String) {
+    func confirmQrScan(qr: Shared.QrPayload, friendName: String) async {
         pendingQrForNaming = nil
         let qrWithName = Shared.QrPayload(
             ekPub: qr.ekPub,
@@ -360,14 +415,14 @@ final class LocationSyncService: ObservableObject {
         debugLog { "Scanning QR: discovery=\(toHex(qrWithName.discoveryToken())), friendName=\(friendName)" }
         isExchanging = true
         triggerRapidPoll()
-        Task {
-            defer { isExchanging = false }
-            let result = e2eeStore.processScannedQr(qr: qrWithName, bobSuggestedName: displayName)
-            guard let initPayload = result.first, let bobEntry = result.second else {
-                logger.error("confirmQrScan: processScannedQr returned nil components")
-                return
-            }
-            friends = e2eeStore.listFriends()
+
+        defer { isExchanging = false }
+        do {
+            let result = try await e2eeStore.processScannedQr(qr: qrWithName, bobSuggestedName: displayName)
+            let initPayload = result.first!
+            let bobEntry = result.second!
+
+            friends = try await e2eeStore.listFriends()
 
             let discoveryHex = toHex(qrWithName.discoveryToken())
             let payload: [String: Any] = [
@@ -403,26 +458,28 @@ final class LocationSyncService: ObservableObject {
                     updateStatus(error)
                 }
             }
+        } catch {
+            logger.error("confirmQrScan failed: \(error.localizedDescription)")
+            updateStatus(error)
         }
     }
 
-    func confirmPendingInit(name: String) {
+    func confirmPendingInit(name: String) async {
         guard let payload = pendingInitPayload else { return }
         pendingInitPayload = nil
         if case .pending = inviteState {
-            e2eeStore.clearInvite()
+            await clearInvite()
         }
         inviteState = .none
         isExchanging = true
         triggerRapidPoll()
-        let entry = try? e2eeStore.processKeyExchangeInit(payload: payload, bobName: name)
-        if entry != nil {
-            friends = e2eeStore.listFriends()
-        }
-        Task {
-            defer { isExchanging = false }
-            if let aliceEntry = entry {
-                try? await locationClient.postOpkBundle(friendId: aliceEntry.id)
+
+        defer { isExchanging = false }
+        do {
+            let result = try await e2eeStore.processKeyExchangeInit(payload: payload, bobName: name)
+            if let entry = result ?? nil {
+                friends = try await e2eeStore.listFriends()
+                try await locationClient.postOpkBundle(friendId: entry.id)
 
                 if let last = LocationManager.shared.lastLocation {
                     self.sendLocation(lat: last.coordinate.latitude, lng: last.coordinate.longitude, force: true)
@@ -432,20 +489,27 @@ final class LocationSyncService: ObservableObject {
                 }
             }
             await pollAll(updateUi: true)
+        } catch {
+            logger.error("confirmPendingInit failed: \(error.localizedDescription)")
+            updateStatus(error)
         }
     }
 
-    func cancelPendingInit() {
+    func cancelPendingInit() async {
         let hasInviteState = if case .none = inviteState { false } else { true }
         guard pendingInitPayload != nil || hasInviteState else { return }
-        e2eeStore.clearInvite()
+        await clearInvite()
         pendingInitPayload = nil
         inviteState = .none
     }
 
-    func renameFriend(id: String, newName: String) {
-        e2eeStore.renameFriend(id: id, newName: newName)
-        friends = e2eeStore.listFriends()
+    func renameFriend(id: String, newName: String) async {
+        do {
+            try await e2eeStore.renameFriend(id: id, newName: newName)
+            friends = try await e2eeStore.listFriends()
+        } catch {
+            logger.error("renameFriend failed: \(error.localizedDescription)")
+        }
     }
 
     func togglePauseFriend(id: String) {
@@ -456,37 +520,41 @@ final class LocationSyncService: ObservableObject {
         }
     }
 
-    func removeFriend(id: String) {
-        e2eeStore.deleteFriend(id: id)
-        friends = e2eeStore.listFriends()
-        friendLocations.removeValue(forKey: id)
-        pausedFriendIds.remove(id)
+    func removeFriend(id: String) async {
+        do {
+            try await e2eeStore.deleteFriend(id: id)
+            friends = try await e2eeStore.listFriends()
+            friendLocations.removeValue(forKey: id)
+            pausedFriendIds.remove(id)
+        } catch {
+            logger.error("removeFriend failed: \(error.localizedDescription)")
+        }
     }
 
     // MARK: - Private polling
 
     private func pollAll(updateUi: Bool = true) async {
         logger.debug("Polling for location updates")
-        var backgroundTask = UIBackgroundTaskIdentifier.invalid
-        // defer guarantees the background task identifier is returned to the OS even if
-        // the enclosing Task is cancelled mid-flight (e.g. by startPolling() restarting).
-        defer {
-            if backgroundTask != .invalid {
-                UIApplication.shared.endBackgroundTask(backgroundTask)
-                backgroundTask = .invalid
-            }
+        // Capture the end operation closure before entering the BackgroundTaskBox.
+        let endOp = self.endBackgroundTask
+
+        // Structured background task management.
+        let backgroundTask = BackgroundTaskBox(end: { id in
+            endOp(id)
+        })
+        let id = self.beginBackgroundTask("PollAll") {
+            backgroundTask.end()
         }
-        backgroundTask = UIApplication.shared.beginBackgroundTask(withName: "PollAll") {
-            if backgroundTask != .invalid {
-                UIApplication.shared.endBackgroundTask(backgroundTask)
-                backgroundTask = .invalid
-            }
+        backgroundTask.identifier = id
+
+        defer {
+            backgroundTask.end()
         }
         do {
             let updates = try await locationClient.poll()
             logger.debug("Got \(updates.count) location updates")
             for update in updates {
-                e2eeStore.updateLastLocation(id: update.userId, lat: update.lat, lng: update.lng, ts: Int64(Date().timeIntervalSince1970))
+                try? await e2eeStore.updateLastLocation(id: update.userId, lat: update.lat, lng: update.lng, ts: Int64(Date().timeIntervalSince1970))
                 friendLocations[update.userId] = (lat: update.lat, lng: update.lng, ts: update.timestamp)
                 friendLastPing[update.userId] = Date()
             }
@@ -501,7 +569,8 @@ final class LocationSyncService: ObservableObject {
     }
 
     private func pollPendingInvite() async {
-        guard let qr = e2eeStore.pendingQrPayload else { return }
+        let pending = try? await e2eeStore.pendingQrPayload()
+        guard let qr = pending ?? nil else { return }
         let discoveryHex = toHex(qr.discoveryToken())
         debugLog { "pollPendingInvite: discoveryHex=\(discoveryHex)" }
         let messages: [[String: Any]]
@@ -543,6 +612,88 @@ final class LocationSyncService: ObservableObject {
         }
     }
 
+    private func withTimeout(seconds: Double, body: @Sendable @escaping () async -> Void) async throws {
+        try await withThrowingTaskGroup(of: Void.self) { group in
+            group.addTask {
+                await body()
+            }
+            group.addTask {
+                try await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+                throw CancellationError()
+            }
+            try await group.next()
+            group.cancelAll()
+        }
+    }
+
+    /// Thread-safe wrapper for UIBackgroundTaskIdentifier to prevent races between
+    /// the expiry handler and the normal completion path.
+    private final class BackgroundTaskBox: @unchecked Sendable {
+        private let lock = NSLock()
+        private var _identifier: UIBackgroundTaskIdentifier = .invalid
+        private var isEnded = false
+        private var isExpired = false
+        private let endOp: @Sendable (UIBackgroundTaskIdentifier) -> Void
+
+        var identifier: UIBackgroundTaskIdentifier {
+            get {
+                lock.lock()
+                defer { lock.unlock() }
+                return _identifier
+            }
+            set {
+                var idToEnd: UIBackgroundTaskIdentifier = .invalid
+                lock.lock()
+                _identifier = newValue
+                // If the task was already expired by the handler before we even got the ID,
+                // end it immediately.
+                if isExpired && !isEnded && newValue != .invalid {
+                    isEnded = true
+                    idToEnd = newValue
+                }
+                lock.unlock()
+                if idToEnd != .invalid {
+                    endOp(idToEnd)
+                }
+            }
+        }
+
+        init(end: @Sendable @escaping (UIBackgroundTaskIdentifier) -> Void) {
+            self.endOp = end
+        }
+
+        func end() {
+            var idToEnd: UIBackgroundTaskIdentifier = .invalid
+            lock.lock()
+            if !isEnded && _identifier != .invalid {
+                isEnded = true
+                idToEnd = _identifier
+            }
+            isExpired = true
+            lock.unlock()
+
+            if idToEnd != .invalid {
+                endOp(idToEnd)
+            }
+        }
+    }
+
+    /// Wraps `AsyncStream.Iterator` to make it Sendable.
+    ///
+    /// AsyncStream.Iterator is not itself Sendable, so concurrent access to `next()` would be unsafe.
+    /// This wrapper is marked @unchecked Sendable and relies on a single-consumer invariant:
+    /// the iterator must only ever be consumed from a single Task. In this codebase, the iterator
+    /// is exclusively owned by the poll loop Task and never shared across tasks.
+    ///
+    /// **Do not pass this to multiple concurrent Tasks.** Doing so would create a race condition
+    /// on the mutable `iterator` property. If you need to signal multiple consumers, use a
+    /// separate AsyncStream or coordinate through a thread-safe channel instead.
+    private final class AsyncIteratorBox: @unchecked Sendable {
+        private var iterator: AsyncStream<Void>.Iterator
+        init(_ iterator: AsyncStream<Void>.Iterator) { self.iterator = iterator }
+        func next() async -> Void? { await iterator.next() }
+    }
+
     private func updateStatus(_ error: Error?) {
         if let error = error {
             let msg: String
@@ -562,3 +713,14 @@ final class LocationSyncService: ObservableObject {
         }
     }
 }
+
+// MARK: - Sendable extensions for Kotlin types
+
+extension Shared.E2eeStore: @unchecked @retroactive Sendable {}
+extension Shared.QrPayload: @unchecked @retroactive Sendable {}
+extension Shared.FriendEntry: @unchecked @retroactive Sendable {}
+extension Shared.KeyExchangeInitPayload: @unchecked @retroactive Sendable {}
+extension Shared.UserLocation: @unchecked @retroactive Sendable {}
+extension Shared.LocationClient: @unchecked @retroactive Sendable {}
+extension Shared.KotlinPair: @unchecked @retroactive Sendable {}
+extension Shared.LocationPlaintext: @unchecked @retroactive Sendable {}

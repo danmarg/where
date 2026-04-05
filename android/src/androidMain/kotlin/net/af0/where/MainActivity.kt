@@ -33,7 +33,7 @@ import com.journeyapps.barcodescanner.ScanContract
 import com.journeyapps.barcodescanner.ScanOptions
 
 class MainActivity : ComponentActivity() {
-    private val viewModel: LocationViewModel by viewModels()
+    private val viewModel: LocationViewModel by viewModels { LocationViewModel.Factory }
 
     private val scanLauncher =
         registerForActivityResult(ScanContract()) { result ->
@@ -205,7 +205,7 @@ class MainActivity : ComponentActivity() {
                     )
                 }
 
-                pendingInitPayload?.takeIf { inviteState is InviteState.None }?.let { payload ->
+                pendingInitPayload?.let { payload ->
                     var name by remember(payload) { mutableStateOf(payload.suggestedName) }
                     AlertDialog(
                         onDismissRequest = { viewModel.cancelPendingInit() },

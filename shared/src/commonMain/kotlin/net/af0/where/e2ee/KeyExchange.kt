@@ -73,7 +73,8 @@ object KeyExchange {
         val keyConfirmation = buildKeyConfirmation(sk, qr.ekPub, ekB.pub)
         val msg =
             KeyExchangeInitMessage(
-                token = tokenAliceToBob.copyOf(), // Bob sends to Alice's "AliceToBob" inbox for discovery
+                // Bob sends to Alice's "AliceToBob" inbox for discovery
+                token = tokenAliceToBob.copyOf(),
                 ekPub = ekB.pub.copyOf(),
                 keyConfirmation = keyConfirmation,
                 suggestedName = suggestedName,
