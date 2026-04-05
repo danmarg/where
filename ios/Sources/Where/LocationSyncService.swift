@@ -152,11 +152,11 @@ final class LocationSyncService: ObservableObject {
         return id
     }()
 
-    init() {
+    init(e2eeStore: Shared.E2eeStore? = nil, locationClient: Shared.LocationClient? = nil) {
         logger.debug("LocationSyncService init: serverUrl=\(ServerConfig.httpBaseUrl)")
-        let store = Shared.E2eeStore(storage: UserDefaultsE2eeStorage())
+        let store = e2eeStore ?? Shared.E2eeStore(storage: UserDefaultsE2eeStorage())
         self.e2eeStore = store
-        self.locationClient = Shared.LocationClient(baseUrl: ServerConfig.httpBaseUrl, store: store)
+        self.locationClient = locationClient ?? Shared.LocationClient(baseUrl: ServerConfig.httpBaseUrl, store: store)
 
         let savedSharing = UserDefaults.standard.object(forKey: "where_is_sharing")
         isSharingLocation = savedSharing != nil ? UserDefaults.standard.bool(forKey: "where_is_sharing") : true
