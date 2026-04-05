@@ -29,7 +29,11 @@ interface LocationSource {
         lng: Double,
     )
 
-    fun onFriendUpdate(update: UserLocation)
+    fun onFriendUpdate(
+        update: UserLocation,
+        timestamp: Long = System.currentTimeMillis(),
+    )
+
     fun onFriendRemoved(id: String)
     fun onConnectionStatus(status: ConnectionStatus)
     fun onConnectionError(e: Throwable)
@@ -75,9 +79,12 @@ object LocationRepository : LocationSource {
         _lastLocation.update { Pair(lat, lng) }
     }
 
-    override fun onFriendUpdate(update: UserLocation) {
+    override fun onFriendUpdate(
+        update: UserLocation,
+        timestamp: Long,
+    ) {
         _friendLocations.update { it + (update.userId to update) }
-        _friendLastPing.update { it + (update.userId to System.currentTimeMillis()) }
+        _friendLastPing.update { it + (update.userId to timestamp) }
     }
 
     override fun onFriendRemoved(id: String) {
