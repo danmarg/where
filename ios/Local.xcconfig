@@ -1,0 +1,6 @@
+// Local build configuration (not checked in)
+// Used by Xcode when building from the UI
+
+// Optional: override server URL for local testing
+// WHERE_SERVER_HTTP_URL = http://localhost:8080
+DEVELOPMENT_TEAM = REDACTED_TEAM_ID

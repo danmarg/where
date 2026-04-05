@@ -72,7 +72,7 @@ object LocationRepository : LocationSource {
         lat: Double,
         lng: Double,
     ) {
-        _lastLocation.value = Pair(lat, lng)
+        _lastLocation.update { Pair(lat, lng) }
     }
 
     override fun onFriendUpdate(update: UserLocation) {

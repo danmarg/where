@@ -98,7 +98,7 @@ class CryptoPrimitivesVectorTest {
         assertContentEquals(
             aliceShared,
             bobShared,
-            "Shared secrets must match"
+            "Shared secrets must match",
         )
     }
 
