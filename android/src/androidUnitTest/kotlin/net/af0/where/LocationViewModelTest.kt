@@ -4,6 +4,7 @@ import android.app.Application
 import android.content.Context
 import android.content.SharedPreferences
 import android.text.TextUtils
+import app.cash.turbine.turbineScope
 import io.mockk.every
 import io.mockk.mockk
 import io.mockk.mockkStatic
@@ -28,10 +29,6 @@ import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
-import app.cash.turbine.test
-import app.cash.turbine.turbineScope
-import kotlinx.coroutines.flow.collect
-import kotlinx.coroutines.launch
 import org.robolectric.annotation.Config
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
