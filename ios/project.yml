@@ -22,10 +22,8 @@ targets:
       Debug: Local.xcconfig
       Release: Local.xcconfig
     dependencies:
-      - framework: $(SRCROOT)/../shared/build/xcode-frameworks/$(CONFIGURATION)/$(SDK_NAME)/Shared.framework
+      - framework: ../shared/build/XCFrameworks/debug/Shared.xcframework
         embed: false
-        codeSign: false
-        implicit: true
       - framework: Security
         embed: false
       - framework: MapKit
@@ -46,7 +44,6 @@ targets:
         UILaunchScreen: {}
     settings:
       PRODUCT_BUNDLE_IDENTIFIER: net.af0.Where
-      FRAMEWORK_SEARCH_PATHS: $(inherited) $(SRCROOT)/../shared/build/xcode-frameworks/$(CONFIGURATION)/$(SDK_NAME)
       DEVELOPMENT_TEAM: ""
       CODE_SIGN_IDENTITY: Apple Development
       CODE_SIGN_STYLE: Automatic

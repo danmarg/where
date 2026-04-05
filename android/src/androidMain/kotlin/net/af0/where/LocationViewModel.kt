@@ -11,8 +11,8 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -303,7 +303,13 @@ class LocationViewModel(
                             try {
                                 Log.d(TAG, "confirmQrScan: force-sending location to ${bobEntry.id}")
                                 locationClient.sendLocationToFriend(bobEntry.id, loc.first, loc.second)
-                                pollingStateInternal.update { it.copy(lastSentLat = loc.first, lastSentLng = loc.second, lastSentTime = clock()) }
+                                pollingStateInternal.update {
+                                    it.copy(
+                                        lastSentLat = loc.first,
+                                        lastSentLng = loc.second,
+                                        lastSentTime = clock(),
+                                    )
+                                }
                             } catch (e: Exception) {
                                 Log.e(TAG, "confirmQrScan: force send failed", e)
                                 updateStatus(e)
@@ -323,7 +329,13 @@ class LocationViewModel(
                                 try {
                                     Log.d(TAG, "confirmQrScan: deferred force-send to ${bobEntry.id}")
                                     locationClient.sendLocationToFriend(bobEntry.id, lat, lng)
-                                    pollingStateInternal.update { it.copy(lastSentLat = lat, lastSentLng = lng, lastSentTime = clock()) }
+                                    pollingStateInternal.update {
+                                        it.copy(
+                                            lastSentLat = lat,
+                                            lastSentLng = lng,
+                                            lastSentTime = clock(),
+                                        )
+                                    }
                                 } catch (e: Exception) {
                                     Log.e(TAG, "confirmQrScan: deferred force send failed", e)
                                     updateStatus(e)
@@ -401,7 +413,13 @@ class LocationViewModel(
                                     try {
                                         Log.d(TAG, "confirmPendingInit: deferred force-send to ${entry.id}")
                                         locationClient.sendLocationToFriend(entry.id, lat, lng)
-                                        pollingStateInternal.update { it.copy(lastSentLat = lat, lastSentLng = lng, lastSentTime = clock()) }
+                                        pollingStateInternal.update {
+                                            it.copy(
+                                                lastSentLat = lat,
+                                                lastSentLng = lng,
+                                                lastSentTime = clock(),
+                                            )
+                                        }
                                     } catch (e: Exception) {
                                         Log.e(TAG, "confirmPendingInit: deferred force send failed", e)
                                         updateStatus(e)
