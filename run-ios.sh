@@ -48,6 +48,9 @@ fi
 # Open Simulator.app so the window appears
 open -a Simulator
 
+echo "Building Shared XCFramework..."
+run ./gradlew :shared:assembleSharedXCFramework
+
 echo "Building iOS app..."
 if ! run xcodebuild \
   -project ios/Where.xcodeproj \

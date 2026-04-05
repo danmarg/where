@@ -573,4 +573,19 @@ class LocationViewModel(
             getApplication<Application>().stopService(intent)
         }
     }
+
+    companion object {
+        val Factory: androidx.lifecycle.ViewModelProvider.Factory =
+            object : androidx.lifecycle.ViewModelProvider.Factory {
+                @Suppress("UNCHECKED_CAST")
+                override fun <T : androidx.lifecycle.ViewModel> create(
+                    modelClass: Class<T>,
+                    extras: androidx.lifecycle.viewmodel.CreationExtras,
+                ): T {
+                    val application =
+                        checkNotNull(extras[androidx.lifecycle.ViewModelProvider.AndroidViewModelFactory.APPLICATION_KEY])
+                    return LocationViewModel(application) as T
+                }
+            }
+    }
 }
