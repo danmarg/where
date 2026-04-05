@@ -168,6 +168,7 @@ struct ContentView: View {
             get: { (syncService.pendingQrForNaming != nil || syncService.pendingInitPayload != nil) && !syncService.isInviteActive },
             set: { if !$0 {
                 syncService.pendingQrForNaming = nil
+                syncService.pendingInitPayload = nil
                 Task { await syncService.cancelPendingInit() }
                 newFriendName = ""
             } }
@@ -176,18 +177,21 @@ struct ContentView: View {
             if let qr = syncService.pendingQrForNaming {
                 Button("Add") {
                     let name = newFriendName.isEmpty ? "Friend" : newFriendName
-                    Task { await syncService.confirmQrScan(qr: qr, friendName: name) }
+                    syncService.pendingQrForNaming = nil
                     newFriendName = ""
+                    Task { await syncService.confirmQrScan(qr: qr, friendName: name) }
                 }
             } else if syncService.pendingInitPayload != nil {
                 Button("Save") {
                     let name = newFriendName.isEmpty ? "Friend" : newFriendName
-                    Task { await syncService.confirmPendingInit(name: name) }
+                    syncService.pendingInitPayload = nil
                     newFriendName = ""
+                    Task { await syncService.confirmPendingInit(name: name) }
                 }
             }
             Button("Cancel", role: .cancel) {
                 syncService.pendingQrForNaming = nil
+                syncService.pendingInitPayload = nil
                 Task { await syncService.cancelPendingInit() }
                 newFriendName = ""
             }

@@ -376,17 +376,20 @@ class LocationViewModel(
                 if (entry != null) {
                     Log.d(TAG, "confirmPendingInit: processKeyExchangeInit succeeded, friendId=${entry.id}")
                     _friends.value = e2eeStore.listFriends()
+                    triggerRapidPoll()
                     try {
                         // Upload OPK bundle so Bob can decrypt our future location messages.
                         // (Bug 5: this was missing from confirmPendingInit, causing Alice's
                         // encrypted messages to be undecryptable until the next heartbeat.)
                         locationClient.postOpkBundle(entry.id)
+                        Log.d(TAG, "confirmPendingInit: postOpkBundle succeeded")
                         if (_isSharingLocation.value) {
                             val loc = locationSource.lastLocation.value
                             if (loc != null) {
                                 try {
-                                    Log.d(TAG, "confirmPendingInit: force-sending location to ${entry.id}")
+                                    Log.d(TAG, "confirmPendingInit: force-sending location to ${entry.id}: lat=${loc.first}, lng=${loc.second}")
                                     locationClient.sendLocationToFriend(entry.id, loc.first, loc.second)
+                                    Log.d(TAG, "confirmPendingInit: sendLocationToFriend succeeded")
                                     pollingStateInternal.update {
                                         it.copy(
                                             lastSentLat = loc.first,
@@ -411,8 +414,9 @@ class LocationViewModel(
                                 } else {
                                     val (lat, lng) = deferred
                                     try {
-                                        Log.d(TAG, "confirmPendingInit: deferred force-send to ${entry.id}")
+                                        Log.d(TAG, "confirmPendingInit: deferred force-send to ${entry.id}: lat=$lat, lng=$lng")
                                         locationClient.sendLocationToFriend(entry.id, lat, lng)
+                                        Log.d(TAG, "confirmPendingInit: deferred sendLocationToFriend succeeded")
                                         pollingStateInternal.update {
                                             it.copy(
                                                 lastSentLat = lat,
