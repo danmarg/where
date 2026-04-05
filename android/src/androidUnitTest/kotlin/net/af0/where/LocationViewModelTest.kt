@@ -27,6 +27,7 @@ import org.robolectric.annotation.Config
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
+import kotlin.test.assertTrue
 
 @OptIn(ExperimentalCoroutinesApi::class)
 @RunWith(RobolectricTestRunner::class)
@@ -94,7 +95,7 @@ class LocationViewModelTest {
 
             // 1. Create invite
             vm.createInvite()
-            assertNotNull(vm.pendingInviteQr.value)
+            assertTrue(vm.inviteState.value is InviteState.Pending)
             assertNotNull(store.pendingQrPayload)
 
             // 2. Simulate finding an init payload via polling
@@ -113,14 +114,14 @@ class LocationViewModelTest {
             vm.pollPendingInvite()
 
             assertNotNull(vm.pendingInitPayload.value)
-            assertNull(vm.pendingInviteQr.value)
+            assertTrue(vm.inviteState.value is InviteState.Consumed)
             assertEquals("Bob", vm.pendingInitPayload.value?.suggestedName)
 
             // 3. Alice cancels naming Bob
             vm.cancelPendingInit()
 
             assertNull(vm.pendingInitPayload.value)
-            assertNull(vm.pendingInviteQr.value)
+            assertTrue(vm.inviteState.value is InviteState.None)
             assertNull(store.pendingQrPayload, "Store should be cleared when Alice cancels")
         }
 

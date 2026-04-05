@@ -166,10 +166,10 @@ struct ContentView: View {
             .ignoresSafeArea()
         }
         .sheet(isPresented: Binding(
-            get: { syncService.pendingInviteQr != nil },
+            get: { if case .pending = syncService.inviteState { return true } else { return false } },
             set: { if !$0 { syncService.clearInvite() } }
         )) {
-            if let qr = syncService.pendingInviteQr {
+            if case .pending(let qr) = syncService.inviteState {
                 InviteSheet(qrPayload: qr, onDismiss: { syncService.clearInvite() })
             }
         }
