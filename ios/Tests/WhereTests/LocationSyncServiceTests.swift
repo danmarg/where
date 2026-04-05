@@ -4,10 +4,10 @@ import UIKit
 @preconcurrency import Shared
 @testable import Where
 
+@MainActor
 class LocationSyncServiceTests: XCTestCase {
     var service: LocationSyncService!
 
-    @MainActor
     override func setUp() {
         super.setUp()
         service = LocationSyncService(e2eeStore: nil, locationClient: nil)
