@@ -212,11 +212,6 @@ final class LocationSyncService: ObservableObject {
         }
     }
 
-    func stopPolling() {
-        pollTask?.cancel()
-        pollTask = nil
-    }
-
     func sendLocation(lat: Double, lng: Double, isHeartbeat: Bool = false, force: Bool = false) {
         // pendingForcedSendAfterPairing is read here so the CoreLocation delegate path
         // (which calls sendLocation without force) still picks up post-pairing forced sends.
@@ -284,7 +279,6 @@ final class LocationSyncService: ObservableObject {
         debugLog { "Created invite: discovery=\(toHex(qr.discoveryToken()))" }
         inviteState = .pending(qr)
         triggerRapidPoll()
-        startPolling()
     }
 
     func clearInvite() {
@@ -302,14 +296,12 @@ final class LocationSyncService: ObservableObject {
         }
         pendingQrForNaming = qr
         triggerRapidPoll()
-        startPolling()
         return true
     }
 
     func confirmQrScan(qr: Shared.QrPayload, friendName: String) {
         pendingQrForNaming = nil
         lastRapidPollTrigger = Date(timeIntervalSince1970: 0)
-        startPolling()
         let qrWithName = Shared.QrPayload(
             ekPub: qr.ekPub,
             suggestedName: friendName,
@@ -371,7 +363,6 @@ final class LocationSyncService: ObservableObject {
         }
         inviteState = .none
         lastRapidPollTrigger = Date(timeIntervalSince1970: 0)
-        startPolling()
         isExchanging = true
         let entry = try? e2eeStore.processKeyExchangeInit(payload: payload, bobName: name)
         if entry != nil {
@@ -394,7 +385,8 @@ final class LocationSyncService: ObservableObject {
     }
 
     func cancelPendingInit() {
-        guard pendingInitPayload != nil || (if case .none = inviteState { false } else { true }) else { return }
+        let hasInviteState = if case .none = inviteState { false } else { true }
+        guard pendingInitPayload != nil || hasInviteState else { return }
         e2eeStore.clearInvite()
         pendingInitPayload = nil
         inviteState = .none
