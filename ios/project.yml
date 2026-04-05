@@ -28,6 +28,15 @@ targets:
             cd ..
             ./gradlew :shared:assembleSharedXCFramework
           fi
+        inputFilePaths:
+          - ../shared/src
+          - ../gradle
+          - ../build.gradle.kts
+          - ../settings.gradle.kts
+          - ../gradle/libs.versions.toml
+          - ../gradlew
+        outputFilePaths:
+          - ../shared/build/XCFrameworks/debug/Shared.xcframework
     dependencies:
       - framework: ../shared/build/XCFrameworks/debug/Shared.xcframework
         embed: false
