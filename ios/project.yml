@@ -58,3 +58,4 @@ targets:
       - target: Where
     settings:
       PRODUCT_BUNDLE_IDENTIFIER: net.af0.WhereTests
+      GENERATE_INFOPLIST_FILE: YES

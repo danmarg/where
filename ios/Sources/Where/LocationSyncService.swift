@@ -330,7 +330,9 @@ final class LocationSyncService: ObservableObject {
 
             defer {
                 backgroundTask.end()
-                currentSendTask = nil
+                Task { @MainActor in
+                    currentSendTask = nil
+                }
             }
 
             do {
@@ -592,6 +594,8 @@ final class LocationSyncService: ObservableObject {
                 var idToEnd: UIBackgroundTaskIdentifier = .invalid
                 lock.lock()
                 _identifier = newValue
+                // If the task was already expired by the handler before we even got the ID,
+                // end it immediately.
                 if isExpired && !isEnded && newValue != .invalid {
                     isEnded = true
                     idToEnd = newValue
