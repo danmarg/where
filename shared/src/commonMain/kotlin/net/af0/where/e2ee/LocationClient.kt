@@ -11,7 +11,7 @@ import net.af0.where.model.UserLocation
  * @param baseUrl Server base URL (e.g. "http://localhost:8080").
  * @param store   Persistent E2EE state storage.
  */
-class LocationClient(
+open class LocationClient(
     private val baseUrl: String,
     private val store: E2eeStore,
 ) {
@@ -96,7 +96,7 @@ class LocationClient(
      * Encrypt and send a location update to all active (non-paused) friends.
      * Handles automatic epoch rotation if Alice reaches a rotation boundary.
      */
-    suspend fun sendLocation(
+    open suspend fun sendLocation(
         lat: Double,
         lng: Double,
         pausedFriendIds: Set<String> = emptySet(),
