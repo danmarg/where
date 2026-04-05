@@ -1,7 +1,10 @@
 package net.af0.where
 
+import android.Manifest
 import android.app.Application
 import android.content.Intent
+import android.content.pm.PackageManager
+import android.os.Looper
 import android.util.Log
 import androidx.annotation.MainThread
 import androidx.core.content.ContextCompat
@@ -32,10 +35,8 @@ import net.af0.where.model.UserLocation
 
 private const val TAG = "LocationViewModel"
 
-class LocationViewModel(app: Application) : AndroidViewModel(app) {
-    private val locationSource: LocationSource = LocationRepository
-    private val e2eeStore = E2eeStore(SharedPrefsE2eeStorage(app))
-    private val locationClient = LocationClient(BuildConfig.SERVER_HTTP_URL, e2eeStore)
+sealed interface InviteState {
+    object None : InviteState
 
     data class Pending(val qr: QrPayload) : InviteState
 
@@ -84,9 +85,9 @@ class LocationViewModel(
     private val _pausedFriendIds = MutableStateFlow(UserPrefs.getPausedFriends(app))
     val pausedFriendIds: StateFlow<Set<String>> = _pausedFriendIds
 
-    val friendLocations: StateFlow<Map<String, UserLocation>> = locationSource.friendLocations
-    val friendLastPing: StateFlow<Map<String, Long>> = locationSource.friendLastPing
-    val connectionStatus: StateFlow<ConnectionStatus> = locationSource.connectionStatus
+    internal val friendLocations = MutableStateFlow(emptyMap<String, UserLocation>())
+    private val _friendLastPing = MutableStateFlow(emptyMap<String, Long>())
+    val friendLastPing: StateFlow<Map<String, Long>> = _friendLastPing
 
     private val _inviteState = MutableStateFlow<InviteState>(InviteState.None)
     val inviteState: StateFlow<InviteState> = _inviteState
@@ -94,7 +95,14 @@ class LocationViewModel(
     private val _pendingQrForNaming = MutableStateFlow<QrPayload?>(null)
     val pendingQrForNaming: StateFlow<QrPayload?> = _pendingQrForNaming
 
-    val pendingInitPayload: StateFlow<KeyExchangeInitPayload?> = locationSource.pendingInitPayload
+    private val _pendingInitPayload = MutableStateFlow<KeyExchangeInitPayload?>(null)
+    val pendingInitPayload: StateFlow<KeyExchangeInitPayload?> = _pendingInitPayload
+
+    private val _isExchanging = MutableStateFlow(false)
+    val isExchanging: StateFlow<Boolean> = _isExchanging
+
+    private val _connectionStatus = MutableStateFlow<ConnectionStatus>(ConnectionStatus.Ok)
+    val connectionStatus: StateFlow<ConnectionStatus> = _connectionStatus
 
     private val pollingStateInternal = MutableStateFlow(PollingState())
     private val pollWakeSignal = Channel<Unit>(Channel.CONFLATED)
@@ -111,49 +119,44 @@ class LocationViewModel(
 
     init {
         Log.d(TAG, "LocationViewModel init: server=${BuildConfig.SERVER_HTTP_URL}, userId=$userId")
-        val savedFriends = e2eeStore.listFriends()
-        val initialLocations = mutableMapOf<String, UserLocation>()
-        val initialLastPing = mutableMapOf<String, Long>()
-        for (friend in savedFriends) {
-            val lat = friend.lastLat
-            val lng = friend.lastLng
-            val ts = friend.lastTs
-            if (lat != null && lng != null && ts != null) {
-                initialLocations[friend.id] = UserLocation(friend.id, lat, lng, ts)
-                initialLastPing[friend.id] = ts * 1000L
+        viewModelScope.launch {
+            val savedFriends = this@LocationViewModel.e2eeStore.listFriends()
+            _friends.value = savedFriends
+            val initialLocations = mutableMapOf<String, UserLocation>()
+            val initialLastPing = mutableMapOf<String, Long>()
+            for (friend in savedFriends) {
+                val lat = friend.lastLat
+                val lng = friend.lastLng
+                val ts = friend.lastTs
+                if (lat != null && lng != null && ts != null) {
+                    initialLocations[friend.id] = UserLocation(friend.id, lat, lng, ts)
+                    initialLastPing[friend.id] = ts * 1000L
+                }
+            }
+            friendLocations.value = initialLocations
+            _friendLastPing.value = initialLastPing
+        }
+
+        if (startPolling) {
+            viewModelScope.launch { pollLoop() }
+            // Send location whenever FusedLocation delivers a new position.
+            viewModelScope.launch {
+                locationSource.lastLocation.collect { loc ->
+                    if (loc != null && _isSharingLocation.value) {
+                        sendLocationIfNeeded(loc.first, loc.second, isHeartbeat = false)
+                    }
+                }
             }
         }
-        LocationRepository.setInitialFriendLocations(initialLocations, initialLastPing)
-        LocationRepository.setSharingLocation(_isSharingLocation.value)
-        LocationRepository.setPausedFriends(_pausedFriendIds.value)
-
         viewModelScope.launch {
-            var prevSharing = _isSharingLocation.value
             _isSharingLocation.collect { sharing ->
-                LocationRepository.setSharingLocation(sharing)
-                if (prevSharing != sharing) {
-                    manageForegroundService(sharing)
-                }
+                manageForegroundService(sharing)
             }
         }
+    }
 
-        viewModelScope.launch {
-            _pausedFriendIds.collect { ids ->
-                LocationRepository.setPausedFriends(ids)
-            }
-        }
-
-        viewModelScope.launch {
-            pendingInitPayload.collect { payload ->
-                if (payload != null && _pendingInviteQr.value != null) {
-                    autoClearedInvite = true
-                    _pendingInviteQr.value = null
-                }
-            }
-        }
-
-        // Always try to start service on init if sharing is on
-        manageForegroundService(_isSharingLocation.value)
+    fun stopPolling() {
+        pollingStateInternal.update { it.copy(isPolling = false) }
     }
 
     private fun triggerRapidPoll() {
@@ -161,10 +164,10 @@ class LocationViewModel(
         pollWakeSignal.trySend(Unit)
     }
 
-    private fun isRapidPolling(): Boolean {
-        val now = System.currentTimeMillis()
-        val isPairing = _pendingInviteQr.value != null || pendingInitPayload.value != null || _pendingQrForNaming.value != null
-        val recentlyTriggered = now - lastRapidPollTrigger < 5 * 60_000L
+    internal fun isRapidPolling(): Boolean {
+        val now = clock()
+        val isPairing = _inviteState.value is InviteState.Pending || _pendingInitPayload.value != null || _pendingQrForNaming.value != null
+        val recentlyTriggered = now - pollingStateInternal.value.lastRapidPollTrigger < 5 * 60_000L
         return isPairing || recentlyTriggered
     }
 
@@ -201,20 +204,29 @@ class LocationViewModel(
     }
 
     fun removeFriend(id: String) {
-        e2eeStore.deleteFriend(id)
-        _friends.value = e2eeStore.listFriends()
-        LocationRepository.onFriendRemoved(id)
-        if (id in _pausedFriendIds.value) {
-            val newPaused = _pausedFriendIds.value - id
-            _pausedFriendIds.value = newPaused
-            sharingPrefs.edit().putString("paused_friends", newPaused.joinToString(",")).apply()
+        check(Looper.myLooper() == Looper.getMainLooper()) { "removeFriend must be called on the main thread" }
+        viewModelScope.launch {
+            e2eeStore.deleteFriend(id)
+            val updatedFriends = e2eeStore.listFriends()
+            withContext(Dispatchers.Main.immediate) {
+                _friends.value = updatedFriends
+                friendLocations.value -= id
+                if (id in _pausedFriendIds.value) {
+                    val newPaused = _pausedFriendIds.value - id
+                    _pausedFriendIds.value = newPaused
+                    UserPrefs.setPausedFriends(getApplication(), newPaused)
+                }
+            }
         }
     }
 
     fun createInvite() {
-        autoClearedInvite = false
-        _pendingInviteQr.value = e2eeStore.createInvite(_displayName.value.ifEmpty { "Me" })
-        triggerRapidPoll()
+        viewModelScope.launch {
+            val qr = e2eeStore.createInvite(_displayName.value.ifEmpty { "Me" })
+            _inviteState.value = InviteState.Pending(qr)
+            triggerRapidPoll()
+            pollPendingInvite()
+        }
     }
 
     fun clearInvite() {
@@ -224,17 +236,17 @@ class LocationViewModel(
                 e2eeStore.clearInvite()
             }
         }
-        _pendingInviteQr.value = null
-        autoClearedInvite = false
-        LocationRepository.onPendingInit(null)
+        _inviteState.value = InviteState.None
     }
 
     fun processQrUrl(url: String): Boolean {
         Log.d(TAG, "processQrUrl: url=$url")
-        val qr = QrUtils.urlToPayload(url) ?: run {
-            Log.e(TAG, "processQrUrl: failed to parse URL")
-            return false
-        }
+        val qr =
+            QrUtils.urlToPayload(url) ?: run {
+                Log.e(TAG, "processQrUrl: failed to parse URL")
+                return false
+            }
+        Log.d(TAG, "processQrUrl: parsed qr, suggestedName=${qr.suggestedName}")
         _pendingQrForNaming.value = qr
         triggerRapidPoll()
         return true
@@ -244,38 +256,95 @@ class LocationViewModel(
         _pendingQrForNaming.value = null
     }
 
-    fun confirmQrScan(qr: QrPayload, friendName: String) {
+    fun confirmQrScan(
+        qr: QrPayload,
+        friendName: String,
+    ) {
+        Log.d(TAG, "confirmQrScan: friendName=$friendName")
         _pendingQrForNaming.value = null
         pollingStateInternal.update { it.copy(lastRapidPollTrigger = 0L) }
         val qrWithName = qr.copy(suggestedName = friendName)
-        try {
-            val (initPayload, bobEntry) = e2eeStore.processScannedQr(qrWithName, _displayName.value.ifEmpty { "" })
-            _friends.value = e2eeStore.listFriends()
-            viewModelScope.launch {
+        _isExchanging.value = true
+        viewModelScope.launch {
+            try {
+                val (initPayload, bobEntry) = e2eeStore.processScannedQr(qrWithName, _displayName.value.ifEmpty { "" })
+                val sendToken = bobEntry.session.sendToken.toHex()
+                Log.d(
+                    TAG,
+                    "confirmQrScan: processScannedQr succeeded, friendId=${bobEntry.id}, fingerprint=${bobEntry.id.take(
+                        8,
+                    )}, sendToken=$sendToken",
+                )
+                _friends.value = e2eeStore.listFriends()
                 try {
                     val discoveryHex = qrWithName.discoveryToken().toHex()
                     try {
+                        Log.d(TAG, "confirmQrScan: posting KeyExchangeInit, discoveryHex=$discoveryHex")
                         E2eeMailboxClient.post(BuildConfig.SERVER_HTTP_URL, discoveryHex, initPayload)
+                        Log.d(TAG, "confirmQrScan: mailbox post succeeded")
                         delay(500)
                     } catch (e: Exception) {
                         Log.e(TAG, "confirmQrScan: mailbox post failed", e)
-                        LocationRepository.onConnectionError(e)
+                        updateStatus(e)
                         return@launch
                     }
                     locationClient.postOpkBundle(bobEntry.id)
-                    locationSource.lastLocation.value?.let { (lat, lng) ->
-                        locationClient.sendLocationToFriend(bobEntry.id, lat, lng)
+                    if (_isSharingLocation.value) {
+                        // Send our location directly to the new friend without going through the
+                        // service. Using the same locationClient instance avoids ratchet divergence.
+                        val loc = locationSource.lastLocation.value
+                        if (loc != null) {
+                            try {
+                                Log.d(TAG, "confirmQrScan: force-sending location to ${bobEntry.id}")
+                                locationClient.sendLocationToFriend(bobEntry.id, loc.first, loc.second)
+                                pollingStateInternal.update {
+                                    it.copy(
+                                        lastSentLat = loc.first,
+                                        lastSentLng = loc.second,
+                                        lastSentTime = clock(),
+                                    )
+                                }
+                            } catch (e: Exception) {
+                                Log.e(TAG, "confirmQrScan: force send failed", e)
+                                updateStatus(e)
+                            }
+                        } else {
+                            // Location not available yet; wait inline so the outer finally
+                            // covers this path and _isExchanging is always restored.
+                            val deferred =
+                                withTimeoutOrNull(30_000L) {
+                                    locationSource.lastLocation.first { it != null }
+                                }
+                            if (deferred == null) {
+                                Log.e(TAG, "confirmQrScan: timed out waiting for location")
+                                updateStatus(Exception("Location unavailable for initial send"))
+                            } else {
+                                val (lat, lng) = deferred
+                                try {
+                                    Log.d(TAG, "confirmQrScan: deferred force-send to ${bobEntry.id}")
+                                    locationClient.sendLocationToFriend(bobEntry.id, lat, lng)
+                                    pollingStateInternal.update {
+                                        it.copy(
+                                            lastSentLat = lat,
+                                            lastSentLng = lng,
+                                            lastSentTime = clock(),
+                                        )
+                                    }
+                                } catch (e: Exception) {
+                                    Log.e(TAG, "confirmQrScan: deferred force send failed", e)
+                                    updateStatus(e)
+                                }
+                            }
+                        }
                     }
+
                     _friends.value = e2eeStore.listFriends()
-                    // Poll immediately after pairing
-                    val updates = locationClient.poll()
-                    for (update in updates) {
-                        e2eeStore.updateLastLocation(update.userId, update.lat, update.lng, System.currentTimeMillis() / 1000L)
-                        LocationRepository.onFriendUpdate(update)
-                    }
+                    doPoll()
                 } catch (e: Exception) {
                     Log.e(TAG, "confirmQrScan inner failure: ${e.message}")
-                    LocationRepository.onConnectionError(e)
+                    updateStatus(e)
+                } finally {
+                    _isExchanging.value = false
                 }
             } catch (e: Exception) {
                 Log.e(TAG, "confirmQrScan: processScannedQr failed", e)
@@ -285,46 +354,217 @@ class LocationViewModel(
     }
 
     fun confirmPendingInit(name: String) {
-        val payload = pendingInitPayload.value ?: return
-        LocationRepository.onPendingInit(null)
-        _pendingInviteQr.value = null
-        if (!autoClearedInvite) e2eeStore.clearInvite()
-        autoClearedInvite = false
-        triggerRapidPoll()
-        try {
-            val entry = e2eeStore.processKeyExchangeInit(payload, name)
-            if (entry != null) {
-                _friends.value = e2eeStore.listFriends()
-                viewModelScope.launch {
-                    locationSource.lastLocation.value?.let { (lat, lng) ->
-                        locationClient.sendLocationToFriend(entry.id, lat, lng)
-                    }
-                    val updates = locationClient.poll()
-                    for (update in updates) {
-                        e2eeStore.updateLastLocation(update.userId, update.lat, update.lng, System.currentTimeMillis() / 1000L)
-                        LocationRepository.onFriendUpdate(update)
-                    }
+        val payload = _pendingInitPayload.value ?: return
+        Log.d(TAG, "confirmPendingInit: name=$name")
+        _pendingInitPayload.value = null
+        val current = _inviteState.value
+        _inviteState.value = InviteState.None
+        pollingStateInternal.update { it.copy(lastRapidPollTrigger = 0L) }
+        _isExchanging.value = true
+        viewModelScope.launch {
+            try {
+                if (current is InviteState.Pending) {
+                    e2eeStore.clearInvite()
                 }
+                val entry = e2eeStore.processKeyExchangeInit(payload, name)
+                if (entry != null) {
+                    Log.d(TAG, "confirmPendingInit: processKeyExchangeInit succeeded, friendId=${entry.id}")
+                    _friends.value = e2eeStore.listFriends()
+                    triggerRapidPoll()
+                    try {
+                        // Upload OPK bundle so Bob can decrypt our future location messages.
+                        // (Bug 5: this was missing from confirmPendingInit, causing Alice's
+                        // encrypted messages to be undecryptable until the next heartbeat.)
+                        locationClient.postOpkBundle(entry.id)
+                        Log.d(TAG, "confirmPendingInit: postOpkBundle succeeded")
+                        if (_isSharingLocation.value) {
+                            val loc = locationSource.lastLocation.value
+                            if (loc != null) {
+                                try {
+                                    Log.d(TAG, "confirmPendingInit: force-sending location to ${entry.id}: lat=${loc.first}, lng=${loc.second}")
+                                    locationClient.sendLocationToFriend(entry.id, loc.first, loc.second)
+                                    Log.d(TAG, "confirmPendingInit: sendLocationToFriend succeeded")
+                                    pollingStateInternal.update {
+                                        it.copy(
+                                            lastSentLat = loc.first,
+                                            lastSentLng = loc.second,
+                                            lastSentTime = clock(),
+                                        )
+                                    }
+                                } catch (e: Exception) {
+                                    Log.e(TAG, "confirmPendingInit: force send failed", e)
+                                    updateStatus(e)
+                                }
+                            } else {
+                                // Wait inline so the outer finally covers this path and
+                                // _isExchanging is always restored.
+                                val deferred =
+                                    withTimeoutOrNull(30_000L) {
+                                        locationSource.lastLocation.first { it != null }
+                                    }
+                                if (deferred == null) {
+                                    Log.e(TAG, "confirmPendingInit: timed out waiting for location")
+                                    updateStatus(Exception("Location unavailable for initial send"))
+                                } else {
+                                    val (lat, lng) = deferred
+                                    try {
+                                        Log.d(TAG, "confirmPendingInit: deferred force-send to ${entry.id}: lat=$lat, lng=$lng")
+                                        locationClient.sendLocationToFriend(entry.id, lat, lng)
+                                        Log.d(TAG, "confirmPendingInit: deferred sendLocationToFriend succeeded")
+                                        pollingStateInternal.update {
+                                            it.copy(
+                                                lastSentLat = lat,
+                                                lastSentLng = lng,
+                                                lastSentTime = clock(),
+                                            )
+                                        }
+                                    } catch (e: Exception) {
+                                        Log.e(TAG, "confirmPendingInit: deferred force send failed", e)
+                                        updateStatus(e)
+                                    }
+                                }
+                            }
+                        }
+                        doPoll()
+                    } catch (e: Exception) {
+                        Log.e(TAG, "confirmPendingInit: inner failure: ${e.message}")
+                        updateStatus(e)
+                    } finally {
+                        _isExchanging.value = false
+                    }
+                } else {
+                    Log.e(TAG, "confirmPendingInit: processKeyExchangeInit returned null")
+                    _isExchanging.value = false
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "confirmPendingInit: processKeyExchangeInit failed", e)
+                _isExchanging.value = false
             }
         }
     }
 
     fun cancelPendingInit() {
-        if (pendingInitPayload.value == null && _pendingInviteQr.value == null) return
-        if (!autoClearedInvite) e2eeStore.clearInvite()
-        autoClearedInvite = false
-        LocationRepository.onPendingInit(null)
-        _pendingInviteQr.value = null
+        if (_pendingInitPayload.value == null && _inviteState.value == InviteState.None) return
+        viewModelScope.launch {
+            e2eeStore.clearInvite()
+        }
+        _pendingInitPayload.value = null
+        _inviteState.value = InviteState.None
     }
 
+    private suspend fun pollLoop() {
+        while (pollingStateInternal.value.isPolling) {
+            val rapid = isRapidPolling()
+            doPoll()
+            // Heartbeat: ensure we send at least once every 5 minutes when stationary.
+            locationSource.lastLocation.value?.let { (lat, lng) ->
+                sendLocationIfNeeded(lat, lng, isHeartbeat = true)
+            }
+            val interval = if (rapid) 2_000L else 60_000L
+            withTimeoutOrNull(interval) {
+                pollWakeSignal.receive()
+            }
+        }
+    }
+
+    internal suspend fun doPoll() {
+        try {
+            Log.d(TAG, "Polling for location updates")
+            val updates = locationClient.poll()
+            Log.d(TAG, "Got ${updates.size} location updates")
+            // Ensure all StateFlow writes go through the main dispatcher
+            withContext(Dispatchers.Main) {
+                for (update in updates) {
+                    friendLocations.value += (update.userId to update)
+                    val now = clock()
+                    _friendLastPing.value += (update.userId to now)
+                    e2eeStore.updateLastLocation(update.userId, update.lat, update.lng, now / 1000L)
+                }
+                pollPendingInvite()
+                _friends.value = e2eeStore.listFriends()
+                updateStatus(null)
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Poll failed: ${e.message}")
+            updateStatus(e)
+        }
+    }
+
+    internal suspend fun pollPendingInvite() {
+        val qr = e2eeStore.pendingQrPayload() ?: return
+        try {
+            val discoveryHex = qr.discoveryToken().toHex()
+            Log.d(TAG, "pollPendingInvite: polling discoveryHex=$discoveryHex")
+            val messages = E2eeMailboxClient.poll(BuildConfig.SERVER_HTTP_URL, discoveryHex)
+            if (messages.isNotEmpty()) {
+                Log.d(TAG, "pollPendingInvite: got ${messages.size} messages")
+            }
+            updateStatus(null)
+            val initPayload = messages.filterIsInstance<KeyExchangeInitPayload>().firstOrNull() ?: return
+
+            Log.d(TAG, "pollPendingInvite: received KeyExchangeInit from ${initPayload.suggestedName}")
+            val currentQr = (_inviteState.value as? InviteState.Pending)?.qr
+            if (currentQr != null) {
+                _inviteState.value = InviteState.Consumed(currentQr)
+            }
+            _pendingInitPayload.value = initPayload
+        } catch (e: Exception) {
+            updateStatus(e)
+        }
+    }
+
+    // Sends our location to all non-paused friends, subject to throttling.
+    // isHeartbeat=true uses a 5-minute minimum interval (called from poll loop);
+    // isHeartbeat=false uses a 15-second minimum interval (called from location updates).
+    internal suspend fun sendLocationIfNeeded(
+        lat: Double,
+        lng: Double,
+        isHeartbeat: Boolean,
+        force: Boolean = false,
+    ) {
+        if (!_isSharingLocation.value) return
+        val now = clock()
+        val state = pollingStateInternal.value
+        val shouldSend =
+            force || state.lastSentLat == null ||
+                (!isHeartbeat && now - state.lastSentTime > 15_000L) ||
+                (isHeartbeat && now - state.lastSentTime > 300_000L)
+        if (!shouldSend) return
+        try {
+            locationClient.sendLocation(lat, lng, _pausedFriendIds.value)
+            pollingStateInternal.update { it.copy(lastSentLat = lat, lastSentLng = lng, lastSentTime = now) }
+            updateStatus(null)
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to send location: ${e.message}")
+            updateStatus(e)
+        }
+    }
+
+    private fun updateStatus(e: Throwable?) {
+        if (e == null) {
+            _connectionStatus.value = ConnectionStatus.Ok
+        } else {
+            val msg =
+                when {
+                    e.message?.contains("Unable to resolve host", ignoreCase = true) == true -> "not resolved"
+                    e.message?.contains("timeout", ignoreCase = true) == true -> "timeout"
+                    e.message?.contains("ConnectException", ignoreCase = true) == true -> "no connection"
+                    e.message?.contains("Failed to post to mailbox: 500", ignoreCase = true) == true -> "server error 500"
+                    else -> e.message?.take(32) ?: "unknown error"
+                }
+            _connectionStatus.value = ConnectionStatus.Error(msg)
+        }
+    }
+
+    @MainThread
     private fun manageForegroundService(sharing: Boolean) {
         check(Looper.myLooper() == Looper.getMainLooper())
         val intent = Intent(getApplication(), LocationService::class.java)
         val hasLocationPermission =
-            ContextCompat.checkSelfPermission(getApplication(), android.Manifest.permission.ACCESS_FINE_LOCATION) ==
-                android.content.pm.PackageManager.PERMISSION_GRANTED ||
-                ContextCompat.checkSelfPermission(getApplication(), android.Manifest.permission.ACCESS_COARSE_LOCATION) ==
-                android.content.pm.PackageManager.PERMISSION_GRANTED
+            ContextCompat.checkSelfPermission(getApplication(), Manifest.permission.ACCESS_FINE_LOCATION) ==
+                PackageManager.PERMISSION_GRANTED ||
+                ContextCompat.checkSelfPermission(getApplication(), Manifest.permission.ACCESS_COARSE_LOCATION) ==
+                PackageManager.PERMISSION_GRANTED
         if (sharing && hasLocationPermission) {
             getApplication<Application>().startForegroundService(intent)
         } else if (!sharing) {
