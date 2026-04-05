@@ -73,8 +73,7 @@ class LocationViewModel(
 
     val userId: String by lazy { UserPrefs.getUserId(getApplication()) }
 
-    private val _isSharingLocation = MutableStateFlow(UserPrefs.isSharing(app))
-    val isSharingLocation: StateFlow<Boolean> = _isSharingLocation
+    val isSharingLocation: StateFlow<Boolean> = locationSource.isSharingLocation
 
     private val _displayName = MutableStateFlow(UserPrefs.getDisplayName(app))
     val displayName: StateFlow<String> = _displayName
@@ -82,12 +81,10 @@ class LocationViewModel(
     private val _friends = MutableStateFlow(emptyList<FriendEntry>())
     val friends: StateFlow<List<FriendEntry>> = _friends
 
-    private val _pausedFriendIds = MutableStateFlow(UserPrefs.getPausedFriends(app))
-    val pausedFriendIds: StateFlow<Set<String>> = _pausedFriendIds
+    val pausedFriendIds: StateFlow<Set<String>> = locationSource.pausedFriendIds
 
-    internal val friendLocations = MutableStateFlow(emptyMap<String, UserLocation>())
-    private val _friendLastPing = MutableStateFlow(emptyMap<String, Long>())
-    val friendLastPing: StateFlow<Map<String, Long>> = _friendLastPing
+    val friendLocations: StateFlow<Map<String, UserLocation>> = locationSource.friendLocations
+    val friendLastPing: StateFlow<Map<String, Long>> = locationSource.friendLastPing
 
     private val _inviteState = MutableStateFlow<InviteState>(InviteState.None)
     val inviteState: StateFlow<InviteState> = _inviteState
@@ -95,20 +92,18 @@ class LocationViewModel(
     private val _pendingQrForNaming = MutableStateFlow<QrPayload?>(null)
     val pendingQrForNaming: StateFlow<QrPayload?> = _pendingQrForNaming
 
-    private val _pendingInitPayload = MutableStateFlow<KeyExchangeInitPayload?>(null)
-    val pendingInitPayload: StateFlow<KeyExchangeInitPayload?> = _pendingInitPayload
+    val pendingInitPayload: StateFlow<KeyExchangeInitPayload?> = locationSource.pendingInitPayload
 
     private val _isExchanging = MutableStateFlow(false)
     val isExchanging: StateFlow<Boolean> = _isExchanging
 
-    private val _connectionStatus = MutableStateFlow<ConnectionStatus>(ConnectionStatus.Ok)
-    val connectionStatus: StateFlow<ConnectionStatus> = _connectionStatus
+    val connectionStatus: StateFlow<ConnectionStatus> = locationSource.connectionStatus
 
     private val pollingStateInternal = MutableStateFlow(PollingState())
     private val pollWakeSignal = Channel<Unit>(Channel.CONFLATED)
 
     val visibleUsers: StateFlow<List<UserLocation>> =
-        combine(locationSource.lastLocation, _isSharingLocation, friendLocations) { myLoc, sharing, friendLocs ->
+        combine(locationSource.lastLocation, isSharingLocation, friendLocations) { myLoc, sharing, friendLocs ->
             buildList {
                 if (myLoc != null && sharing) {
                     add(UserLocation(userId, myLoc.first, myLoc.second, clock() / 1000))
@@ -133,8 +128,11 @@ class LocationViewModel(
                     initialLastPing[friend.id] = ts * 1000L
                 }
             }
-            friendLocations.value = initialLocations
-            _friendLastPing.value = initialLastPing
+            if (locationSource is LocationRepository) {
+                locationSource.setInitialFriendLocations(initialLocations, initialLastPing)
+            }
+            locationSource.setSharingLocation(UserPrefs.isSharing(app))
+            locationSource.setPausedFriends(UserPrefs.getPausedFriends(app))
         }
 
         if (startPolling) {
@@ -142,14 +140,14 @@ class LocationViewModel(
             // Send location whenever FusedLocation delivers a new position.
             viewModelScope.launch {
                 locationSource.lastLocation.collect { loc ->
-                    if (loc != null && _isSharingLocation.value) {
+                    if (loc != null && isSharingLocation.value) {
                         sendLocationIfNeeded(loc.first, loc.second, isHeartbeat = false)
                     }
                 }
             }
         }
         viewModelScope.launch {
-            _isSharingLocation.collect { sharing ->
+            isSharingLocation.collect { sharing ->
                 manageForegroundService(sharing)
             }
         }
@@ -166,7 +164,7 @@ class LocationViewModel(
 
     internal fun isRapidPolling(): Boolean {
         val now = clock()
-        val isPairing = _inviteState.value is InviteState.Pending || _pendingInitPayload.value != null || _pendingQrForNaming.value != null
+        val isPairing = _inviteState.value is InviteState.Pending || pendingInitPayload.value != null || _pendingQrForNaming.value != null
         val recentlyTriggered = now - pollingStateInternal.value.lastRapidPollTrigger < 5 * 60_000L
         return isPairing || recentlyTriggered
     }
@@ -179,16 +177,16 @@ class LocationViewModel(
 
     fun toggleSharing() {
         check(Looper.myLooper() == Looper.getMainLooper()) { "toggleSharing must be called on the main thread" }
-        val new = !_isSharingLocation.value
-        _isSharingLocation.value = new
+        val new = !isSharingLocation.value
+        locationSource.setSharingLocation(new)
         UserPrefs.setSharing(getApplication(), new)
     }
 
     fun togglePauseFriend(id: String) {
         check(Looper.myLooper() == Looper.getMainLooper()) { "togglePauseFriend must be called on the main thread" }
-        val current = _pausedFriendIds.value
+        val current = pausedFriendIds.value
         val new = if (id in current) current - id else current + id
-        _pausedFriendIds.value = new
+        locationSource.setPausedFriends(new)
         UserPrefs.setPausedFriends(getApplication(), new)
     }
 
@@ -209,13 +207,15 @@ class LocationViewModel(
             e2eeStore.deleteFriend(id)
             val updatedFriends = e2eeStore.listFriends()
             withContext(Dispatchers.Main.immediate) {
-                _friends.value = updatedFriends
-                friendLocations.value -= id
-                if (id in _pausedFriendIds.value) {
-                    val newPaused = _pausedFriendIds.value - id
-                    _pausedFriendIds.value = newPaused
+                val currentPaused = pausedFriendIds.value
+                val newPaused = if (id in currentPaused) currentPaused - id else null
+
+                if (newPaused != null) {
+                    locationSource.setPausedFriends(newPaused)
                     UserPrefs.setPausedFriends(getApplication(), newPaused)
                 }
+                locationSource.onFriendRemoved(id)
+                _friends.value = updatedFriends
             }
         }
     }
@@ -289,7 +289,7 @@ class LocationViewModel(
                         return@launch
                     }
                     locationClient.postOpkBundle(bobEntry.id)
-                    if (_isSharingLocation.value) {
+                    if (isSharingLocation.value) {
                         // Send our location directly to the new friend without going through the
                         // service. Using the same locationClient instance avoids ratchet divergence.
                         val loc = locationSource.lastLocation.value
@@ -354,9 +354,9 @@ class LocationViewModel(
     }
 
     fun confirmPendingInit(name: String) {
-        val payload = _pendingInitPayload.value ?: return
+        val payload = pendingInitPayload.value ?: return
         Log.d(TAG, "confirmPendingInit: name=$name")
-        _pendingInitPayload.value = null
+        locationSource.onPendingInit(null)
         val current = _inviteState.value
         _inviteState.value = InviteState.None
         pollingStateInternal.update { it.copy(lastRapidPollTrigger = 0L) }
@@ -377,7 +377,7 @@ class LocationViewModel(
                         // encrypted messages to be undecryptable until the next heartbeat.)
                         locationClient.postOpkBundle(entry.id)
                         Log.d(TAG, "confirmPendingInit: postOpkBundle succeeded")
-                        if (_isSharingLocation.value) {
+                        if (isSharingLocation.value) {
                             val loc = locationSource.lastLocation.value
                             if (loc != null) {
                                 try {
@@ -444,11 +444,11 @@ class LocationViewModel(
     }
 
     fun cancelPendingInit() {
-        if (_pendingInitPayload.value == null && _inviteState.value == InviteState.None) return
+        if (pendingInitPayload.value == null && _inviteState.value == InviteState.None) return
         viewModelScope.launch {
             e2eeStore.clearInvite()
         }
-        _pendingInitPayload.value = null
+        locationSource.onPendingInit(null)
         _inviteState.value = InviteState.None
     }
 
@@ -475,9 +475,8 @@ class LocationViewModel(
             // Ensure all StateFlow writes go through the main dispatcher
             withContext(Dispatchers.Main) {
                 for (update in updates) {
-                    friendLocations.value += (update.userId to update)
                     val now = clock()
-                    _friendLastPing.value += (update.userId to now)
+                    locationSource.onFriendUpdate(update, now)
                     e2eeStore.updateLastLocation(update.userId, update.lat, update.lng, now / 1000L)
                 }
                 pollPendingInvite()
@@ -507,7 +506,7 @@ class LocationViewModel(
             if (currentQr != null) {
                 _inviteState.value = InviteState.Consumed(currentQr)
             }
-            _pendingInitPayload.value = initPayload
+            locationSource.onPendingInit(initPayload)
         } catch (e: Exception) {
             updateStatus(e)
         }
@@ -522,7 +521,7 @@ class LocationViewModel(
         isHeartbeat: Boolean,
         force: Boolean = false,
     ) {
-        if (!_isSharingLocation.value) return
+        if (!isSharingLocation.value) return
         val now = clock()
         val state = pollingStateInternal.value
         val shouldSend =
@@ -531,7 +530,7 @@ class LocationViewModel(
                 (isHeartbeat && now - state.lastSentTime > 300_000L)
         if (!shouldSend) return
         try {
-            locationClient.sendLocation(lat, lng, _pausedFriendIds.value)
+            locationClient.sendLocation(lat, lng, pausedFriendIds.value)
             pollingStateInternal.update { it.copy(lastSentLat = lat, lastSentLng = lng, lastSentTime = now) }
             updateStatus(null)
         } catch (e: Exception) {
@@ -542,17 +541,9 @@ class LocationViewModel(
 
     private fun updateStatus(e: Throwable?) {
         if (e == null) {
-            _connectionStatus.value = ConnectionStatus.Ok
+            locationSource.onConnectionStatus(ConnectionStatus.Ok)
         } else {
-            val msg =
-                when {
-                    e.message?.contains("Unable to resolve host", ignoreCase = true) == true -> "not resolved"
-                    e.message?.contains("timeout", ignoreCase = true) == true -> "timeout"
-                    e.message?.contains("ConnectException", ignoreCase = true) == true -> "no connection"
-                    e.message?.contains("Failed to post to mailbox: 500", ignoreCase = true) == true -> "server error 500"
-                    else -> e.message?.take(32) ?: "unknown error"
-                }
-            _connectionStatus.value = ConnectionStatus.Error(msg)
+            locationSource.onConnectionError(e)
         }
     }
 
