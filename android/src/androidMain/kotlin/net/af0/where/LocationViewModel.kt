@@ -12,6 +12,7 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -110,6 +111,7 @@ class LocationViewModel(
     val connectionStatus: StateFlow<ConnectionStatus> = _connectionStatus
 
     private val pollingStateInternal = MutableStateFlow(PollingState())
+    private val pollWakeSignal = Channel<Unit>(Channel.CONFLATED)
 
     val visibleUsers: StateFlow<List<UserLocation>> =
         combine(locationSource.lastLocation, _isSharingLocation, friendLocations) { myLoc, sharing, friendLocs ->
@@ -165,6 +167,7 @@ class LocationViewModel(
 
     private fun triggerRapidPoll() {
         pollingStateInternal.update { it.copy(lastRapidPollTrigger = clock()) }
+        pollWakeSignal.trySend(Unit)
     }
 
     internal fun isRapidPolling(): Boolean {
@@ -210,12 +213,15 @@ class LocationViewModel(
         check(Looper.myLooper() == Looper.getMainLooper()) { "removeFriend must be called on the main thread" }
         viewModelScope.launch {
             e2eeStore.deleteFriend(id)
-            _friends.value = e2eeStore.listFriends()
-            friendLocations.value -= id
-            if (id in _pausedFriendIds.value) {
-                val newPaused = _pausedFriendIds.value - id
-                _pausedFriendIds.value = newPaused
-                UserPrefs.setPausedFriends(getApplication(), newPaused)
+            val updatedFriends = e2eeStore.listFriends()
+            withContext(Dispatchers.Main.immediate) {
+                _friends.value = updatedFriends
+                friendLocations.value -= id
+                if (id in _pausedFriendIds.value) {
+                    val newPaused = _pausedFriendIds.value - id
+                    _pausedFriendIds.value = newPaused
+                    UserPrefs.setPausedFriends(getApplication(), newPaused)
+                }
             }
         }
     }
@@ -434,16 +440,13 @@ class LocationViewModel(
         while (pollingStateInternal.value.isPolling) {
             val rapid = isRapidPolling()
             doPoll()
-            // Heartbeat: send location to all friends every 5 minutes even without movement.
+            // Heartbeat: ensure we send at least once every 5 minutes when stationary.
             locationSource.lastLocation.value?.let { (lat, lng) ->
                 sendLocationIfNeeded(lat, lng, isHeartbeat = true)
             }
             val interval = if (rapid) 2_000L else 60_000L
-            val steps = (interval / 500L).toInt()
-            for (i in 0 until steps) {
-                if (!pollingStateInternal.value.isPolling) break
-                delay(500)
-                if (!rapid && isRapidPolling()) break
+            withTimeoutOrNull(interval) {
+                pollWakeSignal.receive()
             }
         }
     }
