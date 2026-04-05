@@ -139,6 +139,7 @@ final class LocationSyncService: ObservableObject {
 
     private var lastSentLocation: (lat: Double, lng: Double)? = nil
     private var lastSentTime: Date = Date(timeIntervalSince1970: 0)
+    var pendingForcedSendAfterPairing: Bool = false
     private var currentSendTask: Task<Void, Never>? = nil
 
     // Injected for testing
@@ -162,7 +163,8 @@ final class LocationSyncService: ObservableObject {
     }()
 
     deinit {
-        stopPolling()
+        let task = pollTask
+        task?.cancel()
     }
 
     init(e2eeStore: Shared.E2eeStore? = nil, locationClient: Shared.LocationClient? = nil) {
