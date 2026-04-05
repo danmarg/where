@@ -13,26 +13,10 @@ struct ContentView: View {
     
     @State private var newFriendName: String = ""
 
-    private var visibleUsers: [Shared.UserLocation] {
-        var result: [Shared.UserLocation] = []
-        if syncService.isSharingLocation, let loc = locationManager.location {
-            result.append(Shared.UserLocation(
-                userId: syncService.myId,
-                lat: loc.coordinate.latitude,
-                lng: loc.coordinate.longitude,
-                timestamp: Int64(Date().timeIntervalSince1970)
-            ))
-        }
-        for (friendId, loc) in syncService.friendLocations {
-            result.append(Shared.UserLocation(userId: friendId, lat: loc.lat, lng: loc.lng, timestamp: loc.ts))
-        }
-        return result
-    }
-
     var body: some View {
         ZStack {
             WhereMapView(
-                users: visibleUsers,
+                users: syncService.visibleUsers,
                 friends: syncService.friends,
                 ownUserId: syncService.myId,
                 zoomTarget: zoomTarget,
