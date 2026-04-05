@@ -172,7 +172,6 @@ final class LocationSyncService: ObservableObject {
         self.pollSignals = stream
         self.pollSignalContinuation = continuation
 
-        // TODO: Implement migration path from UserDefaultsE2eeStorage to KeychainE2eeStorage for existing users.
         let store = e2eeStore ?? Shared.E2eeStore(storage: KeychainE2eeStorage())
         self.e2eeStore = store
         self.locationClient = locationClient ?? Shared.LocationClient(baseUrl: ServerConfig.httpBaseUrl, store: store)
