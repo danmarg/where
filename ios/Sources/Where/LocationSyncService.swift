@@ -192,10 +192,6 @@ final class LocationSyncService: ObservableObject {
         startPolling()
     }
 
-    private func triggerRapidPoll() {
-        lastRapidPollTrigger = Date()
-    }
-
     private func isRapidPolling() async -> Bool {
         let now = Date()
         let isPairing = e2eeStore.pendingQrPayload != nil || pendingInitPayload != nil || pendingQrForNaming != nil
@@ -226,19 +222,29 @@ final class LocationSyncService: ObservableObject {
     // However, when the device is stationary CoreLocation may not fire for extended periods,
     // so the poll loop also triggers a heartbeat send (throttled to 5 minutes by sendLocation).
     func startPolling() {
-        pollTask?.cancel()
+        // Idempotency guard: do not create a second loop if one is alive.
+        if let existing = pollTask, !existing.isCancelled { return }
         pollTask = Task { [weak self] in
             while !Task.isCancelled {
-                let rapid = await self?.isRapidPolling() == true
-                await self?.pollAll(updateUi: true)
+                guard let self else { return }
+                await self.pollAll(updateUi: true)
                 // Heartbeat: ensure we send at least once every 5 minutes when stationary.
                 if let loc = LocationManager.shared.lastLocation {
-                    self?.sendLocation(lat: loc.coordinate.latitude, lng: loc.coordinate.longitude, isHeartbeat: true)
+                    self.sendLocation(lat: loc.coordinate.latitude, lng: loc.coordinate.longitude, isHeartbeat: true)
                 }
-                let interval: UInt64 = rapid ? 2_000_000_000 : 60_000_000_000
+                let interval: UInt64 = (await self.isRapidPolling()) ? 2_000_000_000 : 60_000_000_000
                 try? await Task.sleep(nanoseconds: interval)
             }
         }
+    }
+
+    private func triggerRapidPoll() {
+        // Explicit restart: breaks the current sleep so the interval
+        // is re-evaluated immediately.
+        lastRapidPollTrigger = Date()
+        pollTask?.cancel()
+        pollTask = nil
+        startPolling()
     }
 
     func sendLocation(lat: Double, lng: Double, isHeartbeat: Bool = false, force: Bool = false) {
@@ -330,7 +336,6 @@ final class LocationSyncService: ObservableObject {
 
     func confirmQrScan(qr: Shared.QrPayload, friendName: String) {
         pendingQrForNaming = nil
-        lastRapidPollTrigger = Date(timeIntervalSince1970: 0)
         let qrWithName = Shared.QrPayload(
             ekPub: qr.ekPub,
             suggestedName: friendName,
@@ -338,6 +343,7 @@ final class LocationSyncService: ObservableObject {
         )
         debugLog { "Scanning QR: discovery=\(toHex(qrWithName.discoveryToken())), friendName=\(friendName)" }
         isExchanging = true
+        triggerRapidPoll()
         Task {
             defer { isExchanging = false }
             let result = e2eeStore.processScannedQr(qr: qrWithName, bobSuggestedName: displayName)
@@ -391,8 +397,8 @@ final class LocationSyncService: ObservableObject {
             e2eeStore.clearInvite()
         }
         inviteState = .none
-        lastRapidPollTrigger = Date(timeIntervalSince1970: 0)
         isExchanging = true
+        triggerRapidPoll()
         let entry = try? e2eeStore.processKeyExchangeInit(payload: payload, bobName: name)
         if entry != nil {
             friends = e2eeStore.listFriends()
