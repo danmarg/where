@@ -50,7 +50,7 @@ class LocationSyncServiceTests: XCTestCase {
         XCTAssertEqual(sendCount, 2)
     }
 
-    class MockLocationClient: Shared.LocationClient {
+    class MockLocationClient: Shared.LocationClient, @unchecked Sendable {
         var sendLocationCallback: (() -> Void)?
         override func sendLocation(lat: Double, lng: Double, pausedFriendIds: Set<String>) async throws {
             sendLocationCallback?()
@@ -62,11 +62,11 @@ class LocationSyncServiceTests: XCTestCase {
         let isRapid = await service.isRapidPolling()
         XCTAssertFalse(isRapid)
 
-        service.createInvite()
+        await service.createInvite()
         let isRapidAfterInvite = await service.isRapidPolling()
         XCTAssertTrue(isRapidAfterInvite)
 
-        service.clearInvite()
+        await service.clearInvite()
         // It remains rapid for 5 minutes due to the trigger
         let isRapidAfterClear = await service.isRapidPolling()
         XCTAssertTrue(isRapidAfterClear)

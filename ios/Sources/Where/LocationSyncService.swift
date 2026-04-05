@@ -1,5 +1,5 @@
 import Foundation
-import Shared
+@preconcurrency import Shared
 import os
 import UIKit
 import CoreLocation
@@ -186,19 +186,23 @@ final class LocationSyncService: ObservableObject {
         let savedPaused = UserDefaults.standard.stringArray(forKey: "paused_friends") ?? []
         pausedFriendIds = Set(savedPaused)
 
-        Task {
-            friends = e2eeStore.listFriends()
-            var initialLocations: [String: (lat: Double, lng: Double, ts: Int64)] = [:]
-            var initialLastPing: [String: Date] = [:]
-            for friend in friends {
-                if let lat = friend.lastLat?.doubleValue, let lng = friend.lastLng?.doubleValue, let ts = friend.lastTs?.int64Value {
-                    initialLocations[friend.id] = (lat: lat, lng: lng, ts: ts)
-                    initialLastPing[friend.id] = Date(timeIntervalSince1970: TimeInterval(ts))
+        Task { @MainActor in
+            do {
+                self.friends = try await store.listFriends()
+                var initialLocations: [String: (lat: Double, lng: Double, ts: Int64)] = [:]
+                var initialLastPing: [String: Date] = [:]
+                for friend in self.friends {
+                    if let lat = friend.lastLat?.doubleValue, let lng = friend.lastLng?.doubleValue, let ts = friend.lastTs?.int64Value {
+                        initialLocations[friend.id] = (lat: lat, lng: lng, ts: ts)
+                        initialLastPing[friend.id] = Date(timeIntervalSince1970: TimeInterval(ts))
+                    }
                 }
+                self.friendLocations = initialLocations
+                self.friendLastPing = initialLastPing
+                self.updateVisibleUsers()
+            } catch {
+                logger.error("Failed to load initial friends: \(error.localizedDescription)")
             }
-            self.friendLocations = initialLocations
-            self.friendLastPing = initialLastPing
-            self.updateVisibleUsers()
         }
 
         // Subscribe to updates on friendLocations, isSharingLocation, and user location
@@ -214,7 +218,7 @@ final class LocationSyncService: ObservableObject {
 
     fileprivate func isRapidPolling() async -> Bool {
         let now = Date()
-        let isPairing = e2eeStore.pendingQrPayload != nil || pendingInitPayload != nil || pendingQrForNaming != nil
+        let isPairing = (try? await e2eeStore.pendingQrPayload()) != nil || pendingInitPayload != nil || pendingQrForNaming != nil
         let recentlyTriggered = now.timeIntervalSince(lastRapidPollTrigger) < 5 * 60
         return isPairing || recentlyTriggered
     }
@@ -352,16 +356,25 @@ final class LocationSyncService: ObservableObject {
         }
     }
 
-    func createInvite() {
-        let qr = e2eeStore.createInvite(suggestedName: displayName.isEmpty ? "Me" : displayName)
-        debugLog { "Created invite: discovery=\(toHex(qr.discoveryToken()))" }
-        inviteState = .pending(qr)
-        triggerRapidPoll()
+    func createInvite() async {
+        do {
+            let qr = try await e2eeStore.createInvite(suggestedName: displayName.isEmpty ? "Me" : displayName)
+            debugLog { "Created invite: discovery=\(toHex(qr.discoveryToken()))" }
+            inviteState = .pending(qr)
+            triggerRapidPoll()
+        } catch {
+            logger.error("Failed to create invite: \(error.localizedDescription)")
+            updateStatus(error)
+        }
     }
 
-    func clearInvite() {
+    func clearInvite() async {
         if case .pending = inviteState {
-            e2eeStore.clearInvite()
+            do {
+                try await e2eeStore.clearInvite()
+            } catch {
+                logger.error("Failed to clear invite: \(error.localizedDescription)")
+            }
         }
         inviteState = .none
     }
@@ -377,7 +390,7 @@ final class LocationSyncService: ObservableObject {
         return true
     }
 
-    func confirmQrScan(qr: Shared.QrPayload, friendName: String) {
+    func confirmQrScan(qr: Shared.QrPayload, friendName: String) async {
         pendingQrForNaming = nil
         let qrWithName = Shared.QrPayload(
             ekPub: qr.ekPub,
@@ -387,14 +400,14 @@ final class LocationSyncService: ObservableObject {
         debugLog { "Scanning QR: discovery=\(toHex(qrWithName.discoveryToken())), friendName=\(friendName)" }
         isExchanging = true
         triggerRapidPoll()
-        Task {
-            defer { isExchanging = false }
-            let result = e2eeStore.processScannedQr(qr: qrWithName, bobSuggestedName: displayName)
-            guard let initPayload = result.first, let bobEntry = result.second else {
-                logger.error("confirmQrScan: processScannedQr returned nil components")
-                return
-            }
-            friends = e2eeStore.listFriends()
+
+        defer { isExchanging = false }
+        do {
+            let result = try await e2eeStore.processScannedQr(qr: qrWithName, bobSuggestedName: displayName)
+            let initPayload = result.first!
+            let bobEntry = result.second!
+
+            friends = try await e2eeStore.listFriends()
 
             let discoveryHex = toHex(qrWithName.discoveryToken())
             let payload: [String: Any] = [
@@ -430,26 +443,27 @@ final class LocationSyncService: ObservableObject {
                     updateStatus(error)
                 }
             }
+        } catch {
+            logger.error("confirmQrScan failed: \(error.localizedDescription)")
+            updateStatus(error)
         }
     }
 
-    func confirmPendingInit(name: String) {
+    func confirmPendingInit(name: String) async {
         guard let payload = pendingInitPayload else { return }
         pendingInitPayload = nil
         if case .pending = inviteState {
-            e2eeStore.clearInvite()
+            await clearInvite()
         }
         inviteState = .none
         isExchanging = true
         triggerRapidPoll()
-        let entry = try? e2eeStore.processKeyExchangeInit(payload: payload, bobName: name)
-        if entry != nil {
-            friends = e2eeStore.listFriends()
-        }
-        Task {
-            defer { isExchanging = false }
-            if let aliceEntry = entry {
-                try? await locationClient.postOpkBundle(friendId: aliceEntry.id)
+
+        defer { isExchanging = false }
+        do {
+            if let entry = try await e2eeStore.processKeyExchangeInit(payload: payload, bobName: name) {
+                friends = try await e2eeStore.listFriends()
+                try await locationClient.postOpkBundle(friendId: entry.id)
 
                 if let last = LocationManager.shared.lastLocation {
                     self.sendLocation(lat: last.coordinate.latitude, lng: last.coordinate.longitude, force: true)
@@ -459,20 +473,27 @@ final class LocationSyncService: ObservableObject {
                 }
             }
             await pollAll(updateUi: true)
+        } catch {
+            logger.error("confirmPendingInit failed: \(error.localizedDescription)")
+            updateStatus(error)
         }
     }
 
-    func cancelPendingInit() {
+    func cancelPendingInit() async {
         let hasInviteState = if case .none = inviteState { false } else { true }
         guard pendingInitPayload != nil || hasInviteState else { return }
-        e2eeStore.clearInvite()
+        await clearInvite()
         pendingInitPayload = nil
         inviteState = .none
     }
 
-    func renameFriend(id: String, newName: String) {
-        e2eeStore.renameFriend(id: id, newName: newName)
-        friends = e2eeStore.listFriends()
+    func renameFriend(id: String, newName: String) async {
+        do {
+            try await e2eeStore.renameFriend(id: id, newName: newName)
+            friends = try await e2eeStore.listFriends()
+        } catch {
+            logger.error("renameFriend failed: \(error.localizedDescription)")
+        }
     }
 
     func togglePauseFriend(id: String) {
@@ -483,11 +504,15 @@ final class LocationSyncService: ObservableObject {
         }
     }
 
-    func removeFriend(id: String) {
-        e2eeStore.deleteFriend(id: id)
-        friends = e2eeStore.listFriends()
-        friendLocations.removeValue(forKey: id)
-        pausedFriendIds.remove(id)
+    func removeFriend(id: String) async {
+        do {
+            try await e2eeStore.deleteFriend(id: id)
+            friends = try await e2eeStore.listFriends()
+            friendLocations.removeValue(forKey: id)
+            pausedFriendIds.remove(id)
+        } catch {
+            logger.error("removeFriend failed: \(error.localizedDescription)")
+        }
     }
 
     // MARK: - Private polling
@@ -506,7 +531,7 @@ final class LocationSyncService: ObservableObject {
             let updates = try await locationClient.poll()
             logger.debug("Got \(updates.count) location updates")
             for update in updates {
-                e2eeStore.updateLastLocation(id: update.userId, lat: update.lat, lng: update.lng, ts: Int64(Date().timeIntervalSince1970))
+                try? await e2eeStore.updateLastLocation(id: update.userId, lat: update.lat, lng: update.lng, ts: Int64(Date().timeIntervalSince1970))
                 friendLocations[update.userId] = (lat: update.lat, lng: update.lng, ts: update.timestamp)
                 friendLastPing[update.userId] = Date()
             }
@@ -521,7 +546,7 @@ final class LocationSyncService: ObservableObject {
     }
 
     private func pollPendingInvite() async {
-        guard let qr = e2eeStore.pendingQrPayload else { return }
+        guard let qr = try? await e2eeStore.pendingQrPayload() else { return }
         let discoveryHex = toHex(qr.discoveryToken())
         debugLog { "pollPendingInvite: discoveryHex=\(discoveryHex)" }
         let messages: [[String: Any]]
@@ -648,3 +673,14 @@ final class LocationSyncService: ObservableObject {
         }
     }
 }
+
+// MARK: - Sendable extensions for Kotlin types
+
+extension Shared.E2eeStore: @unchecked Sendable {}
+extension Shared.QrPayload: @unchecked Sendable {}
+extension Shared.FriendEntry: @unchecked Sendable {}
+extension Shared.KeyExchangeInitPayload: @unchecked Sendable {}
+extension Shared.UserLocation: @unchecked Sendable {}
+extension Shared.LocationClient: @unchecked Sendable {}
+extension Shared.KotlinPair: @unchecked Sendable {}
+extension Shared.LocationPlaintext: @unchecked Sendable {}
