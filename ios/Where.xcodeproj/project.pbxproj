@@ -162,6 +162,7 @@
 			isa = PBXNativeTarget;
 			buildConfigurationList = 179750A609FCACFE5552F4E1 /* Build configuration list for PBXNativeTarget "Where" */;
 			buildPhases = (
+				C31542DE418B9D29BD8B6FF7 /* Build Shared XCFramework */,
 				E7ED0F8B6CA06472498EA266 /* Sources */,
 				EFB0479BA721AAE049851BE1 /* Frameworks */,
 			);
@@ -228,6 +229,27 @@
 			);
 		};
 /* End PBXProject section */
+
+/* Begin PBXShellScriptBuildPhase section */
+		C31542DE418B9D29BD8B6FF7 /* Build Shared XCFramework */ = {
+			isa = PBXShellScriptBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+			);
+			name = "Build Shared XCFramework";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "if [ -f \"../gradlew\" ]; then\n  cd ..\n  ./gradlew :shared:assembleSharedXCFramework\nfi\n";
+		};
+/* End PBXShellScriptBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
 		0700B98DBA26A1F319FBEAD1 /* Sources */ = {

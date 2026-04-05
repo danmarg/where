@@ -21,6 +21,13 @@ targets:
     configFiles:
       Debug: Local.xcconfig
       Release: Local.xcconfig
+    preBuildScripts:
+      - name: Build Shared XCFramework
+        script: |
+          if [ -f "../gradlew" ]; then
+            cd ..
+            ./gradlew :shared:assembleSharedXCFramework
+          fi
     dependencies:
       - framework: ../shared/build/XCFrameworks/debug/Shared.xcframework
         embed: false
