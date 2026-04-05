@@ -1,6 +1,6 @@
 package net.af0.where.e2ee
 
-/**
+/*
  * Ratchet KDF functions.
  *
  * KDF_RK – DH ratchet step. Inputs the current root key as HKDF salt and a fresh DH output

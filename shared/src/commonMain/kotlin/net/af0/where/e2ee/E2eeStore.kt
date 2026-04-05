@@ -191,7 +191,8 @@ class E2eeStore(
                 FriendEntry(
                     name = qr.suggestedName,
                     session = session,
-                    isInitiator = false, // Bob scanned Alice's QR
+                    // Bob scanned Alice's QR
+                    isInitiator = false,
                 )
             friends[entry.id] = entry
             save()
@@ -242,7 +243,8 @@ class E2eeStore(
                     FriendEntry(
                         name = bobName,
                         session = session,
-                        isInitiator = true, // Alice created the QR
+                        // Alice created the QR
+                        isInitiator = true,
                     )
                 friends[entry.id] = entry
                 pendingInvite = null
@@ -457,7 +459,8 @@ class E2eeStore(
             friends[friendId] =
                 entry.copy(
                     session = newSession,
-                    theirOpkPubs = entry.theirOpkPubs - opkId, // consume the OPK
+                    // consume the OPK
+                    theirOpkPubs = entry.theirOpkPubs - opkId,
                 )
             save()
 
@@ -551,7 +554,8 @@ class E2eeStore(
             friends[friendId] =
                 entry.copy(
                     session = finalSession,
-                    myOpkPrivs = entry.myOpkPrivs - payload.opkId, // delete consumed OPK
+                    // delete consumed OPK
+                    myOpkPrivs = entry.myOpkPrivs - payload.opkId,
                 )
             save()
 
@@ -763,7 +767,8 @@ class E2eeStore(
                 friends[friendId] =
                     entry.copy(
                         session = finalSession,
-                        myOpkPrivs = entry.myOpkPrivs - msg.opkId, // delete consumed OPK
+                        // delete consumed OPK
+                        myOpkPrivs = entry.myOpkPrivs - msg.opkId,
                     )
                 val rotatedToken = finalSession.sendToken.toHex()
                 outgoing.add(

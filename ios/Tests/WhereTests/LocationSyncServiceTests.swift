@@ -10,11 +10,24 @@ class LocationSyncServiceTests: XCTestCase {
 
     override func setUp() {
         super.setUp()
-        service = LocationSyncService(e2eeStore: nil, locationClient: nil)
+        let store = Shared.E2eeStore(storage: KeychainE2eeStorage())
+        // Since XCTestCase.setUp is nonisolated, but class is @MainActor,
+        // and we are on the Main thread, we use MainActor.run { ... }
+        // BUT we must avoid capturing 'self' in a way that risks races.
+        // XCTest guarantees setUp runs on the main thread, so assumeIsolated is the right tool.
+        // The error before was "sending self risks causing data races" because it was captured 
+        // in a closure passed to an actor-isolated context.
+        
+        MainActor.assumeIsolated {
+            // We use a local helper to avoid direct self capture in the closure if possible,
+            // but we need to set self.service.
+            // Let's try the most direct way again but be careful.
+            let s = LocationSyncService(e2eeStore: store, locationClient: nil)
+            self.service = s
+        }
     }
 
-    @MainActor
-    func testThrottleLogic() async {
+    func testThrottleLogic() async throws {
         let lat = 37.7749
         let lng = -122.4194
 
@@ -30,6 +43,7 @@ class LocationSyncServiceTests: XCTestCase {
 
         // Initial send
         service.sendLocation(lat: lat, lng: lng)
+        
         // Wait for the task to start and increment sendCount
         for _ in 0..<100 {
             if sendCountBox.getCount() == 1 { break }
@@ -58,8 +72,7 @@ class LocationSyncServiceTests: XCTestCase {
         }
     }
 
-    @MainActor
-    func testIsRapidPolling() async {
+    func testIsRapidPolling() async throws {
         let isRapid = await service.isRapidPolling()
         XCTAssertFalse(isRapid)
 
@@ -73,8 +86,7 @@ class LocationSyncServiceTests: XCTestCase {
         XCTAssertTrue(isRapidAfterClear)
     }
 
-    @MainActor
-    func testBackgroundTaskExpiry() async {
+    func testBackgroundTaskExpiry() async throws {
         let expiryHandlerBox = ExpiryHandlerBox()
         let endCalledBox = EndCalledBox()
 
