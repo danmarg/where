@@ -18,7 +18,7 @@ class LocationSyncServiceTests: XCTestCase {
         let lng = -122.4194
 
         var sendCount = 0
-        let store = Shared.E2eeStore(storage: UserDefaultsE2eeStorage())
+        let store = Shared.E2eeStore(storage: KeychainE2eeStorage())
         let mockClient = MockLocationClient(baseUrl: "", store: store)
         mockClient.sendLocationCallback = {
             sendCount += 1
