@@ -143,10 +143,10 @@ final class LocationSyncService: ObservableObject {
     private var currentSendTask: Task<Void, Never>? = nil
 
     // Injected for testing
-    var beginBackgroundTask: (String, @escaping () -> Void) -> UIBackgroundTaskIdentifier = { name, handler in
+    var beginBackgroundTask: @Sendable (String, @escaping @Sendable () -> Void) -> UIBackgroundTaskIdentifier = { name, handler in
         UIApplication.shared.beginBackgroundTask(withName: name, expirationHandler: handler)
     }
-    var endBackgroundTask: (UIBackgroundTaskIdentifier) -> Void = { identifier in
+    var endBackgroundTask: @Sendable (UIBackgroundTaskIdentifier) -> Void = { identifier in
         UIApplication.shared.endBackgroundTask(identifier)
     }
 
@@ -676,11 +676,11 @@ final class LocationSyncService: ObservableObject {
 
 // MARK: - Sendable extensions for Kotlin types
 
-extension Shared.E2eeStore: @unchecked Sendable {}
-extension Shared.QrPayload: @unchecked Sendable {}
-extension Shared.FriendEntry: @unchecked Sendable {}
-extension Shared.KeyExchangeInitPayload: @unchecked Sendable {}
-extension Shared.UserLocation: @unchecked Sendable {}
-extension Shared.LocationClient: @unchecked Sendable {}
-extension Shared.KotlinPair: @unchecked Sendable {}
-extension Shared.LocationPlaintext: @unchecked Sendable {}
+extension Shared.E2eeStore: @unchecked @retroactive Sendable {}
+extension Shared.QrPayload: @unchecked @retroactive Sendable {}
+extension Shared.FriendEntry: @unchecked @retroactive Sendable {}
+extension Shared.KeyExchangeInitPayload: @unchecked @retroactive Sendable {}
+extension Shared.UserLocation: @unchecked @retroactive Sendable {}
+extension Shared.LocationClient: @unchecked @retroactive Sendable {}
+extension Shared.KotlinPair: @unchecked @retroactive Sendable {}
+extension Shared.LocationPlaintext: @unchecked @retroactive Sendable {}
