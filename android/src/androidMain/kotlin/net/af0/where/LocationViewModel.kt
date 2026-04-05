@@ -160,7 +160,7 @@ class LocationViewModel(
         _pollingState.update { it.copy(lastRapidPollTrigger = clock()) }
     }
 
-    private fun isRapidPolling(): Boolean {
+    internal fun isRapidPolling(): Boolean {
         val now = clock()
         val isPairing = _inviteState.value is InviteState.Pending || _pendingInitPayload.value != null || _pendingQrForNaming.value != null
         val recentlyTriggered = now - _pollingState.value.lastRapidPollTrigger < 5 * 60_000L
