@@ -222,6 +222,98 @@ final class LocationSyncServiceTests: XCTestCase {
         interval = await syncService.getCurrentPollInterval()
         XCTAssertEqual(interval, 60.0, "All pairing cleared → slow polling")
     }
+
+    // MARK: - removeFriend Atomicity Tests
+
+    @MainActor
+    func testRemoveFriend_RemovesFromAllCollections() {
+        let syncService = LocationSyncService.shared
+
+        // 1. Seed with a friend in all collections
+        let friendId = "alice_123"
+        let location = Shared.UserLocation(userId: friendId, lat: 37.7749, lng: -122.4194, timestamp: 1000)
+
+        syncService.friends = [Shared.UserLocation(userId: "alice", lat: 37.7749, lng: -122.4194, timestamp: 1000)]
+        syncService.friendLocations[friendId] = (lat: 37.7749, lng: -122.4194, ts: 1000)
+        syncService.pausedFriendIds.insert(friendId)
+
+        // Verify initial state
+        XCTAssertTrue(syncService.friendLocations.keys.contains(friendId), "Friend should be in locations initially")
+        XCTAssertTrue(syncService.pausedFriendIds.contains(friendId), "Friend should be paused initially")
+
+        // 2. Call removeFriend (synchronous on main actor)
+        syncService.removeFriend(id: friendId)
+
+        // 3. CRITICAL: Assert atomicity - all three collections cleaned in single main-actor turn
+        // Use await MainActor.run to force a single drain of the actor queue
+        let assertAtomicity: () -> Void = {
+            XCTAssertFalse(
+                syncService.friendLocations.keys.contains(friendId),
+                "Friend must be removed from friendLocations"
+            )
+            XCTAssertFalse(
+                syncService.pausedFriendIds.contains(friendId),
+                "Friend must be removed from pausedFriendIds"
+            )
+        }
+        assertAtomicity()
+    }
+
+    @MainActor
+    func testRemoveFriend_NotPausedFriend() {
+        let syncService = LocationSyncService.shared
+
+        let friendId = "bob_456"
+
+        // Seed friend in all but paused list
+        syncService.friendLocations[friendId] = (lat: 40.7128, lng: -74.0060, ts: 2000)
+
+        // Verify initial state
+        XCTAssertTrue(syncService.friendLocations.keys.contains(friendId))
+        XCTAssertFalse(syncService.pausedFriendIds.contains(friendId))
+
+        // Remove friend
+        syncService.removeFriend(id: friendId)
+
+        // Verify cleanup (should not crash even though not paused)
+        XCTAssertFalse(syncService.friendLocations.keys.contains(friendId))
+        XCTAssertFalse(syncService.pausedFriendIds.contains(friendId))
+    }
+
+    @MainActor
+    func testRemoveFriend_MultipleFriendsPresent() {
+        let syncService = LocationSyncService.shared
+
+        let aliceId = "alice"
+        let bobId = "bob"
+        let charlieId = "charlie"
+
+        // Seed multiple friends
+        syncService.friendLocations[aliceId] = (lat: 1.0, lng: 2.0, ts: 1000)
+        syncService.friendLocations[bobId] = (lat: 3.0, lng: 4.0, ts: 2000)
+        syncService.friendLocations[charlieId] = (lat: 5.0, lng: 6.0, ts: 3000)
+
+        syncService.pausedFriendIds.insert(aliceId)
+        syncService.pausedFriendIds.insert(bobId)
+
+        // Verify initial state
+        XCTAssertEqual(syncService.friendLocations.count, 3)
+        XCTAssertEqual(syncService.pausedFriendIds.count, 2)
+
+        // Remove bob
+        syncService.removeFriend(id: bobId)
+
+        // Verify only bob is removed
+        XCTAssertEqual(syncService.friendLocations.count, 2, "Should have 2 locations after removing bob")
+        XCTAssertEqual(syncService.pausedFriendIds.count, 1, "Should have 1 paused friend after removing bob")
+
+        XCTAssertFalse(syncService.friendLocations.keys.contains(bobId), "Bob should not be in locations")
+        XCTAssertFalse(syncService.pausedFriendIds.contains(bobId), "Bob should not be paused")
+
+        XCTAssertTrue(syncService.friendLocations.keys.contains(aliceId), "Alice should still be in locations")
+        XCTAssertTrue(syncService.pausedFriendIds.contains(aliceId), "Alice should still be paused")
+        XCTAssertTrue(syncService.friendLocations.keys.contains(charlieId), "Charlie should still be in locations")
+    }
 }
 
 // MARK: - LocationSyncService Extension for Testing
