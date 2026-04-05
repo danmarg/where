@@ -12,11 +12,13 @@ import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.test.StandardTestDispatcher
+import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
 import net.af0.where.e2ee.E2eeStorage
 import net.af0.where.e2ee.E2eeStore
+import net.af0.where.e2ee.FriendEntry
 import net.af0.where.e2ee.KeyExchangeInitPayload
 import net.af0.where.e2ee.LocationClient
 import net.af0.where.e2ee.QrPayload
@@ -36,7 +38,7 @@ import kotlin.test.assertTrue
 /**
  * TestLocationClient records all sendLocation calls for testing throttle behavior.
  */
-private class TestLocationClient(store: E2eeStore) : LocationClient("http://localhost", store) {
+private open class TestLocationClient(store: E2eeStore) : LocationClient("http://localhost", store) {
     data class SendCall(val lat: Double, val lng: Double, val pausedFriendIds: Set<String>)
 
     private val calls = mutableListOf<SendCall>()
@@ -51,6 +53,15 @@ private class TestLocationClient(store: E2eeStore) : LocationClient("http://loca
     override suspend fun sendLocation(lat: Double, lng: Double, pausedFriendIds: Set<String>) {
         calls.add(SendCall(lat, lng, pausedFriendIds))
         // Don't call super - we're mocking
+    }
+}
+
+/**
+ * FailingLocationClient throws on postOpkBundle to test exception handling in finally blocks.
+ */
+private class FailingLocationClient(store: E2eeStore) : TestLocationClient(store) {
+    override suspend fun postOpkBundle(friendId: String) {
+        throw Exception("Simulated postOpkBundle failure")
     }
 }
 
@@ -555,5 +566,208 @@ class LocationViewModelTest {
 
             // Now should stop rapid polling
             assertFalse(vm.isRapidPolling(), "All cleared and 5 min window expired → no rapid polling")
+        }
+
+    // ============ Pairing State Machine Integration Tests ============
+
+    @Test
+    fun testPairingFlow_ConfirmPendingInit() =
+        runTest {
+            var currentTime = 1_000_000_000L
+            val store = mockk<E2eeStore>(relaxed = true)
+            val testClient = TestLocationClient(mockk(relaxed = true))
+            val fakeLocationSource = FakeLocationSource()
+            fakeLocationSource.onLocation(37.7749, -122.4194)
+
+            // Mock the store to return a friend when processKeyExchangeInit is called
+            val newFriend = FriendEntry(
+                name = "Bob",
+                session = mockk(relaxed = true),
+                isInitiator = false,
+                lastLat = null,
+                lastLng = null,
+                lastTs = null,
+            )
+            io.mockk.coEvery { store.processKeyExchangeInit(any(), any()) } returns newFriend
+            every { store.listFriends() } returns listOf(newFriend)
+
+            viewModel =
+                LocationViewModel(
+                    app,
+                    e2eeStore = store,
+                    locationClient = testClient,
+                    startPolling = false,
+                    clock = { currentTime },
+                    locationSource = fakeLocationSource,
+                )
+            val vm = viewModel!!
+
+            // 1. Verify initial state: not exchanging, no pending init
+            assertFalse(vm.isExchanging.value, "Should not be exchanging initially")
+            assertNull(vm.pendingInitPayload.value, "Should have no pending init payload initially")
+
+            // 2. Create a pending init payload (simulating Alice receiving Bob's response during polling)
+            val initPayload =
+                KeyExchangeInitPayload(
+                    v = 1,
+                    token = "test_token",
+                    ekPub = byteArrayOf(1, 2, 3),
+                    keyConfirmation = byteArrayOf(4, 5, 6),
+                    suggestedName = "Bob",
+                )
+            val pendingInitField = LocationViewModel::class.java.getDeclaredField("_pendingInitPayload")
+            pendingInitField.isAccessible = true
+            @Suppress("UNCHECKED_CAST")
+            val pendingInitFlow = pendingInitField.get(vm) as MutableStateFlow<KeyExchangeInitPayload?>
+            pendingInitFlow.value = initPayload
+
+            // Verify pending init is set
+            assertNotNull(vm.pendingInitPayload.value, "Pending init should be set")
+
+            // 3. Call confirmPendingInit - this should trigger state transitions
+            vm.confirmPendingInit(name = "Bob")
+
+            // 4. Immediately after confirmPendingInit call (synchronous part):
+            // - pendingInitPayload should be cleared (synchronously)
+            // - isExchanging should be true (set before async coroutine)
+            assertNull(vm.pendingInitPayload.value, "Pending init should be cleared after confirmPendingInit")
+            assertTrue(vm.isExchanging.value, "isExchanging should be true after confirmPendingInit")
+
+            // 5. Advance the test scheduler to let the viewModelScope coroutine run
+            advanceUntilIdle()
+
+            // 6. After the coroutine completes (including the finally block):
+            // - isExchanging should be false again (set in finally block)
+            // - friends should be updated
+            assertFalse(vm.isExchanging.value, "isExchanging should be false after coroutine completes")
+            assertTrue(
+                vm.friends.value.size > 0,
+                "friends list should be updated after successful exchange"
+            )
+        }
+
+    @Test
+    fun testPairingFlow_IsExchangingStateTransitions() =
+        runTest {
+            // Simplified test: focus on isExchanging state machine (the critical invariant)
+            var currentTime = 1_000_000_000L
+            val store = mockk<E2eeStore>(relaxed = true)
+            val testClient = TestLocationClient(mockk(relaxed = true))
+            val fakeLocationSource = FakeLocationSource()
+            fakeLocationSource.onLocation(37.7749, -122.4194)
+
+            // Mock store to return a friend
+            val newFriend = FriendEntry(
+                name = "Alice",
+                session = mockk(relaxed = true),
+                isInitiator = true,
+                lastLat = null,
+                lastLng = null,
+                lastTs = null,
+            )
+            io.mockk.coEvery { store.processScannedQr(any(), any()) } returns Pair(mockk(relaxed = true), newFriend)
+            every { store.listFriends() } returns listOf(newFriend)
+
+            viewModel =
+                LocationViewModel(
+                    app,
+                    e2eeStore = store,
+                    locationClient = testClient,
+                    startPolling = false,
+                    clock = { currentTime },
+                    locationSource = fakeLocationSource,
+                )
+            val vm = viewModel!!
+
+            // 1. Initial state: not exchanging
+            assertFalse(vm.isExchanging.value, "Should not be exchanging initially")
+
+            // 2. Simulate Bob scanning Alice's QR code
+            val qr = QrPayload(
+                ekPub = byteArrayOf(1, 2, 3),
+                suggestedName = "Alice",
+                fingerprint = "alice_fp",
+            )
+
+            // 3. Call confirmQrScan (synchronous sets isExchanging = true before async work)
+            vm.confirmQrScan(qr = qr, friendName = "Alice")
+
+            // 4. isExchanging should be true immediately
+            assertTrue(vm.isExchanging.value, "isExchanging should be true immediately after confirmQrScan")
+
+            // 5. Let async coroutine complete
+            advanceUntilIdle()
+
+            // 6. CRITICAL INVARIANT: isExchanging MUST be false after coroutine completes (finally block)
+            assertFalse(vm.isExchanging.value, "CRITICAL: isExchanging must be false after coroutine completes")
+        }
+
+    @Test
+    fun testPairingFlow_ExchangingResetAfterSuccess() =
+        runTest {
+            // Test that successfully completing the exchange resets isExchanging to false
+            var currentTime = 1_000_000_000L
+            val store = mockk<E2eeStore>(relaxed = true)
+            val testClient = TestLocationClient(mockk(relaxed = true))
+            val fakeLocationSource = FakeLocationSource()
+            fakeLocationSource.onLocation(37.7749, -122.4194)
+
+            // Mock store to successfully process the exchange
+            val newFriend = FriendEntry(
+                name = "Bob",
+                session = mockk(relaxed = true),
+                isInitiator = false,
+                lastLat = null,
+                lastLng = null,
+                lastTs = null,
+            )
+            io.mockk.coEvery { store.processKeyExchangeInit(any(), any()) } returns newFriend
+            every { store.listFriends() } returns listOf(newFriend)
+
+            viewModel =
+                LocationViewModel(
+                    app,
+                    e2eeStore = store,
+                    locationClient = testClient,
+                    startPolling = false,
+                    clock = { currentTime },
+                    locationSource = fakeLocationSource,
+                )
+            val vm = viewModel!!
+
+            // Setup pending init
+            val initPayload = KeyExchangeInitPayload(
+                v = 1,
+                token = "test",
+                ekPub = byteArrayOf(1, 2, 3),
+                keyConfirmation = byteArrayOf(4, 5, 6),
+                suggestedName = "Bob",
+            )
+            val pendingInitField = LocationViewModel::class.java.getDeclaredField("_pendingInitPayload")
+            pendingInitField.isAccessible = true
+            @Suppress("UNCHECKED_CAST")
+            val pendingInitFlow = pendingInitField.get(vm) as MutableStateFlow<KeyExchangeInitPayload?>
+            pendingInitFlow.value = initPayload
+
+            // Verify initial state
+            assertFalse(vm.isExchanging.value, "Should start with isExchanging=false")
+
+            // Call confirmPendingInit
+            vm.confirmPendingInit(name = "Bob")
+
+            // Immediately: isExchanging should be true
+            assertTrue(vm.isExchanging.value, "isExchanging should be true during exchange")
+
+            // Let coroutine complete successfully
+            advanceUntilIdle()
+
+            // CRITICAL: After successful completion, finally block must reset isExchanging to false
+            assertFalse(
+                vm.isExchanging.value,
+                "isExchanging MUST be false after exchange completes (finally block)"
+            )
+
+            // Verify exchange actually happened
+            assertTrue(vm.friends.value.size > 0, "Friends should be updated after exchange")
         }
 }
