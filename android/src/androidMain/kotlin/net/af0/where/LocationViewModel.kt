@@ -128,9 +128,7 @@ class LocationViewModel(
                     initialLastPing[friend.id] = ts * 1000L
                 }
             }
-            if (locationSource is LocationRepository) {
-                locationSource.setInitialFriendLocations(initialLocations, initialLastPing)
-            }
+            locationSource.setInitialFriendLocations(initialLocations, initialLastPing)
             locationSource.setSharingLocation(UserPrefs.isSharing(app))
             locationSource.setPausedFriends(UserPrefs.getPausedFriends(app))
         }
