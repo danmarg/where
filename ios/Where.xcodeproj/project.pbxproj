@@ -10,21 +10,32 @@
 		0B55ED6589BBEEAFECFC9FFD /* MapKit in Frameworks */ = {isa = PBXBuildFile; fileRef = CFF6771BE7FE45B2F4F8952B /* MapKit */; };
 		1FFAFDE1493671FC1146F2E3 /* ServerConfig.swift in Sources */ = {isa = PBXBuildFile; fileRef = E54EC15388BAF720E7755291 /* ServerConfig.swift */; };
 		25C7C204409EE87B7316383F /* LocationSyncService.swift in Sources */ = {isa = PBXBuildFile; fileRef = D4B36665B05EA8E1F42A11EA /* LocationSyncService.swift */; };
+		283CFCE7F99DA35571F0EA88 /* KeychainE2eeStorage.swift in Sources */ = {isa = PBXBuildFile; fileRef = D11AE7B7423D7D8B04C7C2C2 /* KeychainE2eeStorage.swift */; };
 		296E222ADF2ED6BA05F597CC /* FriendsSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 28DD2FC8358389E8C9F6ABE6 /* FriendsSheet.swift */; };
+		2F25461E66995FAC063DAD07 /* LocationSyncServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9849DF78DF23CE90DE4F7F10 /* LocationSyncServiceTests.swift */; };
 		3A351D2D318606B612957163 /* Security in Frameworks */ = {isa = PBXBuildFile; fileRef = 072A149EB28769F34BCED9D8 /* Security */; };
 		4A8A07DB9013B997E0C41EFB /* FriendsStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 87F9371D289CC150DF786A96 /* FriendsStore.swift */; };
 		5EF9E5113CEBF25BACE77F5E /* WhereMapView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2421CE3D6966994F4875E311 /* WhereMapView.swift */; };
 		60D8A627443A5ADF3F5C00CB /* WhereApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7A1BBBBE8782378C8B03BB4C /* WhereApp.swift */; };
 		6CB91DD32C87A081852B00C4 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D43663670EB5FB46B5C7C4EA /* ContentView.swift */; };
-		764133E6060A22FA3668CF7A /* UserDefaultsE2eeStorage.swift in Sources */ = {isa = PBXBuildFile; fileRef = CA7A89FD147B152B7C120CCC /* UserDefaultsE2eeStorage.swift */; };
+		907110FAC1EDCF0B63C3B573 /* Shared.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 4CCEF0D6661013EBFBD2A61F /* Shared.xcframework */; };
 		ACE3C7F5E723E981710460E2 /* CoreLocation in Frameworks */ = {isa = PBXBuildFile; fileRef = 18F48F8FCFBE392E06CD2BB3 /* CoreLocation */; };
 		B60DEE3289B4F67659B77C8A /* LocationManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3ADAF0FD19742D151B957FD9 /* LocationManager.swift */; };
 		C6B7D5B6964E195E120267EE /* QrScannerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 220A8EA077B99368AF6DA3D4 /* QrScannerView.swift */; };
 		CAA74FF2347CA0BA2A825A66 /* UserIdentity.swift in Sources */ = {isa = PBXBuildFile; fileRef = 47183C59D3C1EE4A360DF7ED /* UserIdentity.swift */; };
-		D856CF3786D735F63CD21D1C /* Shared.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 38851FB1006A4C013C3B8A94 /* Shared.framework */; };
 		FC1918F51962F01656F21EE5 /* KotlinByteArrayUtils.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC2B156B7AAD99EBB5C7C775 /* KotlinByteArrayUtils.swift */; };
 		FD798F619BC7B55144C1A274 /* QrCodeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5DBE659D6FC99FBE57AB21DB /* QrCodeView.swift */; };
 /* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		EDC03B097217251A85DACE36 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = BF0BD30487A978EBE44DFB73 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 02B551C6DB1927ABD876665A;
+			remoteInfo = Where;
+		};
+/* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
 		072A149EB28769F34BCED9D8 /* Security */ = {isa = PBXFileReference; lastKnownFileType = text; path = Security; sourceTree = "<group>"; };
@@ -32,20 +43,22 @@
 		1D232AA64C61387DE75E8145 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		220A8EA077B99368AF6DA3D4 /* QrScannerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QrScannerView.swift; sourceTree = "<group>"; };
 		2421CE3D6966994F4875E311 /* WhereMapView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WhereMapView.swift; sourceTree = "<group>"; };
+		2785C3E616D50F787106E3D5 /* WhereTests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = WhereTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		28DD2FC8358389E8C9F6ABE6 /* FriendsSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FriendsSheet.swift; sourceTree = "<group>"; };
-		38851FB1006A4C013C3B8A94 /* Shared.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Shared.framework; path = "$(SRCROOT)/../shared/build/xcode-frameworks/$(CONFIGURATION)/$(SDK_NAME)/Shared.framework"; sourceTree = BUILT_PRODUCTS_DIR; };
 		3ADAF0FD19742D151B957FD9 /* LocationManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocationManager.swift; sourceTree = "<group>"; };
 		47183C59D3C1EE4A360DF7ED /* UserIdentity.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UserIdentity.swift; sourceTree = "<group>"; };
+		4CCEF0D6661013EBFBD2A61F /* Shared.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = Shared.xcframework; path = ../shared/build/XCFrameworks/debug/Shared.xcframework; sourceTree = "<group>"; };
 		5DBE659D6FC99FBE57AB21DB /* QrCodeView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QrCodeView.swift; sourceTree = "<group>"; };
 		7A1BBBBE8782378C8B03BB4C /* WhereApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WhereApp.swift; sourceTree = "<group>"; };
 		87F9371D289CC150DF786A96 /* FriendsStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FriendsStore.swift; sourceTree = "<group>"; };
+		9849DF78DF23CE90DE4F7F10 /* LocationSyncServiceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocationSyncServiceTests.swift; sourceTree = "<group>"; };
 		AC2B156B7AAD99EBB5C7C775 /* KotlinByteArrayUtils.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KotlinByteArrayUtils.swift; sourceTree = "<group>"; };
-		CA7A89FD147B152B7C120CCC /* UserDefaultsE2eeStorage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UserDefaultsE2eeStorage.swift; sourceTree = "<group>"; };
-		CFF6771BE7FE45B2F4F8952B /* MapKit */ = {isa = PBXFileReference; lastKnownFileType = text; path = MapKit; sourceTree = "<group>"; };
+		CFF6771BE7FE45B2F4F8952B /* MapKit */ = {isa = PBXFileReference; path = MapKit; sourceTree = "<group>"; };
+		D11AE7B7423D7D8B04C7C2C2 /* KeychainE2eeStorage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeychainE2eeStorage.swift; sourceTree = "<group>"; };
 		D43663670EB5FB46B5C7C4EA /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
 		D4B36665B05EA8E1F42A11EA /* LocationSyncService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocationSyncService.swift; sourceTree = "<group>"; };
 		E54EC15388BAF720E7755291 /* ServerConfig.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ServerConfig.swift; sourceTree = "<group>"; };
-		EA47D2499F3983EF98B459AB /* Where.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Where.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		EA47D2499F3983EF98B459AB /* Where.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = Where.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		EE1A058D7818BC3CADF5B72E /* Local.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Local.xcconfig; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
@@ -54,7 +67,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				D856CF3786D735F63CD21D1C /* Shared.framework in Frameworks */,
+				907110FAC1EDCF0B63C3B573 /* Shared.xcframework in Frameworks */,
 				3A351D2D318606B612957163 /* Security in Frameworks */,
 				0B55ED6589BBEEAFECFC9FFD /* MapKit in Frameworks */,
 				ACE3C7F5E723E981710460E2 /* CoreLocation in Frameworks */,
@@ -70,7 +83,7 @@
 				18F48F8FCFBE392E06CD2BB3 /* CoreLocation */,
 				CFF6771BE7FE45B2F4F8952B /* MapKit */,
 				072A149EB28769F34BCED9D8 /* Security */,
-				38851FB1006A4C013C3B8A94 /* Shared.framework */,
+				4CCEF0D6661013EBFBD2A61F /* Shared.xcframework */,
 			);
 			name = Frameworks;
 			sourceTree = "<group>";
@@ -79,10 +92,19 @@
 			isa = PBXGroup;
 			children = (
 				D750B7527BB93ABC5F965D20 /* ios */,
+				5A2CEA4BCE3AB8AC3ED3AD09 /* Tests */,
 				B39C72AD8B5E1F0E3A409FD2 /* Where */,
 				04AE05A338521963D27F32FA /* Frameworks */,
 				C945058DA9DF7EA90A7EE8D7 /* Products */,
 			);
+			sourceTree = "<group>";
+		};
+		5A2CEA4BCE3AB8AC3ED3AD09 /* Tests */ = {
+			isa = PBXGroup;
+			children = (
+				E2852557AE2E9BB68B367F2B /* WhereTests */,
+			);
+			path = Tests;
 			sourceTree = "<group>";
 		};
 		B39C72AD8B5E1F0E3A409FD2 /* Where */ = {
@@ -98,7 +120,6 @@
 				5DBE659D6FC99FBE57AB21DB /* QrCodeView.swift */,
 				220A8EA077B99368AF6DA3D4 /* QrScannerView.swift */,
 				E54EC15388BAF720E7755291 /* ServerConfig.swift */,
-				CA7A89FD147B152B7C120CCC /* UserDefaultsE2eeStorage.swift */,
 				47183C59D3C1EE4A360DF7ED /* UserIdentity.swift */,
 				7A1BBBBE8782378C8B03BB4C /* WhereApp.swift */,
 				2421CE3D6966994F4875E311 /* WhereMapView.swift */,
@@ -111,6 +132,7 @@
 			isa = PBXGroup;
 			children = (
 				EA47D2499F3983EF98B459AB /* Where.app */,
+				2785C3E616D50F787106E3D5 /* WhereTests.xctest */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -124,6 +146,14 @@
 			path = .;
 			sourceTree = "<group>";
 		};
+		E2852557AE2E9BB68B367F2B /* WhereTests */ = {
+			isa = PBXGroup;
+			children = (
+				9849DF78DF23CE90DE4F7F10 /* LocationSyncServiceTests.swift */,
+			);
+			path = WhereTests;
+			sourceTree = "<group>";
+		};
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
@@ -131,6 +161,7 @@
 			isa = PBXNativeTarget;
 			buildConfigurationList = 179750A609FCACFE5552F4E1 /* Build configuration list for PBXNativeTarget "Where" */;
 			buildPhases = (
+				C31542DE418B9D29BD8B6FF7 /* Build Shared XCFramework */,
 				E7ED0F8B6CA06472498EA266 /* Sources */,
 				EFB0479BA721AAE049851BE1 /* Frameworks */,
 			);
@@ -145,6 +176,24 @@
 			productReference = EA47D2499F3983EF98B459AB /* Where.app */;
 			productType = "com.apple.product-type.application";
 		};
+		9CBF963EDD9307F0F7BAFAE5 /* WhereTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 14C2327B427D1FFDBE68BF61 /* Build configuration list for PBXNativeTarget "WhereTests" */;
+			buildPhases = (
+				0700B98DBA26A1F319FBEAD1 /* Sources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				A16788C8831A1120EA429060 /* PBXTargetDependency */,
+			);
+			name = WhereTests;
+			packageProductDependencies = (
+			);
+			productName = WhereTests;
+			productReference = 2785C3E616D50F787106E3D5 /* WhereTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -155,6 +204,7 @@
 				LastUpgradeCheck = 1430;
 				TargetAttributes = {
 					02B551C6DB1927ABD876665A = {
+						DevelopmentTeam = "";
 						ProvisioningStyle = Automatic;
 					};
 				};
@@ -174,11 +224,41 @@
 			projectRoot = "";
 			targets = (
 				02B551C6DB1927ABD876665A /* Where */,
+				9CBF963EDD9307F0F7BAFAE5 /* WhereTests */,
 			);
 		};
 /* End PBXProject section */
 
+/* Begin PBXShellScriptBuildPhase section */
+		C31542DE418B9D29BD8B6FF7 /* Build Shared XCFramework */ = {
+			isa = PBXShellScriptBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+			);
+			name = "Build Shared XCFramework";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "if [ -f \"../gradlew\" ]; then\n  cd ..\n  ./gradlew :shared:assembleSharedXCFramework\nfi\n";
+		};
+/* End PBXShellScriptBuildPhase section */
+
 /* Begin PBXSourcesBuildPhase section */
+		0700B98DBA26A1F319FBEAD1 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				2F25461E66995FAC063DAD07 /* LocationSyncServiceTests.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		E7ED0F8B6CA06472498EA266 /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
@@ -186,13 +266,13 @@
 				6CB91DD32C87A081852B00C4 /* ContentView.swift in Sources */,
 				296E222ADF2ED6BA05F597CC /* FriendsSheet.swift in Sources */,
 				4A8A07DB9013B997E0C41EFB /* FriendsStore.swift in Sources */,
+				283CFCE7F99DA35571F0EA88 /* KeychainE2eeStorage.swift in Sources */,
 				FC1918F51962F01656F21EE5 /* KotlinByteArrayUtils.swift in Sources */,
 				B60DEE3289B4F67659B77C8A /* LocationManager.swift in Sources */,
 				25C7C204409EE87B7316383F /* LocationSyncService.swift in Sources */,
 				FD798F619BC7B55144C1A274 /* QrCodeView.swift in Sources */,
 				C6B7D5B6964E195E120267EE /* QrScannerView.swift in Sources */,
 				1FFAFDE1493671FC1146F2E3 /* ServerConfig.swift in Sources */,
-				764133E6060A22FA3668CF7A /* UserDefaultsE2eeStorage.swift in Sources */,
 				CAA74FF2347CA0BA2A825A66 /* UserIdentity.swift in Sources */,
 				60D8A627443A5ADF3F5C00CB /* WhereApp.swift in Sources */,
 				5EF9E5113CEBF25BACE77F5E /* WhereMapView.swift in Sources */,
@@ -200,6 +280,14 @@
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		A16788C8831A1120EA429060 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 02B551C6DB1927ABD876665A /* Where */;
+			targetProxy = EDC03B097217251A85DACE36 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
 
 /* Begin XCBuildConfiguration section */
 		2B328EA413DA9D635E2AF5FE /* Release */ = {
@@ -262,6 +350,42 @@
 			};
 			name = Release;
 		};
+		473BA5BA161C478641479634 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = net.af0.WhereTests;
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Where.app/Where";
+			};
+			name = Debug;
+		};
+		49694C304882757629DF91EC /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = net.af0.WhereTests;
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Where.app/Where";
+			};
+			name = Release;
+		};
 		4EA775B8CB3DB7C7CDBE0541 /* Release */ = {
 			isa = XCBuildConfiguration;
 			baseConfigurationReference = EE1A058D7818BC3CADF5B72E /* Local.xcconfig */;
@@ -269,11 +393,11 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
-				DEVELOPMENT_TEAM = 5PM2V9LTHC;
+				DEVELOPMENT_TEAM = "";
 				FRAMEWORK_SEARCH_PATHS = (
 					"$(inherited)",
-					"$(SRCROOT)/../shared/build/xcode-frameworks/$(CONFIGURATION)/$(SDK_NAME)",
 					"\".\"",
+					"\"../shared/build/XCFrameworks/debug\"",
 				);
 				INFOPLIST_FILE = Sources/Where/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
@@ -294,11 +418,11 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
-				DEVELOPMENT_TEAM = 5PM2V9LTHC;
+				DEVELOPMENT_TEAM = "";
 				FRAMEWORK_SEARCH_PATHS = (
 					"$(inherited)",
-					"$(SRCROOT)/../shared/build/xcode-frameworks/$(CONFIGURATION)/$(SDK_NAME)",
 					"\".\"",
+					"\"../shared/build/XCFrameworks/debug\"",
 				);
 				INFOPLIST_FILE = Sources/Where/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
@@ -382,6 +506,15 @@
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
+		14C2327B427D1FFDBE68BF61 /* Build configuration list for PBXNativeTarget "WhereTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				473BA5BA161C478641479634 /* Debug */,
+				49694C304882757629DF91EC /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
 		179750A609FCACFE5552F4E1 /* Build configuration list for PBXNativeTarget "Where" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (

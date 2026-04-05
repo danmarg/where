@@ -34,6 +34,7 @@ ktor-client-cio = { module = "io.ktor:ktor-client-cio", version.ref = "ktor" }
 ktor-server-test-host = { module = "io.ktor:ktor-server-test-host", version.ref = "ktor" }
 kotlinx-coroutines-test = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-test", version.ref = "kotlinx-coroutines" }
 robolectric = { module = "org.robolectric:robolectric", version = "4.13" }
+mockk = { module = "io.mockk:mockk", version = "1.13.17" }
 androidx-test-core = { module = "androidx.test:core", version = "1.6.1" }
 
 # KotlinX
@@ -58,6 +59,7 @@ zxing-android-embedded = { module = "com.journeyapps:zxing-android-embedded", ve
 # Crypto
 bouncycastle = { module = "org.bouncycastle:bcprov-jdk18on", version.ref = "bouncycastle" }
 libsodium-kmp = { module = "com.ionspin.kotlin:multiplatform-crypto-libsodium-bindings", version.ref = "libsodium" }
+libsodium-kmp-jvm = { module = "com.ionspin.kotlin:multiplatform-crypto-libsodium-bindings-jvm", version.ref = "libsodium" }
 
 # Logging
 logback-classic = { module = "ch.qos.logback:logback-classic", version.ref = "logback" }

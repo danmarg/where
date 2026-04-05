@@ -47,7 +47,11 @@ fun String.hexToByteArray(): ByteArray {
 }
 
 fun qrPayloadToUrl(qr: QrPayload): String {
-    val json = Json { ignoreUnknownKeys = true; encodeDefaults = true }
+    val json =
+        Json {
+            ignoreUnknownKeys = true
+            encodeDefaults = true
+        }
     // Mimic the iOS/Android URL format
     // {"ekPub": "...", "suggestedName": "...", "fingerprint": "..."}
     val ekPubB64 = Base64.getEncoder().encodeToString(qr.ekPub)
@@ -83,7 +87,11 @@ fun printQrCode(url: String) {
 
 fun urlToQrPayload(url: String): QrPayload? {
     val q = url.substringAfter("q=").substringBefore("&")
-    val json = Json { ignoreUnknownKeys = true; encodeDefaults = true }
+    val json =
+        Json {
+            ignoreUnknownKeys = true
+            encodeDefaults = true
+        }
     val decoded = String(Base64.getUrlDecoder().decode(q))
     val map: Map<String, String> = json.decodeFromString(decoded)
     val ekPub = Base64.getDecoder().decode(map["ekPub"] ?: return null)
@@ -129,29 +137,30 @@ fun main(args: Array<String>) {
     val locationClient = LocationClient(host, store)
 
     when (args[0]) {
-        "whoami" -> {
-            val friends = store.listFriends()
-            if (friends.isEmpty()) {
-                println("No friends yet. Your ID will be your session fingerprint after pairing.")
-            } else {
-                // Your ID is the other side's stored fingerprint for you (symmetrical)
-                val friend = friends.first()
-                val mySession = friend.session
-                val myFp = if (friend.isInitiator) mySession.aliceFp else mySession.bobFp
-                println("Your ID: ${myFp.toHex()}")
-            }
-        }
-        "invite" -> {
-            val name = args.getOrNull(1) ?: "CLI User"
-            val qr = store.createInvite(name)
-            val url = qrPayloadToUrl(qr)
-            println("Invite URL: $url")
-            printQrCode(url)
-            println("Discovery Token: ${qr.discoveryToken().toHex()}")
-            if ("--no-wait" in args) return
-            println("\nPress Enter to start waiting for friend to join... (Ctrl+C to stop)")
-            readLine()
+        "whoami" ->
             runBlocking {
+                val friends = store.listFriends()
+                if (friends.isEmpty()) {
+                    println("No friends yet. Your ID will be your session fingerprint after pairing.")
+                } else {
+                    // Your ID is the other side's stored fingerprint for you (symmetrical)
+                    val friend = friends.first()
+                    val mySession = friend.session
+                    val myFp = if (friend.isInitiator) mySession.aliceFp else mySession.bobFp
+                    println("Your ID: ${myFp.toHex()}")
+                }
+            }
+        "invite" ->
+            runBlocking {
+                val name = args.getOrNull(1) ?: "CLI User"
+                val qr = store.createInvite(name)
+                val url = qrPayloadToUrl(qr)
+                println("Invite URL: $url")
+                printQrCode(url)
+                println("Discovery Token: ${qr.discoveryToken().toHex()}")
+                if ("--no-wait" in args) return@runBlocking
+                println("\nPress Enter to start waiting for friend to join... (Ctrl+C to stop)")
+                readLine()
                 while (store.listFriends().isEmpty()) {
                     poll(locationClient, store, host)
                     kotlinx.coroutines.delay(5000)
@@ -161,7 +170,6 @@ fun main(args: Array<String>) {
                     println("Friend: ${friend.name} (${friend.id})")
                 }
             }
-        }
         "join" -> {
             val url =
                 args.getOrNull(1) ?: run {
@@ -192,16 +200,17 @@ fun main(args: Array<String>) {
                 }
             }
         }
-        "list" -> {
-            val friends = store.listFriends()
-            if (friends.isEmpty()) {
-                println("No friends yet.")
-            } else {
-                friends.forEach { friend ->
-                    println("${friend.id.take(8)}: ${friend.name} (${if (friend.isInitiator) "Alice" else "Bob"})")
+        "list" ->
+            runBlocking {
+                val friends = store.listFriends()
+                if (friends.isEmpty()) {
+                    println("No friends yet.")
+                } else {
+                    friends.forEach { friend ->
+                        println("${friend.id.take(8)}: ${friend.name} (${if (friend.isInitiator) "Alice" else "Bob"})")
+                    }
                 }
             }
-        }
         "poll" -> {
             val once = "--once" in args
             if (!once) println("Polling for updates... (Ctrl+C to stop)")
@@ -224,8 +233,26 @@ fun main(args: Array<String>) {
                     println("Lng required")
                     return
                 }
+            val force = "--force" in args
+
+            val lastSentStr = storage.getString("last_sent_time")
+            val lastSent = lastSentStr?.toLongOrNull() ?: 0L
+            val now = System.currentTimeMillis()
+
+            // Mirror the Android fix: 15s throttle for non-heartbeat.
+            if (!force && now - lastSent < 15_000L) {
+                println("Throttled: Last update was only ${(now - lastSent) / 1000}s ago. Use --force to override.")
+                return
+            }
+
             runBlocking {
-                locationClient.sendLocation(lat, lng)
+                try {
+                    locationClient.sendLocation(lat, lng)
+                    storage.putString("last_sent_time", now.toString())
+                    println("Location sent successfully.")
+                } catch (e: Exception) {
+                    println("Failed to send location: ${e.message}")
+                }
             }
         }
         else -> {
@@ -240,7 +267,7 @@ suspend fun poll(
     host: String,
 ) {
     // Poll for pending invites if Alice
-    store.pendingQrPayload?.let { qr ->
+    store.pendingQrPayload()?.let { qr ->
         val discoveryHex = qr.discoveryToken().toHex()
         println("Alice polling mailbox with token: $discoveryHex")
         val messages = E2eeMailboxClient.poll(host, discoveryHex)

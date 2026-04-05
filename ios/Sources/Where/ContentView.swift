@@ -4,34 +4,20 @@ import SwiftUI
 
 struct ContentView: View {
     @ObservedObject private var locationManager = LocationManager.shared
-    @StateObject private var syncService = LocationSyncService()
+    @StateObject private var syncService = LocationSyncService.shared
+    @Environment(\.scenePhase) private var scenePhase
     @State private var showFriends = false
     @State private var showScanner = false
+    @State private var showUserSettings = false
     @State private var scannedUrl: String? = nil
     @State private var zoomTarget: CLLocationCoordinate2D? = nil
-    
-    @State private var newFriendName: String = ""
 
-    private var visibleUsers: [Shared.UserLocation] {
-        var result: [Shared.UserLocation] = []
-        if syncService.isSharingLocation, let loc = locationManager.location {
-            result.append(Shared.UserLocation(
-                userId: syncService.myId,
-                lat: loc.coordinate.latitude,
-                lng: loc.coordinate.longitude,
-                timestamp: Int64(Date().timeIntervalSince1970)
-            ))
-        }
-        for (friendId, loc) in syncService.friendLocations {
-            result.append(Shared.UserLocation(userId: friendId, lat: loc.lat, lng: loc.lng, timestamp: loc.ts))
-        }
-        return result
-    }
+    @State private var newFriendName: String = ""
 
     var body: some View {
         ZStack {
             WhereMapView(
-                users: visibleUsers,
+                users: syncService.visibleUsers,
                 friends: syncService.friends,
                 ownUserId: syncService.myId,
                 zoomTarget: zoomTarget,
@@ -68,7 +54,7 @@ struct ContentView: View {
                             Circle()
                                 .fill(syncService.connectionStatus.isOk ? Color.green : Color.orange)
                                 .frame(width: 8, height: 8)
-                            Text("You: \(syncService.myId.prefix(8))")
+                            Text(syncService.displayName.isEmpty ? "You" : syncService.displayName)
                                 .font(.caption)
                                 .foregroundStyle(.white)
                         }
@@ -85,9 +71,7 @@ struct ContentView: View {
                     .clipShape(Capsule())
                     .contentShape(Capsule())
                     .onTapGesture {
-                        if let loc = locationManager.location {
-                            zoomTarget = CLLocationCoordinate2D(latitude: loc.coordinate.latitude, longitude: loc.coordinate.longitude)
-                        }
+                        showUserSettings = true
                     }
 
                     Spacer()
@@ -107,6 +91,14 @@ struct ContentView: View {
                 .padding(.horizontal, 16)
                 .padding(.bottom, 32)
             }
+
+            if syncService.isExchanging {
+                Color.black.opacity(0.3)
+                    .ignoresSafeArea()
+                ProgressView()
+                    .progressViewStyle(CircularProgressViewStyle(tint: .white))
+                    .scaleEffect(1.5)
+            }
         }
         .sheet(isPresented: $showFriends) {
             FriendsSheet(
@@ -118,17 +110,18 @@ struct ContentView: View {
                 onTogglePause: { syncService.togglePauseFriend(id: $0) },
                 onCreateInvite: {
                     showFriends = false
-                    syncService.createInvite()
+                    Task { await syncService.createInvite() }
                 },
                 onScanQr: {
                     showFriends = false
                     showScanner = true
                 },
+                onRename: { id, name in Task { await syncService.renameFriend(id: id, newName: name) } },
                 onPasteUrl: { url in
                     showFriends = false
                     syncService.processQrUrl(url)
                 },
-                onRemove: { syncService.removeFriend(id: $0) },
+                onRemove: { id in Task { await syncService.removeFriend(id: id) } },
                 onZoomTo: { friendId in
                     if friendId == syncService.myId {
                         // Zoom to own location
@@ -158,36 +151,48 @@ struct ContentView: View {
             .ignoresSafeArea()
         }
         .sheet(isPresented: Binding(
-            get: { syncService.pendingInviteQr != nil },
-            set: { if !$0 { syncService.clearInvite() } }
+            get: { if case .pending = syncService.inviteState { return true } else { return false } },
+            set: { if !$0 { Task { await syncService.clearInvite() } } }
         )) {
-            if let qr = syncService.pendingInviteQr {
-                InviteSheet(qrPayload: qr, onDismiss: { syncService.clearInvite() })
+            if case .pending(let qr) = syncService.inviteState {
+                InviteSheet(qrPayload: qr, onDismiss: { Task { await syncService.clearInvite() } })
             }
+        }
+        .alert("You", isPresented: $showUserSettings) {
+            TextField("Your Name", text: $syncService.displayName)
+            Button("Close", role: .cancel) {}
+        } message: {
+            Text("Set your display name that friends will see.")
         }
         .alert("Name this contact", isPresented: Binding(
             get: { (syncService.pendingQrForNaming != nil || syncService.pendingInitPayload != nil) && !syncService.isInviteActive },
             set: { if !$0 {
                 syncService.pendingQrForNaming = nil
-                syncService.cancelPendingInit()
+                syncService.pendingInitPayload = nil
+                Task { await syncService.cancelPendingInit() }
                 newFriendName = ""
             } }
         )) {
             TextField("Friend's Name", text: $newFriendName)
             if let qr = syncService.pendingQrForNaming {
                 Button("Add") {
-                    syncService.confirmQrScan(qr: qr, friendName: newFriendName.isEmpty ? "Friend" : newFriendName)
+                    let name = newFriendName.isEmpty ? "Friend" : newFriendName
+                    syncService.pendingQrForNaming = nil
                     newFriendName = ""
+                    Task { await syncService.confirmQrScan(qr: qr, friendName: name) }
                 }
             } else if syncService.pendingInitPayload != nil {
                 Button("Save") {
-                    syncService.confirmPendingInit(name: newFriendName.isEmpty ? "Friend" : newFriendName)
+                    let name = newFriendName.isEmpty ? "Friend" : newFriendName
+                    syncService.pendingInitPayload = nil
                     newFriendName = ""
+                    Task { await syncService.confirmPendingInit(name: name) }
                 }
             }
             Button("Cancel", role: .cancel) {
                 syncService.pendingQrForNaming = nil
-                syncService.cancelPendingInit()
+                syncService.pendingInitPayload = nil
+                Task { await syncService.cancelPendingInit() }
                 newFriendName = ""
             }
         } message: {
@@ -200,9 +205,12 @@ struct ContentView: View {
         .onAppear {
             locationManager.requestPermissionAndStart()
         }
-        .onReceive(locationManager.$location) { loc in
-            guard let loc else { return }
-            syncService.sendLocation(lat: loc.coordinate.latitude, lng: loc.coordinate.longitude)
+        .onChange(of: scenePhase) { oldPhase, newPhase in
+            if newPhase == .background {
+                syncService.stopPolling()
+            } else if newPhase == .active {
+                syncService.startPolling()
+            }
         }
         .onReceive(syncService.$pendingQrForNaming) { qr in
             if let qr = qr { newFriendName = qr.suggestedName } else { newFriendName = "" }

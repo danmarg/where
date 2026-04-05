@@ -9,6 +9,7 @@ class RatchetTest {
     init {
         initializeE2eeTests()
     }
+
     @Test
     fun `kdfCk produces 32+32+12 byte split`() {
         val chainKey = ByteArray(32) { it.toByte() }

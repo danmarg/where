@@ -2,10 +2,10 @@
 
 package net.af0.where.e2ee
 
-import com.ionspin.kotlin.crypto.hash.Hash
-import com.ionspin.kotlin.crypto.box.Box
-import com.ionspin.kotlin.crypto.signature.Signature
 import com.ionspin.kotlin.crypto.aead.AuthenticatedEncryptionWithAssociatedData
+import com.ionspin.kotlin.crypto.box.Box
+import com.ionspin.kotlin.crypto.hash.Hash
+import com.ionspin.kotlin.crypto.signature.Signature
 import com.ionspin.kotlin.crypto.util.LibsodiumRandom
 
 // ---------------------------------------------------------------------------
@@ -20,16 +20,20 @@ internal actual fun sha256(data: ByteArray): ByteArray {
 // HMAC-SHA-256
 // ---------------------------------------------------------------------------
 
-internal actual fun hmacSha256(key: ByteArray, data: ByteArray): ByteArray {
+internal actual fun hmacSha256(
+    key: ByteArray,
+    data: ByteArray,
+): ByteArray {
     // Platform-specific HMAC implementation using standard SHA-256.
     // RFC 2104 compliant.
     val blockSeparator = 64
     // Ensure we work on a copy to avoid mutating the caller's buffer when zeroing.
-    var k = when {
-        key.size > blockSeparator -> sha256(key)
-        key.size < blockSeparator -> key.copyOf(blockSeparator)
-        else -> key.copyOf()
-    }
+    var k =
+        when {
+            key.size > blockSeparator -> sha256(key)
+            key.size < blockSeparator -> key.copyOf(blockSeparator)
+            else -> key.copyOf()
+        }
 
     val ipad = ByteArray(blockSeparator) { i -> (k[i].toInt() xor 0x36).toByte() }
     val opad = ByteArray(blockSeparator) { i -> (k[i].toInt() xor 0x5c).toByte() }
@@ -88,7 +92,7 @@ actual fun generateEd25519KeyPair(): RawKeyPair {
 internal actual fun ed25519Sign(
     priv: ByteArray,
     message: ByteArray,
-    ): ByteArray {
+): ByteArray {
     return Signature.detached(message.toUByteArray(), priv.toUByteArray()).toByteArray()
 }
 

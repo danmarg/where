@@ -14,6 +14,8 @@ class SharedPrefsE2eeStorage(context: Context) : E2eeStorage {
         key: String,
         value: String,
     ) {
+        // SharedPreferences.apply() queues writes asynchronously and is safe to call from any thread.
+        // Unlike commit(), apply() does not block and will not cause ANR issues.
         prefs.edit().putString(key, value).apply()
     }
 }

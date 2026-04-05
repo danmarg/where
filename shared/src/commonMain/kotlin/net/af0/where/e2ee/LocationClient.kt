@@ -1,5 +1,7 @@
 package net.af0.where.e2ee
 
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import net.af0.where.model.UserLocation
 
 /**
@@ -9,44 +11,49 @@ import net.af0.where.model.UserLocation
  * @param baseUrl Server base URL (e.g. "http://localhost:8080").
  * @param store   Persistent E2EE state storage.
  */
-class LocationClient(
+open class LocationClient(
     private val baseUrl: String,
     private val store: E2eeStore,
 ) {
+    private val pollMutex = Mutex()
+
     /**
      * Poll all friends and the pending invite (if any).
      *
      * Processes all incoming control messages (OPKs, Ratchets, Acks) and
      * automatically posts required responses back to the server.
      *
+     * Poll calls are serialized to prevent concurrent ratchet state mutations.
+     *
      * @return List of new [UserLocation] updates received since the last poll.
      */
-    suspend fun poll(): List<UserLocation> {
-        val allUpdates = mutableListOf<UserLocation>()
-        var lastError: Exception? = null
+    suspend fun poll(): List<UserLocation> =
+        pollMutex.withLock {
+            val allUpdates = mutableListOf<UserLocation>()
+            var lastError: Exception? = null
 
-        // 1. Poll each friend's current mailbox
-        for (friend in store.listFriends()) {
-            try {
-                val friendUpdates = pollFriend(friend.id)
-                allUpdates.addAll(friendUpdates)
+            // 1. Poll each friend's current mailbox
+            for (friend in store.listFriends()) {
+                try {
+                    val friendUpdates = pollFriend(friend.id)
+                    allUpdates.addAll(friendUpdates)
 
-                // 3. Proactively replenish OPKs if the local user (Bob) is running low.
-                //    Bob periodically generates fresh OPKs and publishes them so Alice can
-                //    rotate epochs without needing Bob to respond to her rotation request first.
-                if (store.shouldReplenishOpks(friend.id)) {
-                    store.generateOpkBundle(friend.id)?.let { bundle ->
-                        E2eeMailboxClient.post(baseUrl, friend.session.sendToken.toHex(), bundle)
+                    // 3. Proactively replenish OPKs if the local user (Bob) is running low.
+                    //    Bob periodically generates fresh OPKs and publishes them so Alice can
+                    //    rotate epochs without needing Bob to respond to her rotation request first.
+                    if (store.shouldReplenishOpks(friend.id)) {
+                        store.generateOpkBundle(friend.id)?.let { bundle ->
+                            E2eeMailboxClient.post(baseUrl, friend.session.sendToken.toHex(), bundle)
+                        }
                     }
+                } catch (e: Exception) {
+                    lastError = e
                 }
-            } catch (e: Exception) {
-                lastError = e
             }
-        }
 
-        lastError?.let { throw it }
-        return allUpdates
-    }
+            lastError?.let { throw it }
+            allUpdates
+        }
 
     /**
      * Poll a specific friend's mailbox, handling all protocol messages and
@@ -68,9 +75,11 @@ class LocationClient(
                 break
             }
             println("[LocationClient] pollFriend($friendId): processBatch returned ${result.decryptedLocations.size} locations")
-            updates.addAll(result.decryptedLocations.map { loc ->
-                UserLocation(userId = friendId, lat = loc.lat, lng = loc.lng, timestamp = loc.ts)
-            })
+            updates.addAll(
+                result.decryptedLocations.map { loc ->
+                    UserLocation(userId = friendId, lat = loc.lat, lng = loc.lng, timestamp = loc.ts)
+                },
+            )
 
             // Post any required protocol responses (RatchetAcks, OPK bundles)
             for (out in result.outgoing) {
@@ -88,7 +97,7 @@ class LocationClient(
      * Encrypt and send a location update to all active (non-paused) friends.
      * Handles automatic epoch rotation if Alice reaches a rotation boundary.
      */
-    suspend fun sendLocation(
+    open suspend fun sendLocation(
         lat: Double,
         lng: Double,
         pausedFriendIds: Set<String> = emptySet(),
@@ -105,7 +114,7 @@ class LocationClient(
                 lastError = e
             }
         }
-        
+
         lastError?.let { throw it }
     }
 
@@ -138,19 +147,21 @@ class LocationClient(
 
         // 2. Encrypt and post
         val current = store.getFriend(friend.id) ?: return
-        val (newSession, ct) = Session.encryptLocation(
-            state = current.session,
-            location = plaintext,
-            senderFp = current.session.aliceFp,
-            recipientFp = current.session.bobFp
-        )
+        val (newSession, ct) =
+            Session.encryptLocation(
+                state = current.session,
+                location = plaintext,
+                senderFp = current.session.aliceFp,
+                recipientFp = current.session.bobFp,
+            )
         store.updateSession(friend.id, newSession)
 
-        val payload = EncryptedLocationPayload(
-            epoch = newSession.epoch,
-            seq = newSession.sendSeq.toString(),
-            ct = ct
-        )
+        val payload =
+            EncryptedLocationPayload(
+                epoch = newSession.epoch,
+                seq = newSession.sendSeq.toString(),
+                ct = ct,
+            )
         E2eeMailboxClient.post(baseUrl, current.session.sendToken.toHex(), payload)
     }
 
@@ -161,7 +172,7 @@ class LocationClient(
      * waiting for a RatchetAck response. Can be triggered manually (e.g., via UI)
      * or automatically by [poll] when running low.
      */
-    suspend fun postOpkBundle(friendId: String) {
+    open suspend fun postOpkBundle(friendId: String) {
         if (store.shouldReplenishOpks(friendId)) {
             store.generateOpkBundle(friendId)?.let { bundle ->
                 val friend = store.getFriend(friendId) ?: return
