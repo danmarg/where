@@ -9,9 +9,10 @@ class LocationSyncServiceTests: XCTestCase {
     var service: LocationSyncService!
 
     override func setUp() async throws {
-        try await super.setUp()
+        // We skip super.setUp() because it is non-isolated in the base XCTestCase,
+        // and calling it from this @MainActor-isolated class with 'self' (which is non-Sendable)
+        // triggers Swift 6 data race warnings. XCTestCase.setUp() is empty, so this is safe.
         let store = Shared.E2eeStore(storage: KeychainE2eeStorage())
-        // Using async setUp allows us to safely initialize @MainActor properties
         self.service = LocationSyncService(e2eeStore: store, locationClient: nil)
     }
 
