@@ -678,6 +678,16 @@ final class LocationSyncService: ObservableObject {
         }
     }
 
+    /// Wraps `AsyncStream.Iterator` to make it Sendable.
+    ///
+    /// AsyncStream.Iterator is not itself Sendable, so concurrent access to `next()` would be unsafe.
+    /// This wrapper is marked @unchecked Sendable and relies on a single-consumer invariant:
+    /// the iterator must only ever be consumed from a single Task. In this codebase, the iterator
+    /// is exclusively owned by the poll loop Task and never shared across tasks.
+    ///
+    /// **Do not pass this to multiple concurrent Tasks.** Doing so would create a race condition
+    /// on the mutable `iterator` property. If you need to signal multiple consumers, use a
+    /// separate AsyncStream or coordinate through a thread-safe channel instead.
     private final class AsyncIteratorBox: @unchecked Sendable {
         private var iterator: AsyncStream<Void>.Iterator
         init(_ iterator: AsyncStream<Void>.Iterator) { self.iterator = iterator }
