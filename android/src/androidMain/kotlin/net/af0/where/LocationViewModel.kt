@@ -10,6 +10,7 @@ import androidx.annotation.MainThread
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.first
@@ -20,6 +21,7 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import net.af0.where.e2ee.E2eeMailboxClient
 import net.af0.where.e2ee.E2eeStore
 import net.af0.where.e2ee.FriendEntry
@@ -168,17 +170,20 @@ class LocationViewModel(
     }
 
     fun setDisplayName(name: String) {
+        check(Looper.myLooper() == Looper.getMainLooper()) { "setDisplayName must be called on the main thread" }
         _displayName.value = name
         UserPrefs.setDisplayName(getApplication(), name)
     }
 
     fun toggleSharing() {
+        check(Looper.myLooper() == Looper.getMainLooper()) { "toggleSharing must be called on the main thread" }
         val new = !_isSharingLocation.value
         _isSharingLocation.value = new
         UserPrefs.setSharing(getApplication(), new)
     }
 
     fun togglePauseFriend(id: String) {
+        check(Looper.myLooper() == Looper.getMainLooper()) { "togglePauseFriend must be called on the main thread" }
         val current = _pausedFriendIds.value
         val new = if (id in current) current - id else current + id
         _pausedFriendIds.value = new
@@ -189,11 +194,13 @@ class LocationViewModel(
         id: String,
         newName: String,
     ) {
+        check(Looper.myLooper() == Looper.getMainLooper()) { "renameFriend must be called on the main thread" }
         e2eeStore.renameFriend(id, newName)
         _friends.value = e2eeStore.listFriends()
     }
 
     fun removeFriend(id: String) {
+        check(Looper.myLooper() == Looper.getMainLooper()) { "removeFriend must be called on the main thread" }
         e2eeStore.deleteFriend(id)
         _friends.value = e2eeStore.listFriends()
         friendLocations.value -= id
@@ -423,15 +430,18 @@ class LocationViewModel(
             Log.d(TAG, "Polling for location updates")
             val updates = locationClient.poll()
             Log.d(TAG, "Got ${updates.size} location updates")
-            for (update in updates) {
-                friendLocations.value += (update.userId to update)
-                val now = clock()
-                _friendLastPing.value += (update.userId to now)
-                e2eeStore.updateLastLocation(update.userId, update.lat, update.lng, now / 1000L)
+            // Ensure all StateFlow writes go through the main dispatcher
+            withContext(Dispatchers.Main) {
+                for (update in updates) {
+                    friendLocations.value += (update.userId to update)
+                    val now = clock()
+                    _friendLastPing.value += (update.userId to now)
+                    e2eeStore.updateLastLocation(update.userId, update.lat, update.lng, now / 1000L)
+                }
+                pollPendingInvite()
+                _friends.value = e2eeStore.listFriends()
+                updateStatus(null)
             }
-            pollPendingInvite()
-            _friends.value = e2eeStore.listFriends()
-            updateStatus(null)
         } catch (e: Exception) {
             Log.e(TAG, "Poll failed: ${e.message}")
             updateStatus(e)
