@@ -19,6 +19,8 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import net.af0.where.e2ee.E2eeMailboxClient
@@ -125,6 +127,7 @@ class LocationService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     private var lastSentTime: Long = 0L
+    private val sendLock = Mutex()
 
     private suspend fun pollLoop() {
         while (true) {
@@ -196,15 +199,18 @@ class LocationService : Service() {
         force: Boolean = false,
     ) {
         if (!locationSource.isSharingLocation.value) return
-        val now = System.currentTimeMillis()
-        val shouldSend =
+        val now = clock()
+        val shouldSend = sendLock.withLock {
             force || lastSentTime == 0L ||
                 (!isHeartbeat && now - lastSentTime > 15_000L) ||
                 (isHeartbeat && now - lastSentTime > 300_000L)
+        }
         if (!shouldSend) return
         try {
             locationClient.sendLocation(lat, lng, locationSource.pausedFriendIds.value)
-            lastSentTime = now
+            sendLock.withLock {
+                lastSentTime = now
+            }
             updateStatus(null)
         } catch (e: Exception) {
             Log.e(TAG, "Failed to send location: ${e.message}")
@@ -240,6 +246,9 @@ class LocationService : Service() {
     companion object {
         /** Overridable in tests; defaults to the production singleton. */
         var locationSource: LocationSource = LocationRepository
+
+        /** Overridable in tests. */
+        var clock: () -> Long = { System.currentTimeMillis() }
 
         private const val CHANNEL_ID = "where_location"
         private const val NOTIFICATION_ID = 1
