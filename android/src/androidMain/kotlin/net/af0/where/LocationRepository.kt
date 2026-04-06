@@ -27,6 +27,7 @@ interface LocationSource {
     val pausedFriendIds: StateFlow<Set<String>>
     val friends: StateFlow<List<FriendEntry>>
     val pollWakeSignal: Channel<Unit>
+    val lastRapidPollTrigger: StateFlow<Long>
 
     fun onLocation(
         lat: Double,
@@ -83,6 +84,9 @@ object LocationRepository : LocationSource {
     override val friends: StateFlow<List<FriendEntry>> = _friends.asStateFlow()
 
     override val pollWakeSignal = Channel<Unit>(Channel.CONFLATED)
+
+    private val _lastRapidPollTrigger = MutableStateFlow(0L)
+    override val lastRapidPollTrigger: StateFlow<Long> = _lastRapidPollTrigger.asStateFlow()
 
     override fun onLocation(
         lat: Double,
@@ -146,6 +150,7 @@ object LocationRepository : LocationSource {
     }
 
     override fun triggerRapidPoll() {
+        _lastRapidPollTrigger.value = System.currentTimeMillis()
         pollWakeSignal.trySend(Unit)
     }
 }
