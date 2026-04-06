@@ -53,14 +53,13 @@ class LocationServiceTest {
 
     @Test
     fun testSendLocationThrottle_Movement() = runTest {
+        var currentTime = 100_000L
+        LocationService.clock = { currentTime }
+
         val controller = Robolectric.buildService(LocationService::class.java)
         val service = controller.get()
         controller.create()
 
-        val lastSentTimeField = LocationService::class.java.getDeclaredField("lastSentTime")
-        lastSentTimeField.isAccessible = true
-
-        val e2eeStore = (context as WhereApplication).e2eeStore
         val mockClient = io.mockk.mockk<LocationClient>(relaxed = true)
         val locationClientField = LocationService::class.java.getDeclaredField("locationClient")
         locationClientField.isAccessible = true
@@ -69,27 +68,25 @@ class LocationServiceTest {
         // 1. Initial send
         service.sendLocationIfNeeded(37.7, -122.4, false, false)
         io.mockk.coVerify(exactly = 1) { mockClient.sendLocation(any(), any(), any()) }
-        val firstSendTime = lastSentTimeField.get(service) as Long
-        assertTrue(firstSendTime > 0)
 
         // 2. Immediate second send (throttled)
         service.sendLocationIfNeeded(37.8, -122.5, false, false)
         io.mockk.coVerify(exactly = 1) { mockClient.sendLocation(any(), any(), any()) }
 
         // 3. Send after 16s (not throttled - movement throttle is 15s)
-        lastSentTimeField.set(service, firstSendTime - 16_000L)
+        currentTime += 16_000L
         service.sendLocationIfNeeded(37.9, -122.6, false, false)
         io.mockk.coVerify(exactly = 2) { mockClient.sendLocation(any(), any(), any()) }
     }
 
     @Test
     fun testSendLocationThrottle_Heartbeat() = runTest {
+        var currentTime = 1_000_000L
+        LocationService.clock = { currentTime }
+
         val controller = Robolectric.buildService(LocationService::class.java)
         val service = controller.get()
         controller.create()
-
-        val lastSentTimeField = LocationService::class.java.getDeclaredField("lastSentTime")
-        lastSentTimeField.isAccessible = true
 
         val mockClient = io.mockk.mockk<LocationClient>(relaxed = true)
         val locationClientField = LocationService::class.java.getDeclaredField("locationClient")
@@ -99,15 +96,14 @@ class LocationServiceTest {
         // 1. Initial send
         service.sendLocationIfNeeded(37.7, -122.4, false, false)
         io.mockk.coVerify(exactly = 1) { mockClient.sendLocation(any(), any(), any()) }
-        val firstSendTime = lastSentTimeField.get(service) as Long
 
         // 2. Heartbeat after 1 minute (throttled - heartbeat throttle is 300s)
-        lastSentTimeField.set(service, firstSendTime - 60_000L)
+        currentTime += 60_000L
         service.sendLocationIfNeeded(37.7, -122.4, true, false)
         io.mockk.coVerify(exactly = 1) { mockClient.sendLocation(any(), any(), any()) }
 
         // 3. Heartbeat after 6 minutes (not throttled)
-        lastSentTimeField.set(service, firstSendTime - 360_000L)
+        currentTime += 300_000L
         service.sendLocationIfNeeded(37.7, -122.4, true, false)
         io.mockk.coVerify(exactly = 2) { mockClient.sendLocation(any(), any(), any()) }
     }
