@@ -152,7 +152,13 @@ struct ContentView: View {
         }
         .sheet(isPresented: Binding(
             get: { if case .pending = syncService.inviteState { return true } else { return false } },
-            set: { if !$0 { Task { await syncService.clearInvite() } } }
+            set: { if !$0 {
+                // If we're dismissing because a peer joined (pendingInitPayload is set),
+                // do NOT clear the store yet, as we need the ephemeral keys to derive the session.
+                if syncService.pendingInitPayload == nil {
+                    Task { await syncService.clearInvite() }
+                }
+            } }
         )) {
             if case .pending(let qr) = syncService.inviteState {
                 InviteSheet(qrPayload: qr, onDismiss: { Task { await syncService.clearInvite() } })

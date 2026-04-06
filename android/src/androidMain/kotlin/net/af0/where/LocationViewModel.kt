@@ -125,6 +125,18 @@ class LocationViewModel(
             }
         }
 
+        // When a friend response (init payload) arrives from the service, flip the invite
+        // state to None so the UI shows the naming dialog (dismissing the QR sheet).
+        viewModelScope.launch {
+            pendingInitPayload.collect { payload ->
+                if (payload != null) {
+                    val current = _inviteState.value
+                    if (current is InviteState.Pending) {
+                        _inviteState.value = InviteState.None
+                    }
+                }
+            }
+        }
     }
 
 
