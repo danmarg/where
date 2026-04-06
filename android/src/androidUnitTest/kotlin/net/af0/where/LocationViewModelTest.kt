@@ -221,7 +221,6 @@ class LocationViewModelTest {
 
     @After
     fun tearDown() {
-        viewModel?.stopPolling()
         io.mockk.unmockkAll()
         Dispatchers.resetMain()
     }
