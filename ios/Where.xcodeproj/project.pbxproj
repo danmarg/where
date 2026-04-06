@@ -47,7 +47,7 @@
 		28DD2FC8358389E8C9F6ABE6 /* FriendsSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FriendsSheet.swift; sourceTree = "<group>"; };
 		3ADAF0FD19742D151B957FD9 /* LocationManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocationManager.swift; sourceTree = "<group>"; };
 		47183C59D3C1EE4A360DF7ED /* UserIdentity.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UserIdentity.swift; sourceTree = "<group>"; };
-		4CCEF0D6661013EBFBD2A61F /* Shared.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = Shared.xcframework; path = ../shared/build/XCFrameworks/debug/Shared.xcframework; sourceTree = "<group>"; };
+		4CCEF0D6661013EBFBD2A61F /* Shared.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = Shared.xcframework; path = "../shared/build/XCFrameworks/$(CONFIGURATION:lower)/Shared.xcframework"; sourceTree = "<group>"; };
 		5DBE659D6FC99FBE57AB21DB /* QrCodeView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QrCodeView.swift; sourceTree = "<group>"; };
 		7A1BBBBE8782378C8B03BB4C /* WhereApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WhereApp.swift; sourceTree = "<group>"; };
 		87F9371D289CC150DF786A96 /* FriendsStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FriendsStore.swift; sourceTree = "<group>"; };
@@ -247,7 +247,7 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
-			shellScript = "if [ -f \"../gradlew\" ]; then\n  cd ..\n  ./gradlew :shared:assembleSharedXCFramework\nfi\n";
+			shellScript = "if [ -f \"../.envrc\" ]; then\n  source \"../.envrc\"\nfi\n\nif [ -f \"../gradlew\" ]; then\n  cd ..\n  GRADLE_CMD=\"./gradlew\"\n  if command -v nix >/dev/null 2>&1 && [ -f \"flake.nix\" ]; then\n    GRADLE_CMD=\"nix develop . --command ./gradlew\"\n  fi\n  \n  if [ \"$CONFIGURATION\" = \"Release\" ]; then\n    $GRADLE_CMD :shared:assembleSharedReleaseXCFramework\n  else\n    $GRADLE_CMD :shared:assembleSharedDebugXCFramework\n  fi\nfi\n";
 		};
 /* End PBXShellScriptBuildPhase section */
 
@@ -396,9 +396,9 @@
 				CODE_SIGN_STYLE = Automatic;
 				DEVELOPMENT_TEAM = "";
 				FRAMEWORK_SEARCH_PATHS = (
-					"$(inherited) $(SRCROOT)/../shared/build/xcode-frameworks/$(CONFIGURATION)/$(SDK_NAME)",
+					"$(inherited) $(SRCROOT)/../shared/build/XCFrameworks/$(CONFIGURATION:lower)",
 					"\".\"",
-					"\"../shared/build/XCFrameworks/debug\"",
+					"\"../shared/build/XCFrameworks/$(CONFIGURATION:lower)\"",
 				);
 				INFOPLIST_FILE = Sources/Where/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
@@ -421,9 +421,9 @@
 				CODE_SIGN_STYLE = Automatic;
 				DEVELOPMENT_TEAM = "";
 				FRAMEWORK_SEARCH_PATHS = (
-					"$(inherited) $(SRCROOT)/../shared/build/xcode-frameworks/$(CONFIGURATION)/$(SDK_NAME)",
+					"$(inherited) $(SRCROOT)/../shared/build/XCFrameworks/$(CONFIGURATION:lower)",
 					"\".\"",
-					"\"../shared/build/XCFrameworks/debug\"",
+					"\"../shared/build/XCFrameworks/$(CONFIGURATION:lower)\"",
 				);
 				INFOPLIST_FILE = Sources/Where/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;

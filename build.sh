@@ -151,34 +151,19 @@ if [ -n "$IOS_TEAM_ID" ]; then
   fi
 fi
 
-# Build the KMP shared framework using the direct link task for the target
-# architecture. This avoids embedAndSignAppleFrameworkForXcode, which requires
-# Xcode env vars to be set at Gradle daemon startup and is unreliable outside Xcode.
-echo "=== Building KMP shared framework for $IOS_SDK ==="
-if [[ "$IOS_TARGET" == "simulator" ]]; then
-  LINK_TASK=":shared:link${XCODE_CONFIGURATION}FrameworkIosSimulatorArm64"
-  FRAMEWORK_SRC="shared/build/bin/iosSimulatorArm64/${BUILD_FLAVOR}Framework/Shared.framework"
+# Build the KMP shared framework using assembleXCFramework.
+# This ensures consistency with the Xcode project and handles all architectures.
+echo "=== Building KMP shared framework ($XCODE_CONFIGURATION) ==="
+if [[ "$XCODE_CONFIGURATION" == "Release" ]]; then
+  TASK=":shared:assembleSharedReleaseXCFramework"
 else
-  LINK_TASK=":shared:link${XCODE_CONFIGURATION}FrameworkIosArm64"
-  FRAMEWORK_SRC="shared/build/bin/iosArm64/${BUILD_FLAVOR}Framework/Shared.framework"
+  TASK=":shared:assembleSharedDebugXCFramework"
 fi
 
-SDKROOT=$(xcrun --sdk $IOS_SDK --show-sdk-path)
-if ! run ./gradlew "$LINK_TASK" -Dios.sdk.root="$SDKROOT"; then
+if ! run ./gradlew "$TASK"; then
   echo "KMP framework build failed."
   exit 1
 fi
-
-# Place the framework where Xcode's FRAMEWORK_SEARCH_PATHS expects it:
-# shared/build/xcode-frameworks/<Configuration>/<sdk_name>/Shared.framework
-# The project uses $(SDK_NAME) which resolves to the unversioned name, so we
-# create a versioned dir and symlink the unversioned name to it.
-SDK_VERSION=$(xcrun --sdk "$IOS_SDK" --show-sdk-version)
-FRAMEWORK_DEST="shared/build/xcode-frameworks/$XCODE_CONFIGURATION/${IOS_SDK}${SDK_VERSION}"
-mkdir -p "$FRAMEWORK_DEST"
-rm -rf "$FRAMEWORK_DEST/Shared.framework"
-cp -r "$FRAMEWORK_SRC" "$FRAMEWORK_DEST/"
-ln -sfn "${IOS_SDK}${SDK_VERSION}" "shared/build/xcode-frameworks/$XCODE_CONFIGURATION/$IOS_SDK"
 
 echo "✓ KMP shared framework built"
 echo ""
@@ -192,7 +177,6 @@ if [[ "$IOS_TARGET" == "simulator" ]]; then
     -sdk iphonesimulator \
     -destination 'generic/platform=iOS Simulator' \
     -derivedDataPath build \
-    ARCHS=arm64 \
     CODE_SIGN_IDENTITY='' CODE_SIGNING_REQUIRED=NO \
     build 2>&1 | tee ../ios_build.log"; then
     echo "iOS build failed."

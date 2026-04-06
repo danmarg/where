@@ -541,7 +541,7 @@ final class LocationSyncService: ObservableObject {
 
     // MARK: - Private polling
 
-    private func pollAll(updateUi: Bool = true) async {
+    func pollAll(updateUi: Bool = true) async {
         logger.debug("Polling for location updates")
         // Capture the end operation closure before entering the BackgroundTaskBox.
         let endOp = self.endBackgroundTask
