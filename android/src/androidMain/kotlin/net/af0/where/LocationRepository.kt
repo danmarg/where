@@ -1,5 +1,6 @@
 package net.af0.where
 
+import androidx.annotation.VisibleForTesting
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -26,8 +27,11 @@ interface LocationSource {
     val isSharingLocation: StateFlow<Boolean>
     val pausedFriendIds: StateFlow<Set<String>>
     val friends: StateFlow<List<FriendEntry>>
-    val pollWakeSignal: Channel<Unit>
     val lastRapidPollTrigger: StateFlow<Long>
+    val pendingQrForNaming: StateFlow<QrPayload?>
+
+    /** Wait for a poll wake signal (either interval timeout or immediate trigger). */
+    suspend fun awaitPollWake(timeoutMillis: Long)
 
     fun onLocation(
         lat: Double,
@@ -73,6 +77,7 @@ object LocationRepository : LocationSource {
     private val _isAppInForeground = MutableStateFlow(false)
     override val isAppInForeground: StateFlow<Boolean> = _isAppInForeground.asStateFlow()
 
+    @get:VisibleForTesting
     internal val _pendingInitPayload = MutableStateFlow<KeyExchangeInitPayload?>(null)
     override val pendingInitPayload: StateFlow<KeyExchangeInitPayload?> = _pendingInitPayload.asStateFlow()
 
@@ -85,8 +90,12 @@ object LocationRepository : LocationSource {
     private val _friends = MutableStateFlow<List<FriendEntry>>(emptyList())
     override val friends: StateFlow<List<FriendEntry>> = _friends.asStateFlow()
 
-    override val pollWakeSignal = Channel<Unit>(Channel.CONFLATED)
+    private val _pendingQrForNaming = MutableStateFlow<QrPayload?>(null)
+    override val pendingQrForNaming: StateFlow<QrPayload?> = _pendingQrForNaming.asStateFlow()
 
+    private val pollWakeSignal = Channel<Unit>(Channel.CONFLATED)
+
+    @get:VisibleForTesting
     internal val _lastRapidPollTrigger = MutableStateFlow(0L)
     override val lastRapidPollTrigger: StateFlow<Long> = _lastRapidPollTrigger.asStateFlow()
 
@@ -133,6 +142,11 @@ object LocationRepository : LocationSource {
         _pendingInitPayload.value = payload
     }
 
+    /** Called by ViewModel to notify Bob scanned a QR and is naming the friend. */
+    fun onPendingQrForNaming(qr: QrPayload?) {
+        _pendingQrForNaming.value = qr
+    }
+
     override fun setSharingLocation(sharing: Boolean) {
         _isSharingLocation.value = sharing
     }
@@ -162,6 +176,12 @@ object LocationRepository : LocationSource {
 
     override fun wakePoll() {
         pollWakeSignal.trySend(Unit)
+    }
+
+    override suspend fun awaitPollWake(timeoutMillis: Long) {
+        kotlinx.coroutines.withTimeoutOrNull(timeoutMillis) {
+            pollWakeSignal.receive()
+        }
     }
 
     /** Resets all state for tests. */

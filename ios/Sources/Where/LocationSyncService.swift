@@ -552,7 +552,7 @@ final class LocationSyncService: ObservableObject {
     // MARK: - Internal polling
 
     func pollAll(updateUi: Bool = true) async {
-        logger.debug("Polling for location updates")
+        logger.debug("Polling for location updates (updateUi=\(updateUi))")
         // Capture the end operation closure before entering the BackgroundTaskBox.
         let endOp = self.endBackgroundTask
 
@@ -576,6 +576,10 @@ final class LocationSyncService: ObservableObject {
                 friendLocations[update.userId] = (lat: update.lat, lng: update.lng, ts: update.timestamp)
                 friendLastPing[update.userId] = Date()
             }
+
+            // Always update visibleUsers to ensure map is fresh when returning to foreground.
+            updateVisibleUsers()
+
             if updateUi {
                 await pollPendingInvite()
             }
