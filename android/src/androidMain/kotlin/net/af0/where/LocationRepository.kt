@@ -1,9 +1,11 @@
 package net.af0.where
 
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
+import net.af0.where.e2ee.FriendEntry
 import net.af0.where.e2ee.KeyExchangeInitPayload
 import net.af0.where.e2ee.QrPayload
 import net.af0.where.model.UserLocation
@@ -23,6 +25,8 @@ interface LocationSource {
     val pendingInitPayload: StateFlow<KeyExchangeInitPayload?>
     val isSharingLocation: StateFlow<Boolean>
     val pausedFriendIds: StateFlow<Set<String>>
+    val friends: StateFlow<List<FriendEntry>>
+    val pollWakeSignal: Channel<Unit>
 
     fun onLocation(
         lat: Double,
@@ -42,6 +46,8 @@ interface LocationSource {
     fun setSharingLocation(sharing: Boolean)
     fun setPausedFriends(friendIds: Set<String>)
     fun setInitialFriendLocations(locations: Map<String, UserLocation>, pings: Map<String, Long>)
+    fun onFriendsUpdated(friends: List<FriendEntry>)
+    fun triggerRapidPoll()
 }
 
 /**
@@ -72,6 +78,11 @@ object LocationRepository : LocationSource {
 
     private val _pausedFriendIds = MutableStateFlow<Set<String>>(emptySet())
     override val pausedFriendIds: StateFlow<Set<String>> = _pausedFriendIds.asStateFlow()
+
+    private val _friends = MutableStateFlow<List<FriendEntry>>(emptyList())
+    override val friends: StateFlow<List<FriendEntry>> = _friends.asStateFlow()
+
+    override val pollWakeSignal = Channel<Unit>(Channel.CONFLATED)
 
     override fun onLocation(
         lat: Double,
@@ -128,5 +139,13 @@ object LocationRepository : LocationSource {
         // Merge with current state to avoid overwriting live updates that arrived before initial load
         _friendLocations.update { locations + it }
         _friendLastPing.update { pings + it }
+    }
+
+    override fun onFriendsUpdated(friends: List<FriendEntry>) {
+        _friends.value = friends
+    }
+
+    override fun triggerRapidPoll() {
+        pollWakeSignal.trySend(Unit)
     }
 }

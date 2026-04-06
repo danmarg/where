@@ -12,17 +12,18 @@ import org.robolectric.shadows.ShadowLog
 import kotlin.test.assertTrue
 
 @RunWith(RobolectricTestRunner::class)
-@Config(sdk = [33], application = Application::class)
+@Config(sdk = [33], application = WhereApplication::class)
 class LocationServiceTest {
     private val context: Application get() = ApplicationProvider.getApplicationContext()
 
     @Before
     fun setup() {
         ShadowLog.stream = System.out
+        LocationRepository.onLocation(0.0, 0.0) // satisfy non-null check if needed, or null it out
         val field = LocationRepository::class.java.getDeclaredField("_lastLocation")
         field.isAccessible = true
-        val flow = field.get(LocationRepository) as kotlinx.coroutines.flow.MutableStateFlow<Pair<Double, Double>?>
-        flow.value = null
+        val flow = field.get(LocationRepository) as kotlinx.coroutines.flow.MutableStateFlow<*>
+        (flow as kotlinx.coroutines.flow.MutableStateFlow<Pair<Double, Double>?>).value = null
     }
 
     private fun getServiceIsRegistered(service: LocationService): Boolean {
