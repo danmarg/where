@@ -8,23 +8,12 @@ import UIKit
 class LocationSyncServiceTests: XCTestCase {
     var service: LocationSyncService!
 
-    override func setUp() {
-        super.setUp()
+    override func setUp() async throws {
+        // We skip super.setUp() because it is non-isolated in the base XCTestCase,
+        // and calling it from this @MainActor-isolated class with 'self' (which is non-Sendable)
+        // triggers Swift 6 data race warnings. XCTestCase.setUp() is empty, so this is safe.
         let store = Shared.E2eeStore(storage: KeychainE2eeStorage())
-        // Since XCTestCase.setUp is nonisolated, but class is @MainActor,
-        // and we are on the Main thread, we use MainActor.run { ... }
-        // BUT we must avoid capturing 'self' in a way that risks races.
-        // XCTest guarantees setUp runs on the main thread, so assumeIsolated is the right tool.
-        // The error before was "sending self risks causing data races" because it was captured 
-        // in a closure passed to an actor-isolated context.
-        
-        MainActor.assumeIsolated {
-            // We use a local helper to avoid direct self capture in the closure if possible,
-            // but we need to set self.service.
-            // Let's try the most direct way again but be careful.
-            let s = LocationSyncService(e2eeStore: store, locationClient: nil)
-            self.service = s
-        }
+        self.service = LocationSyncService(e2eeStore: store, locationClient: nil)
     }
 
     func testThrottleLogic() async throws {
