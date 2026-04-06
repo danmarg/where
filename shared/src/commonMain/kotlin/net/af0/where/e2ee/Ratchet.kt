@@ -9,9 +9,7 @@ package net.af0.where.e2ee
  * KDF_CK – Symmetric chain step. A single HKDF-SHA-256 call producing 76 bytes:
  *   [new_chain_key (32) || message_key (32) || message_nonce (12)].
  *   The old chain key MUST be discarded immediately after this call.
- */
-
-/**
+ *
  * DH ratchet step.
  * @param rootKey      Current 32-byte root key (used as HKDF salt).
  * @param dhOutput     32-byte X25519 shared secret.

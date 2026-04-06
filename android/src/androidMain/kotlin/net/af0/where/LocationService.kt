@@ -1,16 +1,12 @@
 package net.af0.where
 
-import android.Manifest
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.Service
-import android.content.Context
 import android.content.Intent
-import android.content.pm.PackageManager
 import android.os.IBinder
 import android.util.Log
-import androidx.core.content.ContextCompat
 import com.google.android.gms.location.*
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.collectLatest
@@ -18,10 +14,8 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import net.af0.where.e2ee.E2eeStore
 import net.af0.where.e2ee.LocationClient
-import net.af0.where.e2ee.toHex
 import net.af0.where.e2ee.discoveryToken
-
-private const val TAG = "LocationService"
+import net.af0.where.e2ee.toHex
 
 private const val TAG = "LocationService"
 
@@ -32,6 +26,8 @@ private const val TAG = "LocationService"
  * this service keeps the process alive.
  */
 class LocationService : Service() {
+    private var isRegistered = false
+
     private lateinit var fusedClient: com.google.android.gms.location.FusedLocationProviderClient
     private lateinit var locationCallback: LocationCallback
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -81,7 +77,10 @@ class LocationService : Service() {
         }
     }
 
-    private suspend fun maybeSendLocation(lat: Double, lng: Double) {
+    private suspend fun maybeSendLocation(
+        lat: Double,
+        lng: Double,
+    ) {
         val isSharing = LocationRepository.isSharingLocation.value
         if (!isSharing) return
 
@@ -90,18 +89,20 @@ class LocationService : Service() {
             val pausedFriendIds = LocationRepository.pausedFriendIds.value
 
             val lastLoc = lastSentLocation
-            val distance = if (lastLoc != null) {
-                val results = FloatArray(1)
-                android.location.Location.distanceBetween(lastLoc.first, lastLoc.second, lat, lng, results)
-                results[0]
-            } else {
-                Float.MAX_VALUE
-            }
+            val distance =
+                if (lastLoc != null) {
+                    val results = FloatArray(1)
+                    android.location.Location.distanceBetween(lastLoc.first, lastLoc.second, lat, lng, results)
+                    results[0]
+                } else {
+                    Float.MAX_VALUE
+                }
 
             // Thresholds: 1 min if moved > 10m, 5 min heartbeat
-            val shouldSend = lastLoc == null ||
-                            (distance > 10 && now - lastSentTime > 1 * 60_000L) ||
-                            (now - lastSentTime > 5 * 60_000L)
+            val shouldSend =
+                lastLoc == null ||
+                    (distance > 10 && now - lastSentTime > 1 * 60_000L) ||
+                    (now - lastSentTime > 5 * 60_000L)
 
             if (shouldSend) {
                 try {
@@ -164,10 +165,11 @@ class LocationService : Service() {
     }
 
     private suspend fun pollPendingInviteInternal() {
-        val qr = e2eeStore.pendingQrPayload ?: run {
-            LocationRepository.onPendingInit(null)
-            return
-        }
+        val qr =
+            e2eeStore.pendingQrPayload() ?: run {
+                LocationRepository.onPendingInit(null)
+                return
+            }
         try {
             val discoveryHex = qr.discoveryToken().toHex()
             val messages = net.af0.where.e2ee.E2eeMailboxClient.poll(BuildConfig.SERVER_HTTP_URL, discoveryHex)
@@ -180,8 +182,8 @@ class LocationService : Service() {
         }
     }
 
-    private fun isRapidPolling(): Boolean {
-        val isPairing = e2eeStore.pendingQrPayload != null || LocationRepository.pendingInitPayload.value != null
+    private suspend fun isRapidPolling(): Boolean {
+        val isPairing = e2eeStore.pendingQrPayload() != null || LocationRepository.pendingInitPayload.value != null
         return isPairing
     }
 
@@ -190,6 +192,8 @@ class LocationService : Service() {
         flags: Int,
         startId: Int,
     ): Int {
+        if (isRegistered) return START_STICKY
+
         val request =
             LocationRequest.Builder(
                 Priority.PRIORITY_BALANCED_POWER_ACCURACY,
@@ -198,6 +202,7 @@ class LocationService : Service() {
 
         try {
             fusedClient.requestLocationUpdates(request, locationCallback, mainLooper)
+            isRegistered = true
         } catch (_: SecurityException) {
             stopSelf()
         }

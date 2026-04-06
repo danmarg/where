@@ -37,6 +37,9 @@ class LocationServiceTest {
         val service = controller.get()
         controller.create()
 
+        // Explicitly call onStartCommand with any intent since Robolectric might not trigger it synchronously during create
+        controller.startCommand(0, 0)
+
         assertTrue(getServiceIsRegistered(service))
 
         // Multiple startCommand calls must not attempt to re-register location updates.
