@@ -189,7 +189,7 @@ class LocationService : Service() {
         }
     }
 
-    private suspend fun sendLocationIfNeeded(
+    internal suspend fun sendLocationIfNeeded(
         lat: Double,
         lng: Double,
         isHeartbeat: Boolean,
