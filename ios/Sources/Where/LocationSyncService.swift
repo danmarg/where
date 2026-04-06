@@ -480,7 +480,6 @@ final class LocationSyncService: ObservableObject {
         do {
             let result = try await e2eeStore.processKeyExchangeInit(payload: payload, bobName: name)
             if let entry = result ?? nil {
-                await clearInvite()
                 friends = try await e2eeStore.listFriends()
                 updateVisibleUsers()
                 try await locationClient.postOpkBundle(friendId: entry.id)
@@ -622,7 +621,7 @@ final class LocationSyncService: ObservableObject {
             )
 
             if case .pending = inviteState {
-                await clearInvite()
+                inviteState = .none
             }
             pendingInitPayload = initPayload
             triggerRapidPoll()

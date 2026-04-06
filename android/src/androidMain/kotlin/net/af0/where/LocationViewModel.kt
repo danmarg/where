@@ -241,7 +241,9 @@ class LocationViewModel(
                         8,
                     )}, sendToken=$sendToken",
                 )
-                locationSource.onFriendsUpdated(e2eeStore.listFriends())
+                withContext(Dispatchers.Main.immediate) {
+                    locationSource.onFriendsUpdated(e2eeStore.listFriends())
+                }
                 try {
                     val discoveryHex = qrWithName.discoveryToken().toHex()
                     try {
@@ -289,7 +291,9 @@ class LocationViewModel(
                         }
                     }
 
-                    locationSource.onFriendsUpdated(e2eeStore.listFriends())
+                    withContext(Dispatchers.Main.immediate) {
+                        locationSource.onFriendsUpdated(e2eeStore.listFriends())
+                    }
                     locationSource.resetRapidPoll()
                     locationSource.wakePoll()
                 } catch (e: Exception) {
@@ -309,18 +313,16 @@ class LocationViewModel(
         val payload = pendingInitPayload.value ?: return
         Log.d(TAG, "confirmPendingInit: name=$name")
         locationSource.onPendingInit(null)
-        val current = _inviteState.value
         _inviteState.value = InviteState.None
         _isExchanging.value = true
         viewModelScope.launch {
             try {
-                if (current != InviteState.None) {
-                    e2eeStore.clearInvite()
-                }
                 val entry = e2eeStore.processKeyExchangeInit(payload, name)
                 if (entry != null) {
                     Log.d(TAG, "confirmPendingInit: processKeyExchangeInit succeeded, friendId=${entry.id}")
-                    locationSource.onFriendsUpdated(e2eeStore.listFriends())
+                    withContext(Dispatchers.Main.immediate) {
+                        locationSource.onFriendsUpdated(e2eeStore.listFriends())
+                    }
                     locationSource.resetRapidPoll()
                     locationSource.wakePoll()
                     try {
