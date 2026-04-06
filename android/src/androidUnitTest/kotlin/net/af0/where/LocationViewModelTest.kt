@@ -264,7 +264,8 @@ class LocationViewModelTest {
             (fakeLocationSource.pendingInitPayload as MutableStateFlow).value = initPayload
             advanceUntilIdle()
 
-            assertTrue(vm.inviteState.value is InviteState.Consumed)
+            // After peer joins, inviteState remains Pending on Alice side until cleared
+            assertTrue(vm.inviteState.value is InviteState.Pending)
             assertEquals("Bob", vm.pendingInitPayload.value?.suggestedName)
 
             // 3. Alice cancels naming Bob

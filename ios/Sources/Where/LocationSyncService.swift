@@ -104,7 +104,6 @@ enum ConnectionStatus: Sendable {
 enum InviteState: Sendable {
     case none
     case pending(Shared.QrPayload)
-    case consumed(Shared.QrPayload)
 }
 
 @MainActor
@@ -622,8 +621,8 @@ final class LocationSyncService: ObservableObject {
                 suggestedName: suggestedName
             )
 
-            if case .pending(let currentQr) = inviteState {
-                inviteState = .consumed(currentQr)
+            if case .pending = inviteState {
+                await clearInvite()
             }
             pendingInitPayload = initPayload
             triggerRapidPoll()
