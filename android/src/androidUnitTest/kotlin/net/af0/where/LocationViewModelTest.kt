@@ -252,14 +252,9 @@ class LocationViewModelTest {
                     suggestedName = "Bob",
                 )
 
-            // Bob's response
-            (vm.pendingInitPayload as MutableStateFlow).value = initPayload
-
-            // Since we're not running the service, we simulate the effect of the service polling
-            val inviteStateField = LocationViewModel::class.java.getDeclaredField("_inviteState")
-            inviteStateField.isAccessible = true
-            @Suppress("UNCHECKED_CAST")
-            (inviteStateField.get(vm) as MutableStateFlow<InviteState>).value = InviteState.Consumed(qr)
+            // Bob's response arriving at the repository
+            (fakeLocationSource.pendingInitPayload as MutableStateFlow).value = initPayload
+            advanceUntilIdle()
 
             assertTrue(vm.inviteState.value is InviteState.Consumed)
             assertEquals("Bob", vm.pendingInitPayload.value?.suggestedName)
