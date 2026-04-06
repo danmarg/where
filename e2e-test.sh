@@ -74,7 +74,7 @@ if ! echo "$ALICE_SEND2" | grep -q "Throttled"; then
   exit 1
 fi
 
-echo "=== E2E Test: Alice sends third location with --force (Bug B/C fix) ==="
+echo "=== E2E Test: Alice sends third location with --force ==="
 ALICE_SEND3=$(./cli/build/install/cli/bin/cli send 37.7751 -122.4196 --state e2e_alice.json --force)
 echo "$ALICE_SEND3"
 if ! echo "$ALICE_SEND3" | grep -q "successfully"; then

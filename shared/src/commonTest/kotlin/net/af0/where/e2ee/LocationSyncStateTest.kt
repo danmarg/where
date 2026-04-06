@@ -5,7 +5,7 @@ import kotlin.test.*
 
 /**
  * Platform-agnostic simulation of LocationSyncService (iOS) and LocationService (Android)
- * state management logic. This ensures the "cold start" (Bug A) and "throttling" (Bug B)
+ * state management logic. This ensures the "cold start" and "throttling"
  * fixes are robust.
  */
 class LocationSyncStateTest {
@@ -93,7 +93,7 @@ class LocationSyncStateTest {
         // Bob just paired, UI triggers a "forced" publish
         mockSendLocation(friendId, 1.0, 2.0, force = true)
 
-        // If Bug B fix is working, the forced send should NOT be dropped even if isSending is true
+        // The forced send should NOT be dropped even if isSending is true
         // (In the real code, this works because the Task/Coroutine runs anyway or we bypass the guard)
         // Here we simulate the logic:
         assertTrue(sentLocations.any { it.first == friendId }, "Forced send must bypass isSending guard")
@@ -105,7 +105,7 @@ class LocationSyncStateTest {
         lastSentTime = 1000L
 
         // 5 seconds later, movement occurs.
-        // Bug B fix: Cooldown is now 15s, so a 5s update should be dropped,
+        // Cooldown is now 15s, so a 5s update should be dropped,
         // but a 20s update should be allowed.
 
         // T+5s: Should be dropped (jitter protection)
@@ -116,6 +116,6 @@ class LocationSyncStateTest {
         // T+20s: Should be allowed (genuine movement)
         val now20 = 21000L
         val shouldSend20 = (now20 - lastSentTime > 15_000L)
-        assertTrue(shouldSend20, "20s update should be allowed (Bug B fix: 15s instead of 60s)")
+        assertTrue(shouldSend20, "20s update should be allowed (15s instead of 60s)")
     }
 }

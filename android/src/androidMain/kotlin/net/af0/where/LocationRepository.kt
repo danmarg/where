@@ -49,6 +49,8 @@ interface LocationSource {
     fun setInitialFriendLocations(locations: Map<String, UserLocation>, pings: Map<String, Long>)
     fun onFriendsUpdated(friends: List<FriendEntry>)
     fun triggerRapidPoll()
+    fun resetRapidPoll()
+    fun wakePoll()
 }
 
 /**
@@ -151,6 +153,14 @@ object LocationRepository : LocationSource {
 
     override fun triggerRapidPoll() {
         _lastRapidPollTrigger.value = System.currentTimeMillis()
+        pollWakeSignal.trySend(Unit)
+    }
+
+    override fun resetRapidPoll() {
+        _lastRapidPollTrigger.value = 0L
+    }
+
+    override fun wakePoll() {
         pollWakeSignal.trySend(Unit)
     }
 }
