@@ -24,9 +24,22 @@ targets:
     preBuildScripts:
       - name: Build Shared XCFramework
         script: |
+          if [ -f "../.envrc" ]; then
+            source "../.envrc"
+          fi
+
           if [ -f "../gradlew" ]; then
             cd ..
-            ./gradlew :shared:assembleSharedXCFramework
+            GRADLE_CMD="./gradlew"
+            if command -v nix >/dev/null 2>&1 && [ -f "flake.nix" ]; then
+              GRADLE_CMD="nix develop . --command ./gradlew"
+            fi
+            
+            if [ "$CONFIGURATION" = "Release" ]; then
+              $GRADLE_CMD :shared:assembleSharedReleaseXCFramework
+            else
+              $GRADLE_CMD :shared:assembleSharedDebugXCFramework
+            fi
           fi
         inputFilePaths:
           - ../shared/src
@@ -36,9 +49,10 @@ targets:
           - ../gradle/libs.versions.toml
           - ../gradlew
         outputFilePaths:
-          - ../shared/build/XCFrameworks/debug/Shared.xcframework
+          - ../shared/build/XCFrameworks/debug/Shared.xcframework/Info.plist
+          - ../shared/build/XCFrameworks/release/Shared.xcframework/Info.plist
     dependencies:
-      - framework: ../shared/build/XCFrameworks/debug/Shared.xcframework
+      - framework: ../shared/build/XCFrameworks/$(CONFIGURATION:lower)/Shared.xcframework
         embed: false
       - framework: Security
         embed: false
@@ -60,7 +74,7 @@ targets:
         UILaunchScreen: {}
     settings:
       PRODUCT_BUNDLE_IDENTIFIER: net.af0.Where
-      FRAMEWORK_SEARCH_PATHS: $(inherited) $(SRCROOT)/../shared/build/xcode-frameworks/$(CONFIGURATION)/$(SDK_NAME)
+      FRAMEWORK_SEARCH_PATHS: $(inherited) $(SRCROOT)/../shared/build/XCFrameworks/$(CONFIGURATION:lower)
       DEVELOPMENT_TEAM: ""
       CODE_SIGN_IDENTITY: Apple Development
       CODE_SIGN_STYLE: Automatic
