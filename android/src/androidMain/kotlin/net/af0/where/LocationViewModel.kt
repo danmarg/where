@@ -319,6 +319,7 @@ class LocationViewModel(
                 if (entry != null) {
                     Log.d(TAG, "confirmPendingInit: processKeyExchangeInit succeeded, friendId=${entry.id}")
                     locationSource.onFriendsUpdated(e2eeStore.listFriends())
+                    triggerRapidPoll()
                     try {
                         // Upload OPK bundle so Bob can decrypt our future location messages.
                         locationClient.postOpkBundle(entry.id)
@@ -357,7 +358,6 @@ class LocationViewModel(
                                 }
                             }
                         }
-                        triggerRapidPoll()
                     } catch (e: Exception) {
                         Log.e(TAG, "confirmPendingInit: inner failure: ${e.message}")
                         updateStatus(e)
