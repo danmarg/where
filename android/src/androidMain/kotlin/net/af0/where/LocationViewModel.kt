@@ -39,8 +39,6 @@ sealed interface InviteState {
     object None : InviteState
 
     data class Pending(val qr: QrPayload) : InviteState
-
-    data class Consumed(val qr: QrPayload) : InviteState
 }
 
 class LocationViewModel(
@@ -127,18 +125,6 @@ class LocationViewModel(
             }
         }
 
-        // When a friend response (init payload) arrives from the service, flip the invite
-        // state to Consumed so the UI shows the naming dialog.
-        viewModelScope.launch {
-            pendingInitPayload.collect { payload ->
-                if (payload != null) {
-                    val current = _inviteState.value
-                    if (current is InviteState.Pending) {
-                        _inviteState.value = InviteState.Consumed(current.qr)
-                    }
-                }
-            }
-        }
     }
 
 
