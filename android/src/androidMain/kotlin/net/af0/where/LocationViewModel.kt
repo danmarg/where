@@ -322,7 +322,7 @@ class LocationViewModel(
                     locationSource.onFriendsUpdated(e2eeStore.listFriends())
                     try {
                         // Upload OPK bundle so Bob can decrypt our future location messages.
-                        // (Bug 5: this was missing from confirmPendingInit, causing Alice's
+                        // (This was missing from confirmPendingInit, causing Alice's
                         // encrypted messages to be undecryptable until the next heartbeat.)
                         locationClient.postOpkBundle(entry.id)
                         Log.d(TAG, "confirmPendingInit: postOpkBundle succeeded")
