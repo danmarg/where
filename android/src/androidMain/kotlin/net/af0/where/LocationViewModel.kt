@@ -247,7 +247,6 @@ class LocationViewModel(
                         Log.d(TAG, "confirmQrScan: posting KeyExchangeInit, discoveryHex=$discoveryHex")
                         E2eeMailboxClient.post(BuildConfig.SERVER_HTTP_URL, discoveryHex, initPayload)
                         Log.d(TAG, "confirmQrScan: mailbox post succeeded")
-                        delay(500)
                     } catch (e: Exception) {
                         Log.e(TAG, "confirmQrScan: mailbox post failed", e)
                         updateStatus(e)
@@ -322,8 +321,6 @@ class LocationViewModel(
                     locationSource.onFriendsUpdated(e2eeStore.listFriends())
                     try {
                         // Upload OPK bundle so Bob can decrypt our future location messages.
-                        // (This was missing from confirmPendingInit, causing Alice's
-                        // encrypted messages to be undecryptable until the next heartbeat.)
                         locationClient.postOpkBundle(entry.id)
                         Log.d(TAG, "confirmPendingInit: postOpkBundle succeeded")
                         if (isSharingLocation.value) {
