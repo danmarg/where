@@ -390,12 +390,10 @@ final class LocationSyncService: ObservableObject {
     }
 
     func clearInvite() async {
-        if case .pending = inviteState {
-            do {
-                try await e2eeStore.clearInvite()
-            } catch {
-                logger.error("Failed to clear invite: \(error.localizedDescription)")
-            }
+        do {
+            try await e2eeStore.clearInvite()
+        } catch {
+            logger.error("Failed to clear invite: \(error.localizedDescription)")
         }
         inviteState = .none
     }
@@ -428,7 +426,9 @@ final class LocationSyncService: ObservableObject {
             let initPayload = result.first!
             let bobEntry = result.second!
 
+            await clearInvite()
             friends = try await e2eeStore.listFriends()
+            updateVisibleUsers()
 
             let discoveryHex = toHex(qrWithName.discoveryToken())
             let payload: [String: Any] = [
@@ -446,8 +446,6 @@ final class LocationSyncService: ObservableObject {
                     try await postToMailbox(token: discoveryHex, bodyData: bodyData)
                     debugLog { "KeyExchangeInit posted successfully" }
 
-                    try? await Task.sleep(nanoseconds: 500_000_000)
-
                     try await locationClient.postOpkBundle(friendId: bobEntry.id)
 
                     if let last = LocationManager.shared.lastLocation {
@@ -457,7 +455,11 @@ final class LocationSyncService: ObservableObject {
                         self.pendingForcedSendAfterPairing = true
                         LocationManager.shared.requestPermissionAndStart()
                     }
+                    resetRapidPoll()
                     await pollAll(updateUi: true)
+                    friends = try await e2eeStore.listFriends()
+                    updateVisibleUsers()
+                    wakePoll()
 
                     updateStatus(nil)
                 } catch {
@@ -471,13 +473,7 @@ final class LocationSyncService: ObservableObject {
         }
     }
 
-    func confirmPendingInit(name: String) async {
-        guard let payload = pendingInitPayload else { return }
-        pendingInitPayload = nil
-        if case .pending = inviteState {
-            await clearInvite()
-        }
-        inviteState = .none
+    func confirmPendingInit(payload: Shared.KeyExchangeInitPayload, name: String) async {
         isExchanging = true
         triggerRapidPoll()
 
@@ -485,7 +481,9 @@ final class LocationSyncService: ObservableObject {
         do {
             let result = try await e2eeStore.processKeyExchangeInit(payload: payload, bobName: name)
             if let entry = result ?? nil {
+                await clearInvite()
                 friends = try await e2eeStore.listFriends()
+                updateVisibleUsers()
                 try await locationClient.postOpkBundle(friendId: entry.id)
 
                 if let last = LocationManager.shared.lastLocation {
@@ -496,7 +494,11 @@ final class LocationSyncService: ObservableObject {
                     LocationManager.shared.requestPermissionAndStart()
                 }
             }
+            resetRapidPoll()
             await pollAll(updateUi: true)
+            friends = try await e2eeStore.listFriends()
+            updateVisibleUsers()
+            wakePoll()
         } catch {
             logger.error("confirmPendingInit failed: \(error.localizedDescription)")
             updateStatus(error)
@@ -511,10 +513,19 @@ final class LocationSyncService: ObservableObject {
         inviteState = .none
     }
 
+    func wakePoll() {
+        pollSignalContinuation.yield()
+    }
+
+    func resetRapidPoll() {
+        lastRapidPollTrigger = Date(timeIntervalSince1970: 0)
+    }
+
     func renameFriend(id: String, newName: String) async {
         do {
             try await e2eeStore.renameFriend(id: id, newName: newName)
             friends = try await e2eeStore.listFriends()
+            updateVisibleUsers()
         } catch {
             logger.error("renameFriend failed: \(error.localizedDescription)")
         }
@@ -541,7 +552,7 @@ final class LocationSyncService: ObservableObject {
 
     // MARK: - Private polling
 
-    func pollAll(updateUi: Bool = true) async {
+    private func pollAll(updateUi: Bool = true) async {
         logger.debug("Polling for location updates")
         // Capture the end operation closure before entering the BackgroundTaskBox.
         let endOp = self.endBackgroundTask
