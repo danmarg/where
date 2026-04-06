@@ -42,10 +42,10 @@ class LocationSyncStateTest {
         val now = 1000L // Simulated time
         val effectiveForce = force || (pendingForcedFriendId == friendId)
 
-        // Bug B/C fix: only skip if NOT forcing and already sending.
+        // Only skip if NOT forcing and already sending.
         if (!effectiveForce && isSending) return
 
-        // Bug B fix: reduced cooldown check (15s instead of 60s/300s)
+        // Reduced cooldown check (15s instead of 60s/300s)
         val cooldown = if (isHeartbeat) 300_000L else 15_000L
         val shouldSend = effectiveForce || (now - lastSentTime > cooldown)
 
@@ -61,7 +61,7 @@ class LocationSyncStateTest {
     }
 
     @Test
-    fun testColdStartForcedSend_BugA() =
+    fun testColdStartForcedSend() =
         runBlocking {
             // Alice creates invite
             val qr = aliceStore.createInvite("Alice")
@@ -70,7 +70,7 @@ class LocationSyncStateTest {
             val (initPayload, bobEntry) = bobStore.processScannedQr(qr)
             val friendId = bobEntry.id
 
-            // Mimic Bug A fix: mark for forced send when location arrives
+            // Mark for forced send when location arrives
             pendingForcedFriendId = friendId
 
             assertEquals(0, sentLocations.size, "No location sent yet because GPS is null")
@@ -84,7 +84,7 @@ class LocationSyncStateTest {
         }
 
     @Test
-    fun testForcedSendBypassesIsSending_BugB() {
+    fun testForcedSendBypassesIsSending() {
         val friendId = "friend123"
 
         // Simulate a "heartbeat" send that is currently "in flight" (isSending = true)
@@ -100,7 +100,7 @@ class LocationSyncStateTest {
     }
 
     @Test
-    fun testMovementThrottle_BugB_Android() {
+    fun testMovementThrottle_Android() {
         val friendId = "all"
         lastSentTime = 1000L
 
