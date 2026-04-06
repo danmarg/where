@@ -258,6 +258,7 @@ class LocationViewModelTest {
             // Since we're not running the service, we simulate the effect of the service polling
             val inviteStateField = LocationViewModel::class.java.getDeclaredField("_inviteState")
             inviteStateField.isAccessible = true
+            @Suppress("UNCHECKED_CAST")
             (inviteStateField.get(vm) as MutableStateFlow<InviteState>).value = InviteState.Consumed(qr)
 
             assertTrue(vm.inviteState.value is InviteState.Consumed)
@@ -289,33 +290,6 @@ class LocationViewModelTest {
             vm.cancelQrScan()
             assertNull(vm.pendingQrForNaming.value)
         }
-
-    @Test
-    fun testSendLocationThrottle_TwoCallsWithin15Seconds() =
-        runTest {
-            var currentTime = 1000L
-            val store = E2eeStore(FakeE2eeStorage())
-            val testClient = TestLocationClient(store)
-
-            viewModel =
-                LocationViewModel(
-                    app,
-                    e2eeStore = store,
-                    locationClient = testClient,
-                    startPolling = false,
-                    clock = { currentTime },
-                    locationSource = FakeLocationSource(),
-                )
-            val vm = viewModel!!
-
-            // Core polling and sending logic has been moved to LocationService.
-            // These tests are now testing internal logic that moved.
-            // We can either delete them or test the logic via LocationService.
-        }
-
-
-    // ============ Rapid Poll Transition Tests ============
-
 
     // ============ Pairing State Machine Integration Tests ============
 
