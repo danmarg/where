@@ -156,7 +156,10 @@ private class FakeLocationSource : LocationSource {
     private val _friends = MutableStateFlow<List<FriendEntry>>(emptyList())
     override val friends: StateFlow<List<FriendEntry>> = _friends
 
-    override val pollWakeSignal = Channel<Unit>(Channel.CONFLATED)
+    private val _pendingQrForNaming = MutableStateFlow<QrPayload?>(null)
+    override val pendingQrForNaming: StateFlow<QrPayload?> = _pendingQrForNaming
+
+    private val pollWakeSignal = Channel<Unit>(Channel.CONFLATED)
 
     private val _lastRapidPollTrigger = MutableStateFlow(0L)
     override val lastRapidPollTrigger: StateFlow<Long> = _lastRapidPollTrigger
@@ -176,6 +179,12 @@ private class FakeLocationSource : LocationSource {
 
     override fun wakePoll() {
         pollWakeSignal.trySend(Unit)
+    }
+
+    override suspend fun awaitPollWake(timeoutMillis: Long) {
+        kotlinx.coroutines.withTimeoutOrNull(timeoutMillis) {
+            pollWakeSignal.receive()
+        }
     }
 }
 

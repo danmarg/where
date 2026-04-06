@@ -205,7 +205,9 @@ class LocationViewModel(
 
     fun clearInvite() {
         val current = _inviteState.value
-        if (current is InviteState.Pending) {
+        // If a peer already joined (pendingInitPayload is not null), do NOT clear the
+        // persistent invite state yet, as we still need it to derive the session.
+        if (current is InviteState.Pending && locationSource.pendingInitPayload.value == null) {
             viewModelScope.launch {
                 e2eeStore.clearInvite()
             }
@@ -222,12 +224,14 @@ class LocationViewModel(
             }
         Log.d(TAG, "processQrUrl: parsed qr, suggestedName=${qr.suggestedName}")
         _pendingQrForNaming.value = qr
+        if (locationSource is LocationRepository) locationSource.onPendingQrForNaming(qr)
         triggerRapidPoll()
         return true
     }
 
     fun cancelQrScan() {
         _pendingQrForNaming.value = null
+        if (locationSource is LocationRepository) locationSource.onPendingQrForNaming(null)
     }
 
     fun confirmQrScan(
@@ -236,6 +240,7 @@ class LocationViewModel(
     ) {
         Log.d(TAG, "confirmQrScan: friendName=$friendName")
         _pendingQrForNaming.value = null
+        if (locationSource is LocationRepository) locationSource.onPendingQrForNaming(null)
         val qrWithName = qr.copy(suggestedName = friendName)
         val currentInvite = _inviteState.value
         _isExchanging.value = true
