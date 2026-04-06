@@ -43,7 +43,7 @@ final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelega
         Task { @MainActor in
             self.location = loc
             LocationSyncService.shared.sendLocation(lat: loc.coordinate.latitude, lng: loc.coordinate.longitude)
-            // Bug C: Always poll for friend updates when we wake for a location update.
+            // Always poll for friend updates when we wake for a location update.
             await LocationSyncService.shared.pollAll(updateUi: false)
         }
     }
