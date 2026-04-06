@@ -124,8 +124,6 @@ class LocationService : Service() {
 
     override fun onBind(intent: Intent?): IBinder? = null
 
-    private var lastSentLat: Double? = null
-    private var lastSentLng: Double? = null
     private var lastSentTime: Long = 0L
 
     private suspend fun pollLoop() {
@@ -200,14 +198,12 @@ class LocationService : Service() {
         if (!locationSource.isSharingLocation.value) return
         val now = System.currentTimeMillis()
         val shouldSend =
-            force || lastSentLat == null ||
+            force || lastSentTime == 0L ||
                 (!isHeartbeat && now - lastSentTime > 15_000L) ||
                 (isHeartbeat && now - lastSentTime > 300_000L)
         if (!shouldSend) return
         try {
             locationClient.sendLocation(lat, lng, locationSource.pausedFriendIds.value)
-            lastSentLat = lat
-            lastSentLng = lng
             lastSentTime = now
             updateStatus(null)
         } catch (e: Exception) {

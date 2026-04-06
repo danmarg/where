@@ -128,9 +128,6 @@ class LocationViewModel(
         }
     }
 
-    fun stopPolling() {
-        // Core polling logic has been moved to LocationService.
-    }
 
     private fun triggerRapidPoll() {
         locationSource.triggerRapidPoll()
