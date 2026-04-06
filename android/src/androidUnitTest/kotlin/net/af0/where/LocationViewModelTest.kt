@@ -169,6 +169,14 @@ private class FakeLocationSource : LocationSource {
         _lastRapidPollTrigger.value = System.currentTimeMillis()
         pollWakeSignal.trySend(Unit)
     }
+
+    override fun resetRapidPoll() {
+        _lastRapidPollTrigger.value = 0L
+    }
+
+    override fun wakePoll() {
+        pollWakeSignal.trySend(Unit)
+    }
 }
 
 private class FakeE2eeStorage : E2eeStorage {

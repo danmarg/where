@@ -181,12 +181,12 @@ struct ContentView: View {
                     newFriendName = ""
                     Task { await syncService.confirmQrScan(qr: qr, friendName: name) }
                 }
-            } else if syncService.pendingInitPayload != nil {
+            } else if let payload = syncService.pendingInitPayload {
                 Button("Save") {
                     let name = newFriendName.isEmpty ? "Friend" : newFriendName
                     syncService.pendingInitPayload = nil
                     newFriendName = ""
-                    Task { await syncService.confirmPendingInit(name: name) }
+                    Task { await syncService.confirmPendingInit(payload: payload, name: name) }
                 }
             }
             Button("Cancel", role: .cancel) {

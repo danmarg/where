@@ -239,9 +239,14 @@ class LocationViewModel(
         Log.d(TAG, "confirmQrScan: friendName=$friendName")
         _pendingQrForNaming.value = null
         val qrWithName = qr.copy(suggestedName = friendName)
+        val currentInvite = _inviteState.value
         _isExchanging.value = true
         viewModelScope.launch {
             try {
+                if (currentInvite != InviteState.None) {
+                    e2eeStore.clearInvite()
+                    _inviteState.value = InviteState.None
+                }
                 val (initPayload, bobEntry) = e2eeStore.processScannedQr(qrWithName, _displayName.value.ifEmpty { "" })
                 val sendToken = bobEntry.session.sendToken.toHex()
                 Log.d(
@@ -299,7 +304,8 @@ class LocationViewModel(
                     }
 
                     locationSource.onFriendsUpdated(e2eeStore.listFriends())
-                    triggerRapidPoll()
+                    locationSource.resetRapidPoll()
+                    locationSource.wakePoll()
                 } catch (e: Exception) {
                     Log.e(TAG, "confirmQrScan inner failure: ${e.message}")
                     updateStatus(e)
@@ -322,14 +328,15 @@ class LocationViewModel(
         _isExchanging.value = true
         viewModelScope.launch {
             try {
-                if (current is InviteState.Pending) {
+                if (current != InviteState.None) {
                     e2eeStore.clearInvite()
                 }
                 val entry = e2eeStore.processKeyExchangeInit(payload, name)
                 if (entry != null) {
                     Log.d(TAG, "confirmPendingInit: processKeyExchangeInit succeeded, friendId=${entry.id}")
                     locationSource.onFriendsUpdated(e2eeStore.listFriends())
-                    triggerRapidPoll()
+                    locationSource.resetRapidPoll()
+                    locationSource.wakePoll()
                     try {
                         // Upload OPK bundle so Bob can decrypt our future location messages.
                         locationClient.postOpkBundle(entry.id)
