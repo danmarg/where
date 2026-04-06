@@ -19,6 +19,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -88,7 +89,7 @@ class LocationService : Service() {
 
         serviceScope.launch { pollLoop() }
         serviceScope.launch {
-            locationSource.lastLocation.collectLatest { loc ->
+            locationSource.lastLocation.collect { loc ->
                 if (loc != null && locationSource.isSharingLocation.value) {
                     sendLocationIfNeeded(loc.first, loc.second, isHeartbeat = false)
                 }
@@ -132,6 +133,7 @@ class LocationService : Service() {
     private val sendLock = Mutex()
 
     private suspend fun pollLoop() {
+        // The loop continues until serviceScope is cancelled in onDestroy().
         while (true) {
             val rapid = isRapidPolling()
             doPoll()
@@ -140,9 +142,7 @@ class LocationService : Service() {
                 sendLocationIfNeeded(lat, lng, isHeartbeat = true)
             }
             val interval = if (rapid) 2_000L else 60_000L
-            withTimeoutOrNull(interval) {
-                locationSource.pollWakeSignal.receive()
-            }
+            locationSource.awaitPollWake(interval)
         }
     }
 
@@ -154,7 +154,9 @@ class LocationService : Service() {
         val now = clock()
         val recentlyTriggered = now - locationSource.lastRapidPollTrigger.value < 5 * 60_000L
         val hasPendingQr = e2eeStore.pendingQrPayload() != null
-        return hasPendingQr || locationSource.pendingInitPayload.value != null || recentlyTriggered
+        // Also check if Bob is on the naming screen.
+        val isNaming = locationSource.pendingQrForNaming.value != null
+        return hasPendingQr || locationSource.pendingInitPayload.value != null || recentlyTriggered || isNaming
     }
 
     private suspend fun doPoll() {
@@ -206,18 +208,25 @@ class LocationService : Service() {
         if (!locationSource.isSharingLocation.value) return
         val now = clock()
         val shouldSend = sendLock.withLock {
-            force || lastSentTime == 0L ||
+            val canSend = force || lastSentTime == 0L ||
                 (!isHeartbeat && now - lastSentTime > 15_000L) ||
                 (isHeartbeat && now - lastSentTime > 300_000L)
+            if (canSend) {
+                lastSentTime = now
+                true
+            } else {
+                false
+            }
         }
         if (!shouldSend) return
         try {
             locationClient.sendLocation(lat, lng, locationSource.pausedFriendIds.value)
-            sendLock.withLock {
-                lastSentTime = now
-            }
             updateStatus(null)
         } catch (e: Exception) {
+            // Restore lastSentTime on failure so the next update can retry immediately.
+            sendLock.withLock {
+                lastSentTime = 0L
+            }
             Log.e(TAG, "Failed to send location: ${e.message}")
             updateStatus(e)
         }
