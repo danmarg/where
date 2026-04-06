@@ -306,6 +306,12 @@ final class LocationSyncService: ObservableObject {
         // If a task is already in-flight, skip this update unless it's forced.
         if currentSendTask != nil && !effectiveForce { return }
 
+        // Cancel existing task if this is a forced update to ensure it goes through immediately.
+        if effectiveForce, let existing = currentSendTask {
+            existing.cancel()
+            currentSendTask = nil
+        }
+
         let now = Date()
         let shouldSend = effectiveForce || lastSentLocation == nil ||
                         (!isHeartbeat && now.timeIntervalSince(lastSentTime) > 15) ||
@@ -447,6 +453,7 @@ final class LocationSyncService: ObservableObject {
                     if let last = LocationManager.shared.lastLocation {
                         self.sendLocation(lat: last.coordinate.latitude, lng: last.coordinate.longitude, force: true)
                     } else {
+                        logger.debug("confirmQrScan: lastLocation is nil, setting pendingForcedSendAfterPairing")
                         self.pendingForcedSendAfterPairing = true
                         LocationManager.shared.requestPermissionAndStart()
                     }
@@ -484,6 +491,7 @@ final class LocationSyncService: ObservableObject {
                 if let last = LocationManager.shared.lastLocation {
                     self.sendLocation(lat: last.coordinate.latitude, lng: last.coordinate.longitude, force: true)
                 } else {
+                    logger.debug("confirmPendingInit: lastLocation is nil, setting pendingForcedSendAfterPairing")
                     self.pendingForcedSendAfterPairing = true
                     LocationManager.shared.requestPermissionAndStart()
                 }
