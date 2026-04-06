@@ -147,7 +147,9 @@ class LocationService : Service() {
         // We consider it rapid if an invite is pending, or we're in key exchange.
         // The ViewModel triggers this via LocationRepository.triggerRapidPoll().
         // For simplicity, we also rapid-poll if there's a pending init payload.
-        return locationSource.pendingInitPayload.value != null
+        val now = System.currentTimeMillis()
+        val recentlyTriggered = now - locationSource.lastRapidPollTrigger.value < 5 * 60_000L
+        return locationSource.pendingInitPayload.value != null || recentlyTriggered
     }
 
     private suspend fun doPoll() {

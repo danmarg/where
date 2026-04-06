@@ -158,11 +158,15 @@ private class FakeLocationSource : LocationSource {
 
     override val pollWakeSignal = Channel<Unit>(Channel.CONFLATED)
 
+    private val _lastRapidPollTrigger = MutableStateFlow(0L)
+    override val lastRapidPollTrigger: StateFlow<Long> = _lastRapidPollTrigger
+
     override fun onFriendsUpdated(friends: List<FriendEntry>) {
         _friends.value = friends
     }
 
     override fun triggerRapidPoll() {
+        _lastRapidPollTrigger.value = System.currentTimeMillis()
         pollWakeSignal.trySend(Unit)
     }
 }
