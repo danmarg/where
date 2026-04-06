@@ -77,8 +77,26 @@ private class FakeLocationSource : LocationSource {
     private val _lastLocation = MutableStateFlow<Pair<Double, Double>?>(null)
     override val lastLocation: StateFlow<Pair<Double, Double>?> = _lastLocation
 
-    private val _users = MutableStateFlow<List<UserLocation>>(emptyList())
-    override val users: StateFlow<List<UserLocation>> = _users
+    private val _friendLocations = MutableStateFlow<Map<String, UserLocation>>(emptyMap())
+    override val friendLocations: StateFlow<Map<String, UserLocation>> = _friendLocations
+
+    private val _friendLastPing = MutableStateFlow<Map<String, Long>>(emptyMap())
+    override val friendLastPing: StateFlow<Map<String, Long>> = _friendLastPing
+
+    private val _connectionStatus = MutableStateFlow<ConnectionStatus>(ConnectionStatus.Ok)
+    override val connectionStatus: StateFlow<ConnectionStatus> = _connectionStatus
+
+    private val _isAppInForeground = MutableStateFlow(false)
+    override val isAppInForeground: StateFlow<Boolean> = _isAppInForeground
+
+    private val _pendingInitPayload = MutableStateFlow<KeyExchangeInitPayload?>(null)
+    override val pendingInitPayload: StateFlow<KeyExchangeInitPayload?> = _pendingInitPayload
+
+    private val _isSharingLocation = MutableStateFlow(true)
+    override val isSharingLocation: StateFlow<Boolean> = _isSharingLocation
+
+    private val _pausedFriendIds = MutableStateFlow<Set<String>>(emptySet())
+    override val pausedFriendIds: StateFlow<Set<String>> = _pausedFriendIds
 
     override fun onLocation(
         lat: Double,
@@ -87,8 +105,51 @@ private class FakeLocationSource : LocationSource {
         _lastLocation.value = lat to lng
     }
 
-    override fun onUsersUpdate(users: List<UserLocation>) {
-        _users.value = users
+    override fun onFriendUpdate(update: UserLocation, timestamp: Long) {
+        _friendLocations.value += (update.userId to update)
+        _friendLastPing.value += (update.userId to timestamp)
+    }
+
+    override fun onFriendRemoved(id: String) {
+        _friendLocations.value -= id
+        _friendLastPing.value -= id
+    }
+
+    override fun onConnectionStatus(status: ConnectionStatus) {
+        _connectionStatus.value = status
+    }
+
+    override fun onConnectionError(e: Throwable) {
+        val msg =
+            when {
+                e.message?.contains("Unable to resolve host", ignoreCase = true) == true -> "not resolved"
+                e.message?.contains("timeout", ignoreCase = true) == true -> "timeout"
+                e.message?.contains("ConnectException", ignoreCase = true) == true -> "no connection"
+                e.message?.contains("Failed to post to mailbox: 500", ignoreCase = true) == true -> "server error 500"
+                else -> e.message?.take(32) ?: "unknown error"
+            }
+        _connectionStatus.value = ConnectionStatus.Error(msg)
+    }
+
+    override fun setAppForeground(foreground: Boolean) {
+        _isAppInForeground.value = foreground
+    }
+
+    override fun onPendingInit(payload: KeyExchangeInitPayload?) {
+        _pendingInitPayload.value = payload
+    }
+
+    override fun setSharingLocation(sharing: Boolean) {
+        _isSharingLocation.value = sharing
+    }
+
+    override fun setPausedFriends(friendIds: Set<String>) {
+        _pausedFriendIds.value = friendIds
+    }
+
+    override fun setInitialFriendLocations(locations: Map<String, UserLocation>, pings: Map<String, Long>) {
+        _friendLocations.value += locations
+        _friendLastPing.value += pings
     }
 }
 
@@ -198,11 +259,8 @@ class LocationViewModelTest {
 
             val qr = QrPayload(byteArrayOf(1, 2, 3), "Alice", "fp")
 
-            // Bob scans - simulate by setting the private field via reflection since it's Bob's side
-            val pendingQrField = LocationViewModel::class.java.getDeclaredField("_pendingQrForNaming")
-            pendingQrField.isAccessible = true
-            val pendingQrFlow = pendingQrField.get(vm) as kotlinx.coroutines.flow.MutableStateFlow<QrPayload?>
-            pendingQrFlow.value = qr
+            // Bob scans
+            (vm.pendingQrForNaming as MutableStateFlow).value = qr
 
             assertEquals(qr, vm.pendingQrForNaming.value)
 
@@ -365,6 +423,7 @@ class LocationViewModelTest {
             val vm = viewModel!!
 
             // Sharing is disabled, so any send should be rejected
+            (vm.isSharingLocation as MutableStateFlow).value = false
             vm.sendLocationIfNeeded(lat = 37.7749, lng = -122.4194, isHeartbeat = false)
             assertEquals(0, testClient.sendLocationCallCount, "Sending when sharing is disabled should not send")
         }
@@ -428,11 +487,7 @@ class LocationViewModelTest {
             // Initially not rapid polling
             assertFalse(vm.isRapidPolling())
 
-            // Simulate setting pending init payload via reflection (represents Bob's side receiving Alice's invite)
-            val pendingInitField = LocationViewModel::class.java.getDeclaredField("_pendingInitPayload")
-            pendingInitField.isAccessible = true
-            @Suppress("UNCHECKED_CAST")
-            val pendingInitFlow = pendingInitField.get(vm) as MutableStateFlow<KeyExchangeInitPayload?>
+            // Simulate setting pending init payload (represents Bob's side receiving Alice's invite)
             val initPayload =
                 KeyExchangeInitPayload(
                     v = 1,
@@ -441,7 +496,7 @@ class LocationViewModelTest {
                     keyConfirmation = byteArrayOf(4, 5, 6),
                     suggestedName = "Alice",
                 )
-            pendingInitFlow.value = initPayload
+            (vm.pendingInitPayload as MutableStateFlow).value = initPayload
 
             // Now should be rapid polling
             assertTrue(vm.isRapidPolling(), "Should be rapid polling while pending init payload exists")
@@ -471,13 +526,9 @@ class LocationViewModelTest {
             // Initially not rapid polling
             assertFalse(vm.isRapidPolling())
 
-            // Simulate setting pending QR via reflection (represents Bob's side after scanning Alice's QR)
-            val pendingQrField = LocationViewModel::class.java.getDeclaredField("_pendingQrForNaming")
-            pendingQrField.isAccessible = true
-            @Suppress("UNCHECKED_CAST")
-            val pendingQrFlow = pendingQrField.get(vm) as MutableStateFlow<QrPayload?>
+            // Simulate setting pending QR (represents Bob's side after scanning Alice's QR)
             val qr = QrPayload(byteArrayOf(1, 2, 3), "Alice", "fingerprint123")
-            pendingQrFlow.value = qr
+            (vm.pendingQrForNaming as MutableStateFlow).value = qr
 
             // Now should be rapid polling
             assertTrue(vm.isRapidPolling(), "Should be rapid polling while pending QR exists")
@@ -551,10 +602,6 @@ class LocationViewModelTest {
             assertTrue(vm.isRapidPolling(), "Invite pending → rapid polling")
 
             // Simulate received init payload (representing Bob's response)
-            val pendingInitField = LocationViewModel::class.java.getDeclaredField("_pendingInitPayload")
-            pendingInitField.isAccessible = true
-            @Suppress("UNCHECKED_CAST")
-            val pendingInitFlow = pendingInitField.get(vm) as MutableStateFlow<KeyExchangeInitPayload?>
             val initPayload =
                 KeyExchangeInitPayload(
                     v = 1,
@@ -563,7 +610,7 @@ class LocationViewModelTest {
                     keyConfirmation = byteArrayOf(4, 5, 6),
                     suggestedName = "Bob",
                 )
-            pendingInitFlow.value = initPayload
+            (vm.pendingInitPayload as MutableStateFlow).value = initPayload
 
             // Still rapid polling (now due to pending init)
             assertTrue(vm.isRapidPolling(), "Pending init → rapid polling")
@@ -633,11 +680,7 @@ class LocationViewModelTest {
                     keyConfirmation = byteArrayOf(4, 5, 6),
                     suggestedName = "Bob",
                 )
-            val pendingInitField = LocationViewModel::class.java.getDeclaredField("_pendingInitPayload")
-            pendingInitField.isAccessible = true
-            @Suppress("UNCHECKED_CAST")
-            val pendingInitFlow = pendingInitField.get(vm) as MutableStateFlow<KeyExchangeInitPayload?>
-            pendingInitFlow.value = initPayload
+            (vm.pendingInitPayload as MutableStateFlow).value = initPayload
 
             // Verify pending init is set
             assertNotNull(vm.pendingInitPayload.value, "Pending init should be set")
@@ -765,11 +808,7 @@ class LocationViewModelTest {
                     keyConfirmation = byteArrayOf(4, 5, 6),
                     suggestedName = "Bob",
                 )
-            val pendingInitField = LocationViewModel::class.java.getDeclaredField("_pendingInitPayload")
-            pendingInitField.isAccessible = true
-            @Suppress("UNCHECKED_CAST")
-            val pendingInitFlow = pendingInitField.get(vm) as MutableStateFlow<KeyExchangeInitPayload?>
-            pendingInitFlow.value = initPayload
+            (vm.pendingInitPayload as MutableStateFlow).value = initPayload
 
             // Verify initial state
             assertFalse(vm.isExchanging.value, "Should start with isExchanging=false")
@@ -801,6 +840,7 @@ class LocationViewModelTest {
             var currentTime = 1_000_000_000L
             val store = mockk<E2eeStore>(relaxed = true)
             val testClient = TestLocationClient(mockk(relaxed = true))
+            val source = FakeLocationSource()
 
             viewModel =
                 LocationViewModel(
@@ -809,9 +849,10 @@ class LocationViewModelTest {
                     locationClient = testClient,
                     startPolling = false,
                     clock = { currentTime },
-                    locationSource = FakeLocationSource(),
+                    locationSource = source,
                 )
             val vm = viewModel!!
+            advanceUntilIdle()
 
             // 1. Seed the ViewModel with a friend
             val friendId = "friend_alice_123"
@@ -825,23 +866,15 @@ class LocationViewModelTest {
                     lastTs = 1000L,
                 )
 
-            // Inject friend into the friends list via reflection
-            val friendsField = LocationViewModel::class.java.getDeclaredField("_friends")
-            friendsField.isAccessible = true
-            @Suppress("UNCHECKED_CAST")
-            val friendsFlow = friendsField.get(vm) as MutableStateFlow<List<FriendEntry>>
-            friendsFlow.value = listOf(friendEntry)
+            // Inject friend into the friends list
+            (vm.friends as MutableStateFlow).value = listOf(friendEntry)
 
             // Inject into friendLocations
             val location = UserLocation(friendId, 37.7749, -122.4194, 1000L)
-            vm.friendLocations.value = mapOf(friendId to location)
+            source.onFriendUpdate(location, 1000L)
 
             // Inject into pausedFriendIds
-            val pausedField = LocationViewModel::class.java.getDeclaredField("_pausedFriendIds")
-            pausedField.isAccessible = true
-            @Suppress("UNCHECKED_CAST")
-            val pausedFlow = pausedField.get(vm) as MutableStateFlow<Set<String>>
-            pausedFlow.value = setOf(friendId, "other_friend")
+            source.setPausedFriends(setOf(friendId, "other_friend"))
 
             // Mock store to return empty list after deletion
             io.mockk.coEvery { store.listFriends() } returns emptyList()
@@ -885,6 +918,7 @@ class LocationViewModelTest {
             // Test removeFriend when the friend is not in pausedFriendIds
             var currentTime = 1_000_000_000L
             val store = mockk<E2eeStore>(relaxed = true)
+            val source = FakeLocationSource()
 
             viewModel =
                 LocationViewModel(
@@ -893,9 +927,10 @@ class LocationViewModelTest {
                     locationClient = TestLocationClient(mockk(relaxed = true)),
                     startPolling = false,
                     clock = { currentTime },
-                    locationSource = FakeLocationSource(),
+                    locationSource = source,
                 )
             val vm = viewModel!!
+            advanceUntilIdle()
 
             val friendId = "friend_bob_456"
             val friendEntry =
@@ -909,21 +944,13 @@ class LocationViewModelTest {
                 )
 
             // Inject friend (not paused)
-            val friendsField = LocationViewModel::class.java.getDeclaredField("_friends")
-            friendsField.isAccessible = true
-            @Suppress("UNCHECKED_CAST")
-            val friendsFlow = friendsField.get(vm) as MutableStateFlow<List<FriendEntry>>
-            friendsFlow.value = listOf(friendEntry)
+            (vm.friends as MutableStateFlow).value = listOf(friendEntry)
 
             val location = UserLocation(friendId, 40.7128, -74.0060, 2000L)
-            vm.friendLocations.value = mapOf(friendId to location)
+            source.onFriendUpdate(location, 2000L)
 
             // pausedFriendIds is empty
-            val pausedField = LocationViewModel::class.java.getDeclaredField("_pausedFriendIds")
-            pausedField.isAccessible = true
-            @Suppress("UNCHECKED_CAST")
-            val pausedFlow = pausedField.get(vm) as MutableStateFlow<Set<String>>
-            pausedFlow.value = emptySet()
+            source.setPausedFriends(emptySet())
 
             io.mockk.coEvery { store.listFriends() } returns emptyList()
 
@@ -943,6 +970,7 @@ class LocationViewModelTest {
             // Test removeFriend when multiple friends exist - verify only target is removed
             var currentTime = 1_000_000_000L
             val store = mockk<E2eeStore>(relaxed = true)
+            val source = FakeLocationSource()
 
             // Mock listFriends() to return empty list during init()
             io.mockk.coEvery { store.listFriends() } returns emptyList()
@@ -954,7 +982,7 @@ class LocationViewModelTest {
                     locationClient = TestLocationClient(mockk(relaxed = true)),
                     startPolling = false,
                     clock = { currentTime },
-                    locationSource = FakeLocationSource(),
+                    locationSource = source,
                 )
             val vm = viewModel!!
             advanceUntilIdle() // Let init() block complete
@@ -991,25 +1019,15 @@ class LocationViewModelTest {
             val charlieId = charlie.id
 
             // Inject multiple friends
-            val friendsField = LocationViewModel::class.java.getDeclaredField("_friends")
-            friendsField.isAccessible = true
-            @Suppress("UNCHECKED_CAST")
-            val friendsFlow = friendsField.get(vm) as MutableStateFlow<List<FriendEntry>>
-            friendsFlow.value = listOf(alice, bob, charlie)
+            (vm.friends as MutableStateFlow).value = listOf(alice, bob, charlie)
 
-            vm.friendLocations.value =
-                mapOf(
-                    alice.id to UserLocation(alice.id, 1.0, 2.0, 1000L),
-                    bob.id to UserLocation(bob.id, 3.0, 4.0, 2000L),
-                    charlie.id to UserLocation(charlie.id, 5.0, 6.0, 3000L),
-                )
+            source.onFriendUpdate(UserLocation(alice.id, 1.0, 2.0, 1000L), 1000L)
+            source.onFriendUpdate(UserLocation(bob.id, 3.0, 4.0, 2000L), 2000L)
+            source.onFriendUpdate(UserLocation(charlie.id, 5.0, 6.0, 3000L), 3000L)
+
             println("Initial friendLocations: ${vm.friendLocations.value}") // Added logging
 
-            val pausedField = LocationViewModel::class.java.getDeclaredField("_pausedFriendIds")
-            pausedField.isAccessible = true
-            @Suppress("UNCHECKED_CAST")
-            val pausedFlow = pausedField.get(vm) as MutableStateFlow<Set<String>>
-            pausedFlow.value = setOf(aliceId, bobId)
+            source.setPausedFriends(setOf(aliceId, bobId))
 
             // Update mock to return two friends after removing bob
             io.mockk.coEvery { store.listFriends() } returns listOf(alice, charlie)

@@ -29,7 +29,11 @@ interface LocationSource {
         lng: Double,
     )
 
-    fun onFriendUpdate(update: UserLocation)
+    fun onFriendUpdate(
+        update: UserLocation,
+        timestamp: Long = System.currentTimeMillis(),
+    )
+
     fun onFriendRemoved(id: String)
     fun onConnectionStatus(status: ConnectionStatus)
     fun onConnectionError(e: Throwable)
@@ -37,6 +41,7 @@ interface LocationSource {
     fun onPendingInit(payload: KeyExchangeInitPayload?)
     fun setSharingLocation(sharing: Boolean)
     fun setPausedFriends(friendIds: Set<String>)
+    fun setInitialFriendLocations(locations: Map<String, UserLocation>, pings: Map<String, Long>)
 }
 
 /**
@@ -75,9 +80,12 @@ object LocationRepository : LocationSource {
         _lastLocation.update { Pair(lat, lng) }
     }
 
-    override fun onFriendUpdate(update: UserLocation) {
+    override fun onFriendUpdate(
+        update: UserLocation,
+        timestamp: Long,
+    ) {
         _friendLocations.update { it + (update.userId to update) }
-        _friendLastPing.update { it + (update.userId to System.currentTimeMillis()) }
+        _friendLastPing.update { it + (update.userId to timestamp) }
     }
 
     override fun onFriendRemoved(id: String) {
@@ -116,7 +124,7 @@ object LocationRepository : LocationSource {
         _pausedFriendIds.value = friendIds
     }
 
-    fun setInitialFriendLocations(locations: Map<String, UserLocation>, pings: Map<String, Long>) {
+    override fun setInitialFriendLocations(locations: Map<String, UserLocation>, pings: Map<String, Long>) {
         // Merge with current state to avoid overwriting live updates that arrived before initial load
         _friendLocations.update { locations + it }
         _friendLastPing.update { pings + it }
