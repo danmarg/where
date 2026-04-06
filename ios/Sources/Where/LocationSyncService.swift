@@ -473,6 +473,7 @@ final class LocationSyncService: ObservableObject {
     }
 
     func confirmPendingInit(payload: Shared.KeyExchangeInitPayload, name: String) async {
+        await clearInvite()
         isExchanging = true
         triggerRapidPoll()
 
@@ -586,6 +587,7 @@ final class LocationSyncService: ObservableObject {
     }
 
     private func pollPendingInvite() async {
+        if pendingInitPayload != nil { return }
         let pending = try? await e2eeStore.pendingQrPayload()
         guard let qr = pending ?? nil else { return }
         let discoveryHex = toHex(qr.discoveryToken())
@@ -620,9 +622,6 @@ final class LocationSyncService: ObservableObject {
                 suggestedName: suggestedName
             )
 
-            if case .pending = inviteState {
-                inviteState = .none
-            }
             pendingInitPayload = initPayload
             triggerRapidPoll()
             break

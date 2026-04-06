@@ -73,7 +73,7 @@ object LocationRepository : LocationSource {
     private val _isAppInForeground = MutableStateFlow(false)
     override val isAppInForeground: StateFlow<Boolean> = _isAppInForeground.asStateFlow()
 
-    private val _pendingInitPayload = MutableStateFlow<KeyExchangeInitPayload?>(null)
+    internal val _pendingInitPayload = MutableStateFlow<KeyExchangeInitPayload?>(null)
     override val pendingInitPayload: StateFlow<KeyExchangeInitPayload?> = _pendingInitPayload.asStateFlow()
 
     private val _isSharingLocation = MutableStateFlow(true)
@@ -87,7 +87,7 @@ object LocationRepository : LocationSource {
 
     override val pollWakeSignal = Channel<Unit>(Channel.CONFLATED)
 
-    private val _lastRapidPollTrigger = MutableStateFlow(0L)
+    internal val _lastRapidPollTrigger = MutableStateFlow(0L)
     override val lastRapidPollTrigger: StateFlow<Long> = _lastRapidPollTrigger.asStateFlow()
 
     override fun onLocation(
@@ -162,5 +162,20 @@ object LocationRepository : LocationSource {
 
     override fun wakePoll() {
         pollWakeSignal.trySend(Unit)
+    }
+
+    /** Resets all state for tests. */
+    fun reset() {
+        _lastLocation.value = null
+        _friendLocations.value = emptyMap()
+        _friendLastPing.value = emptyMap()
+        _connectionStatus.value = ConnectionStatus.Ok
+        _isAppInForeground.value = false
+        _pendingInitPayload.value = null
+        _isSharingLocation.value = true
+        _pausedFriendIds.value = emptySet()
+        _friends.value = emptyList()
+        _lastRapidPollTrigger.value = 0L
+        while (pollWakeSignal.tryReceive().isSuccess) { /* drain */ }
     }
 }

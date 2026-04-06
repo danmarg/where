@@ -7,6 +7,7 @@ import android.app.Service
 import android.content.Intent
 import android.os.IBinder
 import android.util.Log
+import androidx.annotation.VisibleForTesting
 import com.google.android.gms.location.LocationCallback
 import com.google.android.gms.location.LocationRequest
 import com.google.android.gms.location.LocationResult
@@ -126,7 +127,8 @@ class LocationService : Service() {
 
     override fun onBind(intent: Intent?): IBinder? = null
 
-    private var lastSentTime: Long = 0L
+    @VisibleForTesting
+    internal var lastSentTime: Long = 0L
     private val sendLock = Mutex()
 
     private suspend fun pollLoop() {
@@ -144,13 +146,15 @@ class LocationService : Service() {
         }
     }
 
-    private fun isRapidPolling(): Boolean {
+    @VisibleForTesting
+    internal suspend fun isRapidPolling(): Boolean {
         // We consider it rapid if an invite is pending, or we're in key exchange.
         // The ViewModel triggers this via LocationRepository.triggerRapidPoll().
         // For simplicity, we also rapid-poll if there's a pending init payload.
-        val now = System.currentTimeMillis()
+        val now = clock()
         val recentlyTriggered = now - locationSource.lastRapidPollTrigger.value < 5 * 60_000L
-        return locationSource.pendingInitPayload.value != null || recentlyTriggered
+        val hasPendingQr = e2eeStore.pendingQrPayload() != null
+        return hasPendingQr || locationSource.pendingInitPayload.value != null || recentlyTriggered
     }
 
     private suspend fun doPoll() {
@@ -175,6 +179,7 @@ class LocationService : Service() {
     }
 
     private suspend fun pollPendingInvite() {
+        if (locationSource.pendingInitPayload.value != null) return
         val qr = e2eeStore.pendingQrPayload() ?: return
         try {
             val discoveryHex = qr.discoveryToken().toHex()
