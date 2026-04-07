@@ -132,8 +132,6 @@ final class LocationSyncService: ObservableObject {
     var isInviteActive: Bool { if case .pending = inviteState { return true } else { return false } }
 
     private var lastRapidPollTrigger: Date = Date(timeIntervalSince1970: 0)
-    private let pollSignals: AsyncStream<Void>
-    private let pollSignalContinuation: AsyncStream<Void>.Continuation
     private var visibleUsersCancellables = Set<AnyCancellable>()
 
     private var lastSentLocation: (lat: Double, lng: Double)? = nil
@@ -174,10 +172,6 @@ final class LocationSyncService: ObservableObject {
     init(e2eeStore: Shared.E2eeStore? = nil, locationClient: Shared.LocationClient? = nil) {
         logger.debug("LocationSyncService init: serverUrl=\(ServerConfig.httpBaseUrl)")
 
-        let (stream, continuation) = AsyncStream<Void>.makeStream()
-        self.pollSignals = stream
-        self.pollSignalContinuation = continuation
-
         let store = e2eeStore ?? Shared.E2eeStore(storage: KeychainE2eeStorage())
         self.e2eeStore = store
         self.locationClient = locationClient ?? Shared.LocationClient(baseUrl: ServerConfig.httpBaseUrl, store: store)
@@ -191,6 +185,11 @@ final class LocationSyncService: ObservableObject {
         pausedFriendIds = Set(savedPaused)
 
         Task { @MainActor in
+            // Clear any stale invite from a previous session before loading friends.
+            if (try? await store.pendingQrPayload()) ?? nil != nil {
+                try? await store.clearInvite()
+            }
+
             do {
                 self.friends = try await store.listFriends()
                 var initialLocations: [String: (lat: Double, lng: Double, ts: Int64)] = [:]
@@ -259,23 +258,7 @@ final class LocationSyncService: ObservableObject {
         if let existing = pollTask, !existing.isCancelled { return }
 
         pollTask = Task { [weak self] in
-
-            guard let isolatedSelf = self else { return }
-
-            // Clear any stale invite from a previous session before first poll.
-            // XXX
-            if (try? await isolatedSelf.e2eeStore.pendingQrPayload()) ?? nil != nil {
-                try? await isolatedSelf.e2eeStore.clearInvite()
-            }
-
-            // Use an iterator to catch all signals, including those during pollAll.
-            // Since this Task inherits MainActor isolation, we can safely access self weakly.
-            guard let signals = self?.pollSignals else { return }
-            let signalIterator = AsyncIteratorBox(signals.makeAsyncIterator())
-
             while !Task.isCancelled {
-                // Re-bind self for each loop iteration to prevent retain cycles while ensuring
-                // safety for the duration of the iteration.
                 guard let isolatedSelf = self else { return }
 
                 await isolatedSelf.pollAll(updateUi: true)
@@ -287,10 +270,9 @@ final class LocationSyncService: ObservableObject {
                 let isRapid = await isolatedSelf.isRapidPolling()
                 let intervalSeconds = isRapid ? 2.0 : 60.0
 
-                // Use the local self for timeout management.
-                try? await isolatedSelf.withTimeout(seconds: intervalSeconds) { @Sendable in
-                    _ = await signalIterator.next()
-                }
+                // Sleep natively. If wakePoll() is called, this sleep throws a CancellationError,
+                // the loop cycles, Task.isCancelled evaluates to true, and the task dies gracefully.
+                try? await Task.sleep(nanoseconds: UInt64(intervalSeconds * 1_000_000_000))
             }
         }
     }
@@ -302,7 +284,7 @@ final class LocationSyncService: ObservableObject {
 
     private func triggerRapidPoll() {
         lastRapidPollTrigger = Date()
-        pollSignalContinuation.yield()
+        wakePoll()
     }
 
     @MainActor
@@ -520,7 +502,8 @@ final class LocationSyncService: ObservableObject {
     }
 
     func wakePoll() {
-        pollSignalContinuation.yield()
+        pollTask?.cancel()
+        startPolling()
     }
 
     func resetRapidPoll() {
@@ -639,20 +622,6 @@ final class LocationSyncService: ObservableObject {
         }
     }
 
-    private func withTimeout(seconds: Double, body: @Sendable @escaping () async -> Void) async throws {
-        try await withThrowingTaskGroup(of: Void.self) { group in
-            group.addTask {
-                await body()
-            }
-            group.addTask {
-                try await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
-                throw CancellationError()
-            }
-            try await group.next()
-            group.cancelAll()
-        }
-    }
-
     /// Thread-safe wrapper for UIBackgroundTaskIdentifier to prevent races between
     /// the expiry handler and the normal completion path.
     private final class BackgroundTaskBox: @unchecked Sendable {
@@ -703,22 +672,6 @@ final class LocationSyncService: ObservableObject {
                 endOp(idToEnd)
             }
         }
-    }
-
-    /// Wraps `AsyncStream.Iterator` to make it Sendable.
-    ///
-    /// AsyncStream.Iterator is not itself Sendable, so concurrent access to `next()` would be unsafe.
-    /// This wrapper is marked @unchecked Sendable and relies on a single-consumer invariant:
-    /// the iterator must only ever be consumed from a single Task. In this codebase, the iterator
-    /// is exclusively owned by the poll loop Task and never shared across tasks.
-    ///
-    /// **Do not pass this to multiple concurrent Tasks.** Doing so would create a race condition
-    /// on the mutable `iterator` property. If you need to signal multiple consumers, use a
-    /// separate AsyncStream or coordinate through a thread-safe channel instead.
-    private final class AsyncIteratorBox: @unchecked Sendable {
-        private var iterator: AsyncStream<Void>.Iterator
-        init(_ iterator: AsyncStream<Void>.Iterator) { self.iterator = iterator }
-        func next() async -> Void? { await iterator.next() }
     }
 
     private func updateStatus(_ error: Error?) {
