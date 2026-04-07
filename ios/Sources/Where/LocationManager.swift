@@ -36,6 +36,7 @@ final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelega
         manager.allowsBackgroundLocationUpdates = (manager.authorizationStatus == .authorizedAlways)
         manager.pausesLocationUpdatesAutomatically = false
         manager.startUpdatingLocation()
+        manager.startMonitoringSignificantLocationChanges()
     }
 
     nonisolated func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
