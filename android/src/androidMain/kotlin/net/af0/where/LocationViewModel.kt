@@ -11,15 +11,12 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.channels.Channel
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.stateIn
-import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
@@ -138,7 +135,6 @@ class LocationViewModel(
             }
         }
     }
-
 
     private fun triggerRapidPoll() {
         locationSource.triggerRapidPoll()
@@ -352,7 +348,10 @@ class LocationViewModel(
                             val loc = locationSource.lastLocation.value
                             if (loc != null) {
                                 try {
-                                    Log.d(TAG, "confirmPendingInit: force-sending location to ${entry.id}: lat=${loc.first}, lng=${loc.second}")
+                                    Log.d(
+                                        TAG,
+                                        "confirmPendingInit: force-sending location to ${entry.id}: lat=${loc.first}, lng=${loc.second}",
+                                    )
                                     locationClient.sendLocationToFriend(entry.id, loc.first, loc.second)
                                     Log.d(TAG, "confirmPendingInit: sendLocationToFriend succeeded")
                                 } catch (e: Exception) {
@@ -408,7 +407,6 @@ class LocationViewModel(
         locationSource.resetRapidPoll()
         _inviteState.value = InviteState.None
     }
-
 
     private fun updateStatus(e: Throwable?) {
         if (e == null) {

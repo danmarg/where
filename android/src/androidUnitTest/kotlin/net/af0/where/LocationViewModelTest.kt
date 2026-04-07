@@ -4,7 +4,6 @@ import android.app.Application
 import android.content.Context
 import android.content.SharedPreferences
 import android.text.TextUtils
-import app.cash.turbine.turbineScope
 import io.mockk.every
 import io.mockk.mockk
 import io.mockk.mockkStatic
@@ -106,7 +105,10 @@ private class FakeLocationSource : LocationSource {
         _lastLocation.value = lat to lng
     }
 
-    override fun onFriendUpdate(update: UserLocation, timestamp: Long) {
+    override fun onFriendUpdate(
+        update: UserLocation,
+        timestamp: Long,
+    ) {
         _friendLocations.value += (update.userId to update)
         _friendLastPing.value += (update.userId to timestamp)
     }
@@ -148,7 +150,10 @@ private class FakeLocationSource : LocationSource {
         _pausedFriendIds.value = friendIds
     }
 
-    override fun setInitialFriendLocations(locations: Map<String, UserLocation>, pings: Map<String, Long>) {
+    override fun setInitialFriendLocations(
+        locations: Map<String, UserLocation>,
+        pings: Map<String, Long>,
+    ) {
         _friendLocations.value += locations
         _friendLastPing.value += pings
     }
