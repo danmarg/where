@@ -253,9 +253,20 @@ final class LocationSyncService: ObservableObject {
     // However, when the device is stationary CoreLocation may not fire for extended periods,
     // so the poll loop also triggers a heartbeat send (throttled to 5 minutes by sendLocation).
     func startPolling() {
+        logger.debug("startPolling called")
+
         // Idempotency guard: do not create a second loop if one is alive.
         if let existing = pollTask, !existing.isCancelled { return }
         pollTask = Task { [weak self] in
+
+            guard let isolatedSelf = self else { return }
+
+            // Clear any stale invite from a previous session before first poll.
+            // XXX
+            //if (try? await isolatedSelf.e2eeStore.pendingQrPayload()) ?? nil != nil {
+            //    try? await isolatedSelf.e2eeStore.clearInvite()
+            //}
+
             // Use an iterator to catch all signals, including those during pollAll.
             // Since this Task inherits MainActor isolation, we can safely access self weakly.
             guard let signals = self?.pollSignals else { return }
@@ -473,13 +484,12 @@ final class LocationSyncService: ObservableObject {
     }
 
     func confirmPendingInit(payload: Shared.KeyExchangeInitPayload, name: String) async {
-        await clearInvite()
         isExchanging = true
-        triggerRapidPoll()
 
         defer { isExchanging = false }
         do {
             let result = try await e2eeStore.processKeyExchangeInit(payload: payload, bobName: name)
+
             if let entry = result ?? nil {
                 friends = try await e2eeStore.listFriends()
                 updateVisibleUsers()
@@ -488,16 +498,13 @@ final class LocationSyncService: ObservableObject {
                 if let last = LocationManager.shared.lastLocation {
                     self.sendLocation(lat: last.coordinate.latitude, lng: last.coordinate.longitude, force: true)
                 } else {
-                    logger.debug("confirmPendingInit: lastLocation is nil, setting pendingForcedSendAfterPairing")
                     self.pendingForcedSendAfterPairing = true
                     LocationManager.shared.requestPermissionAndStart()
                 }
             }
             resetRapidPoll()
-            await pollAll(updateUi: true)
             friends = try await e2eeStore.listFriends()
             updateVisibleUsers()
-            wakePoll()
         } catch {
             logger.error("confirmPendingInit failed: \(error.localizedDescription)")
             updateStatus(error)
@@ -552,7 +559,7 @@ final class LocationSyncService: ObservableObject {
     // MARK: - Internal polling
 
     func pollAll(updateUi: Bool = true) async {
-        logger.debug("Polling for location updates (updateUi=\(updateUi))")
+        logger.debug("Polling for location updates !! (updateUi=\(updateUi))")
         // Capture the end operation closure before entering the BackgroundTaskBox.
         let endOp = self.endBackgroundTask
 
@@ -595,7 +602,7 @@ final class LocationSyncService: ObservableObject {
         let pending = try? await e2eeStore.pendingQrPayload()
         guard let qr = pending ?? nil else { return }
         let discoveryHex = toHex(qr.discoveryToken())
-        debugLog { "pollPendingInvite: discoveryHex=\(discoveryHex)" }
+        // XXX debugLog { "pollPendingInvite: discoveryHex=\(discoveryHex)" }
         let messages: [[String: Any]]
         do {
             messages = try await pollMailbox(token: discoveryHex)
@@ -627,6 +634,7 @@ final class LocationSyncService: ObservableObject {
             )
 
             pendingInitPayload = initPayload
+            inviteState = .none   // dismiss the QR sheet so the naming alert can appear
             triggerRapidPoll()
             break
         }
