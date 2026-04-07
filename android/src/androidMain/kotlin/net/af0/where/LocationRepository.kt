@@ -13,6 +13,7 @@ import net.af0.where.model.UserLocation
 
 sealed class ConnectionStatus {
     object Ok : ConnectionStatus()
+
     data class Error(val message: String) : ConnectionStatus()
 }
 
@@ -44,16 +45,30 @@ interface LocationSource {
     )
 
     fun onFriendRemoved(id: String)
+
     fun onConnectionStatus(status: ConnectionStatus)
+
     fun onConnectionError(e: Throwable)
+
     fun setAppForeground(foreground: Boolean)
+
     fun onPendingInit(payload: KeyExchangeInitPayload?)
+
     fun setSharingLocation(sharing: Boolean)
+
     fun setPausedFriends(friendIds: Set<String>)
-    fun setInitialFriendLocations(locations: Map<String, UserLocation>, pings: Map<String, Long>)
+
+    fun setInitialFriendLocations(
+        locations: Map<String, UserLocation>,
+        pings: Map<String, Long>,
+    )
+
     fun onFriendsUpdated(friends: List<FriendEntry>)
+
     fun triggerRapidPoll()
+
     fun resetRapidPoll()
+
     fun wakePoll()
 }
 
@@ -124,13 +139,14 @@ object LocationRepository : LocationSource {
     }
 
     override fun onConnectionError(e: Throwable) {
-        val msg = when {
-            e.message?.contains("Unable to resolve host", ignoreCase = true) == true -> "not resolved"
-            e.message?.contains("timeout", ignoreCase = true) == true -> "timeout"
-            e.message?.contains("ConnectException", ignoreCase = true) == true -> "no connection"
-            e.message?.contains("Failed to post to mailbox: 500", ignoreCase = true) == true -> "server error 500"
-            else -> e.message?.take(32) ?: "unknown error"
-        }
+        val msg =
+            when {
+                e.message?.contains("Unable to resolve host", ignoreCase = true) == true -> "not resolved"
+                e.message?.contains("timeout", ignoreCase = true) == true -> "timeout"
+                e.message?.contains("ConnectException", ignoreCase = true) == true -> "no connection"
+                e.message?.contains("Failed to post to mailbox: 500", ignoreCase = true) == true -> "server error 500"
+                else -> e.message?.take(32) ?: "unknown error"
+            }
         _connectionStatus.value = ConnectionStatus.Error(msg)
     }
 
@@ -155,7 +171,10 @@ object LocationRepository : LocationSource {
         _pausedFriendIds.value = friendIds
     }
 
-    override fun setInitialFriendLocations(locations: Map<String, UserLocation>, pings: Map<String, Long>) {
+    override fun setInitialFriendLocations(
+        locations: Map<String, UserLocation>,
+        pings: Map<String, Long>,
+    ) {
         // Merge with current state to avoid overwriting live updates that arrived before initial load
         _friendLocations.update { locations + it }
         _friendLastPing.update { pings + it }
