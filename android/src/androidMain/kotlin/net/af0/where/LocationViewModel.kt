@@ -14,6 +14,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
@@ -95,19 +96,25 @@ class LocationViewModel(
 
     val pendingInitPayload: StateFlow<KeyExchangeInitPayload?> = locationSource.pendingInitPayload
 
-    val inviteState: StateFlow<InviteState> =
-        combine(_pendingInviteQr, pendingInitPayload) { qr, init ->
-            when {
-                qr != null && init != null -> InviteState.Consumed(qr)
-                qr != null -> InviteState.Pending(qr)
-                else -> InviteState.None
+    private val _inviteState = MutableStateFlow<InviteState>(InviteState.None)
+    val inviteState: StateFlow<InviteState> = _inviteState
+
+    init {
+        viewModelScope.launch {
+            combine(_pendingInviteQr, pendingInitPayload) { qr, init ->
+                when {
+                    qr != null && init != null -> InviteState.Consumed(qr)
+                    qr != null -> InviteState.Pending(qr)
+                    else -> InviteState.None
+                }
+            }.collect {
+                _inviteState.value = it
             }
-        }.stateIn(viewModelScope, SharingStarted.Eagerly, InviteState.None)
+        }
+    }
 
     private val pollingStateInternal = MutableStateFlow(PollingState())
     private val pollWakeSignal = Channel<Unit>(Channel.CONFLATED)
-
-    private var autoClearedInvite = false
 
     val visibleUsers: StateFlow<List<UserLocation>> =
         combine(locationSource.lastLocation, _isSharingLocation, friendLocations) { myLoc, sharing, friendLocs ->
@@ -154,14 +161,6 @@ class LocationViewModel(
         viewModelScope.launch {
             _pausedFriendIds.collect { ids ->
                 locationSource.setPausedFriends(ids)
-            }
-        }
-
-        viewModelScope.launch {
-            pendingInitPayload.collect { payload ->
-                if (payload != null && _pendingInviteQr.value != null) {
-                    autoClearedInvite = true
-                }
             }
         }
 
@@ -227,7 +226,6 @@ class LocationViewModel(
     }
 
     fun createInvite() {
-        autoClearedInvite = false
         viewModelScope.launch {
             val qr = e2eeStore.createInvite(_displayName.value.ifEmpty { "Me" })
             withContext(Dispatchers.Main.immediate) {
@@ -239,11 +237,8 @@ class LocationViewModel(
 
     fun clearInvite() {
         viewModelScope.launch {
-            if (_pendingInviteQr.value != null) {
-                e2eeStore.clearInvite()
-            }
+            e2eeStore.clearInvite()
             _pendingInviteQr.value = null
-            autoClearedInvite = false
             locationSource.onPendingInit(null)
         }
     }
@@ -319,8 +314,6 @@ class LocationViewModel(
         triggerRapidPoll()
         _isExchanging.value = true
         viewModelScope.launch {
-            if (!autoClearedInvite) e2eeStore.clearInvite()
-            autoClearedInvite = false
             try {
                 val entry = e2eeStore.processKeyExchangeInit(payload, name)
                 if (entry != null) {
@@ -354,8 +347,7 @@ class LocationViewModel(
     fun cancelPendingInit() {
         if (pendingInitPayload.value == null && _pendingInviteQr.value == null) return
         viewModelScope.launch {
-            if (!autoClearedInvite) e2eeStore.clearInvite()
-            autoClearedInvite = false
+            e2eeStore.clearInvite()
             locationSource.onPendingInit(null)
             _pendingInviteQr.value = null
         }

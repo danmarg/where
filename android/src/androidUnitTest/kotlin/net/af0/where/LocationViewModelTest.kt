@@ -219,15 +219,17 @@ class LocationViewModelTest {
 
             // 1. Create invite
             vm.createInvite()
+            // In the updated LocationViewModel, createInvite sets pendingInviteQr in a coroutine
             advanceUntilIdle()
 
-            // Inject into private flow since we're mocking store
+            // Inject into private flow since we're mocking store which is where the invite normally comes from
             val pendingInviteField = LocationViewModel::class.java.getDeclaredField("_pendingInviteQr")
             pendingInviteField.isAccessible = true
             (pendingInviteField.get(vm) as MutableStateFlow<QrPayload?>).value = QrPayload(byteArrayOf(), "Alice", "fp")
             advanceUntilIdle()
 
-            assertTrue(vm.inviteState.value is InviteState.Pending)
+            val state = vm.inviteState.value
+            assertTrue(state is InviteState.Pending, "Expected InviteState.Pending but got $state")
 
             // 2. Simulate finding an init payload via polling
             val initPayload =
@@ -247,7 +249,7 @@ class LocationViewModelTest {
             advanceUntilIdle()
 
             assertNotNull(vm.pendingInitPayload.value)
-            assertTrue(vm.inviteState.value is InviteState.Consumed)
+            assertTrue(vm.inviteState.value is InviteState.Consumed, "Expected InviteState.Consumed but got ${vm.inviteState.value}")
             assertEquals("Bob", vm.pendingInitPayload.value?.suggestedName)
 
             // 3. Alice cancels naming Bob
@@ -255,7 +257,8 @@ class LocationViewModelTest {
             advanceUntilIdle()
 
             assertNull(vm.pendingInitPayload.value)
-            assertTrue(vm.inviteState.value is InviteState.None)
+            assertTrue(vm.inviteState.value is InviteState.None, "Expected InviteState.None but got ${vm.inviteState.value}")
+            assertNull(store.pendingQrPayload(), "Store should be cleared when Alice cancels")
         }
 
     @Test
@@ -462,7 +465,7 @@ class LocationViewModelTest {
             vm.createInvite()
             advanceUntilIdle()
 
-            // Inject into private flow since we're mocking store
+            // Inject into private flow since we're mocking store which is where the invite normally comes from
             val pendingInviteField = LocationViewModel::class.java.getDeclaredField("_pendingInviteQr")
             pendingInviteField.isAccessible = true
             (pendingInviteField.get(vm) as MutableStateFlow<QrPayload?>).value = QrPayload(byteArrayOf(), "Alice", "fp")
@@ -1071,7 +1074,6 @@ class LocationViewModelTest {
                     bob.id to UserLocation(bob.id, 3.0, 4.0, 2000L),
                     charlie.id to UserLocation(charlie.id, 5.0, 6.0, 3000L),
                 )
-            println("Initial friendLocations: ${vm.friendLocations.value}") // Added logging
 
             val pausedField = LocationViewModel::class.java.getDeclaredField("_pausedFriendIds")
             pausedField.isAccessible = true
@@ -1085,8 +1087,6 @@ class LocationViewModelTest {
             // Remove bob
             vm.removeFriend(bob.id)
             advanceUntilIdle()
-
-            println("After removing friend, friendLocations: ${vm.friendLocations.value}") // Added logging
 
             // Verify bob is removed but others remain
             assertEquals(2, vm.friends.value.size, "Should have 2 friends after removing bob")

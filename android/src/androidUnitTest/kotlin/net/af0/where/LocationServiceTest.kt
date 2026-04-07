@@ -19,10 +19,7 @@ class LocationServiceTest {
     @Before
     fun setup() {
         ShadowLog.stream = System.out
-        val field = LocationRepository::class.java.getDeclaredField("_lastLocation")
-        field.isAccessible = true
-        val flow = field.get(LocationRepository) as kotlinx.coroutines.flow.MutableStateFlow<Pair<Double, Double>?>
-        flow.value = null
+        LocationRepository.reset()
     }
 
     private fun getServiceIsRegistered(service: LocationService): Boolean {
