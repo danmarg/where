@@ -212,6 +212,7 @@ class LocationViewModel(
                 e2eeStore.clearInvite()
             }
         }
+        locationSource.resetRapidPoll()
         _inviteState.value = InviteState.None
     }
 
@@ -232,6 +233,7 @@ class LocationViewModel(
     fun cancelQrScan() {
         _pendingQrForNaming.value = null
         if (locationSource is LocationRepository) locationSource.onPendingQrForNaming(null)
+        locationSource.resetRapidPoll()
     }
 
     fun confirmQrScan(
@@ -311,7 +313,7 @@ class LocationViewModel(
                     withContext(Dispatchers.Main.immediate) {
                         locationSource.onFriendsUpdated(e2eeStore.listFriends())
                     }
-                    locationSource.resetRapidPoll()
+                    locationSource.triggerRapidPoll()
                     locationSource.wakePoll()
                 } catch (e: Exception) {
                     Log.e(TAG, "confirmQrScan inner failure: ${e.message}")
@@ -340,7 +342,7 @@ class LocationViewModel(
                     withContext(Dispatchers.Main.immediate) {
                         locationSource.onFriendsUpdated(e2eeStore.listFriends())
                     }
-                    locationSource.resetRapidPoll()
+                    locationSource.triggerRapidPoll()
                     locationSource.wakePoll()
                     try {
                         // Upload OPK bundle so Bob can decrypt our future location messages.
@@ -403,6 +405,7 @@ class LocationViewModel(
             e2eeStore.clearInvite()
         }
         locationSource.onPendingInit(null)
+        locationSource.resetRapidPoll()
         _inviteState.value = InviteState.None
     }
 
