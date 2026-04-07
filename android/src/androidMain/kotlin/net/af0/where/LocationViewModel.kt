@@ -144,6 +144,10 @@ class LocationViewModel(
         check(Looper.myLooper() == Looper.getMainLooper()) { "setDisplayName must be called on the main thread" }
         _displayName.value = name
         UserPrefs.setDisplayName(getApplication(), name)
+        // If an invite is active, we should update it.
+        if (_inviteState.value is InviteState.Pending) {
+            createInvite()
+        }
     }
 
     fun toggleSharing() {

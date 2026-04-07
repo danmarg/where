@@ -45,6 +45,7 @@ struct QrCodeView: View {
 
 struct InviteSheet: View {
     let qrPayload: Shared.QrPayload
+    @Binding var displayName: String
     let onDismiss: () -> Void
 
     @State private var showShareSheet = false
@@ -60,6 +61,10 @@ struct InviteSheet: View {
                 Text("Have them scan this QR code or share the link.")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+
+                TextField("Your Name", text: $displayName)
+                    .textFieldStyle(.roundedBorder)
                     .multilineTextAlignment(.center)
 
                 QrCodeView(content: cachedQrUrl)
@@ -78,9 +83,10 @@ struct InviteSheet: View {
             .padding(32)
         }
         .onAppear {
-            if cachedQrUrl.isEmpty {
-                cachedQrUrl = qrPayloadToUrl(qrPayload)
-            }
+            cachedQrUrl = qrPayloadToUrl(qrPayload)
+        }
+        .onChange(of: qrPayload) { oldValue, newValue in
+            cachedQrUrl = qrPayloadToUrl(newValue)
         }
         .sheet(isPresented: $showShareSheet) {
             ShareSheet(items: [cachedQrUrl])
