@@ -2,6 +2,9 @@ import CoreLocation
 import Shared
 import SwiftUI
 
+import os
+private let logger = Logger(subsystem: "net.af0.where", category: "LocationSync")
+
 struct ContentView: View {
     @ObservedObject private var locationManager = LocationManager.shared
     @StateObject private var syncService = LocationSyncService.shared
@@ -190,9 +193,11 @@ struct ContentView: View {
             } else if let payload = syncService.pendingInitPayload {
                 Button("Save") {
                     let name = newFriendName.isEmpty ? "Friend" : newFriendName
-                    syncService.pendingInitPayload = nil
-                    newFriendName = ""
-                    Task { await syncService.confirmPendingInit(payload: payload, name: name) }
+                    Task {
+                        await syncService.confirmPendingInit(payload: payload, name: name)
+                        newFriendName = ""
+                        syncService.pendingInitPayload = nil
+                    }
                 }
             }
             Button("Cancel", role: .cancel) {
