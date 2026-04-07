@@ -82,6 +82,14 @@ fun FriendsSheet(
         ) {
             Text("Friends", style = MaterialTheme.typography.titleLarge)
 
+            OutlinedTextField(
+                value = displayName,
+                onValueChange = onDisplayNameChange,
+                label = { Text("Your Name") },
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true,
+            )
+
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
