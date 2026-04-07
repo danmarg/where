@@ -14,6 +14,7 @@
 		296E222ADF2ED6BA05F597CC /* FriendsSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 28DD2FC8358389E8C9F6ABE6 /* FriendsSheet.swift */; };
 		2F25461E66995FAC063DAD07 /* LocationSyncServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9849DF78DF23CE90DE4F7F10 /* LocationSyncServiceTests.swift */; };
 		3A351D2D318606B612957163 /* Security in Frameworks */ = {isa = PBXBuildFile; fileRef = 072A149EB28769F34BCED9D8 /* Security */; };
+		46EC4AD63ACE118EDB39EA93 /* .LocationSyncService.swift.swp in Resources */ = {isa = PBXBuildFile; fileRef = 77F86EF3C3CDBA0B7249FFC0 /* .LocationSyncService.swift.swp */; };
 		4A8A07DB9013B997E0C41EFB /* FriendsStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 87F9371D289CC150DF786A96 /* FriendsStore.swift */; };
 		5EF9E5113CEBF25BACE77F5E /* WhereMapView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2421CE3D6966994F4875E311 /* WhereMapView.swift */; };
 		60D8A627443A5ADF3F5C00CB /* WhereApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7A1BBBBE8782378C8B03BB4C /* WhereApp.swift */; };
@@ -38,8 +39,8 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
-		072A149EB28769F34BCED9D8 /* Security */ = {isa = PBXFileReference; path = Security; sourceTree = "<group>"; };
-		18F48F8FCFBE392E06CD2BB3 /* CoreLocation */ = {isa = PBXFileReference; path = CoreLocation; sourceTree = "<group>"; };
+		072A149EB28769F34BCED9D8 /* Security */ = {isa = PBXFileReference; lastKnownFileType = text; path = Security; sourceTree = "<group>"; };
+		18F48F8FCFBE392E06CD2BB3 /* CoreLocation */ = {isa = PBXFileReference; lastKnownFileType = text; path = CoreLocation; sourceTree = "<group>"; };
 		1D232AA64C61387DE75E8145 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		220A8EA077B99368AF6DA3D4 /* QrScannerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QrScannerView.swift; sourceTree = "<group>"; };
 		2421CE3D6966994F4875E311 /* WhereMapView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WhereMapView.swift; sourceTree = "<group>"; };
@@ -47,18 +48,19 @@
 		28DD2FC8358389E8C9F6ABE6 /* FriendsSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FriendsSheet.swift; sourceTree = "<group>"; };
 		3ADAF0FD19742D151B957FD9 /* LocationManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocationManager.swift; sourceTree = "<group>"; };
 		47183C59D3C1EE4A360DF7ED /* UserIdentity.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UserIdentity.swift; sourceTree = "<group>"; };
-		4CCEF0D6661013EBFBD2A61F /* Shared.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = Shared.xcframework; path = ../shared/build/XCFrameworks/debug/Shared.xcframework; sourceTree = "<group>"; };
+		4CCEF0D6661013EBFBD2A61F /* Shared.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = Shared.xcframework; path = "../shared/build/XCFrameworks/$(CONFIGURATION:lower)/Shared.xcframework"; sourceTree = "<group>"; };
 		5DBE659D6FC99FBE57AB21DB /* QrCodeView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QrCodeView.swift; sourceTree = "<group>"; };
+		77F86EF3C3CDBA0B7249FFC0 /* .LocationSyncService.swift.swp */ = {isa = PBXFileReference; lastKnownFileType = file; path = .LocationSyncService.swift.swp; sourceTree = "<group>"; };
 		7A1BBBBE8782378C8B03BB4C /* WhereApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WhereApp.swift; sourceTree = "<group>"; };
 		87F9371D289CC150DF786A96 /* FriendsStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FriendsStore.swift; sourceTree = "<group>"; };
 		9849DF78DF23CE90DE4F7F10 /* LocationSyncServiceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocationSyncServiceTests.swift; sourceTree = "<group>"; };
 		AC2B156B7AAD99EBB5C7C775 /* KotlinByteArrayUtils.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KotlinByteArrayUtils.swift; sourceTree = "<group>"; };
-		CFF6771BE7FE45B2F4F8952B /* MapKit */ = {isa = PBXFileReference; path = MapKit; sourceTree = "<group>"; };
+		CFF6771BE7FE45B2F4F8952B /* MapKit */ = {isa = PBXFileReference; lastKnownFileType = text; path = MapKit; sourceTree = "<group>"; };
 		D11AE7B7423D7D8B04C7C2C2 /* KeychainE2eeStorage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeychainE2eeStorage.swift; sourceTree = "<group>"; };
 		D43663670EB5FB46B5C7C4EA /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
 		D4B36665B05EA8E1F42A11EA /* LocationSyncService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocationSyncService.swift; sourceTree = "<group>"; };
 		E54EC15388BAF720E7755291 /* ServerConfig.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ServerConfig.swift; sourceTree = "<group>"; };
-		EA47D2499F3983EF98B459AB /* Where.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = Where.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		EA47D2499F3983EF98B459AB /* Where.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Where.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		EE1A058D7818BC3CADF5B72E /* Local.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Local.xcconfig; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
@@ -110,6 +112,7 @@
 		B39C72AD8B5E1F0E3A409FD2 /* Where */ = {
 			isa = PBXGroup;
 			children = (
+				77F86EF3C3CDBA0B7249FFC0 /* .LocationSyncService.swift.swp */,
 				D43663670EB5FB46B5C7C4EA /* ContentView.swift */,
 				28DD2FC8358389E8C9F6ABE6 /* FriendsSheet.swift */,
 				87F9371D289CC150DF786A96 /* FriendsStore.swift */,
@@ -162,8 +165,8 @@
 			isa = PBXNativeTarget;
 			buildConfigurationList = 179750A609FCACFE5552F4E1 /* Build configuration list for PBXNativeTarget "Where" */;
 			buildPhases = (
-				C31542DE418B9D29BD8B6FF7 /* Build Shared XCFramework */,
 				E7ED0F8B6CA06472498EA266 /* Sources */,
+				7F982A2FD48F1A229F4BD237 /* Resources */,
 				EFB0479BA721AAE049851BE1 /* Frameworks */,
 			);
 			buildRules = (
@@ -205,7 +208,6 @@
 				LastUpgradeCheck = 1430;
 				TargetAttributes = {
 					02B551C6DB1927ABD876665A = {
-						DevelopmentTeam = "";
 						ProvisioningStyle = Automatic;
 					};
 				};
@@ -230,26 +232,16 @@
 		};
 /* End PBXProject section */
 
-/* Begin PBXShellScriptBuildPhase section */
-		C31542DE418B9D29BD8B6FF7 /* Build Shared XCFramework */ = {
-			isa = PBXShellScriptBuildPhase;
+/* Begin PBXResourcesBuildPhase section */
+		7F982A2FD48F1A229F4BD237 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-			);
-			inputFileListPaths = (
-			);
-			inputPaths = (
-			);
-			name = "Build Shared XCFramework";
-			outputFileListPaths = (
-			);
-			outputPaths = (
+				46EC4AD63ACE118EDB39EA93 /* .LocationSyncService.swift.swp in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
-			shellPath = /bin/sh;
-			shellScript = "if [ -f \"../gradlew\" ]; then\n  cd ..\n  ./gradlew :shared:assembleSharedXCFramework\nfi\n";
 		};
-/* End PBXShellScriptBuildPhase section */
+/* End PBXResourcesBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
 		0700B98DBA26A1F319FBEAD1 /* Sources */ = {
@@ -394,11 +386,12 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
-				DEVELOPMENT_TEAM = "";
+				DEVELOPMENT_TEAM = 5PM2V9LTHC;
 				FRAMEWORK_SEARCH_PATHS = (
-					"$(inherited) $(SRCROOT)/../shared/build/xcode-frameworks/$(CONFIGURATION)/$(SDK_NAME)",
+					"$(inherited)",
+					"$(SRCROOT)/../shared/build/XCFrameworks/$(CONFIGURATION:lower)",
 					"\".\"",
-					"\"../shared/build/XCFrameworks/debug\"",
+					"\"../shared/build/XCFrameworks/$(CONFIGURATION:lower)\"",
 				);
 				INFOPLIST_FILE = Sources/Where/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
@@ -419,11 +412,12 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
-				DEVELOPMENT_TEAM = "";
+				DEVELOPMENT_TEAM = 5PM2V9LTHC;
 				FRAMEWORK_SEARCH_PATHS = (
-					"$(inherited) $(SRCROOT)/../shared/build/xcode-frameworks/$(CONFIGURATION)/$(SDK_NAME)",
+					"$(inherited)",
+					"$(SRCROOT)/../shared/build/XCFrameworks/$(CONFIGURATION:lower)",
 					"\".\"",
-					"\"../shared/build/XCFrameworks/debug\"",
+					"\"../shared/build/XCFrameworks/$(CONFIGURATION:lower)\"",
 				);
 				INFOPLIST_FILE = Sources/Where/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;

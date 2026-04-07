@@ -1,9 +1,12 @@
 package net.af0.where
 
+import androidx.annotation.VisibleForTesting
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
+import net.af0.where.e2ee.FriendEntry
 import net.af0.where.e2ee.KeyExchangeInitPayload
 import net.af0.where.e2ee.QrPayload
 import net.af0.where.model.UserLocation
@@ -23,6 +26,12 @@ interface LocationSource {
     val pendingInitPayload: StateFlow<KeyExchangeInitPayload?>
     val isSharingLocation: StateFlow<Boolean>
     val pausedFriendIds: StateFlow<Set<String>>
+    val friends: StateFlow<List<FriendEntry>>
+    val lastRapidPollTrigger: StateFlow<Long>
+    val pendingQrForNaming: StateFlow<QrPayload?>
+
+    /** Wait for a poll wake signal (either interval timeout or immediate trigger). */
+    suspend fun awaitPollWake(timeoutMillis: Long)
 
     fun onLocation(
         lat: Double,
@@ -42,6 +51,10 @@ interface LocationSource {
     fun setSharingLocation(sharing: Boolean)
     fun setPausedFriends(friendIds: Set<String>)
     fun setInitialFriendLocations(locations: Map<String, UserLocation>, pings: Map<String, Long>)
+    fun onFriendsUpdated(friends: List<FriendEntry>)
+    fun triggerRapidPoll()
+    fun resetRapidPoll()
+    fun wakePoll()
 }
 
 /**
@@ -64,7 +77,8 @@ object LocationRepository : LocationSource {
     private val _isAppInForeground = MutableStateFlow(false)
     override val isAppInForeground: StateFlow<Boolean> = _isAppInForeground.asStateFlow()
 
-    private val _pendingInitPayload = MutableStateFlow<KeyExchangeInitPayload?>(null)
+    @get:VisibleForTesting
+    internal val _pendingInitPayload = MutableStateFlow<KeyExchangeInitPayload?>(null)
     override val pendingInitPayload: StateFlow<KeyExchangeInitPayload?> = _pendingInitPayload.asStateFlow()
 
     private val _isSharingLocation = MutableStateFlow(true)
@@ -72,6 +86,18 @@ object LocationRepository : LocationSource {
 
     private val _pausedFriendIds = MutableStateFlow<Set<String>>(emptySet())
     override val pausedFriendIds: StateFlow<Set<String>> = _pausedFriendIds.asStateFlow()
+
+    private val _friends = MutableStateFlow<List<FriendEntry>>(emptyList())
+    override val friends: StateFlow<List<FriendEntry>> = _friends.asStateFlow()
+
+    private val _pendingQrForNaming = MutableStateFlow<QrPayload?>(null)
+    override val pendingQrForNaming: StateFlow<QrPayload?> = _pendingQrForNaming.asStateFlow()
+
+    private val pollWakeSignal = Channel<Unit>(Channel.CONFLATED)
+
+    @get:VisibleForTesting
+    internal val _lastRapidPollTrigger = MutableStateFlow(0L)
+    override val lastRapidPollTrigger: StateFlow<Long> = _lastRapidPollTrigger.asStateFlow()
 
     override fun onLocation(
         lat: Double,
@@ -116,6 +142,11 @@ object LocationRepository : LocationSource {
         _pendingInitPayload.value = payload
     }
 
+    /** Called by ViewModel to notify Bob scanned a QR and is naming the friend. */
+    fun onPendingQrForNaming(qr: QrPayload?) {
+        _pendingQrForNaming.value = qr
+    }
+
     override fun setSharingLocation(sharing: Boolean) {
         _isSharingLocation.value = sharing
     }
@@ -128,5 +159,43 @@ object LocationRepository : LocationSource {
         // Merge with current state to avoid overwriting live updates that arrived before initial load
         _friendLocations.update { locations + it }
         _friendLastPing.update { pings + it }
+    }
+
+    override fun onFriendsUpdated(friends: List<FriendEntry>) {
+        _friends.value = friends
+    }
+
+    override fun triggerRapidPoll() {
+        _lastRapidPollTrigger.value = System.currentTimeMillis()
+        pollWakeSignal.trySend(Unit)
+    }
+
+    override fun resetRapidPoll() {
+        _lastRapidPollTrigger.value = 0L
+    }
+
+    override fun wakePoll() {
+        pollWakeSignal.trySend(Unit)
+    }
+
+    override suspend fun awaitPollWake(timeoutMillis: Long) {
+        kotlinx.coroutines.withTimeoutOrNull(timeoutMillis) {
+            pollWakeSignal.receive()
+        }
+    }
+
+    /** Resets all state for tests. */
+    fun reset() {
+        _lastLocation.value = null
+        _friendLocations.value = emptyMap()
+        _friendLastPing.value = emptyMap()
+        _connectionStatus.value = ConnectionStatus.Ok
+        _isAppInForeground.value = false
+        _pendingInitPayload.value = null
+        _isSharingLocation.value = true
+        _pausedFriendIds.value = emptySet()
+        _friends.value = emptyList()
+        _lastRapidPollTrigger.value = 0L
+        while (pollWakeSignal.tryReceive().isSuccess) { /* drain */ }
     }
 }

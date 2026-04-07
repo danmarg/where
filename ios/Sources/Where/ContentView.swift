@@ -2,6 +2,9 @@ import CoreLocation
 import Shared
 import SwiftUI
 
+import os
+private let logger = Logger(subsystem: "net.af0.where", category: "LocationSync")
+
 struct ContentView: View {
     @ObservedObject private var locationManager = LocationManager.shared
     @StateObject private var syncService = LocationSyncService.shared
@@ -152,7 +155,13 @@ struct ContentView: View {
         }
         .sheet(isPresented: Binding(
             get: { if case .pending = syncService.inviteState { return true } else { return false } },
-            set: { if !$0 { Task { await syncService.clearInvite() } } }
+            set: { if !$0 {
+                // If we're dismissing because a peer joined (pendingInitPayload is set),
+                // do NOT clear the store yet, as we need the ephemeral keys to derive the session.
+                if syncService.pendingInitPayload == nil {
+                    Task { await syncService.clearInvite() }
+                }
+            } }
         )) {
             if case .pending(let qr) = syncService.inviteState {
                 InviteSheet(qrPayload: qr, onDismiss: { Task { await syncService.clearInvite() } })
@@ -181,12 +190,14 @@ struct ContentView: View {
                     newFriendName = ""
                     Task { await syncService.confirmQrScan(qr: qr, friendName: name) }
                 }
-            } else if syncService.pendingInitPayload != nil {
+            } else if let payload = syncService.pendingInitPayload {
                 Button("Save") {
                     let name = newFriendName.isEmpty ? "Friend" : newFriendName
-                    syncService.pendingInitPayload = nil
-                    newFriendName = ""
-                    Task { await syncService.confirmPendingInit(name: name) }
+                    Task {
+                        await syncService.confirmPendingInit(payload: payload, name: name)
+                        newFriendName = ""
+                        syncService.pendingInitPayload = nil
+                    }
                 }
             }
             Button("Cancel", role: .cancel) {
@@ -207,7 +218,9 @@ struct ContentView: View {
         }
         .onChange(of: scenePhase) { oldPhase, newPhase in
             if newPhase == .background {
-                syncService.stopPolling()
+                // If we wanted to stop background polling and only rely on
+                // CoreLocation, this would be the place to stop polling:
+                // syncService.stopPolling()
             } else if newPhase == .active {
                 syncService.startPolling()
             }

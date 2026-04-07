@@ -138,6 +138,8 @@ else
 fi
 
 # Always regenerate the Xcode project from project.yml before building.
+echo "Cleaning old iOS build..."
+rm -rf ios/build
 echo "Generating Xcode project..."
 cd ios && run xcodegen && cd ..
 
@@ -182,6 +184,13 @@ ln -sfn "${IOS_SDK}${SDK_VERSION}" "shared/build/xcode-frameworks/$XCODE_CONFIGU
 
 echo "✓ KMP shared framework built"
 echo ""
+
+# Ensure XCFramework is built
+if [[ "$BUILD_FLAVOR" == "debug" ]]; then
+  ./gradlew :shared:assembleSharedDebugXCFramework
+else
+  ./gradlew :shared:assembleSharedReleaseXCFramework
+fi
 
 # Build the iOS app with xcodebuild.
 if [[ "$IOS_TARGET" == "simulator" ]]; then
