@@ -257,15 +257,16 @@ final class LocationSyncService: ObservableObject {
 
         // Idempotency guard: do not create a second loop if one is alive.
         if let existing = pollTask, !existing.isCancelled { return }
+
         pollTask = Task { [weak self] in
 
             guard let isolatedSelf = self else { return }
 
             // Clear any stale invite from a previous session before first poll.
             // XXX
-            //if (try? await isolatedSelf.e2eeStore.pendingQrPayload()) ?? nil != nil {
-            //    try? await isolatedSelf.e2eeStore.clearInvite()
-            //}
+            if (try? await isolatedSelf.e2eeStore.pendingQrPayload()) ?? nil != nil {
+                try? await isolatedSelf.e2eeStore.clearInvite()
+            }
 
             // Use an iterator to catch all signals, including those during pollAll.
             // Since this Task inherits MainActor isolation, we can safely access self weakly.
@@ -465,7 +466,6 @@ final class LocationSyncService: ObservableObject {
                         self.pendingForcedSendAfterPairing = true
                         LocationManager.shared.requestPermissionAndStart()
                     }
-                    resetRapidPoll()
                     await pollAll(updateUi: true)
                     friends = try await e2eeStore.listFriends()
                     updateVisibleUsers()
@@ -559,7 +559,7 @@ final class LocationSyncService: ObservableObject {
     // MARK: - Internal polling
 
     func pollAll(updateUi: Bool = true) async {
-        logger.debug("Polling for location updates !! (updateUi=\(updateUi))")
+        logger.debug("Polling for location updates (updateUi=\(updateUi))")
         // Capture the end operation closure before entering the BackgroundTaskBox.
         let endOp = self.endBackgroundTask
 
@@ -602,7 +602,6 @@ final class LocationSyncService: ObservableObject {
         let pending = try? await e2eeStore.pendingQrPayload()
         guard let qr = pending ?? nil else { return }
         let discoveryHex = toHex(qr.discoveryToken())
-        // XXX debugLog { "pollPendingInvite: discoveryHex=\(discoveryHex)" }
         let messages: [[String: Any]]
         do {
             messages = try await pollMailbox(token: discoveryHex)
