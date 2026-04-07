@@ -253,8 +253,8 @@ class E2eeStore(
             } catch (e: IllegalArgumentException) {
                 throw e // key_confirmation failure — surface to caller
             } catch (e: Exception) {
-								throw e // XXX
-                //null // transient parse/format error — treat as "not ready yet"
+                throw e // XXX
+                // null // transient parse/format error — treat as "not ready yet"
             }
         }
 
