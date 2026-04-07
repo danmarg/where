@@ -119,7 +119,12 @@ final class LocationSyncService: ObservableObject {
         didSet { UserDefaults.standard.set(isSharingLocation, forKey: "where_is_sharing") }
     }
     @Published var displayName: String {
-        didSet { UserDefaults.standard.set(displayName, forKey: "display_name") }
+        didSet {
+            UserDefaults.standard.set(displayName, forKey: "display_name")
+            if isInviteActive {
+                Task { await createInvite() }
+            }
+        }
     }
     @Published var pausedFriendIds: Set<String> {
         didSet { UserDefaults.standard.set(Array(pausedFriendIds), forKey: "paused_friends") }
