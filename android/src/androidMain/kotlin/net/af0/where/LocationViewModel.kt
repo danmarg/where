@@ -11,15 +11,12 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.channels.Channel
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.stateIn
-import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
@@ -139,7 +136,6 @@ class LocationViewModel(
         }
     }
 
-
     private fun triggerRapidPoll() {
         locationSource.triggerRapidPoll()
     }
@@ -212,6 +208,7 @@ class LocationViewModel(
                 e2eeStore.clearInvite()
             }
         }
+        locationSource.resetRapidPoll()
         _inviteState.value = InviteState.None
     }
 
@@ -232,6 +229,7 @@ class LocationViewModel(
     fun cancelQrScan() {
         _pendingQrForNaming.value = null
         if (locationSource is LocationRepository) locationSource.onPendingQrForNaming(null)
+        locationSource.resetRapidPoll()
     }
 
     fun confirmQrScan(
@@ -311,7 +309,7 @@ class LocationViewModel(
                     withContext(Dispatchers.Main.immediate) {
                         locationSource.onFriendsUpdated(e2eeStore.listFriends())
                     }
-                    locationSource.resetRapidPoll()
+                    locationSource.triggerRapidPoll()
                     locationSource.wakePoll()
                 } catch (e: Exception) {
                     Log.e(TAG, "confirmQrScan inner failure: ${e.message}")
@@ -340,7 +338,7 @@ class LocationViewModel(
                     withContext(Dispatchers.Main.immediate) {
                         locationSource.onFriendsUpdated(e2eeStore.listFriends())
                     }
-                    locationSource.resetRapidPoll()
+                    locationSource.triggerRapidPoll()
                     locationSource.wakePoll()
                     try {
                         // Upload OPK bundle so Bob can decrypt our future location messages.
@@ -350,7 +348,10 @@ class LocationViewModel(
                             val loc = locationSource.lastLocation.value
                             if (loc != null) {
                                 try {
-                                    Log.d(TAG, "confirmPendingInit: force-sending location to ${entry.id}: lat=${loc.first}, lng=${loc.second}")
+                                    Log.d(
+                                        TAG,
+                                        "confirmPendingInit: force-sending location to ${entry.id}: lat=${loc.first}, lng=${loc.second}",
+                                    )
                                     locationClient.sendLocationToFriend(entry.id, loc.first, loc.second)
                                     Log.d(TAG, "confirmPendingInit: sendLocationToFriend succeeded")
                                 } catch (e: Exception) {
@@ -403,9 +404,9 @@ class LocationViewModel(
             e2eeStore.clearInvite()
         }
         locationSource.onPendingInit(null)
+        locationSource.resetRapidPoll()
         _inviteState.value = InviteState.None
     }
-
 
     private fun updateStatus(e: Throwable?) {
         if (e == null) {
