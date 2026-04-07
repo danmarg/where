@@ -5,7 +5,7 @@ import kotlin.test.*
 
 /**
  * Platform-agnostic simulation of LocationSyncService (iOS) and LocationService (Android)
- * state management logic. This ensures the "cold start" (Bug A) and "throttling" (Bug B)
+ * state management logic. This ensures the "cold start" and "throttling"
  * fixes are robust.
  */
 class LocationSyncStateTest {
@@ -42,10 +42,10 @@ class LocationSyncStateTest {
         val now = 1000L // Simulated time
         val effectiveForce = force || (pendingForcedFriendId == friendId)
 
-        // Bug B/C fix: only skip if NOT forcing and already sending.
+        // Only skip if NOT forcing and already sending.
         if (!effectiveForce && isSending) return
 
-        // Bug B fix: reduced cooldown check (15s instead of 60s/300s)
+        // Reduced cooldown check (15s instead of 60s/300s)
         val cooldown = if (isHeartbeat) 300_000L else 15_000L
         val shouldSend = effectiveForce || (now - lastSentTime > cooldown)
 
@@ -61,7 +61,7 @@ class LocationSyncStateTest {
     }
 
     @Test
-    fun testColdStartForcedSend_BugA() =
+    fun testColdStartForcedSend() =
         runBlocking {
             // Alice creates invite
             val qr = aliceStore.createInvite("Alice")
@@ -70,7 +70,7 @@ class LocationSyncStateTest {
             val (initPayload, bobEntry) = bobStore.processScannedQr(qr)
             val friendId = bobEntry.id
 
-            // Mimic Bug A fix: mark for forced send when location arrives
+            // Mark for forced send when location arrives
             pendingForcedFriendId = friendId
 
             assertEquals(0, sentLocations.size, "No location sent yet because GPS is null")
@@ -84,7 +84,7 @@ class LocationSyncStateTest {
         }
 
     @Test
-    fun testForcedSendBypassesIsSending_BugB() {
+    fun testForcedSendBypassesIsSending() {
         val friendId = "friend123"
 
         // Simulate a "heartbeat" send that is currently "in flight" (isSending = true)
@@ -93,19 +93,19 @@ class LocationSyncStateTest {
         // Bob just paired, UI triggers a "forced" publish
         mockSendLocation(friendId, 1.0, 2.0, force = true)
 
-        // If Bug B fix is working, the forced send should NOT be dropped even if isSending is true
+        // The forced send should NOT be dropped even if isSending is true
         // (In the real code, this works because the Task/Coroutine runs anyway or we bypass the guard)
         // Here we simulate the logic:
         assertTrue(sentLocations.any { it.first == friendId }, "Forced send must bypass isSending guard")
     }
 
     @Test
-    fun testMovementThrottle_BugB_Android() {
+    fun testMovementThrottle_Android() {
         val friendId = "all"
         lastSentTime = 1000L
 
         // 5 seconds later, movement occurs.
-        // Bug B fix: Cooldown is now 15s, so a 5s update should be dropped,
+        // Cooldown is now 15s, so a 5s update should be dropped,
         // but a 20s update should be allowed.
 
         // T+5s: Should be dropped (jitter protection)
@@ -116,6 +116,6 @@ class LocationSyncStateTest {
         // T+20s: Should be allowed (genuine movement)
         val now20 = 21000L
         val shouldSend20 = (now20 - lastSentTime > 15_000L)
-        assertTrue(shouldSend20, "20s update should be allowed (Bug B fix: 15s instead of 60s)")
+        assertTrue(shouldSend20, "20s update should be allowed (15s instead of 60s)")
     }
 }

@@ -10,6 +10,7 @@ import io.mockk.mockk
 import io.mockk.mockkStatic
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.test.StandardTestDispatcher
@@ -151,6 +152,40 @@ private class FakeLocationSource : LocationSource {
         _friendLocations.value += locations
         _friendLastPing.value += pings
     }
+
+    private val _friends = MutableStateFlow<List<FriendEntry>>(emptyList())
+    override val friends: StateFlow<List<FriendEntry>> = _friends
+
+    private val _pendingQrForNaming = MutableStateFlow<QrPayload?>(null)
+    override val pendingQrForNaming: StateFlow<QrPayload?> = _pendingQrForNaming
+
+    private val pollWakeSignal = Channel<Unit>(Channel.CONFLATED)
+
+    private val _lastRapidPollTrigger = MutableStateFlow(0L)
+    override val lastRapidPollTrigger: StateFlow<Long> = _lastRapidPollTrigger
+
+    override fun onFriendsUpdated(friends: List<FriendEntry>) {
+        _friends.value = friends
+    }
+
+    override fun triggerRapidPoll() {
+        _lastRapidPollTrigger.value = System.currentTimeMillis()
+        pollWakeSignal.trySend(Unit)
+    }
+
+    override fun resetRapidPoll() {
+        _lastRapidPollTrigger.value = 0L
+    }
+
+    override fun wakePoll() {
+        pollWakeSignal.trySend(Unit)
+    }
+
+    override suspend fun awaitPollWake(timeoutMillis: Long) {
+        kotlinx.coroutines.withTimeoutOrNull(timeoutMillis) {
+            pollWakeSignal.receive()
+        }
+    }
 }
 
 private class FakeE2eeStorage : E2eeStorage {
@@ -203,7 +238,6 @@ class LocationViewModelTest {
 
     @After
     fun tearDown() {
-        viewModel?.stopPolling()
         io.mockk.unmockkAll()
         Dispatchers.resetMain()
     }
@@ -211,17 +245,19 @@ class LocationViewModelTest {
     @Test
     fun testInviteLifecycle_AliceSide() =
         runTest {
+            val fakeLocationSource = FakeLocationSource()
             val store = E2eeStore(FakeE2eeStorage())
             val client = LocationClient("http://localhost", store)
             // Disable automatic polling loop to prevent hangs
-            viewModel = LocationViewModel(app, store, client, startPolling = false)
+            viewModel = LocationViewModel(app, store, client, startPolling = false, locationSource = fakeLocationSource)
             val vm = viewModel!!
 
             // 1. Create invite
             vm.createInvite()
             advanceUntilIdle()
             assertTrue(vm.inviteState.value is InviteState.Pending)
-            assertNotNull(store.pendingQrPayload())
+            val qr = store.pendingQrPayload()
+            assertNotNull(qr)
 
             // 2. Simulate finding an init payload via polling
             val initPayload =
@@ -233,13 +269,12 @@ class LocationViewModelTest {
                     suggestedName = "Bob",
                 )
 
-            io.mockk.coEvery { net.af0.where.e2ee.E2eeMailboxClient.poll(any(), any()) } returns listOf(initPayload)
+            // Bob's response arriving at the repository
+            (fakeLocationSource.pendingInitPayload as MutableStateFlow).value = initPayload
+            advanceUntilIdle()
 
-            // Manually trigger poll
-            vm.pollPendingInvite()
-
-            assertNotNull(vm.pendingInitPayload.value)
-            assertTrue(vm.inviteState.value is InviteState.Consumed)
+            // After peer joins, inviteState transitions to None to dismiss QR sheet
+            assertTrue(vm.inviteState.value is InviteState.None)
             assertEquals("Bob", vm.pendingInitPayload.value?.suggestedName)
 
             // 3. Alice cancels naming Bob
@@ -267,369 +302,6 @@ class LocationViewModelTest {
             // Bob cancels
             vm.cancelQrScan()
             assertNull(vm.pendingQrForNaming.value)
-        }
-
-    @Test
-    fun testSendLocationThrottle_TwoCallsWithin15Seconds() =
-        runTest {
-            var currentTime = 1000L
-            val store = E2eeStore(FakeE2eeStorage())
-            val testClient = TestLocationClient(store)
-
-            viewModel =
-                LocationViewModel(
-                    app,
-                    e2eeStore = store,
-                    locationClient = testClient,
-                    startPolling = false,
-                    clock = { currentTime },
-                    locationSource = FakeLocationSource(),
-                )
-            val vm = viewModel!!
-
-            // Sharing is already enabled by default from mock (is_sharing = true)
-            // Call sendLocationIfNeeded with location change (non-heartbeat)
-            vm.sendLocationIfNeeded(lat = 37.7749, lng = -122.4194, isHeartbeat = false)
-            assertEquals(1, testClient.sendLocationCallCount, "First call should send immediately")
-
-            // Advance clock by 10 seconds (less than 15s threshold)
-            currentTime += 10_000L
-
-            // Call again - should be throttled
-            vm.sendLocationIfNeeded(lat = 37.7750, lng = -122.4195, isHeartbeat = false)
-            assertEquals(1, testClient.sendLocationCallCount, "Second call within 15s should be throttled")
-        }
-
-    @Test
-    fun testSendLocationThrottle_TwoCallsAfter15Seconds() =
-        runTest {
-            var currentTime = 1000L
-            val store = E2eeStore(FakeE2eeStorage())
-            val testClient = TestLocationClient(store)
-
-            viewModel =
-                LocationViewModel(
-                    app,
-                    e2eeStore = store,
-                    locationClient = testClient,
-                    startPolling = false,
-                    clock = { currentTime },
-                    locationSource = FakeLocationSource(),
-                )
-            val vm = viewModel!!
-
-            // Sharing is already enabled by default from mock (is_sharing = true)
-            // Call sendLocationIfNeeded with location change (non-heartbeat)
-            vm.sendLocationIfNeeded(lat = 37.7749, lng = -122.4194, isHeartbeat = false)
-            assertEquals(1, testClient.sendLocationCallCount, "First call should send immediately")
-
-            // Advance clock by 16 seconds (past 15s threshold)
-            currentTime += 16_000L
-
-            // Call again - should NOT be throttled
-            vm.sendLocationIfNeeded(lat = 37.7750, lng = -122.4195, isHeartbeat = false)
-            assertEquals(2, testClient.sendLocationCallCount, "Second call after 15s should send")
-        }
-
-    @Test
-    fun testSendLocationThrottle_HeartbeatThrottle() =
-        runTest {
-            var currentTime = 1000L
-            val store = E2eeStore(FakeE2eeStorage())
-            val testClient = TestLocationClient(store)
-
-            viewModel =
-                LocationViewModel(
-                    app,
-                    e2eeStore = store,
-                    locationClient = testClient,
-                    startPolling = false,
-                    clock = { currentTime },
-                    locationSource = FakeLocationSource(),
-                )
-            val vm = viewModel!!
-
-            // Sharing is already enabled by default from mock (is_sharing = true)
-            // Send initial location
-            vm.sendLocationIfNeeded(lat = 37.7749, lng = -122.4194, isHeartbeat = false)
-            assertEquals(1, testClient.sendLocationCallCount)
-
-            // Advance by 100 seconds (past location change throttle, within heartbeat throttle)
-            currentTime += 100_000L
-
-            // Send heartbeat - should be throttled (only 100s < 300s heartbeat threshold)
-            vm.sendLocationIfNeeded(lat = 37.7749, lng = -122.4194, isHeartbeat = true)
-            assertEquals(1, testClient.sendLocationCallCount, "Heartbeat within 300s should be throttled")
-
-            // Advance by 210 more seconds (total 310s from first send)
-            currentTime += 210_000L
-
-            // Send another heartbeat - should NOT be throttled (now > 300s)
-            vm.sendLocationIfNeeded(lat = 37.7749, lng = -122.4194, isHeartbeat = true)
-            assertEquals(2, testClient.sendLocationCallCount, "Heartbeat after 300s should send")
-        }
-
-    @Test
-    fun testSendLocationThrottle_ForceOverridesThrottle() =
-        runTest {
-            var currentTime = 1000L
-            val store = E2eeStore(FakeE2eeStorage())
-            val testClient = TestLocationClient(store)
-
-            viewModel =
-                LocationViewModel(
-                    app,
-                    e2eeStore = store,
-                    locationClient = testClient,
-                    startPolling = false,
-                    clock = { currentTime },
-                    locationSource = FakeLocationSource(),
-                )
-            val vm = viewModel!!
-
-            // Sharing is already enabled by default from mock (is_sharing = true)
-            // Send initial location
-            vm.sendLocationIfNeeded(lat = 37.7749, lng = -122.4194, isHeartbeat = false)
-            assertEquals(1, testClient.sendLocationCallCount)
-
-            // Try to send again immediately (within throttle window) with force=true
-            vm.sendLocationIfNeeded(lat = 37.7750, lng = -122.4195, isHeartbeat = false, force = true)
-            assertEquals(2, testClient.sendLocationCallCount, "Force send should bypass throttle")
-        }
-
-    @Test
-    fun testSendLocationThrottle_DisabledSharing() =
-        runTest {
-            var currentTime = 1000L
-            val store = E2eeStore(FakeE2eeStorage())
-            val testClient = TestLocationClient(store)
-
-            // Create a mock app that returns false for is_sharing
-            val disabledSharingApp = mockk<Application>(relaxed = true)
-            val disabledPrefs = mockk<SharedPreferences>(relaxed = true)
-            every { disabledSharingApp.getSharedPreferences("where_prefs", Context.MODE_PRIVATE) } returns disabledPrefs
-            every { disabledPrefs.getBoolean("is_sharing", true) } returns false
-            every { disabledPrefs.getString("display_name", "") } returns "Test"
-
-            viewModel =
-                LocationViewModel(
-                    disabledSharingApp,
-                    e2eeStore = store,
-                    locationClient = testClient,
-                    startPolling = false,
-                    clock = { currentTime },
-                    locationSource = FakeLocationSource(),
-                )
-            val vm = viewModel!!
-
-            // Sharing is disabled, so any send should be rejected
-            (vm.isSharingLocation as MutableStateFlow).value = false
-            vm.sendLocationIfNeeded(lat = 37.7749, lng = -122.4194, isHeartbeat = false)
-            assertEquals(0, testClient.sendLocationCallCount, "Sending when sharing is disabled should not send")
-        }
-
-    // ============ Rapid Poll Transition Tests ============
-
-    @Test
-    fun testRapidPolling_WithPendingInvite() =
-        runTest {
-            // Start clock far in the future so initial lastRapidPollTrigger (0L) is outside 5-min window
-            var currentTime = 1_000_000_000L
-            viewModel =
-                LocationViewModel(
-                    app,
-                    e2eeStore = E2eeStore(FakeE2eeStorage()),
-                    startPolling = false,
-                    clock = { currentTime },
-                    locationSource = FakeLocationSource(),
-                )
-            val vm = viewModel!!
-
-            // Before creating invite, should not be rapid polling
-            assertFalse(vm.isRapidPolling(), "Should not be rapid polling initially")
-
-            // Create invite (sets inviteState to Pending and triggers rapid poll)
-            vm.createInvite()
-            advanceUntilIdle()
-
-            // Now should be rapid polling
-            assertTrue(vm.isRapidPolling(), "Should be rapid polling while invite pending")
-
-            // Clear invite
-            vm.clearInvite()
-            advanceUntilIdle()
-
-            // Still rapid polling due to recent trigger (within 5 min window)
-            assertTrue(vm.isRapidPolling(), "Should still be rapid polling within 5 min window after trigger")
-
-            // Advance clock past 5 min threshold
-            currentTime += (5 * 60_000L)
-
-            // Now should stop rapid polling
-            assertFalse(vm.isRapidPolling(), "Should stop rapid polling after 5 min window expires")
-        }
-
-    @Test
-    fun testRapidPolling_WithPendingInitPayload() =
-        runTest {
-            // Start clock far in the future so initial lastRapidPollTrigger (0L) is outside 5-min window
-            var currentTime = 1_000_000_000L
-            viewModel =
-                LocationViewModel(
-                    app,
-                    e2eeStore = E2eeStore(FakeE2eeStorage()),
-                    startPolling = false,
-                    clock = { currentTime },
-                    locationSource = FakeLocationSource(),
-                )
-            val vm = viewModel!!
-
-            // Initially not rapid polling
-            assertFalse(vm.isRapidPolling())
-
-            // Simulate setting pending init payload (represents Bob's side receiving Alice's invite)
-            val initPayload =
-                KeyExchangeInitPayload(
-                    v = 1,
-                    token = "test_token",
-                    ekPub = byteArrayOf(1, 2, 3),
-                    keyConfirmation = byteArrayOf(4, 5, 6),
-                    suggestedName = "Alice",
-                )
-            (vm.pendingInitPayload as MutableStateFlow).value = initPayload
-
-            // Now should be rapid polling
-            assertTrue(vm.isRapidPolling(), "Should be rapid polling while pending init payload exists")
-
-            // Cancel pending init
-            vm.cancelPendingInit()
-
-            // Should no longer be rapid polling
-            assertFalse(vm.isRapidPolling(), "Should stop rapid polling after canceling pending init")
-        }
-
-    @Test
-    fun testRapidPolling_WithPendingQrForNaming() =
-        runTest {
-            // Start clock far in the future so initial lastRapidPollTrigger (0L) is outside 5-min window
-            var currentTime = 1_000_000_000L
-            viewModel =
-                LocationViewModel(
-                    app,
-                    e2eeStore = E2eeStore(FakeE2eeStorage()),
-                    startPolling = false,
-                    clock = { currentTime },
-                    locationSource = FakeLocationSource(),
-                )
-            val vm = viewModel!!
-
-            // Initially not rapid polling
-            assertFalse(vm.isRapidPolling())
-
-            // Simulate setting pending QR (represents Bob's side after scanning Alice's QR)
-            val qr = QrPayload(byteArrayOf(1, 2, 3), "Alice", "fingerprint123")
-            (vm.pendingQrForNaming as MutableStateFlow).value = qr
-
-            // Now should be rapid polling
-            assertTrue(vm.isRapidPolling(), "Should be rapid polling while pending QR exists")
-
-            // Cancel QR scan
-            vm.cancelQrScan()
-
-            // Should no longer be rapid polling
-            assertFalse(vm.isRapidPolling(), "Should stop rapid polling after canceling QR scan")
-        }
-
-    @Test
-    fun testRapidPolling_RecentTrigger() =
-        runTest {
-            // Start clock far in the future so initial lastRapidPollTrigger (0L) is outside 5-min window
-            var currentTime = 1_000_000_000L
-            viewModel =
-                LocationViewModel(
-                    app,
-                    e2eeStore = E2eeStore(FakeE2eeStorage()),
-                    startPolling = false,
-                    clock = { currentTime },
-                    locationSource = FakeLocationSource(),
-                )
-            val vm = viewModel!!
-
-            // Initially not rapid polling
-            assertFalse(vm.isRapidPolling())
-
-            // Create invite to trigger rapid polling
-            vm.createInvite()
-            advanceUntilIdle()
-            assertTrue(vm.isRapidPolling(), "Invite pending should trigger rapid polling")
-
-            // Clear invite - still rapid polling due to recent trigger
-            vm.clearInvite()
-            advanceUntilIdle()
-            assertTrue(vm.isRapidPolling(), "Should still be rapid polling within 5 min window after clearing invite")
-
-            // Advance clock by 100 seconds (within 5 min window)
-            currentTime += 100_000L
-
-            // Should still be rapid polling due to recent trigger
-            assertTrue(vm.isRapidPolling(), "Should be rapid polling within 5 min window after trigger")
-
-            // Advance clock past 5 min threshold
-            currentTime += (5 * 60_000L)
-
-            // Now should not be rapid polling
-            assertFalse(vm.isRapidPolling(), "Should stop rapid polling after 5 min window expires")
-        }
-
-    @Test
-    fun testRapidPolling_MultiplePairingStates() =
-        runTest {
-            // Start clock far in the future so initial lastRapidPollTrigger (0L) is outside 5-min window
-            var currentTime = 1_000_000_000L
-            viewModel =
-                LocationViewModel(
-                    app,
-                    e2eeStore = E2eeStore(FakeE2eeStorage()),
-                    startPolling = false,
-                    clock = { currentTime },
-                    locationSource = FakeLocationSource(),
-                )
-            val vm = viewModel!!
-
-            // Create invite (Alice side)
-            vm.createInvite()
-            advanceUntilIdle()
-            assertTrue(vm.isRapidPolling(), "Invite pending → rapid polling")
-
-            // Simulate received init payload (representing Bob's response)
-            val initPayload =
-                KeyExchangeInitPayload(
-                    v = 1,
-                    token = "test_token",
-                    ekPub = byteArrayOf(1, 2, 3),
-                    keyConfirmation = byteArrayOf(4, 5, 6),
-                    suggestedName = "Bob",
-                )
-            (vm.pendingInitPayload as MutableStateFlow).value = initPayload
-
-            // Still rapid polling (now due to pending init)
-            assertTrue(vm.isRapidPolling(), "Pending init → rapid polling")
-
-            // Clear invite
-            vm.clearInvite()
-
-            // Still rapid polling (pending init is still set)
-            assertTrue(vm.isRapidPolling(), "Pending init still present → rapid polling")
-
-            // Cancel pending init - still rapid polling due to recent trigger (from createInvite)
-            vm.cancelPendingInit()
-            assertTrue(vm.isRapidPolling(), "Both cleared but within 5 min window → still rapid polling")
-
-            // Advance clock past 5 min window
-            currentTime += (5 * 60_000L)
-
-            // Now should stop rapid polling
-            assertFalse(vm.isRapidPolling(), "All cleared and 5 min window expired → no rapid polling")
         }
 
     // ============ Pairing State Machine Integration Tests ============
@@ -1051,50 +723,4 @@ class LocationViewModelTest {
             assertTrue(charlieId in vm.friendLocations.value.keys, "Charlie should still be in locations")
         }
 
-    @Test
-    fun testDoPoll_Consistency() =
-        runTest {
-            val store = E2eeStore(FakeE2eeStorage())
-            val client = mockk<LocationClient>(relaxed = true)
-            var currentTime = 1000L
-
-            viewModel =
-                LocationViewModel(
-                    app,
-                    e2eeStore = store,
-                    locationClient = client,
-                    startPolling = false,
-                    clock = { currentTime },
-                    locationSource = FakeLocationSource(),
-                )
-            val vm = viewModel!!
-
-            val friendId = "friend1"
-            val update = UserLocation(friendId, 1.0, 2.0, 1000L)
-            io.mockk.coEvery { client.poll() } returns listOf(update)
-
-            // Use Turbine to verify no intermediate inconsistent state
-            turbineScope {
-                val locationsTurbine = vm.friendLocations.testIn(this)
-                val pingsTurbine = vm.friendLastPing.testIn(this)
-
-                // Initial states
-                assertEquals(emptyMap(), locationsTurbine.awaitItem())
-                assertEquals(emptyMap(), pingsTurbine.awaitItem())
-
-                vm.doPoll()
-
-                // Both should be updated
-                val finalLocations = locationsTurbine.awaitItem()
-                val finalPings = pingsTurbine.awaitItem()
-
-                assertTrue(finalLocations.containsKey(friendId))
-                assertTrue(finalPings.containsKey(friendId))
-                assertEquals(1.0, (finalLocations[friendId] as UserLocation).lat)
-                assertEquals(currentTime, finalPings[friendId])
-
-                locationsTurbine.cancel()
-                pingsTurbine.cancel()
-            }
-        }
 }
