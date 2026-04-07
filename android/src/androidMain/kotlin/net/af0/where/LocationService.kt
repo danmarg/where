@@ -17,14 +17,10 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.flow.collectLatest
-import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
-import kotlinx.coroutines.withTimeoutOrNull
 import net.af0.where.e2ee.E2eeMailboxClient
 import net.af0.where.e2ee.E2eeStore
 import net.af0.where.e2ee.KeyExchangeInitPayload
@@ -207,17 +203,19 @@ class LocationService : Service() {
     ) {
         if (!locationSource.isSharingLocation.value) return
         val now = clock()
-        val shouldSend = sendLock.withLock {
-            val canSend = force || lastSentTime == 0L ||
-                (!isHeartbeat && now - lastSentTime > 15_000L) ||
-                (isHeartbeat && now - lastSentTime > 300_000L)
-            if (canSend) {
-                lastSentTime = now
-                true
-            } else {
-                false
+        val shouldSend =
+            sendLock.withLock {
+                val canSend =
+                    force || lastSentTime == 0L ||
+                        (!isHeartbeat && now - lastSentTime > 15_000L) ||
+                        (isHeartbeat && now - lastSentTime > 300_000L)
+                if (canSend) {
+                    lastSentTime = now
+                    true
+                } else {
+                    false
+                }
             }
-        }
         if (!shouldSend) return
         try {
             locationClient.sendLocation(lat, lng, locationSource.pausedFriendIds.value)
