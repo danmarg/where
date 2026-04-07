@@ -13,6 +13,7 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
@@ -27,6 +28,8 @@ import net.af0.where.e2ee.QrPayload
 @Composable
 fun InviteSheet(
     qrPayload: QrPayload,
+    displayName: String,
+    onDisplayNameChange: (String) -> Unit,
     onDismiss: () -> Unit,
 ) {
     val context = LocalContext.current
@@ -47,6 +50,13 @@ fun InviteSheet(
                 "Have them scan this QR code or send the link.",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            OutlinedTextField(
+                value = displayName,
+                onValueChange = onDisplayNameChange,
+                label = { Text("Your Name") },
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true,
             )
             qrBitmap?.let {
                 Image(

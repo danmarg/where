@@ -44,7 +44,6 @@ fun MapScreen(
     friendLastPing: Map<String, Long>,
     onRenameFriend: (String, String) -> Unit,
     onRemoveFriend: (String) -> Unit,
-    onShowSettings: () -> Unit,
     onLocationPermissionGranted: () -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
@@ -218,7 +217,7 @@ fun MapScreen(
                 modifier =
                     Modifier
                         .weight(1f)
-                        .clickable { onShowSettings() },
+                        .clickable { zoomToUserId = userId },
                 shape = MaterialTheme.shapes.medium,
                 color = Color.Black.copy(alpha = 0.7f),
             ) {
@@ -238,7 +237,7 @@ fun MapScreen(
                     )
                     Column {
                         Text(
-                            text = if (displayName.isNotEmpty()) displayName else "You",
+                            text = "You",
                             color = Color.White,
                             style = MaterialTheme.typography.labelSmall,
                         )
