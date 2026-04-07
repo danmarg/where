@@ -12,7 +12,6 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
@@ -72,7 +71,6 @@ class MainActivity : ComponentActivity() {
                 val connectionStatus by viewModel.connectionStatus.collectAsState()
 
                 var showSimulatorScanner by remember { mutableStateOf(false) }
-                var showUserSettings by remember { mutableStateOf(false) }
 
                 MapScreen(
                     userId = viewModel.userId,
@@ -106,7 +104,6 @@ class MainActivity : ComponentActivity() {
                     friendLastPing = friendLastPing,
                     onRenameFriend = { id, name -> viewModel.renameFriend(id, name) },
                     onRemoveFriend = { viewModel.removeFriend(it) },
-                    onShowSettings = { showUserSettings = true },
                     onLocationPermissionGranted = ::startLocationService,
                 )
 
@@ -153,7 +150,12 @@ class MainActivity : ComponentActivity() {
                 }
 
                 (inviteState as? InviteState.Pending)?.let { state ->
-                    InviteSheet(qrPayload = state.qr, onDismiss = { viewModel.clearInvite() })
+                    InviteSheet(
+                        qrPayload = state.qr,
+                        displayName = displayName,
+                        onDisplayNameChange = { viewModel.setDisplayName(it) },
+                        onDismiss = { viewModel.clearInvite() },
+                    )
                 }
 
                 pendingQrForNaming?.let { qr ->
@@ -177,29 +179,6 @@ class MainActivity : ComponentActivity() {
                         dismissButton = {
                             TextButton(onClick = { viewModel.cancelQrScan() }) {
                                 Text("Cancel")
-                            }
-                        },
-                    )
-                }
-
-                if (showUserSettings) {
-                    AlertDialog(
-                        onDismissRequest = { showUserSettings = false },
-                        title = { Text("You") },
-                        text = {
-                            Column {
-                                OutlinedTextField(
-                                    value = displayName,
-                                    onValueChange = { viewModel.setDisplayName(it) },
-                                    label = { Text("Your Name") },
-                                    modifier = Modifier.fillMaxWidth(),
-                                    singleLine = true,
-                                )
-                            }
-                        },
-                        confirmButton = {
-                            TextButton(onClick = { showUserSettings = false }) {
-                                Text("Close")
                             }
                         },
                     )

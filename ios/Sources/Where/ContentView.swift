@@ -11,7 +11,6 @@ struct ContentView: View {
     @Environment(\.scenePhase) private var scenePhase
     @State private var showFriends = false
     @State private var showScanner = false
-    @State private var showUserSettings = false
     @State private var scannedUrl: String? = nil
     @State private var zoomTarget: CLLocationCoordinate2D? = nil
 
@@ -57,7 +56,7 @@ struct ContentView: View {
                             Circle()
                                 .fill(syncService.connectionStatus.isOk ? Color.green : Color.orange)
                                 .frame(width: 8, height: 8)
-                            Text(syncService.displayName.isEmpty ? "You" : syncService.displayName)
+                            Text("You")
                                 .font(.caption)
                                 .foregroundStyle(.white)
                         }
@@ -74,7 +73,9 @@ struct ContentView: View {
                     .clipShape(Capsule())
                     .contentShape(Capsule())
                     .onTapGesture {
-                        showUserSettings = true
+                        if let loc = locationManager.location {
+                            zoomTarget = CLLocationCoordinate2D(latitude: loc.coordinate.latitude, longitude: loc.coordinate.longitude)
+                        }
                     }
 
                     Spacer()
@@ -164,14 +165,12 @@ struct ContentView: View {
             } }
         )) {
             if case .pending(let qr) = syncService.inviteState {
-                InviteSheet(qrPayload: qr, onDismiss: { Task { await syncService.clearInvite() } })
+                InviteSheet(
+                    qrPayload: qr,
+                    displayName: $syncService.displayName,
+                    onDismiss: { Task { await syncService.clearInvite() } }
+                )
             }
-        }
-        .alert("You", isPresented: $showUserSettings) {
-            TextField("Your Name", text: $syncService.displayName)
-            Button("Close", role: .cancel) {}
-        } message: {
-            Text("Set your display name that friends will see.")
         }
         .alert("Name this contact", isPresented: Binding(
             get: { (syncService.pendingQrForNaming != nil || syncService.pendingInitPayload != nil) && !syncService.isInviteActive },
