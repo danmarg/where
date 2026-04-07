@@ -723,4 +723,123 @@ class LocationViewModelTest {
             assertTrue(charlieId in vm.friendLocations.value.keys, "Charlie should still be in locations")
         }
 
+    @Test
+    fun testRapidPollResetAfterConfirmQrScan() =
+        runTest {
+            val store = mockk<E2eeStore>(relaxed = true)
+            val source = FakeLocationSource()
+            viewModel =
+                LocationViewModel(
+                    app,
+                    e2eeStore = store,
+                    startPolling = false,
+                    locationSource = source,
+                )
+            val vm = viewModel!!
+
+            val qr =
+                QrPayload(
+                    ekPub = byteArrayOf(1, 2, 3),
+                    suggestedName = "Alice",
+                    fingerprint = "fp",
+                )
+
+            // Mock store to return a friend
+            val newFriend =
+                FriendEntry(
+                    name = "Alice",
+                    session = mockk(relaxed = true),
+                    isInitiator = true,
+                    lastLat = null,
+                    lastLng = null,
+                    lastTs = null,
+                )
+            io.mockk.coEvery { store.processScannedQr(any(), any()) } returns Pair(mockk(relaxed = true), newFriend)
+            io.mockk.coEvery { store.listFriends() } returns emptyList()
+
+            vm.confirmQrScan(qr, "Alice")
+            advanceUntilIdle()
+
+            assertTrue(source.lastRapidPollTrigger.value > 0L, "Rapid poll should be triggered (not reset to 0)")
+        }
+
+    @Test
+    fun testRapidPollResetAfterConfirmPendingInit() =
+        runTest {
+            val store = mockk<E2eeStore>(relaxed = true)
+            val source = FakeLocationSource()
+            viewModel =
+                LocationViewModel(
+                    app,
+                    e2eeStore = store,
+                    startPolling = false,
+                    locationSource = source,
+                )
+            val vm = viewModel!!
+
+            val initPayload =
+                KeyExchangeInitPayload(
+                    v = 1,
+                    token = "test",
+                    ekPub = byteArrayOf(1),
+                    keyConfirmation = byteArrayOf(2),
+                    suggestedName = "Bob",
+                )
+            (vm.pendingInitPayload as MutableStateFlow).value = initPayload
+
+            // Mock store to return a friend
+            val newFriend =
+                FriendEntry(
+                    name = "Bob",
+                    session = mockk(relaxed = true),
+                    isInitiator = false,
+                    lastLat = null,
+                    lastLng = null,
+                    lastTs = null,
+                )
+            io.mockk.coEvery { store.processKeyExchangeInit(any(), any()) } returns newFriend
+            io.mockk.coEvery { store.listFriends() } returns listOf(newFriend)
+
+            vm.confirmPendingInit("Bob")
+            advanceUntilIdle()
+
+            assertTrue(source.lastRapidPollTrigger.value > 0L, "Rapid poll should be triggered (not reset to 0)")
+        }
+
+    @Test
+    fun testRapidPollResetOnCancellation() =
+        runTest {
+            val store = mockk<E2eeStore>(relaxed = true)
+            val source = FakeLocationSource()
+            viewModel =
+                LocationViewModel(
+                    app,
+                    e2eeStore = store,
+                    startPolling = false,
+                    locationSource = source,
+                )
+            val vm = viewModel!!
+
+            // Test cancelPendingInit
+            (vm.pendingInitPayload as MutableStateFlow).value = mockk()
+            source.triggerRapidPoll()
+            assertTrue(source.lastRapidPollTrigger.value > 0L)
+            vm.cancelPendingInit()
+            assertEquals(0L, source.lastRapidPollTrigger.value)
+
+            // Test cancelQrScan
+            (vm.pendingQrForNaming as MutableStateFlow).value = mockk()
+            source.triggerRapidPoll()
+            assertTrue(source.lastRapidPollTrigger.value > 0L)
+            vm.cancelQrScan()
+            assertEquals(0L, source.lastRapidPollTrigger.value)
+
+            // Test clearInvite
+            vm.createInvite()
+            advanceUntilIdle()
+            source.triggerRapidPoll()
+            assertTrue(source.lastRapidPollTrigger.value > 0L)
+            vm.clearInvite()
+            assertEquals(0L, source.lastRapidPollTrigger.value)
+        }
 }

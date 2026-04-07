@@ -406,6 +406,7 @@ final class LocationSyncService: ObservableObject {
         } catch {
             logger.error("Failed to clear invite: \(error.localizedDescription)")
         }
+        resetRapidPoll()
         inviteState = .none
     }
 
@@ -502,7 +503,7 @@ final class LocationSyncService: ObservableObject {
                     LocationManager.shared.requestPermissionAndStart()
                 }
             }
-            resetRapidPoll()
+            triggerRapidPoll()
             friends = try await e2eeStore.listFriends()
             updateVisibleUsers()
         } catch {
@@ -516,6 +517,7 @@ final class LocationSyncService: ObservableObject {
         guard pendingInitPayload != nil || hasInviteState else { return }
         await clearInvite()
         pendingInitPayload = nil
+        resetRapidPoll()
         inviteState = .none
     }
 
