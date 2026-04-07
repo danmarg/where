@@ -138,6 +138,7 @@ final class LocationSyncService: ObservableObject {
     private var lastSentTime: Date = Date(timeIntervalSince1970: 0)
     var pendingForcedSendAfterPairing: Bool = false
     private var currentSendTask: Task<Void, Never>? = nil
+    private var debounceTask: Task<Void, Never>? = nil
 
     // Injected for testing. Closures are @Sendable and use MainActor.assumeIsolated internally
     // to interact with UIApplication.shared, which is required for background tasks in Swift 6.
@@ -502,8 +503,13 @@ final class LocationSyncService: ObservableObject {
     }
 
     func wakePoll() {
-        pollTask?.cancel()
-        startPolling()
+        debounceTask?.cancel()
+        debounceTask = Task {
+            try? await Task.sleep(nanoseconds: 10_000_000) // 10ms debounce
+            guard !Task.isCancelled else { return }
+            pollTask?.cancel()
+            startPolling()
+        }
     }
 
     func resetRapidPoll() {
