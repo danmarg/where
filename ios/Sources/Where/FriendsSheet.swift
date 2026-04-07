@@ -34,6 +34,11 @@ struct FriendsSheet: View {
         NavigationStack {
             List {
                 Section {
+                    TextField("Your Name", text: $displayName)
+                        .textFieldStyle(.roundedBorder)
+                }
+
+                Section {
                     VStack(spacing: 12) {
                         HStack(spacing: 12) {
                             Button {
