@@ -218,7 +218,9 @@ struct ContentView: View {
         }
         .onChange(of: scenePhase) { oldPhase, newPhase in
             if newPhase == .background {
-                syncService.stopPolling()
+                // If we wanted to stop background polling and only rely on
+                // CoreLocation, this would be the place to stop polling:
+                // syncService.stopPolling()
             } else if newPhase == .active {
                 syncService.startPolling()
             }
