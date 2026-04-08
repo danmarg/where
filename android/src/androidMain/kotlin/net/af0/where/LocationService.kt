@@ -86,8 +86,11 @@ class LocationService : Service() {
         serviceScope.launch { pollLoop() }
         serviceScope.launch {
             locationSource.lastLocation.collect { loc ->
-                if (loc != null && locationSource.isSharingLocation.value) {
-                    sendLocationIfNeeded(loc.first, loc.second, isHeartbeat = false)
+                if (loc != null) {
+                    if (locationSource.isSharingLocation.value) {
+                        sendLocationIfNeeded(loc.first, loc.second, isHeartbeat = false)
+                    }
+                    locationSource.wakePoll()
                 }
             }
         }
@@ -132,14 +135,28 @@ class LocationService : Service() {
         // The loop continues until serviceScope is cancelled in onDestroy().
         while (true) {
             val rapid = isRapidPolling()
-            doPoll()
+            val inForeground = locationSource.isAppInForeground.value
+            // Only poll for friends' locations when the user can see the result.
+            if (shouldPollFriends(rapid, inForeground)) {
+                doPoll()
+            }
             // Heartbeat: ensure we send at least once every 5 minutes when stationary.
+            // Runs regardless of foreground state so background location stays alive.
             locationSource.lastLocation.value?.let { (lat, lng) ->
                 sendLocationIfNeeded(lat, lng, isHeartbeat = true)
             }
-            val interval = if (rapid) 2_000L else 60_000L
-            locationSource.awaitPollWake(interval)
+            locationSource.awaitPollWake(pollInterval(rapid, inForeground))
         }
+    }
+
+    @VisibleForTesting
+    internal fun shouldPollFriends(rapid: Boolean, inForeground: Boolean): Boolean = inForeground || rapid
+
+    @VisibleForTesting
+    internal fun pollInterval(rapid: Boolean, inForeground: Boolean): Long = when {
+        rapid -> 2_000L
+        inForeground -> 10_000L
+        else -> 5 * 60 * 1000L
     }
 
     @VisibleForTesting
