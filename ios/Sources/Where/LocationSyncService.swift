@@ -165,7 +165,6 @@ final class LocationSyncService: ObservableObject {
 
     let e2eeStore: Shared.E2eeStore
     let locationClient: Shared.LocationClient
-    private var pollTask: Task<Void, Never>?
 
     let myId: String = {
         let key = "where_user_id"
@@ -174,11 +173,6 @@ final class LocationSyncService: ObservableObject {
         UserDefaults.standard.set(id, forKey: key)
         return id
     }()
-
-    deinit {
-        let task = pollTask
-        task?.cancel()
-    }
 
     init(e2eeStore: Shared.E2eeStore? = nil, locationClient: Shared.LocationClient? = nil) {
         logger.debug("LocationSyncService init: serverUrl=\(ServerConfig.httpBaseUrl)")
