@@ -132,8 +132,10 @@ final class LocationSyncService: ObservableObject {
     var isInviteActive: Bool { if case .pending = inviteState { return true } else { return false } }
 
     private var lastRapidPollTrigger: Date = Date(timeIntervalSince1970: 0)
-    private let pollSignals: AsyncStream<Void>
-    private let pollSignalContinuation: AsyncStream<Void>.Continuation
+    private var pollTimer: Timer?
+    private var isPollInFlight = false
+    private static let rapidPollInterval: TimeInterval = 1.0
+    private static let normalPollInterval: TimeInterval = 60.0
     private var visibleUsersCancellables = Set<AnyCancellable>()
 
     private var lastSentLocation: (lat: Double, lng: Double)? = nil
@@ -173,10 +175,6 @@ final class LocationSyncService: ObservableObject {
 
     init(e2eeStore: Shared.E2eeStore? = nil, locationClient: Shared.LocationClient? = nil) {
         logger.debug("LocationSyncService init: serverUrl=\(ServerConfig.httpBaseUrl)")
-
-        let (stream, continuation) = AsyncStream<Void>.makeStream()
-        self.pollSignals = stream
-        self.pollSignalContinuation = continuation
 
         let store = e2eeStore ?? Shared.E2eeStore(storage: KeychainE2eeStorage())
         self.e2eeStore = store
@@ -246,63 +244,62 @@ final class LocationSyncService: ObservableObject {
         visibleUsers = result
     }
 
-    // Poll loop: handles inbound friend-location polling and the outbound heartbeat.
+    // Poll timer: handles inbound friend-location polling and the outbound heartbeat.
     // Movement-driven sends are handled by LocationManager's CoreLocation delegate.
     // Since UIBackgroundModes contains "location", CoreLocation wakes the app in the
     // background and delivers didUpdateLocations callbacks — no BGAppRefreshTask required.
     // However, when the device is stationary CoreLocation may not fire for extended periods,
-    // so the poll loop also triggers a heartbeat send (throttled to 5 minutes by sendLocation).
+    // so the poll timer also triggers a heartbeat send (throttled to 5 minutes by sendLocation).
     func startPolling() {
         logger.debug("startPolling called")
-
-        // Idempotency guard: do not create a second loop if one is alive.
-        if let existing = pollTask, !existing.isCancelled { return }
-
-        pollTask = Task { [weak self] in
-
-            guard let isolatedSelf = self else { return }
-
+        guard pollTimer?.isValid != true else { return }
+        schedulePollTimer(interval: Self.normalPollInterval)
+        Task {
             // Clear any stale invite from a previous session before first poll.
-            // XXX
-            if (try? await isolatedSelf.e2eeStore.pendingQrPayload()) ?? nil != nil {
-                try? await isolatedSelf.e2eeStore.clearInvite()
+            if (try? await e2eeStore.pendingQrPayload()) ?? nil != nil {
+                try? await e2eeStore.clearInvite()
             }
-
-            // Use an iterator to catch all signals, including those during pollAll.
-            // Since this Task inherits MainActor isolation, we can safely access self weakly.
-            guard let signals = self?.pollSignals else { return }
-            let signalIterator = AsyncIteratorBox(signals.makeAsyncIterator())
-
-            while !Task.isCancelled {
-                // Re-bind self for each loop iteration to prevent retain cycles while ensuring
-                // safety for the duration of the iteration.
-                guard let isolatedSelf = self else { return }
-
-                await isolatedSelf.pollAll(updateUi: true)
-                // Heartbeat: ensure we send at least once every 5 minutes when stationary.
-                if let loc = LocationManager.shared.lastLocation {
-                    isolatedSelf.sendLocation(lat: loc.coordinate.latitude, lng: loc.coordinate.longitude, isHeartbeat: true)
-                }
-
-                let isRapid = await isolatedSelf.isRapidPolling()
-                let intervalSeconds = isRapid ? 2.0 : 60.0
-
-                // Use the local self for timeout management.
-                try? await isolatedSelf.withTimeout(seconds: intervalSeconds) { @Sendable in
-                    _ = await signalIterator.next()
-                }
-            }
+            await firePoll()
         }
     }
 
     func stopPolling() {
-        pollTask?.cancel()
-        pollTask = nil
+        pollTimer?.invalidate()
+        pollTimer = nil
+    }
+
+    private func schedulePollTimer(interval: TimeInterval) {
+        pollTimer?.invalidate()
+        pollTimer = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                await self?.firePoll()
+            }
+        }
+    }
+
+    private func firePoll() async {
+        guard !isPollInFlight else { return }
+        isPollInFlight = true
+        defer { isPollInFlight = false }
+
+        await pollAll(updateUi: true)
+        // Heartbeat: ensure we send at least once every 5 minutes when stationary.
+        if let loc = LocationManager.shared.lastLocation {
+            sendLocation(lat: loc.coordinate.latitude, lng: loc.coordinate.longitude, isHeartbeat: true)
+        }
+
+        // Adjust timer rate to match current pairing state.
+        let isRapid = await isRapidPolling()
+        let targetInterval = isRapid ? Self.rapidPollInterval : Self.normalPollInterval
+        if let t = pollTimer, abs(t.timeInterval - targetInterval) > 0.1 {
+            schedulePollTimer(interval: targetInterval)
+        }
     }
 
     private func triggerRapidPoll() {
         lastRapidPollTrigger = Date()
-        pollSignalContinuation.yield()
+        schedulePollTimer(interval: Self.rapidPollInterval)
+        Task { await firePoll() }
     }
 
     @MainActor
@@ -522,11 +519,12 @@ final class LocationSyncService: ObservableObject {
     }
 
     func wakePoll() {
-        pollSignalContinuation.yield()
+        Task { await firePoll() }
     }
 
     func resetRapidPoll() {
         lastRapidPollTrigger = Date(timeIntervalSince1970: 0)
+        schedulePollTimer(interval: Self.normalPollInterval)
     }
 
     func renameFriend(id: String, newName: String) async {
@@ -641,20 +639,6 @@ final class LocationSyncService: ObservableObject {
         }
     }
 
-    private func withTimeout(seconds: Double, body: @Sendable @escaping () async -> Void) async throws {
-        try await withThrowingTaskGroup(of: Void.self) { group in
-            group.addTask {
-                await body()
-            }
-            group.addTask {
-                try await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
-                throw CancellationError()
-            }
-            try await group.next()
-            group.cancelAll()
-        }
-    }
-
     /// Thread-safe wrapper for UIBackgroundTaskIdentifier to prevent races between
     /// the expiry handler and the normal completion path.
     private final class BackgroundTaskBox: @unchecked Sendable {
@@ -705,22 +689,6 @@ final class LocationSyncService: ObservableObject {
                 endOp(idToEnd)
             }
         }
-    }
-
-    /// Wraps `AsyncStream.Iterator` to make it Sendable.
-    ///
-    /// AsyncStream.Iterator is not itself Sendable, so concurrent access to `next()` would be unsafe.
-    /// This wrapper is marked @unchecked Sendable and relies on a single-consumer invariant:
-    /// the iterator must only ever be consumed from a single Task. In this codebase, the iterator
-    /// is exclusively owned by the poll loop Task and never shared across tasks.
-    ///
-    /// **Do not pass this to multiple concurrent Tasks.** Doing so would create a race condition
-    /// on the mutable `iterator` property. If you need to signal multiple consumers, use a
-    /// separate AsyncStream or coordinate through a thread-safe channel instead.
-    private final class AsyncIteratorBox: @unchecked Sendable {
-        private var iterator: AsyncStream<Void>.Iterator
-        init(_ iterator: AsyncStream<Void>.Iterator) { self.iterator = iterator }
-        func next() async -> Void? { await iterator.next() }
     }
 
     private func updateStatus(_ error: Error?) {
