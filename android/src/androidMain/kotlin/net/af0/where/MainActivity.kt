@@ -71,6 +71,24 @@ class MainActivity : ComponentActivity() {
                 val connectionStatus by viewModel.connectionStatus.collectAsState()
 
                 var showSimulatorScanner by remember { mutableStateOf(false) }
+                var showNamePromptBeforeScan by remember { mutableStateOf(false) }
+
+                fun triggerScan() {
+                    if (android.os.Build.PRODUCT.contains("sdk") ||
+                        android.os.Build.MODEL.contains("Emulator") ||
+                        android.os.Build.DEVICE.contains("generic")
+                    ) {
+                        showSimulatorScanner = true
+                    } else {
+                        scanLauncher.launch(
+                            ScanOptions().apply {
+                                setDesiredBarcodeFormats(ScanOptions.QR_CODE)
+                                setBeepEnabled(false)
+                                setOrientationLocked(false)
+                            },
+                        )
+                    }
+                }
 
                 MapScreen(
                     userId = viewModel.userId,
@@ -85,19 +103,10 @@ class MainActivity : ComponentActivity() {
                     connectionStatus = connectionStatus,
                     onCreateInvite = { viewModel.createInvite() },
                     onScanQr = {
-                        if (android.os.Build.PRODUCT.contains("sdk") ||
-                            android.os.Build.MODEL.contains("Emulator") ||
-                            android.os.Build.DEVICE.contains("generic")
-                        ) {
-                            showSimulatorScanner = true
+                        if (displayName.isEmpty()) {
+                            showNamePromptBeforeScan = true
                         } else {
-                            scanLauncher.launch(
-                                ScanOptions().apply {
-                                    setDesiredBarcodeFormats(ScanOptions.QR_CODE)
-                                    setBeepEnabled(false)
-                                    setOrientationLocked(false)
-                                },
-                            )
+                            triggerScan()
                         }
                     },
                     onPasteUrl = { viewModel.processQrUrl(it) },
@@ -114,6 +123,45 @@ class MainActivity : ComponentActivity() {
                     ) {
                         CircularProgressIndicator()
                     }
+                }
+
+                if (showNamePromptBeforeScan) {
+                    var newName by remember { mutableStateOf("") }
+                    AlertDialog(
+                        onDismissRequest = { showNamePromptBeforeScan = false },
+                        title = { Text("Choose your name") },
+                        text = {
+                            Column {
+                                Text("Please choose a name so your friend knows who you are.")
+                                Spacer(Modifier.height(8.dp))
+                                OutlinedTextField(
+                                    value = newName,
+                                    onValueChange = { newName = it },
+                                    label = { Text("Your Name") },
+                                    singleLine = true,
+                                )
+                            }
+                        },
+                        confirmButton = {
+                            TextButton(
+                                onClick = {
+                                    if (newName.isNotEmpty()) {
+                                        viewModel.setDisplayName(newName)
+                                        showNamePromptBeforeScan = false
+                                        triggerScan()
+                                    }
+                                },
+                                enabled = newName.isNotEmpty(),
+                            ) {
+                                Text("Continue")
+                            }
+                        },
+                        dismissButton = {
+                            TextButton(onClick = { showNamePromptBeforeScan = false }) {
+                                Text("Cancel")
+                            }
+                        },
+                    )
                 }
 
                 if (showSimulatorScanner) {
