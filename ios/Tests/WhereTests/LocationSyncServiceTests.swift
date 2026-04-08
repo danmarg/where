@@ -74,75 +74,70 @@ class LocationSyncServiceTests: XCTestCase {
 
     // MARK: - firePoll foreground/background gating
 
-    func testStartPolling_ForegroundDoesPollFriends() async throws {
+    func testFirePoll_ForegroundDoesPollFriends() async throws {
         let store = Shared.E2eeStore(storage: KeychainE2eeStorage())
         let mockClient = MockLocationClient(baseUrl: "", store: store)
         service = LocationSyncService(e2eeStore: store, locationClient: mockClient)
         service.isInForeground = { true }
         service.startPolling()
 
-        // Wait for pollAll to be called
-        for _ in 0..<100 {
-            if mockClient.pollCallCount > 0 { break }
-            try? await Task.sleep(nanoseconds: 10_000_000)
-        }
+        await service.firePoll()
 
         XCTAssertGreaterThan(mockClient.pollCallCount, 0, "Should poll friends when in foreground")
     }
 
-    func testStartPolling_BackgroundSkipsPollFriends() async throws {
+    func testFirePoll_BackgroundSkipsPollFriends() async throws {
         let store = Shared.E2eeStore(storage: KeychainE2eeStorage())
         let mockClient = MockLocationClient(baseUrl: "", store: store)
         service = LocationSyncService(e2eeStore: store, locationClient: mockClient)
         service.isInForeground = { false }
         service.startPolling()
 
-        // Wait a bit
-        try? await Task.sleep(nanoseconds: 100_000_000)
+        await service.firePoll()
 
         XCTAssertEqual(mockClient.pollCallCount, 0, "Should not poll friends when in background")
     }
 
-    func testStartPolling_RapidPollsEvenInBackground() async throws {
+    func testFirePoll_RapidPollsEvenInBackground() async throws {
         let store = Shared.E2eeStore(storage: KeychainE2eeStorage())
         let mockClient = MockLocationClient(baseUrl: "", store: store)
         service = LocationSyncService(e2eeStore: store, locationClient: mockClient)
         service.isInForeground = { false }
+        service.startPolling()
         // Put service into rapid mode by setting a recent trigger timestamp.
         service.lastRapidPollTrigger = Date()
-        service.startPolling()
 
-        // Wait for pollAll to be called
-        for _ in 0..<100 {
-            if mockClient.pollCallCount > 0 { break }
-            try? await Task.sleep(nanoseconds: 10_000_000)
-        }
+        await service.firePoll()
 
         XCTAssertGreaterThan(mockClient.pollCallCount, 0, "Should poll friends during rapid mode even in background")
     }
 
-    func testWakePoll() async throws {
+    // MARK: - Timer interval selection
+
+    func testTimerInterval_Foreground_Is60s() async throws {
         let store = Shared.E2eeStore(storage: KeychainE2eeStorage())
         let mockClient = MockLocationClient(baseUrl: "", store: store)
         service = LocationSyncService(e2eeStore: store, locationClient: mockClient)
         service.isInForeground = { true }
         service.startPolling()
 
-        // Wait for first poll
-        for _ in 0..<100 {
-            if mockClient.pollCallCount == 1 { break }
-            try? await Task.sleep(nanoseconds: 10_000_000)
-        }
-        XCTAssertEqual(mockClient.pollCallCount, 1)
+        await service.firePoll()
 
-        service.wakePoll()
+        XCTAssertEqual(service.pollTimer?.timeInterval ?? 0, 60.0, accuracy: 0.1,
+                       "Foreground normal poll should be 60s")
+    }
 
-        // Wait for second poll (including 10ms debounce)
-        for _ in 0..<100 {
-            if mockClient.pollCallCount == 2 { break }
-            try? await Task.sleep(nanoseconds: 10_000_000)
-        }
-        XCTAssertEqual(mockClient.pollCallCount, 2)
+    func testTimerInterval_Background_Is5min() async throws {
+        let store = Shared.E2eeStore(storage: KeychainE2eeStorage())
+        let mockClient = MockLocationClient(baseUrl: "", store: store)
+        service = LocationSyncService(e2eeStore: store, locationClient: mockClient)
+        service.isInForeground = { false }
+        service.startPolling()
+
+        await service.firePoll()
+
+        XCTAssertEqual(service.pollTimer?.timeInterval ?? 0, 300.0, accuracy: 0.1,
+                       "Background poll should slow to 5min for heartbeat-only firing")
     }
 
     func testIsRapidPolling() async throws {

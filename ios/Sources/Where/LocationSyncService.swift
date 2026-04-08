@@ -4,7 +4,6 @@ import os
 import UIKit
 import CoreLocation
 import Combine
-
 private let logger = Logger(subsystem: "net.af0.where", category: "LocationSync")
 
 @inline(__always)
@@ -137,9 +136,8 @@ final class LocationSyncService: ObservableObject {
     var isInviteActive: Bool { if case .pending = inviteState { return true } else { return false } }
 
     var lastRapidPollTrigger: Date = Date(timeIntervalSince1970: 0)  // internal for testing
-    var pollTask: Task<Void, Never>? = nil
-    var debounceTask: Task<Void, Never>? = nil
-
+    var pollTimer: Timer?  // internal for testing
+    private var isPollInFlight = false
     /// Overridable in tests to simulate foreground/background without UIKit.
     var isInForeground: () -> Bool = { UIApplication.shared.applicationState == .active }
     private static let rapidPollInterval: TimeInterval = 2.0
@@ -252,59 +250,71 @@ final class LocationSyncService: ObservableObject {
         visibleUsers = result
     }
 
-    // Poll loop: handles inbound friend-location polling and the outbound heartbeat.
+    // Poll timer: handles inbound friend-location polling and the outbound heartbeat.
     // Movement-driven sends are handled by LocationManager's CoreLocation delegate.
     // Since UIBackgroundModes contains "location", CoreLocation wakes the app in the
     // background and delivers didUpdateLocations callbacks — no BGAppRefreshTask required.
     // However, when the device is stationary CoreLocation may not fire for extended periods,
-    // so the poll loop also triggers a heartbeat send (throttled to 5 minutes by sendLocation).
+    // so the poll timer also triggers a heartbeat send (throttled to 5 minutes by sendLocation).
     func startPolling() {
         logger.debug("startPolling called")
-        pollTask?.cancel()
-        pollTask = Task { @MainActor [weak self] in
-            guard let self = self else { return }
-            while !Task.isCancelled {
-                let inForeground = isInForeground()
-                let isRapid = await isRapidPolling()
-
-                // Only fetch friends' locations when there's a user to see the result.
-                if inForeground || isRapid {
-                    await pollAll(updateUi: true)
-                }
-                // Heartbeat always runs: covers the stationary background case where
-                // didUpdateLocations never fires (distanceFilter suppresses updates).
-                if let loc = LocationManager.shared.lastLocation {
-                    sendLocation(lat: loc.coordinate.latitude, lng: loc.coordinate.longitude, isHeartbeat: true)
-                }
-
-                // Slow the timer down in the background — it only needs to fire for heartbeats.
-                let targetInterval: TimeInterval
-                if isRapid {
-                    targetInterval = Self.rapidPollInterval
-                } else if inForeground {
-                    targetInterval = Self.normalPollInterval       // 60s
-                } else {
-                    targetInterval = 5 * 60                       // 5 min: matches heartbeat throttle
-                }
-
-                do {
-                    try await Task.sleep(nanoseconds: UInt64(targetInterval * 1_000_000_000))
-                } catch {
-                    // Task was cancelled, exit the loop.
-                    break
-                }
-            }
+        guard pollTimer?.isValid != true else { return }
+        schedulePollTimer(interval: Self.normalPollInterval)
+        Task {
+            await firePoll()
         }
     }
 
     func stopPolling() {
-        pollTask?.cancel()
-        pollTask = nil
+        pollTimer?.invalidate()
+        pollTimer = nil
+    }
+
+    private func schedulePollTimer(interval: TimeInterval) {
+        pollTimer?.invalidate()
+        pollTimer = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                await self?.firePoll()
+            }
+        }
+    }
+
+    func firePoll() async {  // internal for testing
+        guard !isPollInFlight else { return }
+        isPollInFlight = true
+        defer { isPollInFlight = false }
+
+        let inForeground = isInForeground()
+        let isRapid = await isRapidPolling()
+
+        // Only fetch friends' locations when there's a user to see the result.
+        if inForeground || isRapid {
+            await pollAll(updateUi: true)
+        }
+        // Heartbeat always runs: covers the stationary background case where
+        // didUpdateLocations never fires (distanceFilter suppresses updates).
+        if let loc = LocationManager.shared.lastLocation {
+            sendLocation(lat: loc.coordinate.latitude, lng: loc.coordinate.longitude, isHeartbeat: true)
+        }
+
+        // Slow the timer down in the background — it only needs to fire for heartbeats.
+        let targetInterval: TimeInterval
+        if isRapid {
+            targetInterval = Self.rapidPollInterval
+        } else if inForeground {
+            targetInterval = Self.normalPollInterval       // 60s
+        } else {
+            targetInterval = 5 * 60                       // 5 min: matches heartbeat throttle
+        }
+        if let t = pollTimer, abs(t.timeInterval - targetInterval) > 0.1 {
+            schedulePollTimer(interval: targetInterval)
+        }
     }
 
     private func triggerRapidPoll() {
         lastRapidPollTrigger = Date()
-        wakePoll()
+        schedulePollTimer(interval: Self.rapidPollInterval)
+        Task { await firePoll() }
     }
 
     @MainActor
@@ -524,20 +534,18 @@ final class LocationSyncService: ObservableObject {
     }
 
     func wakePoll() {
-        debounceTask?.cancel()
-        debounceTask = Task { @MainActor [weak self] in
-            do {
-                try await Task.sleep(nanoseconds: 10_000_000) // 10ms debounce
-            } catch {
-                return
-            }
-            self?.startPolling()
-        }
+        Task { await firePoll() }
+    }
+
+    private func triggerRapidPoll() {
+        lastRapidPollTrigger = Date()
+        schedulePollTimer(interval: Self.rapidPollInterval)
+        Task { await firePoll() }
     }
 
     func resetRapidPoll() {
         lastRapidPollTrigger = Date(timeIntervalSince1970: 0)
-        startPolling()
+        schedulePollTimer(interval: Self.normalPollInterval)
     }
 
     func renameFriend(id: String, newName: String) async {
