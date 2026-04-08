@@ -218,9 +218,7 @@ struct ContentView: View {
         }
         .onChange(of: scenePhase) { oldPhase, newPhase in
             if newPhase == .background {
-                // If we wanted to stop background polling and only rely on
-                // CoreLocation, this would be the place to stop polling:
-                // syncService.stopPolling()
+                // Timer keeps running to fire background heartbeat sends.
             } else if newPhase == .active {
                 syncService.startPolling()
             }
