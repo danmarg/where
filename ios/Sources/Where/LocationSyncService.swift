@@ -131,11 +131,13 @@ final class LocationSyncService: ObservableObject {
     @Published var visibleUsers: [Shared.UserLocation] = []
     var isInviteActive: Bool { if case .pending = inviteState { return true } else { return false } }
 
-    private var lastRapidPollTrigger: Date = Date(timeIntervalSince1970: 0)
-    private var pollTimer: Timer?
+    var lastRapidPollTrigger: Date = Date(timeIntervalSince1970: 0)  // internal for testing
+    var pollTimer: Timer?  // internal for testing
     private var isPollInFlight = false
+    /// Overridable in tests to simulate foreground/background without UIKit.
+    var isInForeground: () -> Bool = { UIApplication.shared.applicationState == .active }
     private static let rapidPollInterval: TimeInterval = 1.0
-    private static let normalPollInterval: TimeInterval = 60.0
+    private static let normalPollInterval: TimeInterval = 10.0
     private var visibleUsersCancellables = Set<AnyCancellable>()
 
     private var lastSentLocation: (lat: Double, lng: Double)? = nil
@@ -277,20 +279,33 @@ final class LocationSyncService: ObservableObject {
         }
     }
 
-    private func firePoll() async {
+    func firePoll() async {  // internal for testing
         guard !isPollInFlight else { return }
         isPollInFlight = true
         defer { isPollInFlight = false }
 
-        await pollAll(updateUi: true)
-        // Heartbeat: ensure we send at least once every 5 minutes when stationary.
+        let inForeground = isInForeground()
+        let isRapid = await isRapidPolling()
+
+        // Only fetch friends' locations when there's a user to see the result.
+        if inForeground || isRapid {
+            await pollAll(updateUi: true)
+        }
+        // Heartbeat always runs: covers the stationary background case where
+        // didUpdateLocations never fires (distanceFilter suppresses updates).
         if let loc = LocationManager.shared.lastLocation {
             sendLocation(lat: loc.coordinate.latitude, lng: loc.coordinate.longitude, isHeartbeat: true)
         }
 
-        // Adjust timer rate to match current pairing state.
-        let isRapid = await isRapidPolling()
-        let targetInterval = isRapid ? Self.rapidPollInterval : Self.normalPollInterval
+        // Slow the timer down in the background — it only needs to fire for heartbeats.
+        let targetInterval: TimeInterval
+        if isRapid {
+            targetInterval = Self.rapidPollInterval
+        } else if inForeground {
+            targetInterval = Self.normalPollInterval       // 10s
+        } else {
+            targetInterval = 5 * 60                       // 5 min: matches heartbeat throttle
+        }
         if let t = pollTimer, abs(t.timeInterval - targetInterval) > 0.1 {
             schedulePollTimer(interval: targetInterval)
         }
