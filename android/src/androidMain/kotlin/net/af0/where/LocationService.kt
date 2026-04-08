@@ -150,14 +150,21 @@ class LocationService : Service() {
     }
 
     @VisibleForTesting
-    internal fun shouldPollFriends(rapid: Boolean, inForeground: Boolean): Boolean = inForeground || rapid
+    internal fun shouldPollFriends(
+        rapid: Boolean,
+        inForeground: Boolean,
+    ): Boolean = inForeground || rapid
 
     @VisibleForTesting
-    internal fun pollInterval(rapid: Boolean, inForeground: Boolean): Long = when {
-        rapid -> 2_000L
-        inForeground -> 10_000L
-        else -> 5 * 60 * 1000L
-    }
+    internal fun pollInterval(
+        rapid: Boolean,
+        inForeground: Boolean,
+    ): Long =
+        when {
+            rapid -> 2_000L
+            inForeground -> 10_000L
+            else -> 5 * 60 * 1000L
+        }
 
     @VisibleForTesting
     internal suspend fun isRapidPolling(): Boolean {
