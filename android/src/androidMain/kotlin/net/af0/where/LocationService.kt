@@ -90,6 +90,8 @@ class LocationService : Service() {
                     if (locationSource.isSharingLocation.value) {
                         sendLocationIfNeeded(loc.first, loc.second, isHeartbeat = false)
                     }
+                    // When our own location changes, trigger a poll for friend updates.
+                    // This ensures that whenever we share, we also receive.
                     locationSource.wakePoll()
                 }
             }
@@ -153,7 +155,15 @@ class LocationService : Service() {
     internal fun shouldPollFriends(
         rapid: Boolean,
         inForeground: Boolean,
-    ): Boolean = inForeground || rapid
+    ): Boolean {
+        // We always poll if we're in the foreground or in rapid-poll mode (pairing).
+        if (inForeground || rapid) return true
+
+        // If we're in the background, we only poll if our own location was recently
+        // updated. This allows us to sync friends whenever the OS wakes us for a fix.
+        val now = clock()
+        return now - lastSentTime < 30_000L
+    }
 
     @VisibleForTesting
     internal fun pollInterval(
@@ -231,7 +241,7 @@ class LocationService : Service() {
             sendLock.withLock {
                 val canSend =
                     force || lastSentTime == 0L ||
-                        (!isHeartbeat && now - lastSentTime > 15_000L) ||
+                        !isHeartbeat ||
                         (isHeartbeat && now - lastSentTime > 300_000L)
                 if (canSend) {
                     lastSentTime = now
