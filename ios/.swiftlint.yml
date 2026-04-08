@@ -1,0 +1,12 @@
+disabled_rules:
+  - trailing_whitespace
+  - force_cast
+  - force_try
+opt_in_rules:
+  - empty_count
+  - vertical_whitespace
+
+excluded:
+  - Pods
+  - build
+  - .gradle
