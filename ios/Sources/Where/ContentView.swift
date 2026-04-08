@@ -11,6 +11,7 @@ struct ContentView: View {
     @Environment(\.scenePhase) private var scenePhase
     @State private var showFriends = false
     @State private var showScanner = false
+    @State private var showNamePromptBeforeScan = false
     @State private var scannedUrl: String? = nil
     @State private var zoomTarget: CLLocationCoordinate2D? = nil
 
@@ -118,7 +119,11 @@ struct ContentView: View {
                 },
                 onScanQr: {
                     showFriends = false
-                    showScanner = true
+                    if syncService.displayName.isEmpty {
+                        showNamePromptBeforeScan = true
+                    } else {
+                        showScanner = true
+                    }
                 },
                 onRename: { id, name in Task { await syncService.renameFriend(id: id, newName: name) } },
                 onPasteUrl: { url in
@@ -171,6 +176,21 @@ struct ContentView: View {
                     onDismiss: { Task { await syncService.clearInvite() } }
                 )
             }
+        }
+        .alert("Choose your name", isPresented: $showNamePromptBeforeScan) {
+            TextField("Your Name", text: $syncService.displayName)
+            Button("Continue") {
+                if !syncService.displayName.isEmpty {
+                    showNamePromptBeforeScan = false
+                    showScanner = true
+                }
+            }
+            .disabled(syncService.displayName.isEmpty)
+            Button("Cancel", role: .cancel) {
+                showNamePromptBeforeScan = false
+            }
+        } message: {
+            Text("Please choose a name so your friend knows who you are.")
         }
         .alert("Name this contact", isPresented: Binding(
             get: { (syncService.pendingQrForNaming != nil || syncService.pendingInitPayload != nil) && !syncService.isInviteActive },
