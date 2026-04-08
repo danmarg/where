@@ -70,14 +70,14 @@ class LocationServiceTest {
             io.mockk.coVerify(exactly = 1) { mockClient.sendLocation(any(), any(), any()) }
             assertTrue(service.lastSentTime > 0)
 
-            // 2. Immediate second send (throttled)
+            // 2. Immediate second send (no longer throttled for non-heartbeat)
             service.sendLocationIfNeeded(37.8, -122.5, false, false)
-            io.mockk.coVerify(exactly = 1) { mockClient.sendLocation(any(), any(), any()) }
-
-            // 3. Send after 16s (not throttled - movement throttle is 15s)
-            currentTime += 16_000L
-            service.sendLocationIfNeeded(37.9, -122.6, false, false)
             io.mockk.coVerify(exactly = 2) { mockClient.sendLocation(any(), any(), any()) }
+
+            // 3. Send after 1s
+            currentTime += 1_000L
+            service.sendLocationIfNeeded(37.9, -122.6, false, false)
+            io.mockk.coVerify(exactly = 3) { mockClient.sendLocation(any(), any(), any()) }
         }
 
     @Test
@@ -150,9 +150,19 @@ class LocationServiceTest {
     }
 
     @Test
-    fun testShouldPollFriends_BackgroundNotRapid_ShouldNotPoll() {
+    fun testShouldPollFriends_BackgroundNotRapid_NotRecentlySent_ShouldNotPoll() {
         val service = Robolectric.buildService(LocationService::class.java).get()
+        service.lastSentTime = 100_000L
+        LocationService.clock = { 200_000L } // 100s later
         assertFalse(service.shouldPollFriends(rapid = false, inForeground = false))
+    }
+
+    @Test
+    fun testShouldPollFriends_BackgroundNotRapid_RecentlySent_ShouldPoll() {
+        val service = Robolectric.buildService(LocationService::class.java).get()
+        service.lastSentTime = 100_000L
+        LocationService.clock = { 110_000L } // 10s later
+        assertTrue(service.shouldPollFriends(rapid = false, inForeground = false))
     }
 
     @Test

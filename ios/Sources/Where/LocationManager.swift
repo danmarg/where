@@ -44,6 +44,8 @@ final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelega
         Task { @MainActor in
             self.location = loc
             LocationSyncService.shared.sendLocation(lat: loc.coordinate.latitude, lng: loc.coordinate.longitude)
+            // Ensure we also poll for updates when the OS wakes us for a location fix.
+            await LocationSyncService.shared.pollAll(updateUi: false)
         }
     }
 
