@@ -12,6 +12,7 @@ import org.robolectric.Robolectric
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
 import org.robolectric.shadows.ShadowLog
+import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
@@ -139,4 +140,51 @@ class LocationServiceTest {
             LocationRepository._pendingInitPayload.value = null
             assertFalse(service.isRapidPolling())
         }
+
+    // ---- shouldPollFriends ----
+
+    @Test
+    fun testShouldPollFriends_ForegroundNotRapid_ShouldPoll() {
+        val service = Robolectric.buildService(LocationService::class.java).get()
+        assertTrue(service.shouldPollFriends(rapid = false, inForeground = true))
+    }
+
+    @Test
+    fun testShouldPollFriends_BackgroundNotRapid_ShouldNotPoll() {
+        val service = Robolectric.buildService(LocationService::class.java).get()
+        assertFalse(service.shouldPollFriends(rapid = false, inForeground = false))
+    }
+
+    @Test
+    fun testShouldPollFriends_RapidInBackground_ShouldPoll() {
+        val service = Robolectric.buildService(LocationService::class.java).get()
+        assertTrue(service.shouldPollFriends(rapid = true, inForeground = false))
+    }
+
+    @Test
+    fun testShouldPollFriends_RapidInForeground_ShouldPoll() {
+        val service = Robolectric.buildService(LocationService::class.java).get()
+        assertTrue(service.shouldPollFriends(rapid = true, inForeground = true))
+    }
+
+    // ---- pollInterval ----
+
+    @Test
+    fun testPollInterval_Rapid_Is2s() {
+        val service = Robolectric.buildService(LocationService::class.java).get()
+        assertEquals(2_000L, service.pollInterval(rapid = true, inForeground = true))
+        assertEquals(2_000L, service.pollInterval(rapid = true, inForeground = false))
+    }
+
+    @Test
+    fun testPollInterval_Foreground_Is10s() {
+        val service = Robolectric.buildService(LocationService::class.java).get()
+        assertEquals(10_000L, service.pollInterval(rapid = false, inForeground = true))
+    }
+
+    @Test
+    fun testPollInterval_Background_Is5min() {
+        val service = Robolectric.buildService(LocationService::class.java).get()
+        assertEquals(5 * 60 * 1000L, service.pollInterval(rapid = false, inForeground = false))
+    }
 }
