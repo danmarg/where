@@ -56,9 +56,88 @@ class LocationSyncServiceTests: XCTestCase {
 
     class MockLocationClient: Shared.LocationClient, @unchecked Sendable {
         var sendLocationCallback: (@Sendable () -> Void)?
+        private let lock = NSLock()
+        private var _pollCallCount = 0
+        var pollCallCount: Int {
+            lock.lock(); defer { lock.unlock() }
+            return _pollCallCount
+        }
         override func sendLocation(lat: Double, lng: Double, pausedFriendIds: Set<String>) async throws {
             sendLocationCallback?()
         }
+        override func poll() async throws -> [Shared.UserLocation] {
+            lock.lock(); defer { lock.unlock() }
+            _pollCallCount += 1
+            return []
+        }
+    }
+
+    // MARK: - firePoll foreground/background gating
+
+    func testFirePoll_ForegroundDoesPollFriends() async throws {
+        let store = Shared.E2eeStore(storage: KeychainE2eeStorage())
+        let mockClient = MockLocationClient(baseUrl: "", store: store)
+        service = LocationSyncService(e2eeStore: store, locationClient: mockClient)
+        service.isInForeground = { true }
+        service.startPolling()
+
+        await service.firePoll()
+
+        XCTAssertGreaterThan(mockClient.pollCallCount, 0, "Should poll friends when in foreground")
+    }
+
+    func testFirePoll_BackgroundSkipsPollFriends() async throws {
+        let store = Shared.E2eeStore(storage: KeychainE2eeStorage())
+        let mockClient = MockLocationClient(baseUrl: "", store: store)
+        service = LocationSyncService(e2eeStore: store, locationClient: mockClient)
+        service.isInForeground = { false }
+        service.startPolling()
+
+        await service.firePoll()
+
+        XCTAssertEqual(mockClient.pollCallCount, 0, "Should not poll friends when in background")
+    }
+
+    func testFirePoll_RapidPollsEvenInBackground() async throws {
+        let store = Shared.E2eeStore(storage: KeychainE2eeStorage())
+        let mockClient = MockLocationClient(baseUrl: "", store: store)
+        service = LocationSyncService(e2eeStore: store, locationClient: mockClient)
+        service.isInForeground = { false }
+        service.startPolling()
+        // Put service into rapid mode by setting a recent trigger timestamp.
+        service.lastRapidPollTrigger = Date()
+
+        await service.firePoll()
+
+        XCTAssertGreaterThan(mockClient.pollCallCount, 0, "Should poll friends during rapid mode even in background")
+    }
+
+    // MARK: - Timer interval selection
+
+    func testTimerInterval_Foreground_Is10s() async throws {
+        let store = Shared.E2eeStore(storage: KeychainE2eeStorage())
+        let mockClient = MockLocationClient(baseUrl: "", store: store)
+        service = LocationSyncService(e2eeStore: store, locationClient: mockClient)
+        service.isInForeground = { true }
+        service.startPolling()
+
+        await service.firePoll()
+
+        XCTAssertEqual(service.pollTimer?.timeInterval ?? 0, 10.0, accuracy: 0.1,
+                       "Foreground normal poll should be 10s")
+    }
+
+    func testTimerInterval_Background_Is5min() async throws {
+        let store = Shared.E2eeStore(storage: KeychainE2eeStorage())
+        let mockClient = MockLocationClient(baseUrl: "", store: store)
+        service = LocationSyncService(e2eeStore: store, locationClient: mockClient)
+        service.isInForeground = { false }
+        service.startPolling()
+
+        await service.firePoll()
+
+        XCTAssertEqual(service.pollTimer?.timeInterval ?? 0, 300.0, accuracy: 0.1,
+                       "Background poll should slow to 5min for heartbeat-only firing")
     }
 
     func testIsRapidPolling() async throws {
