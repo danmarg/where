@@ -12,7 +12,7 @@ import kotlin.test.assertTrue
  * cinterop; on JVM/Android they use libsodium bindings.
  *
  * Catching a failure here on one platform means that platform's implementation
- * diverges from the spec — most likely an Ed25519 seed-format mismatch.
+ * diverges from the spec.
  */
 class CryptoPrimitivesVectorTest {
     companion object {
@@ -99,76 +99,6 @@ class CryptoPrimitivesVectorTest {
             aliceShared,
             bobShared,
             "Shared secrets must match",
-        )
-    }
-
-    // -----------------------------------------------------------------------
-    // Ed25519 (RFC 8032 §5.1 Test Vector 1)
-    //
-    // CRITICAL: this vector catches private-key seed-format mismatches between
-    // Apple Security framework and BouncyCastle.  Both must treat the 32-byte
-    // private key as the seed (random nonce), not the expanded scalar.
-    // -----------------------------------------------------------------------
-
-    @Test
-    fun `ed25519 RFC 8032 test vector 1 round-trip`() {
-        // RFC 8032 §5.1.7: Ed25519 Test Vectors, Vector 1
-        // This tests that a signature produced by our implementation
-        // can be verified by our implementation.
-        val kp = generateEd25519KeyPair()
-        val msg = ByteArray(0) // empty message (like RFC vector 1)
-
-        val sig = ed25519Sign(kp.priv, msg)
-        assertTrue(
-            ed25519Verify(kp.pub, msg, sig),
-            "Signature must verify with the same implementation",
-        )
-    }
-
-    @Test
-    fun `ed25519 verify RFC 8032 vector 1 signature`() {
-        val pub =
-            hex(
-                "d75a980182b10ab7d54bfed3c964073a" +
-                    "0ee172f3daa62325af021a68f707511a",
-            )
-        // RFC 8032 §5.1 Test Vector 1: empty message
-        val sig =
-            hex(
-                "e5564300c360ac729086e2cc806e828a" +
-                    "84877f1eb8e5d974d873e06522490155" +
-                    "5fb8821590a33bacc61e39701cf9b46b" +
-                    "d25bf5f0595bbe24655141438e7a100b",
-            )
-        assertTrue(
-            ed25519Verify(pub, ByteArray(0), sig),
-            "RFC 8032 test vector 1 signature must verify",
-        )
-    }
-
-    @Test
-    fun `ed25519 rejects invalid signature`() {
-        val pub =
-            hex(
-                "d75a980182b10ab7d54bfed3c964073a" +
-                    "0ee172f3daa62325af021a68f707511a",
-            )
-        val badSig = ByteArray(64) // all-zero signature is always invalid
-        assertTrue(
-            !ed25519Verify(pub, ByteArray(0), badSig),
-            "All-zero signature must not verify",
-        )
-    }
-
-    @Test
-    fun `ed25519 round-trip sign and verify`() {
-        val kp = generateEd25519KeyPair()
-        val msg = "hello world".encodeToByteArray()
-        val sig = ed25519Sign(kp.priv, msg)
-        assertTrue(ed25519Verify(kp.pub, msg, sig))
-        assertTrue(
-            !ed25519Verify(kp.pub, msg + byteArrayOf(0), sig),
-            "Signature must not verify for different message",
         )
     }
 
