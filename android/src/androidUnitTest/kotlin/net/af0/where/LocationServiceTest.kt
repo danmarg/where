@@ -254,16 +254,31 @@ class LocationServiceTest {
             LocationRepository.triggerRapidPoll()
             assertTrue(service.isRapidPolling())
 
-            // 2. Mock a location update from a new friend
+            // 2. Mock a location update from an existing friend (not being tracked)
+            val existingFriendId = "existing_friend"
+            val update1 = net.af0.where.model.UserLocation(existingFriendId, 1.0, 2.0, currentTime / 1000L)
+            io.mockk.coEvery { mockClient.poll() } returns listOf(update1)
+
+            // Track a different friend
             val newFriendId = "new_friend"
-            val update = net.af0.where.model.UserLocation(newFriendId, 1.0, 2.0, currentTime / 1000L)
-            io.mockk.coEvery { mockClient.poll() } returns listOf(update)
+            LocationRepository.markAwaitingFirstUpdate(newFriendId)
 
             // 3. Fire poll
             service.doPoll()
 
-            // 4. Verify rapid poll is reset
-            assertFalse(service.isRapidPolling(), "Rapid poll should be reset after first location update from a new friend")
+            // 4. Verify rapid poll is NOT reset yet
+            assertTrue(service.isRapidPolling(), "Rapid poll should NOT be reset after update from a different friend")
+            assertTrue(LocationRepository.lastRapidPollTrigger.value > 0L)
+
+            // 5. Mock a location update from the tracked friend
+            val update2 = net.af0.where.model.UserLocation(newFriendId, 3.0, 4.0, currentTime / 1000L)
+            io.mockk.coEvery { mockClient.poll() } returns listOf(update2)
+
+            // 6. Fire poll again
+            service.doPoll()
+
+            // 7. Verify rapid poll IS reset now
+            assertFalse(service.isRapidPolling(), "Rapid poll should be reset after first location update from the tracked friend")
             assertEquals(0L, LocationRepository.lastRapidPollTrigger.value)
         }
 
