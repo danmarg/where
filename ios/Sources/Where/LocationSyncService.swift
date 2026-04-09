@@ -470,7 +470,7 @@ final class LocationSyncService: ObservableObject {
                     await pollAll(updateUi: true)
                     friends = try await e2eeStore.listFriends()
                     updateVisibleUsers()
-                    triggerRapidPoll()
+                    resetRapidPoll()
 
                     updateStatus(nil)
                 } catch {
@@ -486,6 +486,7 @@ final class LocationSyncService: ObservableObject {
 
     func confirmPendingInit(payload: Shared.KeyExchangeInitPayload, name: String) async {
         isExchanging = true
+        pendingInitPayload = nil
 
         defer { isExchanging = false }
         do {
@@ -503,7 +504,8 @@ final class LocationSyncService: ObservableObject {
                     LocationManager.shared.requestPermissionAndStart()
                 }
             }
-            triggerRapidPoll()
+            resetRapidPoll()
+            wakePoll()
             friends = try await e2eeStore.listFriends()
             updateVisibleUsers()
         } catch {

@@ -765,7 +765,7 @@ class LocationViewModelTest {
             vm.confirmQrScan(qr, "Alice")
             advanceUntilIdle()
 
-            assertTrue(source.lastRapidPollTrigger.value > 0L, "Rapid poll should be triggered (not reset to 0)")
+            assertEquals(0L, source.lastRapidPollTrigger.value, "Rapid poll should be reset after confirmQrScan")
         }
 
     @Test
@@ -808,7 +808,7 @@ class LocationViewModelTest {
             vm.confirmPendingInit("Bob")
             advanceUntilIdle()
 
-            assertTrue(source.lastRapidPollTrigger.value > 0L, "Rapid poll should be triggered (not reset to 0)")
+            assertEquals(0L, source.lastRapidPollTrigger.value, "Rapid poll should be reset after confirmPendingInit")
         }
 
     @Test

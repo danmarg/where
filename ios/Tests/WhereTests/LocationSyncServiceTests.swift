@@ -149,9 +149,9 @@ class LocationSyncServiceTests: XCTestCase {
         XCTAssertTrue(isRapidAfterInvite)
 
         await service.clearInvite()
-        // It remains rapid for 5 minutes due to the trigger
+        // It should NO LONGER remain rapid for 5 minutes after clear
         let isRapidAfterClear = await service.isRapidPolling()
-        XCTAssertTrue(isRapidAfterClear)
+        XCTAssertFalse(isRapidAfterClear)
     }
 
     func testBackgroundTaskExpiry() async throws {
