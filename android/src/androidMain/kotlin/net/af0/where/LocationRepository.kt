@@ -185,7 +185,7 @@ object LocationRepository : LocationSource {
     }
 
     override fun triggerRapidPoll() {
-        _lastRapidPollTrigger.value = System.currentTimeMillis()
+        _lastRapidPollTrigger.value = LocationService.clock()
         pollWakeSignal.trySend(Unit)
     }
 
