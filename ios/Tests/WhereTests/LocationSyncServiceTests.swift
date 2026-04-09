@@ -58,6 +58,7 @@ class LocationSyncServiceTests: XCTestCase {
         var sendLocationCallback: (@Sendable () -> Void)?
         private let lock = NSLock()
         private var _pollCallCount = 0
+        var pollResult: [Shared.UserLocation] = []
         var pollCallCount: Int {
             lock.lock(); defer { lock.unlock() }
             return _pollCallCount
@@ -68,7 +69,7 @@ class LocationSyncServiceTests: XCTestCase {
         override func poll() async throws -> [Shared.UserLocation] {
             lock.lock(); defer { lock.unlock() }
             _pollCallCount += 1
-            return []
+            return pollResult
         }
     }
 
@@ -152,6 +153,28 @@ class LocationSyncServiceTests: XCTestCase {
         // It should NO LONGER remain rapid for 5 minutes after clear
         let isRapidAfterClear = await service.isRapidPolling()
         XCTAssertFalse(isRapidAfterClear)
+    }
+
+    func testRapidPollResetAfterFirstLocationUpdate() async throws {
+        let store = Shared.E2eeStore(storage: KeychainE2eeStorage())
+        let mockClient = MockLocationClient(baseUrl: "", store: store)
+        service = LocationSyncService(e2eeStore: store, locationClient: mockClient)
+
+        // 1. Trigger rapid poll
+        service.lastRapidPollTrigger = Date()
+        XCTAssertTrue(await service.isRapidPolling())
+
+        // 2. Mock a location update from a new friend
+        let newFriendId = "new_friend"
+        let update = Shared.UserLocation(userId: newFriendId, lat: 1.0, lng: 2.0, timestamp: 123)
+        mockClient.pollResult = [update]
+
+        // 3. Fire poll
+        await service.pollAll(updateUi: true)
+
+        // 4. Verify rapid poll is reset
+        XCTAssertFalse(await service.isRapidPolling(), "Rapid poll should be reset after first location update from a new friend")
+        XCTAssertEqual(service.lastRapidPollTrigger.timeIntervalSince1970, 0, accuracy: 0.1)
     }
 
     func testBackgroundTaskExpiry() async throws {

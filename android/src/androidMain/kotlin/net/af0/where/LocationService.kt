@@ -224,16 +224,23 @@ class LocationService : Service() {
         return hasPendingQr || locationSource.pendingInitPayload.value != null || recentlyTriggered || isNaming
     }
 
-    private suspend fun doPoll() {
+    @VisibleForTesting
+    internal suspend fun doPoll() {
         try {
             Log.d(TAG, "Polling for location updates")
             val updates = locationClient.poll()
             Log.d(TAG, "Got ${updates.size} location updates")
             withContext(Dispatchers.Main) {
                 val now = System.currentTimeMillis()
+                var gotFirstUpdate = false
                 for (update in updates) {
+                    val existing = locationSource.friendLocations.value[update.userId]
+                    if (existing == null) gotFirstUpdate = true
                     locationSource.onFriendUpdate(update, now)
                     e2eeStore.updateLastLocation(update.userId, update.lat, update.lng, now / 1000L)
+                }
+                if (gotFirstUpdate) {
+                    locationSource.resetRapidPoll()
                 }
                 pollPendingInvite()
                 locationSource.onFriendsUpdated(e2eeStore.listFriends())
