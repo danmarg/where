@@ -2,12 +2,9 @@ package net.af0.where
 
 import android.app.Application
 import android.content.Intent
-import com.google.android.gms.location.LocationCallback
-import com.google.android.gms.location.LocationRequest
 import androidx.test.core.app.ApplicationProvider
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
-import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.runCurrent
@@ -328,10 +325,10 @@ class LocationServiceTest {
 
             val mockClient = io.mockk.mockk<LocationClient>(relaxed = true)
             service.locationClientOverride = mockClient
-            
+
             val mockFused = io.mockk.mockk<com.google.android.gms.location.FusedLocationProviderClient>(relaxed = true)
             service.fusedClientOverride = mockFused
-            
+
             val mockStore = io.mockk.mockk<net.af0.where.e2ee.E2eeStore>(relaxed = true)
             service.e2eeStoreOverride = mockStore
 

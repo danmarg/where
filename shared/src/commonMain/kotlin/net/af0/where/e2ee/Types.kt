@@ -4,8 +4,8 @@ import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 
 /**
- * Raw X25519 or Ed25519 keypair. Both fields are 32-byte little-endian representations
- * as defined by RFC 7748 / RFC 8032.
+ * Raw X25519 keypair. Both fields are 32-byte little-endian representations
+ * as defined by RFC 7748.
  */
 data class RawKeyPair(val priv: ByteArray, val pub: ByteArray) {
     override fun equals(other: Any?): Boolean = other is RawKeyPair && priv.contentEquals(other.priv) && pub.contentEquals(other.pub)
