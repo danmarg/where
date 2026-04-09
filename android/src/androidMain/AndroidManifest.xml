@@ -13,7 +13,8 @@
     <application
         android:name=".WhereApplication"
         android:label="Where"
-        android:theme="@style/Theme.Where">
+        android:theme="@style/Theme.Where"
+        android:allowBackup="false">
 
         <meta-data
             android:name="com.google.android.geo.API_KEY"
