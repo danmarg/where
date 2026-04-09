@@ -217,8 +217,8 @@ final class LocationSyncService: ObservableObject {
 
         Task {
             // Clear any stale invite from a previous session before first poll.
-            if (try? await e2eeStore.pendingQrPayload()) ?? nil != nil {
-                try? await e2eeStore.clearInvite()
+            if (try? await store.pendingQrPayload()) ?? nil != nil {
+                try? await store.clearInvite()
             }
             startPolling()
         }
@@ -309,12 +309,6 @@ final class LocationSyncService: ObservableObject {
         if let t = pollTimer, abs(t.timeInterval - targetInterval) > 0.1 {
             schedulePollTimer(interval: targetInterval)
         }
-    }
-
-    private func triggerRapidPoll() {
-        lastRapidPollTrigger = Date()
-        schedulePollTimer(interval: Self.rapidPollInterval)
-        Task { await firePoll() }
     }
 
     @MainActor
