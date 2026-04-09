@@ -197,4 +197,42 @@ class LocationServiceTest {
         val service = Robolectric.buildService(LocationService::class.java).get()
         assertEquals(5 * 60 * 1000L, service.pollInterval(rapid = false, inForeground = false))
     }
+
+    @Test
+    fun testActionForcePublish() =
+        runTest {
+            val controller = Robolectric.buildService(LocationService::class.java)
+            val service = controller.get()
+
+            val mockClient = io.mockk.mockk<LocationClient>(relaxed = true)
+            val locationClientField = LocationService::class.java.getDeclaredField("locationClient")
+            locationClientField.isAccessible = true
+            locationClientField.set(service, mockClient)
+
+            controller.create()
+
+            // 1. Immediate send
+            LocationRepository.onLocation(37.4, -122.1)
+            val intent1 =
+                android.content.Intent(context, LocationService::class.java).apply {
+                    action = LocationService.ACTION_FORCE_PUBLISH
+                    putExtra(LocationService.EXTRA_FRIEND_ID, "friend1")
+                }
+            controller.withIntent(intent1).startCommand(0, 1)
+
+            io.mockk.coVerify(timeout = 5000) { mockClient.sendLocationToFriend("friend1", 37.4, -122.1) }
+
+            // 2. Deferred send
+            LocationRepository.reset()
+            val intent2 =
+                android.content.Intent(context, LocationService::class.java).apply {
+                    action = LocationService.ACTION_FORCE_PUBLISH
+                    putExtra(LocationService.EXTRA_FRIEND_ID, "friend2")
+                }
+            controller.withIntent(intent2).startCommand(0, 2)
+
+            // Provide location
+            LocationRepository.onLocation(37.5, -122.2)
+            io.mockk.coVerify(timeout = 5000) { mockClient.sendLocationToFriend("friend2", 37.5, -122.2) }
+        }
 }
