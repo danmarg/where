@@ -109,10 +109,14 @@ object Session {
         }
 
         // Advance the receive chain key to reach the correct seq (handles gaps).
+        // Each intermediate chainKey is zeroed before the reference is dropped (§5.5).
         var chainKey = state.recvChainKey.copyOf()
         var step: ChainStep? = null
+        // stepsNeeded is capped at MAX_DECRYPT_GAP (1000) above, so .toInt() is safe.
+        require(stepsNeeded <= Int.MAX_VALUE) { "stepsNeeded overflows Int" }
         repeat(stepsNeeded.toInt()) {
             step = kdfCk(chainKey)
+            chainKey.fill(0)
             chainKey = step!!.newChainKey
         }
         val finalStep = step!!
