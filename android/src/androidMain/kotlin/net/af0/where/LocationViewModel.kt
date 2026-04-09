@@ -286,6 +286,7 @@ class LocationViewModel(
                     withContext(Dispatchers.Main.immediate) {
                         locationSource.onFriendsUpdated(e2eeStore.listFriends())
                     }
+                    locationSource.markAwaitingFirstUpdate(bobEntry.id)
                     locationSource.triggerRapidPoll()
                     locationSource.wakePoll()
                 } catch (e: Exception) {
@@ -315,6 +316,7 @@ class LocationViewModel(
                     withContext(Dispatchers.Main.immediate) {
                         locationSource.onFriendsUpdated(e2eeStore.listFriends())
                     }
+                    locationSource.markAwaitingFirstUpdate(entry.id)
                     locationSource.triggerRapidPoll()
                     locationSource.wakePoll()
                     try {
