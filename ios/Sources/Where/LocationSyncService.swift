@@ -546,7 +546,7 @@ final class LocationSyncService: ObservableObject {
 
     func resetRapidPoll() {
         lastRapidPollTrigger = Date(timeIntervalSince1970: 0)
-        awaitingFirstUpdateIds.clear()
+        awaitingFirstUpdateIds.removeAll()
         schedulePollTimer(interval: Self.normalPollInterval)
     }
 
