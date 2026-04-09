@@ -35,6 +35,15 @@ private const val TAG = "LocationService"
  * and the E2EE protocol work (polling, sending location).
  */
 class LocationService : Service() {
+    @VisibleForTesting
+    internal var fusedClientOverride: com.google.android.gms.location.FusedLocationProviderClient? = null
+
+    @VisibleForTesting
+    internal var e2eeStoreOverride: E2eeStore? = null
+
+    @VisibleForTesting
+    internal var locationClientOverride: LocationClient? = null
+
     private lateinit var fusedClient: com.google.android.gms.location.FusedLocationProviderClient
     private lateinit var locationCallback: LocationCallback
     private var isRegistered = false
@@ -53,10 +62,10 @@ class LocationService : Service() {
         startForeground(NOTIFICATION_ID, buildNotification())
 
         val app = application as WhereApplication
-        e2eeStore = app.e2eeStore
-        locationClient = app.locationClient
+        e2eeStore = e2eeStoreOverride ?: app.e2eeStore
+        locationClient = locationClientOverride ?: app.locationClient
+        fusedClient = fusedClientOverride ?: LocationServices.getFusedLocationProviderClient(this)
 
-        fusedClient = LocationServices.getFusedLocationProviderClient(this)
         locationCallback =
             object : LocationCallback() {
                 override fun onLocationResult(result: LocationResult) {
@@ -72,18 +81,7 @@ class LocationService : Service() {
         } catch (_: SecurityException) {
         }
 
-        val request =
-            LocationRequest.Builder(Priority.PRIORITY_BALANCED_POWER_ACCURACY, 30_000L)
-                .setMinUpdateIntervalMillis(15_000L)
-                .setMinUpdateDistanceMeters(10f)
-                .build()
-
-        try {
-            fusedClient.requestLocationUpdates(request, locationCallback, mainLooper)
-            isRegistered = true
-        } catch (_: SecurityException) {
-            stopSelf()
-        }
+        ensureLocationRegistration()
 
         serviceScope.launch { pollLoop() }
         serviceScope.launch {
@@ -139,25 +137,31 @@ class LocationService : Service() {
             }
         }
 
-        if (!isRegistered) {
-            val request =
-                LocationRequest.Builder(Priority.PRIORITY_BALANCED_POWER_ACCURACY, 30_000L)
-                    .setMinUpdateIntervalMillis(15_000L)
-                    .setMinUpdateDistanceMeters(10f)
-                    .build()
-            try {
-                fusedClient.requestLocationUpdates(request, locationCallback, mainLooper)
-                isRegistered = true
-            } catch (_: SecurityException) {
-                stopSelf()
-            }
-        }
+        ensureLocationRegistration()
         return START_STICKY
+    }
+
+    private fun ensureLocationRegistration() {
+        if (isRegistered) return
+
+        val request =
+            LocationRequest.Builder(Priority.PRIORITY_BALANCED_POWER_ACCURACY, 30_000L)
+                .setMinUpdateIntervalMillis(15_000L)
+                .setMinUpdateDistanceMeters(10f)
+                .build()
+
+        try {
+            fusedClient.requestLocationUpdates(request, locationCallback, mainLooper)
+            isRegistered = true
+        } catch (_: SecurityException) {
+            stopSelf()
+        }
     }
 
     override fun onDestroy() {
         Log.d(TAG, "onDestroy")
         fusedClient.removeLocationUpdates(locationCallback)
+        isRegistered = false
         serviceScope.cancel()
         super.onDestroy()
     }
