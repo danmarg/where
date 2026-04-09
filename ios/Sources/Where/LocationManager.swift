@@ -55,7 +55,7 @@ final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelega
         let status = manager.authorizationStatus
         Task { @MainActor in
             self.authorizationStatus = status
-            manager.allowsBackgroundLocationUpdates = (status == .authorizedAlways)
+            self.manager.allowsBackgroundLocationUpdates = (status == .authorizedAlways)
             if status == .authorizedWhenInUse || status == .authorizedAlways {
                 self.startUpdating()
             }
