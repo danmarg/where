@@ -4,7 +4,6 @@ import os
 import UIKit
 import CoreLocation
 import Combine
-
 private let logger = Logger(subsystem: "net.af0.where", category: "LocationSync")
 
 @inline(__always)
@@ -142,7 +141,7 @@ final class LocationSyncService: ObservableObject {
     /// Overridable in tests to simulate foreground/background without UIKit.
     var isInForeground: () -> Bool = { UIApplication.shared.applicationState == .active }
     private static let rapidPollInterval: TimeInterval = 1.0
-    private static let normalPollInterval: TimeInterval = 10.0
+    private static let normalPollInterval: TimeInterval = 60.0
     private var visibleUsersCancellables = Set<AnyCancellable>()
 
     private var lastSentLocation: (lat: Double, lng: Double)? = nil
@@ -216,7 +215,13 @@ final class LocationSyncService: ObservableObject {
             }
             .store(in: &visibleUsersCancellables)
 
-        startPolling()
+        Task {
+            // Clear any stale invite from a previous session before first poll.
+            if (try? await e2eeStore.pendingQrPayload()) ?? nil != nil {
+                try? await e2eeStore.clearInvite()
+            }
+            startPolling()
+        }
     }
 
     func isRapidPolling() async -> Bool {
@@ -256,10 +261,6 @@ final class LocationSyncService: ObservableObject {
         guard pollTimer?.isValid != true else { return }
         schedulePollTimer(interval: Self.normalPollInterval)
         Task {
-            // Clear any stale invite from a previous session before first poll.
-            if (try? await e2eeStore.pendingQrPayload()) ?? nil != nil {
-                try? await e2eeStore.clearInvite()
-            }
             await firePoll()
         }
     }
@@ -301,7 +302,7 @@ final class LocationSyncService: ObservableObject {
         if isRapid {
             targetInterval = Self.rapidPollInterval
         } else if inForeground {
-            targetInterval = Self.normalPollInterval       // 10s
+            targetInterval = Self.normalPollInterval       // 60s
         } else {
             targetInterval = 5 * 60                       // 5 min: matches heartbeat throttle
         }
@@ -481,7 +482,7 @@ final class LocationSyncService: ObservableObject {
                     await pollAll(updateUi: true)
                     friends = try await e2eeStore.listFriends()
                     updateVisibleUsers()
-                    wakePoll()
+                    triggerRapidPoll()
 
                     updateStatus(nil)
                 } catch {
@@ -533,6 +534,12 @@ final class LocationSyncService: ObservableObject {
     }
 
     func wakePoll() {
+        Task { await firePoll() }
+    }
+
+    private func triggerRapidPoll() {
+        lastRapidPollTrigger = Date()
+        schedulePollTimer(interval: Self.rapidPollInterval)
         Task { await firePoll() }
     }
 
@@ -646,8 +653,8 @@ final class LocationSyncService: ObservableObject {
                 suggestedName: suggestedName
             )
 
-            pendingInitPayload = initPayload
             inviteState = .none   // dismiss the QR sheet so the naming alert can appear
+            pendingInitPayload = initPayload
             triggerRapidPoll()
             break
         }

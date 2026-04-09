@@ -114,7 +114,7 @@ class LocationSyncServiceTests: XCTestCase {
 
     // MARK: - Timer interval selection
 
-    func testTimerInterval_Foreground_Is10s() async throws {
+    func testTimerInterval_Foreground_Is60s() async throws {
         let store = Shared.E2eeStore(storage: KeychainE2eeStorage())
         let mockClient = MockLocationClient(baseUrl: "", store: store)
         service = LocationSyncService(e2eeStore: store, locationClient: mockClient)
@@ -123,8 +123,8 @@ class LocationSyncServiceTests: XCTestCase {
 
         await service.firePoll()
 
-        XCTAssertEqual(service.pollTimer?.timeInterval ?? 0, 10.0, accuracy: 0.1,
-                       "Foreground normal poll should be 10s")
+        XCTAssertEqual(service.pollTimer?.timeInterval ?? 0, 60.0, accuracy: 0.1,
+                       "Foreground normal poll should be 60s")
     }
 
     func testTimerInterval_Background_Is5min() async throws {
