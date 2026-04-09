@@ -1,6 +1,8 @@
 package net.af0.where
 
 import android.app.Application
+import com.google.android.gms.location.LocationCallback
+import com.google.android.gms.location.LocationRequest
 import androidx.test.core.app.ApplicationProvider
 import kotlinx.coroutines.test.runTest
 import net.af0.where.e2ee.KeyExchangeInitPayload
@@ -39,15 +41,21 @@ class LocationServiceTest {
     fun testDeduplication_BugC() {
         val controller = Robolectric.buildService(LocationService::class.java)
         val service = controller.get()
+
+        val mockFusedClient = io.mockk.mockk<com.google.android.gms.location.FusedLocationProviderClient>(relaxed = true)
+        service.fusedClientOverride = mockFusedClient
+
         controller.create()
 
         assertTrue(getServiceIsRegistered(service))
+        io.mockk.verify(exactly = 1) { mockFusedClient.requestLocationUpdates(any<LocationRequest>(), any<LocationCallback>(), any<android.os.Looper>()) }
 
         // Multiple startCommand calls must not attempt to re-register location updates.
         controller.startCommand(0, 1)
         controller.startCommand(0, 2)
 
         assertTrue(getServiceIsRegistered(service))
+        io.mockk.verify(exactly = 1) { mockFusedClient.requestLocationUpdates(any<LocationRequest>(), any<LocationCallback>(), any<android.os.Looper>()) }
     }
 
     @Test
@@ -56,14 +64,11 @@ class LocationServiceTest {
             var currentTime = 100_000L
             LocationService.clock = { currentTime }
 
+            val mockClient = io.mockk.mockk<LocationClient>(relaxed = true)
             val controller = Robolectric.buildService(LocationService::class.java)
             val service = controller.get()
+            service.locationClientOverride = mockClient
             controller.create()
-
-            val mockClient = io.mockk.mockk<LocationClient>(relaxed = true)
-            val locationClientField = LocationService::class.java.getDeclaredField("locationClient")
-            locationClientField.isAccessible = true
-            locationClientField.set(service, mockClient)
 
             // 1. Initial send
             service.sendLocationIfNeeded(37.7, -122.4, false, false)
@@ -86,14 +91,11 @@ class LocationServiceTest {
             var currentTime = 1_000_000L
             LocationService.clock = { currentTime }
 
+            val mockClient = io.mockk.mockk<LocationClient>(relaxed = true)
             val controller = Robolectric.buildService(LocationService::class.java)
             val service = controller.get()
+            service.locationClientOverride = mockClient
             controller.create()
-
-            val mockClient = io.mockk.mockk<LocationClient>(relaxed = true)
-            val locationClientField = LocationService::class.java.getDeclaredField("locationClient")
-            locationClientField.isAccessible = true
-            locationClientField.set(service, mockClient)
 
             // 1. Initial send
             service.sendLocationIfNeeded(37.7, -122.4, false, false)
