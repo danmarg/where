@@ -1,9 +1,9 @@
 package net.af0.where
 
 import android.app.Application
+import androidx.test.core.app.ApplicationProvider
 import com.google.android.gms.location.LocationCallback
 import com.google.android.gms.location.LocationRequest
-import androidx.test.core.app.ApplicationProvider
 import kotlinx.coroutines.test.runTest
 import net.af0.where.e2ee.KeyExchangeInitPayload
 import net.af0.where.e2ee.LocationClient
@@ -48,14 +48,18 @@ class LocationServiceTest {
         controller.create()
 
         assertTrue(getServiceIsRegistered(service))
-        io.mockk.verify(exactly = 1) { mockFusedClient.requestLocationUpdates(any<LocationRequest>(), any<LocationCallback>(), any<android.os.Looper>()) }
+        io.mockk.verify(exactly = 1) {
+            mockFusedClient.requestLocationUpdates(any<LocationRequest>(), any<LocationCallback>(), any<android.os.Looper>())
+        }
 
         // Multiple startCommand calls must not attempt to re-register location updates.
         controller.startCommand(0, 1)
         controller.startCommand(0, 2)
 
         assertTrue(getServiceIsRegistered(service))
-        io.mockk.verify(exactly = 1) { mockFusedClient.requestLocationUpdates(any<LocationRequest>(), any<LocationCallback>(), any<android.os.Looper>()) }
+        io.mockk.verify(exactly = 1) {
+            mockFusedClient.requestLocationUpdates(any<LocationRequest>(), any<LocationCallback>(), any<android.os.Looper>())
+        }
     }
 
     @Test
