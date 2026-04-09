@@ -150,6 +150,9 @@ final class LocationSyncService: ObservableObject {
     private var currentSendTask: Task<Void, Never>? = nil
     private var isCurrentSendHeartbeat: Bool = false
     private var awaitingFirstUpdateIds: Set<String> = []
+    // Monotonically increasing counter used to prevent stale task cleanup from
+    // clearing a newer task's state. Incremented each time a new send task is created.
+    private var sendTaskGeneration: Int = 0
 
     // Injected for testing. Closures are @Sendable and use MainActor.assumeIsolated internally
     // to interact with UIApplication.shared, which is required for background tasks in Swift 6.
@@ -333,7 +336,9 @@ final class LocationSyncService: ObservableObject {
         if currentSendTask != nil && !effectiveForce && !replacingHeartbeat { return }
 
         // Cancel existing task if this is a forced update or if we're replacing a heartbeat.
+        // Bump the generation so the cancelled task's deferred cleanup won't clear the new task.
         if (effectiveForce || replacingHeartbeat), let existing = currentSendTask {
+            sendTaskGeneration += 1
             existing.cancel()
             currentSendTask = nil
             isCurrentSendHeartbeat = false
@@ -361,6 +366,8 @@ final class LocationSyncService: ObservableObject {
         logger.debug("Sending location: \(lat), \(lng) (heartbeat=\(isHeartbeat), force=\(force), effectiveForce=\(effectiveForce))")
 
         isCurrentSendHeartbeat = isHeartbeat
+        sendTaskGeneration += 1
+        let myGeneration = sendTaskGeneration
         let backgroundTask = self.startBackgroundTask("SendLocation")
         currentSendTask = Task {
             // Re-check isSharingLocation inside Task if needed,
@@ -368,9 +375,13 @@ final class LocationSyncService: ObservableObject {
 
             defer {
                 backgroundTask.end()
+                // Only clear state if this task is still the current one. A stale cleanup
+                // from a cancelled task must not overwrite state set by a newer task.
                 Task { @MainActor in
-                    currentSendTask = nil
-                    isCurrentSendHeartbeat = false
+                    if self.sendTaskGeneration == myGeneration {
+                        self.currentSendTask = nil
+                        self.isCurrentSendHeartbeat = false
+                    }
                 }
             }
 
@@ -439,9 +450,10 @@ final class LocationSyncService: ObservableObject {
             let initPayload = result.first!
             let bobEntry = result.second!
 
-            awaitingFirstUpdateIds.insert(bobEntry.id)
-
             await clearInvite()
+            // Insert AFTER clearInvite: clearInvite calls resetRapidPoll which clears
+            // awaitingFirstUpdateIds, so inserting before it is a no-op.
+            awaitingFirstUpdateIds.insert(bobEntry.id)
             friends = try await e2eeStore.listFriends()
             updateVisibleUsers()
 

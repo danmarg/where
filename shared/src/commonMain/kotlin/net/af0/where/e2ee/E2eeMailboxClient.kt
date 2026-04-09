@@ -2,6 +2,7 @@ package net.af0.where.e2ee
 
 import io.ktor.client.HttpClient
 import io.ktor.client.call.body
+import io.ktor.client.plugins.HttpTimeout
 import io.ktor.client.plugins.contentnegotiation.ContentNegotiation
 import io.ktor.client.request.get
 import io.ktor.client.request.post
@@ -24,6 +25,11 @@ object E2eeMailboxClient {
         HttpClient {
             install(ContentNegotiation) {
                 json(json)
+            }
+            install(HttpTimeout) {
+                connectTimeoutMillis = 10_000
+                requestTimeoutMillis = 30_000
+                socketTimeoutMillis = 30_000
             }
         }
 
