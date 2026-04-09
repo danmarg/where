@@ -39,6 +39,8 @@ class LocationService : Service() {
     private lateinit var locationCallback: LocationCallback
     private var isRegistered = false
 
+    private val pendingFriendSends = mutableSetOf<String>()
+
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
 
     private lateinit var e2eeStore: E2eeStore
@@ -90,6 +92,21 @@ class LocationService : Service() {
                     if (locationSource.isSharingLocation.value) {
                         sendLocationIfNeeded(loc.first, loc.second, isHeartbeat = false)
                     }
+
+                    if (pendingFriendSends.isNotEmpty()) {
+                        val toSend = pendingFriendSends.toSet()
+                        pendingFriendSends.clear()
+                        for (friendId in toSend) {
+                            launch {
+                                try {
+                                    locationClient.sendLocationToFriend(friendId, loc.first, loc.second)
+                                } catch (e: Exception) {
+                                    Log.e(TAG, "Failed to send deferred location to $friendId: ${e.message}")
+                                }
+                            }
+                        }
+                    }
+
                     // When our own location changes, trigger a poll for friend updates.
                     // This ensures that whenever we share, we also receive.
                     locationSource.wakePoll()
@@ -104,6 +121,24 @@ class LocationService : Service() {
         startId: Int,
     ): Int {
         Log.d(TAG, "onStartCommand: isRegistered=$isRegistered")
+        if (intent?.action == ACTION_FORCE_PUBLISH) {
+            val friendId = intent.getStringExtra(EXTRA_FRIEND_ID)
+            if (friendId != null) {
+                val loc = locationSource.lastLocation.value
+                if (loc != null) {
+                    serviceScope.launch {
+                        try {
+                            locationClient.sendLocationToFriend(friendId, loc.first, loc.second)
+                        } catch (e: Exception) {
+                            Log.e(TAG, "Failed to send forced location to $friendId: ${e.message}")
+                        }
+                    }
+                } else {
+                    pendingFriendSends.add(friendId)
+                }
+            }
+        }
+
         if (!isRegistered) {
             val request =
                 LocationRequest.Builder(Priority.PRIORITY_BALANCED_POWER_ACCURACY, 30_000L)
@@ -290,6 +325,9 @@ class LocationService : Service() {
             .build()
 
     companion object {
+        const val ACTION_FORCE_PUBLISH = "net.af0.where.ACTION_FORCE_PUBLISH"
+        const val EXTRA_FRIEND_ID = "friend_id"
+
         /** Overridable in tests; defaults to the production singleton. */
         var locationSource: LocationSource = LocationRepository
 

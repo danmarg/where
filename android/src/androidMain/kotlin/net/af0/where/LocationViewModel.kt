@@ -19,7 +19,6 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import kotlinx.coroutines.withTimeoutOrNull
 import net.af0.where.e2ee.E2eeMailboxClient
 import net.af0.where.e2ee.E2eeStore
 import net.af0.where.e2ee.FriendEntry
@@ -276,38 +275,12 @@ class LocationViewModel(
                     }
                     locationClient.postOpkBundle(bobEntry.id)
                     if (isSharingLocation.value) {
-                        // Send our location directly to the new friend without going through the
-                        // service. Using the same locationClient instance avoids ratchet divergence.
-                        val loc = locationSource.lastLocation.value
-                        if (loc != null) {
-                            try {
-                                Log.d(TAG, "confirmQrScan: force-sending location to ${bobEntry.id}")
-                                locationClient.sendLocationToFriend(bobEntry.id, loc.first, loc.second)
-                            } catch (e: Exception) {
-                                Log.e(TAG, "confirmQrScan: force send failed", e)
-                                updateStatus(e)
+                        val intent =
+                            Intent(getApplication(), LocationService::class.java).apply {
+                                action = LocationService.ACTION_FORCE_PUBLISH
+                                putExtra(LocationService.EXTRA_FRIEND_ID, bobEntry.id)
                             }
-                        } else {
-                            // Location not available yet; wait inline so the outer finally
-                            // covers this path and _isExchanging is always restored.
-                            val deferred =
-                                withTimeoutOrNull(30_000L) {
-                                    locationSource.lastLocation.first { it != null }
-                                }
-                            if (deferred == null) {
-                                Log.e(TAG, "confirmQrScan: timed out waiting for location")
-                                updateStatus(Exception("Location unavailable for initial send"))
-                            } else {
-                                val (lat, lng) = deferred
-                                try {
-                                    Log.d(TAG, "confirmQrScan: deferred force-send to ${bobEntry.id}")
-                                    locationClient.sendLocationToFriend(bobEntry.id, lat, lng)
-                                } catch (e: Exception) {
-                                    Log.e(TAG, "confirmQrScan: deferred force send failed", e)
-                                    updateStatus(e)
-                                }
-                            }
-                        }
+                        getApplication<Application>().startForegroundService(intent)
                     }
 
                     withContext(Dispatchers.Main.immediate) {
@@ -349,41 +322,12 @@ class LocationViewModel(
                         locationClient.postOpkBundle(entry.id)
                         Log.d(TAG, "confirmPendingInit: postOpkBundle succeeded")
                         if (isSharingLocation.value) {
-                            val loc = locationSource.lastLocation.value
-                            if (loc != null) {
-                                try {
-                                    Log.d(
-                                        TAG,
-                                        "confirmPendingInit: force-sending location to ${entry.id}: lat=${loc.first}, lng=${loc.second}",
-                                    )
-                                    locationClient.sendLocationToFriend(entry.id, loc.first, loc.second)
-                                    Log.d(TAG, "confirmPendingInit: sendLocationToFriend succeeded")
-                                } catch (e: Exception) {
-                                    Log.e(TAG, "confirmPendingInit: force send failed", e)
-                                    updateStatus(e)
+                            val intent =
+                                Intent(getApplication(), LocationService::class.java).apply {
+                                    action = LocationService.ACTION_FORCE_PUBLISH
+                                    putExtra(LocationService.EXTRA_FRIEND_ID, entry.id)
                                 }
-                            } else {
-                                // Wait inline so the outer finally covers this path and
-                                // _isExchanging is always restored.
-                                val deferred =
-                                    withTimeoutOrNull(30_000L) {
-                                        locationSource.lastLocation.first { it != null }
-                                    }
-                                if (deferred == null) {
-                                    Log.e(TAG, "confirmPendingInit: timed out waiting for location")
-                                    updateStatus(Exception("Location unavailable for initial send"))
-                                } else {
-                                    val (lat, lng) = deferred
-                                    try {
-                                        Log.d(TAG, "confirmPendingInit: deferred force-send to ${entry.id}: lat=$lat, lng=$lng")
-                                        locationClient.sendLocationToFriend(entry.id, lat, lng)
-                                        Log.d(TAG, "confirmPendingInit: deferred sendLocationToFriend succeeded")
-                                    } catch (e: Exception) {
-                                        Log.e(TAG, "confirmPendingInit: deferred force send failed", e)
-                                        updateStatus(e)
-                                    }
-                                }
-                            }
+                            getApplication<Application>().startForegroundService(intent)
                         }
                     } catch (e: Exception) {
                         Log.e(TAG, "confirmPendingInit: inner failure: ${e.message}")
