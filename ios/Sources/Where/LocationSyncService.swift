@@ -476,7 +476,7 @@ final class LocationSyncService: ObservableObject {
                     await pollAll(updateUi: true)
                     friends = try await e2eeStore.listFriends()
                     updateVisibleUsers()
-                    resetRapidPoll()
+                    triggerRapidPoll()
 
                     updateStatus(nil)
                 } catch {
@@ -510,8 +510,7 @@ final class LocationSyncService: ObservableObject {
                     LocationManager.shared.requestPermissionAndStart()
                 }
             }
-            resetRapidPoll()
-            wakePoll()
+            triggerRapidPoll()
             friends = try await e2eeStore.listFriends()
             updateVisibleUsers()
         } catch {
@@ -595,10 +594,18 @@ final class LocationSyncService: ObservableObject {
         do {
             let updates = try await locationClient.poll()
             logger.debug("Got \(updates.count) location updates")
+            var gotFirstUpdate = false
             for update in updates {
+                if friendLocations[update.userId] == nil {
+                    gotFirstUpdate = true
+                }
                 try? await e2eeStore.updateLastLocation(id: update.userId, lat: update.lat, lng: update.lng, ts: Int64(Date().timeIntervalSince1970))
                 friendLocations[update.userId] = (lat: update.lat, lng: update.lng, ts: update.timestamp)
                 friendLastPing[update.userId] = Date()
+            }
+
+            if gotFirstUpdate {
+                resetRapidPoll()
             }
 
             // Always update visibleUsers to ensure map is fresh when returning to foreground.
