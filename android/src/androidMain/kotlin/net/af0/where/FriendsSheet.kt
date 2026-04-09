@@ -176,6 +176,8 @@ fun FriendsSheet(
                                 Text(
                                     friend.name,
                                     style = MaterialTheme.typography.bodyLarge,
+                                    maxLines = 1,
+                                    overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
                                 )
                                 Text(
                                     friend.safetyNumber,
