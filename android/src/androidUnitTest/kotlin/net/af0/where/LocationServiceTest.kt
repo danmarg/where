@@ -290,8 +290,8 @@ class LocationServiceTest {
             // 1. Add two new friends
             val friendId1 = "friend1"
             val friendId2 = "friend2"
-            LocationRepository.onFriendAdded(friendId1)
-            LocationRepository.onFriendAdded(friendId2)
+            LocationRepository.markAwaitingFirstUpdate(friendId1)
+            LocationRepository.markAwaitingFirstUpdate(friendId2)
 
             // 2. Trigger rapid poll
             LocationRepository.triggerRapidPoll()
@@ -346,6 +346,7 @@ class LocationServiceTest {
                         putExtra(LocationService.EXTRA_FRIEND_ID, "friend1")
                     }
                 controller.withIntent(intent1).startCommand(0, 1)
+                runCurrent()
 
                 io.mockk.coVerify(timeout = 5000) { mockClient.sendLocationToFriend("friend1", 37.4, -122.1) }
 
@@ -357,9 +358,11 @@ class LocationServiceTest {
                         putExtra(LocationService.EXTRA_FRIEND_ID, "friend2")
                     }
                 controller.withIntent(intent2).startCommand(0, 2)
+                runCurrent()
 
                 // Provide location
                 LocationRepository.onLocation(37.5, -122.2)
+                runCurrent()
                 io.mockk.coVerify(timeout = 5000) { mockClient.sendLocationToFriend("friend2", 37.5, -122.2) }
             } finally {
                 controller.destroy()
