@@ -298,7 +298,7 @@ class LocationViewModelTest {
     @Test
     fun testCancelQrScan_BobSide() =
         runTest {
-            viewModel = LocationViewModel(app, startPolling = false)
+            viewModel = LocationViewModel(app, E2eeStore(FakeE2eeStorage()), startPolling = false)
             val vm = viewModel!!
 
             val qr = QrPayload(byteArrayOf(1, 2, 3), "Alice", "fp")
