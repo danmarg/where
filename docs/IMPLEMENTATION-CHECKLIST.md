@@ -57,7 +57,7 @@ Split into client-crypto, client-app, and server.
 - **Bob: Periodically generate and post `PreKeyBundle`**:
   - Generate a batch of X25519 keypairs (OPKs).
   - Post public keys with unique IDs to the shared mailbox.
-  - **Authenticate bundle with HMAC**: `HMAC-SHA-256(K_bundle, v || token || keys_json_canonical)`. (No Ed25519; `K_bundle` is session-derived.)
+  - **Authenticate bundle with HMAC**: `HMAC-SHA-256(K_bundle, v || token || keys_json_canonical)`. (`K_bundle` is session-derived.)
 - **Alice: Consume OPK for Epoch Rotation**:
   - Cache Bob's OPKs from mailbox. Verify HMAC before use.
   - On epoch boundary (every `T` minutes), pop one OPK.
