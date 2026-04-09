@@ -42,6 +42,8 @@ final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelega
     nonisolated func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
         guard let loc = locations.last else { return }
         Task { @MainActor in
+            let backgroundTask = LocationSyncService.shared.startBackgroundTask("LocationUpdate")
+            defer { backgroundTask.end() }
             self.location = loc
             LocationSyncService.shared.sendLocation(lat: loc.coordinate.latitude, lng: loc.coordinate.longitude)
             // Ensure we also poll for updates when the OS wakes us for a location fix.
@@ -53,6 +55,7 @@ final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelega
         let status = manager.authorizationStatus
         Task { @MainActor in
             self.authorizationStatus = status
+            manager.allowsBackgroundLocationUpdates = (status == .authorizedAlways)
             if status == .authorizedWhenInUse || status == .authorizedAlways {
                 self.startUpdating()
             }
