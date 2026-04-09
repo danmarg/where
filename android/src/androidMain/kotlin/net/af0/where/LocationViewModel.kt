@@ -286,7 +286,7 @@ class LocationViewModel(
                     withContext(Dispatchers.Main.immediate) {
                         locationSource.onFriendsUpdated(e2eeStore.listFriends())
                     }
-                    locationSource.triggerRapidPoll()
+                    locationSource.resetRapidPoll()
                     locationSource.wakePoll()
                 } catch (e: Exception) {
                     Log.e(TAG, "confirmQrScan inner failure: ${e.message}")
@@ -315,7 +315,7 @@ class LocationViewModel(
                     withContext(Dispatchers.Main.immediate) {
                         locationSource.onFriendsUpdated(e2eeStore.listFriends())
                     }
-                    locationSource.triggerRapidPoll()
+                    locationSource.resetRapidPoll()
                     locationSource.wakePoll()
                     try {
                         // Upload OPK bundle so Bob can decrypt our future location messages.
