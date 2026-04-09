@@ -69,6 +69,10 @@ interface LocationSource {
 
     fun resetRapidPoll()
 
+    fun markAwaitingFirstUpdate(friendId: String)
+
+    fun onFriendLocationReceived(friendId: String)
+
     fun wakePoll()
 }
 
@@ -104,6 +108,8 @@ object LocationRepository : LocationSource {
 
     private val _friends = MutableStateFlow<List<FriendEntry>>(emptyList())
     override val friends: StateFlow<List<FriendEntry>> = _friends.asStateFlow()
+
+    private val awaitingFirstUpdateIds = mutableSetOf<String>()
 
     private val _pendingQrForNaming = MutableStateFlow<QrPayload?>(null)
     override val pendingQrForNaming: StateFlow<QrPayload?> = _pendingQrForNaming.asStateFlow()
@@ -191,6 +197,19 @@ object LocationRepository : LocationSource {
 
     override fun resetRapidPoll() {
         _lastRapidPollTrigger.value = 0L
+        awaitingFirstUpdateIds.clear()
+    }
+
+    override fun markAwaitingFirstUpdate(friendId: String) {
+        awaitingFirstUpdateIds.add(friendId)
+    }
+
+    override fun onFriendLocationReceived(friendId: String) {
+        if (awaitingFirstUpdateIds.remove(friendId)) {
+            if (awaitingFirstUpdateIds.isEmpty()) {
+                resetRapidPoll()
+            }
+        }
     }
 
     override fun wakePoll() {
