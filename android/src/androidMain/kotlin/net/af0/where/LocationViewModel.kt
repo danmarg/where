@@ -19,7 +19,6 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import kotlinx.coroutines.withTimeoutOrNull
 import net.af0.where.e2ee.E2eeMailboxClient
 import net.af0.where.e2ee.E2eeStore
 import net.af0.where.e2ee.FriendEntry
@@ -276,10 +275,11 @@ class LocationViewModel(
                     }
                     locationClient.postOpkBundle(bobEntry.id)
                     if (isSharingLocation.value) {
-                        val intent = Intent(getApplication(), LocationService::class.java).apply {
-                            action = LocationService.ACTION_FORCE_PUBLISH
-                            putExtra(LocationService.EXTRA_FRIEND_ID, bobEntry.id)
-                        }
+                        val intent =
+                            Intent(getApplication(), LocationService::class.java).apply {
+                                action = LocationService.ACTION_FORCE_PUBLISH
+                                putExtra(LocationService.EXTRA_FRIEND_ID, bobEntry.id)
+                            }
                         getApplication<Application>().startForegroundService(intent)
                     }
 
@@ -322,10 +322,11 @@ class LocationViewModel(
                         locationClient.postOpkBundle(entry.id)
                         Log.d(TAG, "confirmPendingInit: postOpkBundle succeeded")
                         if (isSharingLocation.value) {
-                            val intent = Intent(getApplication(), LocationService::class.java).apply {
-                                action = LocationService.ACTION_FORCE_PUBLISH
-                                putExtra(LocationService.EXTRA_FRIEND_ID, entry.id)
-                            }
+                            val intent =
+                                Intent(getApplication(), LocationService::class.java).apply {
+                                    action = LocationService.ACTION_FORCE_PUBLISH
+                                    putExtra(LocationService.EXTRA_FRIEND_ID, entry.id)
+                                }
                             getApplication<Application>().startForegroundService(intent)
                         }
                     } catch (e: Exception) {
