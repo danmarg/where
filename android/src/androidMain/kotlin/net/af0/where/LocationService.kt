@@ -228,7 +228,8 @@ class LocationService : Service() {
         return hasPendingQr || locationSource.pendingInitPayload.value != null || recentlyTriggered || isNaming
     }
 
-    private suspend fun doPoll() {
+    @VisibleForTesting
+    internal suspend fun doPoll() {
         try {
             Log.d(TAG, "Polling for location updates")
             val updates = locationClient.poll()
@@ -237,6 +238,7 @@ class LocationService : Service() {
                 val now = System.currentTimeMillis()
                 for (update in updates) {
                     locationSource.onFriendUpdate(update, now)
+                    locationSource.onFriendLocationReceived(update.userId)
                     e2eeStore.updateLastLocation(update.userId, update.lat, update.lng, now / 1000L)
                 }
                 pollPendingInvite()

@@ -182,6 +182,10 @@ private class FakeLocationSource : LocationSource {
         _lastRapidPollTrigger.value = 0L
     }
 
+    override fun markAwaitingFirstUpdate(friendId: String) {}
+
+    override fun onFriendLocationReceived(friendId: String) {}
+
     override fun wakePoll() {
         pollWakeSignal.trySend(Unit)
     }

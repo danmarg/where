@@ -149,6 +149,7 @@ final class LocationSyncService: ObservableObject {
     var pendingForcedSendAfterPairing: Bool = false
     private var currentSendTask: Task<Void, Never>? = nil
     private var isCurrentSendHeartbeat: Bool = false
+    private var awaitingFirstUpdateIds: Set<String> = []
 
     // Injected for testing. Closures are @Sendable and use MainActor.assumeIsolated internally
     // to interact with UIApplication.shared, which is required for background tasks in Swift 6.
@@ -438,6 +439,8 @@ final class LocationSyncService: ObservableObject {
             let initPayload = result.first!
             let bobEntry = result.second!
 
+            awaitingFirstUpdateIds.insert(bobEntry.id)
+
             await clearInvite()
             friends = try await e2eeStore.listFriends()
             updateVisibleUsers()
@@ -486,12 +489,14 @@ final class LocationSyncService: ObservableObject {
 
     func confirmPendingInit(payload: Shared.KeyExchangeInitPayload, name: String) async {
         isExchanging = true
+        pendingInitPayload = nil
 
         defer { isExchanging = false }
         do {
             let result = try await e2eeStore.processKeyExchangeInit(payload: payload, bobName: name)
 
             if let entry = result ?? nil {
+                awaitingFirstUpdateIds.insert(entry.id)
                 friends = try await e2eeStore.listFriends()
                 updateVisibleUsers()
                 try await locationClient.postOpkBundle(friendId: entry.id)
@@ -541,6 +546,7 @@ final class LocationSyncService: ObservableObject {
 
     func resetRapidPoll() {
         lastRapidPollTrigger = Date(timeIntervalSince1970: 0)
+        awaitingFirstUpdateIds.clear()
         schedulePollTimer(interval: Self.normalPollInterval)
     }
 
@@ -575,6 +581,14 @@ final class LocationSyncService: ObservableObject {
 
     // MARK: - Internal polling
 
+    private func onFriendLocationReceived(friendId: String) {
+        if awaitingFirstUpdateIds.remove(friendId) != nil {
+            if awaitingFirstUpdateIds.isEmpty {
+                resetRapidPoll()
+            }
+        }
+    }
+
     func pollAll(updateUi: Bool = true) async {
         logger.debug("Polling for location updates (updateUi=\(updateUi))")
         let backgroundTask = self.startBackgroundTask("PollAll")
@@ -589,6 +603,7 @@ final class LocationSyncService: ObservableObject {
                 try? await e2eeStore.updateLastLocation(id: update.userId, lat: update.lat, lng: update.lng, ts: Int64(Date().timeIntervalSince1970))
                 friendLocations[update.userId] = (lat: update.lat, lng: update.lng, ts: update.timestamp)
                 friendLastPing[update.userId] = Date()
+                onFriendLocationReceived(friendId: update.userId)
             }
 
             // Always update visibleUsers to ensure map is fresh when returning to foreground.
