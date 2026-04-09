@@ -7,6 +7,7 @@ import com.google.android.gms.location.LocationRequest
 import androidx.test.core.app.ApplicationProvider
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.StandardTestDispatcher
@@ -51,6 +52,12 @@ class LocationServiceTest {
         val field = LocationService::class.java.getDeclaredField("isRegistered")
         field.isAccessible = true
         return field.get(service) as Boolean
+    }
+
+    private fun serviceScope(service: LocationService): kotlinx.coroutines.CoroutineScope {
+        val field = LocationService::class.java.getDeclaredField("serviceScope")
+        field.isAccessible = true
+        return field.get(service) as kotlinx.coroutines.CoroutineScope
     }
 
     @Test
@@ -227,6 +234,38 @@ class LocationServiceTest {
         val service = Robolectric.buildService(LocationService::class.java).get()
         assertEquals(5 * 60 * 1000L, service.pollInterval(rapid = false, inForeground = false))
     }
+
+    @Test
+    fun testRapidPollResetAfterFirstLocationUpdate() =
+        runTest {
+            var currentTime = 1_000_000_000L
+            LocationService.clock = { currentTime }
+
+            val controller = Robolectric.buildService(LocationService::class.java)
+            val service = controller.get()
+            controller.create()
+
+            val mockClient = io.mockk.mockk<LocationClient>(relaxed = true)
+            val locationClientField = LocationService::class.java.getDeclaredField("locationClient")
+            locationClientField.isAccessible = true
+            locationClientField.set(service, mockClient)
+
+            // 1. Trigger rapid poll
+            LocationRepository.triggerRapidPoll()
+            assertTrue(service.isRapidPolling())
+
+            // 2. Mock a location update from a new friend
+            val newFriendId = "new_friend"
+            val update = net.af0.where.model.UserLocation(newFriendId, 1.0, 2.0, currentTime / 1000L)
+            io.mockk.coEvery { mockClient.poll() } returns listOf(update)
+
+            // 3. Fire poll
+            service.doPoll()
+
+            // 4. Verify rapid poll is reset
+            assertFalse(service.isRapidPolling(), "Rapid poll should be reset after first location update from a new friend")
+            assertEquals(0L, LocationRepository.lastRapidPollTrigger.value)
+        }
 
     @Test
     fun testActionForcePublish() =
