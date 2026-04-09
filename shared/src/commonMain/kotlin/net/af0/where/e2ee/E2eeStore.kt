@@ -443,7 +443,7 @@ class E2eeStore(
                 )
 
             val oldSendToken = entry.session.sendToken
-            val nonce = randomBytes(12)
+            val nonce = intToBeBytes(newSession.epoch) + ByteArray(8)
             val ct =
                 buildEpochRotationCt(
                     rootKey = entry.session.rootKey,
@@ -539,7 +539,7 @@ class E2eeStore(
             // Authenticate Ack using intermediate root key (the one Alice knows)
             // and include Bob's new key in authenticated plaintext.
             val ts = currentTimeSeconds()
-            val nonce = randomBytes(12)
+            val nonce = intToBeBytes(payload.epoch) + ByteArray(8)
             val ackCt =
                 buildRatchetAckCt(
                     rootKey = intermediateSession.rootKey,
@@ -752,7 +752,7 @@ class E2eeStore(
                 // Authenticate Ack using intermediate root key (the one Alice knows)
                 // and include Bob's new key in authenticated plaintext.
                 val ts = currentTimeSeconds()
-                val nonce = randomBytes(12)
+                val nonce = intToBeBytes(msg.epoch) + ByteArray(8)
                 val ackCt =
                     buildRatchetAckCt(
                         rootKey = intermediateSession.rootKey,
