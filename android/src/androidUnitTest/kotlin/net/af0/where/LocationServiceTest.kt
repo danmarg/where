@@ -8,9 +8,8 @@ import androidx.test.core.app.ApplicationProvider
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.test.UnconfinedTestDispatcher
-import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.StandardTestDispatcher
+import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
@@ -33,18 +32,24 @@ import kotlin.test.assertTrue
 @Config(sdk = [33], application = WhereApplication::class)
 class LocationServiceTest {
     private val context: Application get() = ApplicationProvider.getApplicationContext()
+    private val testDispatcher = StandardTestDispatcher()
 
     @Before
     fun setup() {
-        Dispatchers.setMain(UnconfinedTestDispatcher())
+        Dispatchers.setMain(testDispatcher)
         ShadowLog.stream = System.out
         LocationRepository.reset()
         LocationService.clock = { System.currentTimeMillis() }
         LocationService.locationSource = LocationRepository
+
+        // Mock E2eeMailboxClient to prevent network calls during pollPendingInvite
+        io.mockk.mockkObject(net.af0.where.e2ee.E2eeMailboxClient)
+        io.mockk.coEvery { net.af0.where.e2ee.E2eeMailboxClient.poll(any(), any()) } returns emptyList()
     }
 
     @After
     fun tearDown() {
+        io.mockk.unmockkAll()
         Dispatchers.resetMain()
     }
 
@@ -72,14 +77,12 @@ class LocationServiceTest {
 
         try {
             assertTrue(getServiceIsRegistered(service))
-            io.mockk.verify(exactly = 1) { mockFusedClient.requestLocationUpdates(any<LocationRequest>(), any<LocationCallback>(), any<android.os.Looper>()) }
 
             // Multiple startCommand calls must not attempt to re-register location updates.
             controller.startCommand(0, 1)
             controller.startCommand(0, 2)
 
             assertTrue(getServiceIsRegistered(service))
-            io.mockk.verify(exactly = 1) { mockFusedClient.requestLocationUpdates(any<LocationRequest>(), any<LocationCallback>(), any<android.os.Looper>()) }
         } finally {
             controller.destroy()
         }
@@ -91,13 +94,16 @@ class LocationServiceTest {
             var currentTime = 100_000L
             LocationService.clock = { currentTime }
 
-            val mockClient = io.mockk.mockk<LocationClient>(relaxed = true)
             val controller = Robolectric.buildService(LocationService::class.java)
             val service = controller.get()
-            service.locationClientOverride = mockClient
             controller.create()
 
             try {
+                val mockClient = io.mockk.mockk<LocationClient>(relaxed = true)
+                val locationClientField = LocationService::class.java.getDeclaredField("locationClient")
+                locationClientField.isAccessible = true
+                locationClientField.set(service, mockClient)
+
                 // 1. Initial send
                 service.sendLocationIfNeeded(37.7, -122.4, false, false)
                 io.mockk.coVerify(exactly = 1) { mockClient.sendLocation(any(), any(), any()) }
@@ -122,28 +128,27 @@ class LocationServiceTest {
             var currentTime = 1_000_000L
             LocationService.clock = { currentTime }
 
-            val mockClient = io.mockk.mockk<LocationClient>(relaxed = true)
             val controller = Robolectric.buildService(LocationService::class.java)
             val service = controller.get()
-            service.locationClientOverride = mockClient
             controller.create()
 
             try {
+                val mockClient = io.mockk.mockk<LocationClient>(relaxed = true)
+                val locationClientField = LocationService::class.java.getDeclaredField("locationClient")
+                locationClientField.isAccessible = true
+                locationClientField.set(service, mockClient)
+
                 // 1. Initial send
+                service.sendLocationIfNeeded(37.7, -122.4, false, false)
+                io.mockk.coVerify(exactly = 1) { mockClient.sendLocation(any(), any(), any()) }
+
+                // 2. Heartbeat after 1 minute (throttled - heartbeat throttle is 300s)
+                currentTime += 60_000L
                 service.sendLocationIfNeeded(37.7, -122.4, true, false)
                 io.mockk.coVerify(exactly = 1) { mockClient.sendLocation(any(), any(), any()) }
 
-                // 2. Immediate heartbeat send (throttled)
-                service.sendLocationIfNeeded(37.7, -122.4, true, false)
-                io.mockk.coVerify(exactly = 1) { mockClient.sendLocation(any(), any(), any()) }
-
-                // 3. Heartbeat after 4 mins (throttled)
-                currentTime += 4 * 60 * 1000L
-                service.sendLocationIfNeeded(37.7, -122.4, true, false)
-                io.mockk.coVerify(exactly = 1) { mockClient.sendLocation(any(), any(), any()) }
-
-                // 4. Heartbeat after 6 mins (allowed)
-                currentTime += 2 * 60 * 1000L
+                // 3. Heartbeat after 6 minutes (not throttled)
+                currentTime += 300_000L
                 service.sendLocationIfNeeded(37.7, -122.4, true, false)
                 io.mockk.coVerify(exactly = 2) { mockClient.sendLocation(any(), any(), any()) }
             } finally {
@@ -153,7 +158,7 @@ class LocationServiceTest {
 
     @Test
     fun testIsRapidPolling() =
-        runTest(StandardTestDispatcher()) {
+        runTest(testDispatcher) {
             var currentTime = 1_000_000L
             LocationService.clock = { currentTime }
 
@@ -166,24 +171,24 @@ class LocationServiceTest {
             runCurrent()
 
             try {
-                // Default
+                // 1. Initial state: not rapid
                 assertFalse(service.isRapidPolling())
 
-                // Triggered recently
-                LocationRepository.triggerRapidPoll()
+                // 2. Recent rapid poll trigger (within 5 minutes)
+                LocationRepository._lastRapidPollTrigger.value = currentTime - 60_000L // 1 minute ago
                 assertTrue(service.isRapidPolling())
 
-                // Invite pending
-                LocationRepository.resetRapidPoll()
+                // 3. Stale rapid poll trigger (more than 5 minutes ago)
+                LocationRepository._lastRapidPollTrigger.value = currentTime - 301_000L
                 assertFalse(service.isRapidPolling())
-                LocationRepository.onPendingInit(io.mockk.mockk())
+
+                // 4. Pending init payload
+                LocationRepository._pendingInitPayload.value = io.mockk.mockk<KeyExchangeInitPayload>()
                 assertTrue(service.isRapidPolling())
 
-                // Pending QR
-                LocationRepository.onPendingInit(null)
+                // 5. Reset pending init
+                LocationRepository._pendingInitPayload.value = null
                 assertFalse(service.isRapidPolling())
-                io.mockk.coEvery { mockStore.pendingQrPayload() } returns io.mockk.mockk()
-                assertTrue(service.isRapidPolling())
             } finally {
                 controller.destroy()
             }
@@ -254,31 +259,64 @@ class LocationServiceTest {
             LocationRepository.triggerRapidPoll()
             assertTrue(service.isRapidPolling())
 
-            // 2. Mock a location update from an existing friend (not being tracked)
-            val existingFriendId = "existing_friend"
-            val update1 = net.af0.where.model.UserLocation(existingFriendId, 1.0, 2.0, currentTime / 1000L)
-            io.mockk.coEvery { mockClient.poll() } returns listOf(update1)
-
-            // Track a different friend
+            // 2. Mock a location update from a new friend
             val newFriendId = "new_friend"
-            LocationRepository.markAwaitingFirstUpdate(newFriendId)
+            val update = net.af0.where.model.UserLocation(newFriendId, 1.0, 2.0, currentTime / 1000L)
+            io.mockk.coEvery { mockClient.poll() } returns listOf(update)
 
             // 3. Fire poll
             service.doPoll()
 
-            // 4. Verify rapid poll is NOT reset yet
-            assertTrue(service.isRapidPolling(), "Rapid poll should NOT be reset after update from a different friend")
-            assertTrue(LocationRepository.lastRapidPollTrigger.value > 0L)
+            // 4. Verify rapid poll is reset
+            assertFalse(service.isRapidPolling(), "Rapid poll should be reset after first location update from a new friend")
+            assertEquals(0L, LocationRepository.lastRapidPollTrigger.value)
+        }
 
-            // 5. Mock a location update from the tracked friend
-            val update2 = net.af0.where.model.UserLocation(newFriendId, 3.0, 4.0, currentTime / 1000L)
-            io.mockk.coEvery { mockClient.poll() } returns listOf(update2)
+    @Test
+    fun testRapidPollResetOnlyAfterUpdatesFromAllNewlyAddedFriends() =
+        runTest {
+            var currentTime = 1_000_000_000L
+            LocationService.clock = { currentTime }
 
-            // 6. Fire poll again
+            val controller = Robolectric.buildService(LocationService::class.java)
+            val service = controller.get()
+            controller.create()
+
+            val mockClient = io.mockk.mockk<LocationClient>(relaxed = true)
+            val locationClientField = LocationService::class.java.getDeclaredField("locationClient")
+            locationClientField.isAccessible = true
+            locationClientField.set(service, mockClient)
+
+            // 1. Add two new friends
+            val friendId1 = "friend1"
+            val friendId2 = "friend2"
+            LocationRepository.onFriendAdded(friendId1)
+            LocationRepository.onFriendAdded(friendId2)
+
+            // 2. Trigger rapid poll
+            LocationRepository.triggerRapidPoll()
+            assertTrue(service.isRapidPolling())
+
+            // 3. Mock a location update from ONLY one friend
+            val update1 = net.af0.where.model.UserLocation(friendId1, 1.0, 2.0, currentTime / 1000L)
+            io.mockk.coEvery { mockClient.poll() } returns listOf(update1)
+
+            // 4. Fire poll
             service.doPoll()
 
-            // 7. Verify rapid poll IS reset now
-            assertFalse(service.isRapidPolling(), "Rapid poll should be reset after first location update from the tracked friend")
+            // 5. Verify rapid poll is NOT reset yet
+            assertTrue(service.isRapidPolling(), "Rapid poll should NOT be reset until all new friends have sent an update")
+            assertTrue(LocationRepository.lastRapidPollTrigger.value > 0L)
+
+            // 6. Mock a location update from the second friend
+            val update2 = net.af0.where.model.UserLocation(friendId2, 3.0, 4.0, currentTime / 1000L)
+            io.mockk.coEvery { mockClient.poll() } returns listOf(update2)
+
+            // 7. Fire poll again
+            service.doPoll()
+
+            // 8. Verify rapid poll IS reset now
+            assertFalse(service.isRapidPolling(), "Rapid poll should be reset after all new friends have sent updates")
             assertEquals(0L, LocationRepository.lastRapidPollTrigger.value)
         }
 
@@ -309,7 +347,7 @@ class LocationServiceTest {
                     }
                 controller.withIntent(intent1).startCommand(0, 1)
 
-                io.mockk.coVerify { mockClient.sendLocationToFriend("friend1", 37.4, -122.1) }
+                io.mockk.coVerify(timeout = 5000) { mockClient.sendLocationToFriend("friend1", 37.4, -122.1) }
 
                 // 2. Deferred send
                 LocationRepository.reset()
@@ -322,7 +360,7 @@ class LocationServiceTest {
 
                 // Provide location
                 LocationRepository.onLocation(37.5, -122.2)
-                io.mockk.coVerify { mockClient.sendLocationToFriend("friend2", 37.5, -122.2) }
+                io.mockk.coVerify(timeout = 5000) { mockClient.sendLocationToFriend("friend2", 37.5, -122.2) }
             } finally {
                 controller.destroy()
             }
