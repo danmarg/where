@@ -32,33 +32,6 @@ internal expect fun x25519(
     theirPub: ByteArray,
 ): ByteArray
 
-/** Generate a fresh Ed25519 keypair from the platform CSPRNG. */
-expect fun generateEd25519KeyPair(): RawKeyPair
-
-/**
- * Ed25519 sign.
- * @param priv 32-byte Ed25519 private key seed
- * @param message arbitrary message bytes
- * @return 64-byte signature
- */
-internal expect fun ed25519Sign(
-    priv: ByteArray,
-    message: ByteArray,
-): ByteArray
-
-/**
- * Ed25519 verify.
- * @param pub 32-byte Ed25519 public key
- * @param message message that was signed
- * @param sig 64-byte signature
- * @return true iff signature is valid
- */
-internal expect fun ed25519Verify(
-    pub: ByteArray,
-    message: ByteArray,
-    sig: ByteArray,
-): Boolean
-
 /**
  * AEAD encrypt (ChaCha20-Poly1305 IETF).
  * @param key   32-byte key
