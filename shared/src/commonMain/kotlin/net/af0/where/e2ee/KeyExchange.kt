@@ -153,7 +153,7 @@ object KeyExchange {
             hkdfSha256(
                 ikm = sk,
                 salt = null,
-                info = INFO_SESSION.encodeToByteArray(),
+                info = INFO_KEY_EXCHANGE.encodeToByteArray(),
                 length = 96,
             )
         val chainKey0 = expanded.copyOfRange(32, 64)
