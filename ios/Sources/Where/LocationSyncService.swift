@@ -148,6 +148,7 @@ final class LocationSyncService: ObservableObject {
     private var lastSentTime: Date = Date(timeIntervalSince1970: 0)
     var pendingForcedSendAfterPairing: Bool = false
     private var currentSendTask: Task<Void, Never>? = nil
+    private var isCurrentSendHeartbeat: Bool = false
 
     // Injected for testing. Closures are @Sendable and use MainActor.assumeIsolated internally
     // to interact with UIApplication.shared, which is required for background tasks in Swift 6.
@@ -272,11 +273,16 @@ final class LocationSyncService: ObservableObject {
 
     private func schedulePollTimer(interval: TimeInterval) {
         pollTimer?.invalidate()
-        pollTimer = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { [weak self] _ in
+        let t = Timer(timeInterval: interval, repeats: true) { [weak self] _ in
             Task { @MainActor [weak self] in
-                await self?.firePoll()
+                guard let self = self else { return }
+                let backgroundTask = self.startBackgroundTask("PollTimer")
+                defer { backgroundTask.end() }
+                await self.firePoll()
             }
         }
+        RunLoop.main.add(t, forMode: .common)
+        pollTimer = t
     }
 
     func firePoll() async {  // internal for testing
@@ -320,17 +326,20 @@ final class LocationSyncService: ObservableObject {
         let effectiveForce = force || pendingForcedSendAfterPairing
         guard isSharingLocation else { return }
 
-        // If a task is already in-flight, skip this update unless it's forced.
-        if currentSendTask != nil && !effectiveForce { return }
+        // If a task is already in-flight, skip this update unless it's forced
+        // or we're replacing an in-flight heartbeat with a movement update.
+        let replacingHeartbeat = !isHeartbeat && isCurrentSendHeartbeat
+        if currentSendTask != nil && !effectiveForce && !replacingHeartbeat { return }
 
-        // Cancel existing task if this is a forced update to ensure it goes through immediately.
-        if effectiveForce, let existing = currentSendTask {
+        // Cancel existing task if this is a forced update or if we're replacing a heartbeat.
+        if (effectiveForce || replacingHeartbeat), let existing = currentSendTask {
             existing.cancel()
             currentSendTask = nil
+            isCurrentSendHeartbeat = false
         }
 
         let now = Date()
-        let shouldSend = effectiveForce || lastSentLocation == nil ||
+        let shouldSend = effectiveForce || replacingHeartbeat || lastSentLocation == nil ||
                         (!isHeartbeat && now.timeIntervalSince(lastSentTime) > 15) ||
                         (isHeartbeat && now.timeIntervalSince(lastSentTime) > 5 * 60)
 
@@ -350,32 +359,17 @@ final class LocationSyncService: ObservableObject {
 
         logger.debug("Sending location: \(lat), \(lng) (heartbeat=\(isHeartbeat), force=\(force), effectiveForce=\(effectiveForce))")
 
+        isCurrentSendHeartbeat = isHeartbeat
+        let backgroundTask = self.startBackgroundTask("SendLocation")
         currentSendTask = Task {
             // Re-check isSharingLocation inside Task if needed,
             // but for simplicity we rely on the main-actor throttle check above.
-
-            // Capture the end operation closure before entering the BackgroundTaskBox.
-            // This avoids direct self capture in closures that might be called concurrently.
-            let endOp = self.endBackgroundTask
-
-            // Structured background task management.
-            let backgroundTask = BackgroundTaskBox(end: { id in
-                endOp(id)
-            })
-            let id = self.beginBackgroundTask("SendLocation") {
-                backgroundTask.end()
-            }
-            backgroundTask.identifier = id
-
-            guard backgroundTask.identifier != .invalid else {
-                logger.error("Failed to begin background task for SendLocation")
-                return
-            }
 
             defer {
                 backgroundTask.end()
                 Task { @MainActor in
                     currentSendTask = nil
+                    isCurrentSendHeartbeat = false
                 }
             }
 
@@ -528,13 +522,21 @@ final class LocationSyncService: ObservableObject {
     }
 
     func wakePoll() {
-        Task { await firePoll() }
+        Task { @MainActor in
+            let backgroundTask = self.startBackgroundTask("WakePoll")
+            defer { backgroundTask.end() }
+            await firePoll()
+        }
     }
 
     private func triggerRapidPoll() {
         lastRapidPollTrigger = Date()
         schedulePollTimer(interval: Self.rapidPollInterval)
-        Task { await firePoll() }
+        Task { @MainActor in
+            let backgroundTask = self.startBackgroundTask("RapidPoll")
+            defer { backgroundTask.end() }
+            await firePoll()
+        }
     }
 
     func resetRapidPoll() {
@@ -575,17 +577,7 @@ final class LocationSyncService: ObservableObject {
 
     func pollAll(updateUi: Bool = true) async {
         logger.debug("Polling for location updates (updateUi=\(updateUi))")
-        // Capture the end operation closure before entering the BackgroundTaskBox.
-        let endOp = self.endBackgroundTask
-
-        // Structured background task management.
-        let backgroundTask = BackgroundTaskBox(end: { id in
-            endOp(id)
-        })
-        let id = self.beginBackgroundTask("PollAll") {
-            backgroundTask.end()
-        }
-        backgroundTask.identifier = id
+        let backgroundTask = self.startBackgroundTask("PollAll")
 
         defer {
             backgroundTask.end()
@@ -654,56 +646,17 @@ final class LocationSyncService: ObservableObject {
         }
     }
 
-    /// Thread-safe wrapper for UIBackgroundTaskIdentifier to prevent races between
-    /// the expiry handler and the normal completion path.
-    private final class BackgroundTaskBox: @unchecked Sendable {
-        private let lock = NSLock()
-        private var _identifier: UIBackgroundTaskIdentifier = .invalid
-        private var isEnded = false
-        private var isExpired = false
-        private let endOp: @Sendable (UIBackgroundTaskIdentifier) -> Void
-
-        var identifier: UIBackgroundTaskIdentifier {
-            get {
-                lock.lock()
-                defer { lock.unlock() }
-                return _identifier
-            }
-            set {
-                var idToEnd: UIBackgroundTaskIdentifier = .invalid
-                lock.lock()
-                _identifier = newValue
-                // If the task was already expired by the handler before we even got the ID,
-                // end it immediately.
-                if isExpired && !isEnded && newValue != .invalid {
-                    isEnded = true
-                    idToEnd = newValue
-                }
-                lock.unlock()
-                if idToEnd != .invalid {
-                    endOp(idToEnd)
-                }
-            }
+    @MainActor
+    func startBackgroundTask(_ name: String) -> BackgroundTaskBox {
+        let endOp = self.endBackgroundTask
+        let backgroundTask = BackgroundTaskBox(end: { id in
+            endOp(id)
+        })
+        let id = self.beginBackgroundTask(name) {
+            backgroundTask.end()
         }
-
-        init(end: @Sendable @escaping (UIBackgroundTaskIdentifier) -> Void) {
-            self.endOp = end
-        }
-
-        func end() {
-            var idToEnd: UIBackgroundTaskIdentifier = .invalid
-            lock.lock()
-            if !isEnded && _identifier != .invalid {
-                isEnded = true
-                idToEnd = _identifier
-            }
-            isExpired = true
-            lock.unlock()
-
-            if idToEnd != .invalid {
-                endOp(idToEnd)
-            }
-        }
+        backgroundTask.identifier = id
+        return backgroundTask
     }
 
     private func updateStatus(_ error: Error?) {
@@ -736,3 +689,55 @@ extension Shared.UserLocation: @unchecked @retroactive Sendable {}
 extension Shared.LocationClient: @unchecked @retroactive Sendable {}
 extension Shared.KotlinPair: @unchecked @retroactive Sendable {}
 extension Shared.LocationPlaintext: @unchecked @retroactive Sendable {}
+
+/// Thread-safe wrapper for UIBackgroundTaskIdentifier to prevent races between
+/// the expiry handler and the normal completion path.
+final class BackgroundTaskBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var _identifier: UIBackgroundTaskIdentifier = .invalid
+    private var isEnded = false
+    private var isExpired = false
+    private let endOp: @Sendable (UIBackgroundTaskIdentifier) -> Void
+
+    var identifier: UIBackgroundTaskIdentifier {
+        get {
+            lock.lock()
+            defer { lock.unlock() }
+            return _identifier
+        }
+        set {
+            var idToEnd: UIBackgroundTaskIdentifier = .invalid
+            lock.lock()
+            _identifier = newValue
+            // If the task was already expired by the handler before we even got the ID,
+            // end it immediately.
+            if isExpired && !isEnded && newValue != .invalid {
+                isEnded = true
+                idToEnd = newValue
+            }
+            lock.unlock()
+            if idToEnd != .invalid {
+                endOp(idToEnd)
+            }
+        }
+    }
+
+    init(end: @Sendable @escaping (UIBackgroundTaskIdentifier) -> Void) {
+        self.endOp = end
+    }
+
+    func end() {
+        var idToEnd: UIBackgroundTaskIdentifier = .invalid
+        lock.lock()
+        if !isEnded && _identifier != .invalid {
+            isEnded = true
+            idToEnd = _identifier
+        }
+        isExpired = true
+        lock.unlock()
+
+        if idToEnd != .invalid {
+            endOp(idToEnd)
+        }
+    }
+}
