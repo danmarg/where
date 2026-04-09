@@ -22,6 +22,7 @@ kotlin {
     sourceSets {
         androidMain.dependencies {
             implementation(libs.kotlinx.serialization.json)
+            implementation(libs.security.crypto)
         }
         androidUnitTest.dependencies {
             implementation(kotlin("test"))
@@ -65,6 +66,10 @@ android {
 
     testOptions {
         unitTests.isIncludeAndroidResources = false
+        unitTests.all {
+            it.maxHeapSize = "4g"
+            it.jvmArgs("-XX:+UseG1GC", "-XX:MaxMetaspaceSize=512m")
+        }
     }
 
     signingConfigs {

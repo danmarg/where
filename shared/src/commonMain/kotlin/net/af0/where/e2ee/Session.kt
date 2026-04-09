@@ -235,6 +235,7 @@ object Session {
 
     /**
      * Bob: perform his own DH rotation step to refresh his send chain.
+     * The DH is computed immediately; bobNewEkPriv is NOT stored in the returned state.
      */
     fun bobProcessOwnRotation(
         state: SessionState,
@@ -247,16 +248,19 @@ object Session {
             state.copy(
                 rootKey = ratchetStep.newRootKey,
                 sendChainKey = ratchetStep.newChainKey,
-                myEkPriv = bobNewEkPriv.copyOf(),
+                // DH already computed above; zero priv so it is not persisted (§5.5).
+                myEkPriv = ByteArray(32),
                 myEkPub = bobNewEkPub.copyOf(),
                 sendSeq = 0L,
             )
         dhOut.fill(0)
+        bobNewEkPriv.fill(0)
         return newState
     }
 
     /**
      * Alice: process Bob's RatchetAck and perform the second half of the DH ratchet.
+     * state.myEkPriv is consumed and zeroed in the returned state (§5.5).
      *
      * @param state       Alice's current session state.
      * @param bobNewEkPub Bob's new ephemeral public key from RatchetAck.
@@ -274,6 +278,8 @@ object Session {
                 recvChainKey = ratchetStep.newChainKey,
                 theirEkPub = bobNewEkPub.copyOf(),
                 recvSeq = 0L,
+                // Consumed by this DH step; zero so it is not persisted (§5.5).
+                myEkPriv = ByteArray(32),
             )
         dhOut.fill(0)
         return newState
