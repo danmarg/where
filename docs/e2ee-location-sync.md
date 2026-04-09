@@ -617,8 +617,10 @@ K_rot = HKDF-SHA-256(salt = epoch_be4,          // 4-byte big-endian epoch
 nonce = epoch_be4 || 0x00...00                   // epoch (4 bytes) || 8 zero bytes = 12 bytes
 ct    = ChaCha20-Poly1305(key=K_rot, nonce=nonce,
                     plaintext=rotation_payload_json,
-                    aad=alice_fp || bob_fp)
+                    aad=alice_fp || bob_fp || routing_token)
 ```
+
+where `routing_token` is the mailbox token on which the `EpochRotation` is posted (Alice's old send token, which equals Bob's old recv token). Including it in the AAD cryptographically binds the ciphertext to the specific mailbox, preventing an adversary from replaying a captured `EpochRotation` to a different token. Implementations MUST use the raw binary token bytes (32 bytes), not the base64 encoding.
 
 *RatchetAck encryption (Bob):*
 ```
@@ -628,8 +630,10 @@ K_ack = HKDF-SHA-256(salt = epoch_be4,
 nonce = epoch_be4 || 0x00...00
 ct    = ChaCha20-Poly1305(key=K_ack, nonce=nonce,
                     plaintext=ack_payload_json,
-                    aad=alice_fp || bob_fp)
+                    aad=alice_fp || bob_fp || routing_token)
 ```
+
+where `routing_token` is the mailbox token on which the `RatchetAck` is posted (Bob's new send token). Same rationale as for `EpochRotation`: the token binds the ciphertext to its intended delivery mailbox.
 
 *PreKeyBundle authentication (Bob):*
 ```
@@ -786,7 +790,7 @@ Alice MUST verify the MAC using her cached `K_bundle` before storing any OPKs.
   "payload": {
     "type": "EpochRotation",
     "epoch": 43,
-    "ct": "<base64, ChaCha20-Poly1305(key=K_rot, nonce=epoch_be4||zeros8, aad=alice_fp||bob_fp, plaintext=rotation_inner_json)>"
+    "ct": "<base64, ChaCha20-Poly1305(key=K_rot, nonce=epoch_be4||zeros8, aad=alice_fp||bob_fp||routing_token, plaintext=rotation_inner_json)>"
   }
 }
 ```
@@ -813,7 +817,7 @@ Bob MUST decrypt using `K_rot` derived from his current root key. If decryption 
   "payload": {
     "type": "RatchetAck",
     "epoch_seen": 43,
-    "ct": "<base64, ChaCha20-Poly1305(key=K_ack, nonce=epoch_seen_be4||zeros8, aad=alice_fp||bob_fp, plaintext=ack_inner_json)>"
+    "ct": "<base64, ChaCha20-Poly1305(key=K_ack, nonce=epoch_seen_be4||zeros8, aad=alice_fp||bob_fp||routing_token, plaintext=ack_inner_json)>"
   }
 }
 ```
