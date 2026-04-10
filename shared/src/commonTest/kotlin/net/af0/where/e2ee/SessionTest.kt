@@ -463,14 +463,15 @@ class SessionTest {
         // This happens after Alice rotates her epoch.
         val bobOpk2 = generateX25519KeyPair()
         val aliceNewEk2 = generateX25519KeyPair()
-        val aliceRotated = Session.aliceEpochRotation(
-            state = aliceSession,
-            aliceNewEkPriv = aliceNewEk2.priv,
-            aliceNewEkPub = aliceNewEk2.pub,
-            bobOpkPub = bobOpk2.pub,
-            senderFp = aliceSession.aliceFp,
-            recipientFp = aliceSession.bobFp,
-        )
+        val aliceRotated =
+            Session.aliceEpochRotation(
+                state = aliceSession,
+                aliceNewEkPriv = aliceNewEk2.priv,
+                aliceNewEkPub = aliceNewEk2.pub,
+                bobOpkPub = bobOpk2.pub,
+                senderFp = aliceSession.aliceFp,
+                recipientFp = aliceSession.bobFp,
+            )
 
         val bobNewEk = generateX25519KeyPair()
         assertTrue(aliceRotated.myEkPriv.any { it != 0.toByte() }, "Pre-condition: aliceRotated.myEkPriv should not be all zeros")
