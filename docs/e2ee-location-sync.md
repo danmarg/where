@@ -64,6 +64,7 @@ This document does **not** cover:
 |---|---|
 | Passive network attacker | Can observe all network packets (mitigated by TLS, included for defense-in-depth) |
 | Compromised server | Has full access to the server process, memory, database, and all received ciphertext |
+| Actively malicious server | Injects or replays messages |
 | Honest-but-curious server | Reads all metadata and routing information but does not actively modify messages |
 | Malicious friend | A user who was legitimately added as a friend but later turns adversarial |
 | MITM during key exchange | Can intercept out-of-band key exchange if the channel is not authenticated |
@@ -99,6 +100,7 @@ For threat models that include a metadata-analyzing server, the mitigations in �
 - **Metadata about the social graph.** The server never sees user IDs or UUIDs — routing tokens are opaque and random-looking. However, the server observes which IP addresses `POST` to and `GET` from each token. If Alice's IP consistently posts to token T and Bob's IP consistently polls T, the server can infer they share a friendship, even without decrypting any payload. Timing correlation reinforces this: correlated activity (Alice posts, Bob polls seconds later) on the same token is a strong signal. See §7 for partial mitigations (constant-rate polling, dummy tokens).
 - **Map tile server leakage.** When a recipient views a friend's location on a map, the map provider (e.g., Google Maps, Apple Maps, Mapbox) may infer the friend's location from which tiles the recipient's device requests. This can be mitigated at the application layer via tile pre-fetching or caching, but is outside the scope of this protocol.
 - **Denial of service.** This protocol does not protect against a server that drops or delays messages.
+- **Clock manipulation.** An attacker who can skew the victim's clock (e.g., via NTP poisoning or rogue cellular time) by more than 15 minutes can cause the recipient to reject all future valid epoch rotations, permanently stalling post-compromise security (PCS).
 - **Quantum adversaries.** All DH operations here use X25519 (256-bit elliptic curve). A cryptographically relevant quantum computer running Shor's algorithm could break these. See §12.
 
 ---
