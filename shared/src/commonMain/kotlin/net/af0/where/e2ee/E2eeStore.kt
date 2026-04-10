@@ -43,8 +43,8 @@ data class FriendEntry(
     /** Computed friend ID: hex(SHA-256(EK_A.pub)) — full 64 hex chars. */
     val id: String get() = session.aliceFp.toHex()
 
-    /** Safety number (e.g., for display in UI). */
-    val safetyNumber: String get() = formatSafetyNumber(safetyNumber(session.myEkPub, session.theirEkPub))
+    /** Safety number (e.g., for display in UI). Stable for the lifetime of the session. */
+    val safetyNumber: String get() = formatSafetyNumber(safetyNumber(session.aliceEkPub, session.bobEkPub))
 
     override fun equals(other: Any?): Boolean {
         if (this === other) return true

@@ -141,6 +141,52 @@ class SessionTest {
     }
 
     // ---------------------------------------------------------------------------
+    // MAX_DECRYPT_GAP boundary
+    // ---------------------------------------------------------------------------
+
+    @Test
+    fun `exactly MAX_DECRYPT_GAP missed messages is allowed`() {
+        val (aliceSession, bobSession) = exchangeKeys()
+        val loc = LocationPlaintext(1.0, 2.0, 3.0, 4L)
+
+        // Advance Alice's chain MAX_DECRYPT_GAP + 1 times: skip the first MAX_DECRYPT_GAP
+        // messages and deliver only the (MAX_DECRYPT_GAP + 1)-th.
+        var aSess = aliceSession
+        var lastCt = ByteArray(0)
+        val target = 1000 + 1 // MAX_DECRYPT_GAP = 1000; seq starts at 1, so we send 1001 msgs
+        repeat(target) {
+            val (newA, ct) = Session.encryptLocation(aSess, loc, aSess.aliceFp, aSess.bobFp)
+            aSess = newA
+            lastCt = ct
+        }
+        // Bob has recvSeq=0; stepsNeeded = 1001 = MAX_DECRYPT_GAP + 1; should be accepted.
+        val (_, decrypted) = Session.decryptLocation(bobSession, lastCt, aSess.sendSeq, bobSession.aliceFp, bobSession.bobFp)
+        assertEquals(loc.lat, decrypted.lat)
+    }
+
+    @Test
+    fun `MAX_DECRYPT_GAP + 1 missed messages is rejected`() {
+        val (aliceSession, bobSession) = exchangeKeys()
+        val loc = LocationPlaintext(1.0, 2.0, 3.0, 4L)
+
+        // Send MAX_DECRYPT_GAP + 2 messages (seq = 1002); stepsNeeded = 1002 > 1001.
+        var aSess = aliceSession
+        var lastCt = ByteArray(0)
+        val target = 1000 + 2
+        repeat(target) {
+            val (newA, ct) = Session.encryptLocation(aSess, loc, aSess.aliceFp, aSess.bobFp)
+            aSess = newA
+            lastCt = ct
+        }
+        try {
+            Session.decryptLocation(bobSession, lastCt, aSess.sendSeq, bobSession.aliceFp, bobSession.bobFp)
+            kotlin.test.fail("Expected IllegalArgumentException for gap exceeding MAX_DECRYPT_GAP")
+        } catch (e: IllegalArgumentException) {
+            assertTrue(e.message?.contains("exceeds maximum") == true)
+        }
+    }
+
+    // ---------------------------------------------------------------------------
     // AAD integrity
     // ---------------------------------------------------------------------------
 

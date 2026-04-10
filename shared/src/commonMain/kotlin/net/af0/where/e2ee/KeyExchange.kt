@@ -68,6 +68,8 @@ object KeyExchange {
                 recvToken = tokenAliceToBob,
                 aliceFp = aliceFp,
                 bobFp = bobFp,
+                aliceEkPub = qr.ekPub,
+                bobEkPub = ekB.pub,
                 kBundle = kBundle,
             )
 
@@ -124,6 +126,8 @@ object KeyExchange {
             recvToken = tokenBobToAlice,
             aliceFp = aliceFp,
             bobFp = bobFp,
+            aliceEkPub = aliceEkPub,
+            bobEkPub = msg.ekPub,
             kBundle = kBundle,
         )
     }
@@ -147,6 +151,8 @@ object KeyExchange {
         recvToken: ByteArray,
         aliceFp: ByteArray,
         bobFp: ByteArray,
+        aliceEkPub: ByteArray,
+        bobEkPub: ByteArray,
         kBundle: ByteArray,
     ): SessionState {
         val expanded =
@@ -172,6 +178,8 @@ object KeyExchange {
             theirEkPub = theirEkPub.copyOf(),
             aliceFp = aliceFp.copyOf(),
             bobFp = bobFp.copyOf(),
+            aliceEkPub = aliceEkPub.copyOf(),
+            bobEkPub = bobEkPub.copyOf(),
             kBundle = kBundle.copyOf(),
         )
     }

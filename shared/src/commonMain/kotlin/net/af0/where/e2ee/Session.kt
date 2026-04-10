@@ -104,8 +104,12 @@ object Session {
         require(seq > state.recvSeq) { "replay — seq $seq must be greater than state.recvSeq ${state.recvSeq}" }
 
         val stepsNeeded = seq - state.recvSeq
-        require(stepsNeeded <= MAX_DECRYPT_GAP) {
-            "seq gap $stepsNeeded exceeds maximum $MAX_DECRYPT_GAP — session may be desynchronized"
+        // stepsNeeded is always >= 1 because seq starts at 1 and recvSeq starts at 0 (or resets
+        // to 0 on epoch rotation). The number of *missed* messages is (stepsNeeded - 1), so
+        // we allow stepsNeeded up to MAX_DECRYPT_GAP + 1 to permit exactly MAX_DECRYPT_GAP
+        // missed messages.
+        require(stepsNeeded <= MAX_DECRYPT_GAP + 1) {
+            "seq gap ${stepsNeeded - 1} exceeds maximum $MAX_DECRYPT_GAP — session may be desynchronized"
         }
 
         // Advance the receive chain key to reach the correct seq (handles gaps).
