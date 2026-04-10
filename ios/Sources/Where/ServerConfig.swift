@@ -7,7 +7,7 @@ import Foundation
 /// - Production: point to your deployed server URL.
 enum ServerConfig {
     #if targetEnvironment(simulator)
-    static let httpBaseUrl = "http://localhost:8080"
+    static let httpBaseUrl = "https://where-api.af0.net"
     #else
     static let httpBaseUrl: String = {
         // Read from environment variable set at build time (e.g., by Local.xcconfig or xcodebuild).
