@@ -115,7 +115,10 @@ data class LocationPlaintext(
 
 /**
  * Alice's QR / invite-link payload.
- * Contains only her ephemeral public key; no long-term identity keys.
+ * Contains Alice's ephemeral public key and a fresh random secret used to derive
+ * the discovery token. Only someone who received the QR (out-of-band) knows
+ * [discoverySecret], so the discovery mailbox address is not computable by the
+ * server or a network observer who later sees EK_A.pub in a KeyExchangeInit.
  */
 @Serializable
 data class QrPayload(
@@ -126,17 +129,21 @@ data class QrPayload(
     val suggestedName: String,
     // hex(SHA-256(ekPub)[0:8])
     val fingerprint: String,
+    // Fresh random 32-byte secret; HKDF IKM for the discovery token (§4.2).
+    @SerialName("discovery_secret")
+    @Serializable(with = ByteArrayBase64Serializer::class) val discoverySecret: ByteArray,
 ) {
     override fun equals(other: Any?): Boolean {
         if (other !is QrPayload) return false
         return ekPub.contentEquals(other.ekPub) && suggestedName == other.suggestedName &&
-            fingerprint == other.fingerprint
+            fingerprint == other.fingerprint && discoverySecret.contentEquals(other.discoverySecret)
     }
 
     override fun hashCode(): Int {
         var h = ekPub.contentHashCode()
         h = 31 * h + suggestedName.hashCode()
         h = 31 * h + fingerprint.hashCode()
+        h = 31 * h + discoverySecret.contentHashCode()
         return h
     }
 }
