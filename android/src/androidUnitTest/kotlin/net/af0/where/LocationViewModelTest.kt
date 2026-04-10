@@ -92,7 +92,7 @@ private class FakeLocationSource : LocationSource {
     private val _pendingInitPayload = MutableStateFlow<KeyExchangeInitPayload?>(null)
     override val pendingInitPayload: StateFlow<KeyExchangeInitPayload?> = _pendingInitPayload
 
-    private val _isSharingLocation = MutableStateFlow(true)
+    private val _isSharingLocation = MutableStateFlow(false)
     override val isSharingLocation: StateFlow<Boolean> = _isSharingLocation
 
     private val _pausedFriendIds = MutableStateFlow<Set<String>>(emptySet())

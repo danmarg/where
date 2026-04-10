@@ -99,6 +99,10 @@ class LocationViewModel(
 
     init {
         Log.d(TAG, "LocationViewModel init: server=${BuildConfig.SERVER_HTTP_URL}")
+        // Restore initial sharing state synchronously so observers (like LocationService)
+        // see the correct value immediately.
+        locationSource.setSharingLocation(UserPrefs.isSharing(app))
+
         viewModelScope.launch {
             val savedFriends = this@LocationViewModel.e2eeStore.listFriends()
             locationSource.onFriendsUpdated(savedFriends)
@@ -114,7 +118,6 @@ class LocationViewModel(
                 }
             }
             locationSource.setInitialFriendLocations(initialLocations, initialLastPing)
-            locationSource.setSharingLocation(UserPrefs.isSharing(app))
             locationSource.setPausedFriends(UserPrefs.getPausedFriends(app))
         }
 

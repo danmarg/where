@@ -17,7 +17,14 @@ class LocationRepositoryTest {
     @Before
     fun resetRepository() {
         // Reset the repository to a known state before each test
+        LocationRepository.reset()
         LocationRepository.onLocation(0.0, 0.0)
+    }
+
+    @Test
+    fun testDefaultSharingStateIsFalse() {
+        LocationRepository.reset()
+        assertTrue(!LocationRepository.isSharingLocation.value, "Default sharing state should be false")
     }
 
     /**
