@@ -68,6 +68,9 @@ open class LocationClient(
         initialFriend.session.prevRecvToken?.let { prev ->
             if (currentTimeSeconds() < initialFriend.session.prevRecvTokenDeadline) {
                 tokensToPoll.add(prev.toHex())
+            } else {
+                // Deadline passed: eager cleanup of stale chain state.
+                store.clearPrevRecvState(friendId)
             }
         }
 
