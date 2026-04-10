@@ -11,21 +11,36 @@ struct WhereMapView: UIViewRepresentable {
     var onSelectFriend: (String) -> Void = { _ in }
 
     private static let ownAnnotationId = "__own__"
+func makeUIView(context: Context) -> MKMapView {
+    let mapView = MKMapView()
+    mapView.delegate = context.coordinator
+    mapView.showsUserLocation = false
 
-    func makeUIView(context: Context) -> MKMapView {
-        let mapView = MKMapView()
-        mapView.delegate = context.coordinator
-        mapView.showsUserLocation = false
-        // Set initial region to San Francisco; will zoom to actual location once user's location is available
-        let initialRegion = MKCoordinateRegion(
-            center: CLLocationCoordinate2D(latitude: 37.7749, longitude: -122.4194),
-            span: MKCoordinateSpan(latitudeDelta: 1.0, longitudeDelta: 1.0)
+    let defaults = UserDefaults.standard
+    let lat = defaults.double(forKey: "map_last_lat")
+    let lng = defaults.double(forKey: "map_last_lng")
+    let latDelta = defaults.double(forKey: "map_last_lat_delta")
+    let lngDelta = defaults.double(forKey: "map_last_lng_delta")
+
+    let initialRegion: MKCoordinateRegion
+    if lat != 0 || lng != 0 {
+        initialRegion = MKCoordinateRegion(
+            center: CLLocationCoordinate2D(latitude: lat, longitude: lng),
+            span: MKCoordinateSpan(latitudeDelta: latDelta == 0 ? 0.05 : latDelta, longitudeDelta: lngDelta == 0 ? 0.05 : lngDelta)
         )
-        mapView.setRegion(initialRegion, animated: false)
-        return mapView
+    } else {
+        // Default to something reasonable if no saved location
+        initialRegion = MKCoordinateRegion(
+            center: CLLocationCoordinate2D(latitude: 37.33, longitude: -122.03),
+            span: MKCoordinateSpan(latitudeDelta: 0.1, longitudeDelta: 0.1)
+        )
     }
+    mapView.setRegion(initialRegion, animated: false)
+    return mapView
+}
 
-    func updateUIView(_ mapView: MKMapView, context: Context) {
+func updateUIView(_ mapView: MKMapView, context: Context) {
+    // ... (existing implementation)
         let existing = mapView.annotations.compactMap { $0 as? UserAnnotation }
         let existingById = Dictionary(uniqueKeysWithValues: existing.map { ($0.userId, $0) })
         let newFriendById = Dictionary(uniqueKeysWithValues: users.map { ($0.userId, $0) })
@@ -98,6 +113,15 @@ struct WhereMapView: UIViewRepresentable {
     final class Coordinator: NSObject, MKMapViewDelegate {
         var hasCentered = false
         var parentView: WhereMapView?
+        
+        func mapView(_ mapView: MKMapView, regionDidChangeAnimated animated: Bool) {
+            let region = mapView.region
+            let defaults = UserDefaults.standard
+            defaults.set(region.center.latitude, forKey: "map_last_lat")
+            defaults.set(region.center.longitude, forKey: "map_last_lng")
+            defaults.set(region.span.latitudeDelta, forKey: "map_last_lat_delta")
+            defaults.set(region.span.longitudeDelta, forKey: "map_last_lng_delta")
+        }
 
         func mapView(_ mapView: MKMapView, viewFor annotation: MKAnnotation) -> MKAnnotationView? {
             guard let userAnnotation = annotation as? UserAnnotation else { return nil }
