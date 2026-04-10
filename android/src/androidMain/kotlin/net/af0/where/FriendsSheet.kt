@@ -108,54 +108,7 @@ fun FriendsSheet(
                 }
             }
 
-            if (showPasteField) {
-                Column(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
-                    OutlinedTextField(
-                        value = pastedUrl,
-                        onValueChange = { pastedUrl = it },
-                        label = { Text("Paste where://invite?...") },
-                        modifier = Modifier.fillMaxWidth(),
-                        singleLine = true,
-                    )
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    ) {
-                        FilledTonalButton(
-                            onClick = {
-                                if (pastedUrl.isNotEmpty()) {
-                                    onDismiss()
-                                    onPasteUrl(pastedUrl)
-                                    pastedUrl = ""
-                                    showPasteField = false
-                                }
-                            },
-                            modifier = Modifier.weight(1f),
-                        ) {
-                            Text("Go")
-                        }
-                        FilledTonalButton(
-                            onClick = {
-                                pastedUrl = ""
-                                showPasteField = false
-                            },
-                            modifier = Modifier.weight(1f),
-                        ) {
-                            Text("Cancel")
-                        }
-                    }
-                }
-            } else {
-                FilledTonalButton(
-                    onClick = { showPasteField = true },
-                    modifier = Modifier.fillMaxWidth(),
-                ) {
-                    Text("Paste URL")
-                }
-            }
+
 
             if (friends.isNotEmpty()) {
                 Text("Friends (${friends.size})", style = MaterialTheme.typography.labelMedium)

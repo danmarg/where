@@ -52,36 +52,7 @@ struct FriendsSheet: View {
                             .buttonStyle(.bordered)
                         }
 
-                        if showPasteField {
-                            HStack(spacing: 8) {
-                                TextField("Paste where://invite?...", text: $pastedUrl)
-                                    .textFieldStyle(.roundedBorder)
-                                    .font(.caption)
-                                    .autocorrectionDisabled()
-                                    .textInputAutocapitalization(.never)
 
-                                Button("Go") {
-                                    if !pastedUrl.isEmpty {
-                                        onPasteUrl(pastedUrl)
-                                        pastedUrl = ""
-                                        showPasteField = false
-                                    }
-                                }
-                                .buttonStyle(.bordered)
-
-                                Button("Cancel") {
-                                    pastedUrl = ""
-                                    showPasteField = false
-                                }
-                                .buttonStyle(.bordered)
-                            }
-                        } else {
-                            Button("Paste URL") {
-                                showPasteField = true
-                            }
-                            .frame(maxWidth: .infinity)
-                            .buttonStyle(.bordered)
-                        }
                     }
                 }
 
