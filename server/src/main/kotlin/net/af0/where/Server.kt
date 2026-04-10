@@ -19,6 +19,8 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonNull
+import redis.clients.jedis.JedisPooled
+import java.net.URI
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.ConcurrentLinkedQueue
 
@@ -40,18 +42,50 @@ internal const val RATE_LIMIT_MAX_POSTS = 60
 /** Rate-limit window duration in milliseconds (1 minute). */
 private const val RATE_LIMIT_WINDOW_MS = 60_000L
 
-/** How often the background eviction job sweeps stale map entries. */
+/** How often the background eviction job sweeps stale map entries (in-memory only). */
 private const val EVICTION_INTERVAL_MS = 5 * 60_000L
+
+// ---------------------------------------------------------------------------
+// MailboxStore interface
+// ---------------------------------------------------------------------------
+
+/**
+ * Backing store for the anonymous mailbox routing table.
+ *
+ * Two implementations:
+ *   - [InMemoryMailboxState] — used in tests and when REDIS_URL is absent.
+ *   - [RedisMailboxState]    — used in production; state survives restarts.
+ */
+interface MailboxStore {
+    /**
+     * Store [payload] under [token]. Returns false if the token is rate-limited
+     * or has reached [MAX_QUEUE_DEPTH].
+     */
+    fun post(token: String, payload: JsonElement): Boolean
+
+    /** Destructively drain all non-expired messages for [token]. */
+    fun drain(token: String): List<JsonElement>
+
+    /** Reclaim stale entries. No-op for implementations where the store handles expiry. */
+    fun evict() {}
+
+    /** Release any external resources (connections, pools). */
+    fun close() {}
+}
+
+// ---------------------------------------------------------------------------
+// In-memory implementation (tests / no Redis)
+// ---------------------------------------------------------------------------
 
 private data class MailboxEntry(val payload: JsonElement, val expiresAt: Long)
 
 /**
- * Anonymous mailbox routing table (§7.1, §10).
+ * Anonymous mailbox routing table backed by in-process maps (§7.1, §10).
  *
  * Keys are opaque routing tokens (hex strings from the URL). Values are queues of
  * timestamped JSON payloads. The server never parses payload content.
  */
-class MailboxState {
+class InMemoryMailboxState : MailboxStore {
     private val mailboxes = ConcurrentHashMap<String, ConcurrentLinkedQueue<MailboxEntry>>()
 
     /** Per-token post timestamps used for rate limiting (sliding window). */
@@ -67,7 +101,7 @@ class MailboxState {
      * payload) if the token has exceeded [MAX_QUEUE_DEPTH] live messages or the
      * [RATE_LIMIT_MAX_POSTS] per-minute rate limit.
      */
-    fun post(
+    override fun post(
         token: String,
         payload: JsonElement,
     ): Boolean {
@@ -102,7 +136,7 @@ class MailboxState {
      * at which point it will create a fresh entry via [computeIfAbsent].  Either way no
      * data is lost.
      */
-    fun evict() = evictWithParams(rateLimitWindowMs = RATE_LIMIT_WINDOW_MS)
+    override fun evict() = evictWithParams(rateLimitWindowMs = RATE_LIMIT_WINDOW_MS)
 
     /** Exposed for tests to control the rate-limit window (e.g. 0 to treat all entries as stale). */
     internal fun evictForTest(rateLimitWindowMs: Long) = evictWithParams(rateLimitWindowMs)
@@ -127,7 +161,7 @@ class MailboxState {
      * Drain all non-expired messages for [token] and return them.
      * Returns an empty list for unknown or empty tokens (§7.2: indistinguishable responses).
      */
-    fun drain(token: String): List<JsonElement> {
+    override fun drain(token: String): List<JsonElement> {
         val now = System.currentTimeMillis()
 
         // Constant-Time Invariant (§7.2, §10.2):
@@ -144,29 +178,120 @@ class MailboxState {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Redis implementation (production)
+// ---------------------------------------------------------------------------
+
+/**
+ * Anonymous mailbox routing table backed by Redis (§7.1, §10).
+ *
+ * All operations are atomic via Lua scripts. Redis key TTLs replace the background
+ * eviction job — no [evict] implementation is needed.
+ *
+ * Key layout:
+ *   inbox:{token}     — Redis List of JSON payload strings
+ *   ratelimit:{token} — Redis counter (INCR) for fixed-window rate limiting
+ */
+class RedisMailboxState(redisUrl: String) : MailboxStore {
+    private val jedis = JedisPooled(URI(redisUrl))
+
+    /**
+     * Atomically: check fixed-window rate limit, check queue depth, append payload.
+     *
+     * Rate limiting uses a fixed 1-minute window (INCR + EXPIRE on first increment).
+     * At window boundaries a client could burst up to 2× the per-minute limit, which
+     * is acceptable for location sharing at this scale.
+     *
+     * Returns 1 on success, 0 if rate-limited or queue full.
+     */
+    private val postScript = """
+        local maxPosts = tonumber(ARGV[1])
+        local maxDepth = tonumber(ARGV[2])
+        local payload  = ARGV[3]
+        local ttlSec   = tonumber(ARGV[4])
+        local rlTtlSec = tonumber(ARGV[5])
+        local count = redis.call('INCR', KEYS[1])
+        if count == 1 then redis.call('EXPIRE', KEYS[1], rlTtlSec) end
+        if count > maxPosts then return 0 end
+        if redis.call('LLEN', KEYS[2]) >= maxDepth then return 0 end
+        redis.call('RPUSH', KEYS[2], payload)
+        redis.call('EXPIRE', KEYS[2], ttlSec)
+        return 1
+    """.trimIndent()
+
+    /** Atomically drain all messages for the token. */
+    private val drainScript = """
+        local msgs = redis.call('LRANGE', KEYS[1], 0, -1)
+        if #msgs > 0 then redis.call('DEL', KEYS[1]) end
+        return msgs
+    """.trimIndent()
+
+    override fun post(token: String, payload: JsonElement): Boolean {
+        val result = jedis.eval(
+            postScript,
+            listOf("ratelimit:$token", "inbox:$token"),
+            listOf(
+                RATE_LIMIT_MAX_POSTS.toString(),
+                MAX_QUEUE_DEPTH.toString(),
+                payload.toString(),
+                (MAILBOX_TTL_MS / 1000).toString(),
+                (RATE_LIMIT_WINDOW_MS / 1000).toString(),
+            ),
+        )
+        return result == 1L
+    }
+
+    override fun drain(token: String): List<JsonElement> {
+        @Suppress("UNCHECKED_CAST")
+        val msgs = jedis.eval(drainScript, listOf("inbox:$token"), emptyList()) as List<*>
+        return msgs.map { item ->
+            val str = when (item) {
+                is String -> item
+                is ByteArray -> item.decodeToString()
+                else -> item.toString()
+            }
+            json.parseToJsonElement(str)
+        }
+    }
+
+    // evict() is intentionally left as the interface no-op: Redis TTL handles expiry.
+
+    override fun close() = jedis.close()
+}
+
+// ---------------------------------------------------------------------------
+// ServerState
+// ---------------------------------------------------------------------------
+
 /**
  * Encapsulates all mutable server state so each module() invocation (including in tests)
  * gets its own isolated state rather than sharing package-level globals.
  */
-class ServerState(val debug: Boolean = false) {
-    val mailbox = MailboxState()
-}
+class ServerState(
+    val debug: Boolean = false,
+    val mailbox: MailboxStore = InMemoryMailboxState(),
+)
 
 fun main(args: Array<String>) {
     val port = System.getenv("PORT")?.toInt() ?: 8080
     val debug = args.contains("--debug") || System.getenv("WHERE_DEBUG") == "true"
+    val redisUrl = System.getenv("REDIS_URL")
+    val mailbox: MailboxStore =
+        if (redisUrl != null) RedisMailboxState(redisUrl) else InMemoryMailboxState()
     embeddedServer(Netty, port = port, host = "0.0.0.0") {
-        module(ServerState(debug))
+        module(ServerState(debug, mailbox))
     }.start(wait = true)
+    mailbox.close()
 }
 
 fun Application.module(state: ServerState = ServerState()) {
     install(ContentNegotiation) { json(json) }
     install(CallLogging)
 
-    // Background eviction: remove zombie token entries from the mailbox and rate-limit
-    // maps.  Entries are created on first POST but never deleted by post/drain; without
-    // eviction a token-flooding attack causes unbounded memory growth.
+    environment.monitor.subscribe(ApplicationStopped) { state.mailbox.close() }
+
+    // Background eviction: remove zombie token entries from the in-memory mailbox and
+    // rate-limit maps. This is a no-op when using RedisMailboxState (TTL handles it).
     launch(Dispatchers.Default) {
         while (isActive) {
             delay(EVICTION_INTERVAL_MS)
