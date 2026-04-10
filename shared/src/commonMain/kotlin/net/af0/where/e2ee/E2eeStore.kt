@@ -39,6 +39,12 @@ data class FriendEntry(
     val lastLat: Double? = null,
     val lastLng: Double? = null,
     val lastTs: Long? = null,
+    /**
+     * Epoch seconds of the last verified RatchetAck received from Bob (Alice only).
+     * Initialized to the pairing timestamp so the 7-day grace period starts from pairing.
+     * Long.MAX_VALUE is the unset sentinel (used for backward-compat on upgrade from old data).
+     */
+    val lastAckTs: Long = Long.MAX_VALUE,
 ) {
     /** Computed friend ID: hex(SHA-256(EK_A.pub)) — full 64 hex chars. */
     val id: String get() = session.aliceFp.toHex()
@@ -57,7 +63,8 @@ data class FriendEntry(
             nextOpkId == other.nextOpkId &&
             lastLat == other.lastLat &&
             lastLng == other.lastLng &&
-            lastTs == other.lastTs
+            lastTs == other.lastTs &&
+            lastAckTs == other.lastAckTs
     }
 
     override fun hashCode(): Int {
@@ -68,6 +75,7 @@ data class FriendEntry(
         result = 31 * result + (lastLat?.hashCode() ?: 0)
         result = 31 * result + (lastLng?.hashCode() ?: 0)
         result = 31 * result + (lastTs?.hashCode() ?: 0)
+        result = 31 * result + lastAckTs.hashCode()
         return result
     }
 }
@@ -118,6 +126,8 @@ class E2eeStore(
                             lastLat = s.lastLat,
                             lastLng = s.lastLng,
                             lastTs = s.lastTs,
+                            // 0L = field absent in old serialized data; give a fresh grace period.
+                            lastAckTs = if (s.lastAckTs == 0L) currentTimeSeconds() else s.lastAckTs,
                         )
                     entry.id to entry
                 }.toMutableMap()
@@ -145,6 +155,7 @@ class E2eeStore(
                             lastLat = f.lastLat,
                             lastLng = f.lastLng,
                             lastTs = f.lastTs,
+                            lastAckTs = f.lastAckTs,
                         )
                     },
                 pendingInvite = pendingInvite,
@@ -193,6 +204,8 @@ class E2eeStore(
                     session = session,
                     // Bob scanned Alice's QR
                     isInitiator = false,
+                    // Start the ack-timeout clock from pairing time.
+                    lastAckTs = currentTimeSeconds(),
                 )
             friends[entry.id] = entry
             save()
@@ -245,6 +258,8 @@ class E2eeStore(
                         session = session,
                         // Alice created the QR
                         isInitiator = true,
+                        // Start the ack-timeout clock from pairing time.
+                        lastAckTs = currentTimeSeconds(),
                     )
                 friends[entry.id] = entry
                 pendingInvite = null
@@ -839,15 +854,42 @@ class E2eeStore(
 
                 if (!isTimestampFresh(ackData.ts)) continue
 
-                // Perform the second half of the DH ratchet if Bob provided a new key.
-                if (ackData.newEkPub != null) {
-                    val newSession = Session.aliceProcessRatchetAck(entry.session, ackData.newEkPub)
-                    friends[friendId] = entry.copy(session = newSession)
-                }
+                // Verified ack: reset the staleness clock regardless of whether Bob
+                // included a new key (the ack itself proves Bob is still active).
+                val newSession =
+                    if (ackData.newEkPub != null) {
+                        Session.aliceProcessRatchetAck(entry.session, ackData.newEkPub)
+                    } else {
+                        null
+                    }
+                friends[friendId] =
+                    entry.copy(
+                        session = newSession ?: entry.session,
+                        lastAckTs = currentTimeSeconds(),
+                    )
             }
 
             save()
             PollBatchResult(decryptedLocations, newToken, outgoing)
+        }
+
+    /**
+     * Returns true if Alice (initiator) has not received a Ratchet Ack from Bob
+     * for longer than [thresholdSeconds].  Always false for Bob (non-initiator).
+     *
+     * When true, [LocationClient.sendLocation] skips this friend and the UI should
+     * show a warning so the user knows their location is no longer being shared.
+     */
+    suspend fun isAckTimedOut(
+        friendId: String,
+        thresholdSeconds: Long = ACK_TIMEOUT_SECONDS,
+    ): Boolean =
+        stateLock.withLock {
+            val entry = friends[friendId] ?: return@withLock false
+            if (!entry.isInitiator) return@withLock false
+            // Long.MAX_VALUE sentinel = upgraded from old data; treat as not timed out.
+            if (entry.lastAckTs == Long.MAX_VALUE) return@withLock false
+            currentTimeSeconds() - entry.lastAckTs > thresholdSeconds
         }
 
     companion object {
@@ -867,6 +909,17 @@ class E2eeStore(
          * Balances forward-secrecy granularity vs. overhead.
          */
         const val EPOCH_ROTATION_INTERVAL = 50L
+
+        /**
+         * If Alice receives no Ratchet Ack from Bob for this long, she stops sending
+         * location to him and the UI warns the user.
+         *
+         * The underlying cause is usually that Bob has disabled background location —
+         * his app isn't polling, so he never processes Alice's epoch rotations and
+         * never posts a Ratchet Ack back.  Seven days gives ample time for Bob to
+         * open the app and trigger a maintenance poll.
+         */
+        const val ACK_TIMEOUT_SECONDS = 7L * 24 * 3600
     }
 }
 
@@ -892,6 +945,8 @@ internal data class SerializedFriendEntry(
     val lastLat: Double? = null,
     val lastLng: Double? = null,
     val lastTs: Long? = null,
+    // Default 0L = field absent in old data; load() converts 0L → currentTimeSeconds().
+    val lastAckTs: Long = 0L,
 )
 
 @Serializable

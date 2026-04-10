@@ -142,6 +142,7 @@ final class LocationSyncService: ObservableObject {
     var isInForeground: () -> Bool = { UIApplication.shared.applicationState == .active }
     private static let rapidPollInterval: TimeInterval = 1.0
     private static let normalPollInterval: TimeInterval = 60.0
+    private static let maintenancePollInterval: TimeInterval = 30 * 60  // ack-only when not sharing
     private var visibleUsersCancellables = Set<AnyCancellable>()
 
     private var lastSentLocation: (lat: Double, lng: Double)? = nil
@@ -297,24 +298,27 @@ final class LocationSyncService: ObservableObject {
         let inForeground = isInForeground()
         let isRapid = await isRapidPolling()
 
-        // Only fetch friends' locations when there's a user to see the result.
-        if inForeground || isRapid {
-            await pollAll(updateUi: true)
-        }
+        // Always poll — even when sharing is off we need to process incoming
+        // EpochRotations and post Ratchet Acks so Alice's location doesn't get stuck.
+        // The timer interval drops to 30 min in that case (maintenance-only).
+        // updateUi (which drives pollPendingInvite) is only needed in foreground/rapid.
+        await pollAll(updateUi: inForeground || isRapid)
         // Heartbeat always runs: covers the stationary background case where
         // didUpdateLocations never fires (distanceFilter suppresses updates).
         if let loc = LocationManager.shared.lastLocation {
             sendLocation(lat: loc.coordinate.latitude, lng: loc.coordinate.longitude, isHeartbeat: true)
         }
 
-        // Slow the timer down in the background — it only needs to fire for heartbeats.
+        // Adjust timer interval based on app state.
         let targetInterval: TimeInterval
         if isRapid {
-            targetInterval = Self.rapidPollInterval
+            targetInterval = Self.rapidPollInterval        // 1s: pairing
         } else if inForeground {
-            targetInterval = Self.normalPollInterval       // 60s
+            targetInterval = Self.normalPollInterval       // 60s: user watching map
+        } else if isSharingLocation {
+            targetInterval = 5 * 60                       // 5 min: heartbeat + friend poll
         } else {
-            targetInterval = 5 * 60                       // 5 min: matches heartbeat throttle
+            targetInterval = Self.maintenancePollInterval  // 30 min: Ratchet Ack maintenance
         }
         if let t = pollTimer, abs(t.timeInterval - targetInterval) > 0.1 {
             schedulePollTimer(interval: targetInterval)

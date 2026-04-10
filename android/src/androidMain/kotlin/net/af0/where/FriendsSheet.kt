@@ -35,6 +35,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
+import net.af0.where.e2ee.E2eeStore
 import net.af0.where.e2ee.FriendEntry
 
 fun timeAgoString(lastPingMs: Long?): String {
@@ -190,6 +191,16 @@ fun FriendsSheet(
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 )
+                                val ackStale = friend.isInitiator &&
+                                    friend.lastAckTs != Long.MAX_VALUE &&
+                                    System.currentTimeMillis() / 1000 - friend.lastAckTs > E2eeStore.ACK_TIMEOUT_SECONDS
+                                if (ackStale) {
+                                    Text(
+                                        "Not receiving this friend's acks — location sharing paused",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.error,
+                                    )
+                                }
                             }
 
                             IconButton(onClick = { renameFriend = friend }) {

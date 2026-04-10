@@ -87,7 +87,7 @@ class LocationSyncServiceTests: XCTestCase {
         XCTAssertGreaterThan(mockClient.pollCallCount, 0, "Should poll friends when in foreground")
     }
 
-    func testFirePoll_BackgroundSkipsPollFriends() async throws {
+    func testFirePoll_BackgroundStillPollsFriends() async throws {
         let store = Shared.E2eeStore(storage: KeychainE2eeStorage())
         let mockClient = MockLocationClient(baseUrl: "", store: store)
         service = LocationSyncService(e2eeStore: store, locationClient: mockClient)
@@ -96,7 +96,38 @@ class LocationSyncServiceTests: XCTestCase {
 
         await service.firePoll()
 
-        XCTAssertEqual(mockClient.pollCallCount, 0, "Should not poll friends when in background")
+        XCTAssertGreaterThan(mockClient.pollCallCount, 0,
+            "Should poll friends in background so locations stay fresh when stationary")
+    }
+
+    func testFirePoll_BackgroundPollsEvenWhenNotSharing() async throws {
+        // When sharing is off, we still poll at a lower (30 min) frequency to process
+        // Ratchet Acks so Alice's location sending doesn't get stuck.
+        let store = Shared.E2eeStore(storage: KeychainE2eeStorage())
+        let mockClient = MockLocationClient(baseUrl: "", store: store)
+        service = LocationSyncService(e2eeStore: store, locationClient: mockClient)
+        service.isInForeground = { false }
+        service.isSharingLocation = false
+        service.startPolling()
+
+        await service.firePoll()
+
+        XCTAssertGreaterThan(mockClient.pollCallCount, 0,
+            "Should still poll for Ratchet Acks in background even when not sharing")
+    }
+
+    func testTimerInterval_BackgroundNotSharing_Is30min() async throws {
+        let store = Shared.E2eeStore(storage: KeychainE2eeStorage())
+        let mockClient = MockLocationClient(baseUrl: "", store: store)
+        service = LocationSyncService(e2eeStore: store, locationClient: mockClient)
+        service.isInForeground = { false }
+        service.isSharingLocation = false
+        service.startPolling()
+
+        await service.firePoll()
+
+        XCTAssertEqual(service.pollTimer?.timeInterval ?? 0, 30 * 60, accuracy: 0.1,
+                       "Background maintenance poll (not sharing) should be 30 min")
     }
 
     func testFirePoll_RapidPollsEvenInBackground() async throws {
