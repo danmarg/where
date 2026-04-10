@@ -17,8 +17,11 @@ private func debugLog(_ msg: () -> String) {
 // MARK: - QR payload URL helpers
 
 func qrPayloadToUrl(_ qr: Shared.QrPayload) -> String {
+    var ekPubData = toSwiftData(qr.ekPub)
+    defer { ekPubData.zeroize() }
+
     let dict: [String: Any] = [
-        "ek_pub": toSwiftData(qr.ekPub).base64EncodedString(),
+        "ek_pub": ekPubData.base64EncodedString(),
         "suggested_name": qr.suggestedName,
         "fingerprint": qr.fingerprint,
     ]
@@ -468,12 +471,19 @@ final class LocationSyncService: ObservableObject {
             updateVisibleUsers()
 
             let discoveryHex = toHex(qrWithName.discoveryToken())
+            var ekPubData = toSwiftData(initPayload.ekPub)
+            var keyConfData = toSwiftData(initPayload.keyConfirmation)
+            defer {
+                ekPubData.zeroize()
+                keyConfData.zeroize()
+            }
+
             let payload: [String: Any] = [
                 "v": 1,
                 "type": "KeyExchangeInit",
                 "token": initPayload.token,
-                "ek_pub": toSwiftData(initPayload.ekPub).base64EncodedString(),
-                "key_confirmation": toSwiftData(initPayload.keyConfirmation).base64EncodedString(),
+                "ek_pub": ekPubData.base64EncodedString(),
+                "key_confirmation": keyConfData.base64EncodedString(),
                 "suggested_name": initPayload.suggestedName,
             ]
 
