@@ -115,18 +115,28 @@ final class LocationSyncService: ObservableObject {
     @Published var friends: [Shared.FriendEntry] = []
     @Published var inviteState: InviteState = .none
     @Published var isSharingLocation: Bool {
-        didSet { UserDefaults.standard.set(isSharingLocation, forKey: "where_is_sharing") }
+        didSet {
+            let keychain = KeychainE2eeStorage()
+            keychain.putString(key: "where_is_sharing", value: isSharingLocation ? "true" : "false")
+        }
     }
     @Published var displayName: String {
         didSet {
-            UserDefaults.standard.set(displayName, forKey: "display_name")
+            let keychain = KeychainE2eeStorage()
+            keychain.putString(key: "display_name", value: displayName)
             if isInviteActive {
                 Task { await createInvite() }
             }
         }
     }
     @Published var pausedFriendIds: Set<String> {
-        didSet { UserDefaults.standard.set(Array(pausedFriendIds), forKey: "paused_friends") }
+        didSet {
+            let keychain = KeychainE2eeStorage()
+            let json = try? JSONSerialization.data(withJSONObject: Array(pausedFriendIds))
+            if let json = json, let jsonStr = String(data: json, encoding: .utf8) {
+                keychain.putString(key: "paused_friends", value: jsonStr)
+            }
+        }
     }
 
     @Published var pendingQrForNaming: Shared.QrPayload? = nil
@@ -178,13 +188,23 @@ final class LocationSyncService: ObservableObject {
         self.e2eeStore = store
         self.locationClient = locationClient ?? Shared.LocationClient(baseUrl: ServerConfig.httpBaseUrl, store: store)
 
-        let savedSharing = UserDefaults.standard.object(forKey: "where_is_sharing")
-        isSharingLocation = savedSharing != nil ? UserDefaults.standard.bool(forKey: "where_is_sharing") : true
+        let keychain = KeychainE2eeStorage()
 
-        displayName = UserDefaults.standard.string(forKey: "display_name") ?? ""
+        if let sharingStr = keychain.getString(key: "where_is_sharing") {
+            isSharingLocation = sharingStr == "true"
+        } else {
+            isSharingLocation = true
+        }
 
-        let savedPaused = UserDefaults.standard.stringArray(forKey: "paused_friends") ?? []
-        pausedFriendIds = Set(savedPaused)
+        displayName = keychain.getString(key: "display_name") ?? ""
+
+        if let pausedJsonStr = keychain.getString(key: "paused_friends"),
+           let pausedData = pausedJsonStr.data(using: .utf8),
+           let pausedArray = try? JSONSerialization.jsonObject(with: pausedData) as? [String] {
+            pausedFriendIds = Set(pausedArray)
+        } else {
+            pausedFriendIds = []
+        }
 
         Task { @MainActor in
             do {
