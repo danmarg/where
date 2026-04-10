@@ -5,6 +5,7 @@ package net.af0.where.e2ee
 import com.ionspin.kotlin.crypto.aead.AuthenticatedEncryptionWithAssociatedData
 import com.ionspin.kotlin.crypto.box.Box
 import com.ionspin.kotlin.crypto.hash.Hash
+import com.ionspin.kotlin.crypto.scalarmult.ScalarMultiplication
 import com.ionspin.kotlin.crypto.util.LibsodiumRandom
 
 // ---------------------------------------------------------------------------
@@ -73,7 +74,8 @@ internal actual fun x25519(
     myPriv: ByteArray,
     theirPub: ByteArray,
 ): ByteArray {
-    return Box.beforeNM(theirPub.toUByteArray(), myPriv.toUByteArray()).toByteArray()
+    return ScalarMultiplication.scalarMultiplication(myPriv.toUByteArray(), theirPub.toUByteArray())
+        .toByteArray()
 }
 
 // ---------------------------------------------------------------------------
