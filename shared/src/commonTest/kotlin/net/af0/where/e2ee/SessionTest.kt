@@ -425,4 +425,58 @@ class SessionTest {
             }
         assertTrue(threw, "Expected AEAD to fail with wrong routing token")
     }
+
+    @Test
+    fun `test private keys are zeroed after use`() {
+        val (aliceSession, bobSession) = exchangeKeys()
+
+        val aliceNewEk = generateX25519KeyPair()
+        val bobOpk = generateX25519KeyPair()
+
+        val aliceEkPrivCopy = aliceNewEk.priv.copyOf()
+        val bobOpkPrivCopy = bobOpk.priv.copyOf()
+
+        // aliceEpochRotation
+        Session.aliceEpochRotation(
+            state = aliceSession,
+            aliceNewEkPriv = aliceNewEk.priv,
+            aliceNewEkPub = aliceNewEk.pub,
+            bobOpkPub = bobOpk.pub,
+            senderFp = aliceSession.aliceFp,
+            recipientFp = aliceSession.bobFp,
+        )
+        assertTrue(aliceNewEk.priv.all { it == 0.toByte() }, "aliceNewEkPriv should be zeroed")
+
+        // bobProcessAliceRotation
+        Session.bobProcessAliceRotation(
+            state = bobSession,
+            aliceNewEkPub = aliceNewEk.pub,
+            bobOpkPriv = bobOpk.priv,
+            newEpoch = 1,
+            senderFp = bobSession.aliceFp,
+            recipientFp = bobSession.bobFp,
+        )
+        assertTrue(bobOpk.priv.all { it == 0.toByte() }, "bobOpkPriv should be zeroed")
+
+        // aliceProcessRatchetAck
+        // First we need to get a session where myEkPriv is not zero.
+        // This happens after Alice rotates her epoch.
+        val bobOpk2 = generateX25519KeyPair()
+        val aliceNewEk2 = generateX25519KeyPair()
+        val aliceRotated =
+            Session.aliceEpochRotation(
+                state = aliceSession,
+                aliceNewEkPriv = aliceNewEk2.priv,
+                aliceNewEkPub = aliceNewEk2.pub,
+                bobOpkPub = bobOpk2.pub,
+                senderFp = aliceSession.aliceFp,
+                recipientFp = aliceSession.bobFp,
+            )
+
+        val bobNewEk = generateX25519KeyPair()
+        assertTrue(aliceRotated.myEkPriv.any { it != 0.toByte() }, "Pre-condition: aliceRotated.myEkPriv should not be all zeros")
+
+        Session.aliceProcessRatchetAck(aliceRotated, bobNewEk.pub)
+        assertTrue(aliceRotated.myEkPriv.all { it == 0.toByte() }, "aliceRotated.myEkPriv should be zeroed")
+    }
 }
