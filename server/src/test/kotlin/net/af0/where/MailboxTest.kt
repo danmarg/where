@@ -155,7 +155,7 @@ class MailboxTest {
 
     @Test
     fun `evict resets stale postTimes so rate limit no longer applies`() {
-        val state = MailboxState()
+        val state = InMemoryMailboxState()
         val token = "evicttoken0000001"
         // Exhaust the rate limit for this token.
         repeat(RATE_LIMIT_MAX_POSTS) { i ->
@@ -172,7 +172,7 @@ class MailboxTest {
 
     @Test
     fun `evict removes empty mailbox entries`() {
-        val state = MailboxState()
+        val state = InMemoryMailboxState()
         val token = "evicttoken0000002"
         state.post(token, JsonPrimitive("msg"))
         state.drain(token) // empties the mailbox queue
@@ -186,7 +186,7 @@ class MailboxTest {
 
     @Test
     fun `evict does not remove mailbox entries with live messages`() {
-        val state = MailboxState()
+        val state = InMemoryMailboxState()
         state.post("live", JsonPrimitive("msg"))
 
         // Evict — the message has not expired so the entry should be retained.
