@@ -1,5 +1,7 @@
 package net.af0.where
 
+import android.content.Context
+import android.content.SharedPreferences
 import net.af0.where.e2ee.E2eeStorage
 import net.af0.where.e2ee.E2eeStore
 
@@ -18,5 +20,9 @@ private class InMemoryE2eeStorage : E2eeStorage {
 }
 
 class TestWhereApplication : WhereApplication() {
+    override val encryptedPrefs: SharedPreferences by lazy {
+        getSharedPreferences("test_encrypted_prefs", Context.MODE_PRIVATE)
+    }
+
     override val e2eeStore: E2eeStore by lazy { E2eeStore(InMemoryE2eeStorage()) }
 }
