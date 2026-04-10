@@ -334,6 +334,8 @@ class E2eeStore(
             val opkList = newOpks.map { (opk, _) -> opk }
             val mac =
                 PreKeyBundleOps.buildMac(
+                    // Bob's sendToken == Alice's recvToken (both are T_BA_0), so Alice's
+                    // storeOpkBundle can verify this MAC using her recvToken.
                     token = entry.session.sendToken,
                     opks = opkList,
                     kBundle = entry.session.kBundle,
@@ -368,6 +370,8 @@ class E2eeStore(
 
             val opks = bundle.toOPKList()
             if (!PreKeyBundleOps.verify(
+                    // Alice's recvToken == Bob's sendToken (both are T_BA_0), matching
+                    // the token Bob used in generateOpkBundle.
                     token = entry.session.recvToken,
                     opks = opks,
                     mac = bundle.mac,
