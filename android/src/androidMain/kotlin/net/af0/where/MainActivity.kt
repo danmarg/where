@@ -58,6 +58,7 @@ class MainActivity : ComponentActivity() {
 
         setContent {
             MaterialTheme {
+                val ownLocation by viewModel.ownLocation.collectAsState()
                 val users by viewModel.visibleUsers.collectAsState()
                 val friends by viewModel.friends.collectAsState()
                 val displayName by viewModel.displayName.collectAsState()
@@ -73,7 +74,7 @@ class MainActivity : ComponentActivity() {
                 var showSimulatorScanner by remember { mutableStateOf(false) }
 
                 MapScreen(
-                    userId = viewModel.userId,
+                    ownLocation = ownLocation,
                     users = users,
                     friends = friends,
                     displayName = displayName,

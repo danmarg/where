@@ -16,6 +16,7 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -57,8 +58,6 @@ class LocationViewModel(
             ?: (app as? WhereApplication)?.locationClient
             ?: LocationClient(BuildConfig.SERVER_HTTP_URL, this.e2eeStore)
 
-    val userId: String by lazy { UserPrefs.getUserId(getApplication()) }
-
     val isSharingLocation: StateFlow<Boolean> = locationSource.isSharingLocation
 
     private val _displayName = MutableStateFlow(UserPrefs.getDisplayName(app))
@@ -84,18 +83,19 @@ class LocationViewModel(
 
     val connectionStatus: StateFlow<ConnectionStatus> = locationSource.connectionStatus
 
+    val ownLocation: StateFlow<UserLocation?> =
+        combine(locationSource.lastLocation, isSharingLocation) { myLoc, sharing ->
+            if (myLoc != null && sharing) UserLocation("", myLoc.first, myLoc.second, clock() / 1000)
+            else null
+        }.stateIn(viewModelScope, SharingStarted.Eagerly, null)
+
     val visibleUsers: StateFlow<List<UserLocation>> =
-        combine(locationSource.lastLocation, isSharingLocation, friendLocations) { myLoc, sharing, friendLocs ->
-            buildList {
-                if (myLoc != null && sharing) {
-                    add(UserLocation(userId, myLoc.first, myLoc.second, clock() / 1000))
-                }
-                addAll(friendLocs.values)
-            }
-        }.stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
+        friendLocations
+            .map { it.values.toList() }
+            .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
 
     init {
-        Log.d(TAG, "LocationViewModel init: server=${BuildConfig.SERVER_HTTP_URL}, userId=$userId")
+        Log.d(TAG, "LocationViewModel init: server=${BuildConfig.SERVER_HTTP_URL}")
         viewModelScope.launch {
             val savedFriends = this@LocationViewModel.e2eeStore.listFriends()
             locationSource.onFriendsUpdated(savedFriends)

@@ -5,10 +5,12 @@ import Shared
 struct WhereMapView: UIViewRepresentable {
     let users: [Shared.UserLocation]
     let friends: [Shared.FriendEntry]
-    let ownUserId: String
+    var ownLocation: CLLocationCoordinate2D? = nil
     var zoomTarget: CLLocationCoordinate2D? = nil
     var onZoomConsumed: () -> Void = {}
     var onSelectFriend: (String) -> Void = { _ in }
+
+    private static let ownAnnotationId = "__own__"
 
     func makeUIView(context: Context) -> MKMapView {
         let mapView = MKMapView()
@@ -26,20 +28,31 @@ struct WhereMapView: UIViewRepresentable {
     func updateUIView(_ mapView: MKMapView, context: Context) {
         let existing = mapView.annotations.compactMap { $0 as? UserAnnotation }
         let existingById = Dictionary(uniqueKeysWithValues: existing.map { ($0.userId, $0) })
-        let newById = Dictionary(uniqueKeysWithValues: users.map { ($0.userId, $0) })
+        let newFriendById = Dictionary(uniqueKeysWithValues: users.map { ($0.userId, $0) })
 
-        // Group users by location to handle overlaps
+        // Remove stale annotations (own if location gone; friends if no longer present)
+        let toRemove = existing.filter { ann in
+            ann.isOwn ? ownLocation == nil : newFriendById[ann.userId] == nil
+        }
+        mapView.removeAnnotations(toRemove)
+
+        // Update or add own pin
+        if let own = ownLocation {
+            if let existingOwn = existingById[Self.ownAnnotationId] {
+                existingOwn.coordinate = own
+            } else {
+                mapView.addAnnotation(UserAnnotation(ownCoordinate: own))
+            }
+        }
+
+        // Group friends by location to handle overlaps
         var locationGroups: [String: [Shared.UserLocation]] = [:]
         for user in users {
             let key = String(format: "%.6f,%.6f", user.lat, user.lng)
             locationGroups[key, default: []].append(user)
         }
 
-        // Remove stale annotations
-        let toRemove = existing.filter { newById[$0.userId] == nil }
-        mapView.removeAnnotations(toRemove)
-
-        // Update existing or add new annotations
+        // Update existing or add new friend annotations
         for (_, group) in locationGroups {
             for (index, user) in group.enumerated() {
                 var coord = CLLocationCoordinate2D(latitude: user.lat, longitude: user.lng)
@@ -50,13 +63,12 @@ struct WhereMapView: UIViewRepresentable {
                     coord.latitude += radius * cos(angle)
                     coord.longitude += radius * sin(angle)
                 }
-
                 if let pin = existingById[user.userId] {
                     pin.coordinate = coord
                 } else {
                     let friend = friends.first { $0.id == user.userId }
                     let friendName = friend?.name ?? String(user.userId.prefix(8))
-                    mapView.addAnnotation(UserAnnotation(user: user, coordinate: coord, friendName: friendName, isOwn: user.userId == ownUserId))
+                    mapView.addAnnotation(UserAnnotation(user: user, coordinate: coord, friendName: friendName))
                 }
             }
         }
@@ -70,10 +82,8 @@ struct WhereMapView: UIViewRepresentable {
         }
 
         // Auto-center on own location the first time only
-        if !context.coordinator.hasCentered,
-           let own = users.first(where: { $0.userId == ownUserId }) {
-            let coord = CLLocationCoordinate2D(latitude: own.lat, longitude: own.lng)
-            let region = MKCoordinateRegion(center: coord, latitudinalMeters: 5000, longitudinalMeters: 5000)
+        if !context.coordinator.hasCentered, let own = ownLocation {
+            let region = MKCoordinateRegion(center: own, latitudinalMeters: 5000, longitudinalMeters: 5000)
             mapView.setRegion(region, animated: true)
             context.coordinator.hasCentered = true
         }
@@ -121,11 +131,19 @@ final class UserAnnotation: NSObject, MKAnnotation {
     let subtitle: String?
     let isOwn: Bool
 
-    init(user: Shared.UserLocation, coordinate: CLLocationCoordinate2D, friendName: String, isOwn: Bool) {
+    init(user: Shared.UserLocation, coordinate: CLLocationCoordinate2D, friendName: String) {
         self.userId = user.userId
         self.coordinate = coordinate
-        self.title = isOwn ? "You" : friendName
-        self.subtitle = isOwn ? nil : user.userId.prefix(8).description
-        self.isOwn = isOwn
+        self.title = friendName
+        self.subtitle = user.userId.prefix(8).description
+        self.isOwn = false
+    }
+
+    init(ownCoordinate: CLLocationCoordinate2D) {
+        self.userId = "__own__"
+        self.coordinate = ownCoordinate
+        self.title = "You"
+        self.subtitle = nil
+        self.isOwn = true
     }
 }
