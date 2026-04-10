@@ -229,7 +229,7 @@ class E2eeBidirectionalEndToEndTest {
         runBlocking {
             initializeLibsodium()
             val bobStore = E2eeStore(MemoryE2eeStorage())
-            val qr = QrPayload(byteArrayOf(1, 2, 3), "Alice", "fp")
+            val qr = QrPayload(byteArrayOf(1, 2, 3), "Alice", "fp", ByteArray(32))
             val (initPayload, _) = bobStore.processScannedQr(qr, "Bob")
 
             // Use a non-existent host to trigger a failure
