@@ -225,10 +225,15 @@ class KeyExchangeTest {
         // Simulate an epoch rotation (alice generates new EK, bob processes it)
         val bobOpk = generateX25519KeyPair()
         val aliceNewEk = generateX25519KeyPair()
-        val aliceRotated = Session.aliceEpochRotation(
-            aliceSession, aliceNewEk.priv, aliceNewEk.pub, bobOpk.pub,
-            aliceSession.aliceFp, aliceSession.bobFp,
-        )
+        val aliceRotated =
+            Session.aliceEpochRotation(
+                aliceSession,
+                aliceNewEk.priv,
+                aliceNewEk.pub,
+                bobOpk.pub,
+                aliceSession.aliceFp,
+                aliceSession.bobFp,
+            )
 
         // aliceEkPub and bobEkPub must be unchanged after rotation
         assertContentEquals(aliceSession.aliceEkPub, aliceRotated.aliceEkPub)
@@ -249,6 +254,43 @@ class KeyExchangeTest {
         assertContentEquals(msg.ekPub, aliceSession.bobEkPub)
         assertContentEquals(qr.ekPub, bobSession.aliceEkPub)
         assertContentEquals(msg.ekPub, bobSession.bobEkPub)
+    }
+
+    @Test
+    fun `aliceProcessInit detects key substitution via different session keys`() {
+        // Alice creates a QR payload (EK_A).
+        val (qr, aliceEkPriv) = KeyExchange.aliceCreateQrPayload("Alice")
+
+        // Bob (legitimately) processes the QR and creates a KeyExchangeInitMessage (EK_B) and a session.
+        val (_, bobSession) = KeyExchange.bobProcessQr(qr, "Bob")
+
+        // Attacker generates their own key pair (EK_M).
+        val ekM = generateX25519KeyPair()
+
+        // Attacker computes SK_AM = x25519(ekM.priv, qr.ekPub).
+        val skAM = x25519(ekM.priv, qr.ekPub)
+
+        // Attacker constructs a tampered KeyExchangeInitMessage with EK_M.pub and a keyConfirmation
+        // correctly computed over (SK_AM, EK_A.pub, EK_M.pub) using KeyExchange.buildKeyConfirmation.
+        // Attacker knows the discovery token.
+        val tamperedMsg =
+            KeyExchangeInitMessage(
+                token = deriveDiscoveryToken(qr.ekPub),
+                ekPub = ekM.pub.copyOf(),
+                keyConfirmation = KeyExchange.buildKeyConfirmation(skAM, qr.ekPub, ekM.pub),
+                suggestedName = "Attacker",
+            )
+
+        // Alice processes the tampered message using KeyExchange.aliceProcessInit and derives a session.
+        val aliceSession = KeyExchange.aliceProcessInit(tamperedMsg, aliceEkPriv, qr.ekPub)
+
+        // Verify that Alice's session keys (rootKey, sendChainKey, recvChainKey) are different from Bob's session keys.
+        assertFalse(aliceSession.rootKey.contentEquals(bobSession.rootKey))
+        assertFalse(aliceSession.sendChainKey.contentEquals(bobSession.recvChainKey))
+        assertFalse(aliceSession.recvChainKey.contentEquals(bobSession.sendChainKey))
+
+        // Verify that Alice's bobEkPub in her session state matches EK_M.pub, not EK_B.pub.
+        assertContentEquals(ekM.pub, aliceSession.bobEkPub)
     }
 
     // ---------------------------------------------------------------------------
