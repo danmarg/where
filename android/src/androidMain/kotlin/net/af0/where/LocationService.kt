@@ -177,42 +177,31 @@ class LocationService : Service() {
         while (true) {
             val rapid = isRapidPolling()
             val inForeground = locationSource.isAppInForeground.value
-            // Only poll for friends' locations when the user can see the result.
-            if (shouldPollFriends(rapid, inForeground)) {
-                doPoll()
-            }
+            val isSharing = locationSource.isSharingLocation.value
+            // Always poll — even when sharing is off we need to process incoming
+            // EpochRotations and post Ratchet Acks so Alice's location doesn't get
+            // stuck.  The interval is 30 min in that case (maintenance-only).
+            doPoll()
             // Heartbeat: ensure we send at least once every 5 minutes when stationary.
             // Runs regardless of foreground state so background location stays alive.
             locationSource.lastLocation.value?.let { (lat, lng) ->
                 sendLocationIfNeeded(lat, lng, isHeartbeat = true)
             }
-            locationSource.awaitPollWake(pollInterval(rapid, inForeground))
+            locationSource.awaitPollWake(pollInterval(rapid, inForeground, isSharing))
         }
-    }
-
-    @VisibleForTesting
-    internal fun shouldPollFriends(
-        rapid: Boolean,
-        inForeground: Boolean,
-    ): Boolean {
-        // We always poll if we're in the foreground or in rapid-poll mode (pairing).
-        if (inForeground || rapid) return true
-
-        // If we're in the background, we only poll if our own location was recently
-        // updated. This allows us to sync friends whenever the OS wakes us for a fix.
-        val now = clock()
-        return now - lastSentTime < 30_000L
     }
 
     @VisibleForTesting
     internal fun pollInterval(
         rapid: Boolean,
         inForeground: Boolean,
+        isSharingLocation: Boolean = true,
     ): Long =
         when {
             rapid -> 2_000L
             inForeground -> 10_000L
-            else -> 5 * 60 * 1000L
+            isSharingLocation -> 5 * 60 * 1000L      // heartbeat + friend poll
+            else -> 30 * 60 * 1000L                  // maintenance-only (Ratchet Acks)
         }
 
     @VisibleForTesting
