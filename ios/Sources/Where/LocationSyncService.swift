@@ -19,11 +19,14 @@ private func debugLog(_ msg: () -> String) {
 func qrPayloadToUrl(_ qr: Shared.QrPayload) -> String? {
     var ekPubData = toSwiftData(qr.ekPub)
     defer { ekPubData.zeroize() }
+    var secretData = toSwiftData(qr.discoverySecret)
+    defer { secretData.zeroize() }
 
     let dict: [String: Any] = [
         "ek_pub": ekPubData.base64EncodedString(),
         "suggested_name": qr.suggestedName,
         "fingerprint": qr.fingerprint,
+        "discovery_secret": secretData.base64EncodedString(),
     ]
     do {
         let jsonData = try JSONSerialization.data(withJSONObject: dict)
@@ -48,12 +51,15 @@ private func urlToQrPayload(_ url: String) -> Shared.QrPayload? {
           ekPub.count == 32,
           let name = dict["suggested_name"] as? String,
           let fp = dict["fingerprint"] as? String,
-          fp.count == 16
+          fp.count == 16,
+          let discoverySecret = (dict["discovery_secret"] as? String).flatMap({ Data(base64Encoded: $0) }),
+          discoverySecret.count == 32
     else { return nil }
     return Shared.QrPayload(
         ekPub: kotlinByteArray(from: ekPub),
         suggestedName: name,
-        fingerprint: fp
+        fingerprint: fp,
+        discoverySecret: kotlinByteArray(from: discoverySecret)
     )
 }
 
@@ -458,7 +464,8 @@ final class LocationSyncService: ObservableObject {
         let qrWithName = Shared.QrPayload(
             ekPub: qr.ekPub,
             suggestedName: friendName,
-            fingerprint: qr.fingerprint
+            fingerprint: qr.fingerprint,
+            discoverySecret: qr.discoverySecret
         )
         debugLog { "Scanning QR: discovery=\(toHex(qrWithName.discoveryToken())), friendName=\(friendName)" }
         isExchanging = true

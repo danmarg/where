@@ -27,6 +27,7 @@ object KeyExchange {
                 ekPub = ek.pub.copyOf(),
                 suggestedName = suggestedName,
                 fingerprint = fp,
+                discoverySecret = randomBytes(32),
             )
         return payload to ek.priv
     }

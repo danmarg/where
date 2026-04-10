@@ -301,7 +301,7 @@ class LocationViewModelTest {
             viewModel = LocationViewModel(app, E2eeStore(FakeE2eeStorage()), startPolling = false)
             val vm = viewModel!!
 
-            val qr = QrPayload(byteArrayOf(1, 2, 3), "Alice", "fp")
+            val qr = QrPayload(byteArrayOf(1, 2, 3), "Alice", "fp", ByteArray(32))
 
             // Bob scans
             (vm.pendingQrForNaming as MutableStateFlow).value = qr
@@ -431,6 +431,7 @@ class LocationViewModelTest {
                     ekPub = byteArrayOf(1, 2, 3),
                     suggestedName = "Alice",
                     fingerprint = "alice_fp",
+                    discoverySecret = ByteArray(32),
                 )
 
             // 3. Call confirmQrScan (synchronous sets isExchanging = true before async work)
@@ -751,6 +752,7 @@ class LocationViewModelTest {
                     ekPub = byteArrayOf(1, 2, 3),
                     suggestedName = "Alice",
                     fingerprint = "fp",
+                    discoverySecret = ByteArray(32),
                 )
 
             // Mock store to return a friend
