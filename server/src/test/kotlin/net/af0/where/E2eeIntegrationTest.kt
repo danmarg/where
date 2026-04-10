@@ -315,6 +315,8 @@ class E2eeIntegrationTest {
                     1,
                     bobState.aliceFp,
                     bobState.bobFp,
+                    0L,
+                    0L,
                 )
             assertEquals(1, bobState.epoch)
 
@@ -364,6 +366,8 @@ class E2eeIntegrationTest {
                 1,
                 bobState0.aliceFp,
                 bobState0.bobFp,
+                0L,
+                0L,
             )
 
         // Correct: decrypt epoch-0 message with the epoch-0 (pre-rotation) state
