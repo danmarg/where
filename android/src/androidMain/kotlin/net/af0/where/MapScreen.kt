@@ -28,7 +28,7 @@ import net.af0.where.model.UserLocation
 @OptIn(ExperimentalPermissionsApi::class, ExperimentalMaterial3Api::class)
 @Composable
 fun MapScreen(
-    userId: String,
+    ownLocation: UserLocation?,
     users: List<UserLocation>,
     friends: List<FriendEntry>,
     displayName: String,
@@ -120,7 +120,6 @@ fun MapScreen(
     val defaultPosition = remember { CameraPosition.fromLatLngZoom(LatLng(37.33, -122.03), 10f) }
     val cameraPositionState = rememberCameraPositionState { position = defaultPosition }
 
-    val ownLocation = users.find { it.userId == userId }
     LaunchedEffect(ownLocation) {
         if (ownLocation != null && cameraPositionState.position == defaultPosition) {
             cameraPositionState.position =
@@ -132,11 +131,13 @@ fun MapScreen(
 
     LaunchedEffect(zoomToUserId) {
         val id = zoomToUserId ?: return@LaunchedEffect
-        val user = users.find { it.userId == id }
-        if (user != null) {
-            cameraPositionState.animate(
-                CameraUpdateFactory.newLatLngZoom(LatLng(user.lat, user.lng), 15f),
-            )
+        val target = if (id == "__own__") {
+            ownLocation?.let { LatLng(it.lat, it.lng) }
+        } else {
+            users.find { it.userId == id }?.let { LatLng(it.lat, it.lng) }
+        }
+        if (target != null) {
+            cameraPositionState.animate(CameraUpdateFactory.newLatLngZoom(target, 15f))
         }
         zoomToUserId = null
     }
@@ -146,14 +147,39 @@ fun MapScreen(
             modifier = Modifier.fillMaxSize(),
             cameraPositionState = cameraPositionState,
         ) {
-            users.forEach { user ->
-                val isMe = user.userId == userId
-                val name =
-                    if (isMe) {
-                        if (displayName.isNotEmpty()) displayName else "You"
-                    } else {
-                        friends.find { it.id == user.userId }?.name ?: user.userId.take(8)
+            ownLocation?.let { own ->
+                key("__own__") {
+                    MarkerComposable(
+                        state = MarkerState(position = LatLng(own.lat, own.lng)),
+                        anchor = Offset(0.5f, 1f),
+                    ) {
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            Surface(
+                                shape = MaterialTheme.shapes.small,
+                                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.9f),
+                                contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                                shadowElevation = 2.dp,
+                            ) {
+                                Text(
+                                    text = if (displayName.isNotEmpty()) displayName else "You",
+                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                                    style = MaterialTheme.typography.labelSmall,
+                                    maxLines = 1,
+                                    overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                                )
+                            }
+                            Icon(
+                                imageVector = Icons.Default.Place,
+                                contentDescription = null,
+                                tint = Color.Blue,
+                                modifier = Modifier.size(36.dp),
+                            )
+                        }
                     }
+                }
+            }
+            users.forEach { user ->
+                val name = friends.find { it.id == user.userId }?.name ?: user.userId.take(8)
                 key(user.userId) {
                     MarkerComposable(
                         state = MarkerState(position = LatLng(user.lat, user.lng)),
@@ -177,7 +203,7 @@ fun MapScreen(
                             Icon(
                                 imageVector = Icons.Default.Place,
                                 contentDescription = null,
-                                tint = if (isMe) Color.Blue else Color.Red,
+                                tint = Color.Red,
                                 modifier = Modifier.size(36.dp),
                             )
                         }
@@ -219,7 +245,7 @@ fun MapScreen(
                 modifier =
                     Modifier
                         .weight(1f)
-                        .clickable { zoomToUserId = userId },
+                        .clickable { zoomToUserId = "__own__" },
                 shape = MaterialTheme.shapes.medium,
                 color = Color.Black.copy(alpha = 0.7f),
             ) {
@@ -267,7 +293,6 @@ fun MapScreen(
 
     if (showFriends) {
         FriendsSheet(
-            userId = userId,
             friends = friends,
             displayName = displayName,
             onDisplayNameChange = onDisplayNameChange,

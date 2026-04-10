@@ -20,7 +20,7 @@ final class FriendsStore: ObservableObject {
 
     func add(id: String) {
         let trimmed = id.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty, trimmed != UserIdentity.userId else { return }
+        guard !trimmed.isEmpty else { return }
         friendIds.insert(trimmed)
         persist()
     }

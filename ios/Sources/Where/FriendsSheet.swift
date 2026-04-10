@@ -11,7 +11,6 @@ func timeAgoString(_ date: Date?) -> String {
 }
 
 struct FriendsSheet: View {
-    let myId: String
     @Binding var displayName: String
     let friends: [Shared.FriendEntry]
     let pausedFriendIds: Set<String>
