@@ -131,11 +131,12 @@ fun MapScreen(
 
     LaunchedEffect(zoomToUserId) {
         val id = zoomToUserId ?: return@LaunchedEffect
-        val target = if (id == "__own__") {
-            ownLocation?.let { LatLng(it.lat, it.lng) }
-        } else {
-            users.find { it.userId == id }?.let { LatLng(it.lat, it.lng) }
-        }
+        val target =
+            if (id == "__own__") {
+                ownLocation?.let { LatLng(it.lat, it.lng) }
+            } else {
+                users.find { it.userId == id }?.let { LatLng(it.lat, it.lng) }
+            }
         if (target != null) {
             cameraPositionState.animate(CameraUpdateFactory.newLatLngZoom(target, 15f))
         }

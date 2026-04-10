@@ -9,13 +9,14 @@ import androidx.security.crypto.MasterKey
 import net.af0.where.e2ee.E2eeStorage
 
 class SharedPrefsE2eeStorage(context: Context) : E2eeStorage {
-    private val prefs = EncryptedSharedPreferences.create(
-        context,
-        "e2ee_prefs",
-        buildMasterKey(context),
-        EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
-        EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM,
-    )
+    private val prefs =
+        EncryptedSharedPreferences.create(
+            context,
+            "e2ee_prefs",
+            buildMasterKey(context),
+            EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
+            EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM,
+        )
 
     override fun getString(key: String): String? = prefs.getString(key, null)
 

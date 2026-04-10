@@ -199,8 +199,8 @@ class LocationService : Service() {
         when {
             rapid -> 2_000L
             inForeground -> 10_000L
-            isSharingLocation -> 5 * 60 * 1000L      // heartbeat + friend poll
-            else -> 30 * 60 * 1000L                  // maintenance-only (Ratchet Acks)
+            isSharingLocation -> 5 * 60 * 1000L // heartbeat + friend poll
+            else -> 30 * 60 * 1000L // maintenance-only (Ratchet Acks)
         }
 
     @VisibleForTesting

@@ -112,7 +112,7 @@ class MailboxState {
         postTimes.forEach { (token, _) ->
             postTimes.computeIfPresent(token) { _, q ->
                 q.removeIf { it < now - rateLimitWindowMs }
-                if (q.isEmpty()) null else q   // null return removes the entry
+                if (q.isEmpty()) null else q // null return removes the entry
             }
         }
         mailboxes.forEach { (token, _) ->

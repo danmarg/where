@@ -9,7 +9,10 @@ private class InMemoryE2eeStorage : E2eeStorage {
 
     override fun getString(key: String): String? = data[key]
 
-    override fun putString(key: String, value: String) {
+    override fun putString(
+        key: String,
+        value: String,
+    ) {
         data[key] = value
     }
 }
