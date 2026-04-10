@@ -237,6 +237,8 @@ class SessionTest {
                 newEpoch = 1,
                 senderFp = bobSession.aliceFp,
                 recipientFp = bobSession.bobFp,
+                currentTime = 0L,
+                timeout = 0L,
             )
 
         assertEquals(1, aliceRotated.epoch)
@@ -273,6 +275,8 @@ class SessionTest {
                 1,
                 bobSession.aliceFp,
                 bobSession.bobFp,
+                0L,
+                0L,
             )
 
         val loc = LocationPlaintext(lat = 48.8566, lng = 2.3522, acc = 5.0, ts = 1711155000L)
@@ -455,6 +459,8 @@ class SessionTest {
             newEpoch = 1,
             senderFp = bobSession.aliceFp,
             recipientFp = bobSession.bobFp,
+            currentTime = 0L,
+            timeout = 0L,
         )
         assertTrue(bobOpk.priv.all { it == 0.toByte() }, "bobOpkPriv should be zeroed")
 

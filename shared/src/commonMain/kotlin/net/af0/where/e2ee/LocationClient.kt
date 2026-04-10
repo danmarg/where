@@ -61,34 +61,44 @@ open class LocationClient(
      */
     private suspend fun pollFriend(friendId: String): List<UserLocation> {
         val updates = mutableListOf<UserLocation>()
-        var currentFriend = store.getFriend(friendId) ?: return emptyList()
-        var tokenToPoll = currentFriend.session.recvToken.toHex()
+        val initialFriend = store.getFriend(friendId) ?: return emptyList()
 
-        while (true) {
-            val messages = E2eeMailboxClient.poll(baseUrl, tokenToPoll)
-            println("[LocationClient] pollFriend($friendId): got ${messages.size} messages, token=$tokenToPoll")
-            if (messages.isEmpty()) break
-
-            val result = store.processBatch(friendId, messages)
-            if (result == null) {
-                println("[LocationClient] pollFriend($friendId): processBatch returned null")
-                break
+        // §8.3: Poll both old and new tokens if we are in the rotation window.
+        val tokensToPoll = mutableListOf(initialFriend.session.recvToken.toHex())
+        initialFriend.session.prevRecvToken?.let { prev ->
+            if (currentTimeSeconds() < initialFriend.session.prevRecvTokenDeadline) {
+                tokensToPoll.add(prev.toHex())
             }
-            println("[LocationClient] pollFriend($friendId): processBatch returned ${result.decryptedLocations.size} locations")
-            updates.addAll(
-                result.decryptedLocations.map { loc ->
-                    UserLocation(userId = friendId, lat = loc.lat, lng = loc.lng, timestamp = loc.ts)
-                },
-            )
+        }
 
-            // Post any required protocol responses (RatchetAcks, OPK bundles)
-            for (out in result.outgoing) {
-                E2eeMailboxClient.post(baseUrl, out.token, out.payload)
+        for (token in tokensToPoll) {
+            var currentToken = token
+            while (true) {
+                val messages = E2eeMailboxClient.poll(baseUrl, currentToken)
+                println("[LocationClient] pollFriend($friendId): got ${messages.size} messages, token=$currentToken")
+                if (messages.isEmpty()) break
+
+                val result = store.processBatch(friendId, messages, tokenUsed = currentToken)
+                if (result == null) {
+                    println("[LocationClient] pollFriend($friendId): processBatch returned null")
+                    break
+                }
+                println("[LocationClient] pollFriend($friendId): processBatch returned ${result.decryptedLocations.size} locations")
+                updates.addAll(
+                    result.decryptedLocations.map { loc ->
+                        UserLocation(userId = friendId, lat = loc.lat, lng = loc.lng, timestamp = loc.ts)
+                    },
+                )
+
+                // Post any required protocol responses (RatchetAcks, OPK bundles)
+                for (out in result.outgoing) {
+                    E2eeMailboxClient.post(baseUrl, out.token, out.payload)
+                }
+
+                // If an epoch rotation happened, we MUST poll the new token immediately
+                // to ensure messages Alice posted to the new epoch aren't delayed.
+                currentToken = result.newToken ?: break
             }
-
-            // If an epoch rotation happened, we MUST poll the new token immediately
-            // to ensure messages Alice posted to the new epoch aren't delayed.
-            tokenToPoll = result.newToken ?: break
         }
         return updates
     }
