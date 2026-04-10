@@ -40,8 +40,10 @@ private func urlToQrPayload(_ url: String) -> Shared.QrPayload? {
     guard let data = Data(base64Encoded: b64),
           let dict = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
           let ekPub = (dict["ek_pub"] as? String).flatMap({ Data(base64Encoded: $0) }),
+          ekPub.count == 32,
           let name = dict["suggested_name"] as? String,
-          let fp = dict["fingerprint"] as? String
+          let fp = dict["fingerprint"] as? String,
+          fp.count == 16
     else { return nil }
     return Shared.QrPayload(
         ekPub: kotlinByteArray(from: ekPub),
@@ -673,9 +675,12 @@ final class LocationSyncService: ObservableObject {
             guard version == 1,
                   (msg["type"] as? String) == "KeyExchangeInit",
                   let token = msg["token"] as? String,
+                  token.count == 32,
                   let ekPubB64 = msg["ek_pub"] as? String, let ekPub = Data(base64Encoded: ekPubB64),
+                  ekPub.count == 32,
                   let keyConfB64 = msg["key_confirmation"] as? String,
-                  let keyConfData = Data(base64Encoded: keyConfB64)
+                  let keyConfData = Data(base64Encoded: keyConfB64),
+                  keyConfData.count == 32
             else { continue }
             let suggestedName = msg["suggested_name"] as? String ?? ""
             let initPayload = Shared.KeyExchangeInitPayload(
