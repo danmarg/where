@@ -195,6 +195,7 @@ object Session {
 
         // Security (§5.5, §11): zero out ephemeral keys after use
         dhOut.fill(0)
+        aliceNewEkPriv.fill(0)
 
         return newState
     }
@@ -237,6 +238,7 @@ object Session {
 
         // Security (§5.5, §11): zero out ephemeral keys after use
         dhOut.fill(0)
+        bobOpkPriv.fill(0)
 
         return newState
     }
@@ -290,6 +292,7 @@ object Session {
                 myEkPriv = ByteArray(32),
             )
         dhOut.fill(0)
+        state.myEkPriv.fill(0)
         return newState
     }
 
