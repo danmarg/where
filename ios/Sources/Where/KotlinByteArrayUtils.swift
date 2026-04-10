@@ -18,9 +18,26 @@ func toHex(_ kba: Shared.KotlinByteArray) -> String {
     (0..<Int(kba.size)).map { String(format: "%02x", UInt8(bitPattern: kba.get(index: Int32($0)))) }.joined()
 }
 
+extension Data {
+    /// Securely zeros out the buffer using memset_s to prevent compiler elision.
+    /// This is critical for sensitive data like cryptographic keys.
+    mutating func zeroize() {
+        withUnsafeMutableBytes { ptr in
+            guard let base = ptr.baseAddress else { return }
+            memset_s(base, ptr.count, 0, ptr.count)
+        }
+    }
+}
+
 func identityFingerprint(ikPub: Shared.KotlinByteArray, sigIkPub: Shared.KotlinByteArray) -> Shared.KotlinByteArray {
     var hasher = SHA256()
-    hasher.update(data: toSwiftData(ikPub))
-    hasher.update(data: toSwiftData(sigIkPub))
+    var ikPubData = toSwiftData(ikPub)
+    var sigIkPubData = toSwiftData(sigIkPub)
+    defer {
+        ikPubData.zeroize()
+        sigIkPubData.zeroize()
+    }
+    hasher.update(data: ikPubData)
+    hasher.update(data: sigIkPubData)
     return kotlinByteArray(from: Data(hasher.finalize()))
 }
