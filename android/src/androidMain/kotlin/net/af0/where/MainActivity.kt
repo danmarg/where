@@ -220,6 +220,7 @@ class MainActivity : ComponentActivity() {
     override fun onResume() {
         super.onResume()
         LocationRepository.setAppForeground(true)
+        LocationRepository.wakePoll()
     }
 
     override fun onPause() {

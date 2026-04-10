@@ -191,30 +191,8 @@ class LocationServiceTest {
             }
         }
 
-    @Test
-    fun testShouldPollFriends() {
-        val controller = Robolectric.buildService(LocationService::class.java)
-        val service = controller.get()
-        controller.create()
-
-        try {
-            // Rapid -> Yes
-            assertTrue(service.shouldPollFriends(rapid = true, inForeground = false))
-
-            // Foreground -> Yes
-            assertTrue(service.shouldPollFriends(rapid = false, inForeground = true))
-
-            // Background + Recently updated -> Yes
-            service.lastSentTime = System.currentTimeMillis() - 10_000
-            assertTrue(service.shouldPollFriends(rapid = false, inForeground = false))
-
-            // Background + Not recently updated -> No
-            service.lastSentTime = System.currentTimeMillis() - 60_000
-            assertFalse(service.shouldPollFriends(rapid = false, inForeground = false))
-        } finally {
-            controller.destroy()
-        }
-    }
+    // shouldPollFriends removed — pollLoop now always calls doPoll() regardless of
+    // foreground state, so friend locations stay fresh when devices are stationary.
 
     // ---- pollInterval ----
 
@@ -234,7 +212,13 @@ class LocationServiceTest {
     @Test
     fun testPollInterval_Background_Is5min() {
         val service = Robolectric.buildService(LocationService::class.java).get()
-        assertEquals(5 * 60 * 1000L, service.pollInterval(rapid = false, inForeground = false))
+        assertEquals(5 * 60 * 1000L, service.pollInterval(rapid = false, inForeground = false, isSharingLocation = true))
+    }
+
+    @Test
+    fun testPollInterval_BackgroundNotSharing_Is30min() {
+        val service = Robolectric.buildService(LocationService::class.java).get()
+        assertEquals(30 * 60 * 1000L, service.pollInterval(rapid = false, inForeground = false, isSharingLocation = false))
     }
 
     @Test
