@@ -85,8 +85,11 @@ class LocationViewModel(
 
     val ownLocation: StateFlow<UserLocation?> =
         combine(locationSource.lastLocation, isSharingLocation) { myLoc, sharing ->
-            if (myLoc != null && sharing) UserLocation("", myLoc.first, myLoc.second, clock() / 1000)
-            else null
+            if (myLoc != null && sharing) {
+                UserLocation("", myLoc.first, myLoc.second, clock() / 1000)
+            } else {
+                null
+            }
         }.stateIn(viewModelScope, SharingStarted.Eagerly, null)
 
     val visibleUsers: StateFlow<List<UserLocation>> =

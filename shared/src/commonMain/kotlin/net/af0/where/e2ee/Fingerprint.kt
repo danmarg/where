@@ -35,14 +35,16 @@ fun safetyNumber(
  */
 fun formatSafetyNumber(sn: ByteArray): String {
     require(sn.size == 32) { "safety number must be 32 bytes" }
-    val groups = (0 until 8).map { i ->
-        val offset = i * 4
-        val v = ((sn[offset].toLong() and 0xFF) shl 24) or
-            ((sn[offset + 1].toLong() and 0xFF) shl 16) or
-            ((sn[offset + 2].toLong() and 0xFF) shl 8) or
-            (sn[offset + 3].toLong() and 0xFF)
-        (v % 100000L).toString().padStart(5, '0')
-    }
+    val groups =
+        (0 until 8).map { i ->
+            val offset = i * 4
+            val v =
+                ((sn[offset].toLong() and 0xFF) shl 24) or
+                    ((sn[offset + 1].toLong() and 0xFF) shl 16) or
+                    ((sn[offset + 2].toLong() and 0xFF) shl 8) or
+                    (sn[offset + 3].toLong() and 0xFF)
+            (v % 100000L).toString().padStart(5, '0')
+        }
     return groups.take(4).joinToString(" ") + "\n" + groups.drop(4).joinToString(" ")
 }
 

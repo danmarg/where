@@ -175,7 +175,7 @@ class MailboxTest {
         val state = MailboxState()
         val token = "evicttoken0000002"
         state.post(token, JsonPrimitive("msg"))
-        state.drain(token)  // empties the mailbox queue
+        state.drain(token) // empties the mailbox queue
 
         // Evict — the mailbox queue is empty so the entry should be removed.
         state.evictForTest(rateLimitWindowMs = 0)
