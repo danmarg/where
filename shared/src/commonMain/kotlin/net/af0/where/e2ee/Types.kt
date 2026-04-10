@@ -48,7 +48,7 @@ data class SessionState(
     val sendSeq: Long,
     val recvSeq: Long,
     val epoch: Int,
-    @Serializable(with = ByteArrayBase64Serializer::class) val myEkPriv: ByteArray,
+    @kotlinx.serialization.Transient val myEkPriv: ByteArray = ByteArray(32),
     @Serializable(with = ByteArrayBase64Serializer::class) val myEkPub: ByteArray,
     @Serializable(with = ByteArrayBase64Serializer::class) val theirEkPub: ByteArray,
     @Serializable(with = ByteArrayBase64Serializer::class) val aliceFp: ByteArray,
