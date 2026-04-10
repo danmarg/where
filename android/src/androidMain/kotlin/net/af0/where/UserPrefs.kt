@@ -1,14 +1,18 @@
 package net.af0.where
 
 import android.content.Context
+import android.content.SharedPreferences
 
 object UserPrefs {
-    private const val PREFS_NAME = "where_prefs"
     private const val KEY_DISPLAY_NAME = "display_name"
     private const val KEY_IS_SHARING = "is_sharing"
     private const val KEY_PAUSED_FRIENDS = "paused_friends"
 
-    private fun prefs(context: Context) = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+    private fun prefs(context: Context): SharedPreferences {
+        val app = context.applicationContext as? WhereApplication
+            ?: return context.getSharedPreferences("where_prefs", Context.MODE_PRIVATE)
+        return app.encryptedPrefs
+    }
 
     fun getDisplayName(context: Context): String = prefs(context).getString(KEY_DISPLAY_NAME, "") ?: ""
 
