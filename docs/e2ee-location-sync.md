@@ -849,7 +849,7 @@ Recipients MUST reject any `EpochRotation` or `RatchetAck` whose decrypted `ts` 
 |---|---|
 | Routing Model | **Anonymous Mailboxes.** Routes opaque `EncryptedLocation` payloads by pairwise routing tokens (T). No userid-based addressing. |
 | Client Interaction | **Registration-less.** Clients poll `GET /inbox/{token}` and post `POST /inbox/{token}`; the server has no knowledge of user identity. |
-| Persistent store | **Opaque Payload Buffer.** Redis-backed durable buffer of encrypted payloads indexed by routing token T, retained for 7 days. |
+| Persistent store | **Opaque Payload Buffer.** Durable buffer of encrypted payloads indexed by routing token T, retained for 7 days. |
 | Metadata Exposure | **Obfuscated.** Routing tokens are pairwise and random-looking; social graph is hidden from the server. |
 
 ### 10.2 Routing Table
@@ -870,7 +870,7 @@ The server exposes only the mailbox API (`POST /inbox/{token}` and `GET /inbox/{
 
 - TLS termination (HTTPS).
 - Best-effort delivery model.
-- Horizontal scalability via Redis if needed.
+- Horizontal scalability.
 
 ### 10.4 Server Cannot Decrypt or Link
 
