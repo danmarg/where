@@ -376,4 +376,72 @@ class E2eeStoreTest {
             assertEquals(4, reloadedAlice.theirOpkPubs.size, "Alice's cached OPK pubkeys must persist")
             assertEquals(5, reloadedBob.nextOpkId, "Bob's next OPK ID must persist")
         }
+
+    @Test
+    fun testOkpDepletionFallback() =
+        runBlocking {
+            val qr = aliceStore.createInvite("Alice")
+            val (initPayload, bobEntry) = bobStore.processScannedQr(qr)
+            val aliceEntry = aliceStore.processKeyExchangeInit(initPayload, "Bob")!!
+
+            // Generate a small number of OPKs
+            val bundle = bobStore.generateOpkBundle(bobEntry.id, count = 2)!!
+            aliceStore.storeOpkBundle(aliceEntry.id, bundle)
+
+            // Verify Alice has 2 OPKs
+            var aliceFriend = aliceStore.getFriend(aliceEntry.id)!!
+            assertEquals(2, aliceFriend.theirOpkPubs.size, "Alice should have 2 OPKs")
+
+            // Rotate epoch using the first OPK
+            val rotPayload1 = aliceStore.initiateEpochRotation(aliceEntry.id)
+            assertNotNull(rotPayload1, "First epoch rotation should succeed")
+
+            val ack1 = bobStore.processEpochRotation(bobEntry.id, rotPayload1)
+            assertNotNull(ack1, "Bob should return a RatchetAck for first rotation")
+            aliceStore.processRatchetAck(aliceEntry.id, ack1!!)
+
+            aliceFriend = aliceStore.getFriend(aliceEntry.id)!!
+            assertEquals(1, aliceFriend.theirOpkPubs.size, "Alice should have 1 OPK remaining after first rotation")
+
+            // Rotate epoch using the second OPK
+            val rotPayload2 = aliceStore.initiateEpochRotation(aliceEntry.id)
+            assertNotNull(rotPayload2, "Second epoch rotation should succeed")
+
+            val ack2 = bobStore.processEpochRotation(bobEntry.id, rotPayload2)
+            assertNotNull(ack2, "Bob should return a RatchetAck for second rotation")
+            aliceStore.processRatchetAck(aliceEntry.id, ack2!!)
+
+            aliceFriend = aliceStore.getFriend(aliceEntry.id)!!
+            assertEquals(0, aliceFriend.theirOpkPubs.size, "Alice should have no OPKs remaining after second rotation")
+
+            // Try to rotate again when OPKs are depleted — should return null
+            val rotPayload3 = aliceStore.initiateEpochRotation(aliceEntry.id)
+            assertNull(rotPayload3, "Epoch rotation should return null when OPKs are depleted")
+
+            // Verify that encryption/decryption still works with the current session
+            val aliceCurrent = aliceStore.getFriend(aliceEntry.id)!!
+            val bobCurrent = bobStore.getFriend(bobEntry.id)!!
+            val loc = LocationPlaintext(lat = 47.6, lng = -122.3, acc = 10.0, ts = 1_000_000L)
+
+            val (newAliceSess, ct) =
+                Session.encryptLocation(
+                    aliceCurrent.session,
+                    loc,
+                    aliceCurrent.session.aliceFp,
+                    aliceCurrent.session.bobFp,
+                )
+            aliceStore.updateSession(aliceEntry.id, newAliceSess)
+
+            val bobUpdated = bobStore.getFriend(bobEntry.id)!!
+            val result =
+                Session.decryptLocation(
+                    bobUpdated.session,
+                    ct,
+                    newAliceSess.sendSeq,
+                    bobUpdated.session.aliceFp,
+                    bobUpdated.session.bobFp,
+                )
+            assertNotNull(result, "Decryption must succeed even after OPK depletion")
+            assertEquals(loc.lat, result!!.second.lat, 1e-9)
+        }
 }
