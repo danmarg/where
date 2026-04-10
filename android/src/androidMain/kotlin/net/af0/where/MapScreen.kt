@@ -116,12 +116,34 @@ fun MapScreen(
 
     var showFriends by remember { mutableStateOf(false) }
     var zoomToUserId by remember { mutableStateOf<String?>(null) }
+    val context = androidx.compose.ui.platform.LocalContext.current
 
-    val defaultPosition = remember { CameraPosition.fromLatLngZoom(LatLng(37.33, -122.03), 10f) }
-    val cameraPositionState = rememberCameraPositionState { position = defaultPosition }
+    val initialPosition =
+        remember {
+            val last = UserPrefs.getLastLocation(context)
+            if (last != null) {
+                CameraPosition.fromLatLngZoom(LatLng(last.first, last.second), last.third)
+            } else {
+                CameraPosition.fromLatLngZoom(LatLng(37.33, -122.03), 10f)
+            }
+        }
+
+    val cameraPositionState = rememberCameraPositionState { position = initialPosition }
+
+    DisposableEffect(Unit) {
+        onDispose {
+            val pos = cameraPositionState.position
+            UserPrefs.setLastLocation(
+                context,
+                pos.target.latitude,
+                pos.target.longitude,
+                pos.zoom,
+            )
+        }
+    }
 
     LaunchedEffect(ownLocation) {
-        if (ownLocation != null && cameraPositionState.position == defaultPosition) {
+        if (ownLocation != null && UserPrefs.getLastLocation(context) == null) {
             cameraPositionState.position =
                 CameraPosition.fromLatLngZoom(
                     LatLng(ownLocation.lat, ownLocation.lng), 14f,

@@ -7,6 +7,9 @@ object UserPrefs {
     private const val KEY_DISPLAY_NAME = "display_name"
     private const val KEY_IS_SHARING = "is_sharing"
     private const val KEY_PAUSED_FRIENDS = "paused_friends"
+    private const val KEY_LAST_LAT = "last_lat"
+    private const val KEY_LAST_LNG = "last_lng"
+    private const val KEY_LAST_ZOOM = "last_zoom"
 
     private fun prefs(context: Context): SharedPreferences {
         val app = context.applicationContext as? WhereApplication
@@ -40,5 +43,28 @@ object UserPrefs {
         paused: Set<String>,
     ) {
         prefs(context).edit().putString(KEY_PAUSED_FRIENDS, paused.joinToString(",")).apply()
+    }
+
+    fun getLastLocation(context: Context): Triple<Double, Double, Float>? {
+        val p = prefs(context)
+        if (!p.contains(KEY_LAST_LAT)) return null
+        return Triple(
+            p.getFloat(KEY_LAST_LAT, 0f).toDouble(),
+            p.getFloat(KEY_LAST_LNG, 0f).toDouble(),
+            p.getFloat(KEY_LAST_ZOOM, 0f),
+        )
+    }
+
+    fun setLastLocation(
+        context: Context,
+        lat: Double,
+        lng: Double,
+        zoom: Float,
+    ) {
+        prefs(context).edit()
+            .putFloat(KEY_LAST_LAT, lat.toFloat())
+            .putFloat(KEY_LAST_LNG, lng.toFloat())
+            .putFloat(KEY_LAST_ZOOM, zoom)
+            .apply()
     }
 }
