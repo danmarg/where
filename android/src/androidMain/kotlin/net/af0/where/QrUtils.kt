@@ -24,19 +24,19 @@ object QrUtils {
         val encoded =
             Base64.getUrlEncoder().withoutPadding()
                 .encodeToString(json.encodeToString(qr).encodeToByteArray())
-        return "where://invite?q=$encoded"
+        return "https://where.af0.net/invite#$encoded"
     }
 
     fun urlToPayload(url: String): QrPayload? {
         if (BuildConfig.DEBUG) Log.d(TAG, "urlToPayload: url=$url")
-        val q =
-            url.substringAfter("?q=", "").ifEmpty {
-                if (BuildConfig.DEBUG) Log.d(TAG, "urlToPayload: no q= parameter found")
+        val fragment =
+            url.substringAfter("#", "").ifEmpty {
+                if (BuildConfig.DEBUG) Log.d(TAG, "urlToPayload: no fragment found")
                 return null
             }
-        if (BuildConfig.DEBUG) Log.d(TAG, "urlToPayload: q=$q")
+        if (BuildConfig.DEBUG) Log.d(TAG, "urlToPayload: fragment=$fragment")
         return try {
-            val decoded = Base64.getUrlDecoder().decode(q).decodeToString()
+            val decoded = Base64.getUrlDecoder().decode(fragment).decodeToString()
             if (BuildConfig.DEBUG) Log.d(TAG, "urlToPayload: decoded=$decoded")
             json.decodeFromString<QrPayload>(decoded)
         } catch (e: Exception) {
