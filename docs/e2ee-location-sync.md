@@ -161,12 +161,13 @@ Both private keys are deleted immediately after `SK` is computed and verified.
 
 **Setup:**
 
-Alice opens "Add Friend" and generates a fresh ephemeral key pair `EK_A`. She displays a QR code encoding:
+Alice opens "Add Friend" and generates a fresh ephemeral key pair `EK_A` and a fresh random 32-byte `discovery_secret`. She displays a QR code encoding:
 ```
 {
-  "ek_pub":        base64(Alice.EK_A.pub),  // X25519 ephemeral public key (32 bytes)
-  "suggested_name": "Alice",
-  "fingerprint":   hex(SHA-256(EK_A.pub)[0:10])
+  "ek_pub":            base64(Alice.EK_A.pub),  // X25519 ephemeral public key (32 bytes)
+  "suggested_name":    "Alice",
+  "fingerprint":       hex(SHA-256(EK_A.pub)[0:10]),
+  "discovery_secret":  base64(random_32_bytes)   // fresh per QR; HKDF IKM for discovery token
 }
 ```
 
@@ -174,16 +175,18 @@ No long-term keys, no signatures. The QR is intentionally minimal.
 
 **Discovery Token (Pre-Session Rendezvous):**
 
-After Alice generates her QR, she derives the discovery token from `EK_A.pub`:
+After Alice generates her QR, she derives the discovery token from `discovery_secret`:
 
 ```
-discovery_token_A = HKDF-SHA-256(IKM  = Alice.EK_A.pub,
-                                  salt = 0x00...00,   // 32 zero bytes
+discovery_token_A = HKDF-SHA-256(IKM  = Alice.discovery_secret,   // 32-byte random secret
+                                  salt = 0x00...00,                // 32 zero bytes
                                   info = "Where-v1-Discovery")[0:16]
 ```
 
+Using a random secret (rather than `EK_A.pub`) as HKDF IKM ensures that only someone who received the QR out-of-band can compute `discovery_token_A`. A network observer who later sees `EK_A.pub` in Bob's `KeyExchangeInit` message cannot retroactively map it to the discovery-phase mailbox.
+
 - Alice begins polling `GET /inbox/{hex(discovery_token_A)}` immediately.
-- Bob derives the same `discovery_token_A` from the scanned `ek_pub` and POSTs his `KeyExchangeInit` there.
+- Bob derives the same `discovery_token_A` from the scanned `discovery_secret` and POSTs his `KeyExchangeInit` there.
 - Once Alice retrieves and processes the `KeyExchangeInit`, she switches to polling `recv_token` for all subsequent messages.
 - The discovery token is single-use and ephemeral: implementations MUST discard it after `aliceProcessInit` completes.
 
@@ -260,7 +263,7 @@ The key agreement proceeds identically to Option A, using the same discovery tok
 
 ### 4.4 What the Server Learns from Key Exchange
 
-- **Discovery phase:** A 16-byte token was used briefly for rendezvous. This token is derived from `EK_A.pub` (ephemeral, per-invite), so the server cannot link it to any stable user identity. The server observes that some IP polled it and another IP posted to it, but learns nothing about who those IPs represent.
+- **Discovery phase:** A 16-byte token was used briefly for rendezvous. This token is derived from a random 32-byte `discovery_secret` embedded in the QR (not from `EK_A.pub`), so neither the server nor any observer who later sees `EK_A.pub` in a `KeyExchangeInit` message can compute or correlate the discovery-phase mailbox. The server observes that some IP polled it and another IP posted to it, but learns nothing about who those IPs represent.
 - **`KeyExchangeInit` phase:** The server sees Bob's `EK_B.pub` (ephemeral, 32 bytes) and the HMAC confirmation tag. Both are ephemeral and single-use. No stable long-term key material is exposed to the server at any point.
 - **Nothing** about the resulting shared secret `SK`, the session fingerprints, or the identities of the participants.
 
@@ -383,7 +386,7 @@ This provides true asynchronous PCS: Alice can "heal" the session at any time us
 
 **OPK Depletion:** If Alice has no OPKs for Bob, she SHOULD continue broadcasting on the symmetric ratchet and SHOULD NOT rotate the DH epoch until a new bundle is received.
 
-**Retransmission:** Alice retransmits her `EpochRotation` every `T` minutes until she receives an `EncryptedLocation` acknowledgment or a `RatchetAck` (optional) from Bob.
+**EpochRotation delivery:** The server guarantees message durability for at least 7 days (see §10.2), so Alice does not need to retransmit `EpochRotation` messages. If Bob is offline, the `EpochRotation` will remain in the mailbox until he polls. If Alice has not received any valid `EncryptedLocation` or `RatchetAck` on the new token after 7 days, she SHOULD stop transmitting and prompt the user to re-pair.
 
 **Summary of PCS guarantees in OPK mode:**
 
@@ -533,7 +536,7 @@ Because of the indistinguishable response invariant (§7.2), clients can impleme
 | Message encryption | ChaCha20-Poly1305 | 256-bit | Per-message key; deleted after use |
 | Message authentication | ChaCha20-Poly1305 tag | 128-bit | Included in AEAD output; covers AAD |
 | Key exchange KDF | HKDF-SHA-256 | — | `info = "Where-v1-KeyExchange"` (initial SK) |
-| Discovery token | HKDF-SHA-256 | 16-byte output | `ikm = EK_A.pub`, `salt = 0x00*32`, `info = "Where-v1-Discovery"` (§4.2) |
+| Discovery token | HKDF-SHA-256 | 16-byte output | `ikm = discovery_secret` (32-byte random, from QR payload), `salt = 0x00*32`, `info = "Where-v1-Discovery"` (§4.2) |
 | Bundle auth key | HKDF-SHA-256 | 32-byte output | `K_bundle = HKDF(SK, salt=0, info="Where-v1-BundleAuth")`; for PreKeyBundle HMAC |
 | Rotation auth key | HKDF-SHA-256 | 32-byte output | `K_rot = HKDF(root_key, salt=epoch_be4, info="Where-v1-EpochRotation")`; for EpochRotation AEAD |
 | Ack auth key | HKDF-SHA-256 | 32-byte output | `K_ack = HKDF(new_root_key, salt=epoch_be4, info="Where-v1-RatchetAck")`; for RatchetAck AEAD |
@@ -846,19 +849,16 @@ Recipients MUST reject any `EpochRotation` or `RatchetAck` whose decrypted `ts` 
 |---|---|
 | Routing Model | **Anonymous Mailboxes.** Routes opaque `EncryptedLocation` payloads by pairwise routing tokens (T). No userid-based addressing. |
 | Client Interaction | **Registration-less.** Clients poll `GET /inbox/{token}` and post `POST /inbox/{token}`; the server has no knowledge of user identity. |
-| In-memory store | **Opaque Payload Buffer.** Brief TTL buffer of encrypted payloads indexed by routing token T. |
+| Persistent store | **Opaque Payload Buffer.** Redis-backed durable buffer of encrypted payloads indexed by routing token T, retained for 7 days. |
 | Metadata Exposure | **Obfuscated.** Routing tokens are pairwise and random-looking; social graph is hidden from the server. |
 
 ### 10.2 Routing Table
 
-The server maintains an in-memory or persisted map of **mailboxes** indexed by 16-byte routing tokens:
-```kotlin
-val mailboxes: ConcurrentHashMap<RoutingToken, Queue<EncryptedMessage>>
-```
+The server maintains a Redis-backed map of **mailboxes** indexed by 16-byte routing tokens. Mailboxes are durable across server restarts.
 
 1. **POST /inbox/{token}:**
    - Push the payload into the corresponding queue.
-   - Apply a TTL of at least 30–60 minutes to ensure messages are available when Bob reconnects after a typical offline period.
+   - Apply a TTL of 7 days. This aligns with the client re-pair timeout: if Bob has not polled within 7 days, the session will be abandoned on both sides regardless.
 
 2. **GET /inbox/{token}:**
    - Drain and return all messages in the queue.
@@ -909,6 +909,4 @@ With this design:
 
 3. **Multi-Device Support.** Full session synchronization across multiple devices (e.g., phone and tablet) is a complex challenge planned for future work.
 
-4. **Server-Side Message Buffering TTL Tuning.** The current default TTL is 30–60 minutes (§10.2). The optimal value balances offline tolerance against server memory footprint and should be informed by real-world usage data.
-
-5. **Session Expiry and Staleness Handling.** If Alice stops sharing (app uninstalled, account deleted, extended offline period), Bob's client continues polling indefinitely against a token that will never receive new messages. Bob's client SHOULD implement exponential back-off after a configurable number of consecutive empty responses (e.g., back off after 10 empty polls, doubling the interval up to a maximum of 30 min), and SHOULD surface a "no recent location" staleness indicator to the user after a threshold (e.g., 2 hours without a new frame).
+4. **Session Expiry and Staleness Handling.** If Alice stops sharing (app uninstalled, account deleted, extended offline period), Bob's client continues polling indefinitely against a token that will never receive new messages. Bob's client SHOULD implement exponential back-off after a configurable number of consecutive empty responses (e.g., back off after 10 empty polls, doubling the interval up to a maximum of 30 min), and SHOULD surface a "no recent location" staleness indicator to the user after a threshold (e.g., 2 hours without a new frame).
