@@ -18,6 +18,8 @@ targets:
     deploymentTarget: "17.0"
     sources:
       - path: Sources/Where
+    resources:
+      - path: Sources/Where/Assets.xcassets
     configFiles:
       Debug: Local.xcconfig
       Release: Local.xcconfig
@@ -32,6 +34,8 @@ targets:
         embed: false
     info:
       path: Sources/Where/Info.plist
+      useBaseInternationalization: true
+      appIcon: AppIcon
       properties:
         NSLocationWhenInUseUsageDescription: "Where needs your location to show it on the map."
         NSLocationAlwaysAndWhenInUseUsageDescription: "Where needs your location in the background to keep sharing it."
