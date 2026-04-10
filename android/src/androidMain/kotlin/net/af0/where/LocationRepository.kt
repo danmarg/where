@@ -146,12 +146,25 @@ object LocationRepository : LocationSource {
 
     override fun onConnectionError(e: Throwable) {
         val msg =
-            when {
-                e.message?.contains("Unable to resolve host", ignoreCase = true) == true -> "not resolved"
-                e.message?.contains("timeout", ignoreCase = true) == true -> "timeout"
-                e.message?.contains("ConnectException", ignoreCase = true) == true -> "no connection"
-                e.message?.contains("Failed to post to mailbox: 500", ignoreCase = true) == true -> "server error 500"
-                else -> e.message?.take(32) ?: "unknown error"
+            when (e) {
+                // Hypothetical crypto exceptions from the shared module
+                is MacVerificationException -> {
+                    "Security error: Your location data might be corrupted or tampered with. Please try re-pairing with your friends."
+                }
+                is EpochMismatchException -> {
+                    "Sync error: Your device is out of sync. Please try re-pairing."
+                }
+                is OpkDepletedException -> {
+                    "Connection limit reached: Your session has expired. Please re-pair to continue sharing."
+                }
+                // General network and server errors
+                else -> when {
+                    e.message?.contains("Unable to resolve host", ignoreCase = true) == true -> "Network error: Could not connect to the server. Please check your internet connection."
+                    e.message?.contains("timeout", ignoreCase = true) == true -> "Network error: The connection timed out. Please try again."
+                    e.message?.contains("ConnectException", ignoreCase = true) == true -> "Network error: Could not establish a connection. Please check your network."
+                    e.message?.contains("500", ignoreCase = true) -> "Server error: Something went wrong on our end. Please try again later."
+                    else -> "An unexpected error occurred. Please try re-pairing your device." // Generic fallback, sanitized
+                }
             }
         _connectionStatus.value = ConnectionStatus.Error(msg)
     }
