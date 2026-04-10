@@ -12,7 +12,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
 
 @RunWith(RobolectricTestRunner::class)
-@Config(sdk = [33], application = WhereApplication::class)
+@Config(sdk = [33], application = TestWhereApplication::class)
 class BootReceiverTest {
     @Test
     fun testOnReceiveStartsService() {
@@ -30,7 +30,7 @@ class BootReceiverTest {
     @Test
     fun testOnReceiveRespectsSharingPreference() {
         val context = ApplicationProvider.getApplicationContext<Context>()
-        val prefs = context.getSharedPreferences("where_prefs", Context.MODE_PRIVATE)
+        val prefs = (context as WhereApplication).encryptedPrefs
         prefs.edit().putBoolean("is_sharing", false).commit()
 
         val receiver = BootReceiver()
