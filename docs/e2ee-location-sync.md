@@ -357,7 +357,7 @@ Alice polls the mailbox and caches Bob's OPKs. When Alice reaches an epoch bound
 
 1. `dh_out = X25519(Alice.NewEK_A.priv, Bob.OPK.pub)`.
 2. `(new_root_key, new_send_CK) = KDF_RK(root_key, dh_out)`.
-3. Alice derives `K_rot = HKDF-SHA-256(root_key, salt=epoch_be4, info="Where-v1-RotationAuth")[0:32]` **from the pre-rotation root key**.
+3. Alice derives `K_rot = HKDF-SHA-256(root_key, salt=epoch_be4, info="Where-v1-EpochRotation")[0:32]` **from the pre-rotation root key**.
 4. Alice constructs the `EpochRotation` payload and AEAD-encrypts it under `K_rot` (see §9.3 for wire format).
 5. Alice posts the encrypted `EpochRotation` on the **old (pre-rotation) send_token**.
 
@@ -534,8 +534,8 @@ Because of the indistinguishable response invariant (§7.2), clients can impleme
 | Key exchange KDF | HKDF-SHA-256 | — | `info = "Where-v1-KeyExchange"` (initial SK) |
 | Discovery token | HKDF-SHA-256 | 16-byte output | `ikm = EK_A.pub`, `salt = 0x00*32`, `info = "Where-v1-Discovery"` (§4.2) |
 | Bundle auth key | HKDF-SHA-256 | 32-byte output | `K_bundle = HKDF(SK, salt=0, info="Where-v1-BundleAuth")`; for PreKeyBundle HMAC |
-| Rotation auth key | HKDF-SHA-256 | 32-byte output | `K_rot = HKDF(root_key, salt=epoch_be4, info="Where-v1-RotationAuth")`; for EpochRotation AEAD |
-| Ack auth key | HKDF-SHA-256 | 32-byte output | `K_ack = HKDF(new_root_key, salt=epoch_be4, info="Where-v1-AckAuth")`; for RatchetAck AEAD |
+| Rotation auth key | HKDF-SHA-256 | 32-byte output | `K_rot = HKDF(root_key, salt=epoch_be4, info="Where-v1-EpochRotation")`; for EpochRotation AEAD |
+| Ack auth key | HKDF-SHA-256 | 32-byte output | `K_ack = HKDF(new_root_key, salt=epoch_be4, info="Where-v1-RatchetAck")`; for RatchetAck AEAD |
 
 ### 8.2 Session State Per Friend-Pair
 
@@ -613,7 +613,7 @@ Because there are no long-term signing keys in this protocol, `EpochRotation` an
 ```
 K_rot = HKDF-SHA-256(salt = epoch_be4,          // 4-byte big-endian epoch
                       ikm  = current_root_key,   // pre-rotation root key
-                      info = "Where-v1-RotationAuth")[0:32]
+                      info = "Where-v1-EpochRotation")[0:32]
 nonce = epoch_be4 || 0x00...00                   // epoch (4 bytes) || 8 zero bytes = 12 bytes
 ct    = ChaCha20-Poly1305(key=K_rot, nonce=nonce,
                     plaintext=rotation_payload_json,
@@ -626,7 +626,7 @@ where `routing_token` is the mailbox token on which the `EpochRotation` is poste
 ```
 K_ack = HKDF-SHA-256(salt = epoch_be4,
                       ikm  = new_root_key,        // post-rotation root key
-                      info = "Where-v1-AckAuth")[0:32]
+                      info = "Where-v1-RatchetAck")[0:32]
 nonce = epoch_be4 || 0x00...00
 ct    = ChaCha20-Poly1305(key=K_ack, nonce=nonce,
                     plaintext=ack_payload_json,
@@ -804,7 +804,7 @@ where the inner plaintext (before encryption) is:
 }
 ```
 
-and `K_rot = HKDF(pre_rotation_root_key, salt=epoch_be4, info="Where-v1-RotationAuth")[0:32]`.
+and `K_rot = HKDF(pre_rotation_root_key, salt=epoch_be4, info="Where-v1-EpochRotation")[0:32]`.
 
 Bob MUST decrypt using `K_rot` derived from his current root key. If decryption fails (bad key or corrupted), discard the message — do NOT advance the ratchet.
 
@@ -830,7 +830,7 @@ where the inner plaintext is:
 }
 ```
 
-and `K_ack = HKDF(new_root_key, salt=epoch_seen_be4, info="Where-v1-AckAuth")[0:32]`.
+and `K_ack = HKDF(new_root_key, salt=epoch_seen_be4, info="Where-v1-RatchetAck")[0:32]`.
 
 Recipients MUST reject any `EpochRotation` or `RatchetAck` whose decrypted `ts` falls outside a `T + 5 minute` clock-skew grace window relative to the recipient's local clock.
 
