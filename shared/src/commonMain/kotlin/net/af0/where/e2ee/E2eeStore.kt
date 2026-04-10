@@ -320,6 +320,29 @@ class E2eeStore(
         }
     }
 
+    /**
+     * Clear the previous receive token state (used during epoch rotation window).
+     * Zeroes out the old chain key before nulling it.
+     */
+    suspend fun clearPrevRecvState(id: String) {
+        stateLock.withLock {
+            val entry = friends[id] ?: return@withLock
+            val session = entry.session
+            if (session.prevRecvToken == null && session.prevRecvChainKey == null) return@withLock
+
+            session.prevRecvChainKey?.fill(0)
+            friends[id] = entry.copy(
+                session = session.copy(
+                    prevRecvToken = null,
+                    prevRecvTokenDeadline = 0L,
+                    prevRecvChainKey = null,
+                    prevRecvSeq = 0L
+                )
+            )
+            save()
+        }
+    }
+
     // -----------------------------------------------------------------------
     // OPK management
     // -----------------------------------------------------------------------
