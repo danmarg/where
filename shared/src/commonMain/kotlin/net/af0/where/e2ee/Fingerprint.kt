@@ -28,13 +28,14 @@ fun safetyNumber(
 }
 
 /**
- * Format 32-byte safety number as 8 groups of 5 decimal digits (40 decimal digits total).
+ * Format 32-byte safety number as two lines of 4 groups of 5 decimal digits each.
  * Each group is derived from 4 bytes interpreted as uint32, taken modulo 100000,
- * and zero-padded to 5 digits. Groups are separated by spaces.
+ * and zero-padded to 5 digits. Groups within a line are separated by spaces;
+ * lines are separated by newlines.
  */
 fun formatSafetyNumber(sn: ByteArray): String {
     require(sn.size == 32) { "safety number must be 32 bytes" }
-    return (0 until 8).joinToString(" ") { i ->
+    val groups = (0 until 8).map { i ->
         val offset = i * 4
         val v = ((sn[offset].toLong() and 0xFF) shl 24) or
             ((sn[offset + 1].toLong() and 0xFF) shl 16) or
@@ -42,6 +43,7 @@ fun formatSafetyNumber(sn: ByteArray): String {
             (sn[offset + 3].toLong() and 0xFF)
         (v % 100000L).toString().padStart(5, '0')
     }
+    return groups.take(4).joinToString(" ") + "\n" + groups.drop(4).joinToString(" ")
 }
 
 private fun ByteArray.compare(other: ByteArray): Int {
