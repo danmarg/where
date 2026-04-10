@@ -1,6 +1,7 @@
 package net.af0.where
 
 import android.content.Context
+import android.content.SharedPreferences
 import android.os.Build
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
@@ -9,14 +10,8 @@ import androidx.security.crypto.MasterKey
 import net.af0.where.e2ee.E2eeStorage
 
 class SharedPrefsE2eeStorage(context: Context) : E2eeStorage {
-    private val prefs =
-        EncryptedSharedPreferences.create(
-            context,
-            "e2ee_prefs",
-            buildMasterKey(context),
-            EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
-            EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM,
-        )
+    private val prefs = (context.applicationContext as? WhereApplication)?.encryptedPrefs
+        ?: context.getSharedPreferences(ENCRYPTED_PREFS_NAME, Context.MODE_PRIVATE)
 
     override fun getString(key: String): String? = prefs.getString(key, null)
 
@@ -28,7 +23,18 @@ class SharedPrefsE2eeStorage(context: Context) : E2eeStorage {
     }
 
     companion object {
-        private fun buildMasterKey(context: Context): MasterKey {
+        private const val ENCRYPTED_PREFS_NAME = "e2ee_prefs"
+
+        fun createEncryptedPrefs(context: Context): SharedPreferences =
+            EncryptedSharedPreferences.create(
+                context,
+                ENCRYPTED_PREFS_NAME,
+                buildMasterKey(context),
+                EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
+                EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM,
+            )
+
+        fun buildMasterKey(context: Context): MasterKey {
             // Try StrongBox-backed key (API 28+, requires dedicated security chip).
             // Fall back to standard Android Keystore if StrongBox is unavailable.
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
