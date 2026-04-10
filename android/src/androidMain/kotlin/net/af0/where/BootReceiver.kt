@@ -17,8 +17,12 @@ class BootReceiver : BroadcastReceiver() {
             action == "android.intent.action.QUICKBOOT_POWERON" ||
             action == "com.htc.intent.action.QUICKBOOT_POWERON"
         ) {
-            Log.d(TAG, "Starting LocationService after boot: $action")
-            context.startForegroundService(Intent(context, LocationService::class.java))
+            if (UserPrefs.isSharing(context)) {
+                Log.d(TAG, "Starting LocationService after boot: $action")
+                context.startForegroundService(Intent(context, LocationService::class.java))
+            } else {
+                Log.d(TAG, "Skipping LocationService after boot because sharing is disabled.")
+            }
         }
     }
 }

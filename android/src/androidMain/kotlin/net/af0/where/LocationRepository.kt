@@ -100,7 +100,7 @@ object LocationRepository : LocationSource {
     internal val _pendingInitPayload = MutableStateFlow<KeyExchangeInitPayload?>(null)
     override val pendingInitPayload: StateFlow<KeyExchangeInitPayload?> = _pendingInitPayload.asStateFlow()
 
-    private val _isSharingLocation = MutableStateFlow(true)
+    private val _isSharingLocation = MutableStateFlow(false)
     override val isSharingLocation: StateFlow<Boolean> = _isSharingLocation.asStateFlow()
 
     private val _pausedFriendIds = MutableStateFlow<Set<String>>(emptySet())
@@ -230,7 +230,7 @@ object LocationRepository : LocationSource {
         _connectionStatus.value = ConnectionStatus.Ok
         _isAppInForeground.value = false
         _pendingInitPayload.value = null
-        _isSharingLocation.value = true
+        _isSharingLocation.value = false
         _pausedFriendIds.value = emptySet()
         _friends.value = emptyList()
         _lastRapidPollTrigger.value = 0L
