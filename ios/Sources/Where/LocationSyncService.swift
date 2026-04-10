@@ -373,28 +373,32 @@ final class LocationSyncService: ObservableObject {
             // Re-check isSharingLocation inside Task if needed,
             // but for simplicity we rely on the main-actor throttle check above.
 
+            var sendSucceeded = false
             defer {
                 backgroundTask.end()
-                // Only clear state if this task is still the current one. A stale cleanup
+                // Synchronously clear task state on @MainActor — no nested Task needed,
+                // avoiding the race where a forced send still sees a non-nil currentSendTask.
+                // Only clear state if this task is still the current one; a stale cleanup
                 // from a cancelled task must not overwrite state set by a newer task.
-                Task { @MainActor in
-                    if self.sendTaskGeneration == myGeneration {
-                        self.currentSendTask = nil
-                        self.isCurrentSendHeartbeat = false
-                    }
+                if self.sendTaskGeneration == myGeneration {
+                    self.currentSendTask = nil
+                    self.isCurrentSendHeartbeat = false
+                }
+                // Restore the pairing flag if the send did not succeed (error or cancellation)
+                // and no newer task has taken over. This covers both thrown errors and silent
+                // cancellation paths where the underlying call returns without throwing.
+                if wasForcedByPairing && !sendSucceeded && self.sendTaskGeneration == myGeneration {
+                    self.pendingForcedSendAfterPairing = true
                 }
             }
 
             do {
                 try await locationClient.sendLocation(lat: lat, lng: lng, pausedFriendIds: pausedFriendIds)
+                sendSucceeded = true
                 logger.debug("Location sent successfully")
                 updateStatus(nil)
             } catch {
                 logger.error("Failed to send location: \(error.localizedDescription)")
-                // Restore the pairing flag so the next location callback retries the send.
-                if wasForcedByPairing {
-                    pendingForcedSendAfterPairing = true
-                }
                 updateStatus(error)
             }
         }

@@ -15,7 +15,7 @@ final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelega
         super.init()
         manager.delegate = self
         manager.desiredAccuracy = kCLLocationAccuracyHundredMeters
-        manager.distanceFilter = 10 // meters — low value ensures updates when stationary, rely on heartbeat throttle for battery
+        manager.distanceFilter = 50 // meters — heartbeat timer covers stationary case
     }
 
     func requestPermissionAndStart() {
