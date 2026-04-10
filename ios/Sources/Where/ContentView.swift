@@ -228,6 +228,9 @@ struct ContentView: View {
         .onReceive(syncService.$pendingInitPayload) { payload in
             if let payload = payload { newFriendName = payload.suggestedName } else { newFriendName = "" }
         }
+        .onOpenURL { url in
+            syncService.processQrUrl(url.absoluteString)
+        }
     }
 }
 
