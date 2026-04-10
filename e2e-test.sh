@@ -94,8 +94,8 @@ fi
 echo "=== E2E Test: Epoch Rotation — Multiple sends to trigger DH ratchet ==="
 # Send multiple locations (every 15s) to trigger shouldRotateEpoch based on message count
 for i in {1..3}; do
-  LAT=$(echo "37.7749 + 0.00$i" | bc)
-  LNG=$(echo "-122.4194 - 0.00$i" | bc)
+  LAT=$(awk "BEGIN {print 37.7749 + 0.00$i}")
+  LNG=$(awk "BEGIN {print -122.4194 - 0.00$i}")
   echo "  Alice send #$((i+3)): lat=$LAT"
   ./cli/build/install/cli/bin/cli send "$LAT" "$LNG" --state e2e_alice.json --force > /dev/null
   sleep 1
