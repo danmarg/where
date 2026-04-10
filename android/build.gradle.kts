@@ -47,11 +47,6 @@ android {
         versionCode = 1
         versionName = "0.1.0"
         manifestPlaceholders["MAPS_API_KEY"] = localProperties.getProperty("MAPS_API_KEY") ?: ""
-        buildConfigField(
-            "String",
-            "SERVER_HTTP_URL",
-            "\"${localProperties.getProperty("SERVER_HTTP_URL") ?: "http://10.0.2.2:8080"}\"",
-        )
     }
 
     buildFeatures {
@@ -90,6 +85,14 @@ android {
     buildTypes {
         release {
             signingConfig = signingConfigs.getByName("release")
+            buildConfigField("String", "SERVER_HTTP_URL", "\"https://where.af0.net\"")
+        }
+        debug {
+            buildConfigField(
+                "String",
+                "SERVER_HTTP_URL",
+                "\"${localProperties.getProperty("SERVER_HTTP_URL") ?: "http://10.0.2.2:8080"}\"",
+            )
         }
     }
 }
