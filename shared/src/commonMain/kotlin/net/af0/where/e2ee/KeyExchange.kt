@@ -41,6 +41,7 @@ object KeyExchange {
     ): Pair<KeyExchangeInitMessage, SessionState> {
         val ekB = generateX25519KeyPair()
         val sk = x25519(ekB.priv, qr.ekPub)
+        ekB.priv.fill(0)
 
         val aliceFp = fingerprint(qr.ekPub)
         val bobFp = fingerprint(ekB.pub)
