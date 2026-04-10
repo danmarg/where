@@ -17,6 +17,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -48,7 +49,7 @@ class LocationService : Service() {
     private lateinit var locationCallback: LocationCallback
     private var isRegistered = false
 
-    private val pendingFriendSends = mutableSetOf<String>()
+    private val pendingFriendSends = Channel<String>(Channel.UNLIMITED)
 
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
 
@@ -91,16 +92,13 @@ class LocationService : Service() {
                         sendLocationIfNeeded(loc.first, loc.second, isHeartbeat = false)
                     }
 
-                    if (pendingFriendSends.isNotEmpty()) {
-                        val toSend = pendingFriendSends.toSet()
-                        pendingFriendSends.clear()
-                        for (friendId in toSend) {
-                            launch {
-                                try {
-                                    locationClient.sendLocationToFriend(friendId, loc.first, loc.second)
-                                } catch (e: Exception) {
-                                    Log.e(TAG, "Failed to send deferred location to $friendId: ${e.message}")
-                                }
+                    while (true) {
+                        val friendId = pendingFriendSends.tryReceive().getOrNull() ?: break
+                        launch {
+                            try {
+                                locationClient.sendLocationToFriend(friendId, loc.first, loc.second)
+                            } catch (e: Exception) {
+                                Log.e(TAG, "Failed to send deferred location to $friendId: ${e.message}")
                             }
                         }
                     }
@@ -132,7 +130,7 @@ class LocationService : Service() {
                         }
                     }
                 } else {
-                    pendingFriendSends.add(friendId)
+                    pendingFriendSends.trySend(friendId)
                 }
             }
         }
@@ -162,6 +160,7 @@ class LocationService : Service() {
         Log.d(TAG, "onDestroy")
         fusedClient.removeLocationUpdates(locationCallback)
         isRegistered = false
+        pendingFriendSends.close()
         serviceScope.cancel()
         super.onDestroy()
     }
