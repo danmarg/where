@@ -16,7 +16,7 @@ private func debugLog(_ msg: () -> String) {
 
 // MARK: - QR payload URL helpers
 
-func qrPayloadToUrl(_ qr: Shared.QrPayload) -> String {
+func qrPayloadToUrl(_ qr: Shared.QrPayload) -> String? {
     var ekPubData = toSwiftData(qr.ekPub)
     defer { ekPubData.zeroize() }
 
@@ -25,12 +25,17 @@ func qrPayloadToUrl(_ qr: Shared.QrPayload) -> String {
         "suggested_name": qr.suggestedName,
         "fingerprint": qr.fingerprint,
     ]
-    let jsonData = try! JSONSerialization.data(withJSONObject: dict)
-    let b64 = jsonData.base64EncodedString()
-        .replacingOccurrences(of: "+", with: "-")
-        .replacingOccurrences(of: "/", with: "_")
-        .replacingOccurrences(of: "=", with: "")
-    return "https://where.af0.net/invite#\(b64)"
+    do {
+        let jsonData = try JSONSerialization.data(withJSONObject: dict)
+        let b64 = jsonData.base64EncodedString()
+            .replacingOccurrences(of: "+", with: "-")
+            .replacingOccurrences(of: "/", with: "_")
+            .replacingOccurrences(of: "=", with: "")
+        return "https://where.af0.net/invite#\(b64)"
+    } catch {
+        logger.error("Failed to serialize QR payload: \(error.localizedDescription)")
+        return nil
+    }
 }
 
 private func urlToQrPayload(_ url: String) -> Shared.QrPayload? {
@@ -462,8 +467,11 @@ final class LocationSyncService: ObservableObject {
         defer { isExchanging = false }
         do {
             let result = try await e2eeStore.processScannedQr(qr: qrWithName, bobSuggestedName: displayName)
-            let initPayload = result.first!
-            let bobEntry = result.second!
+            guard let initPayload = result.first, let bobEntry = result.second else {
+                logger.error("processScannedQr returned nil components")
+                updateStatus(NSError(domain: "Where", code: -1, userInfo: [NSLocalizedDescriptionKey: "Pairing failed: invalid response"]))
+                return
+            }
 
             await clearInvite()
             // Insert AFTER clearInvite: clearInvite calls resetRapidPoll which clears
