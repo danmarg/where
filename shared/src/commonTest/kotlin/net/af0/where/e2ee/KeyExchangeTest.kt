@@ -180,6 +180,13 @@ class KeyExchangeTest {
     }
 
     @Test
+    fun `safetyNumber returns 32 bytes`() {
+        val ekA = generateX25519KeyPair().pub
+        val ekB = generateX25519KeyPair().pub
+        assertEquals(32, safetyNumber(ekA, ekB).size)
+    }
+
+    @Test
     fun `safetyNumber differs for different pairs`() {
         val ekA = generateX25519KeyPair().pub
         val ekB = generateX25519KeyPair().pub
@@ -187,6 +194,59 @@ class KeyExchangeTest {
         val sn1 = safetyNumber(ekA, ekB)
         val sn2 = safetyNumber(ekA, ekC)
         assertNotEquals(sn1.toList(), sn2.toList())
+    }
+
+    @Test
+    fun `formatSafetyNumber produces 8 groups of 5 decimal digits`() {
+        val ekA = generateX25519KeyPair().pub
+        val ekB = generateX25519KeyPair().pub
+        val formatted = formatSafetyNumber(safetyNumber(ekA, ekB))
+        val groups = formatted.split(" ")
+        assertEquals(8, groups.size)
+        for (group in groups) {
+            assertEquals(5, group.length)
+            assertTrue(group.all { it.isDigit() }, "Expected all digits but got: $group")
+            val v = group.toInt()
+            assertTrue(v in 0..99999, "Group value out of range: $v")
+        }
+    }
+
+    @Test
+    fun `FriendEntry safetyNumber is stable across epoch rotations`() {
+        val (qr, aliceEkPriv) = KeyExchange.aliceCreateQrPayload("Alice")
+        val (msg, bobSession) = KeyExchange.bobProcessQr(qr, "Bob")
+        val aliceSession = KeyExchange.aliceProcessInit(msg, aliceEkPriv, qr.ekPub)
+
+        // Safety number before rotation
+        val snBefore = formatSafetyNumber(safetyNumber(aliceSession.aliceEkPub, aliceSession.bobEkPub))
+
+        // Simulate an epoch rotation (alice generates new EK, bob processes it)
+        val bobOpk = generateX25519KeyPair()
+        val aliceNewEk = generateX25519KeyPair()
+        val aliceRotated = Session.aliceEpochRotation(
+            aliceSession, aliceNewEk.priv, aliceNewEk.pub, bobOpk.pub,
+            aliceSession.aliceFp, aliceSession.bobFp,
+        )
+
+        // aliceEkPub and bobEkPub must be unchanged after rotation
+        assertContentEquals(aliceSession.aliceEkPub, aliceRotated.aliceEkPub)
+        assertContentEquals(aliceSession.bobEkPub, aliceRotated.bobEkPub)
+
+        val snAfter = formatSafetyNumber(safetyNumber(aliceRotated.aliceEkPub, aliceRotated.bobEkPub))
+        assertEquals(snBefore, snAfter, "Safety number changed after epoch rotation")
+    }
+
+    @Test
+    fun `session aliceEkPub and bobEkPub are set correctly`() {
+        val (qr, aliceEkPriv) = KeyExchange.aliceCreateQrPayload("Alice")
+        val (msg, bobSession) = KeyExchange.bobProcessQr(qr, "Bob")
+        val aliceSession = KeyExchange.aliceProcessInit(msg, aliceEkPriv, qr.ekPub)
+
+        // Bootstrap keys must be the original EK_A.pub and EK_B.pub
+        assertContentEquals(qr.ekPub, aliceSession.aliceEkPub)
+        assertContentEquals(msg.ekPub, aliceSession.bobEkPub)
+        assertContentEquals(qr.ekPub, bobSession.aliceEkPub)
+        assertContentEquals(msg.ekPub, bobSession.bobEkPub)
     }
 
     // ---------------------------------------------------------------------------

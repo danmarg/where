@@ -34,6 +34,8 @@ data class RawKeyPair(val priv: ByteArray, val pub: ByteArray) {
  *   theirEkPub    – 32-byte peer's last known ephemeral X25519 public key.
  *   aliceFp       – SHA-256(EK_A.pub) — Alice's session fingerprint.
  *   bobFp         – SHA-256(EK_B.pub) — Bob's session fingerprint.
+ *   aliceEkPub    – EK_A.pub — Alice's bootstrap ephemeral public key (stable for session lifetime).
+ *   bobEkPub      – EK_B.pub — Bob's bootstrap ephemeral public key (stable for session lifetime).
  *   kBundle       – HKDF(SK, info="Where-v1-BundleAuth") — bundle authentication key.
  */
 @Serializable
@@ -51,6 +53,8 @@ data class SessionState(
     @Serializable(with = ByteArrayBase64Serializer::class) val theirEkPub: ByteArray,
     @Serializable(with = ByteArrayBase64Serializer::class) val aliceFp: ByteArray,
     @Serializable(with = ByteArrayBase64Serializer::class) val bobFp: ByteArray,
+    @Serializable(with = ByteArrayBase64Serializer::class) val aliceEkPub: ByteArray,
+    @Serializable(with = ByteArrayBase64Serializer::class) val bobEkPub: ByteArray,
     @Serializable(with = ByteArrayBase64Serializer::class) val kBundle: ByteArray,
 ) {
     override fun equals(other: Any?): Boolean {
@@ -68,6 +72,8 @@ data class SessionState(
             theirEkPub.contentEquals(other.theirEkPub) &&
             aliceFp.contentEquals(other.aliceFp) &&
             bobFp.contentEquals(other.bobFp) &&
+            aliceEkPub.contentEquals(other.aliceEkPub) &&
+            bobEkPub.contentEquals(other.bobEkPub) &&
             kBundle.contentEquals(other.kBundle)
     }
 
@@ -85,6 +91,8 @@ data class SessionState(
         h = 31 * h + theirEkPub.contentHashCode()
         h = 31 * h + aliceFp.contentHashCode()
         h = 31 * h + bobFp.contentHashCode()
+        h = 31 * h + aliceEkPub.contentHashCode()
+        h = 31 * h + bobEkPub.contentHashCode()
         h = 31 * h + kBundle.contentHashCode()
         return h
     }

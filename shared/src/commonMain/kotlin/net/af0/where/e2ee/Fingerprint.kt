@@ -9,25 +9,39 @@ internal fun fingerprint(ekPub: ByteArray): ByteArray = sha256(ekPub)
 
 /**
  * Safety number for out-of-band verification.
- * Returns the first 12 bytes of SHA-256(lower_EK.pub || higher_EK.pub), where
- * "lower/higher" is lexicographic order of the two EK.pub values.
- * Display as 6 groups of 4 decimal digits.
+ * Returns the full 32-byte SHA-256(lower_EK.pub || higher_EK.pub), where
+ * "lower/higher" is lexicographic order of the two bootstrap EK.pub values.
+ *
+ * IMPORTANT: callers must pass the *bootstrap* EK_A.pub and EK_B.pub (the keys
+ * exchanged at pairing time), not the current-epoch ephemeral keys. Use
+ * SessionState.aliceEkPub / SessionState.bobEkPub, which are stable for the
+ * lifetime of the session.
+ *
+ * Display with formatSafetyNumber() as 8 groups of 5 decimal digits.
  */
 fun safetyNumber(
     localEkPub: ByteArray,
     remoteEkPub: ByteArray,
 ): ByteArray {
     val cmp = localEkPub.compare(remoteEkPub)
-    val full = if (cmp <= 0) sha256(localEkPub + remoteEkPub) else sha256(remoteEkPub + localEkPub)
-    return full.copyOfRange(0, 12)
+    return if (cmp <= 0) sha256(localEkPub + remoteEkPub) else sha256(remoteEkPub + localEkPub)
 }
 
 /**
- * Format 12-byte safety number as 6 groups of 4 hex digits.
+ * Format 32-byte safety number as 8 groups of 5 decimal digits (40 decimal digits total).
+ * Each group is derived from 4 bytes interpreted as uint32, taken modulo 100000,
+ * and zero-padded to 5 digits. Groups are separated by spaces.
  */
 fun formatSafetyNumber(sn: ByteArray): String {
-    require(sn.size == 12) { "safety number must be 12 bytes" }
-    return sn.toHex().chunked(4).joinToString(" ")
+    require(sn.size == 32) { "safety number must be 32 bytes" }
+    return (0 until 8).joinToString(" ") { i ->
+        val offset = i * 4
+        val v = ((sn[offset].toLong() and 0xFF) shl 24) or
+            ((sn[offset + 1].toLong() and 0xFF) shl 16) or
+            ((sn[offset + 2].toLong() and 0xFF) shl 8) or
+            (sn[offset + 3].toLong() and 0xFF)
+        (v % 100000L).toString().padStart(5, '0')
+    }
 }
 
 private fun ByteArray.compare(other: ByteArray): Int {
