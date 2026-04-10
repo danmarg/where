@@ -22,6 +22,7 @@
 		ACE3C7F5E723E981710460E2 /* CoreLocation in Frameworks */ = {isa = PBXBuildFile; fileRef = 18F48F8FCFBE392E06CD2BB3 /* CoreLocation */; };
 		B60DEE3289B4F67659B77C8A /* LocationManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3ADAF0FD19742D151B957FD9 /* LocationManager.swift */; };
 		C6B7D5B6964E195E120267EE /* QrScannerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 220A8EA077B99368AF6DA3D4 /* QrScannerView.swift */; };
+		D66FFD9563E853E9385BD61B /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 1CDCC10A00DAB4D475C2B7C1 /* Assets.xcassets */; };
 		FC1918F51962F01656F21EE5 /* KotlinByteArrayUtils.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC2B156B7AAD99EBB5C7C775 /* KotlinByteArrayUtils.swift */; };
 		FD798F619BC7B55144C1A274 /* QrCodeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5DBE659D6FC99FBE57AB21DB /* QrCodeView.swift */; };
 /* End PBXBuildFile section */
@@ -39,6 +40,7 @@
 /* Begin PBXFileReference section */
 		072A149EB28769F34BCED9D8 /* Security */ = {isa = PBXFileReference; path = Security; sourceTree = "<group>"; };
 		18F48F8FCFBE392E06CD2BB3 /* CoreLocation */ = {isa = PBXFileReference; path = CoreLocation; sourceTree = "<group>"; };
+		1CDCC10A00DAB4D475C2B7C1 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		1D232AA64C61387DE75E8145 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		220A8EA077B99368AF6DA3D4 /* QrScannerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QrScannerView.swift; sourceTree = "<group>"; };
 		2421CE3D6966994F4875E311 /* WhereMapView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WhereMapView.swift; sourceTree = "<group>"; };
@@ -109,6 +111,7 @@
 		B39C72AD8B5E1F0E3A409FD2 /* Where */ = {
 			isa = PBXGroup;
 			children = (
+				1CDCC10A00DAB4D475C2B7C1 /* Assets.xcassets */,
 				D43663670EB5FB46B5C7C4EA /* ContentView.swift */,
 				28DD2FC8358389E8C9F6ABE6 /* FriendsSheet.swift */,
 				87F9371D289CC150DF786A96 /* FriendsStore.swift */,
@@ -162,6 +165,7 @@
 			buildConfigurationList = 179750A609FCACFE5552F4E1 /* Build configuration list for PBXNativeTarget "Where" */;
 			buildPhases = (
 				E7ED0F8B6CA06472498EA266 /* Sources */,
+				7F982A2FD48F1A229F4BD237 /* Resources */,
 				EFB0479BA721AAE049851BE1 /* Frameworks */,
 			);
 			buildRules = (
@@ -227,6 +231,17 @@
 			);
 		};
 /* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		7F982A2FD48F1A229F4BD237 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				D66FFD9563E853E9385BD61B /* Assets.xcassets in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
 		0700B98DBA26A1F319FBEAD1 /* Sources */ = {
