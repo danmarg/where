@@ -275,7 +275,7 @@ class KeyExchangeTest {
         // Attacker knows the discovery token.
         val tamperedMsg =
             KeyExchangeInitMessage(
-                token = deriveDiscoveryToken(qr.ekPub),
+                token = deriveDiscoveryToken(qr.discoverySecret),
                 ekPub = ekM.pub.copyOf(),
                 keyConfirmation = KeyExchange.buildKeyConfirmation(skAM, qr.ekPub, ekM.pub),
                 suggestedName = "Attacker",
@@ -299,27 +299,27 @@ class KeyExchangeTest {
 
     @Test
     fun `deriveDiscoveryToken produces 16 bytes`() {
-        val ekPub = ByteArray(32) { it.toByte() }
-        assertEquals(16, deriveDiscoveryToken(ekPub).size)
+        val secret = ByteArray(32) { it.toByte() }
+        assertEquals(16, deriveDiscoveryToken(secret).size)
     }
 
     @Test
     fun `deriveDiscoveryToken is deterministic`() {
-        val ekPub = ByteArray(32) { it.toByte() }
-        assertContentEquals(deriveDiscoveryToken(ekPub), deriveDiscoveryToken(ekPub))
+        val secret = ByteArray(32) { it.toByte() }
+        assertContentEquals(deriveDiscoveryToken(secret), deriveDiscoveryToken(secret))
     }
 
     @Test
-    fun `deriveDiscoveryToken differs for distinct ephemeral keys`() {
-        val ek1 = generateX25519KeyPair().pub
-        val ek2 = generateX25519KeyPair().pub
-        assertNotEquals(deriveDiscoveryToken(ek1).toList(), deriveDiscoveryToken(ek2).toList())
+    fun `deriveDiscoveryToken differs for distinct secrets`() {
+        val s1 = ByteArray(32) { it.toByte() }
+        val s2 = ByteArray(32) { (it + 1).toByte() }
+        assertNotEquals(deriveDiscoveryToken(s1).toList(), deriveDiscoveryToken(s2).toList())
     }
 
     @Test
-    fun `QrPayload discoveryToken matches deriveDiscoveryToken on ekPub`() {
+    fun `QrPayload discoveryToken matches deriveDiscoveryToken on discoverySecret`() {
         val (qr, _) = KeyExchange.aliceCreateQrPayload("Alice")
-        assertContentEquals(deriveDiscoveryToken(qr.ekPub), qr.discoveryToken())
+        assertContentEquals(deriveDiscoveryToken(qr.discoverySecret), qr.discoveryToken())
     }
 
     @Test
