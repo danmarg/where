@@ -854,7 +854,7 @@ Recipients MUST reject any `EpochRotation` or `RatchetAck` whose decrypted `ts` 
 
 ### 10.2 Routing Table
 
-The server maintains a Redis-backed map of **mailboxes** indexed by 16-byte routing tokens. Mailboxes are durable across server restarts.
+The server maintains a persistent map of **mailboxes** indexed by 16-byte routing tokens. Mailboxes are durable across server restarts.
 
 1. **POST /inbox/{token}:**
    - Push the payload into the corresponding queue.
