@@ -12,7 +12,7 @@
 |---|---|
 | `shared/` | KMP library — data models, E2EE crypto implementations (Double Ratchet), `LocationClient` |
 | `android/` | Android app — Compose UI, FusedLocation foreground service, Google Maps |
-| `server/` | Ktor server — Anonymous Mailbox API, in-memory location store |
+| `server/` | Ktor server — Anonymous Mailbox API, Redis-backed persistent mailbox store |
 | `ios/` | iOS app — SwiftUI + MapKit + CoreLocation, native HTTP polling |
 
 ### Data flow
@@ -53,7 +53,8 @@
 - **iOS**: `distanceFilter = 50m` + `desiredAccuracy = kCLLocationAccuracyHundredMeters`; `startMonitoringSignificantLocationChanges()` when backgrounded.
 
 ### Server state
-- In-memory `ConcurrentHashMap`s for mailboxes. State is lost on restart.
+- Mailboxes are persisted in Redis. State survives restarts.
+- Messages are retained for 7 days, aligning with the client re-pair timeout.
 
 ---
 
@@ -122,6 +123,5 @@ and run on the JVM target via `:shared:jvmTest`.
 ---
 
 ## Planned future work
-- Persistent server storage
 - User-controlled sharing (groups, time-limited sharing)
 - Push notifications when a friend's location changes significantly
