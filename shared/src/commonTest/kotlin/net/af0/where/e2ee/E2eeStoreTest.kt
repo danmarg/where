@@ -444,4 +444,82 @@ class E2eeStoreTest {
             assertNotNull(result, "Decryption must succeed even after OPK depletion")
             assertEquals(loc.lat, result!!.second.lat, 1e-9)
         }
+
+    @Test
+    fun testDualPollingWindow() =
+        runBlocking {
+            val qr = aliceStore.createInvite("Alice")
+            val (initPayload, bobEntry) = bobStore.processScannedQr(qr)
+            val aliceEntry = aliceStore.processKeyExchangeInit(initPayload, "Bob")!!
+
+            // Bob generates OPKs, Alice stores them
+            val bundle = bobStore.generateOpkBundle(bobEntry.id, count = 1)!!
+            aliceStore.storeOpkBundle(aliceEntry.id, bundle)
+
+            // 1. Alice sends a message in epoch 0
+            val loc0 = LocationPlaintext(1.0, 1.0, 1.0, 1000L)
+            val aliceFriend0 = aliceStore.getFriend(aliceEntry.id)!!
+            val (aliceSess0, ct0) =
+                Session.encryptLocation(
+                    aliceFriend0.session,
+                    loc0,
+                    aliceFriend0.session.aliceFp,
+                    aliceFriend0.session.bobFp,
+                )
+            aliceStore.updateSession(aliceEntry.id, aliceSess0)
+
+            val payload0 = EncryptedLocationPayload(epoch = aliceSess0.epoch, seq = aliceSess0.sendSeq.toString(), ct = ct0)
+            val oldToken = aliceSess0.sendToken.toHex()
+
+            // 2. Alice rotates to epoch 1
+            val rotPayload = aliceStore.initiateEpochRotation(aliceEntry.id)!!
+            val aliceFriend1 = aliceStore.getFriend(aliceEntry.id)!!
+            assertEquals(1, aliceFriend1.session.epoch)
+            val newToken = aliceFriend1.session.recvToken.toHex() // From Bob's perspective
+
+            // 3. Bob polls old token and sees BOTH the location and the rotation
+            val batch = listOf(payload0, rotPayload)
+            val result = bobStore.processBatch(bobEntry.id, batch, tokenUsed = oldToken)!!
+
+            assertEquals(1, result.decryptedLocations.size)
+            assertEquals(loc0.lat, result.decryptedLocations[0].lat)
+            assertNotNull(result.newToken)
+
+            val bobFriend1 = bobStore.getFriend(bobEntry.id)!!
+            assertEquals(1, bobFriend1.session.epoch)
+            assertNotNull(bobFriend1.session.prevRecvToken)
+            assertContentEquals(oldToken.hexToByteArray(), bobFriend1.session.prevRecvToken)
+
+            // 4. Alice sends another message in epoch 0 (simulating delayed arrival)
+            val loc0b = LocationPlaintext(2.0, 2.0, 2.0, 1001L)
+            val (aliceSess0b, ct0b) = Session.encryptLocation(aliceSess0, loc0b, aliceSess0.aliceFp, aliceSess0.bobFp)
+            val payload0b = EncryptedLocationPayload(epoch = aliceSess0b.epoch, seq = aliceSess0b.sendSeq.toString(), ct = ct0b)
+
+            // Bob polls the old token AGAIN
+            val result2 = bobStore.processBatch(bobEntry.id, listOf(payload0b), tokenUsed = oldToken)!!
+            assertEquals(1, result2.decryptedLocations.size)
+            assertEquals(loc0b.lat, result2.decryptedLocations[0].lat)
+
+            // 5. Alice sends a message in epoch 1
+            val loc1 = LocationPlaintext(3.0, 3.0, 3.0, 1002L)
+            val (aliceSess1, ct1) =
+                Session.encryptLocation(
+                    aliceFriend1.session,
+                    loc1,
+                    aliceFriend1.session.aliceFp,
+                    aliceFriend1.session.bobFp,
+                )
+            aliceStore.updateSession(aliceEntry.id, aliceSess1)
+            val payload1 = EncryptedLocationPayload(epoch = aliceSess1.epoch, seq = aliceSess1.sendSeq.toString(), ct = ct1)
+
+            // Bob polls the NEW token
+            val result3 = bobStore.processBatch(bobEntry.id, listOf(payload1), tokenUsed = newToken)!!
+            assertEquals(1, result3.decryptedLocations.size)
+            assertEquals(loc1.lat, result3.decryptedLocations[0].lat)
+
+            // 6. Verify that prevRecvToken is cleared after successful decryption on new token
+            val bobFriendFinal = bobStore.getFriend(bobEntry.id)!!
+            assertNull(bobFriendFinal.session.prevRecvToken)
+            assertNull(bobFriendFinal.session.prevRecvChainKey)
+        }
 }
