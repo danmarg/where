@@ -27,12 +27,12 @@ func qrPayloadToUrl(_ qr: Shared.QrPayload) -> String {
         .replacingOccurrences(of: "+", with: "-")
         .replacingOccurrences(of: "/", with: "_")
         .replacingOccurrences(of: "=", with: "")
-    return "where://invite?q=\(b64)"
+    return "https://where.af0.net/invite#\(b64)"
 }
 
 private func urlToQrPayload(_ url: String) -> Shared.QrPayload? {
-    guard let q = URLComponents(string: url)?.queryItems?.first(where: { $0.name == "q" })?.value else { return nil }
-    var b64 = q.replacingOccurrences(of: "-", with: "+").replacingOccurrences(of: "_", with: "/")
+    guard let fragment = URLComponents(string: url)?.fragment, !fragment.isEmpty else { return nil }
+    var b64 = fragment.replacingOccurrences(of: "-", with: "+").replacingOccurrences(of: "_", with: "/")
     while b64.count % 4 != 0 { b64 += "=" }
     guard let data = Data(base64Encoded: b64),
           let dict = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
