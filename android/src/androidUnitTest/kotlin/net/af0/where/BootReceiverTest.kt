@@ -28,6 +28,21 @@ class BootReceiverTest {
     }
 
     @Test
+    fun testOnReceiveRespectsSharingPreference() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val prefs = context.getSharedPreferences("where_prefs", Context.MODE_PRIVATE)
+        prefs.edit().putBoolean("is_sharing", false).commit()
+
+        val receiver = BootReceiver()
+        val intent = Intent(Intent.ACTION_BOOT_COMPLETED)
+
+        receiver.onReceive(context, intent)
+
+        val nextIntent = shadowOf(context as android.app.Application).nextStartedService
+        assertEquals(null, nextIntent, "Should not start service when sharing is disabled")
+    }
+
+    @Test
     fun testOnReceiveIgnoresOtherActions() {
         val context = ApplicationProvider.getApplicationContext<Context>()
         val receiver = BootReceiver()

@@ -62,6 +62,9 @@ class LocationService : Service() {
         createNotificationChannel()
         startForeground(NOTIFICATION_ID, buildNotification())
 
+        // Initialise repository sharing state from prefs before starting any collection.
+        locationSource.setSharingLocation(UserPrefs.isSharing(this))
+
         val app = application as WhereApplication
         e2eeStore = e2eeStoreOverride ?: app.e2eeStore
         locationClient = locationClientOverride ?: app.locationClient
