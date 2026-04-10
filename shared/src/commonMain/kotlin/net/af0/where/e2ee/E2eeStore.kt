@@ -147,7 +147,7 @@ class E2eeStore(
                         SerializedFriendEntry(
                             friendId = f.id,
                             name = f.name,
-                            session = f.session,
+                            session = f.session.copy(myEkPriv = ByteArray(32)),
                             isInitiator = f.isInitiator,
                             myOpkPrivs = f.myOpkPrivs.map { (id, key) -> SerializedOpkEntry(id, key) },
                             theirOpkPubs = f.theirOpkPubs.map { (id, key) -> SerializedOpkEntry(id, key) },
