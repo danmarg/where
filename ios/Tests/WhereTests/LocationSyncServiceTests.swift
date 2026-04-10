@@ -256,6 +256,78 @@ class LocationSyncServiceTests: XCTestCase {
         XCTAssertTrue(endCalledBox.getCalled())
     }
 
+    // MARK: - Keychain storage tests
+
+    func testIsSharingLocationStoredInKeychain() throws {
+        let keychain = KeychainE2eeStorage()
+
+        // Test setting to false and verifying Keychain storage
+        keychain.putString(key: "where_is_sharing", value: "false")
+        XCTAssertEqual(keychain.getString(key: "where_is_sharing"), "false")
+
+        // Test persistence with a fresh service
+        let store = Shared.E2eeStore(storage: KeychainE2eeStorage())
+        service = LocationSyncService(e2eeStore: store, locationClient: nil)
+        XCTAssertFalse(service.isSharingLocation)
+
+        // Test setting to true
+        service.isSharingLocation = true
+        let keychain2 = KeychainE2eeStorage()
+        XCTAssertEqual(keychain2.getString(key: "where_is_sharing"), "true")
+    }
+
+    func testDisplayNameStoredInKeychain() throws {
+        let keychain = KeychainE2eeStorage()
+
+        // Test setting and reading from Keychain
+        keychain.putString(key: "display_name", value: "Alice")
+        XCTAssertEqual(keychain.getString(key: "display_name"), "Alice")
+
+        // Test persistence with a fresh service
+        let store = Shared.E2eeStore(storage: KeychainE2eeStorage())
+        service = LocationSyncService(e2eeStore: store, locationClient: nil)
+        XCTAssertEqual(service.displayName, "Alice")
+    }
+
+    func testPausedFriendIdsStoredInKeychain() throws {
+        let keychain = KeychainE2eeStorage()
+
+        // Test setting paused friend IDs through the service
+        let store = Shared.E2eeStore(storage: KeychainE2eeStorage())
+        service = LocationSyncService(e2eeStore: store, locationClient: nil)
+        service.pausedFriendIds = ["friend1", "friend2"]
+
+        // Verify they're in Keychain
+        let pausedJson = keychain.getString(key: "paused_friends")
+        XCTAssertNotNil(pausedJson)
+        if let pausedData = pausedJson?.data(using: .utf8),
+           let pausedArray = try? JSONSerialization.jsonObject(with: pausedData) as? [String] {
+            XCTAssertEqual(Set(pausedArray), ["friend1", "friend2"])
+        } else {
+            XCTFail("Failed to parse paused friends from Keychain")
+        }
+
+        // Test persistence with a fresh service
+        let store2 = Shared.E2eeStore(storage: KeychainE2eeStorage())
+        let service2 = LocationSyncService(e2eeStore: store2, locationClient: nil)
+        XCTAssertEqual(service2.pausedFriendIds, ["friend1", "friend2"])
+    }
+
+    func testKeychainNotUserDefaults() throws {
+        // Verify that UserDefaults no longer contains these keys
+        let store = Shared.E2eeStore(storage: KeychainE2eeStorage())
+        service = LocationSyncService(e2eeStore: store, locationClient: nil)
+
+        service.isSharingLocation = false
+        service.displayName = "TestUser"
+        service.pausedFriendIds = ["friend1"]
+
+        // Verify that UserDefaults does not have these keys
+        XCTAssertNil(UserDefaults.standard.object(forKey: "where_is_sharing"))
+        XCTAssertNil(UserDefaults.standard.object(forKey: "display_name"))
+        XCTAssertNil(UserDefaults.standard.object(forKey: "paused_friends"))
+    }
+
     private final class ExpiryHandlerBox: @unchecked Sendable {
         private let lock = NSLock()
         private var handler: (@Sendable () -> Void)?
