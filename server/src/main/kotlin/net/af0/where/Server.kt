@@ -11,6 +11,10 @@ import io.ktor.server.plugins.contentnegotiation.*
 import io.ktor.server.request.*
 import io.ktor.server.response.*
 import io.ktor.server.routing.*
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
@@ -31,10 +35,13 @@ private const val MAILBOX_TTL_MS = 60 * 60 * 1000L
 private const val MAX_QUEUE_DEPTH = 100
 
 /** Maximum POST requests per token within the rate-limit window. */
-private const val RATE_LIMIT_MAX_POSTS = 60
+internal const val RATE_LIMIT_MAX_POSTS = 60
 
 /** Rate-limit window duration in milliseconds (1 minute). */
 private const val RATE_LIMIT_WINDOW_MS = 60_000L
+
+/** How often the background eviction job sweeps stale map entries. */
+private const val EVICTION_INTERVAL_MS = 5 * 60_000L
 
 private data class MailboxEntry(val payload: JsonElement, val expiresAt: Long)
 
@@ -83,6 +90,40 @@ class MailboxState {
     }
 
     /**
+     * Remove map entries whose contents have fully expired.
+     *
+     * Both [mailboxes] and [postTimes] grow by one entry per unique token ever seen and
+     * are never shrunk by [post] or [drain].  This method reclaims those zombie entries.
+     *
+     * Safety: [ConcurrentHashMap.computeIfPresent] holds a bucket-level lock while the
+     * lambda runs, so a concurrent [post] (which uses [getOrPut] / [computeIfAbsent] on
+     * the same key) will either complete before the lock is acquired — leaving a non-empty
+     * queue that this method will not remove — or block until after the lock is released,
+     * at which point it will create a fresh entry via [computeIfAbsent].  Either way no
+     * data is lost.
+     */
+    fun evict() = evictWithParams(rateLimitWindowMs = RATE_LIMIT_WINDOW_MS)
+
+    /** Exposed for tests to control the rate-limit window (e.g. 0 to treat all entries as stale). */
+    internal fun evictForTest(rateLimitWindowMs: Long) = evictWithParams(rateLimitWindowMs)
+
+    private fun evictWithParams(rateLimitWindowMs: Long) {
+        val now = System.currentTimeMillis()
+        postTimes.forEach { (token, _) ->
+            postTimes.computeIfPresent(token) { _, q ->
+                q.removeIf { it < now - rateLimitWindowMs }
+                if (q.isEmpty()) null else q   // null return removes the entry
+            }
+        }
+        mailboxes.forEach { (token, _) ->
+            mailboxes.computeIfPresent(token) { _, q ->
+                q.removeIf { it.expiresAt <= now }
+                if (q.isEmpty()) null else q
+            }
+        }
+    }
+
+    /**
      * Drain all non-expired messages for [token] and return them.
      * Returns an empty list for unknown or empty tokens (§7.2: indistinguishable responses).
      */
@@ -122,6 +163,16 @@ fun main(args: Array<String>) {
 fun Application.module(state: ServerState = ServerState()) {
     install(ContentNegotiation) { json(json) }
     install(CallLogging)
+
+    // Background eviction: remove zombie token entries from the mailbox and rate-limit
+    // maps.  Entries are created on first POST but never deleted by post/drain; without
+    // eviction a token-flooding attack causes unbounded memory growth.
+    launch(Dispatchers.Default) {
+        while (isActive) {
+            delay(EVICTION_INTERVAL_MS)
+            state.mailbox.evict()
+        }
+    }
 
     if (state.debug) {
         intercept(ApplicationCallPipeline.Monitoring) {

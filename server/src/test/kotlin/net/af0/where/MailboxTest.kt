@@ -6,6 +6,7 @@ import io.ktor.http.*
 import io.ktor.server.testing.*
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonPrimitive
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
@@ -147,6 +148,52 @@ class MailboxTest {
     // ---------------------------------------------------------------------------
     // Constant-time invariant: unknown tokens look like empty tokens (§7.2)
     // ---------------------------------------------------------------------------
+
+    // ---------------------------------------------------------------------------
+    // Eviction
+    // ---------------------------------------------------------------------------
+
+    @Test
+    fun `evict resets stale postTimes so rate limit no longer applies`() {
+        val state = MailboxState()
+        val token = "evicttoken0000001"
+        // Exhaust the rate limit for this token.
+        repeat(RATE_LIMIT_MAX_POSTS) { i ->
+            state.post(token, JsonPrimitive(i))
+        }
+        assertTrue(!state.post(token, JsonPrimitive("x")), "should be rate-limited before eviction")
+
+        // Evict with window=0 so all timestamps look stale.
+        state.evictForTest(rateLimitWindowMs = 0)
+
+        // Rate-limit state is gone; posting should be accepted again.
+        assertTrue(state.post(token, JsonPrimitive("y")), "should accept post after eviction cleared postTimes")
+    }
+
+    @Test
+    fun `evict removes empty mailbox entries`() {
+        val state = MailboxState()
+        val token = "evicttoken0000002"
+        state.post(token, JsonPrimitive("msg"))
+        state.drain(token)  // empties the mailbox queue
+
+        // Evict — the mailbox queue is empty so the entry should be removed.
+        state.evictForTest(rateLimitWindowMs = 0)
+
+        // Drain should still return empty (no phantom entry).
+        assertTrue(state.drain(token).isEmpty(), "evicted mailbox entry should return empty")
+    }
+
+    @Test
+    fun `evict does not remove mailbox entries with live messages`() {
+        val state = MailboxState()
+        state.post("live", JsonPrimitive("msg"))
+
+        // Evict — the message has not expired so the entry should be retained.
+        state.evictForTest(rateLimitWindowMs = 0)
+
+        assertEquals(1, state.drain("live").size, "live message should survive eviction")
+    }
 
     @Test
     fun `GET inbox response is identical for unknown and empty tokens`() {
