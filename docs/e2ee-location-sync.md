@@ -203,15 +203,14 @@ bob_fp   = SHA-256(EK_B.pub)   // 32 bytes
 safety_number = SHA-256(lower_EK.pub || higher_EK.pub)   // sorted lexicographically
 
 // Derive initial bootstrap routing tokens from SK
-info_token = "Where-v1-RoutingToken" || alice_fp || bob_fp
 // AliceToBob token (Alice posts, Bob polls)
 T_AB_0 = HKDF-SHA-256(IKM  = SK,
-                       salt = 0x00000000 || 0x00,   // epoch=0 (4 bytes), direction=0 (AliceToBob, 1 byte)
-                       info = info_token)[0:16]
+                       salt = 0x00000000,   // epoch=0 (4 bytes)
+                       info = "Where-v1-RoutingToken" || alice_fp || bob_fp)[0:16]
 // BobToAlice token (Bob posts, Alice polls)
 T_BA_0 = HKDF-SHA-256(IKM  = SK,
-                       salt = 0x00000000 || 0x01,   // epoch=0 (4 bytes), direction=1 (BobToAlice, 1 byte)
-                       info = info_token)[0:16]
+                       salt = 0x00000000,   // epoch=0 (4 bytes)
+                       info = "Where-v1-RoutingToken" || bob_fp || alice_fp)[0:16]
 ```
 
 **Key Confirmation:**
@@ -575,14 +574,13 @@ Output: 64 bytes split as `[0:32] = new_root_key`, `[32:64] = new_chain_key`.
 
 After each DH ratchet step, the routing tokens for this friendship pair MUST be re-derived from the new root key:
 ```
-info_token = "Where-v1-RoutingToken" || alice_fp || bob_fp
 new_send_token = HKDF-SHA-256(
-    salt = new_epoch (4 bytes) || direction (1 byte),
+    salt = new_epoch (4 bytes),
     ikm  = new_root_key,
-    info = info_token
+    info = "Where-v1-RoutingToken" || sender_fp || recipient_fp
 )[0:16]
 ```
-This ensures the routing tokens rotate with every epoch, preventing the server from correlating historical traffic for a friendship pair via static tokens. Direction is 0 for Alice->Bob and 1 for Bob->Alice.
+This ensures the routing tokens rotate with every epoch, preventing the server from correlating historical traffic for a friendship pair via static tokens. Direction is encoded implicitly via the `sender_fp || recipient_fp` ordering in the info field.
 
 **Token Transition Protocol:**
 When the routing tokens change, the ordering of events is strictly sequenced:
