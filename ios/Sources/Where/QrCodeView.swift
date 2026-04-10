@@ -78,15 +78,16 @@ struct InviteSheet: View {
                         .buttonStyle(.bordered)
                     Button("Share Link") { showShareSheet = true }
                         .buttonStyle(.borderedProminent)
+                        .disabled(cachedQrUrl.isEmpty)
                 }
             }
             .padding(32)
         }
         .onAppear {
-            cachedQrUrl = qrPayloadToUrl(qrPayload)
+            cachedQrUrl = qrPayloadToUrl(qrPayload) ?? ""
         }
         .onChange(of: qrPayload) { oldValue, newValue in
-            cachedQrUrl = qrPayloadToUrl(newValue)
+            cachedQrUrl = qrPayloadToUrl(newValue) ?? ""
         }
         .sheet(isPresented: $showShareSheet) {
             ShareSheet(items: [cachedQrUrl])
