@@ -171,14 +171,6 @@ final class LocationSyncService: ObservableObject {
     let e2eeStore: Shared.E2eeStore
     let locationClient: Shared.LocationClient
 
-    let myId: String = {
-        let key = "where_user_id"
-        if let id = UserDefaults.standard.string(forKey: key) { return id }
-        let id = UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased()
-        UserDefaults.standard.set(id, forKey: key)
-        return id
-    }()
-
     init(e2eeStore: Shared.E2eeStore? = nil, locationClient: Shared.LocationClient? = nil) {
         logger.debug("LocationSyncService init: serverUrl=\(ServerConfig.httpBaseUrl)")
 
@@ -241,19 +233,9 @@ final class LocationSyncService: ObservableObject {
     }
 
     private func updateVisibleUsers() {
-        var result: [Shared.UserLocation] = []
-        if isSharingLocation, let loc = LocationManager.shared.location {
-            result.append(Shared.UserLocation(
-                userId: myId,
-                lat: loc.coordinate.latitude,
-                lng: loc.coordinate.longitude,
-                timestamp: Int64(loc.timestamp.timeIntervalSince1970)
-            ))
+        visibleUsers = friendLocations.map { (friendId, locData) in
+            Shared.UserLocation(userId: friendId, lat: locData.lat, lng: locData.lng, timestamp: locData.ts)
         }
-        for (friendId, locData) in friendLocations {
-            result.append(Shared.UserLocation(userId: friendId, lat: locData.lat, lng: locData.lng, timestamp: locData.ts))
-        }
-        visibleUsers = result
     }
 
     // Poll timer: handles inbound friend-location polling and the outbound heartbeat.

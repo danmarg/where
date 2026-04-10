@@ -21,7 +21,9 @@ struct ContentView: View {
             WhereMapView(
                 users: syncService.visibleUsers,
                 friends: syncService.friends,
-                ownUserId: syncService.myId,
+                ownLocation: locationManager.location.map {
+                    CLLocationCoordinate2D(latitude: $0.coordinate.latitude, longitude: $0.coordinate.longitude)
+                },
                 zoomTarget: zoomTarget,
                 onZoomConsumed: { zoomTarget = nil },
                 onSelectFriend: { friendId in
@@ -106,7 +108,6 @@ struct ContentView: View {
         }
         .sheet(isPresented: $showFriends) {
             FriendsSheet(
-                myId: syncService.myId,
                 displayName: $syncService.displayName,
                 friends: syncService.friends,
                 pausedFriendIds: syncService.pausedFriendIds,
@@ -127,12 +128,7 @@ struct ContentView: View {
                 },
                 onRemove: { id in Task { await syncService.removeFriend(id: id) } },
                 onZoomTo: { friendId in
-                    if friendId == syncService.myId {
-                        // Zoom to own location
-                        if let loc = locationManager.location {
-                            zoomTarget = CLLocationCoordinate2D(latitude: loc.coordinate.latitude, longitude: loc.coordinate.longitude)
-                        }
-                    } else if let loc = syncService.friendLocations[friendId] {
+                    if let loc = syncService.friendLocations[friendId] {
                         zoomTarget = CLLocationCoordinate2D(latitude: loc.lat, longitude: loc.lng)
                     }
                     showFriends = false

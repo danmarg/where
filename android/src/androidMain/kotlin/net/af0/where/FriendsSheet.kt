@@ -52,7 +52,6 @@ fun timeAgoString(lastPingMs: Long?): String {
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun FriendsSheet(
-    userId: String,
     friends: List<FriendEntry>,
     displayName: String,
     onDisplayNameChange: (String) -> Unit,
