@@ -61,7 +61,10 @@ interface MailboxStore {
      * Store [payload] under [token]. Returns false if the token is rate-limited
      * or has reached [MAX_QUEUE_DEPTH].
      */
-    fun post(token: String, payload: JsonElement): Boolean
+    fun post(
+        token: String,
+        payload: JsonElement,
+    ): Boolean
 
     /** Destructively drain all non-expired messages for [token]. */
     fun drain(token: String): List<JsonElement>
@@ -204,7 +207,8 @@ class RedisMailboxState(redisUrl: String) : MailboxStore {
      *
      * Returns 1 on success, 0 if rate-limited or queue full.
      */
-    private val postScript = """
+    private val postScript =
+        """
         local maxPosts = tonumber(ARGV[1])
         local maxDepth = tonumber(ARGV[2])
         local payload  = ARGV[3]
@@ -217,39 +221,46 @@ class RedisMailboxState(redisUrl: String) : MailboxStore {
         redis.call('RPUSH', KEYS[2], payload)
         redis.call('EXPIRE', KEYS[2], ttlSec)
         return 1
-    """.trimIndent()
+        """.trimIndent()
 
     /** Atomically drain all messages for the token. */
-    private val drainScript = """
+    private val drainScript =
+        """
         local msgs = redis.call('LRANGE', KEYS[1], 0, -1)
         if #msgs > 0 then redis.call('DEL', KEYS[1]) end
         return msgs
-    """.trimIndent()
+        """.trimIndent()
 
-    override fun post(token: String, payload: JsonElement): Boolean {
-        val result = jedis.eval(
-            postScript,
-            listOf("ratelimit:$token", "inbox:$token"),
-            listOf(
-                RATE_LIMIT_MAX_POSTS.toString(),
-                MAX_QUEUE_DEPTH.toString(),
-                payload.toString(),
-                (MAILBOX_TTL_MS / 1000).toString(),
-                (RATE_LIMIT_WINDOW_MS / 1000).toString(),
-            ),
-        )
+    override fun post(
+        token: String,
+        payload: JsonElement,
+    ): Boolean {
+        val result =
+            jedis.eval(
+                postScript,
+                listOf("ratelimit:$token", "inbox:$token"),
+                listOf(
+                    RATE_LIMIT_MAX_POSTS.toString(),
+                    MAX_QUEUE_DEPTH.toString(),
+                    payload.toString(),
+                    (MAILBOX_TTL_MS / 1000).toString(),
+                    (RATE_LIMIT_WINDOW_MS / 1000).toString(),
+                ),
+            )
         return result == 1L
     }
 
     override fun drain(token: String): List<JsonElement> {
         @Suppress("UNCHECKED_CAST")
-        val msgs = jedis.eval(drainScript, listOf("inbox:$token"), emptyList()) as List<*>
-        return msgs.map { item ->
-            val str = when (item) {
-                is String -> item
-                is ByteArray -> item.decodeToString()
-                else -> item.toString()
-            }
+        val msgs =
+            jedis.eval(drainScript, listOf("inbox:$token"), emptyList()) as List<*>
+        return msgs.map { item: Any? ->
+            val str =
+                when (item) {
+                    is String -> item
+                    is ByteArray -> item.decodeToString()
+                    else -> item.toString()
+                }
             json.parseToJsonElement(str)
         }
     }
