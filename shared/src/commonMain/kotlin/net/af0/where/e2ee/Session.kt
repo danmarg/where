@@ -211,6 +211,8 @@ object Session {
      * @param bobOpkPriv  Bob's OPK private key for the consumed opk_id.
      * @param senderFp    Alice's fingerprint.
      * @param recipientFp Bob's fingerprint.
+     * @param currentTime Bob's current local time (Unix seconds).
+     * @param timeout     How long to continue polling the old token (seconds).
      */
     fun bobProcessAliceRotation(
         state: SessionState,
@@ -219,6 +221,8 @@ object Session {
         newEpoch: Int,
         senderFp: ByteArray,
         recipientFp: ByteArray,
+        currentTime: Long,
+        timeout: Long,
     ): SessionState {
         val dhOut = x25519(bobOpkPriv, aliceNewEkPub)
         val ratchetStep = kdfRk(state.rootKey, dhOut)
@@ -234,6 +238,11 @@ object Session {
                 epoch = newEpoch,
                 theirEkPub = aliceNewEkPub.copyOf(),
                 recvSeq = 0L,
+                // §8.3: Continue polling old token for a safety window.
+                prevRecvToken = state.recvToken.copyOf(),
+                prevRecvTokenDeadline = currentTime + timeout,
+                prevRecvChainKey = state.recvChainKey.copyOf(),
+                prevRecvSeq = state.recvSeq,
             )
 
         // Security (§5.5, §11): zero out ephemeral keys after use
