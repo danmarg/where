@@ -15,6 +15,7 @@ play-services-location = "21.3.0"
 accompanist-permissions = "0.37.3"
 zxing-core = "3.5.3"
 zxing-android = "4.3.0"
+jedis = "5.2.0"
 libsodium = "0.9.5"
 security-crypto = "1.1.0-alpha06"
 
@@ -62,6 +63,9 @@ bouncycastle = { module = "org.bouncycastle:bcprov-jdk18on", version.ref = "boun
 libsodium-kmp = { module = "com.ionspin.kotlin:multiplatform-crypto-libsodium-bindings", version.ref = "libsodium" }
 libsodium-kmp-jvm = { module = "com.ionspin.kotlin:multiplatform-crypto-libsodium-bindings-jvm", version.ref = "libsodium" }
 security-crypto = { module = "androidx.security:security-crypto", version.ref = "security-crypto" }
+
+# Redis
+jedis = { module = "redis.clients:jedis", version.ref = "jedis" }
 
 # Logging
 logback-classic = { module = "ch.qos.logback:logback-classic", version.ref = "logback" }
