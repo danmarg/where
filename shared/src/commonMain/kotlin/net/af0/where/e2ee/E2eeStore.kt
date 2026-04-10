@@ -544,6 +544,8 @@ class E2eeStore(
                     newEpoch = payload.epoch,
                     senderFp = entry.session.aliceFp,
                     recipientFp = entry.session.bobFp,
+                    currentTime = currentTimeSeconds(),
+                    timeout = PREV_TOKEN_TIMEOUT_SECONDS,
                 )
 
             // Step 2: Refresh Bob's own send chain
@@ -668,11 +670,17 @@ class E2eeStore(
      * }
      * ```
      *
+     * @param friendId   ID of the friend whose messages are being processed.
+     * @param messages   Batch of payloads from the mailbox.
+     * @param tokenUsed  The hex-encoded token from which these messages were polled.
+     *                   If this matches the session's prevRecvToken, the old chain state
+     *                   is used for decryption.
      * @return [PollBatchResult], or null if [friendId] is not found.
      */
     suspend fun processBatch(
         friendId: String,
         messages: List<MailboxPayload>,
+        tokenUsed: String? = null,
     ): PollBatchResult? =
         stateLock.withLock {
             friends[friendId] ?: return@withLock null
@@ -700,29 +708,60 @@ class E2eeStore(
             }
 
             // Step 2: Decrypt location updates BEFORE processing epoch rotation.
-            // All EncryptedLocationPayloads on this token are from the current epoch.
-            val preRotationSession = friends[friendId]?.session ?: return@withLock PollBatchResult(emptyList(), null, emptyList())
-            var currentSession = preRotationSession
-            for (msg in messages.filterIsInstance<EncryptedLocationPayload>().sortedBy { it.seqAsLong() }) {
+            // All EncryptedLocationPayloads on this token are from the same epoch.
+            val sessionAtStart = friends[friendId]?.session ?: return@withLock PollBatchResult(emptyList(), null, emptyList())
+            val isPrevToken = tokenUsed != null && sessionAtStart.prevRecvToken?.toHex() == tokenUsed
+
+            // Construct a temporary SessionState for decryption if this is the old token.
+            var decryptionSession = if (isPrevToken && sessionAtStart.prevRecvChainKey != null) {
+                sessionAtStart.copy(
+                    epoch = sessionAtStart.epoch - 1,
+                    recvChainKey = sessionAtStart.prevRecvChainKey,
+                    recvSeq = sessionAtStart.prevRecvSeq,
+                )
+            } else {
+                sessionAtStart
+            }
+
+            val sortedLocations = messages.filterIsInstance<EncryptedLocationPayload>().sortedBy { it.seqAsLong() }
+            for (msg in sortedLocations) {
                 try {
                     val (newSession, loc) =
                         Session.decryptLocation(
-                            state = currentSession,
+                            state = decryptionSession,
                             ct = msg.ct,
                             seq = msg.seqAsLong(),
-                            senderFp = currentSession.aliceFp,
-                            recipientFp = currentSession.bobFp,
+                            senderFp = decryptionSession.aliceFp,
+                            recipientFp = decryptionSession.bobFp,
                         )
-                    currentSession = newSession
+                    decryptionSession = newSession
                     decryptedLocations.add(loc)
                 } catch (_: Exception) {
                     // drop individually bad messages rather than aborting the whole batch
                 }
             }
-            if (currentSession !== preRotationSession) {
-                val entry = friends[friendId] ?: return@withLock PollBatchResult(decryptedLocations, null, emptyList())
-                friends[friendId] = entry.copy(session = currentSession)
+
+            // Save the updated receive state back to the correct fields.
+            val entryAfterDecryption = friends[friendId] ?: return@withLock PollBatchResult(decryptedLocations, null, emptyList())
+            val updatedSession = if (isPrevToken) {
+                // If we decrypted messages on the old token, update the prevRecv fields.
+                entryAfterDecryption.session.copy(
+                    prevRecvChainKey = decryptionSession.recvChainKey,
+                    prevRecvSeq = decryptionSession.recvSeq,
+                )
+            } else {
+                // If we decrypted messages on the new token, update the main recv fields.
+                var s = entryAfterDecryption.session.copy(
+                    recvChainKey = decryptionSession.recvChainKey,
+                    recvSeq = decryptionSession.recvSeq,
+                )
+                // §8.3: Stop polling the old token once we have a valid message on the new one.
+                if (decryptedLocations.isNotEmpty() && s.prevRecvToken != null) {
+                    s = s.copy(prevRecvToken = null, prevRecvTokenDeadline = 0L, prevRecvChainKey = null, prevRecvSeq = 0L)
+                }
+                s
             }
+            friends[friendId] = entryAfterDecryption.copy(session = updatedSession)
 
             // Step 3: Process epoch rotation (after location decryption).
             for (msg in messages.filterIsInstance<EpochRotationPayload>()) {
@@ -757,6 +796,8 @@ class E2eeStore(
                         newEpoch = msg.epoch,
                         senderFp = entry.session.aliceFp,
                         recipientFp = entry.session.bobFp,
+                        currentTime = currentTimeSeconds(),
+                        timeout = PREV_TOKEN_TIMEOUT_SECONDS,
                     )
 
                 // Step 3b: Refresh Bob's own send chain
@@ -920,6 +961,12 @@ class E2eeStore(
          * open the app and trigger a maintenance poll.
          */
         const val ACK_TIMEOUT_SECONDS = 7L * 24 * 3600
+
+        /**
+         * How long Bob continues polling the old recvToken after Alice rotates epochs.
+         * Per §8.3, this should be 2*T. 1 hour (3600s) is a safe upper bound.
+         */
+        const val PREV_TOKEN_TIMEOUT_SECONDS = 3600L
     }
 }
 
