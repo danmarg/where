@@ -97,18 +97,9 @@ struct FriendsSheet: View {
                                         .font(.caption2)
                                         .fontDesign(.monospaced)
                                         .foregroundStyle(.secondary)
-                                    HStack(spacing: 8) {
-                                        Text(friend.id.prefix(8))
-                                            .font(.caption)
-                                            .fontDesign(.monospaced)
-                                            .foregroundStyle(.secondary)
-                                        Text("•")
-                                            .font(.caption)
-                                            .foregroundStyle(.secondary)
-                                        Text(timeAgoString(lastPingTimes[friend.id]))
-                                            .font(.caption)
-                                            .foregroundStyle(.secondary)
-                                    }
+                                    Text(timeAgoString(lastPingTimes[friend.id]))
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
                                 }
                                 Spacer()
                                 

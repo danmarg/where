@@ -197,11 +197,13 @@ class KeyExchangeTest {
     }
 
     @Test
-    fun `formatSafetyNumber produces 8 groups of 5 decimal digits`() {
+    fun `formatSafetyNumber produces two lines of 4 groups of 5 decimal digits`() {
         val ekA = generateX25519KeyPair().pub
         val ekB = generateX25519KeyPair().pub
         val formatted = formatSafetyNumber(safetyNumber(ekA, ekB))
-        val groups = formatted.split(" ")
+        val lines = formatted.split("\n")
+        assertEquals(2, lines.size)
+        val groups = lines.flatMap { it.split(" ") }
         assertEquals(8, groups.size)
         for (group in groups) {
             assertEquals(5, group.length)
