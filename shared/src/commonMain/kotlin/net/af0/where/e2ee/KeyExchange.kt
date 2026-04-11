@@ -47,9 +47,10 @@ object KeyExchange {
         val aliceFp = fingerprint(qr.ekPub)
         val bobFp = fingerprint(ekB.pub)
 
-        // Bob derives his send token (token for Bob → Alice) and Alice's recv token
-        val tokenBobToAlice = deriveRoutingToken(sk, epoch = 0, senderFp = bobFp, recipientFp = aliceFp)
-        val tokenAliceToBob = deriveRoutingToken(sk, epoch = 0, senderFp = aliceFp, recipientFp = bobFp)
+        // Bob derives initial routing tokens using stable init-token KDF (not the ratchet token KDF).
+        // T_AB_0 = HKDF(SK, info="Where-v1-InitToken-AB")[0:16]; T_BA_0 = ...InitToken-BA.
+        val tokenAliceToBob = hkdfSha256(ikm = sk, salt = null, info = INFO_INIT_TOKEN_AB.encodeToByteArray(), length = 16)
+        val tokenBobToAlice = hkdfSha256(ikm = sk, salt = null, info = INFO_INIT_TOKEN_BA.encodeToByteArray(), length = 16)
 
         val kBundle =
             hkdfSha256(
@@ -106,9 +107,9 @@ object KeyExchange {
 
         val aliceFp = fingerprint(aliceEkPub)
         val bobFp = fingerprint(msg.ekPub)
-        // Alice derives her send token (token for Alice → Bob) and Bob's recv token
-        val tokenAliceToBob = deriveRoutingToken(sk, epoch = 0, senderFp = aliceFp, recipientFp = bobFp)
-        val tokenBobToAlice = deriveRoutingToken(sk, epoch = 0, senderFp = bobFp, recipientFp = aliceFp)
+        // Alice derives initial routing tokens using stable init-token KDF (not the ratchet token KDF).
+        val tokenAliceToBob = hkdfSha256(ikm = sk, salt = null, info = INFO_INIT_TOKEN_AB.encodeToByteArray(), length = 16)
+        val tokenBobToAlice = hkdfSha256(ikm = sk, salt = null, info = INFO_INIT_TOKEN_BA.encodeToByteArray(), length = 16)
 
         val kBundle =
             hkdfSha256(
@@ -174,7 +175,7 @@ object KeyExchange {
             recvToken = recvToken.copyOf(),
             sendSeq = 0L,
             recvSeq = 0L,
-            epoch = 0,
+
             myEkPriv = myEkPriv.copyOf(),
             myEkPub = myEkPub.copyOf(),
             theirEkPub = theirEkPub.copyOf(),

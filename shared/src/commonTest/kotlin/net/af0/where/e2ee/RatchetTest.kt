@@ -82,18 +82,18 @@ class RatchetTest {
         val rootKey = ByteArray(32) { it.toByte() }
         val senderFp = ByteArray(32) { 0xAA.toByte() }
         val recipientFp = ByteArray(32) { 0xBB.toByte() }
-        val token = deriveRoutingToken(rootKey, epoch = 0, senderFp, recipientFp)
+        val token = deriveRoutingToken(rootKey, senderFp, recipientFp)
         assertEquals(16, token.size)
     }
 
     @Test
-    fun `deriveRoutingToken differs across epochs`() {
+    fun `deriveRoutingToken differs for different sender-recipient pairs`() {
         val rootKey = ByteArray(32) { it.toByte() }
         val senderFp = ByteArray(32) { 0xAA.toByte() }
         val recipientFp = ByteArray(32) { 0xBB.toByte() }
-        val t0 = deriveRoutingToken(rootKey, epoch = 0, senderFp, recipientFp)
-        val t1 = deriveRoutingToken(rootKey, epoch = 1, senderFp, recipientFp)
-        assertNotEquals(t0.toList(), t1.toList())
+        val tAB = deriveRoutingToken(rootKey, senderFp, recipientFp)
+        val tBA = deriveRoutingToken(rootKey, recipientFp, senderFp)
+        assertNotEquals(tAB.toList(), tBA.toList())
     }
 
     @Test
@@ -102,7 +102,7 @@ class RatchetTest {
         val rootKey = ByteArray(32) { 0xCC.toByte() }
         val senderFp = ByteArray(32) { 0xAA.toByte() }
         val recipientFp = ByteArray(32) { 0xBB.toByte() }
-        val token = deriveRoutingToken(rootKey, 0, senderFp, recipientFp)
+        val token = deriveRoutingToken(rootKey, senderFp, recipientFp)
         val step = kdfCk(rootKey)
         // token is 16 bytes, step outputs are 32/12 — compare prefix
         assertNotEquals(token.toList(), step.messageKey.copyOfRange(0, 16).toList())

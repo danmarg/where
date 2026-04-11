@@ -143,13 +143,9 @@ fun FriendsSheet(
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 )
-                                val ackStale =
-                                    friend.isInitiator &&
-                                        friend.lastAckTs != Long.MAX_VALUE &&
-                                        System.currentTimeMillis() / 1000 - friend.lastAckTs > E2eeStore.ACK_TIMEOUT_SECONDS
-                                if (ackStale) {
+                                if (friend.isStale) {
                                     Text(
-                                        "Not receiving this friend's acks — location sharing paused",
+                                        "Friend has not been seen recently — rotation may be stuck",
                                         style = MaterialTheme.typography.bodySmall,
                                         color = MaterialTheme.colorScheme.error,
                                     )
