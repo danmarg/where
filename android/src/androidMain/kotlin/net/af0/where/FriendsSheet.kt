@@ -127,7 +127,7 @@ fun FriendsSheet(
                         ) {
                             Column(modifier = Modifier.weight(1f)) {
                                 Text(
-                                    friend.name,
+                                    if (friend.isConfirmed) friend.name else "${friend.name} (Pending)",
                                     style = MaterialTheme.typography.bodyLarge,
                                     maxLines = 1,
                                     overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
