@@ -223,7 +223,7 @@ class LocationService : Service() {
     internal suspend fun doPoll() {
         try {
             Log.d(TAG, "Polling for location updates")
-            val updates = locationClient.poll()
+            val updates = locationClient.poll(isForeground = locationSource.isAppInForeground.value)
             Log.d(TAG, "Got ${updates.size} location updates")
             withContext(Dispatchers.Main) {
                 val now = System.currentTimeMillis()

@@ -25,9 +25,10 @@ open class LocationClient(
      *
      * Poll calls are serialized to prevent concurrent ratchet state mutations.
      *
+     * @param isForeground Whether the app is currently in the foreground.
      * @return List of new [UserLocation] updates received since the last poll.
      */
-    suspend fun poll(): List<UserLocation> =
+    suspend fun poll(isForeground: Boolean = true): List<UserLocation> =
         pollMutex.withLock {
             val allUpdates = mutableListOf<UserLocation>()
             var lastError: Exception? = null
@@ -36,7 +37,8 @@ open class LocationClient(
 
             // If we have no friends, do a "health check" poll against a dummy token
             // to ensure connectivity and surface network errors even when the user is alone.
-            if (friends.isEmpty()) {
+            // We only do this in the foreground to save on battery/server costs.
+            if (friends.isEmpty() && isForeground) {
                 try {
                     E2eeMailboxClient.poll(baseUrl, "00000000000000000000000000000000")
                 } catch (e: ServerException) {
