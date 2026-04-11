@@ -110,8 +110,12 @@ data class SessionState(
  * Bob includes bobNewEkPub in his RatchetAck; Alice performs step 2 when committing.
  * [aliceNewEkPriv] is kept alive (serialized) until the RatchetAck is processed.
  *
- * @property newSession       Intermediate session state (after step 1 only); committed
- *                            in [Session.aliceProcessRatchetAck] after step 2.
+ * SECURITY NOTE (§5.5): [aliceNewEkPriv] MUST be stored with the same protections as
+ * the session root key (e.g., kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly on iOS,
+ * StrongBox-backed EncryptedSharedPreferences on Android). Backup exposure of this
+ * key compromises the post-compromise security of the pending DH rotation.
+ *
+ * @property newSession       Intermediate session state (after step 1 only); committed *                            in [Session.aliceProcessRatchetAck] after step 2.
  * @property epochRotationCt  Pre-built AEAD blob to include with each outgoing send.
  * @property opkId            OPK ID consumed for this rotation (for diagnostics).
  * @property aliceNewEkPriv   Alice's ephemeral private key; used for step 2 DH on commit.
@@ -157,11 +161,18 @@ fun String.hexToByteArray(): ByteArray {
 data class PendingAck(
     @Serializable(with = ByteArrayBase64Serializer::class) val ackCt: ByteArray,
     val sendToken: String,
+    val expectedRecvToken: String,
 ) {
     override fun equals(other: Any?): Boolean =
-        other is PendingAck && ackCt.contentEquals(other.ackCt) && sendToken == other.sendToken
+        other is PendingAck && ackCt.contentEquals(other.ackCt) &&
+            sendToken == other.sendToken && expectedRecvToken == other.expectedRecvToken
 
-    override fun hashCode(): Int = 31 * ackCt.contentHashCode() + sendToken.hashCode()
+    override fun hashCode(): Int {
+        var h = ackCt.contentHashCode()
+        h = 31 * h + sendToken.hashCode()
+        h = 31 * h + expectedRecvToken.hashCode()
+        return h
+    }
 }
 
 /** Plaintext location payload (before encryption / after decryption). */

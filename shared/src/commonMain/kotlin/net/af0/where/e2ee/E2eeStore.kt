@@ -87,6 +87,10 @@ private fun Map<Int, ByteArray>.contentEquals(other: Map<Int, ByteArray>): Boole
 
 /**
  * Alice's pending invite state.
+ *
+ * SECURITY NOTE (§5.5): [aliceEkPriv] MUST be stored with the same protections as
+ * the session root key (e.g., kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly on iOS,
+ * StrongBox-backed EncryptedSharedPreferences on Android).
  */
 @Serializable
 internal data class PendingInvite(
@@ -603,11 +607,13 @@ class E2eeStore(
      * For Alice, [RatchetAckPayload]s in the batch atomically commit any pending rotation.
      *
      * @param friendId   ID of the friend whose messages are being processed.
+     * @param recvToken  The token used to fetch this batch.
      * @param messages   Batch of payloads from the mailbox.
      * @return [PollBatchResult], or null if [friendId] is not found.
      */
     suspend fun processBatch(
         friendId: String,
+        recvToken: String,
         messages: List<MailboxPayload>,
     ): PollBatchResult? =
         stateLock.withLock {
@@ -666,7 +672,12 @@ class E2eeStore(
                         ),
                     // If Bob had a pendingAck and Alice just sent us a message on the new
                     // recvToken, she has committed the rotation — ack was received, stop re-posting.
-                    pendingAck = if (decryptedLocations.isNotEmpty()) null else entryAfterDecryption.pendingAck,
+                    pendingAck =
+                        if (decryptedLocations.isNotEmpty() && entryAfterDecryption.pendingAck?.expectedRecvToken == recvToken) {
+                            null
+                        } else {
+                            entryAfterDecryption.pendingAck
+                        },
                 )
 
             // Step 3: Process EpochRotation (Bob only).
@@ -709,7 +720,12 @@ class E2eeStore(
                         myOpkPrivs = entry.myOpkPrivs - rotPt.opkId,
                         // Cache the ack for lost-ack recovery: re-posted on every poll until
                         // Alice's first message on the new recvToken proves she committed.
-                        pendingAck = PendingAck(ackCt = ackCt, sendToken = oldSendToken.toHex()),
+                        pendingAck =
+                            PendingAck(
+                                ackCt = ackCt,
+                                sendToken = oldSendToken.toHex(),
+                                expectedRecvToken = newState.recvToken.toHex(),
+                            ),
                     )
 
                 // Post RatchetAck on the OLD sendToken (T_BA_old).
