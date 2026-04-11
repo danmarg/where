@@ -269,9 +269,12 @@ final class LocationSyncService: ObservableObject {
     }
 
     private func updateVisibleUsers() {
-        visibleUsers = friendLocations.map { (friendId, locData) in
-            Shared.UserLocation(userId: friendId, lat: locData.lat, lng: locData.lng, timestamp: locData.ts)
-        }
+        let confirmedIds = Set(friends.filter { $0.isConfirmed }.map { $0.id })
+        visibleUsers = friendLocations
+            .filter { confirmedIds.contains($0.key) }
+            .map { (friendId, locData) in
+                Shared.UserLocation(userId: friendId, lat: locData.lat, lng: locData.lng, timestamp: locData.ts)
+            }
     }
 
     // Poll timer: handles inbound friend-location polling and the outbound heartbeat.
@@ -655,6 +658,7 @@ final class LocationSyncService: ObservableObject {
                 onFriendLocationReceived(friendId: update.userId)
             }
 
+            friends = try await e2eeStore.listFriends()
             // Always update visibleUsers to ensure map is fresh when returning to foreground.
             updateVisibleUsers()
 
