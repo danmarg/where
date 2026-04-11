@@ -10,15 +10,11 @@ import kotlinx.serialization.json.long
 import kotlinx.serialization.json.put
 
 /**
- * High-level session operations: encrypt and decrypt location updates.
+ * High-level session operations: encrypt a location update, decrypt an incoming update,
+ * and perform DH ratchet rotation.
  *
- * Per-message token rotation (§8.3): each encrypted message embeds a fresh
- * 16-byte nextSendToken in the first bytes of the plaintext.  The recipient
- * extracts it and immediately switches its recvToken — structurally enforcing
- * the single-token invariant without any overlap window.
- *
- * All functions are pure (immutable SessionState in, new SessionState out) so
- * callers can easily audit state transitions and write deterministic tests.
+ * All functions are pure (immutable SessionState in, new SessionState out) so callers
+ * can easily audit state transitions and write deterministic tests.
  */
 object Session {
     private const val AAD_PREFIX = "Where-v1-Location"
@@ -28,9 +24,6 @@ object Session {
     // 512 bytes provides comfortable clearance while remaining a small fixed multiple
     // of a cache line, as per the design doc.
     internal const val PADDING_SIZE = 512
-
-    // Next-token prefix length embedded at the start of every plaintext.
-    internal const val TOKEN_PREFIX_SIZE = 16
 
     /**
      * Maximum allowed gap between the last received seq and the incoming seq.
@@ -43,16 +36,13 @@ object Session {
     /**
      * Encrypt one location update for a single peer.
      *
-     * Generates a fresh random [nextSendToken] (16 bytes), prepends it to the
-     * plaintext, and returns a new [SessionState] whose [SessionState.sendToken]
-     * is set to that token.  The caller MUST use the *old* sendToken (captured
-     * before this call) to POST the ciphertext; the new sendToken is for the
-     * next message.
+     * Returns the updated SessionState (with advanced chain key and seq) and the
+     * ciphertext (GCM ciphertext + 16-byte tag, ready to embed in EncryptedLocation).
      *
      * @param state       Current session state (will be advanced).
      * @param location    Plaintext location to encrypt.
-     * @param senderFp    SHA-256(sender EK.pub), 32 bytes — bound into AAD.
-     * @param recipientFp SHA-256(recipient EK.pub), 32 bytes — bound into AAD.
+     * @param senderFp    Alice's 32-byte fingerprint.
+     * @param recipientFp Bob's 32-byte fingerprint.
      */
     fun encryptLocation(
         state: SessionState,
@@ -67,19 +57,13 @@ object Session {
         val step = kdfCk(state.sendChainKey)
         val seq = state.sendSeq + 1
         val aad = buildLocationAad(senderFp, recipientFp, seq)
-
-        // Generate the token the recipient should poll for the NEXT message.
-        val nextSendToken = randomBytes(TOKEN_PREFIX_SIZE)
-        val plaintext = padToFixedSize(nextSendToken + encodeLocation(location), PADDING_SIZE)
+        val plaintext = padToFixedSize(encodeLocation(location), PADDING_SIZE)
         val ct = aeadEncrypt(step.messageKey, step.messageNonce, plaintext, aad)
 
         val newState =
             state.copy(
                 sendChainKey = step.newChainKey,
                 sendSeq = seq,
-                // Ready for the next outgoing message; caller must use the OLD sendToken
-                // for this message's POST.
-                sendToken = nextSendToken,
             )
 
         // Security (§5.5, §11): zero out ephemeral keys after use
@@ -93,9 +77,7 @@ object Session {
     /**
      * Decrypt one incoming location frame.
      *
-     * Extracts the embedded nextRecvToken from the first [TOKEN_PREFIX_SIZE] bytes
-     * of the plaintext and stores it as [SessionState.recvToken] in the returned
-     * state.  The caller should immediately start polling that new token.
+     * Returns the updated SessionState (with advanced recvSeq) and the plaintext.
      *
      * Rules:
      *   - Frames with seq <= state.recvSeq are silently dropped (replay).
@@ -136,6 +118,7 @@ object Session {
         // Each intermediate chainKey is zeroed before the reference is dropped (§5.5).
         var chainKey = state.recvChainKey.copyOf()
         var step: ChainStep? = null
+        // stepsNeeded is capped at MAX_GAP (1024) above, so .toInt() is safe.
         require(stepsNeeded <= Int.MAX_VALUE) { "stepsNeeded overflows Int" }
         repeat(stepsNeeded.toInt()) {
             step = kdfCk(chainKey)
@@ -162,17 +145,12 @@ object Session {
                 plaintext.fill(0)
                 throw DecryptionException("unpadding failed", e)
             }
-
-        require(unpadded.size > TOKEN_PREFIX_SIZE) { "plaintext too short to contain token prefix" }
-        val nextRecvToken = unpadded.copyOfRange(0, TOKEN_PREFIX_SIZE)
-        val location = decodeLocation(unpadded.copyOfRange(TOKEN_PREFIX_SIZE, unpadded.size))
+        val location = decodeLocation(unpadded)
 
         val newState =
             state.copy(
                 recvChainKey = chainKey,
                 recvSeq = seq,
-                // Immediately switch to the token embedded in this message.
-                recvToken = nextRecvToken,
             )
 
         // Security (§5.5, §11): zero out ephemeral keys after use
@@ -182,6 +160,152 @@ object Session {
         unpadded.fill(0)
 
         return newState to location
+    }
+
+    /**
+     * Alice: initiate a DH ratchet rotation step using a cached OPK from Bob.
+     *
+     * Computes the new session state and pre-builds the EpochRotation ciphertext blob.
+     * Returns (newSession, epochRotationCt, opkId) — the caller stores these as a
+     * [PendingRotation] and includes [epochRotationCt] in every outgoing send until
+     * Bob acks.
+     *
+     * Alice MUST NOT commit [newSession] until she receives a RatchetAck (call
+     * [aliceProcessRatchetAck] to do so). Until then she continues using the current
+     * session for all sends and receives.
+     *
+     * @param state          Current session state.
+     * @param aliceNewEkPriv Alice's fresh ephemeral X25519 private key for this step.
+     * @param aliceNewEkPub  Corresponding public key.
+     * @param bobOpkPub      Bob's OPK public key (consumed from cache).
+     * @param opkId          ID of the OPK consumed (stored in PendingRotation).
+     * @param aliceFp        Alice's fingerprint.
+     * @param bobFp          Bob's fingerprint.
+     * @return Triple(newSession, epochRotationCt, opkId).
+     */
+    fun aliceEpochRotation(
+        state: SessionState,
+        aliceNewEkPriv: ByteArray,
+        aliceNewEkPub: ByteArray,
+        bobOpkPub: ByteArray,
+        opkId: Int,
+        aliceFp: ByteArray,
+        bobFp: ByteArray,
+    ): Triple<SessionState, ByteArray, Int> {
+        val dhOut = x25519(aliceNewEkPriv, bobOpkPub)
+        val ratchetStep = kdfRk(state.rootKey, dhOut)
+        val newTokenAliceToBob = deriveRoutingToken(ratchetStep.newRootKey, senderFp = aliceFp, recipientFp = bobFp)
+        val newTokenBobToAlice = deriveRoutingToken(ratchetStep.newRootKey, senderFp = bobFp, recipientFp = aliceFp)
+
+        val newSession =
+            state.copy(
+                rootKey = ratchetStep.newRootKey,
+                sendChainKey = ratchetStep.newChainKey,
+                sendToken = newTokenAliceToBob,
+                recvToken = newTokenBobToAlice,
+                // myEkPriv is zeroed immediately — it is not used for a second DH step.
+                myEkPriv = ByteArray(32),
+                myEkPub = aliceNewEkPub.copyOf(),
+                theirEkPub = bobOpkPub.copyOf(),
+                sendSeq = 0L,
+            )
+
+        val epochRotationCt =
+            buildEpochRotationCt(
+                currentRootKey = state.rootKey,
+                opkId = opkId,
+                newEkPub = aliceNewEkPub,
+                aliceFp = aliceFp,
+                bobFp = bobFp,
+                sendToken = state.sendToken,
+            )
+
+        // Security (§5.5, §11): zero out ephemeral keys after use
+        dhOut.fill(0)
+        aliceNewEkPriv.fill(0)
+
+        return Triple(newSession, epochRotationCt, opkId)
+    }
+
+    /**
+     * Bob: process Alice's EpochRotation by computing the matching DH step.
+     *
+     * Immediately switches to the new recvToken (no dual-polling window). Returns
+     * (newState, ratchetAckCt). Bob MUST post [ratchetAckCt] on [state.sendToken]
+     * (the **pre-rotation** sendToken) before updating his routing address so Alice
+     * can receive it on her current recvToken.
+     *
+     * @param state           Bob's current session state.
+     * @param aliceNewEkPub   Alice's new ephemeral public key (from [decryptEpochRotationCt]).
+     * @param bobOpkPriv      Bob's OPK private key for the consumed opkId.
+     * @param aliceFp         Alice's fingerprint.
+     * @param bobFp           Bob's fingerprint.
+     * @return Pair(newState, ratchetAckCt) where ratchetAckCt must be posted on the pre-rotation sendToken.
+     */
+    fun bobProcessAliceRotation(
+        state: SessionState,
+        aliceNewEkPub: ByteArray,
+        bobOpkPriv: ByteArray,
+        aliceFp: ByteArray,
+        bobFp: ByteArray,
+    ): Pair<SessionState, ByteArray> {
+        val dhOut = x25519(bobOpkPriv, aliceNewEkPub)
+        val ratchetStep = kdfRk(state.rootKey, dhOut)
+        val newTokenAliceToBob = deriveRoutingToken(ratchetStep.newRootKey, senderFp = aliceFp, recipientFp = bobFp)
+        val newTokenBobToAlice = deriveRoutingToken(ratchetStep.newRootKey, senderFp = bobFp, recipientFp = aliceFp)
+
+        val newState =
+            state.copy(
+                rootKey = ratchetStep.newRootKey,
+                // Bob's new recv chain (= Alice's new send)
+                recvChainKey = ratchetStep.newChainKey,
+                sendToken = newTokenBobToAlice,
+                recvToken = newTokenAliceToBob,
+                theirEkPub = aliceNewEkPub.copyOf(),
+                recvSeq = 0L,
+            )
+
+        val ratchetAckCt =
+            buildRatchetAckCt(
+                newRootKey = ratchetStep.newRootKey,
+                bobFp = bobFp,
+                aliceFp = aliceFp,
+                newSendToken = newTokenBobToAlice,
+            )
+
+        // Security (§5.5, §11): zero out ephemeral keys after use
+        dhOut.fill(0)
+        bobOpkPriv.fill(0)
+
+        return newState to ratchetAckCt
+    }
+
+    /**
+     * Alice: verify Bob's RatchetAck and atomically commit the pending rotation.
+     *
+     * Throws [IllegalArgumentException] if the AEAD tag does not verify, indicating
+     * Bob did not successfully perform the matching DH step.
+     *
+     * @param pendingRotation The stored pending rotation (from [aliceEpochRotation]).
+     * @param ackCt           The AEAD blob from the RatchetAckPayload.
+     * @param bobFp           Bob's fingerprint.
+     * @param aliceFp         Alice's fingerprint.
+     * @return The committed new session state.
+     */
+    fun aliceProcessRatchetAck(
+        pendingRotation: PendingRotation,
+        ackCt: ByteArray,
+        bobFp: ByteArray,
+        aliceFp: ByteArray,
+    ): SessionState {
+        decryptRatchetAckCt(
+            newRootKey = pendingRotation.newSession.rootKey,
+            ct = ackCt,
+            bobFp = bobFp,
+            aliceFp = aliceFp,
+            newSendToken = pendingRotation.newSession.recvToken,
+        )
+        return pendingRotation.newSession
     }
 
     // ---------------------------------------------------------------------------

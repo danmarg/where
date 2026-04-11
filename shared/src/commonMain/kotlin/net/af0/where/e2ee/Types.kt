@@ -18,26 +18,27 @@ data class RawKeyPair(val priv: ByteArray, val pub: ByteArray) {
  * All byte arrays are copies; callers must zero them after use.
  *
  * Fields:
- *   rootKey       – 32-byte root key, derived at session init from the shared secret.
+ *   rootKey       – 32-byte root key, updated on every DH ratchet step.
  *   sendChainKey  – 32-byte symmetric chain key; advanced on every location send.
  *   recvChainKey  – 32-byte symmetric chain key; advanced on every location receive.
  *                   Independent from sendChainKey; initialized to the peer's send chain
  *                   so that send and receive ratchets never share key material.
- *   sendToken     – 16-byte opaque token (mailbox address) for the NEXT outgoing message.
- *                   Each encrypted message embeds the sender's nextSendToken so the
- *                   recipient can immediately switch to it (§8.3 per-message rotation).
+ *   sendToken     – 16-byte opaque token (mailbox address) for outgoing messages.
  *   recvToken     – 16-byte opaque token (mailbox address) for incoming messages.
- *                   Updated after each successfully decrypted message.
  *   sendSeq       – Monotonically increasing counter; MUST NOT wrap (session must be
  *                   invalidated and re-keyed if it reaches Long.MAX_VALUE).
  *   recvSeq       – Highest seq received from the peer (for replay rejection).
- *   myEkPriv      – 32-byte current ephemeral X25519 private key (zeroed after use; §5.5).
+ *   myEkPriv      – 32-byte current ephemeral X25519 private key (zeroed after DH step; §5.5).
  *   myEkPub       – 32-byte current ephemeral X25519 public key.
  *   theirEkPub    – 32-byte peer's last known ephemeral X25519 public key.
  *   aliceFp       – SHA-256(EK_A.pub) — Alice's session fingerprint.
  *   bobFp         – SHA-256(EK_B.pub) — Bob's session fingerprint.
  *   aliceEkPub    – EK_A.pub — Alice's bootstrap ephemeral public key (stable for session lifetime).
  *   bobEkPub      – EK_B.pub — Bob's bootstrap ephemeral public key (stable for session lifetime).
+ *   kBundle       – HKDF(SK, info="Where-v1-BundleAuth") — bundle authentication key.
+ *
+ * There is no epoch counter. DH ratchet advancement is ack-triggered (§8.4): Alice stores
+ * a PendingRotation alongside the session and commits it when she receives a RatchetAck.
  */
 @Serializable
 data class SessionState(
@@ -55,6 +56,7 @@ data class SessionState(
     @Serializable(with = ByteArrayBase64Serializer::class) val bobFp: ByteArray,
     @Serializable(with = ByteArrayBase64Serializer::class) val aliceEkPub: ByteArray,
     @Serializable(with = ByteArrayBase64Serializer::class) val bobEkPub: ByteArray,
+    @Serializable(with = ByteArrayBase64Serializer::class) val kBundle: ByteArray,
 ) {
     override fun equals(other: Any?): Boolean {
         if (other !is SessionState) return false
@@ -71,7 +73,8 @@ data class SessionState(
             aliceFp.contentEquals(other.aliceFp) &&
             bobFp.contentEquals(other.bobFp) &&
             aliceEkPub.contentEquals(other.aliceEkPub) &&
-            bobEkPub.contentEquals(other.bobEkPub)
+            bobEkPub.contentEquals(other.bobEkPub) &&
+            kBundle.contentEquals(other.kBundle)
     }
 
     override fun hashCode(): Int {
@@ -89,8 +92,35 @@ data class SessionState(
         h = 31 * h + bobFp.contentHashCode()
         h = 31 * h + aliceEkPub.contentHashCode()
         h = 31 * h + bobEkPub.contentHashCode()
+        h = 31 * h + kBundle.contentHashCode()
         return h
     }
+}
+
+/**
+ * A pending DH ratchet rotation initiated by Alice.
+ *
+ * Alice computes this when she first has an OPK available and no rotation is in flight.
+ * She stores it alongside her session and includes [epochRotationCt] in every outgoing
+ * POST until she receives a RatchetAck covering the rotation.
+ *
+ * @property newSession       The session state to commit once Bob acks.
+ * @property epochRotationCt  Pre-built AEAD blob to include with each outgoing send.
+ * @property opkId            OPK ID consumed for this rotation (for diagnostics).
+ */
+@Serializable
+data class PendingRotation(
+    val newSession: SessionState,
+    @Serializable(with = ByteArrayBase64Serializer::class) val epochRotationCt: ByteArray,
+    val opkId: Int,
+) {
+    override fun equals(other: Any?): Boolean =
+        other is PendingRotation &&
+            newSession == other.newSession &&
+            epochRotationCt.contentEquals(other.epochRotationCt) &&
+            opkId == other.opkId
+
+    override fun hashCode(): Int = 31 * newSession.hashCode() + epochRotationCt.contentHashCode()
 }
 
 fun ByteArray.toHex(): String = joinToString("") { (it.toInt() and 0xFF).toString(16).padStart(2, '0') }
@@ -160,6 +190,13 @@ data class KeyExchangeInitMessage(
     }
 
     override fun hashCode(): Int = token.contentHashCode()
+}
+
+/** One OPK entry in a PreKeyBundle. */
+data class OPK(val id: Int, val pub: ByteArray) {
+    override fun equals(other: Any?): Boolean = other is OPK && id == other.id && pub.contentEquals(other.pub)
+
+    override fun hashCode(): Int = 31 * id + pub.contentHashCode()
 }
 
 /** Output of a symmetric ratchet step (KDF_CK). */

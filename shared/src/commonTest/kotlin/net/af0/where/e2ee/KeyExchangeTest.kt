@@ -214,16 +214,34 @@ class KeyExchangeTest {
     }
 
     @Test
-    fun `FriendEntry safetyNumber is stable across messages`() {
+    fun `FriendEntry safetyNumber is stable across epoch rotations`() {
         val (qr, aliceEkPriv) = KeyExchange.aliceCreateQrPayload("Alice")
-        val (msg, _) = KeyExchange.bobProcessQr(qr, "Bob")
+        val (msg, bobSession) = KeyExchange.bobProcessQr(qr, "Bob")
         val aliceSession = KeyExchange.aliceProcessInit(msg, aliceEkPriv, qr.ekPub)
 
+        // Safety number before rotation
         val snBefore = formatSafetyNumber(safetyNumber(aliceSession.aliceEkPub, aliceSession.bobEkPub))
 
-        // aliceEkPub and bobEkPub are bootstrap keys, never change
-        val snAfter = formatSafetyNumber(safetyNumber(aliceSession.aliceEkPub, aliceSession.bobEkPub))
-        assertEquals(snBefore, snAfter, "Safety number must remain stable")
+        // Simulate an epoch rotation (alice generates new EK, bob processes it)
+        val bobOpk = generateX25519KeyPair()
+        val aliceNewEk = generateX25519KeyPair()
+        val (aliceRotated, _, _) =
+            Session.aliceEpochRotation(
+                aliceSession,
+                aliceNewEk.priv,
+                aliceNewEk.pub,
+                bobOpk.pub,
+                opkId = 1,
+                aliceFp = aliceSession.aliceFp,
+                bobFp = aliceSession.bobFp,
+            )
+
+        // aliceEkPub and bobEkPub must be unchanged after rotation
+        assertContentEquals(aliceSession.aliceEkPub, aliceRotated.aliceEkPub)
+        assertContentEquals(aliceSession.bobEkPub, aliceRotated.bobEkPub)
+
+        val snAfter = formatSafetyNumber(safetyNumber(aliceRotated.aliceEkPub, aliceRotated.bobEkPub))
+        assertEquals(snBefore, snAfter, "Safety number changed after epoch rotation")
     }
 
     @Test
