@@ -30,8 +30,11 @@ private val json =
         ignoreUnknownKeys = true
     }
 
-/** TTL for mailbox messages: 60 minutes. */
-private const val MAILBOX_TTL_MS = 60 * 60 * 1000L
+/** TTL for mailbox messages: 7 days (§10.2). */
+private const val MAILBOX_TTL_MS = 7 * 24 * 60 * 60 * 1000L
+
+/** TTL after first drain: 60 seconds (§7.3). */
+private const val CONSUMED_TTL_MS = 60 * 1000L
 
 /** Maximum messages retained per token. Prevents unbounded memory growth from floods. */
 private const val MAX_QUEUE_DEPTH = 100
@@ -80,7 +83,7 @@ interface MailboxStore {
 // In-memory implementation (tests / no Redis)
 // ---------------------------------------------------------------------------
 
-private data class MailboxEntry(val payload: JsonElement, val expiresAt: Long)
+private data class MailboxEntry(val payload: JsonElement, var expiresAt: Long)
 
 /**
  * Anonymous mailbox routing table backed by in-process maps (§7.1, §10).
@@ -163,6 +166,8 @@ class InMemoryMailboxState : MailboxStore {
     /**
      * Drain all non-expired messages for [token] and return them.
      * Returns an empty list for unknown or empty tokens (§7.2: indistinguishable responses).
+     *
+     * After the first drain, messages are kept for [CONSUMED_TTL_MS] to allow for retries (§7.3).
      */
     override fun drain(token: String): List<JsonElement> {
         val now = System.currentTimeMillis()
@@ -173,9 +178,18 @@ class InMemoryMailboxState : MailboxStore {
         val queue = mailboxes[token] ?: dummyQueue
 
         val result = mutableListOf<JsonElement>()
-        // Drain the entire queue; re-add nothing — this is a destructive read.
-        generateSequence { queue.poll() }.forEach { entry ->
-            if (entry.expiresAt > now) result.add(entry.payload)
+        val it = queue.iterator()
+        while (it.hasNext()) {
+            val entry = it.next()
+            if (entry.expiresAt <= now) {
+                it.remove()
+            } else {
+                result.add(entry.payload)
+                // Mark as consumed by shortening TTL if not already shortened.
+                if (entry.expiresAt > now + CONSUMED_TTL_MS) {
+                    entry.expiresAt = now + CONSUMED_TTL_MS
+                }
+            }
         }
         return result
     }
@@ -223,11 +237,18 @@ class RedisMailboxState(redisUrl: String) : MailboxStore {
         return 1
         """.trimIndent()
 
-    /** Atomically drain all messages for the token. */
+    /**
+     * Atomically retrieve all messages and set a short TTL if not already set (§7.3).
+     */
     private val drainScript =
         """
         local msgs = redis.call('LRANGE', KEYS[1], 0, -1)
-        if #msgs > 0 then redis.call('DEL', KEYS[1]) end
+        if #msgs > 0 then
+            local ttl = redis.call('TTL', KEYS[1])
+            if ttl > 60 or ttl == -1 then
+                redis.call('EXPIRE', KEYS[1], 60)
+            end
+        end
         return msgs
         """.trimIndent()
 

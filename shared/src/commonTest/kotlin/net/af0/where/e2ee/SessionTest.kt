@@ -25,6 +25,9 @@ class SessionTest {
         return ExchangeResult(aliceSession, bobSession)
     }
 
+    private val nextRecvToken = ByteArray(16) { 0x11.toByte() }
+    private val emptyOpkPrivGetter: (Int) -> ByteArray? = { null }
+
     // ---------------------------------------------------------------------------
     // Encrypt / decrypt round-trip
     // ---------------------------------------------------------------------------
@@ -34,13 +37,14 @@ class SessionTest {
         val (aliceSession, bobSession) = exchangeKeys()
         val loc = LocationPlaintext(lat = 37.7749, lng = -122.4194, acc = 15.0, ts = 1711152000L)
 
-        val (aliceNew, ct) = Session.encryptLocation(aliceSession, loc, aliceSession.aliceFp, aliceSession.bobFp)
-        val (_, decrypted) = Session.decryptLocation(bobSession, ct, aliceNew.sendSeq, bobSession.aliceFp, bobSession.bobFp)
+        val (aliceNew, ct) = Session.encryptLocation(aliceSession, loc, aliceSession.aliceFp, aliceSession.bobFp, nextRecvToken)
+        val (bobNew, decrypted) = Session.decryptLocation(bobSession, ct, aliceNew.sendSeq, bobSession.aliceFp, bobSession.bobFp, emptyOpkPrivGetter)
 
         assertEquals(loc.lat, decrypted.lat)
         assertEquals(loc.lng, decrypted.lng)
         assertEquals(loc.acc, decrypted.acc)
         assertEquals(loc.ts, decrypted.ts)
+        assertContentEquals(nextRecvToken, bobNew.recvToken)
     }
 
     @Test
@@ -48,9 +52,9 @@ class SessionTest {
         val (aliceSession, _) = exchangeKeys()
         val loc = LocationPlaintext(0.0, 0.0, 0.0, 0L)
 
-        val (s1, _) = Session.encryptLocation(aliceSession, loc, aliceSession.aliceFp, aliceSession.bobFp)
-        val (s2, _) = Session.encryptLocation(s1, loc, aliceSession.aliceFp, aliceSession.bobFp)
-        val (s3, _) = Session.encryptLocation(s2, loc, aliceSession.aliceFp, aliceSession.bobFp)
+        val (s1, _) = Session.encryptLocation(aliceSession, loc, aliceSession.aliceFp, aliceSession.bobFp, nextRecvToken)
+        val (s2, _) = Session.encryptLocation(s1, loc, aliceSession.aliceFp, aliceSession.bobFp, nextRecvToken)
+        val (s3, _) = Session.encryptLocation(s2, loc, aliceSession.aliceFp, aliceSession.bobFp, nextRecvToken)
 
         assertEquals(1L, s1.sendSeq)
         assertEquals(2L, s2.sendSeq)
@@ -62,8 +66,8 @@ class SessionTest {
         val (aliceSession, _) = exchangeKeys()
         val loc = LocationPlaintext(0.0, 0.0, 0.0, 0L)
 
-        val (s1, ct1) = Session.encryptLocation(aliceSession, loc, aliceSession.aliceFp, aliceSession.bobFp)
-        val (_, ct2) = Session.encryptLocation(s1, loc, aliceSession.aliceFp, aliceSession.bobFp)
+        val (s1, ct1) = Session.encryptLocation(aliceSession, loc, aliceSession.aliceFp, aliceSession.bobFp, nextRecvToken)
+        val (_, ct2) = Session.encryptLocation(s1, loc, aliceSession.aliceFp, aliceSession.bobFp, nextRecvToken)
 
         assertNotEquals(ct1.toList(), ct2.toList())
     }
@@ -79,9 +83,11 @@ class SessionTest {
         var aSess = aliceSession
         var bSess = bobSession
         for (loc in locs) {
-            val (newA, ct) = Session.encryptLocation(aSess, loc, aSess.aliceFp, aSess.bobFp)
-            val (newB, dec) = Session.decryptLocation(bSess, ct, newA.sendSeq, bSess.aliceFp, bSess.bobFp)
+            val nextToken = randomBytes(16)
+            val (newA, ct) = Session.encryptLocation(aSess, loc, aSess.aliceFp, aSess.bobFp, nextToken)
+            val (newB, dec) = Session.decryptLocation(bSess, ct, newA.sendSeq, bSess.aliceFp, bSess.bobFp, emptyOpkPrivGetter)
             assertEquals(loc.lat, dec.lat)
+            assertContentEquals(nextToken, newB.recvToken)
             aSess = newA
             bSess = newB
         }
@@ -96,13 +102,13 @@ class SessionTest {
         val (aliceSession, bobSession) = exchangeKeys()
         val loc = LocationPlaintext(1.0, 2.0, 3.0, 4L)
 
-        val (aliceNew, ct) = Session.encryptLocation(aliceSession, loc, aliceSession.aliceFp, aliceSession.bobFp)
+        val (aliceNew, ct) = Session.encryptLocation(aliceSession, loc, aliceSession.aliceFp, aliceSession.bobFp, nextRecvToken)
         val seq = aliceNew.sendSeq
 
-        val (bobNew, _) = Session.decryptLocation(bobSession, ct, seq, bobSession.aliceFp, bobSession.bobFp)
+        val (bobNew, _) = Session.decryptLocation(bobSession, ct, seq, bobSession.aliceFp, bobSession.bobFp, emptyOpkPrivGetter)
         // Second delivery of the same seq must be rejected.
         try {
-            Session.decryptLocation(bobNew, ct, seq, bobNew.aliceFp, bobNew.bobFp)
+            Session.decryptLocation(bobNew, ct, seq, bobNew.aliceFp, bobNew.bobFp, emptyOpkPrivGetter)
             kotlin.test.fail("Expected IllegalArgumentException for replay")
         } catch (e: IllegalArgumentException) {
             assertTrue(e.message?.contains("replay") == true)
@@ -118,21 +124,21 @@ class SessionTest {
         var bSess = bobSession
         val cts = mutableListOf<Pair<Long, ByteArray>>()
         repeat(3) {
-            val (newA, ct) = Session.encryptLocation(aSess, loc, aSess.aliceFp, aSess.bobFp)
+            val (newA, ct) = Session.encryptLocation(aSess, loc, aSess.aliceFp, aSess.bobFp, nextRecvToken)
             cts += newA.sendSeq to ct
             aSess = newA
         }
 
         // Deliver in order first.
         for ((seq, ct) in cts) {
-            val res = Session.decryptLocation(bSess, ct, seq, bSess.aliceFp, bSess.bobFp)
+            val res = Session.decryptLocation(bSess, ct, seq, bSess.aliceFp, bSess.bobFp, emptyOpkPrivGetter)
             bSess = res.first
         }
 
         // Re-deliver any of them — all should be rejected.
         for ((seq, ct) in cts) {
             try {
-                Session.decryptLocation(bSess, ct, seq, bSess.aliceFp, bSess.bobFp)
+                Session.decryptLocation(bSess, ct, seq, bSess.aliceFp, bSess.bobFp, emptyOpkPrivGetter)
                 kotlin.test.fail("Expected IllegalArgumentException for lower seq")
             } catch (e: IllegalArgumentException) {
                 assertTrue(e.message?.contains("replay") == true)
@@ -149,18 +155,15 @@ class SessionTest {
         val (aliceSession, bobSession) = exchangeKeys()
         val loc = LocationPlaintext(1.0, 2.0, 3.0, 4L)
 
-        // Advance Alice's chain MAX_GAP + 1 times: skip the first MAX_GAP
-        // messages and deliver only the (MAX_GAP + 1)-th.
         var aSess = aliceSession
         var lastCt = ByteArray(0)
-        val target = 1024 + 1 // MAX_GAP = 1024; seq starts at 1, so we send 1025 msgs
+        val target = 1024 + 1
         repeat(target) {
-            val (newA, ct) = Session.encryptLocation(aSess, loc, aSess.aliceFp, aSess.bobFp)
+            val (newA, ct) = Session.encryptLocation(aSess, loc, aSess.aliceFp, aSess.bobFp, nextRecvToken)
             aSess = newA
             lastCt = ct
         }
-        // Bob has recvSeq=0; stepsNeeded = 1025 = MAX_GAP + 1; should be accepted.
-        val (_, decrypted) = Session.decryptLocation(bobSession, lastCt, aSess.sendSeq, bobSession.aliceFp, bobSession.bobFp)
+        val (_, decrypted) = Session.decryptLocation(bobSession, lastCt, aSess.sendSeq, bobSession.aliceFp, bobSession.bobFp, emptyOpkPrivGetter)
         assertEquals(loc.lat, decrypted.lat)
     }
 
@@ -169,17 +172,16 @@ class SessionTest {
         val (aliceSession, bobSession) = exchangeKeys()
         val loc = LocationPlaintext(1.0, 2.0, 3.0, 4L)
 
-        // Send MAX_GAP + 2 messages (seq = 1026); stepsNeeded = 1026 > 1025.
         var aSess = aliceSession
         var lastCt = ByteArray(0)
         val target = 1024 + 2
         repeat(target) {
-            val (newA, ct) = Session.encryptLocation(aSess, loc, aSess.aliceFp, aSess.bobFp)
+            val (newA, ct) = Session.encryptLocation(aSess, loc, aSess.aliceFp, aSess.bobFp, nextRecvToken)
             aSess = newA
             lastCt = ct
         }
         try {
-            Session.decryptLocation(bobSession, lastCt, aSess.sendSeq, bobSession.aliceFp, bobSession.bobFp)
+            Session.decryptLocation(bobSession, lastCt, aSess.sendSeq, bobSession.aliceFp, bobSession.bobFp, emptyOpkPrivGetter)
             kotlin.test.fail("Expected IllegalArgumentException for gap exceeding MAX_GAP")
         } catch (e: IllegalArgumentException) {
             assertTrue(e.message?.contains("exceeds maximum") == true)
@@ -191,19 +193,17 @@ class SessionTest {
         val (_, bobSession) = exchangeKeys()
         val dummyCt = ByteArray(Session.PADDING_SIZE + 16)
 
-        // Attacker sends seq = 2^63 - 1
         val largeSeq = Long.MAX_VALUE
 
         val startTime = currentTimeMillis()
         try {
-            Session.decryptLocation(bobSession, dummyCt, largeSeq, bobSession.aliceFp, bobSession.bobFp)
+            Session.decryptLocation(bobSession, dummyCt, largeSeq, bobSession.aliceFp, bobSession.bobFp, emptyOpkPrivGetter)
             kotlin.test.fail("Expected IllegalArgumentException for large seq")
         } catch (e: IllegalArgumentException) {
             assertTrue(e.message?.contains("exceeds maximum") == true)
         }
         val duration = currentTimeMillis() - startTime
 
-        // Rejection should be near-instant (no HKDF iterations)
         assertTrue(duration < 100, "Large seq rejection took too long: ${duration}ms")
     }
 
@@ -217,12 +217,11 @@ class SessionTest {
         val eveFp = sha256(generateX25519KeyPair().pub)
 
         val loc = LocationPlaintext(1.0, 2.0, 3.0, 4L)
-        val (aliceNew, ct) = Session.encryptLocation(aliceSession, loc, aliceSession.aliceFp, aliceSession.bobFp)
+        val (aliceNew, ct) = Session.encryptLocation(aliceSession, loc, aliceSession.aliceFp, aliceSession.bobFp, nextRecvToken)
 
-        // Decrypting with wrong sender fingerprint must fail.
         val threw =
             try {
-                Session.decryptLocation(bobSession, ct, aliceNew.sendSeq, eveFp, bobSession.bobFp)
+                Session.decryptLocation(bobSession, ct, aliceNew.sendSeq, eveFp, bobSession.bobFp, emptyOpkPrivGetter)
                 false
             } catch (_: Exception) {
                 true
@@ -231,279 +230,47 @@ class SessionTest {
     }
 
     // ---------------------------------------------------------------------------
-    // Epoch rotation (DH ratchet)
+    // Integrated DH ratchet
     // ---------------------------------------------------------------------------
 
     @Test
-    fun `epoch rotation produces different routing token and chain key`() {
+    fun `integrated DH ratchet produces different root key`() {
         val (aliceSession, bobSession) = exchangeKeys()
 
         val bobOpk = generateX25519KeyPair()
         val aliceNewEk = generateX25519KeyPair()
+        val loc = LocationPlaintext(1.0, 2.0, 3.0, 4L)
 
-        val aliceRotated =
-            Session.aliceEpochRotation(
-                state = aliceSession,
-                aliceNewEkPriv = aliceNewEk.priv,
-                aliceNewEkPub = aliceNewEk.pub,
-                bobOpkPub = bobOpk.pub,
-                senderFp = aliceSession.aliceFp,
-                recipientFp = aliceSession.bobFp,
-            )
-        val bobRotated =
-            Session.bobProcessAliceRotation(
-                state = bobSession,
-                aliceNewEkPub = aliceNewEk.pub,
-                bobOpkPriv = bobOpk.priv,
-                newEpoch = 1,
-                senderFp = bobSession.aliceFp,
-                recipientFp = bobSession.bobFp,
-                currentTime = 0L,
-                timeout = 0L,
-            )
-
-        assertEquals(1, aliceRotated.epoch)
-        assertEquals(1, bobRotated.epoch)
-        assertContentEquals(aliceRotated.sendToken, bobRotated.recvToken, "Alice send = Bob recv after rotation")
-        assertContentEquals(aliceRotated.recvToken, bobRotated.sendToken, "Alice recv = Bob send after rotation")
-        assertNotEquals(aliceSession.sendToken.toList(), aliceRotated.sendToken.toList(), "Token changed after rotation")
-        assertContentEquals(aliceRotated.rootKey, bobRotated.rootKey)
-        // After epoch rotation Alice's new send chain must equal Bob's new recv chain.
-        assertContentEquals(aliceRotated.sendChainKey, bobRotated.recvChainKey)
-    }
-
-    @Test
-    fun `messages after epoch rotation can be decrypted`() {
-        val (aliceSession, bobSession) = exchangeKeys()
-
-        val bobOpk = generateX25519KeyPair()
-        val aliceNewEk = generateX25519KeyPair()
-
-        val aliceRotated =
-            Session.aliceEpochRotation(
-                aliceSession,
-                aliceNewEk.priv,
-                aliceNewEk.pub,
-                bobOpk.pub,
-                aliceSession.aliceFp,
-                aliceSession.bobFp,
-            )
-        val bobRotated =
-            Session.bobProcessAliceRotation(
-                bobSession,
-                aliceNewEk.pub,
-                bobOpk.priv,
-                1,
-                bobSession.aliceFp,
-                bobSession.bobFp,
-                0L,
-                0L,
-            )
-
-        val loc = LocationPlaintext(lat = 48.8566, lng = 2.3522, acc = 5.0, ts = 1711155000L)
-        // Alice's epoch is now 1; encrypt uses epoch from state.
-        val (aliceAfter, ct) = Session.encryptLocation(aliceRotated, loc, aliceRotated.aliceFp, aliceRotated.bobFp)
-        val (_, decrypted) = Session.decryptLocation(bobRotated, ct, aliceAfter.sendSeq, bobRotated.aliceFp, bobRotated.bobFp)
-
-        assertEquals(loc.lat, decrypted.lat)
-        assertEquals(loc.lng, decrypted.lng)
-    }
-
-    // ---------------------------------------------------------------------------
-    // AEAD control message helpers
-    // ---------------------------------------------------------------------------
-
-    @Test
-    fun `EpochRotation AEAD round-trip`() {
-        val rootKey = ByteArray(32) { it.toByte() }
-        val routingToken = ByteArray(16) { (it + 1).toByte() }
-        val newEkPub = ByteArray(32) { (it + 64).toByte() }
-        val senderFp = ByteArray(32) { it.toByte() }
-        val recipientFp = ByteArray(32) { (it + 1).toByte() }
-        val nonce = ByteArray(12) { 0xAA.toByte() }
-        val ts = 1711152000L
-
-        val ct =
-            buildEpochRotationCt(
-                rootKey = rootKey,
-                epoch = 3,
-                opkId = 7,
-                newEkPub = newEkPub,
-                ts = ts,
-                nonce = nonce,
-                routingToken = routingToken,
-                senderFp = senderFp,
-                recipientFp = recipientFp,
-            )
-
-        val plaintext =
-            decryptEpochRotationCt(
-                rootKey = rootKey,
-                epoch = 3,
-                nonce = nonce,
-                ct = ct,
-                routingToken = routingToken,
-                senderFp = senderFp,
-                recipientFp = recipientFp,
-            )
-
-        assertEquals(3, plaintext.epoch)
-        assertEquals(7, plaintext.opkId)
-        assertContentEquals(newEkPub, plaintext.newEkPub)
-        assertEquals(ts, plaintext.ts)
-    }
-
-    @Test
-    fun `EpochRotation AEAD fails with wrong root key`() {
-        val rootKey = ByteArray(32) { it.toByte() }
-        val wrongKey = ByteArray(32) { (it + 1).toByte() }
-        val routingToken = ByteArray(16) { 0x01.toByte() }
-        val newEkPub = ByteArray(32)
-        val senderFp = ByteArray(32)
-        val recipientFp = ByteArray(32)
-        val nonce = ByteArray(12)
-
-        val ct = buildEpochRotationCt(rootKey, 1, 1, newEkPub, 1000L, nonce, routingToken, senderFp, recipientFp)
-
-        val threw =
-            try {
-                decryptEpochRotationCt(wrongKey, 1, nonce, ct, routingToken, senderFp, recipientFp)
-                false
-            } catch (_: Exception) {
-                true
-            }
-        assertTrue(threw, "Expected AEAD to fail with wrong root key")
-    }
-
-    @Test
-    fun `RatchetAck AEAD round-trip`() {
-        val rootKey = ByteArray(32) { it.toByte() }
-        val routingToken = ByteArray(16) { (it + 1).toByte() }
-        val senderFp = ByteArray(32) { it.toByte() }
-        val recipientFp = ByteArray(32) { (it + 1).toByte() }
-        val newEkPub = ByteArray(32) { (it + 5).toByte() }
-        val nonce = ByteArray(12) { 0xBB.toByte() }
-        val ts = 1711152000L
-
-        val ct =
-            buildRatchetAckCt(
-                rootKey,
-                epochSeen = 5,
-                ts = ts,
-                newEkPub = newEkPub,
-                nonce = nonce,
-                routingToken = routingToken,
-                senderFp = senderFp,
-                recipientFp = recipientFp,
-            )
-        val plaintext =
-            decryptRatchetAckCt(
-                rootKey,
-                epochSeen = 5,
-                nonce = nonce,
-                ct = ct,
-                routingToken = routingToken,
-                senderFp = senderFp,
-                recipientFp = recipientFp,
-            )
-
-        assertEquals(5, plaintext.epochSeen)
-        assertEquals(ts, plaintext.ts)
-        assertContentEquals(newEkPub, plaintext.newEkPub)
-    }
-
-    @Test
-    fun `RatchetAck AEAD fails with wrong routing token`() {
-        val rootKey = ByteArray(32) { it.toByte() }
-        val routingToken = ByteArray(16) { 0x01.toByte() }
-        val wrongToken = ByteArray(16) { 0x02.toByte() }
-        val senderFp = ByteArray(32)
-        val recipientFp = ByteArray(32)
-        val nonce = ByteArray(12)
-
-        val ct =
-            buildRatchetAckCt(
-                rootKey,
-                epochSeen = 1,
-                ts = 1000L,
-                newEkPub = null,
-                nonce = nonce,
-                routingToken = routingToken,
-                senderFp = senderFp,
-                recipientFp = recipientFp,
-            )
-
-        val threw =
-            try {
-                decryptRatchetAckCt(
-                    rootKey,
-                    epochSeen = 1,
-                    nonce = nonce,
-                    ct = ct,
-                    routingToken = wrongToken,
-                    senderFp = senderFp,
-                    recipientFp = recipientFp,
-                )
-                false
-            } catch (_: Exception) {
-                true
-            }
-        assertTrue(threw, "Expected AEAD to fail with wrong routing token")
-    }
-
-    @Test
-    fun `test private keys are zeroed after use`() {
-        val (aliceSession, bobSession) = exchangeKeys()
-
-        val aliceNewEk = generateX25519KeyPair()
-        val bobOpk = generateX25519KeyPair()
-
-        val aliceEkPrivCopy = aliceNewEk.priv.copyOf()
-        val bobOpkPrivCopy = bobOpk.priv.copyOf()
-
-        // aliceEpochRotation
-        Session.aliceEpochRotation(
-            state = aliceSession,
-            aliceNewEkPriv = aliceNewEk.priv,
-            aliceNewEkPub = aliceNewEk.pub,
-            bobOpkPub = bobOpk.pub,
-            senderFp = aliceSession.aliceFp,
-            recipientFp = aliceSession.bobFp,
+        val (aliceNew, ct) = Session.encryptLocation(
+            aliceSession, loc, aliceSession.aliceFp, aliceSession.bobFp, nextRecvToken,
+            nextOpkId = 1, nextBobOpkPub = bobOpk.pub, aliceNewEkPriv = aliceNewEk.priv, aliceNewEkPub = aliceNewEk.pub
         )
-        assertTrue(aliceNewEk.priv.all { it == 0.toByte() }, "aliceNewEkPriv should be zeroed")
 
-        // bobProcessAliceRotation
-        Session.bobProcessAliceRotation(
-            state = bobSession,
-            aliceNewEkPub = aliceNewEk.pub,
-            bobOpkPriv = bobOpk.priv,
-            newEpoch = 1,
-            senderFp = bobSession.aliceFp,
-            recipientFp = bobSession.bobFp,
-            currentTime = 0L,
-            timeout = 0L,
+        val opkPrivGetter: (Int) -> ByteArray? = { id -> if (id == 1) bobOpk.priv else null }
+        val (bobNew, _) = Session.decryptLocation(bobSession, ct, aliceNew.sendSeq, bobSession.aliceFp, bobSession.bobFp, opkPrivGetter)
+
+        assertNotEquals(aliceSession.rootKey.toList(), aliceNew.rootKey.toList(), "Root key should change")
+        assertContentEquals(aliceNew.rootKey, bobNew.rootKey, "Root keys should match after integrated DH")
+        assertContentEquals(aliceNew.sendChainKey, bobNew.recvChainKey, "Chain keys should match after integrated DH")
+    }
+
+    @Test
+    fun `integrated DH ratchet handles missing OPK gracefully`() {
+        val (aliceSession, bobSession) = exchangeKeys()
+
+        val bobOpk = generateX25519KeyPair()
+        val aliceNewEk = generateX25519KeyPair()
+        val loc = LocationPlaintext(1.0, 2.0, 3.0, 4L)
+
+        val (aliceNew, ct) = Session.encryptLocation(
+            aliceSession, loc, aliceSession.aliceFp, aliceSession.bobFp, nextRecvToken,
+            nextOpkId = 1, nextBobOpkPub = bobOpk.pub, aliceNewEkPriv = aliceNewEk.priv, aliceNewEkPub = aliceNewEk.pub
         )
-        assertTrue(bobOpk.priv.all { it == 0.toByte() }, "bobOpkPriv should be zeroed")
 
-        // aliceProcessRatchetAck
-        // First we need to get a session where myEkPriv is not zero.
-        // This happens after Alice rotates her epoch.
-        val bobOpk2 = generateX25519KeyPair()
-        val aliceNewEk2 = generateX25519KeyPair()
-        val aliceRotated =
-            Session.aliceEpochRotation(
-                state = aliceSession,
-                aliceNewEkPriv = aliceNewEk2.priv,
-                aliceNewEkPub = aliceNewEk2.pub,
-                bobOpkPub = bobOpk2.pub,
-                senderFp = aliceSession.aliceFp,
-                recipientFp = aliceSession.bobFp,
-            )
+        // Bob doesn't have the OPK
+        val opkPrivGetter: (Int) -> ByteArray? = { null }
+        val (bobNew, _) = Session.decryptLocation(bobSession, ct, aliceNew.sendSeq, bobSession.aliceFp, bobSession.bobFp, opkPrivGetter)
 
-        val bobNewEk = generateX25519KeyPair()
-        assertTrue(aliceRotated.myEkPriv.any { it != 0.toByte() }, "Pre-condition: aliceRotated.myEkPriv should not be all zeros")
-
-        Session.aliceProcessRatchetAck(aliceRotated, bobNewEk.pub)
-        assertTrue(aliceRotated.myEkPriv.all { it == 0.toByte() }, "aliceRotated.myEkPriv should be zeroed")
+        assertNotEquals(aliceNew.rootKey.toList(), bobNew.rootKey.toList())
     }
 }

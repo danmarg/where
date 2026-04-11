@@ -44,7 +44,6 @@ sealed class MailboxPayload {
  * An encrypted location frame (Alice → Bob, §9.1).
  *
  * @property v      Protocol version.
- * @property epoch  DH ratchet epoch (uint32).
  * @property seq    Monotone counter as a decimal string, to avoid JS uint64 precision loss.
  * @property ct     ChaCha20-Poly1305 ciphertext + 16-byte tag (base64 on the wire).
  */
@@ -52,7 +51,6 @@ sealed class MailboxPayload {
 @SerialName("EncryptedLocation")
 data class EncryptedLocationPayload(
     override val v: Int = 1,
-    val epoch: Int,
     val seq: String,
     @Serializable(with = ByteArrayBase64Serializer::class) val ct: ByteArray,
 ) : MailboxPayload() {
@@ -85,53 +83,6 @@ data class PreKeyBundlePayload(
 ) : MailboxPayload() {
     fun toOPKList(): List<OPK> = keys.map { it.toOPK() }
 }
-
-/**
- * DH epoch rotation announcement (Alice → Bob, §9.3).
- *
- * @property v         Protocol version.
- * @property epoch     New epoch number (uint32).
- * @property opkId     ID of the Bob OPK Alice consumed for this ratchet step.
- * @property newEkPub  Alice's new X25519 ephemeral public key (32 bytes, base64).
- * @property ts        Unix timestamp in seconds (uint64).
- * @property nonce     12-byte random nonce for AEAD.
- * @property ct        AEAD ciphertext authenticating the rotation (see [buildEpochRotationCt]).
- */
-@Serializable
-@SerialName("EpochRotation")
-data class EpochRotationPayload(
-    override val v: Int = 1,
-    val epoch: Int,
-    @SerialName("opk_id") val opkId: Int,
-    @SerialName("new_ek_pub")
-    @Serializable(with = ByteArrayBase64Serializer::class) val newEkPub: ByteArray,
-    val ts: Long,
-    @Serializable(with = ByteArrayBase64Serializer::class) val nonce: ByteArray,
-    @Serializable(with = ByteArrayBase64Serializer::class) val ct: ByteArray,
-) : MailboxPayload()
-
-/**
- * Acknowledgment from Bob after processing an EpochRotation (Bob → Alice, §9.3).
- * Includes Bob's new ephemeral key for a two-way DH ratchet.
- *
- * @property v          Protocol version.
- * @property epochSeen  The epoch number Bob successfully processed.
- * @property ts         Unix timestamp in seconds.
- * @property newEkPub   Bob's new X25519 ephemeral public key (32 bytes).
- * @property nonce      12-byte random nonce for AEAD.
- * @property ct         AEAD ciphertext authenticating the ack (see [buildRatchetAckCt]).
- */
-@Serializable
-@SerialName("RatchetAck")
-data class RatchetAckPayload(
-    override val v: Int = 1,
-    @SerialName("epoch_seen") val epochSeen: Int,
-    val ts: Long,
-    @SerialName("new_ek_pub")
-    @Serializable(with = ByteArrayBase64Serializer::class) val newEkPub: ByteArray,
-    @Serializable(with = ByteArrayBase64Serializer::class) val nonce: ByteArray,
-    @Serializable(with = ByteArrayBase64Serializer::class) val ct: ByteArray,
-) : MailboxPayload()
 
 /**
  * Bob's KeyExchangeInit posted to the discovery token address (§4.2).

@@ -317,7 +317,7 @@ final class LocationSyncService: ObservableObject {
         let isRapid = await isRapidPolling()
 
         // Always poll — even when sharing is off we need to process incoming
-        // EpochRotations and post Ratchet Acks so Alice's location doesn't get stuck.
+        // location updates and tokens so the session remains synchronized.
         // The timer interval drops to 30 min in that case (maintenance-only).
         // updateUi (which drives pollPendingInvite) is only needed in foreground/rapid.
         await pollAll(updateUi: inForeground || isRapid)
@@ -336,7 +336,7 @@ final class LocationSyncService: ObservableObject {
         } else if isSharingLocation {
             targetInterval = 5 * 60                       // 5 min: heartbeat + friend poll
         } else {
-            targetInterval = Self.maintenancePollInterval  // 30 min: Ratchet Ack maintenance
+            targetInterval = Self.maintenancePollInterval  // 30 min: token maintenance
         }
         if let t = pollTimer, abs(t.timeInterval - targetInterval) > 0.1 {
             schedulePollTimer(interval: targetInterval)

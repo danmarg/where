@@ -97,18 +97,6 @@ class RatchetTest {
     }
 
     @Test
-    fun `deriveRoutingToken domain-separated from symmetric ratchet output`() {
-        // A routing token and a message key derived from the same root must not be equal.
-        val rootKey = ByteArray(32) { 0xCC.toByte() }
-        val senderFp = ByteArray(32) { 0xAA.toByte() }
-        val recipientFp = ByteArray(32) { 0xBB.toByte() }
-        val token = deriveRoutingToken(rootKey, 0, senderFp, recipientFp)
-        val step = kdfCk(rootKey)
-        // token is 16 bytes, step outputs are 32/12 — compare prefix
-        assertNotEquals(token.toList(), step.messageKey.copyOfRange(0, 16).toList())
-    }
-
-    @Test
     fun `intToBeBytes round-trip`() {
         assertEquals(0, intToBeBytes(0).fold(0) { acc, b -> (acc shl 8) or (b.toInt() and 0xFF) })
         assertEquals(1, intToBeBytes(1).fold(0) { acc, b -> (acc shl 8) or (b.toInt() and 0xFF) })
