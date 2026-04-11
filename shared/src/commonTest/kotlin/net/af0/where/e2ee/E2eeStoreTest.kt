@@ -493,7 +493,7 @@ class E2eeStoreTest {
             // 3. Bob processes a batch containing [location, epochRotation] in the same poll
             val locPayload = EncryptedLocationPayload(seq = aliceSess0.sendSeq.toString(), ct = ct0)
             val batch = listOf(locPayload, rotPayload)
-            val result = bobStore.processBatch(bobEntry.id, batch)!!
+            val result = bobStore.processBatch(bobEntry.id, bobEntry.session.recvToken.toHex(), batch)!!
 
             // Location decrypted before rotation was applied
             assertEquals(1, result.decryptedLocations.size)
@@ -554,7 +554,7 @@ class E2eeStoreTest {
             aliceStore.updateSession(aliceEntry.id, aliceSess0)
             val rotPayload = aliceStore.initiateRotation(aliceEntry.id)!!
             val locPayload = EncryptedLocationPayload(seq = aliceSess0.sendSeq.toString(), ct = ct0)
-            bobStore.processBatch(bobEntry.id, listOf(locPayload, rotPayload))
+            bobStore.processBatch(bobEntry.id, bobEntry.session.recvToken.toHex(), listOf(locPayload, rotPayload))
 
             // Confirm PendingAck is set before "restart"
             assertNotNull(bobStore.getFriend(bobEntry.id)!!.pendingAck)
@@ -574,6 +574,11 @@ class E2eeStoreTest {
                 bobStore.getFriend(bobEntry.id)!!.pendingAck!!.sendToken,
                 bobReloaded.pendingAck!!.sendToken,
                 "sendToken must be identical after reload",
+            )
+            assertEquals(
+                bobStore.getFriend(bobEntry.id)!!.pendingAck!!.expectedRecvToken,
+                bobReloaded.pendingAck!!.expectedRecvToken,
+                "expectedRecvToken must be identical after reload",
             )
         }
 
@@ -606,7 +611,7 @@ class E2eeStoreTest {
 
             // Bob processes the batch — switches to T_AB_new, sends ack on T_BA_old.
             val locPayload = EncryptedLocationPayload(seq = aliceSess0.sendSeq.toString(), ct = ct0)
-            bobStore.processBatch(bobEntry.id, listOf(locPayload, rotPayload))
+            bobStore.processBatch(bobEntry.id, bobEntry.session.recvToken.toHex(), listOf(locPayload, rotPayload))
 
             // Bob has a PendingAck stored (ack was "lost" — not processed by Alice yet).
             val bobWithPending = bobStore.getFriend(bobEntry.id)!!
@@ -639,6 +644,7 @@ class E2eeStoreTest {
 
             val result = bobStore.processBatch(
                 bobEntry.id,
+                bobStore.getFriend(bobEntry.id)!!.session.recvToken.toHex(),
                 listOf(EncryptedLocationPayload(seq = aliceSess1.sendSeq.toString(), ct = ct1)),
             )!!
             assertEquals(1, result.decryptedLocations.size, "Bob must decrypt Alice's post-commit location")
@@ -646,5 +652,90 @@ class E2eeStoreTest {
 
             // Bob's PendingAck is cleared — he knows Alice committed.
             assertNull(bobStore.getFriend(bobEntry.id)!!.pendingAck, "Bob must clear PendingAck after Alice's first post-commit message")
+        }
+
+    @Test
+    fun testPendingAckNotClearedOnOldToken() =
+        runBlocking {
+            // Setup Bob and Alice
+            val qr = aliceStore.createInvite("Alice")
+            val (initPayload, bobEntry) = bobStore.processScannedQr(qr)
+            val aliceEntry = aliceStore.processKeyExchangeInit(initPayload, "Bob")!!
+            val bundle = bobStore.generateOpkBundle(bobEntry.id, count = 1)!!
+            aliceStore.storeOpkBundle(aliceEntry.id, bundle)
+
+            // 1. Bob processes EpochRotation, switches to T_AB_new
+            val loc0 = LocationPlaintext(1.0, 1.0, 1.0, 1000L)
+            val aliceFriend0 = aliceStore.getFriend(aliceEntry.id)!!
+            val (aliceSess0, ct0) = Session.encryptLocation(
+                aliceFriend0.session, loc0,
+                aliceFriend0.session.aliceFp, aliceFriend0.session.bobFp,
+            )
+            aliceStore.updateSession(aliceEntry.id, aliceSess0)
+            val rotPayload = aliceStore.initiateRotation(aliceEntry.id)!!
+
+            val oldToken = bobEntry.session.recvToken.toHex()
+            bobStore.processBatch(bobEntry.id, oldToken, listOf(EncryptedLocationPayload(seq = aliceSess0.sendSeq.toString(), ct = ct0), rotPayload))
+
+            val bobAfterRot = bobStore.getFriend(bobEntry.id)!!
+            assertNotNull(bobAfterRot.pendingAck)
+            val expectedNewToken = bobAfterRot.pendingAck!!.expectedRecvToken
+            val oldTokenFromSession = bobAfterRot.session.recvToken.toHex()
+            
+            // The current session's recvToken IS the new one
+            assertEquals(expectedNewToken, oldTokenFromSession)
+            // It MUST be different from the oldToken we used to poll
+            assertFalse(expectedNewToken == oldToken, "New token must differ from old token")
+
+            // 2. Bob receives a delayed location on the OLD token.
+            val result = bobStore.processBatch(
+                bobEntry.id,
+                oldToken, // NOT expectedNewToken
+                listOf()
+            )!!
+
+            // We can't easily decrypt for the old epoch once rotated without keeping the old session.
+            // But we can verify that IF decryptedLocations was non-empty, it still wouldn't clear if the token is wrong.
+
+            // Let's use a trick: Step 2 decrypts locations using the CURRENT session.
+            // If we send a message on the NEW epoch, but with the OLD token, it would decrypt
+            // but SHOULD NOT clear pendingAck.
+
+            val aliceCommitted = aliceStore.getFriend(aliceEntry.id)!!
+            // Wait, we need Alice to commit to get the new session
+            val ackPayload = RatchetAckPayload(ct = bobAfterRot.pendingAck!!.ackCt)
+            aliceStore.processRatchetAck(aliceEntry.id, ackPayload)
+            val aliceCommittedSess = aliceStore.getFriend(aliceEntry.id)!!
+
+            val locNewEpoch = LocationPlaintext(2.0, 2.0, 1.0, 2000L)
+            val (aliceSessNew, ctNew) = Session.encryptLocation(
+                aliceCommittedSess.session, locNewEpoch,
+                aliceCommittedSess.session.aliceFp, aliceCommittedSess.session.bobFp,
+            )
+
+            // Receive message on the OLD token but with NEW session (simulates server/proxy weirdness)
+            bobStore.processBatch(
+                bobEntry.id,
+                oldToken,
+                listOf(EncryptedLocationPayload(seq = aliceSessNew.sendSeq.toString(), ct = ctNew))
+            )!!
+
+            // If it decrypted (it should, as seq is correct for the current session),
+            // it MUST NOT clear pendingAck because the token is wrong.
+            assertNotNull(bobStore.getFriend(bobEntry.id)!!.pendingAck, "PendingAck must not be cleared by messages on the old token")
+
+            // 3. Receive a FRESH message on the NEW token → CLEAR pendingAck
+            val locNewEpoch2 = LocationPlaintext(3.0, 3.0, 1.0, 3000L)
+            val (aliceSessNew2, ctNew2) = Session.encryptLocation(
+                aliceSessNew, locNewEpoch2,
+                aliceCommittedSess.session.aliceFp, aliceCommittedSess.session.bobFp,
+            )
+
+            bobStore.processBatch(
+                bobEntry.id,
+                expectedNewToken,
+                listOf(EncryptedLocationPayload(seq = aliceSessNew2.sendSeq.toString(), ct = ctNew2))
+            )!!
+            assertNull(bobStore.getFriend(bobEntry.id)!!.pendingAck, "PendingAck must be cleared by messages on the new token")
         }
 }

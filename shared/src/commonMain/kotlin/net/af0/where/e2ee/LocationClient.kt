@@ -95,7 +95,7 @@ open class LocationClient(
         val messages = E2eeMailboxClient.poll(baseUrl, friend.session.recvToken.toHex())
         if (messages.isEmpty()) return emptyList()
 
-        val result = store.processBatch(friendId, messages) ?: return emptyList()
+        val result = store.processBatch(friendId, friend.session.recvToken.toHex(), messages) ?: return emptyList()
 
         // Post any required protocol responses (RatchetAcks, OPK bundles).
         for (out in result.outgoing) {
