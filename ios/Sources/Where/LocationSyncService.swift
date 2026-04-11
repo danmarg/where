@@ -646,7 +646,7 @@ final class LocationSyncService: ObservableObject {
             backgroundTask.end()
         }
         do {
-            let updates = try await locationClient.poll()
+            let updates = try await locationClient.poll(isForeground: isInForeground())
             logger.debug("Got \(updates.count) location updates")
             for update in updates {
                 try? await e2eeStore.updateLastLocation(id: update.userId, lat: update.lat, lng: update.lng, ts: Int64(Date().timeIntervalSince1970))
