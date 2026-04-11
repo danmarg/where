@@ -13,6 +13,7 @@ struct ContentView: View {
     @State private var showScanner = false
     @State private var scannedUrl: String? = nil
     @State private var zoomTarget: CLLocationCoordinate2D? = nil
+    @State private var showErrorAlert = false
 
     @State private var newFriendName: String = ""
 
@@ -75,7 +76,9 @@ struct ContentView: View {
                     .clipShape(Capsule())
                     .contentShape(Capsule())
                     .onTapGesture {
-                        if let loc = locationManager.location {
+                        if case .error = syncService.connectionStatus {
+                            showErrorAlert = true
+                        } else if let loc = locationManager.location {
                             zoomTarget = CLLocationCoordinate2D(latitude: loc.coordinate.latitude, longitude: loc.coordinate.longitude)
                         }
                     }
@@ -226,6 +229,13 @@ struct ContentView: View {
         }
         .onOpenURL { url in
             syncService.processQrUrl(url.absoluteString)
+        }
+        .alert("Connection Error", isPresented: $showErrorAlert) {
+            Button("OK", role: .cancel) { }
+        } message: {
+            if case .error(let msg) = syncService.connectionStatus {
+                Text(msg)
+            }
         }
     }
 }

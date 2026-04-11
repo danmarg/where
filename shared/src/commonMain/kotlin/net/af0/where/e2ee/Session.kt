@@ -91,9 +91,10 @@ object Session {
      * @param senderFp    32-byte fingerprint of the sender.
      * @param recipientFp 32-byte fingerprint of the recipient.
      * @return Pair(newState, plaintext).
-     * @throws IllegalArgumentException if GCM authentication fails, the seq gap is too large, or seq is a replay.
+     * @throws ProtocolException if seq is a replay or the gap is too large.
+     * @throws AuthenticationException if GCM authentication fails.
      */
-    @Throws(IllegalArgumentException::class)
+    @Throws(WhereException::class)
     fun decryptLocation(
         state: SessionState,
         ct: ByteArray,
@@ -101,15 +102,17 @@ object Session {
         senderFp: ByteArray,
         recipientFp: ByteArray,
     ): Pair<SessionState, LocationPlaintext> {
-        require(seq > state.recvSeq) { "replay — seq $seq must be greater than state.recvSeq ${state.recvSeq}" }
+        if (seq <= state.recvSeq) {
+            throw ProtocolException("replay — seq $seq must be greater than state.recvSeq ${state.recvSeq}")
+        }
 
         val stepsNeeded = seq - state.recvSeq
         // stepsNeeded is always >= 1 because seq starts at 1 and recvSeq starts at 0 (or resets
         // to 0 on epoch rotation). The number of *missed* messages is (stepsNeeded - 1), so
         // we allow stepsNeeded up to MAX_GAP + 1 to permit exactly MAX_GAP
         // missed messages.
-        require(stepsNeeded <= MAX_GAP + 1) {
-            "seq gap ${stepsNeeded - 1} exceeds maximum $MAX_GAP — session may be desynchronized"
+        if (stepsNeeded > MAX_GAP + 1) {
+            throw ProtocolException("seq gap ${stepsNeeded - 1} exceeds maximum $MAX_GAP — session may be desynchronized")
         }
 
         // Advance the receive chain key to reach the correct seq (handles gaps).
@@ -126,7 +129,14 @@ object Session {
         val finalStep = step!!
 
         val aad = buildLocationAad(senderFp, recipientFp, state.epoch, seq)
-        val plaintext = aeadDecrypt(finalStep.messageKey, finalStep.messageNonce, ct, aad)
+        val plaintext =
+            try {
+                aeadDecrypt(finalStep.messageKey, finalStep.messageNonce, ct, aad)
+            } catch (e: Exception) {
+                finalStep.messageKey.fill(0)
+                finalStep.messageNonce.fill(0)
+                throw AuthenticationException("decryption failed: bad MAC", e)
+            }
         val unpadded =
             try {
                 unpad(plaintext)
@@ -134,7 +144,7 @@ object Session {
                 finalStep.messageKey.fill(0)
                 finalStep.messageNonce.fill(0)
                 plaintext.fill(0)
-                throw e
+                throw DecryptionException("unpadding failed", e)
             }
         val location = decodeLocation(unpadded)
 
@@ -425,8 +435,15 @@ internal fun decryptEpochRotationCt(
     val salt = epochBe
     val kRot = hkdfSha256(rootKey, salt, INFO_EPOCH_ROTATION.encodeToByteArray(), 32)
     val aad = senderFp + recipientFp + routingToken
-    val plaintext = aeadDecrypt(kRot, nonce, ct, aad)
-    require(plaintext.size == 4 + 4 + 32 + 8) { "bad EpochRotation plaintext size: ${plaintext.size}" }
+    val plaintext =
+        try {
+            aeadDecrypt(kRot, nonce, ct, aad)
+        } catch (e: Exception) {
+            throw AuthenticationException("EpochRotation decryption failed", e)
+        }
+    if (plaintext.size != 4 + 4 + 32 + 8) {
+        throw ProtocolException("bad EpochRotation plaintext size: ${plaintext.size}")
+    }
     val decodedEpoch = bytesToInt(plaintext, 0)
     val opkId = bytesToInt(plaintext, 4)
     val newEkPub = plaintext.copyOfRange(8, 40)
@@ -471,8 +488,15 @@ internal fun decryptRatchetAckCt(
     val salt = epochBe
     val kAck = hkdfSha256(rootKey, salt, INFO_RATCHET_ACK.encodeToByteArray(), 32)
     val aad = senderFp + recipientFp + routingToken
-    val plaintext = aeadDecrypt(kAck, nonce, ct, aad)
-    require(plaintext.size == 4 + 8 + 32) { "bad RatchetAck plaintext size: ${plaintext.size}" }
+    val plaintext =
+        try {
+            aeadDecrypt(kAck, nonce, ct, aad)
+        } catch (e: Exception) {
+            throw AuthenticationException("RatchetAck decryption failed", e)
+        }
+    if (plaintext.size != 4 + 8 + 32) {
+        throw ProtocolException("bad RatchetAck plaintext size: ${plaintext.size}")
+    }
     val decodedEpochSeen = bytesToInt(plaintext, 0)
     val ts = bytesToLong(plaintext, 4)
     val newEkPub = plaintext.copyOfRange(12, 44)

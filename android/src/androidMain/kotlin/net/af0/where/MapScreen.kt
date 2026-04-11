@@ -116,6 +116,7 @@ fun MapScreen(
 
     var showFriends by remember { mutableStateOf(false) }
     var zoomToUserId by remember { mutableStateOf<String?>(null) }
+    var showErrorAlert by remember { mutableStateOf(false) }
     val context = androidx.compose.ui.platform.LocalContext.current
 
     val initialPosition =
@@ -268,7 +269,13 @@ fun MapScreen(
                 modifier =
                     Modifier
                         .weight(1f)
-                        .clickable { zoomToUserId = "__own__" },
+                        .clickable {
+                            if (connectionStatus is ConnectionStatus.Error) {
+                                showErrorAlert = true
+                            } else {
+                                zoomToUserId = "__own__"
+                            }
+                        },
                 shape = MaterialTheme.shapes.medium,
                 color = Color.Black.copy(alpha = 0.7f),
             ) {
@@ -329,6 +336,17 @@ fun MapScreen(
             onRemove = onRemoveFriend,
             onDismiss = { showFriends = false },
             onZoomTo = { zoomToUserId = it },
+        )
+    }
+
+    if (showErrorAlert && connectionStatus is ConnectionStatus.Error) {
+        AlertDialog(
+            onDismissRequest = { showErrorAlert = false },
+            title = { Text("Connection Error") },
+            text = { Text(connectionStatus.message) },
+            confirmButton = {
+                TextButton(onClick = { showErrorAlert = false }) { Text("OK") }
+            },
         )
     }
 }
