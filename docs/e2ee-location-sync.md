@@ -271,7 +271,7 @@ The server cannot derive `SK` or link any routing token to a real identity witho
 
 ### 5.1 Per-Message Token Rotation
 
-The concept of "epochs" is removed from the protocol. Token rotation is per-message and structurally enforced.
+Token rotation is per-message and structurally enforced.
 
 #### 5.1.1 Polling Invariant
 
@@ -330,7 +330,7 @@ When Bob retrieves and decrypts the message:
 
 ### 5.3 Forward Secrecy Granularity
 
-Symmetric-key ratcheting (KDF chain) continues to provide per-message forward secrecy. Deleting each message key `MK_n` immediately after use ensures that compromise of one key does not expose others.
+Symmetric-key ratcheting (KDF chain) provides per-message forward secrecy. Deleting each message key `MK_n` immediately after use ensures that compromise of one key does not expose others.
 
 ### 5.4 Message Key Deletion Policy
 
@@ -400,9 +400,11 @@ The server can still observe the timing and frequency of `POST` and `GET` reques
 
 ### 7.4.1 Polling Strategy
 
-To prevent timing-based social-graph inference, Bob MUST poll at a **constant rate** regardless of whether messages are expected. Recommended default: **60 seconds**.
+To prevent timing-based social-graph inference, Bob MUST poll at a **constant rate** regardless of whether messages are expected. Polling more frequently when a location update is expected, or less frequently when offline, creates a timing side-channel the server can exploit to infer when friends are actively sharing.
 
-Bob polls for all of his friendship tokens in a fixed, shuffled order. The shuffle MUST be re-randomised on each poll cycle to prevent ordering-based inference.
+**Polling cadence is a UX/battery parameter, not a cryptographic one.** The polling interval is independent and should be set based on freshness requirements and battery budget. A 60–120 second poll interval provides acceptable location freshness for a mapping application without the battery drain of 10-second polling, and without revealing fine-grained app-foreground state to the server. Recommended default: **60 seconds**.
+
+Bob polls for all of his friendship tokens in a fixed, shuffled order. The shuffle MUST be re-randomised on each poll cycle to prevent ordering-based inference. This, combined with the indistinguishable-response invariant (§7.2), means the server cannot distinguish "polling for a real active friendship" from "polling for a stale or never-used token".
 
 ### 7.5 Future: Dummy Token Polling
 
@@ -416,11 +418,16 @@ Because of the indistinguishable response invariant (§7.2), clients can impleme
 
 | Purpose | Algorithm | Key size | Notes |
 |---|---|---|---|
-| Bootstrap DH | X25519 | 256-bit | Ephemeral; deleted after SK derivation |
-| One-Time Pre-Key | X25519 | 256-bit | Ephemeral; deleted after use |
+| Bootstrap DH (Alice) | X25519 (`EK_A`) | 256-bit | Ephemeral, generated per invite; deleted after SK derivation |
+| Bootstrap DH (Bob) | X25519 (`EK_B`) | 256-bit | Ephemeral, generated per QR scan; deleted after SK derivation |
+| One-Time Pre-Key (Bob) | X25519 (`OPK`) | 256-bit | Ephemeral, generated in batches; deleted after use |
 | Root KDF | HKDF-SHA-256 | 256-bit output | Inputs: DH output + current root key |
 | Chain KDF | HKDF-SHA-256 | — | Advancing symmetric ratchet |
 | Message encryption | ChaCha20-Poly1305 | 256-bit | Per-message key; deleted after use |
+| Message authentication | ChaCha20-Poly1305 tag | 128-bit | Included in AEAD output; covers AAD |
+| Key exchange KDF | HKDF-SHA-256 | — | `info = "Where-v1-KeyExchange"` (initial SK) |
+| Discovery token | HKDF-SHA-256 | 16-byte output | `ikm = discovery_secret` (32-byte random, from QR payload), `salt = 0x00*32`, `info = "Where-v1-Discovery"` (§4.2) |
+| Bundle auth key | HKDF-SHA-256 | 32-byte output | `K_bundle = HKDF(SK, salt=0, info="Where-v1-BundleAuth")`; for PreKeyBundle HMAC |
 
 ### 8.2 Session State Per Friend-Pair
 
