@@ -126,17 +126,23 @@ data class PendingRotation(
     @Serializable(with = ByteArrayBase64Serializer::class) val epochRotationCt: ByteArray,
     val opkId: Int,
     @Serializable(with = ByteArrayBase64Serializer::class) val aliceNewEkPriv: ByteArray,
+    val createdAt: Long,
 ) {
     override fun equals(other: Any?): Boolean =
         other is PendingRotation &&
             newSession == other.newSession &&
             epochRotationCt.contentEquals(other.epochRotationCt) &&
             opkId == other.opkId &&
-            aliceNewEkPriv.contentEquals(other.aliceNewEkPriv)
+            aliceNewEkPriv.contentEquals(other.aliceNewEkPriv) &&
+            createdAt == other.createdAt
 
-    override fun hashCode(): Int =
-        31 * (31 * newSession.hashCode() + epochRotationCt.contentHashCode()) +
-            aliceNewEkPriv.contentHashCode()
+    override fun hashCode(): Int {
+        var h = 31 * newSession.hashCode() + epochRotationCt.contentHashCode()
+        h = 31 * h + opkId
+        h = 31 * h + aliceNewEkPriv.contentHashCode()
+        h = 31 * h + createdAt.hashCode()
+        return h
+    }
 }
 
 fun ByteArray.toHex(): String = joinToString("") { (it.toInt() and 0xFF).toString(16).padStart(2, '0') }
