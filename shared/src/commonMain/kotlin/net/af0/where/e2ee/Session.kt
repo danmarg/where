@@ -461,7 +461,10 @@ internal data class EpochRotationPlaintext(val opkId: Int, val newEkPub: ByteArr
  *
  * K_rot = HKDF(currentRootKey, salt=absent, info="Where-v1-EpochRotation", length=32).
  * K_rot is unique per rotation (root key advances after each DH step), so a fixed
- * all-zero nonce is safe (§8.4).
+ * all-zero nonce is safe (§8.4). Note that while the resulting ciphertext may be
+ * re-sent multiple times (e.g., via pendingEpochRotation), the (K_rot, nonce) pair
+ * is never used with *different* plaintext. This is safe deterministic replay, not
+ * nonce reuse. The protocol ensures only one rotation is pending at a time.
  *
  * Plaintext: opkId (4 bytes big-endian) || newEkPub (32 bytes) = 36 bytes.
  * AAD: aliceFp || bobFp || sendToken (Alice's current sendToken = T_AB_old).
@@ -477,6 +480,9 @@ internal fun buildEpochRotationCt(
     val kRot = hkdfSha256(currentRootKey, salt = null, INFO_EPOCH_ROTATION.encodeToByteArray(), 32)
     val plaintext = intToBeBytes(opkId) + newEkPub
     val aad = aliceFp + bobFp + sendToken
+    // K_rot is unique per rotation, so a fixed all-zero nonce is safe (§8.4).
+    // Repeated posting of the same ciphertext (deterministic replay) is safe,
+    // not nonce reuse with fresh plaintext.
     val nonce = ByteArray(12)
     return aeadEncrypt(kRot, nonce, plaintext, aad)
 }
@@ -493,6 +499,9 @@ internal fun decryptEpochRotationCt(
 ): EpochRotationPlaintext {
     val kRot = hkdfSha256(currentRootKey, salt = null, INFO_EPOCH_ROTATION.encodeToByteArray(), 32)
     val aad = aliceFp + bobFp + sendToken
+    // K_rot is unique per rotation, so a fixed all-zero nonce is safe (§8.4).
+    // Repeated posting of the same ciphertext (deterministic replay) is safe,
+    // not nonce reuse with fresh plaintext.
     val nonce = ByteArray(12)
     val plaintext =
         try {
@@ -517,6 +526,10 @@ internal fun decryptEpochRotationCt(
  *   - Alice has it in [PendingRotation.newSession.rootKey].
  * A successful tag verification proves Bob performed the correct step 1 DH.
  *
+ * Like EpochRotation, K_ack is unique per rotation, so a fixed all-zero nonce
+ * is safe (§8.4). Repeated posting of the same RatchetAck ciphertext (for
+ * lost-ack recovery) is safe deterministic replay, not nonce reuse with fresh plaintext.
+ *
  * Plaintext: bobNewEkPub (32 bytes) — Bob's fresh ephemeral pub key for step 2.
  * AAD: bobFp || aliceFp || intermediateSendToken (T_BA from rootKey1).
  */
@@ -529,6 +542,9 @@ internal fun buildRatchetAckCt(
 ): ByteArray {
     val kAck = hkdfSha256(intermediateRootKey, salt = null, INFO_RATCHET_ACK.encodeToByteArray(), 32)
     val aad = bobFp + aliceFp + intermediateSendToken
+    // K_ack is unique per rotation, so a fixed all-zero nonce is safe (§8.4).
+    // Repeated posting of the same ciphertext (deterministic replay) is safe,
+    // not nonce reuse with fresh plaintext.
     val nonce = ByteArray(12)
     return aeadEncrypt(kAck, nonce, bobNewEkPub, aad)
 }
@@ -549,6 +565,9 @@ internal fun decryptRatchetAckCt(
 ): ByteArray {
     val kAck = hkdfSha256(intermediateRootKey, salt = null, INFO_RATCHET_ACK.encodeToByteArray(), 32)
     val aad = bobFp + aliceFp + intermediateSendToken
+    // K_ack is unique per rotation, so a fixed all-zero nonce is safe (§8.4).
+    // Repeated posting of the same ciphertext (deterministic replay) is safe,
+    // not nonce reuse with fresh plaintext.
     val nonce = ByteArray(12)
     val plaintext =
         try {
