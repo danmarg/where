@@ -351,7 +351,7 @@ When Alice polls Bob's channel and receives a `RatchetAck` covering the rotation
 
 **OPK Depletion:** If Alice has no OPKs for Bob, she SHOULD continue broadcasting on the symmetric ratchet (per-message FS maintained) and SHOULD NOT rotate the DH ratchet until a new bundle is received.
 
-**Lost RatchetAck:** If Bob's ack is lost, Alice never commits the rotation. She continues sending `EpochRotation` alongside her location updates (resending the same rotation, same new key). Bob will see the duplicate rotation and should be idempotent — verify the new keys match the already-computed ones and re-send the ack.
+**Lost RatchetAck:** After processing an `EpochRotation`, Bob immediately switches his `recvToken` to `T_AB_new` and will no longer poll `T_AB_old`. Alice's retried `EpochRotation` messages (sent on `T_AB_old`) are therefore never seen by Bob again — idempotent re-processing is not possible. Instead, Bob stores the `ackCt` and pre-rotation `sendToken` as a `PendingAck` and re-posts the ack on every poll cycle until Alice commits. Alice is still polling `T_BA_old` (Bob's pre-rotation sendToken, which is her `recvToken` before commit), so she will eventually receive the re-posted ack. Once Alice commits and begins sending on `T_AB_new`, Bob decrypts her first message on the new token and clears the `PendingAck`.
 
 ### 5.4 Forward Secrecy Granularity vs. Overhead Analysis
 
