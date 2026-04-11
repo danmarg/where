@@ -388,6 +388,12 @@ class E2eeStore(
         }
     }
 
+    suspend fun isAckTimedOut(friendId: String): Boolean =
+        stateLock.withLock {
+            val entry = friends[friendId] ?: return@withLock false
+            entry.isInitiator && entry.lastAckTs != Long.MAX_VALUE && (currentTimeSeconds() - entry.lastAckTs) > FriendEntry.ACK_TIMEOUT_SECONDS
+        }
+
     // -----------------------------------------------------------------------
     // OPK management
     // -----------------------------------------------------------------------
@@ -714,20 +720,19 @@ class E2eeStore(
                 ) {
                     continue
                 }
-                val newPubMap = entry.theirOpkPubs + opks.associate { it.id to it.pub }
+                val newPubMap = entry.theirOpkPubs + msg.toOPKList().associate { it.id to it.pub }
                 friends[friendId] = entry.copy(theirOpkPubs = newPubMap, isConfirmed = true)
             }
 
             // Step 2: Decrypt location updates BEFORE processing epoch rotation.
             // All EncryptedLocationPayloads on this token are from the same epoch.
             val sessionAtStart = friends[friendId]?.session ?: return@withLock PollBatchResult(emptyList(), emptyList())
-            val isPrevToken = recvToken != null && sessionAtStart.prevRecvToken?.toHex() == recvToken
+            val isPrevToken = sessionAtStart.prevRecvToken?.toHex() == recvToken
 
             // Construct a temporary SessionState for decryption if this is the old token.
             var decryptionSession =
                 if (isPrevToken && sessionAtStart.prevRecvChainKey != null) {
                     sessionAtStart.copy(
-                        epoch = sessionAtStart.epoch - 1,
                         recvChainKey = sessionAtStart.prevRecvChainKey,
                         recvSeq = sessionAtStart.prevRecvSeq,
                     )
