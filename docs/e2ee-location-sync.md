@@ -272,11 +272,11 @@ The server cannot derive `SK` or link any routing token to a real identity witho
 
 ---
 
-## 5. Ratchet Design for One-Way Streaming Location Data
+## 5. Ratchet Design for Streaming Location Data
 
 ### 5.0 Architectural Trade-offs vs. Signal Double Ratchet
 
-This protocol uses a hybrid ratchet designed for **one-way streaming** (Alice sends continuously; Bob is a passive receiver), not bidirectional messaging. Compared to the previous X3DH-based design, the ephemeral-only bootstrap removes the static DH contributor (`IK.priv`), making PCS guarantees symmetric:
+This protocol uses a hybrid ratchet designed for **one-way streaming** (Alice sends continuously; Bob is a passive receiver), but maintains bidirectional session state to support mutual location sharing. Compared to the previous X3DH-based design, the ephemeral-only bootstrap removes the static DH contributor (`IK.priv`), making PCS guarantees symmetric:
 
 | Property | Signal Double Ratchet | This Protocol |
 |---|---|---|
@@ -502,21 +502,21 @@ Because of the indistinguishable response invariant (§7.2), clients can impleme
 
 ### 8.2 Session State Per Friend-Pair
 
-Alice and Bob each maintain, for each friendship session:
+Identity and session state are tied to a single bidirectional friendship. Both parties maintain:
 ```
 SessionState {
-  root_key:        [32]byte   // current root key
-  send_chain_key:  [32]byte   // CK for Alice→B direction
-  recv_chain_key:  [32]byte   // CK for B→Alice direction
-  send_token:      [16]byte   // token this client posts to
-  recv_token:      [16]byte   // token this client polls from
-  send_seq:        uint64     // monotonically increasing counter
-  recv_seq:        uint64     // highest received seq (for replay rejection)
-  alice_ek_pub:    [32]byte   // bootstrap public key EK_A.pub (for safety number)
-  bob_ek_pub:      [32]byte   // bootstrap public key EK_B.pub (for safety number)
-  alice_fp:        [32]byte   // SHA-256(EK_A.pub) — stable for session lifetime
-  bob_fp:          [32]byte   // SHA-256(EK_B.pub) — stable for session lifetime
-  k_bundle:        [32]byte   // HKDF(SK, "Where-v1-BundleAuth") — for verifying PreKeyBundle MACs
+  rootKey:         [32]byte   // current root key
+  sendChainKey:    [32]byte   // CK for outgoing direction
+  recvChainKey:    [32]byte   // CK for incoming direction
+  sendToken:       [16]byte   // token this client posts to
+  recvToken:       [16]byte   // token this client polls from
+  sendSeq:         uint64     // monotonically increasing counter
+  recvSeq:         uint64     // highest received seq (for replay rejection)
+  aliceEkPub:      [32]byte   // bootstrap public key EK_A.pub (for safety number)
+  bobEkPub:        [32]byte   // bootstrap public key EK_B.pub (for safety number)
+  aliceFp:         [32]byte   // SHA-256(EK_A.pub) — stable for session lifetime
+  bobFp:           [32]byte   // SHA-256(EK_B.pub) — stable for session lifetime
+  kBundle:         [32]byte   // HKDF(SK, "Where-v1-BundleAuth") — for verifying PreKeyBundle MACs
 }
 ```
 
@@ -526,13 +526,24 @@ Note: `my_ek_priv` (Alice's rotation ephemeral private key) lives only in memory
 
 **KDF_RK (Diffie-Hellman ratchet step):**
 ```
-(new_root_key, new_chain_key) = HKDF-SHA-256(
-    salt = current_root_key,
-    ikm  = X25519(my_ek_priv, their_opk_pub),
+(newRootKey, newChainKey) = HKDF-SHA-256(
+    salt = currentRootKey,
+    ikm  = X25519(myEkPriv, theirEkPub),
     info = "Where-v1-RatchetStep"
 )
 ```
-Output: 64 bytes split as `[0:32] = new_root_key`, `[32:64] = new_chain_key`.
+Output: 64 bytes split as `[0:32] = newRootKey`, `[32:64] = newChainKey`.
+
+A full DH rotation involves two steps to advance both directions (mutual PFS):
+
+1. **Alice initiates** (Step 1):
+   `dh_out = X25519(aliceNewEk.priv, Bob.OPK.pub)`
+   `(rootKey1, sendChainKey_AB) = KDF_RK(rootKey0, dh_out)`
+2. **Bob responds** (Step 2):
+   `dh_out = X25519(bobNewEk.priv, Alice.EK_new.pub)`
+   `(rootKey2, sendChainKey_BA) = KDF_RK(rootKey1, dh_out)`
+
+Both parties re-derive their routing tokens from the final `rootKey2`.
 
 After each DH ratchet step, new routing tokens MUST be derived from the new root key:
 ```
