@@ -6,3 +6,5 @@ import platform.CoreFoundation.CFAbsoluteTimeGetCurrent
 private const val CF_TO_UNIX_OFFSET = 978307200L
 
 actual fun currentTimeSeconds(): Long = (CFAbsoluteTimeGetCurrent() + CF_TO_UNIX_OFFSET).toLong()
+
+actual fun currentTimeMillis(): Long = ((CFAbsoluteTimeGetCurrent() + CF_TO_UNIX_OFFSET) * 1000).toLong()
