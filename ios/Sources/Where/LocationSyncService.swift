@@ -729,15 +729,39 @@ final class LocationSyncService: ObservableObject {
     private func updateStatus(_ error: Error?) {
         if let error = error {
             let msg: String
-            let desc = error.localizedDescription.lowercased()
-            if desc.contains("timeout") {
-                msg = "timeout"
-            } else if desc.contains("not resolved") || desc.contains("connection") {
-                msg = "no connection"
-            } else if let nsError = error as NSError?, nsError.domain == "Where" {
-                msg = "server error \(nsError.code)"
+            if let whereEx = error as? Shared.WhereException {
+                if let netEx = whereEx as? Shared.NetworkException {
+                    if netEx is Shared.ConnectException {
+                        msg = "No connection"
+                    } else if netEx is Shared.TimeoutException {
+                        msg = "Request timed out"
+                    } else if let serverEx = netEx as? Shared.ServerException {
+                        msg = "Server error \(serverEx.statusCode)"
+                    } else {
+                        msg = "Network error"
+                    }
+                } else if let cryptoEx = whereEx as? Shared.CryptoException {
+                    if cryptoEx is Shared.AuthenticationException {
+                        msg = "Authentication failed"
+                    } else if cryptoEx is Shared.ProtocolException {
+                        msg = "Protocol error"
+                    } else {
+                        msg = "Security error"
+                    }
+                } else {
+                    msg = "Internal error"
+                }
             } else {
-                msg = String(desc.prefix(32))
+                let desc = error.localizedDescription.lowercased()
+                if desc.contains("timeout") {
+                    msg = "Timeout"
+                } else if desc.contains("not resolved") || desc.contains("connection") {
+                    msg = "No connection"
+                } else if let nsError = error as NSError?, nsError.domain == "Where" {
+                    msg = "Server error \(nsError.code)"
+                } else {
+                    msg = String(desc.prefix(32))
+                }
             }
             connectionStatus = .error(message: msg)
         } else {

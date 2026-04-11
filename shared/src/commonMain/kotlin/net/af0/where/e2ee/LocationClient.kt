@@ -32,8 +32,23 @@ open class LocationClient(
             val allUpdates = mutableListOf<UserLocation>()
             var lastError: Exception? = null
 
+            val friends = store.listFriends()
+
+            // If we have no friends, do a "health check" poll against a dummy token
+            // to ensure connectivity and surface network errors even when the user is alone.
+            if (friends.isEmpty()) {
+                try {
+                    E2eeMailboxClient.poll(baseUrl, "00000000000000000000000000000000")
+                } catch (e: ServerException) {
+                    // 404 is expected for a dummy token, means we reached the server.
+                    if (e.statusCode != 404) lastError = e
+                } catch (e: Exception) {
+                    lastError = e
+                }
+            }
+
             // 1. Poll each friend's current mailbox
-            for (friend in store.listFriends()) {
+            for (friend in friends) {
                 try {
                     val friendUpdates = pollFriend(friend.id)
                     allUpdates.addAll(friendUpdates)
