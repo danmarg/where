@@ -124,6 +124,14 @@ open class LocationClient(
 
         for (friend in store.listFriends()) {
             if (friend.id in pausedFriendIds) continue
+            // Skip friends who have not yet confirmed the handshake, UNLESS we are the
+            // initiator (Alice), in which case we must send the first message to Bob to
+            // trigger confirmation on his side.
+            if (!friend.isConfirmed && !friend.isInitiator) continue
+            // Skip friends from whom Alice has not received a Ratchet Ack in 7 days.
+            // This prevents sending in a stale epoch with no forward secrecy and gives
+            // the user a visible signal that Bob's app is not processing location updates.
+            if (store.isAckTimedOut(friend.id)) continue
             try {
                 sendLocationToFriendInternal(friend.id, plaintext)
             } catch (e: Exception) {
