@@ -141,38 +141,38 @@ class SessionTest {
     }
 
     // ---------------------------------------------------------------------------
-    // MAX_DECRYPT_GAP boundary
+    // MAX_GAP boundary
     // ---------------------------------------------------------------------------
 
     @Test
-    fun `exactly MAX_DECRYPT_GAP missed messages is allowed`() {
+    fun `exactly MAX_GAP missed messages is allowed`() {
         val (aliceSession, bobSession) = exchangeKeys()
         val loc = LocationPlaintext(1.0, 2.0, 3.0, 4L)
 
-        // Advance Alice's chain MAX_DECRYPT_GAP + 1 times: skip the first MAX_DECRYPT_GAP
-        // messages and deliver only the (MAX_DECRYPT_GAP + 1)-th.
+        // Advance Alice's chain MAX_GAP + 1 times: skip the first MAX_GAP
+        // messages and deliver only the (MAX_GAP + 1)-th.
         var aSess = aliceSession
         var lastCt = ByteArray(0)
-        val target = 1000 + 1 // MAX_DECRYPT_GAP = 1000; seq starts at 1, so we send 1001 msgs
+        val target = 1024 + 1 // MAX_GAP = 1024; seq starts at 1, so we send 1025 msgs
         repeat(target) {
             val (newA, ct) = Session.encryptLocation(aSess, loc, aSess.aliceFp, aSess.bobFp)
             aSess = newA
             lastCt = ct
         }
-        // Bob has recvSeq=0; stepsNeeded = 1001 = MAX_DECRYPT_GAP + 1; should be accepted.
+        // Bob has recvSeq=0; stepsNeeded = 1025 = MAX_GAP + 1; should be accepted.
         val (_, decrypted) = Session.decryptLocation(bobSession, lastCt, aSess.sendSeq, bobSession.aliceFp, bobSession.bobFp)
         assertEquals(loc.lat, decrypted.lat)
     }
 
     @Test
-    fun `MAX_DECRYPT_GAP + 1 missed messages is rejected`() {
+    fun `MAX_GAP + 1 missed messages is rejected`() {
         val (aliceSession, bobSession) = exchangeKeys()
         val loc = LocationPlaintext(1.0, 2.0, 3.0, 4L)
 
-        // Send MAX_DECRYPT_GAP + 2 messages (seq = 1002); stepsNeeded = 1002 > 1001.
+        // Send MAX_GAP + 2 messages (seq = 1026); stepsNeeded = 1026 > 1025.
         var aSess = aliceSession
         var lastCt = ByteArray(0)
-        val target = 1000 + 2
+        val target = 1024 + 2
         repeat(target) {
             val (newA, ct) = Session.encryptLocation(aSess, loc, aSess.aliceFp, aSess.bobFp)
             aSess = newA
@@ -180,10 +180,31 @@ class SessionTest {
         }
         try {
             Session.decryptLocation(bobSession, lastCt, aSess.sendSeq, bobSession.aliceFp, bobSession.bobFp)
-            kotlin.test.fail("Expected IllegalArgumentException for gap exceeding MAX_DECRYPT_GAP")
+            kotlin.test.fail("Expected IllegalArgumentException for gap exceeding MAX_GAP")
         } catch (e: IllegalArgumentException) {
             assertTrue(e.message?.contains("exceeds maximum") == true)
         }
+    }
+
+    @Test
+    fun `malicious large seq is rejected immediately without work`() {
+        val (_, bobSession) = exchangeKeys()
+        val dummyCt = ByteArray(Session.PADDING_SIZE + 16)
+
+        // Attacker sends seq = 2^63 - 1
+        val largeSeq = Long.MAX_VALUE
+
+        val startTime = currentTimeMillis()
+        try {
+            Session.decryptLocation(bobSession, dummyCt, largeSeq, bobSession.aliceFp, bobSession.bobFp)
+            kotlin.test.fail("Expected IllegalArgumentException for large seq")
+        } catch (e: IllegalArgumentException) {
+            assertTrue(e.message?.contains("exceeds maximum") == true)
+        }
+        val duration = currentTimeMillis() - startTime
+
+        // Rejection should be near-instant (no HKDF iterations)
+        assertTrue(duration < 100, "Large seq rejection took too long: ${duration}ms")
     }
 
     // ---------------------------------------------------------------------------
