@@ -446,7 +446,7 @@ class E2eeStore(
 
             val (opkId, opkPub) = entry.theirOpkPubs.minBy { it.key }
             val newEk = generateX25519KeyPair()
-            val (newSession, epochRotationCt, _) =
+            val pending =
                 Session.aliceEpochRotation(
                     state = entry.session,
                     aliceNewEkPriv = newEk.priv,
@@ -457,7 +457,6 @@ class E2eeStore(
                     bobFp = entry.session.bobFp,
                 )
 
-            val pending = PendingRotation(newSession, epochRotationCt, opkId)
             friends[friendId] =
                 entry.copy(
                     pendingRotation = pending,
@@ -466,7 +465,7 @@ class E2eeStore(
                 )
             save()
 
-            EpochRotationPayload(ct = epochRotationCt)
+            EpochRotationPayload(ct = pending.epochRotationCt)
         }
 
     /**
@@ -547,21 +546,21 @@ class E2eeStore(
             if (!entry.isInitiator) return@withLock false
             val pending = entry.pendingRotation ?: return@withLock false
 
-            try {
-                decryptRatchetAckCt(
-                    newRootKey = pending.newSession.rootKey,
-                    ct = payload.ct,
-                    bobFp = entry.session.bobFp,
-                    aliceFp = entry.session.aliceFp,
-                    newSendToken = pending.newSession.recvToken,
-                )
-            } catch (_: Exception) {
-                return@withLock false
-            }
+            val committed =
+                try {
+                    Session.aliceProcessRatchetAck(
+                        pendingRotation = pending,
+                        ackCt = payload.ct,
+                        bobFp = entry.session.bobFp,
+                        aliceFp = entry.session.aliceFp,
+                    )
+                } catch (_: Exception) {
+                    return@withLock false
+                }
 
             friends[friendId] =
                 entry.copy(
-                    session = pending.newSession,
+                    session = committed,
                     pendingRotation = null,
                 )
             save()
@@ -718,6 +717,15 @@ class E2eeStore(
 
                 // Generate and post a fresh OPK bundle on the OLD sendToken as well,
                 // MACed with oldSendToken so Alice can verify it before committing.
+                //
+                // Ordering guarantee: Alice's processBatch processes PreKeyBundlePayloads in
+                // Step 1 (before RatchetAck in Step 4), so if both arrive in the same batch,
+                // the bundle is verified against Alice's pre-commit recvToken (= T_BA_old). ✓
+                //
+                // Cross-poll gap: if Alice polls T_BA_old between Bob's RatchetAck POST and
+                // this OPK bundle POST, she commits first and never sees the bundle (she switches
+                // to polling T_BA_new). The consequence is one missed bundle — rotation is
+                // delayed until Bob replenishes via shouldReplenishOpks. No security impact.
                 val freshEntry = friends[friendId] ?: continue
                 val startId = freshEntry.nextOpkId
                 val newOpks =
@@ -755,21 +763,21 @@ class E2eeStore(
                 if (!entry.isInitiator) continue
                 val pending = entry.pendingRotation ?: continue
 
-                try {
-                    decryptRatchetAckCt(
-                        newRootKey = pending.newSession.rootKey,
-                        ct = msg.ct,
-                        bobFp = entry.session.bobFp,
-                        aliceFp = entry.session.aliceFp,
-                        newSendToken = pending.newSession.recvToken,
-                    )
-                } catch (_: Exception) {
-                    continue
-                }
+                val committed =
+                    try {
+                        Session.aliceProcessRatchetAck(
+                            pendingRotation = pending,
+                            ackCt = msg.ct,
+                            bobFp = entry.session.bobFp,
+                            aliceFp = entry.session.aliceFp,
+                        )
+                    } catch (_: Exception) {
+                        continue
+                    }
 
                 friends[friendId] =
                     entry.copy(
-                        session = pending.newSession,
+                        session = committed,
                         pendingRotation = null,
                     )
             }
