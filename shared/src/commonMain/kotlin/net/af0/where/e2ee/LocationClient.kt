@@ -16,6 +16,11 @@ open class LocationClient(
 
     /**
      * Poll all friends and the pending invite (if any).
+     *
+     * Processes all incoming control messages (OPKs) and automatically posts
+     * required responses back to the server.
+     *
+     * @return List of new [UserLocation] updates received since the last poll.
      */
     suspend fun poll(): List<UserLocation> =
         pollMutex.withLock {
@@ -27,6 +32,7 @@ open class LocationClient(
                     val friendUpdates = pollFriend(friend.id)
                     allUpdates.addAll(friendUpdates)
 
+                    // Proactively replenish OPKs if the local user (Bob) is running low.
                     if (store.shouldReplenishOpks(friend.id)) {
                         store.generateOpkBundle(friend.id)?.let { bundle ->
                             E2eeMailboxClient.post(baseUrl, friend.session.sendToken.toHex(), bundle)
@@ -41,6 +47,9 @@ open class LocationClient(
             allUpdates
         }
 
+    /**
+     * Poll a specific friend's mailbox, handling per-message token rotation.
+     */
     private suspend fun pollFriend(friendId: String): List<UserLocation> {
         val updates = mutableListOf<UserLocation>()
         val initialFriend = store.getFriend(friendId) ?: return emptyList()
@@ -84,6 +93,8 @@ open class LocationClient(
 
         for (friend in store.listFriends()) {
             if (friend.id in pausedFriendIds) continue
+            // Skip friends from whom Alice has not received anything in 7 days.
+            if (store.isFriendStale(friend.id)) continue
             try {
                 sendLocationToFriendInternal(friend.id, plaintext)
             } catch (e: Exception) {
@@ -94,6 +105,9 @@ open class LocationClient(
         lastError?.let { throw it }
     }
 
+    /**
+     * Encrypt and send a location update to a single specific friend.
+     */
     suspend fun sendLocationToFriend(
         friendId: String,
         lat: Double,
@@ -147,6 +161,11 @@ open class LocationClient(
         E2eeMailboxClient.post(baseUrl, current.session.sendToken.toHex(), payload)
     }
 
+    /**
+     * Explicitly post a new OPK bundle for a friend.
+     *
+     * Called by Bob to replenish his OPK supply so Alice can rotate the DH ratchet.
+     */
     open suspend fun postOpkBundle(friendId: String) {
         if (store.shouldReplenishOpks(friendId)) {
             store.generateOpkBundle(friendId)?.let { bundle ->

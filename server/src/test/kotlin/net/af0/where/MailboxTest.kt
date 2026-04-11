@@ -124,6 +124,7 @@ class MailboxTest {
         }
     }
 
+
     @Test
     fun `GET inbox for different tokens are independent`() {
         if (!isLocalhost()) return
@@ -181,5 +182,4 @@ class MailboxTest {
 
         assertEquals(1, state.drain("live").size, "live message should survive eviction")
     }
-
 }
