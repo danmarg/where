@@ -75,9 +75,22 @@ open class LocationClient(
     /**
      * Poll a specific friend's mailbox, handling all protocol messages.
      * Bob always polls exactly one recvToken — no dual-polling window.
+     *
+     * Lost-ack recovery: if Bob has a [PendingAck] from a previous EpochRotation whose
+     * RatchetAck was never received by Alice, re-post it on every cycle. Alice polls
+     * T_BA_old (Bob's pre-rotation sendToken) until she commits, so she will eventually
+     * see the re-posted ack. [E2eeStore.processBatch] clears [PendingAck] as soon as
+     * Alice's first message on the new recvToken arrives.
      */
     private suspend fun pollFriend(friendId: String): List<UserLocation> {
         val friend = store.getFriend(friendId) ?: return emptyList()
+
+        // Re-post cached ack if present (best-effort; silently ignore network errors).
+        friend.pendingAck?.let { ack ->
+            try {
+                E2eeMailboxClient.post(baseUrl, ack.sendToken, RatchetAckPayload(ct = ack.ackCt))
+            } catch (_: Exception) { /* will retry next poll */ }
+        }
 
         val messages = E2eeMailboxClient.poll(baseUrl, friend.session.recvToken.toHex())
         if (messages.isEmpty()) return emptyList()
