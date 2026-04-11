@@ -56,26 +56,23 @@ internal fun kdfCk(chainKey: ByteArray): ChainStep {
 }
 
 /**
- * Derive the routing token for a given epoch and direction from the root key.
+ * Derive the routing token for a given ratchet state and direction from the root key.
  *
  * The direction is implicit in the (senderFp, recipientFp) pair: each party uses themselves
  * as sender and the peer as recipient. This eliminates the boolean ambiguity and makes
  * the direction semantically clear at each call site.
  *
  * info = "Where-v1-RoutingToken" || senderFp (32 bytes) || recipientFp (32 bytes)
- * salt = epoch (4 bytes)
  *
  * Returns 16 bytes.
  */
 internal fun deriveRoutingToken(
     rootKey: ByteArray,
-    epoch: Int,
     senderFp: ByteArray,
     recipientFp: ByteArray,
 ): ByteArray {
-    val salt = intToBeBytes(epoch)
     val info = INFO_ROUTING_TOKEN.encodeToByteArray() + senderFp + recipientFp
-    return hkdfSha256(ikm = rootKey, salt = salt, info = info, length = 16)
+    return hkdfSha256(ikm = rootKey, salt = null, info = info, length = 16)
 }
 
 // ---------------------------------------------------------------------------

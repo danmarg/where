@@ -225,14 +225,16 @@ class KeyExchangeTest {
         // Simulate an epoch rotation (alice generates new EK, bob processes it)
         val bobOpk = generateX25519KeyPair()
         val aliceNewEk = generateX25519KeyPair()
-        val aliceRotated =
+        val (aliceRotated, _, _, _) =
             Session.aliceEpochRotation(
                 aliceSession,
                 aliceNewEk.priv,
                 aliceNewEk.pub,
                 bobOpk.pub,
-                aliceSession.aliceFp,
-                aliceSession.bobFp,
+                opkId = 1,
+                aliceFp = aliceSession.aliceFp,
+                bobFp = aliceSession.bobFp,
+                createdAt = currentTimeSeconds(),
             )
 
         // aliceEkPub and bobEkPub must be unchanged after rotation

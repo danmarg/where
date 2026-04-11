@@ -70,11 +70,8 @@ struct FriendsSheet: View {
                                     Text(timeAgoString(lastPingTimes[friend.id]))
                                         .font(.caption)
                                         .foregroundStyle(.secondary)
-                                    let ackStale = friend.isInitiator &&
-                                        friend.lastAckTs != Int64.max &&
-                                        Int64(Date().timeIntervalSince1970) - friend.lastAckTs > 7 * 24 * 3600
-                                    if ackStale {
-                                        Text("Not receiving acks — location sharing paused")
+                                    if friend.isStale {
+                                        Text("Friend not seen recently")
                                             .font(.caption)
                                             .foregroundStyle(.red)
                                     }
