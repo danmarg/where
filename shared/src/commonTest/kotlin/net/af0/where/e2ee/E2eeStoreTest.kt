@@ -557,11 +557,21 @@ class E2eeStoreTest {
             assertEquals(1, result.decryptedLocations.size)
             assertEquals(loc0.lat, result.decryptedLocations[0].lat)
 
-            // Bob's outgoing should include RatchetAck + PreKeyBundle (both on old sendToken)
+            // Bob's outgoing should include PreKeyBundle + RatchetAck (both on old sendToken).
+            // Ordering is critical: PreKeyBundle must be POSTed before RatchetAck so Alice
+            // sees the new OPKs before she commits and switches tokens.
+            val bundleEntry = result.outgoing.firstOrNull { it.payload is PreKeyBundlePayload }
+            assertNotNull(bundleEntry, "Bob must produce a PreKeyBundle in outgoing")
             val ackEntry = result.outgoing.firstOrNull { it.payload is RatchetAckPayload }
             assertNotNull(ackEntry, "Bob must produce a RatchetAck in outgoing")
+
+            val bundleIdx = result.outgoing.indexOf(bundleEntry)
+            val ackIdx = result.outgoing.indexOf(ackEntry)
+            assertTrue(bundleIdx < ackIdx, "PreKeyBundle must be ordered before RatchetAck")
+
             // The ack is sent on Bob's pre-rotation sendToken = Alice's pre-rotation recvToken (T_BA_old)
             assertEquals(bobOldSendToken, ackEntry!!.token, "RatchetAck must be addressed to Bob's pre-rotation sendToken")
+            assertEquals(bobOldSendToken, bundleEntry!!.token, "PreKeyBundle must be addressed to Bob's pre-rotation sendToken")
 
             // Bob's session is now on the new tokens (immediate switch — no dual-polling)
             val bobAfter = bobStore.getFriend(bobEntry.id)!!

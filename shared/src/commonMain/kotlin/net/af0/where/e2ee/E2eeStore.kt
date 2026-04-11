@@ -728,9 +728,6 @@ class E2eeStore(
                             ),
                     )
 
-                // Post RatchetAck on the OLD sendToken (T_BA_old).
-                outgoing.add(OutgoingMessage(oldSendToken.toHex(), RatchetAckPayload(ct = ackCt)))
-
                 // Generate and post a fresh OPK bundle on the OLD sendToken as well,
                 // MACed with oldSendToken so Alice can verify it before committing.
                 //
@@ -738,10 +735,11 @@ class E2eeStore(
                 // Step 1 (before RatchetAck in Step 4), so if both arrive in the same batch,
                 // the bundle is verified against Alice's pre-commit recvToken (= T_BA_old). ✓
                 //
-                // Cross-poll gap: if Alice polls T_BA_old between Bob's RatchetAck POST and
-                // this OPK bundle POST, she commits first and never sees the bundle (she switches
-                // to polling T_BA_new). The consequence is one missed bundle — rotation is
-                // delayed until Bob replenishes via shouldReplenishOpks. No security impact.
+                // Cross-poll gap: we add the OPK bundle to 'outgoing' BEFORE the RatchetAck.
+                // LocationClient posts them in order. This ensures that if Alice polls
+                // between POSTs, she either sees both (in a single poll) or only the bundle.
+                // If she sees the RatchetAck, she is guaranteed to have the bundle already
+                // available on the server (or in the same batch).
                 val freshEntry = friends[friendId] ?: continue
                 val startId = freshEntry.nextOpkId
                 val newOpks =
@@ -771,6 +769,9 @@ class E2eeStore(
                         ),
                     ),
                 )
+
+                // Post RatchetAck on the OLD sendToken (T_BA_old).
+                outgoing.add(OutgoingMessage(oldSendToken.toHex(), RatchetAckPayload(ct = ackCt)))
             }
 
             // Step 4: Process RatchetAcks — Alice atomically commits her pending rotation.
