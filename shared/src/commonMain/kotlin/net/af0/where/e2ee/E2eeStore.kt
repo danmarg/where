@@ -41,9 +41,31 @@ data class FriendEntry(
     val lastLat: Double? = null,
     val lastLng: Double? = null,
     val lastTs: Long? = null,
+    val lastAckTs: Long = Long.MAX_VALUE,
     val pendingRotation: PendingRotation? = null,
     val pendingAck: PendingAck? = null,
 ) {
+    companion object {
+        /** §12: Surface a "no recent location" warning after 2 days of silence. */
+        const val STALE_THRESHOLD_SECONDS = 2 * 24 * 3600L
+
+        /** §12: Surface a "no acks received" warning after 7 days of silence. */
+        const val ACK_TIMEOUT_SECONDS = 7 * 24 * 3600L
+    }
+
+    /**
+     * Returns true if Bob's app hasn't polled Alice's rotation in [STALE_THRESHOLD_SECONDS],
+     * or if no acks have been received for [ACK_TIMEOUT_SECONDS].
+     * This is a heuristic for UI to show a "not seen recently" warning.
+     */
+    val isStale: Boolean
+        get() {
+            val now = currentTimeSeconds()
+            val rotationStale = pendingRotation?.let { (now - it.createdAt) > STALE_THRESHOLD_SECONDS } ?: false
+            val ackStale = isInitiator && lastAckTs != Long.MAX_VALUE && (now - lastAckTs) > ACK_TIMEOUT_SECONDS
+            return rotationStale || ackStale
+        }
+
     /** Computed friend ID: hex(SHA-256(EK_A.pub)) — full 64 hex chars. */
     val id: String get() = session.aliceFp.toHex()
 
@@ -130,6 +152,7 @@ class E2eeStore(
                             lastLat = s.lastLat,
                             lastLng = s.lastLng,
                             lastTs = s.lastTs,
+                            lastAckTs = s.lastAckTs,
                             pendingRotation = s.pendingRotation,
                             pendingAck = s.pendingAck,
                         )
@@ -159,6 +182,7 @@ class E2eeStore(
                             lastLat = f.lastLat,
                             lastLng = f.lastLng,
                             lastTs = f.lastTs,
+                            lastAckTs = f.lastAckTs,
                             pendingRotation = f.pendingRotation,
                             pendingAck = f.pendingAck,
                         )
@@ -261,6 +285,7 @@ class E2eeStore(
                         session = session,
                         // Alice created the QR
                         isInitiator = true,
+                        lastAckTs = currentTimeSeconds(),
                     )
                 friends[entry.id] = entry
                 pendingInvite = null
@@ -459,6 +484,7 @@ class E2eeStore(
                     opkId = opkId,
                     aliceFp = entry.session.aliceFp,
                     bobFp = entry.session.bobFp,
+                    createdAt = currentTimeSeconds(),
                 )
 
             friends[friendId] =
@@ -566,6 +592,7 @@ class E2eeStore(
                 entry.copy(
                     session = committed,
                     pendingRotation = null,
+                    lastAckTs = currentTimeSeconds(),
                 )
             save()
             true
@@ -839,6 +866,7 @@ internal data class SerializedFriendEntry(
     val lastLat: Double? = null,
     val lastLng: Double? = null,
     val lastTs: Long? = null,
+    val lastAckTs: Long = Long.MAX_VALUE,
     val pendingRotation: PendingRotation? = null,
     val pendingAck: PendingAck? = null,
 )

@@ -196,6 +196,7 @@ object Session {
         opkId: Int,
         aliceFp: ByteArray,
         bobFp: ByteArray,
+        createdAt: Long,
     ): PendingRotation {
         // Step 1 DH: Alice's ephemeral × Bob's OPK.
         val dhOut = x25519(aliceNewEkPriv, bobOpkPub)
@@ -240,6 +241,7 @@ object Session {
             epochRotationCt = epochRotationCt,
             opkId = opkId,
             aliceNewEkPriv = aliceNewEkPrivCopy,
+            createdAt = createdAt,
         )
     }
 

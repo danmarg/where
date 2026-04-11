@@ -250,6 +250,7 @@ class SessionTest {
                 opkId = 1,
                 aliceFp = aliceSession.aliceFp,
                 bobFp = aliceSession.bobFp,
+                createdAt = currentTimeSeconds(),
             )
         val (bobRotated, ackCt) =
             Session.bobProcessAliceRotation(
@@ -294,6 +295,7 @@ class SessionTest {
                 opkId = 1,
                 aliceFp = aliceSession.aliceFp,
                 bobFp = aliceSession.bobFp,
+                createdAt = currentTimeSeconds(),
             )
         val (bobRotated, ackCt) =
             Session.bobProcessAliceRotation(
@@ -456,6 +458,7 @@ class SessionTest {
                 opkId = 1,
                 aliceFp = aliceSession.aliceFp,
                 bobFp = aliceSession.bobFp,
+                createdAt = currentTimeSeconds(),
             )
         assertTrue(aliceNewEk.priv.all { it == 0.toByte() }, "caller's aliceNewEkPriv should be zeroed")
         assertTrue(pending.aliceNewEkPriv.any { it != 0.toByte() }, "PendingRotation must hold a live copy of aliceNewEkPriv")

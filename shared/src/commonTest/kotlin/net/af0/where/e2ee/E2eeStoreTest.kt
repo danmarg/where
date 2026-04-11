@@ -442,6 +442,40 @@ class E2eeStoreTest {
             assertEquals(4, reloadedBob.myOpkPrivs.size, "Bob's OPK privkeys must persist")
             assertEquals(4, reloadedAlice.theirOpkPubs.size, "Alice's cached OPK pubkeys must persist")
             assertEquals(5, reloadedBob.nextOpkId, "Bob's next OPK ID must persist")
+            assertTrue(reloadedAlice.lastAckTs != Long.MAX_VALUE, "Alice's lastAckTs should be set")
+        }
+
+    @Test
+    fun testStalenessHeuristic() =
+        runBlocking {
+            val qr = aliceStore.createInvite("Alice")
+            val (initPayload, bobEntry) = bobStore.processScannedQr(qr)
+            val aliceEntry = aliceStore.processKeyExchangeInit(initPayload, "Bob")!!
+
+            // Not stale initially
+            assertFalse(aliceStore.getFriend(aliceEntry.id)!!.isStale)
+
+            // Simulate stale rotation (manual timestamp manipulation in FriendEntry is not possible as it's private in store,
+            // but we can test the logic in FriendEntry directly).
+            val entry = aliceStore.getFriend(aliceEntry.id)!!
+            val stalePending = entry.pendingRotation?.copy(createdAt = currentTimeSeconds() - FriendEntry.STALE_THRESHOLD_SECONDS - 10)
+            val staleEntry = entry.copy(pendingRotation = stalePending)
+            // Wait, pendingRotation is null initially. Let's initiate rotation.
+            val bundle = bobStore.generateOpkBundle(bobEntry.id, count = 1)!!
+            aliceStore.storeOpkBundle(aliceEntry.id, bundle)
+            aliceStore.initiateRotation(aliceEntry.id)
+            
+            val entryWithRot = aliceStore.getFriend(aliceEntry.id)!!
+            assertNotNull(entryWithRot.pendingRotation)
+            assertFalse(entryWithRot.isStale)
+
+            val staleRot = entryWithRot.pendingRotation!!.copy(createdAt = currentTimeSeconds() - FriendEntry.STALE_THRESHOLD_SECONDS - 10)
+            val staleEntryRot = entryWithRot.copy(pendingRotation = staleRot)
+            assertTrue(staleEntryRot.isStale, "Should be stale if pending rotation is old")
+
+            // Test ack staleness
+            val entryWithStaleAck = entry.copy(lastAckTs = currentTimeSeconds() - FriendEntry.ACK_TIMEOUT_SECONDS - 10)
+            assertTrue(entryWithStaleAck.isStale, "Should be stale if last ack is old")
         }
 
     @Test
