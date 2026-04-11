@@ -67,8 +67,6 @@ class E2eeIntegrationTest {
             bobSession.sendChainKey,
             "Alice's recv chain must equal Bob's send chain",
         )
-        assertEquals(0, aliceSession.epoch)
-        assertEquals(0, bobSession.epoch)
     }
 
     // -----------------------------------------------------------------------
@@ -95,7 +93,6 @@ class E2eeIntegrationTest {
             val payload: MailboxPayload =
                 EncryptedLocationPayload(
                     v = 1,
-                    epoch = newAliceState.epoch,
                     seq = newAliceState.sendSeq.toString(),
                     ct = ct,
                 )
@@ -158,7 +155,7 @@ class E2eeIntegrationTest {
                     contentType(ContentType.Application.Json)
                     setBody(
                         json.encodeToString<MailboxPayload>(
-                            EncryptedLocationPayload(1, nextState.epoch, nextState.sendSeq.toString(), ct),
+                            EncryptedLocationPayload(1, nextState.sendSeq.toString(), ct),
                         ),
                     )
                 }
@@ -203,7 +200,7 @@ class E2eeIntegrationTest {
                 contentType(ContentType.Application.Json)
                 setBody(
                     json.encodeToString<MailboxPayload>(
-                        EncryptedLocationPayload(1, newAliceState.epoch, newAliceState.sendSeq.toString(), tampered),
+                        EncryptedLocationPayload(1, newAliceState.sendSeq.toString(), tampered),
                     ),
                 )
             }
@@ -224,11 +221,11 @@ class E2eeIntegrationTest {
         }
 
     // -----------------------------------------------------------------------
-    // Epoch rotation
+    // Ratchet rotation
     // -----------------------------------------------------------------------
 
     @Test
-    fun `epoch rotation - token changes, old and new tokens are independently decryptable`() =
+    fun `ratchet rotation - token changes, old and new tokens are independently decryptable`() =
         testApplication {
             application { module(ServerState()) }
 
@@ -239,7 +236,7 @@ class E2eeIntegrationTest {
 
             val oldToken = aliceState.sendToken.toHex()
 
-            // Alice sends one message in epoch 0 to the old token
+            // Alice sends one message to the old token
             val loc0 = LocationPlaintext(lat = 51.5, lng = -0.1, acc = 5.0, ts = 1000L)
             val (aliceState1, ct0) = Session.encryptLocation(aliceState, loc0, aliceState.aliceFp, aliceState.bobFp)
             aliceState = aliceState1
@@ -249,7 +246,6 @@ class E2eeIntegrationTest {
                     json.encodeToString<MailboxPayload>(
                         EncryptedLocationPayload(
                             1,
-                            aliceState.epoch,
                             aliceState.sendSeq.toString(),
                             ct0,
                         ),
@@ -257,22 +253,36 @@ class E2eeIntegrationTest {
                 )
             }
 
-            // Alice rotates epoch (consumes a fresh Bob OPK keypair)
+            // Alice rotates (consumes a fresh Bob OPK keypair)
             val aliceNewEk = generateX25519KeyPair()
             val bobOpk = generateX25519KeyPair()
-            aliceState =
+            val pending =
                 Session.aliceEpochRotation(
                     aliceState,
                     aliceNewEk.priv,
                     aliceNewEk.pub,
                     bobOpk.pub,
+                    1, // opkId
                     aliceState.aliceFp,
                     aliceState.bobFp,
+                    1000L, // createdAt
                 )
-            val newToken = aliceState.sendToken.toHex()
-            assertNotEquals(oldToken, newToken, "Routing token must change after epoch rotation")
 
-            // Alice sends one message in epoch 1 to the new token
+            // For the test, we skip the ack and just commit manually to simulate rotation completion
+            val bobNewEk = generateX25519KeyPair()
+            val ackCt = buildRatchetAckCt(
+                pending.newSession.rootKey,
+                bobNewEk.pub,
+                aliceState.bobFp,
+                aliceState.aliceFp,
+                pending.newSession.recvToken
+            )
+            aliceState = Session.aliceProcessRatchetAck(pending, ackCt, aliceState.bobFp, aliceState.aliceFp)
+
+            val newToken = aliceState.sendToken.toHex()
+            assertNotEquals(oldToken, newToken, "Routing token must change after rotation")
+
+            // Alice sends one message to the new token
             val loc1 = LocationPlaintext(lat = 52.0, lng = -0.2, acc = 3.0, ts = 2000L)
             val (aliceState2, ct1) = Session.encryptLocation(aliceState, loc1, aliceState.aliceFp, aliceState.bobFp)
             client.post("/inbox/$newToken") {
@@ -281,7 +291,6 @@ class E2eeIntegrationTest {
                     json.encodeToString<MailboxPayload>(
                         EncryptedLocationPayload(
                             1,
-                            aliceState2.epoch,
                             aliceState2.sendSeq.toString(),
                             ct1,
                         ),
@@ -289,9 +298,9 @@ class E2eeIntegrationTest {
                 )
             }
 
-            // Bob polls old token and decrypts the epoch-0 message with his pre-rotation state
+            // Bob polls old token and decrypts the old message with his pre-rotation state
             val oldArr = json.decodeFromString<JsonArray>(client.get("/inbox/$oldToken").bodyAsText())
-            assertEquals(1, oldArr.size, "Old token should have one epoch-0 message")
+            assertEquals(1, oldArr.size, "Old token should have one old message")
             val msg0 = json.decodeFromJsonElement<MailboxPayload>(oldArr[0])
             assertIs<EncryptedLocationPayload>(msg0)
             val (bobState1, decrypted0) =
@@ -306,23 +315,20 @@ class E2eeIntegrationTest {
             assertEquals(loc0.lat, decrypted0.lat, 1e-9)
             assertEquals(loc0.ts, decrypted0.ts)
 
-            // Bob applies epoch rotation to advance to epoch 1
-            bobState =
+            // Bob applies rotation to advance
+            val (bobStateNew, _) =
                 Session.bobProcessAliceRotation(
                     bobState,
                     aliceNewEk.pub,
                     bobOpk.priv,
-                    1,
                     bobState.aliceFp,
                     bobState.bobFp,
-                    0L,
-                    0L,
                 )
-            assertEquals(1, bobState.epoch)
+            bobState = bobStateNew
 
-            // Bob polls new token and decrypts the epoch-1 message
+            // Bob polls new token and decrypts the new message
             val newArr = json.decodeFromString<JsonArray>(client.get("/inbox/$newToken").bodyAsText())
-            assertEquals(1, newArr.size, "New token should have one epoch-1 message")
+            assertEquals(1, newArr.size, "New token should have one message")
             val msg1 = json.decodeFromJsonElement<MailboxPayload>(newArr[0])
             assertIs<EncryptedLocationPayload>(msg1)
             val (_, decrypted1) =
@@ -338,11 +344,11 @@ class E2eeIntegrationTest {
         }
 
     @Test
-    fun `epoch rotation ordering - old-epoch messages must be decrypted with pre-rotation session`() {
+    fun `rotation ordering - old messages must be decrypted with pre-rotation session`() {
         // Demonstrates the ordering requirement in the poll loop: when a poll batch from
-        // the old token contains both EncryptedLocationPayloads (epoch N) and an
+        // the old token contains both EncryptedLocationPayloads and an
         // EpochRotation, the location messages must be decrypted BEFORE the session is
-        // advanced to epoch N+1. Decrypting an epoch-N message with the epoch-N+1
+        // advanced. Decrypting an old message with the new
         // session will fail because the recv chain key has been replaced.
         val (qr, aliceEkPriv) =
             KeyExchange.aliceCreateQrPayload("Alice")
@@ -351,26 +357,23 @@ class E2eeIntegrationTest {
         var aliceState =
             KeyExchange.aliceProcessInit(initMsg, aliceEkPriv, qr.ekPub)
 
-        // Alice encrypts a location in epoch 0
+        // Alice encrypts a location
         val location = LocationPlaintext(lat = 1.0, lng = 2.0, acc = 1.0, ts = 1000L)
         val (aliceState1, ct) = Session.encryptLocation(aliceState, location, aliceState.aliceFp, aliceState.bobFp)
 
-        // Bob advances to epoch 1 (simulating having processed an EpochRotation)
+        // Bob advances (simulating having processed an EpochRotation)
         val aliceNewEk = generateX25519KeyPair()
         val bobOpk = generateX25519KeyPair()
-        val bobStatePostRotation =
+        val (bobStatePostRotation, _) =
             Session.bobProcessAliceRotation(
                 bobState0,
                 aliceNewEk.pub,
                 bobOpk.priv,
-                1,
                 bobState0.aliceFp,
                 bobState0.bobFp,
-                0L,
-                0L,
             )
 
-        // Correct: decrypt epoch-0 message with the epoch-0 (pre-rotation) state
+        // Correct: decrypt old message with the pre-rotation state
         val (_, decrypted) =
             Session.decryptLocation(
                 bobState0,
@@ -382,7 +385,7 @@ class E2eeIntegrationTest {
         assertEquals(location.lat, decrypted.lat, 1e-9)
         assertEquals(location.ts, decrypted.ts)
 
-        // Wrong: decrypt epoch-0 message with the epoch-1 (post-rotation) state — must fail
+        // Wrong: decrypt old message with the post-rotation state — must fail
         val threw =
             try {
                 Session.decryptLocation(
@@ -398,7 +401,7 @@ class E2eeIntegrationTest {
             }
         assertTrue(
             threw,
-            "Decrypting an epoch-0 message with post-rotation state must throw",
+            "Decrypting an old message with post-rotation state must throw",
         )
     }
 
@@ -421,7 +424,7 @@ class E2eeIntegrationTest {
                 contentType(ContentType.Application.Json)
                 setBody(
                     json.encodeToString<MailboxPayload>(
-                        EncryptedLocationPayload(1, newAliceState.epoch, newAliceState.sendSeq.toString(), ct),
+                        EncryptedLocationPayload(1, newAliceState.sendSeq.toString(), ct),
                     ),
                 )
             }
