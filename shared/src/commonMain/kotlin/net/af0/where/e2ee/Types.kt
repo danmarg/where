@@ -36,6 +36,10 @@ data class RawKeyPair(val priv: ByteArray, val pub: ByteArray) {
  *   aliceEkPub    – EK_A.pub — Alice's bootstrap ephemeral public key (stable for session lifetime).
  *   bobEkPub      – EK_B.pub — Bob's bootstrap ephemeral public key (stable for session lifetime).
  *   kBundle       – HKDF(SK, info="Where-v1-BundleAuth") — bundle authentication key.
+ *   prevRecvToken         – If non-null, Bob's previous recvToken (used for dual-polling window).
+ *   prevRecvTokenDeadline – If non-zero, deadline to poll prevRecvToken (seconds since epoch).
+ *   prevRecvChainKey      – If non-null, Bob's previous recvChainKey (used for decryption).
+ *   prevRecvSeq           – Highest seq received on prevRecvToken (for replay rejection).
  *
  * There is no epoch counter. DH ratchet advancement is ack-triggered (§8.4): Alice stores
  * a PendingRotation alongside the session and commits it when she receives a RatchetAck.
@@ -57,6 +61,10 @@ data class SessionState(
     @Serializable(with = ByteArrayBase64Serializer::class) val aliceEkPub: ByteArray,
     @Serializable(with = ByteArrayBase64Serializer::class) val bobEkPub: ByteArray,
     @Serializable(with = ByteArrayBase64Serializer::class) val kBundle: ByteArray,
+    @Serializable(with = ByteArrayBase64Serializer::class) val prevRecvToken: ByteArray? = null,
+    val prevRecvTokenDeadline: Long = 0L,
+    @Serializable(with = ByteArrayBase64Serializer::class) val prevRecvChainKey: ByteArray? = null,
+    val prevRecvSeq: Long = 0L,
 ) {
     override fun equals(other: Any?): Boolean {
         if (other !is SessionState) return false
@@ -74,7 +82,17 @@ data class SessionState(
             bobFp.contentEquals(other.bobFp) &&
             aliceEkPub.contentEquals(other.aliceEkPub) &&
             bobEkPub.contentEquals(other.bobEkPub) &&
-            kBundle.contentEquals(other.kBundle)
+            kBundle.contentEquals(other.kBundle) &&
+            (
+                (prevRecvToken == null && other.prevRecvToken == null) ||
+                    (prevRecvToken != null && other.prevRecvToken != null && prevRecvToken.contentEquals(other.prevRecvToken))
+            ) &&
+            prevRecvTokenDeadline == other.prevRecvTokenDeadline &&
+            (
+                (prevRecvChainKey == null && other.prevRecvChainKey == null) ||
+                    (prevRecvChainKey != null && other.prevRecvChainKey != null && prevRecvChainKey.contentEquals(other.prevRecvChainKey))
+            ) &&
+            prevRecvSeq == other.prevRecvSeq
     }
 
     override fun hashCode(): Int {
@@ -93,6 +111,10 @@ data class SessionState(
         h = 31 * h + aliceEkPub.contentHashCode()
         h = 31 * h + bobEkPub.contentHashCode()
         h = 31 * h + kBundle.contentHashCode()
+        h = 31 * h + (prevRecvToken?.contentHashCode() ?: 0)
+        h = 31 * h + prevRecvTokenDeadline.hashCode()
+        h = 31 * h + (prevRecvChainKey?.contentHashCode() ?: 0)
+        h = 31 * h + prevRecvSeq.hashCode()
         return h
     }
 }
