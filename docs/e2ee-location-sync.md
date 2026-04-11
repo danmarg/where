@@ -325,14 +325,14 @@ Specifically, when Alice initiates a DH rotation:
 4. She AEAD-encrypts the rotation payload under `K_rot` (see §8.3) and posts it alongside her location update on the **old `send_token`**.
 5. She stores the pending new state but continues using the old state until acked.
 
-**3. Bob Receives and Acks (on every receive):**
-When Bob polls and gets a batch of messages from Alice:
-1. If the batch contains an `EpochRotation`, Bob decrypts it, computes new keys + new tokens.
+**3. Bob Receives and Acks (on EpochRotation only):**
+When Bob polls and gets a batch containing an `EpochRotation`:
+1. Bob decrypts it and computes new keys + new tokens.
 2. Bob **immediately** switches his `recvToken` to the new value — no dual-polling needed, since Alice is still posting to the old token until she gets the ack.
-3. Bob sends a `RatchetAck` as a POST on his `sendToken` (a separate small message, independent of whether Bob is currently sharing his own location).
+3. Bob sends a `RatchetAck` as a POST on his **old** `sendToken` (a separate small message, independent of whether Bob is currently sharing his own location).
 4. **Bob MUST delete the OPK private key immediately after use.**
 
-Bob sends a `RatchetAck` on **every receive**, not only after DH rotations. This simplifies Bob's logic: he always acks whatever he received, and the ack serves double duty as a liveness signal.
+Bob sends a `RatchetAck` only when processing an `EpochRotation`, not on every receive. Batches containing only location updates require no response from Bob.
 
 **4. Alice Commits (on receiving RatchetAck):**
 When Alice polls Bob's channel and receives a `RatchetAck` covering the rotation:
@@ -360,7 +360,7 @@ When Alice polls Bob's channel and receives a `RatchetAck` covering the rotation
 | Forward secrecy granularity | Per message (every `KDF_CK` step) |
 | Post-compromise security | Per DH ratchet step (ack-triggered) |
 | Extra messages per Alice send | 1 `EpochRotation` alongside location (until acked) |
-| Extra messages per Bob receive | 1 `RatchetAck` POST per poll cycle that got messages |
+| Extra messages per Bob receive | 1 `RatchetAck` POST only when an `EpochRotation` was in the batch |
 | Dual-polling window | None (Bob polls one token at a time) |
 
 ### 5.5 Message Key Deletion Policy
@@ -638,7 +638,7 @@ Policy (A) above (drop past-seq frames; advance chain for future-seq frames) req
    - She has at least one cached OPK for Bob, **and**
    - A DH rotation is not already pending (i.e., she has not yet received a `RatchetAck` for the current rotation).
 3. While a rotation is pending, Alice includes an `EpochRotation` message alongside every location update she sends, on the **old `send_token`**. She does not advance to the new token until acked.
-4. Bob sends a `RatchetAck` on **every receive** — triggered by polling, not by his own send cadence. The ack is a separate POST on Bob's `send_token`.
+4. Bob sends a `RatchetAck` only when an `EpochRotation` is present in the batch — a separate POST on Bob's **old** `send_token`. Batches containing only location updates require no response.
 5. When Alice receives a `RatchetAck`, she atomically commits the pending rotation state (new root key, chain keys, routing tokens).
 6. Bob periodically uploads new `PreKeyBundle` messages to ensure Alice has a supply of OPKs.
 
@@ -782,7 +782,7 @@ where the inner plaintext is:
 }
 ```
 
-and `K_ack = HKDF(new_root_key, salt=0, info="Where-v1-RatchetAck")[0:32]` (using the post-rotation root key). Bob sends a `RatchetAck` on every receive, including normal location-only batches; in that case `K_ack` is derived from the current (unchanged) root key.
+and `K_ack = HKDF(new_root_key, salt=0, info="Where-v1-RatchetAck")[0:32]` (using the post-rotation root key). Bob sends a `RatchetAck` only when processing an `EpochRotation`; `K_ack` is always derived from the post-rotation root key.
 
 Alice MUST verify the `RatchetAck` using `K_ack` derived from the pending new root key. A successful decryption confirms Bob has the new keys; Alice atomically commits the pending rotation.
 
