@@ -266,16 +266,13 @@ class E2eeStoreTest {
             assertNotNull(ack, "Bob must return a RatchetAck")
 
             val bobAfter = bobStore.getFriend(bobEntry.id)!!
-            // Bob's new tokens match Alice's pending session
-            assertContentEquals(
-                aliceAfterInit.pendingRotation!!.newSession.sendToken,
-                bobAfter.session.recvToken,
-                "Alice pending sendToken = Bob new recvToken",
-            )
+            // The pending session is intermediate (rootKey1 only); step 2 runs on commit.
+            // The step-1 chain key relationship still holds: Alice's pending sendChainKey
+            // (chainKey_AB) must equal Bob's new recvChainKey.
             assertContentEquals(
                 aliceAfterInit.pendingRotation!!.newSession.sendChainKey,
                 bobAfter.session.recvChainKey,
-                "Alice new send chain must equal Bob's new recv chain",
+                "Alice pending sendChainKey (chainKey_AB) must equal Bob's new recvChainKey",
             )
 
             // Alice commits pending rotation upon receiving the RatchetAck
@@ -292,6 +289,12 @@ class E2eeStoreTest {
                 aliceCommitted.session.recvToken,
                 bobAfter.session.sendToken,
                 "Alice recvToken = Bob sendToken after commit",
+            )
+            // Mutual PFS: step 2 gives each side a fresh chain key from their own ephemeral.
+            assertContentEquals(
+                aliceCommitted.session.recvChainKey,
+                bobAfter.session.sendChainKey,
+                "Alice recvChainKey (chainKey_BA) must equal Bob's sendChainKey after commit",
             )
         }
 
