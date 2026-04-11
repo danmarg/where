@@ -61,7 +61,7 @@ struct FriendsSheet: View {
                         ForEach(friends, id: \.id) { friend in
                             HStack {
                                 VStack(alignment: .leading, spacing: 2) {
-                                    Text(friend.name)
+                                    Text(friend.isConfirmed ? friend.name : "\(friend.name) (Pending)")
                                         .font(.body)
                                     Text(friend.safetyNumber)
                                         .font(.caption2)

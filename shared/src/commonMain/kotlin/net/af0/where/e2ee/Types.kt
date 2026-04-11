@@ -79,11 +79,15 @@ data class SessionState(
             aliceEkPub.contentEquals(other.aliceEkPub) &&
             bobEkPub.contentEquals(other.bobEkPub) &&
             kBundle.contentEquals(other.kBundle) &&
-            ((prevRecvToken == null && other.prevRecvToken == null) ||
-                (prevRecvToken != null && other.prevRecvToken != null && prevRecvToken.contentEquals(other.prevRecvToken))) &&
+            (
+                (prevRecvToken == null && other.prevRecvToken == null) ||
+                    (prevRecvToken != null && other.prevRecvToken != null && prevRecvToken.contentEquals(other.prevRecvToken))
+            ) &&
             prevRecvTokenDeadline == other.prevRecvTokenDeadline &&
-            ((prevRecvChainKey == null && other.prevRecvChainKey == null) ||
-                (prevRecvChainKey != null && other.prevRecvChainKey != null && prevRecvChainKey.contentEquals(other.prevRecvChainKey))) &&
+            (
+                (prevRecvChainKey == null && other.prevRecvChainKey == null) ||
+                    (prevRecvChainKey != null && other.prevRecvChainKey != null && prevRecvChainKey.contentEquals(other.prevRecvChainKey))
+            ) &&
             prevRecvSeq == other.prevRecvSeq
     }
 
