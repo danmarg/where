@@ -104,23 +104,35 @@ data class SessionState(
  * She stores it alongside her session and includes [epochRotationCt] in every outgoing
  * POST until she receives a RatchetAck covering the rotation.
  *
- * @property newSession       The session state to commit once Bob acks.
+ * The rotation uses a two-step DH for mutual PFS (§8.4):
+ *   Step 1: KDF_RK(rootKey, DH(aliceNewEk, bobOpk))  → (rootKey1, chainKey_AB)
+ *   Step 2: KDF_RK(rootKey1, DH(bobNewEk, aliceNewEk)) → (rootKey2, chainKey_BA)
+ * Bob includes bobNewEkPub in his RatchetAck; Alice performs step 2 when committing.
+ * [aliceNewEkPriv] is kept alive (serialized) until the RatchetAck is processed.
+ *
+ * @property newSession       Intermediate session state (after step 1 only); committed
+ *                            in [Session.aliceProcessRatchetAck] after step 2.
  * @property epochRotationCt  Pre-built AEAD blob to include with each outgoing send.
  * @property opkId            OPK ID consumed for this rotation (for diagnostics).
+ * @property aliceNewEkPriv   Alice's ephemeral private key; used for step 2 DH on commit.
  */
 @Serializable
 data class PendingRotation(
     val newSession: SessionState,
     @Serializable(with = ByteArrayBase64Serializer::class) val epochRotationCt: ByteArray,
     val opkId: Int,
+    @Serializable(with = ByteArrayBase64Serializer::class) val aliceNewEkPriv: ByteArray,
 ) {
     override fun equals(other: Any?): Boolean =
         other is PendingRotation &&
             newSession == other.newSession &&
             epochRotationCt.contentEquals(other.epochRotationCt) &&
-            opkId == other.opkId
+            opkId == other.opkId &&
+            aliceNewEkPriv.contentEquals(other.aliceNewEkPriv)
 
-    override fun hashCode(): Int = 31 * newSession.hashCode() + epochRotationCt.contentHashCode()
+    override fun hashCode(): Int =
+        31 * (31 * newSession.hashCode() + epochRotationCt.contentHashCode()) +
+            aliceNewEkPriv.contentHashCode()
 }
 
 fun ByteArray.toHex(): String = joinToString("") { (it.toInt() and 0xFF).toString(16).padStart(2, '0') }

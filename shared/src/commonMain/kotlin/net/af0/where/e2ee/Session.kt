@@ -163,25 +163,30 @@ object Session {
     }
 
     /**
-     * Alice: initiate a DH ratchet rotation step using a cached OPK from Bob.
+     * Alice: initiate a two-step DH ratchet rotation using a cached OPK from Bob.
      *
-     * Computes the new session state and pre-builds the EpochRotation ciphertext blob.
-     * Returns (newSession, epochRotationCt, opkId) — the caller stores these as a
-     * [PendingRotation] and includes [epochRotationCt] in every outgoing send until
-     * Bob acks.
+     * Computes the intermediate session state (after step 1 only) and pre-builds the
+     * EpochRotation ciphertext blob. The caller stores the returned [PendingRotation]
+     * and includes [PendingRotation.epochRotationCt] in every outgoing send until Bob acks.
      *
-     * Alice MUST NOT commit [newSession] until she receives a RatchetAck (call
-     * [aliceProcessRatchetAck] to do so). Until then she continues using the current
-     * session for all sends and receives.
+     * Alice MUST NOT commit until she receives a RatchetAck. Call [aliceProcessRatchetAck],
+     * which performs step 2 (using Bob's fresh EK from the ack) and returns the final
+     * committed session. Until then she continues using the current session for sends/receives.
+     *
+     * Two-step protocol (§8.4):
+     *   Step 1 (here):    KDF_RK(rootKey,  DH(aliceNewEk, bobOpk))  → (rootKey1, chainKey_AB)
+     *   Step 2 (on ack):  KDF_RK(rootKey1, DH(aliceNewEk, bobNewEk)) → (rootKey2, chainKey_BA)
+     * Both sides contribute a fresh ephemeral per rotation — mutual PFS.
      *
      * @param state          Current session state.
      * @param aliceNewEkPriv Alice's fresh ephemeral X25519 private key for this step.
+     *                       The caller's buffer is zeroed; a copy is kept in [PendingRotation].
      * @param aliceNewEkPub  Corresponding public key.
      * @param bobOpkPub      Bob's OPK public key (consumed from cache).
      * @param opkId          ID of the OPK consumed (stored in PendingRotation).
      * @param aliceFp        Alice's fingerprint.
      * @param bobFp          Bob's fingerprint.
-     * @return Triple(newSession, epochRotationCt, opkId).
+     * @return [PendingRotation] with the intermediate session, ack ct, and preserved priv key.
      */
     fun aliceEpochRotation(
         state: SessionState,
@@ -191,23 +196,27 @@ object Session {
         opkId: Int,
         aliceFp: ByteArray,
         bobFp: ByteArray,
-    ): Triple<SessionState, ByteArray, Int> {
+    ): PendingRotation {
+        // Step 1 DH: Alice's ephemeral × Bob's OPK.
         val dhOut = x25519(aliceNewEkPriv, bobOpkPub)
         val ratchetStep = kdfRk(state.rootKey, dhOut)
+        // Intermediate routing tokens from rootKey1. The final tokens (from rootKey2) are
+        // derived in aliceProcessRatchetAck once Bob's fresh EK is received.
+        // recvToken (= T_BA from rootKey1) is used as the AAD anchor in the RatchetAck.
         val newTokenAliceToBob = deriveRoutingToken(ratchetStep.newRootKey, senderFp = aliceFp, recipientFp = bobFp)
         val newTokenBobToAlice = deriveRoutingToken(ratchetStep.newRootKey, senderFp = bobFp, recipientFp = aliceFp)
 
         val newSession =
             state.copy(
                 rootKey = ratchetStep.newRootKey,
-                sendChainKey = ratchetStep.newChainKey,
+                sendChainKey = ratchetStep.newChainKey,  // chainKey_AB; final send chain for Alice
                 sendToken = newTokenAliceToBob,
-                recvToken = newTokenBobToAlice,
-                // myEkPriv is zeroed immediately — it is not used for a second DH step.
-                myEkPriv = ByteArray(32),
+                recvToken = newTokenBobToAlice,  // used as AAD in RatchetAck; overwritten at commit
+                myEkPriv = ByteArray(32),  // not stored here — kept in PendingRotation.aliceNewEkPriv
                 myEkPub = aliceNewEkPub.copyOf(),
                 theirEkPub = bobOpkPub.copyOf(),
                 sendSeq = 0L,
+                recvSeq = 0L,
             )
 
         val epochRotationCt =
@@ -220,24 +229,36 @@ object Session {
                 sendToken = state.sendToken,
             )
 
-        // Security (§5.5, §11): zero out ephemeral keys after use
+        // Keep a copy of aliceNewEkPriv in PendingRotation for step 2 in aliceProcessRatchetAck.
+        // Zero the caller's buffer immediately (§5.5, §11).
+        val aliceNewEkPrivCopy = aliceNewEkPriv.copyOf()
         dhOut.fill(0)
         aliceNewEkPriv.fill(0)
 
-        return Triple(newSession, epochRotationCt, opkId)
+        return PendingRotation(
+            newSession = newSession,
+            epochRotationCt = epochRotationCt,
+            opkId = opkId,
+            aliceNewEkPriv = aliceNewEkPrivCopy,
+        )
     }
 
     /**
-     * Bob: process Alice's EpochRotation by computing the matching DH step.
+     * Bob: process Alice's EpochRotation using a two-step DH for mutual PFS.
      *
      * Immediately switches to the new recvToken (no dual-polling window). Returns
      * (newState, ratchetAckCt). Bob MUST post [ratchetAckCt] on [state.sendToken]
-     * (the **pre-rotation** sendToken) before updating his routing address so Alice
-     * can receive it on her current recvToken.
+     * (the **pre-rotation** sendToken) so Alice can receive it on her current recvToken.
+     *
+     * Two-step protocol (§8.4):
+     *   Step 1: KDF_RK(rootKey,  DH(bobOpk,    aliceNewEk)) → (rootKey1, chainKey_AB)
+     *   Step 2: KDF_RK(rootKey1, DH(bobNewEk,  aliceNewEk)) → (rootKey2, chainKey_BA)
+     * Bob generates a fresh ephemeral [bobNewEk] and includes its public key in the
+     * RatchetAck so Alice can perform the matching step 2 on commit.
      *
      * @param state           Bob's current session state.
      * @param aliceNewEkPub   Alice's new ephemeral public key (from [decryptEpochRotationCt]).
-     * @param bobOpkPriv      Bob's OPK private key for the consumed opkId.
+     * @param bobOpkPriv      Bob's OPK private key for the consumed opkId (zeroed on return).
      * @param aliceFp         Alice's fingerprint.
      * @param bobFp           Bob's fingerprint.
      * @return Pair(newState, ratchetAckCt) where ratchetAckCt must be posted on the pre-rotation sendToken.
@@ -249,48 +270,70 @@ object Session {
         aliceFp: ByteArray,
         bobFp: ByteArray,
     ): Pair<SessionState, ByteArray> {
-        val dhOut = x25519(bobOpkPriv, aliceNewEkPub)
-        val ratchetStep = kdfRk(state.rootKey, dhOut)
-        val newTokenAliceToBob = deriveRoutingToken(ratchetStep.newRootKey, senderFp = aliceFp, recipientFp = bobFp)
-        val newTokenBobToAlice = deriveRoutingToken(ratchetStep.newRootKey, senderFp = bobFp, recipientFp = aliceFp)
+        // Step 1: Alice's DH contribution (OPK × aliceNewEk).
+        val dhOut1 = x25519(bobOpkPriv, aliceNewEkPub)
+        val ratchetStep1 = kdfRk(state.rootKey, dhOut1)
+
+        // Step 2: Bob's fresh DH contribution — generates mutual PFS.
+        val bobNewEk = generateX25519KeyPair()
+        val dhOut2 = x25519(bobNewEk.priv, aliceNewEkPub)
+        val ratchetStep2 = kdfRk(ratchetStep1.newRootKey, dhOut2)
+
+        // Final routing tokens derived from rootKey2.
+        val newTokenAliceToBob = deriveRoutingToken(ratchetStep2.newRootKey, senderFp = aliceFp, recipientFp = bobFp)
+        val newTokenBobToAlice = deriveRoutingToken(ratchetStep2.newRootKey, senderFp = bobFp, recipientFp = aliceFp)
 
         val newState =
             state.copy(
-                rootKey = ratchetStep.newRootKey,
-                // Bob's new recv chain (= Alice's new send)
-                recvChainKey = ratchetStep.newChainKey,
+                rootKey = ratchetStep2.newRootKey,
+                recvChainKey = ratchetStep1.newChainKey,  // chainKey_AB (= Alice's send chain)
+                sendChainKey = ratchetStep2.newChainKey,  // chainKey_BA (Bob's fresh send chain)
                 sendToken = newTokenBobToAlice,
                 recvToken = newTokenAliceToBob,
                 theirEkPub = aliceNewEkPub.copyOf(),
+                myEkPub = bobNewEk.pub.copyOf(),
+                myEkPriv = ByteArray(32),
                 recvSeq = 0L,
+                sendSeq = 0L,
             )
 
+        // The ack is authenticated under K_ack derived from rootKey1 (the intermediate root
+        // key that Alice also holds in her pending session). Alice uses the ack to extract
+        // bobNewEkPub and compute step 2 herself.
+        val intermediateTokenBobToAlice =
+            deriveRoutingToken(ratchetStep1.newRootKey, senderFp = bobFp, recipientFp = aliceFp)
         val ratchetAckCt =
             buildRatchetAckCt(
-                newRootKey = ratchetStep.newRootKey,
+                intermediateRootKey = ratchetStep1.newRootKey,
+                bobNewEkPub = bobNewEk.pub,
                 bobFp = bobFp,
                 aliceFp = aliceFp,
-                newSendToken = newTokenBobToAlice,
+                intermediateSendToken = intermediateTokenBobToAlice,
             )
 
         // Security (§5.5, §11): zero out ephemeral keys after use
-        dhOut.fill(0)
+        dhOut1.fill(0)
+        dhOut2.fill(0)
         bobOpkPriv.fill(0)
+        bobNewEk.priv.fill(0)
 
         return newState to ratchetAckCt
     }
 
     /**
-     * Alice: verify Bob's RatchetAck and atomically commit the pending rotation.
+     * Alice: verify Bob's RatchetAck, perform step 2 DH, and atomically commit the rotation.
      *
-     * Throws [IllegalArgumentException] if the AEAD tag does not verify, indicating
-     * Bob did not successfully perform the matching DH step.
+     * The ack contains Bob's fresh ephemeral public key (bobNewEkPub) in its AEAD plaintext.
+     * Alice uses it to perform step 2: KDF_RK(rootKey1, DH(aliceNewEkPriv, bobNewEkPub))
+     * → (rootKey2, chainKey_BA). The returned session is the fully committed final state.
+     *
+     * Throws [AuthenticationException] if the AEAD tag does not verify.
      *
      * @param pendingRotation The stored pending rotation (from [aliceEpochRotation]).
      * @param ackCt           The AEAD blob from the RatchetAckPayload.
      * @param bobFp           Bob's fingerprint.
      * @param aliceFp         Alice's fingerprint.
-     * @return The committed new session state.
+     * @return The committed new session state (with final rootKey2 and routing tokens).
      */
     fun aliceProcessRatchetAck(
         pendingRotation: PendingRotation,
@@ -298,14 +341,42 @@ object Session {
         bobFp: ByteArray,
         aliceFp: ByteArray,
     ): SessionState {
-        decryptRatchetAckCt(
-            newRootKey = pendingRotation.newSession.rootKey,
-            ct = ackCt,
-            bobFp = bobFp,
-            aliceFp = aliceFp,
-            newSendToken = pendingRotation.newSession.recvToken,
-        )
-        return pendingRotation.newSession
+        // Decrypt the ack (authenticated under K_ack from rootKey1) to get Bob's fresh EK pub.
+        val bobNewEkPub =
+            decryptRatchetAckCt(
+                intermediateRootKey = pendingRotation.newSession.rootKey,
+                ct = ackCt,
+                bobFp = bobFp,
+                aliceFp = aliceFp,
+                intermediateSendToken = pendingRotation.newSession.recvToken,
+            )
+
+        // Step 2 DH: KDF_RK(rootKey1, DH(aliceNewEkPriv, bobNewEkPub)) → (rootKey2, chainKey_BA)
+        val dhOut2 = x25519(pendingRotation.aliceNewEkPriv, bobNewEkPub)
+        val ratchetStep2 = kdfRk(pendingRotation.newSession.rootKey, dhOut2)
+
+        // Final routing tokens from rootKey2.
+        val finalTokenAliceToBob =
+            deriveRoutingToken(ratchetStep2.newRootKey, senderFp = aliceFp, recipientFp = bobFp)
+        val finalTokenBobToAlice =
+            deriveRoutingToken(ratchetStep2.newRootKey, senderFp = bobFp, recipientFp = aliceFp)
+
+        val committed =
+            pendingRotation.newSession.copy(
+                rootKey = ratchetStep2.newRootKey,
+                // sendChainKey (chainKey_AB from step 1) carries over unchanged
+                recvChainKey = ratchetStep2.newChainKey,  // chainKey_BA from step 2
+                sendToken = finalTokenAliceToBob,
+                recvToken = finalTokenBobToAlice,
+                theirEkPub = bobNewEkPub.copyOf(),
+                recvSeq = 0L,
+            )
+
+        // Security (§5.5, §11): zero out ephemeral keys after use
+        dhOut2.fill(0)
+        pendingRotation.aliceNewEkPriv.fill(0)
+
+        return committed
     }
 
     // ---------------------------------------------------------------------------
@@ -440,37 +511,44 @@ internal fun decryptEpochRotationCt(
 /**
  * Build the AEAD-encrypted RatchetAck payload blob.
  *
- * K_ack = HKDF(newRootKey, salt=absent, info="Where-v1-RatchetAck", length=32).
- * Both Bob (post-rotation) and Alice (pendingRotation.newSession) know newRootKey, so
- * a successful tag verification proves Bob performed the correct DH step.
+ * K_ack = HKDF(intermediateRootKey, salt=absent, info="Where-v1-RatchetAck", length=32).
+ * [intermediateRootKey] is rootKey1 (after step 1 only), known to both parties:
+ *   - Bob computes it in [Session.bobProcessAliceRotation].
+ *   - Alice has it in [PendingRotation.newSession.rootKey].
+ * A successful tag verification proves Bob performed the correct step 1 DH.
  *
- * Plaintext: empty.
- * AAD: bobFp || aliceFp || newSendToken (T_BA_new = Bob's new send / Alice's new recv token).
+ * Plaintext: bobNewEkPub (32 bytes) — Bob's fresh ephemeral pub key for step 2.
+ * AAD: bobFp || aliceFp || intermediateSendToken (T_BA from rootKey1).
  */
 internal fun buildRatchetAckCt(
-    newRootKey: ByteArray,
+    intermediateRootKey: ByteArray,
+    bobNewEkPub: ByteArray,
     bobFp: ByteArray,
     aliceFp: ByteArray,
-    newSendToken: ByteArray,
+    intermediateSendToken: ByteArray,
 ): ByteArray {
-    val kAck = hkdfSha256(newRootKey, salt = null, INFO_RATCHET_ACK.encodeToByteArray(), 32)
-    val aad = bobFp + aliceFp + newSendToken
+    val kAck = hkdfSha256(intermediateRootKey, salt = null, INFO_RATCHET_ACK.encodeToByteArray(), 32)
+    val aad = bobFp + aliceFp + intermediateSendToken
     val nonce = ByteArray(12)
-    return aeadEncrypt(kAck, nonce, ByteArray(0), aad)
+    return aeadEncrypt(kAck, nonce, bobNewEkPub, aad)
 }
 
 /**
- * Verify a RatchetAck ct. Throws if the AEAD tag does not verify.
+ * Verify and decrypt a RatchetAck ct.
+ *
+ * Returns Bob's fresh ephemeral public key (32 bytes) for Alice's step 2 DH.
+ * Throws [AuthenticationException] if the AEAD tag does not verify.
+ * Throws [ProtocolException] if the plaintext is not exactly 32 bytes.
  */
 internal fun decryptRatchetAckCt(
-    newRootKey: ByteArray,
+    intermediateRootKey: ByteArray,
     ct: ByteArray,
     bobFp: ByteArray,
     aliceFp: ByteArray,
-    newSendToken: ByteArray,
-) {
-    val kAck = hkdfSha256(newRootKey, salt = null, INFO_RATCHET_ACK.encodeToByteArray(), 32)
-    val aad = bobFp + aliceFp + newSendToken
+    intermediateSendToken: ByteArray,
+): ByteArray {
+    val kAck = hkdfSha256(intermediateRootKey, salt = null, INFO_RATCHET_ACK.encodeToByteArray(), 32)
+    val aad = bobFp + aliceFp + intermediateSendToken
     val nonce = ByteArray(12)
     val plaintext =
         try {
@@ -478,9 +556,10 @@ internal fun decryptRatchetAckCt(
         } catch (e: Exception) {
             throw AuthenticationException("RatchetAck decryption failed", e)
         }
-    if (plaintext.isNotEmpty()) {
-        throw ProtocolException("unexpected RatchetAck plaintext: ${plaintext.size} bytes")
+    if (plaintext.size != 32) {
+        throw ProtocolException("unexpected RatchetAck plaintext size: ${plaintext.size} (expected 32 bytes for bobNewEkPub)")
     }
+    return plaintext  // bobNewEkPub
 }
 
 private fun bytesToInt(
