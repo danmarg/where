@@ -6,7 +6,10 @@ import net.af0.where.model.UserLocation
 
 /**
  * Orchestrates the end-to-end encrypted location sharing protocol.
- * Unifies polling, decryption, epoch rotation, and sending for all platforms.
+ * Unifies polling, decryption, and sending for all platforms.
+ *
+ * Per-message token rotation (§8.3): each message embeds the next routing token in its
+ * ciphertext, so the recipient always polls exactly one token at a time — no overlap window.
  *
  * @param baseUrl Server base URL (e.g. "http://localhost:8080").
  * @param store   Persistent E2EE state storage.
@@ -18,10 +21,7 @@ open class LocationClient(
     private val pollMutex = Mutex()
 
     /**
-     * Poll all friends and the pending invite (if any).
-     *
-     * Processes all incoming control messages (OPKs, Ratchets, Acks) and
-     * automatically posts required responses back to the server.
+     * Poll all friends for new location updates.
      *
      * Poll calls are serialized to prevent concurrent ratchet state mutations.
      *
@@ -52,17 +52,7 @@ open class LocationClient(
             // 1. Poll each friend's current mailbox
             for (friend in friends) {
                 try {
-                    val friendUpdates = pollFriend(friend.id)
-                    allUpdates.addAll(friendUpdates)
-
-                    // 3. Proactively replenish OPKs if the local user (Bob) is running low.
-                    //    Bob periodically generates fresh OPKs and publishes them so Alice can
-                    //    rotate epochs without needing Bob to respond to her rotation request first.
-                    if (store.shouldReplenishOpks(friend.id)) {
-                        store.generateOpkBundle(friend.id)?.let { bundle ->
-                            E2eeMailboxClient.post(baseUrl, friend.session.sendToken.toHex(), bundle)
-                        }
-                    }
+                    allUpdates.addAll(pollFriend(friend.id))
                 } catch (e: Exception) {
                     lastError = e
                 }
@@ -73,59 +63,38 @@ open class LocationClient(
         }
 
     /**
-     * Poll a specific friend's mailbox, handling all protocol messages and
-     * potentially recursive polls if an epoch rotation occurs.
+     * Poll a specific friend's mailbox, following per-message token rotation.
+     *
+     * Since each message advances the recvToken, we loop: after a successful
+     * batch, the session's recvToken points to the next mailbox, which may
+     * already have messages waiting (e.g. if the sender was active while we
+     * were offline).
      */
     private suspend fun pollFriend(friendId: String): List<UserLocation> {
         val updates = mutableListOf<UserLocation>()
-        val initialFriend = store.getFriend(friendId) ?: return emptyList()
 
-        // §8.3: Poll both old and new tokens if we are in the rotation window.
-        val tokensToPoll = mutableListOf(initialFriend.session.recvToken.toHex())
-        initialFriend.session.prevRecvToken?.let { prev ->
-            if (currentTimeSeconds() < initialFriend.session.prevRecvTokenDeadline) {
-                tokensToPoll.add(prev.toHex())
-            } else {
-                // Deadline passed: eager cleanup of stale chain state.
-                store.clearPrevRecvState(friendId)
-            }
-        }
+        while (true) {
+            val friend = store.getFriend(friendId) ?: break
+            val currentToken = friend.session.recvToken.toHex()
+            val messages = E2eeMailboxClient.poll(baseUrl, currentToken)
+            println("[LocationClient] pollFriend($friendId): got ${messages.size} messages on token $currentToken")
+            if (messages.isEmpty()) break
 
-        for (token in tokensToPoll) {
-            var currentToken = token
-            while (true) {
-                val messages = E2eeMailboxClient.poll(baseUrl, currentToken)
-                println("[LocationClient] pollFriend($friendId): got ${messages.size} messages, token=$currentToken")
-                if (messages.isEmpty()) break
+            val result = store.processBatch(friendId, messages) ?: break
+            if (result.decryptedLocations.isEmpty()) break
 
-                val result = store.processBatch(friendId, messages, tokenUsed = currentToken)
-                if (result == null) {
-                    println("[LocationClient] pollFriend($friendId): processBatch returned null")
-                    break
-                }
-                println("[LocationClient] pollFriend($friendId): processBatch returned ${result.decryptedLocations.size} locations")
-                updates.addAll(
-                    result.decryptedLocations.map { loc ->
-                        UserLocation(userId = friendId, lat = loc.lat, lng = loc.lng, timestamp = loc.ts)
-                    },
-                )
-
-                // Post any required protocol responses (RatchetAcks, OPK bundles)
-                for (out in result.outgoing) {
-                    E2eeMailboxClient.post(baseUrl, out.token, out.payload)
-                }
-
-                // If an epoch rotation happened, we MUST poll the new token immediately
-                // to ensure messages Alice posted to the new epoch aren't delayed.
-                currentToken = result.newToken ?: break
-            }
+            updates.addAll(
+                result.decryptedLocations.map { loc ->
+                    UserLocation(userId = friendId, lat = loc.lat, lng = loc.lng, timestamp = loc.ts)
+                },
+            )
+            // Token advanced — loop to drain any messages already waiting at the new token.
         }
         return updates
     }
 
     /**
      * Encrypt and send a location update to all active (non-paused) friends.
-     * Handles automatic epoch rotation if Alice reaches a rotation boundary.
      */
     open suspend fun sendLocation(
         lat: Double,
@@ -138,10 +107,6 @@ open class LocationClient(
 
         for (friend in store.listFriends()) {
             if (friend.id in pausedFriendIds) continue
-            // Skip friends from whom Alice has not received a Ratchet Ack in 7 days.
-            // This prevents sending in a stale epoch with no forward secrecy and gives
-            // the user a visible signal that Bob's app is not processing location updates.
-            if (store.isAckTimedOut(friend.id)) continue
             try {
                 sendLocationToFriendInternal(friend.id, plaintext)
             } catch (e: Exception) {
@@ -171,47 +136,24 @@ open class LocationClient(
     ) {
         val friend = store.getFriend(friendId) ?: return
 
-        // 1. Rotate epoch if due (Alice-only)
-        if (store.shouldRotateEpoch(friend.id)) {
-            val oldToken = friend.session.sendToken.toHex()
-            store.initiateEpochRotation(friend.id)?.let { rot ->
-                E2eeMailboxClient.post(baseUrl, oldToken, rot)
-            }
-        }
+        // Capture the current send token BEFORE encryption — encryptLocation advances
+        // sendToken to the next value (embedded in the ciphertext for the recipient).
+        val currentSendToken = friend.session.sendToken.toHex()
 
-        // 2. Encrypt and post
-        val current = store.getFriend(friend.id) ?: return
         val (newSession, ct) =
             Session.encryptLocation(
-                state = current.session,
+                state = friend.session,
                 location = plaintext,
-                senderFp = current.session.aliceFp,
-                recipientFp = current.session.bobFp,
+                senderFp = friend.session.aliceFp,
+                recipientFp = friend.session.bobFp,
             )
-        store.updateSession(friend.id, newSession)
+        store.updateSession(friendId, newSession)
 
         val payload =
             EncryptedLocationPayload(
-                epoch = newSession.epoch,
                 seq = newSession.sendSeq.toString(),
                 ct = ct,
             )
-        E2eeMailboxClient.post(baseUrl, current.session.sendToken.toHex(), payload)
-    }
-
-    /**
-     * Explicitly post a new OPK bundle for a friend.
-     *
-     * Called by Bob to replenish his OPK supply so Alice can rotate epochs without
-     * waiting for a RatchetAck response. Can be triggered manually (e.g., via UI)
-     * or automatically by [poll] when running low.
-     */
-    open suspend fun postOpkBundle(friendId: String) {
-        if (store.shouldReplenishOpks(friendId)) {
-            store.generateOpkBundle(friendId)?.let { bundle ->
-                val friend = store.getFriend(friendId) ?: return
-                E2eeMailboxClient.post(baseUrl, friend.session.sendToken.toHex(), bundle)
-            }
-        }
+        E2eeMailboxClient.post(baseUrl, currentSendToken, payload)
     }
 }

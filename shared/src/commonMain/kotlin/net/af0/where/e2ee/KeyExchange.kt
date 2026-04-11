@@ -10,6 +10,9 @@ package net.af0.where.e2ee
  *
  * Bob includes key_confirmation = HMAC-SHA-256(SK, "Where-v1-Confirm" || EK_A.pub || EK_B.pub)
  * in KeyExchangeInit. Alice MUST verify this before accepting the session.
+ *
+ * Initial routing tokens are derived from SK via two independent HKDF expansions so
+ * that neither direction's token can be derived from the other.
  */
 
 object KeyExchange {
@@ -47,17 +50,9 @@ object KeyExchange {
         val aliceFp = fingerprint(qr.ekPub)
         val bobFp = fingerprint(ekB.pub)
 
-        // Bob derives his send token (token for Bob → Alice) and Alice's recv token
-        val tokenBobToAlice = deriveRoutingToken(sk, epoch = 0, senderFp = bobFp, recipientFp = aliceFp)
-        val tokenAliceToBob = deriveRoutingToken(sk, epoch = 0, senderFp = aliceFp, recipientFp = bobFp)
+        val tokenAliceToBob = deriveInitToken(sk, INFO_INIT_TOKEN_AB)
+        val tokenBobToAlice = deriveInitToken(sk, INFO_INIT_TOKEN_BA)
 
-        val kBundle =
-            hkdfSha256(
-                ikm = sk,
-                salt = null,
-                info = INFO_BUNDLE_AUTH.encodeToByteArray(),
-                length = 32,
-            )
         val session =
             initSession(
                 sk = sk,
@@ -72,7 +67,6 @@ object KeyExchange {
                 bobFp = bobFp,
                 aliceEkPub = qr.ekPub,
                 bobEkPub = ekB.pub,
-                kBundle = kBundle,
             )
 
         val keyConfirmation = buildKeyConfirmation(sk, qr.ekPub, ekB.pub)
@@ -106,17 +100,9 @@ object KeyExchange {
 
         val aliceFp = fingerprint(aliceEkPub)
         val bobFp = fingerprint(msg.ekPub)
-        // Alice derives her send token (token for Alice → Bob) and Bob's recv token
-        val tokenAliceToBob = deriveRoutingToken(sk, epoch = 0, senderFp = aliceFp, recipientFp = bobFp)
-        val tokenBobToAlice = deriveRoutingToken(sk, epoch = 0, senderFp = bobFp, recipientFp = aliceFp)
+        val tokenAliceToBob = deriveInitToken(sk, INFO_INIT_TOKEN_AB)
+        val tokenBobToAlice = deriveInitToken(sk, INFO_INIT_TOKEN_BA)
 
-        val kBundle =
-            hkdfSha256(
-                ikm = sk,
-                salt = null,
-                info = INFO_BUNDLE_AUTH.encodeToByteArray(),
-                length = 32,
-            )
         // DH already computed above; do not persist the priv key (§5.5).
         return initSession(
             sk = sk,
@@ -130,13 +116,19 @@ object KeyExchange {
             bobFp = bobFp,
             aliceEkPub = aliceEkPub,
             bobEkPub = msg.ekPub,
-            kBundle = kBundle,
         )
     }
 
     // ---------------------------------------------------------------------------
     // Internal helpers
     // ---------------------------------------------------------------------------
+
+    /**
+     * Derive an initial 16-byte routing token from the shared secret.
+     * Uses a dedicated HKDF info string so AB and BA tokens are independent.
+     */
+    private fun deriveInitToken(sk: ByteArray, info: String): ByteArray =
+        hkdfSha256(ikm = sk, salt = null, info = info.encodeToByteArray(), length = 16)
 
     /**
      * Derive the initial session state from SK.
@@ -155,7 +147,6 @@ object KeyExchange {
         bobFp: ByteArray,
         aliceEkPub: ByteArray,
         bobEkPub: ByteArray,
-        kBundle: ByteArray,
     ): SessionState {
         val expanded =
             hkdfSha256(
@@ -174,7 +165,6 @@ object KeyExchange {
             recvToken = recvToken.copyOf(),
             sendSeq = 0L,
             recvSeq = 0L,
-            epoch = 0,
             myEkPriv = myEkPriv.copyOf(),
             myEkPub = myEkPub.copyOf(),
             theirEkPub = theirEkPub.copyOf(),
@@ -182,7 +172,6 @@ object KeyExchange {
             bobFp = bobFp.copyOf(),
             aliceEkPub = aliceEkPub.copyOf(),
             bobEkPub = bobEkPub.copyOf(),
-            kBundle = kBundle.copyOf(),
         )
     }
 
