@@ -19,10 +19,10 @@ data class RawKeyPair(val priv: ByteArray, val pub: ByteArray) {
  *
  * Fields:
  *   rootKey       – 32-byte root key, updated on every DH ratchet step.
- *   sendChainKey  – 32-byte symmetric chain key; advanced on every location send.
- *   recvChainKey  – 32-byte symmetric chain key; advanced on every location receive.
- *                   Independent from sendChainKey; initialized to the peer's send chain
- *                   so that send and receive ratchets never share key material.
+ *   sendChainKey  – 32-byte symmetric chain key; advanced on every outgoing message send.
+ *   recvChainKey  – 32-byte symmetric chain key; advanced on every incoming message receive.
+ *                   Independent from sendChainKey; both are refreshed during the two-step
+ *                   DH rotation to ensure bidirectional mutual PFS.
  *   sendToken     – 16-byte opaque token (mailbox address) for outgoing messages.
  *   recvToken     – 16-byte opaque token (mailbox address) for incoming messages.
  *   sendSeq       – Monotonically increasing counter; MUST NOT wrap (session must be
@@ -41,7 +41,7 @@ data class RawKeyPair(val priv: ByteArray, val pub: ByteArray) {
  *   prevRecvChainKey      – If non-null, Bob's previous recvChainKey (used for decryption).
  *   prevRecvSeq           – Highest seq received on prevRecvToken (for replay rejection).
  *
- * There is no epoch counter. DH ratchet advancement is ack-triggered (§8.4): Alice stores
+ * There is no epoch counter. DH ratchet advancement is ack-triggered (§8.3): Alice stores
  * a PendingRotation alongside the session and commits it when she receives a RatchetAck.
  */
 @Serializable
@@ -126,7 +126,7 @@ data class SessionState(
  * She stores it alongside her session and includes [epochRotationCt] in every outgoing
  * POST until she receives a RatchetAck covering the rotation.
  *
- * The rotation uses a two-step DH for mutual PFS (§8.4):
+ * The rotation uses a two-step DH for mutual PFS (§8.3):
  *   Step 1: KDF_RK(rootKey, DH(aliceNewEk, bobOpk))  → (rootKey1, chainKey_AB)
  *   Step 2: KDF_RK(rootKey1, DH(bobNewEk, aliceNewEk)) → (rootKey2, chainKey_BA)
  * Bob includes bobNewEkPub in his RatchetAck; Alice performs step 2 when committing.
