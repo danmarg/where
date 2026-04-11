@@ -90,7 +90,7 @@ object KeyExchange {
     /**
      * Alice: verify Bob's key_confirmation, recompute SK, and derive the sender session state.
      * Alice MUST zero aliceEkPriv immediately after this call.
-     * Throws IllegalArgumentException if key_confirmation fails.
+     * Throws AuthenticationException if key_confirmation fails.
      */
     fun aliceProcessInit(
         msg: KeyExchangeInitMessage,
@@ -100,8 +100,8 @@ object KeyExchange {
         val sk = x25519(aliceEkPriv, msg.ekPub)
 
         // Verify key confirmation before proceeding.
-        require(verifyKeyConfirmation(sk, aliceEkPub, msg.ekPub, msg.keyConfirmation)) {
-            "KeyExchangeInit key_confirmation failed — aborting key exchange"
+        if (!verifyKeyConfirmation(sk, aliceEkPub, msg.ekPub, msg.keyConfirmation)) {
+            throw AuthenticationException("KeyExchangeInit key_confirmation failed — aborting key exchange")
         }
 
         val aliceFp = fingerprint(aliceEkPub)

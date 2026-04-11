@@ -103,8 +103,8 @@ class SessionTest {
         // Second delivery of the same seq must be rejected.
         try {
             Session.decryptLocation(bobNew, ct, seq, bobNew.aliceFp, bobNew.bobFp)
-            kotlin.test.fail("Expected IllegalArgumentException for replay")
-        } catch (e: IllegalArgumentException) {
+            kotlin.test.fail("Expected ProtocolException for replay")
+        } catch (e: ProtocolException) {
             assertTrue(e.message?.contains("replay") == true)
         }
     }
@@ -133,8 +133,8 @@ class SessionTest {
         for ((seq, ct) in cts) {
             try {
                 Session.decryptLocation(bSess, ct, seq, bSess.aliceFp, bSess.bobFp)
-                kotlin.test.fail("Expected IllegalArgumentException for lower seq")
-            } catch (e: IllegalArgumentException) {
+                kotlin.test.fail("Expected ProtocolException for lower seq")
+            } catch (e: ProtocolException) {
                 assertTrue(e.message?.contains("replay") == true)
             }
         }
@@ -180,8 +180,8 @@ class SessionTest {
         }
         try {
             Session.decryptLocation(bobSession, lastCt, aSess.sendSeq, bobSession.aliceFp, bobSession.bobFp)
-            kotlin.test.fail("Expected IllegalArgumentException for gap exceeding MAX_GAP")
-        } catch (e: IllegalArgumentException) {
+            kotlin.test.fail("Expected ProtocolException for gap exceeding MAX_GAP")
+        } catch (e: ProtocolException) {
             assertTrue(e.message?.contains("exceeds maximum") == true)
         }
     }
@@ -197,8 +197,8 @@ class SessionTest {
         val startTime = currentTimeMillis()
         try {
             Session.decryptLocation(bobSession, dummyCt, largeSeq, bobSession.aliceFp, bobSession.bobFp)
-            kotlin.test.fail("Expected IllegalArgumentException for large seq")
-        } catch (e: IllegalArgumentException) {
+            kotlin.test.fail("Expected ProtocolException for large seq")
+        } catch (e: ProtocolException) {
             assertTrue(e.message?.contains("exceeds maximum") == true)
         }
         val duration = currentTimeMillis() - startTime
