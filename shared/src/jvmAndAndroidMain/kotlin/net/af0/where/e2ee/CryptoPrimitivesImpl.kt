@@ -54,7 +54,7 @@ internal actual fun hmacSha256(
 // Random
 // ---------------------------------------------------------------------------
 
-internal actual fun randomBytes(size: Int): ByteArray {
+actual fun randomBytes(size: Int): ByteArray {
     return LibsodiumRandom.buf(size).toByteArray()
 }
 

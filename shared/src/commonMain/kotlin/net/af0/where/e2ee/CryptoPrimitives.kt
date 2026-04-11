@@ -16,7 +16,7 @@ internal expect fun hmacSha256(
 ): ByteArray
 
 /** CSPRNG: generate [size] random bytes. */
-internal expect fun randomBytes(size: Int): ByteArray
+expect fun randomBytes(size: Int): ByteArray
 
 /** Generate a fresh X25519 keypair from the platform CSPRNG. */
 expect fun generateX25519KeyPair(): RawKeyPair

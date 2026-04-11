@@ -181,8 +181,8 @@ class LocationService : Service() {
             val inForeground = locationSource.isAppInForeground.value
             val isSharing = locationSource.isSharingLocation.value
             // Always poll — even when sharing is off we need to process incoming
-            // EpochRotations and post Ratchet Acks so Alice's location doesn't get
-            // stuck.  The interval is 30 min in that case (maintenance-only).
+            // location updates and tokens so the session remains synchronized.
+            // The interval is 30 min in that case (maintenance-only).
             doPoll()
             // Heartbeat: ensure we send at least once every 5 minutes when stationary.
             // Runs regardless of foreground state so background location stays alive.
@@ -203,7 +203,7 @@ class LocationService : Service() {
             rapid -> 2_000L
             inForeground -> 10_000L
             isSharingLocation -> 5 * 60 * 1000L // heartbeat + friend poll
-            else -> 30 * 60 * 1000L // maintenance-only (Ratchet Acks)
+            else -> 30 * 60 * 1000L // maintenance-only
         }
 
     @VisibleForTesting

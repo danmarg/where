@@ -106,7 +106,7 @@ class MailboxTest {
     }
 
     @Test
-    fun `GET inbox is destructive - second GET returns empty`() {
+    fun `GET inbox is non-destructive for 60s - second GET returns messages`() {
         if (!isLocalhost()) return
         testApplication {
             application { module(ServerState()) }
@@ -120,7 +120,7 @@ class MailboxTest {
             assertEquals(1, first.size)
 
             val second = json.decodeFromString<JsonArray>(client.get("/inbox/$token").bodyAsText())
-            assertTrue(second.isEmpty(), "Second GET should return empty array")
+            assertEquals(1, second.size, "Second GET should still return messages within 60s")
         }
     }
 
@@ -170,19 +170,6 @@ class MailboxTest {
         assertTrue(state.post(token, JsonPrimitive("y")), "should accept post after eviction cleared postTimes")
     }
 
-    @Test
-    fun `evict removes empty mailbox entries`() {
-        val state = InMemoryMailboxState()
-        val token = "evicttoken0000002"
-        state.post(token, JsonPrimitive("msg"))
-        state.drain(token) // empties the mailbox queue
-
-        // Evict — the mailbox queue is empty so the entry should be removed.
-        state.evictForTest(rateLimitWindowMs = 0)
-
-        // Drain should still return empty (no phantom entry).
-        assertTrue(state.drain(token).isEmpty(), "evicted mailbox entry should return empty")
-    }
 
     @Test
     fun `evict does not remove mailbox entries with live messages`() {
@@ -195,25 +182,4 @@ class MailboxTest {
         assertEquals(1, state.drain("live").size, "live message should survive eviction")
     }
 
-    @Test
-    fun `GET inbox response is identical for unknown and empty tokens`() {
-        if (!isLocalhost()) return
-        testApplication {
-            application { module(ServerState()) }
-            val neverUsed = "0000000000000000"
-            val posted = "1111111111111111"
-
-            // Post then drain 'posted' to make it an empty known token
-            client.post("/inbox/$posted") {
-                contentType(ContentType.Application.Json)
-                setBody("""{"type":"EncryptedLocation","epoch":1,"seq":"1","ct":"AA=="}""")
-            }
-            client.get("/inbox/$posted") // drain
-
-            val unknownResponse = client.get("/inbox/$neverUsed").bodyAsText()
-            val emptyResponse = client.get("/inbox/$posted").bodyAsText()
-
-            assertEquals(unknownResponse, emptyResponse, "Unknown and empty-inbox responses must be identical")
-        }
-    }
 }

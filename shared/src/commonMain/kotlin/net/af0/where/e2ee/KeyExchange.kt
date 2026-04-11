@@ -62,10 +62,6 @@ object KeyExchange {
             initSession(
                 sk = sk,
                 isAlice = false,
-                // DH already computed above; do not persist the priv key (§5.5).
-                myEkPriv = ByteArray(32),
-                myEkPub = ekB.pub,
-                theirEkPub = qr.ekPub,
                 sendToken = tokenBobToAlice,
                 recvToken = tokenAliceToBob,
                 aliceFp = aliceFp,
@@ -117,13 +113,9 @@ object KeyExchange {
                 info = INFO_BUNDLE_AUTH.encodeToByteArray(),
                 length = 32,
             )
-        // DH already computed above; do not persist the priv key (§5.5).
         return initSession(
             sk = sk,
             isAlice = true,
-            myEkPriv = ByteArray(32),
-            myEkPub = aliceEkPub.copyOf(),
-            theirEkPub = msg.ekPub,
             sendToken = tokenAliceToBob,
             recvToken = tokenBobToAlice,
             aliceFp = aliceFp,
@@ -146,9 +138,6 @@ object KeyExchange {
     internal fun initSession(
         sk: ByteArray,
         isAlice: Boolean,
-        myEkPriv: ByteArray,
-        myEkPub: ByteArray,
-        theirEkPub: ByteArray,
         sendToken: ByteArray,
         recvToken: ByteArray,
         aliceFp: ByteArray,
@@ -174,10 +163,6 @@ object KeyExchange {
             recvToken = recvToken.copyOf(),
             sendSeq = 0L,
             recvSeq = 0L,
-            epoch = 0,
-            myEkPriv = myEkPriv.copyOf(),
-            myEkPub = myEkPub.copyOf(),
-            theirEkPub = theirEkPub.copyOf(),
             aliceFp = aliceFp.copyOf(),
             bobFp = bobFp.copyOf(),
             aliceEkPub = aliceEkPub.copyOf(),
