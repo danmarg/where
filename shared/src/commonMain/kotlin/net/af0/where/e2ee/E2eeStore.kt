@@ -34,6 +34,8 @@ data class FriendEntry(
     val lastLat: Double? = null,
     val lastLng: Double? = null,
     val lastTs: Long? = null,
+    /** Last time we received any message from this friend (Location or OPKs). */
+    val lastSeenTs: Long = currentTimeSeconds(),
 ) {
     /** Computed friend ID: hex(SHA-256(EK_A.pub)) — full 64 hex chars. */
     val id: String get() = session.aliceFp.toHex()
@@ -52,7 +54,8 @@ data class FriendEntry(
             nextOpkId == other.nextOpkId &&
             lastLat == other.lastLat &&
             lastLng == other.lastLng &&
-            lastTs == other.lastTs
+            lastTs == other.lastTs &&
+            lastSeenTs == other.lastSeenTs
     }
 
     override fun hashCode(): Int {
@@ -63,6 +66,7 @@ data class FriendEntry(
         result = 31 * result + (lastLat?.hashCode() ?: 0)
         result = 31 * result + (lastLng?.hashCode() ?: 0)
         result = 31 * result + (lastTs?.hashCode() ?: 0)
+        result = 31 * result + lastSeenTs.hashCode()
         return result
     }
 }
@@ -110,6 +114,7 @@ class E2eeStore(
                             lastLat = s.lastLat,
                             lastLng = s.lastLng,
                             lastTs = s.lastTs,
+                            lastSeenTs = if (s.lastSeenTs == 0L) currentTimeSeconds() else s.lastSeenTs,
                         )
                     entry.id to entry
                 }.toMutableMap()
@@ -136,6 +141,7 @@ class E2eeStore(
                             lastLat = f.lastLat,
                             lastLng = f.lastLng,
                             lastTs = f.lastTs,
+                            lastSeenTs = f.lastSeenTs,
                         )
                     },
                 pendingInvite = pendingInvite,
@@ -369,7 +375,10 @@ class E2eeStore(
                     )
                 ) {
                     val newPubMap = entry.theirOpkPubs + opks.associate { it.id to it.pub }
-                    friends[friendId] = entry.copy(theirOpkPubs = newPubMap)
+                    friends[friendId] = entry.copy(
+                        theirOpkPubs = newPubMap,
+                        lastSeenTs = currentTimeSeconds()
+                    )
                 }
             }
 
@@ -396,7 +405,10 @@ class E2eeStore(
                                 priv
                             }
                         )
-                    friends[friendId] = friends[friendId]!!.copy(session = newSession)
+                    friends[friendId] = friends[friendId]!!.copy(
+                        session = newSession,
+                        lastSeenTs = currentTimeSeconds()
+                    )
                     decryptedLocations.add(loc)
                 } catch (_: Exception) {
                 }
@@ -406,10 +418,25 @@ class E2eeStore(
             PollBatchResult(decryptedLocations)
         }
 
+    /**
+     * Returns true if we have not received anything from this friend for longer than [thresholdSeconds].
+     */
+    suspend fun isFriendStale(
+        friendId: String,
+        thresholdSeconds: Long = STALE_THRESHOLD_SECONDS,
+    ): Boolean =
+        stateLock.withLock {
+            val entry = friends[friendId] ?: return@withLock false
+            currentTimeSeconds() - entry.lastSeenTs > thresholdSeconds
+        }
+
     companion object {
         private const val STORAGE_KEY = "e2ee_store"
         const val OPK_BATCH_SIZE = 10
         const val OPK_REPLENISH_THRESHOLD = 3
+
+        /** 7 days timeout for friends. */
+        const val STALE_THRESHOLD_SECONDS = 7L * 24 * 3600
     }
 }
 
@@ -435,6 +462,7 @@ internal data class SerializedFriendEntry(
     val lastLat: Double? = null,
     val lastLng: Double? = null,
     val lastTs: Long? = null,
+    val lastSeenTs: Long = 0L,
 )
 
 @Serializable

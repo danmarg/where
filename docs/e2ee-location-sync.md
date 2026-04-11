@@ -248,6 +248,23 @@ Alice receives the `KeyExchangeInit` and:
 
 Bob **deletes `EK_B.priv` immediately** after posting the `KeyExchangeInit`.
 
+### 4.3 Option B: Out-of-Band Copy-Paste (Existing Flow Extension)
+
+Users share a link through any out-of-band channel (iMessage, Signal, in-person). The link is:
+```
+where://add?ek=<base64_ek_pub>&fp=<fingerprint>&name=<name>
+```
+
+The key agreement proceeds identically to Option A, using the same discovery token mechanism. The app MUST display a prominent prompt encouraging Safety Number verification after the friend is added via this path.
+
+### 4.4 What the Server Learns from Key Exchange
+
+- **Discovery phase:** A 16-byte token was used briefly for rendezvous. This token is derived from a random 32-byte `discovery_secret` embedded in the QR (not from `EK_A.pub`), so neither the server nor any observer who later sees `EK_A.pub` in a `KeyExchangeInit` message can compute or correlate the discovery-phase mailbox. The server observes that some IP polled it and another IP posted to it, but learns nothing about who those IPs represent.
+- **`KeyExchangeInit` phase:** The server sees Bob's `EK_B.pub` (ephemeral, 32 bytes) and the HMAC confirmation tag. Both are ephemeral and single-use. No stable long-term key material is exposed to the server at any point.
+- **Nothing** about the resulting shared secret `SK`, the session fingerprints, or the identities of the participants.
+
+The server cannot derive `SK` or link any routing token to a real identity without one of the parties' private keys.
+
 ---
 
 ## 5. Ratchet Design for One-Way Streaming Location Data
@@ -322,6 +339,15 @@ Forward secrecy is only as strong as the message key deletion discipline:
 - Chain keys `CK` MUST be deleted from memory after deriving the next step.
 - Root keys MUST be overwritten immediately after deriving new chain keys.
 - Ephemeral DH private keys MUST be deleted after computing the shared secret.
+- On Android, keys live in a `SecureRandom`-backed in-memory structure; `Arrays.fill(key, 0)` before GC. On iOS, `Data` is zeroed explicitly before dealloc.
+- No message keys or chain keys are persisted to disk. If the app is killed and restarted, the session restarts from the last stored state (root key + current chain key). The root key is stored in the platform keychain (Android Keystore / iOS Secure Enclave-backed Keychain).
+
+**Keychain backup and state-rollback risk:** Platform keychains may be backed up (iCloud Keychain on iOS, Google Play Backup on Android). If a backup is restored to a different device or is compromised, the attacker gains access to the stored root key and current chain key, and can re-derive message keys from the backed-up state forward — until the next DH ratchet step heals the session.
+
+Mandatory mitigations:
+- **iOS:** Mark all session-state keychain items with `kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly`. This attribute excludes the item from iCloud Backup.
+- **Android:** Store session state in `EncryptedSharedPreferences` backed by a Keystore key created with `setIsStrongBoxBacked(true)` and `allowBackup=false` in the manifest.
+- **Both:** On detecting a fresh install or that session state is missing/invalid (e.g., root key absent), invalidate the session and initiate re-keying with all affected friends rather than accepting a potentially stale backup.
 
 ---
 
@@ -329,11 +355,19 @@ Forward secrecy is only as strong as the message key deletion discipline:
 
 ### 6.1 The Problem
 
-Alice broadcasts her location to N friends. She must encrypt separately for each friend because each friend has a unique `recv_token` and potentially a different ratchet state.
+Alice broadcasts her location to N friends. She must encrypt separately for each friend because each friend has a unique `recv_token` and potentially a different ratchet state. Group key schemes (like MLS) require all-to-all consistency and are overkill for Where's small group sizes. Using a single group key would mean that any one friend's device compromise exposes Alice's location to everyone.
 
 ### 6.2 Per-Friend Symmetric Sessions
 
 Alice maintains one independent ratchet session per friend. When sending a location update, she encrypts a unique payload for each friend, each containing that friend's specific `next_token` and potential DH parameters.
+
+**Bandwidth:** For N friends, Alice sends N encrypted frames per location update. For Where's small group sizes (typically < 50 friends), O(N) per-friend encryption is the right tradeoff: simpler, stronger blast-radius isolation, no group-state synchronization needed.
+
+### 6.3 Handling Friend Add/Remove
+
+**Adding a friend:** When Alice adds Bob as a friend, she runs the key exchange (§4) and initializes a new ratchet session. There is no effect on other friends' sessions.
+
+**Removing a friend:** Alice removes the ratchet session state for Bob. Since she was encrypting separately for each friend, Bob's removal immediately stops the flow of ciphertext addressed to him. He cannot recover future location updates.
 
 ---
 
@@ -342,21 +376,37 @@ Alice maintains one independent ratchet session per friend. When sending a locat
 ### 7.1 The Mailbox Model
 
 The server's role is strictly limited to acting as a stateless message router for anonymous mailboxes.
-1. **Routing Token (T):** A random 16-byte token.
+1. **Routing Token (T):** A random-looking 16-byte token derived pairwise by clients.
 2. **Mailbox API:**
    - `POST /inbox/{token}`: Clients push an encrypted payload into the mailbox.
    - `GET /inbox/{token}`: Clients poll for and retrieve all available payloads.
+3. **Server Obliviousness:** The server does not know the sender or recipient identity—only the opaque routing token.
 
 ### 7.2 Invariant: Indistinguishable Responses
 
-The server MUST return an identical response for all token queries where no messages are pending, regardless of whether the token is "real".
+To prevent the server from learning whether a routing token corresponds to a real relationship, the following invariant is mandatory:
 
-### 7.3 Token Consumption and TTL
+**The server MUST return an identical response (HTTP 200 OK with `[]`) for all token queries where no messages are pending, regardless of whether the token has ever been "registered" or used.**
 
-Upon a successful retrieval of a message by Bob:
-1. The server marks `recv_token_i` as consumed.
-2. The server MUST NOT immediately delete the message. Instead, it sets a short TTL (e.g., 60 seconds) on `recv_token_i` to allow for transient network retries.
-3. After the TTL expires, the token and message are deleted.
+There is no "create mailbox" or "register token" step. Mailboxes exist implicitly upon the first `POST`. A `GET` for a non-existent token is indistinguishable from a `GET` for an empty real mailbox.
+
+### 7.3 Metadata Exposure and Traffic Analysis
+
+The server can still observe the timing and frequency of `POST` and `GET` requests for specific tokens. IP correlation can be used to infer relationships over time.
+
+### 7.4 Mitigations
+
+- **Payload padding (mandatory):** All payloads MUST be padded to a fixed length (512 bytes recommended) before encryption.
+
+### 7.4.1 Polling Strategy
+
+To prevent timing-based social-graph inference, Bob MUST poll at a **constant rate** regardless of whether messages are expected. Recommended default: **60 seconds**.
+
+Bob polls for all of his friendship tokens in a fixed, shuffled order. The shuffle MUST be re-randomised on each poll cycle to prevent ordering-based inference.
+
+### 7.5 Future: Dummy Token Polling
+
+Because of the indistinguishable response invariant (§7.2), clients can implement **dummy token polling** as a future enhancement. A client polls for random "dummy" tokens alongside real ones. The server cannot distinguish real polls from noise. This significantly raises the bar for traffic analysis and requires no server-side changes to implement.
 
 ---
 
@@ -377,12 +427,15 @@ Upon a successful retrieval of a message by Bob:
 ```
 SessionState {
   root_key:        [32]byte
-  chain_key:       [32]byte
+  send_chain_key:  [32]byte
+  recv_chain_key:  [32]byte
   send_token:      [16]byte   // token this client posts to
   recv_token:      [16]byte   // token this client polls from
-  seq:             uint64
+  send_seq:        uint64
+  recv_seq:        uint64
   alice_fp:        [32]byte
   bob_fp:          [32]byte
+  k_bundle:        [32]byte
 }
 ```
 

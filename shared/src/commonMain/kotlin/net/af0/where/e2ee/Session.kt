@@ -93,7 +93,21 @@ object Session {
     /**
      * Decrypt one incoming location frame.
      *
-     * Returns the updated SessionState and the plaintext location.
+     * Returns the updated SessionState (with advanced recvSeq) and the plaintext location.
+     *
+     * Rules:
+     *   - Frames with seq <= state.recvSeq are silently dropped (replay).
+     *   - The receive chain key is advanced deterministically; missing frames permanently
+     *     skip their message keys (strict-ordering policy §8.3.1).
+     *   - Gaps larger than MAX_GAP are rejected to prevent CPU exhaustion.
+     *
+     * @param state       Current session state.
+     * @param ct          Ciphertext + GCM tag.
+     * @param seq         Sequence number from the wire frame.
+     * @param senderFp    32-byte fingerprint of the sender.
+     * @param recipientFp 32-byte fingerprint of the recipient.
+     * @param bobOpkPrivGetter Callback to retrieve an OPK private key by ID.
+     * @return Pair(newState, plaintext).
      */
     @Throws(IllegalArgumentException::class)
     fun decryptLocation(
@@ -107,6 +121,7 @@ object Session {
         require(seq > state.recvSeq) { "replay — seq $seq must be greater than state.recvSeq ${state.recvSeq}" }
 
         val stepsNeeded = seq - state.recvSeq
+        // stepsNeeded is always >= 1 because seq starts at 1 and recvSeq starts at 0.
         require(stepsNeeded <= MAX_GAP + 1) {
             "seq gap ${stepsNeeded - 1} exceeds maximum $MAX_GAP — session may be desynchronized"
         }
@@ -211,11 +226,17 @@ object Session {
         )
     }
 
+    /**
+     * Padding to a fixed size.
+     * Uses 2 bytes (big-endian uint16) for the padding count, stored at the end.
+     * All padding bytes (including the count bytes) have the same value (the count).
+     */
     private fun padToFixedSize(
         data: ByteArray,
         size: Int,
     ): ByteArray {
         require(data.size > 0) { "plaintext must not be empty" }
+        // We need at least 2 bytes for the padding count
         require(data.size <= size - 2) { "plaintext (${data.size} bytes) too large for PADDING_SIZE $size" }
 
         val padCount = size - data.size
