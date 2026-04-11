@@ -508,6 +508,8 @@ class E2eeStoreTest {
                 bobAfter.session.recvToken.toHex() == aliceFriend0.session.sendToken.toHex(),
                 "Bob's recvToken must have switched to the new token",
             )
+            // Bob must have stored a PendingAck for lost-ack recovery.
+            assertNotNull(bobAfter.pendingAck, "Bob must store PendingAck after EpochRotation")
 
             // 4. Alice processes the RatchetAck → commits pending rotation
             val ackPayload = ackEntry.payload as RatchetAckPayload
@@ -525,6 +527,50 @@ class E2eeStoreTest {
                 aliceCommitted.session.recvToken,
                 bobAfter.session.sendToken,
                 "Alice recvToken = Bob sendToken after commit",
+            )
+        }
+
+    @Test
+    fun testPendingAckSurvivesRestart() =
+        runBlocking {
+            // Verifies that PendingAck is persisted: if the app restarts between Bob processing
+            // the EpochRotation and Alice receiving the ack, Bob still re-posts on the next poll.
+            val qr = aliceStore.createInvite("Alice")
+            val (initPayload, bobEntry) = bobStore.processScannedQr(qr)
+            val aliceEntry = aliceStore.processKeyExchangeInit(initPayload, "Bob")!!
+
+            val bundle = bobStore.generateOpkBundle(bobEntry.id, count = 1)!!
+            aliceStore.storeOpkBundle(aliceEntry.id, bundle)
+
+            val loc0 = LocationPlaintext(9.0, 9.0, 1.0, 9000L)
+            val aliceFriend0 = aliceStore.getFriend(aliceEntry.id)!!
+            val (aliceSess0, ct0) = Session.encryptLocation(
+                aliceFriend0.session, loc0,
+                aliceFriend0.session.aliceFp, aliceFriend0.session.bobFp,
+            )
+            aliceStore.updateSession(aliceEntry.id, aliceSess0)
+            val rotPayload = aliceStore.initiateRotation(aliceEntry.id)!!
+            val locPayload = EncryptedLocationPayload(seq = aliceSess0.sendSeq.toString(), ct = ct0)
+            bobStore.processBatch(bobEntry.id, listOf(locPayload, rotPayload))
+
+            // Confirm PendingAck is set before "restart"
+            assertNotNull(bobStore.getFriend(bobEntry.id)!!.pendingAck)
+
+            // Simulate app restart: create a new store backed by the same storage (load() runs in init)
+            val bobStoreAfterRestart = E2eeStore(bobStorage)
+
+            // PendingAck must survive the round-trip through serialization
+            val bobReloaded = bobStoreAfterRestart.getFriend(bobEntry.id)!!
+            assertNotNull(bobReloaded.pendingAck, "PendingAck must survive serialization round-trip")
+            assertContentEquals(
+                bobStore.getFriend(bobEntry.id)!!.pendingAck!!.ackCt,
+                bobReloaded.pendingAck!!.ackCt,
+                "ackCt must be identical after reload",
+            )
+            assertEquals(
+                bobStore.getFriend(bobEntry.id)!!.pendingAck!!.sendToken,
+                bobReloaded.pendingAck!!.sendToken,
+                "sendToken must be identical after reload",
             )
         }
 
