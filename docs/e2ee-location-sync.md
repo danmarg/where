@@ -210,6 +210,7 @@ safety_number = SHA-256(lower_EK.pub || higher_EK.pub)   // sorted lexicographic
 T_AB_0 = HKDF-SHA-256(IKM  = SK,
                        salt = <absent>,
                        info = "Where-v1-InitToken-AB")[0:16]
+// Note: HKDF with salt=<absent> uses HMAC-SHA-256 with a zero-filled key per RFC 5869, which is semantically equivalent to salt = ByteArray(32).
 // BobToAlice token (Bob posts, Alice polls)
 T_BA_0 = HKDF-SHA-256(IKM  = SK,
                        salt = <absent>,
@@ -856,4 +857,4 @@ With this design:
 
 3. **Multi-Device Support.** Full session synchronization across multiple devices (e.g., phone and tablet) is a complex challenge planned for future work.
 
-4. **Session Expiry and Staleness Handling.** If Alice stops sharing (app uninstalled, account deleted, extended offline period), Bob's client continues polling indefinitely against a token that will never receive new messages. Bob's client SHOULD implement exponential back-off after a configurable number of consecutive empty responses (e.g., back off after 10 empty polls, doubling the interval up to a maximum of 30 min), and SHOULD surface a "no recent location" staleness indicator to the user after a threshold (e.g., 2 hours without a new frame).
+4. **Session Expiry and Staleness Handling.** If Alice stops sharing (app uninstalled, account deleted, extended offline period), Bob's client continues polling indefinitely against a token that will never receive new messages. To provide UX signals, `FriendEntry.isStale` is a heuristic that returns true if a pending rotation has been unacknowledged for more than 2 days (`STALE_THRESHOLD_SECONDS`) or if no acks have been received for more than 7 days (`ACK_TIMEOUT_SECONDS`). Clients SHOULD surface a "no recent location" or "rotation stuck" warning to the user based on this flag.
