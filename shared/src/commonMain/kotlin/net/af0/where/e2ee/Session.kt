@@ -535,7 +535,7 @@ internal fun decryptEpochRotationCt(
  * Plaintext: bobNewEkPub (32 bytes) — Bob's fresh ephemeral pub key for step 2.
  * AAD: bobFp || aliceFp || intermediateSendToken (T_BA from rootKey1).
  */
-internal fun buildRatchetAckCt(
+fun buildRatchetAckCt(
     intermediateRootKey: ByteArray,
     bobNewEkPub: ByteArray,
     bobFp: ByteArray,

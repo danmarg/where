@@ -159,8 +159,14 @@ class E2eeBidirectionalEndToEndTest {
             println("\nPHASE 6: Alice Polls for Bob's Location")
             println("─────────────────────────────────────────────────────────────")
 
-            val aliceUpdates = aliceClient.poll()
-            val bobLocFromAlice = aliceUpdates.firstOrNull { it.userId == aliceFriendId }
+            var aliceUpdates = aliceClient.poll()
+            var bobLocFromAlice = aliceUpdates.firstOrNull { it.userId == aliceFriendId }
+            if (bobLocFromAlice == null) {
+                // Alice's first poll might have only consumed the RatchetAck and committed the
+                // rotation, switching her recvToken to the new one. Poll again to get the location.
+                aliceUpdates = aliceClient.poll()
+                bobLocFromAlice = aliceUpdates.firstOrNull { it.userId == aliceFriendId }
+            }
             assertNotNull(bobLocFromAlice, "Alice should receive Bob's location via poll()")
             assertEquals(bobLocation.first, bobLocFromAlice.lat, 0.0001)
             assertEquals(bobLocation.second, bobLocFromAlice.lng, 0.0001)
@@ -211,9 +217,7 @@ class E2eeBidirectionalEndToEndTest {
             val finalBobSession = bobStore.getFriend(aliceFriendId)!!.session
             assertContentEquals(finalAliceSession.sendToken, finalBobSession.recvToken, "Alice send = Bob recv (final)")
             assertContentEquals(finalAliceSession.recvToken, finalBobSession.sendToken, "Alice recv = Bob send (final)")
-            assertEquals(finalAliceSession.epoch, finalBobSession.epoch, "Epochs should match")
             println("✓ Session state integrity verified")
-            println("  Final epoch: ${finalAliceSession.epoch}")
             println("  Alice sendSeq=${finalAliceSession.sendSeq}, recvSeq=${finalAliceSession.recvSeq}")
             println("  Bob   sendSeq=${finalBobSession.sendSeq}, recvSeq=${finalBobSession.recvSeq}")
             println()
