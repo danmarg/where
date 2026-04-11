@@ -28,7 +28,7 @@ class MailboxTest {
             val response =
                 client.post("/inbox/aabbccddeeff0011") {
                     contentType(ContentType.Application.Json)
-                    setBody("""{"type":"EncryptedLocation","epoch":1,"seq":"1","ct":"AAEC"}""")
+                    setBody("""{"type":"EncryptedLocation","seq":"1","ct":"AAEC"}""")
                 }
             assertEquals(HttpStatusCode.NoContent, response.status)
         }
@@ -86,8 +86,8 @@ class MailboxTest {
         testApplication {
             application { module(ServerState()) }
             val token = "deadbeef01234567"
-            val payload1 = """{"type":"EncryptedLocation","epoch":1,"seq":"1","ct":"AA=="}"""
-            val payload2 = """{"type":"EncryptedLocation","epoch":1,"seq":"2","ct":"BB=="}"""
+            val payload1 = """{"type":"EncryptedLocation","seq":"1","ct":"AA=="}"""
+            val payload2 = """{"type":"EncryptedLocation","seq":"2","ct":"BB=="}"""
 
             client.post("/inbox/$token") {
                 contentType(ContentType.Application.Json)
@@ -113,7 +113,7 @@ class MailboxTest {
             val token = "cafebabe12345678"
             client.post("/inbox/$token") {
                 contentType(ContentType.Application.Json)
-                setBody("""{"type":"EncryptedLocation","epoch":1,"seq":"1","ct":"AA=="}""")
+                setBody("""{"type":"EncryptedLocation","seq":"1","ct":"AA=="}""")
             }
 
             val first = json.decodeFromString<JsonArray>(client.get("/inbox/$token").bodyAsText())
@@ -134,7 +134,7 @@ class MailboxTest {
 
             client.post("/inbox/$tokenA") {
                 contentType(ContentType.Application.Json)
-                setBody("""{"type":"EncryptedLocation","epoch":1,"seq":"1","ct":"AA=="}""")
+                setBody("""{"type":"EncryptedLocation","seq":"1","ct":"AA=="}""")
             }
 
             val responseA = json.decodeFromString<JsonArray>(client.get("/inbox/$tokenA").bodyAsText())
@@ -206,7 +206,7 @@ class MailboxTest {
             // Post then drain 'posted' to make it an empty known token
             client.post("/inbox/$posted") {
                 contentType(ContentType.Application.Json)
-                setBody("""{"type":"EncryptedLocation","epoch":1,"seq":"1","ct":"AA=="}""")
+                setBody("""{"type":"EncryptedLocation","seq":"1","ct":"AA=="}""")
             }
             client.get("/inbox/$posted") // drain
 

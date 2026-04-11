@@ -45,7 +45,7 @@ Split into client-crypto, client-app, and server.
   - Derive `message_key` and `message_nonce` from `send_chain_key`; delete old chain key.
   - Increment `send_seq` (uint64).
   - **Overflow check**: If `send_seq == UINT64_MAX`, terminate session and re-key.
-  - AAD = `"Where-v1-Location"` (UTF-8) `|| version` (4 bytes, big-endian uint32 = 1) `|| alice_fp` (32 bytes, `SHA-256(EK_A.pub)`) `|| bob_fp` (32 bytes, `SHA-256(EK_B.pub)`) `|| epoch` (4 bytes BE uint32) `|| seq_be` (8 bytes BE uint64).
+  - AAD = `"Where-v1-Location"` (UTF-8) `|| version` (4 bytes, big-endian uint32 = 1) `|| alice_fp` (32 bytes, `SHA-256(EK_A.pub)`) `|| bob_fp` (32 bytes, `SHA-256(EK_B.pub)`) `|| seq_be` (8 bytes BE uint64).
   - AES-256-GCM encrypt padded JSON using `message_nonce`.
   - Send `EncryptedLocation` wrapped in a `Post` envelope with top-level **`"v": 1`** field. **No `nonce` field**. **No `ek_pub`**.
 - **Incoming**:
@@ -63,25 +63,24 @@ Split into client-crypto, client-app, and server.
   - On epoch boundary (every `T` minutes), pop one OPK.
   - `dh_out = X25519(my_ek_priv, Bob.OPK.pub)`.
   - `new_root_key, new_chain_key = KDF_RK(root_key, dh_out)`.
-  - `new_send_token = HKDF-SHA-256(new_root_key, info="Where-v1-RoutingToken" || alice_fp || bob_fp, salt=new_epoch || my_dir)[0:16]`.
-  - `new_recv_token = HKDF-SHA-256(new_root_key, info="Where-v1-RoutingToken" || alice_fp || bob_fp, salt=new_epoch || their_dir)[0:16]`.
+  - `new_send_token = HKDF-SHA-256(new_root_key, info="Where-v1-RoutingToken" || alice_fp || bob_fp, salt=null)[0:16]`.
+  - `new_recv_token = HKDF-SHA-256(new_root_key, info="Where-v1-RoutingToken" || bob_fp || alice_fp, salt=null)[0:16]`.
   - Derive updated `K_rot = HKDF-SHA-256(new_root_key, info="Where-v1-EpochRotation")` and `K_ack`.
-  - **Alice MUST continue polling the old (current) token** for `PreKeyBundle` and `RatchetAck` until `2 * T` expires.
-  - **Send `EpochRotation`** on the **current (old) routing token**: AEAD-encrypt with `AES-256-GCM(key=K_rot, plaintext=canonical_blob, aad=routing_token_current)`. Canonical blob contains `epoch`, `opk_id`, `new_ek_pub`, `ts`.
-- **Timestamp validation**: On receiving `EpochRotation` or `RatchetAck`, reject if `ts` is outside `T + 5 min` of local clock.
+  - **Alice MUST continue polling the old (current) token** for `PreKeyBundle` and `RatchetAck` until acked.
+  - **Send `EpochRotation`** on the **current (old) routing token**: AEAD-encrypt with `AES-256-GCM(key=K_rot, plaintext=canonical_blob, aad=routing_token_current)`. Canonical blob contains `opk_id`, `new_ek_pub`.
 - **Bob: Process Epoch Rotation**:
   - Retrieve private key for `opk_id` from secure storage.
   - Perform `KDF_RK` to derive `new_root_key` and `new_routing_token`.
   - Verify AEAD tag on `EpochRotation` using `K_rot` before accepting. Abort on failure.
   - **MUST delete OPK private key immediately after use.**
-  - (Optional) Send `RatchetAck`: AEAD-encrypted with `AES-256-GCM(key=K_ack, plaintext=canonical_blob, aad=routing_token_current)`. Canonical blob contains `epoch_seen`, `ts`.
+  - Send `RatchetAck`: AEAD-encrypted with `AES-256-GCM(key=K_ack, plaintext=canonical_blob, aad=routing_token_current)`. Canonical blob contains `bob_new_ek_pub`.
 
 - **Token Transition Protocol**:
-  - Alice posts all frames *after* `EpochRotation` to `new_routing_token`.
-  - Bob polls **both** `current` and `new` tokens.
-  - Bob retires `current` token only after receiving a valid frame on `new` token OR after `2 * T` (20 min).
+  - Alice posts all frames *after* `EpochRotation` to `old_routing_token` until acked.
+  - Bob polls only the **current** token. Switches `recvToken` immediately on `EpochRotation`.
+  - Bob stores a `PendingAck` and re-posts the `RatchetAck` until Alice switches.
   - **T_AB_0 SHOULD be discarded** after the first successful DH ratchet step completes.
-- **Out-of-order delivery during transition**: process `EpochRotation` before `EncryptedLocation` of higher epoch in same batch. Buffer up to 64 frames on `new_routing_token` if `EpochRotation` hasn't arrived; discard after `2 * T`.
+- **Out-of-order delivery during transition**: Decrypt location updates BEFORE processing any epoch rotation in the same batch.
 - **No OPKs**: if Alice runs out of cached OPKs, the DH ratchet stalls (PCS suspended). Alice continues broadcasting on the symmetric ratchet. Alice SHOULD NOT rotate the DH epoch until a new bundle is received.
 
 ### Secure storage
