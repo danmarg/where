@@ -23,15 +23,15 @@ object Session {
     // §7.4: pad plaintext to a fixed block size for traffic-analysis resistance.
     // 512 bytes provides comfortable clearance while remaining a small fixed multiple
     // of a cache line, as per the design doc.
-    private const val PADDING_SIZE = 512
+    internal const val PADDING_SIZE = 512
 
     /**
      * Maximum allowed gap between the last received seq and the incoming seq.
      * A gap larger than this most likely indicates a desynchronized or malicious session.
      * Enforcing a cap prevents the chain from being advanced thousands of steps in a tight
-     * loop on the UI thread (issue #7).
+     * loop on the UI thread (issue #146).
      */
-    private const val MAX_DECRYPT_GAP = 1000L
+    private const val MAX_GAP = 1024L
 
     /**
      * Encrypt one location update for a single peer.
@@ -106,17 +106,17 @@ object Session {
         val stepsNeeded = seq - state.recvSeq
         // stepsNeeded is always >= 1 because seq starts at 1 and recvSeq starts at 0 (or resets
         // to 0 on epoch rotation). The number of *missed* messages is (stepsNeeded - 1), so
-        // we allow stepsNeeded up to MAX_DECRYPT_GAP + 1 to permit exactly MAX_DECRYPT_GAP
+        // we allow stepsNeeded up to MAX_GAP + 1 to permit exactly MAX_GAP
         // missed messages.
-        require(stepsNeeded <= MAX_DECRYPT_GAP + 1) {
-            "seq gap ${stepsNeeded - 1} exceeds maximum $MAX_DECRYPT_GAP — session may be desynchronized"
+        require(stepsNeeded <= MAX_GAP + 1) {
+            "seq gap ${stepsNeeded - 1} exceeds maximum $MAX_GAP — session may be desynchronized"
         }
 
         // Advance the receive chain key to reach the correct seq (handles gaps).
         // Each intermediate chainKey is zeroed before the reference is dropped (§5.5).
         var chainKey = state.recvChainKey.copyOf()
         var step: ChainStep? = null
-        // stepsNeeded is capped at MAX_DECRYPT_GAP (1000) above, so .toInt() is safe.
+        // stepsNeeded is capped at MAX_GAP (1024) above, so .toInt() is safe.
         require(stepsNeeded <= Int.MAX_VALUE) { "stepsNeeded overflows Int" }
         repeat(stepsNeeded.toInt()) {
             step = kdfCk(chainKey)
