@@ -130,6 +130,28 @@ fun String.hexToByteArray(): ByteArray {
     return ByteArray(length / 2) { i -> substring(i * 2, i * 2 + 2).toInt(16).toByte() }
 }
 
+/**
+ * Bob's cached RatchetAck for lost-ack recovery.
+ *
+ * After Bob processes an EpochRotation he immediately switches his recvToken to T_AB_new,
+ * so he will never see Alice's retried EpochRotations (which arrive on T_AB_old).
+ * To recover, Bob re-posts the same ack on every poll cycle until he sees Alice's first
+ * message on T_AB_new (proving she received the ack and committed).
+ *
+ * @property ackCt     The AEAD blob to re-post as [RatchetAckPayload].
+ * @property sendToken The pre-rotation sendToken (T_BA_old, hex) where the ack must be posted.
+ */
+@Serializable
+data class PendingAck(
+    @Serializable(with = ByteArrayBase64Serializer::class) val ackCt: ByteArray,
+    val sendToken: String,
+) {
+    override fun equals(other: Any?): Boolean =
+        other is PendingAck && ackCt.contentEquals(other.ackCt) && sendToken == other.sendToken
+
+    override fun hashCode(): Int = 31 * ackCt.contentHashCode() + sendToken.hashCode()
+}
+
 /** Plaintext location payload (before encryption / after decryption). */
 data class LocationPlaintext(
     val lat: Double,

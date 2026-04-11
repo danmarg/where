@@ -29,6 +29,7 @@ interface E2eeStorage {
  * @param theirOpkPubs    Alice's cache of Bob's OPK public keys keyed by OPK ID — consumed on rotation.
  * @param nextOpkId       Next OPK ID to use when Bob generates a new batch (Bob-only).
  * @param pendingRotation Alice's pending DH ratchet rotation (Alice only); null if no rotation in flight.
+ * @param pendingAck      Bob's cached RatchetAck for lost-ack recovery (Bob only); null once Alice commits.
  */
 data class FriendEntry(
     val name: String,
@@ -41,6 +42,7 @@ data class FriendEntry(
     val lastLng: Double? = null,
     val lastTs: Long? = null,
     val pendingRotation: PendingRotation? = null,
+    val pendingAck: PendingAck? = null,
 ) {
     /** Computed friend ID: hex(SHA-256(EK_A.pub)) — full 64 hex chars. */
     val id: String get() = session.aliceFp.toHex()
@@ -60,7 +62,8 @@ data class FriendEntry(
             lastLat == other.lastLat &&
             lastLng == other.lastLng &&
             lastTs == other.lastTs &&
-            pendingRotation == other.pendingRotation
+            pendingRotation == other.pendingRotation &&
+            pendingAck == other.pendingAck
     }
 
     override fun hashCode(): Int {
@@ -72,6 +75,7 @@ data class FriendEntry(
         result = 31 * result + (lastLng?.hashCode() ?: 0)
         result = 31 * result + (lastTs?.hashCode() ?: 0)
         result = 31 * result + (pendingRotation?.hashCode() ?: 0)
+        result = 31 * result + (pendingAck?.hashCode() ?: 0)
         return result
     }
 }
@@ -123,6 +127,7 @@ class E2eeStore(
                             lastLng = s.lastLng,
                             lastTs = s.lastTs,
                             pendingRotation = s.pendingRotation,
+                            pendingAck = s.pendingAck,
                         )
                     entry.id to entry
                 }.toMutableMap()
@@ -151,6 +156,7 @@ class E2eeStore(
                             lastLng = f.lastLng,
                             lastTs = f.lastTs,
                             pendingRotation = f.pendingRotation,
+                            pendingAck = f.pendingAck,
                         )
                     },
                 pendingInvite = pendingInvite,
@@ -659,6 +665,9 @@ class E2eeStore(
                             recvChainKey = decryptionSession.recvChainKey,
                             recvSeq = decryptionSession.recvSeq,
                         ),
+                    // If Bob had a pendingAck and Alice just sent us a message on the new
+                    // recvToken, she has committed the rotation — ack was received, stop re-posting.
+                    pendingAck = if (decryptedLocations.isNotEmpty()) null else entryAfterDecryption.pendingAck,
                 )
 
             // Step 3: Process EpochRotation (Bob only).
@@ -699,6 +708,9 @@ class E2eeStore(
                     entry.copy(
                         session = newState,
                         myOpkPrivs = entry.myOpkPrivs - rotPt.opkId,
+                        // Cache the ack for lost-ack recovery: re-posted on every poll until
+                        // Alice's first message on the new recvToken proves she committed.
+                        pendingAck = PendingAck(ackCt = ackCt, sendToken = oldSendToken.toHex()),
                     )
 
                 // Post RatchetAck on the OLD sendToken (T_BA_old).
@@ -803,6 +815,7 @@ internal data class SerializedFriendEntry(
     val lastLng: Double? = null,
     val lastTs: Long? = null,
     val pendingRotation: PendingRotation? = null,
+    val pendingAck: PendingAck? = null,
 )
 
 @Serializable

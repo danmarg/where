@@ -527,4 +527,75 @@ class E2eeStoreTest {
                 "Alice recvToken = Bob sendToken after commit",
             )
         }
+
+    @Test
+    fun testLostRatchetAckRecovery() =
+        runBlocking {
+            // Simulates the lost-ack scenario:
+            // Bob processes EpochRotation and switches to T_AB_new, but his RatchetAck is
+            // never received by Alice. Since Bob now polls T_AB_new, he will never see
+            // Alice's retried EpochRotation on T_AB_old. Recovery: Bob stores a PendingAck
+            // and re-posts it on every poll. Alice eventually receives it on T_BA_old and
+            // commits. Bob clears PendingAck when he sees Alice's first message on T_AB_new.
+
+            val qr = aliceStore.createInvite("Alice")
+            val (initPayload, bobEntry) = bobStore.processScannedQr(qr)
+            val aliceEntry = aliceStore.processKeyExchangeInit(initPayload, "Bob")!!
+
+            val bundle = bobStore.generateOpkBundle(bobEntry.id, count = 1)!!
+            aliceStore.storeOpkBundle(aliceEntry.id, bundle)
+
+            // Alice initiates rotation and sends a batch with [location, EpochRotation].
+            val loc0 = LocationPlaintext(2.0, 3.0, 1.0, 1000L)
+            val aliceFriend0 = aliceStore.getFriend(aliceEntry.id)!!
+            val (aliceSess0, ct0) = Session.encryptLocation(
+                aliceFriend0.session, loc0,
+                aliceFriend0.session.aliceFp, aliceFriend0.session.bobFp,
+            )
+            aliceStore.updateSession(aliceEntry.id, aliceSess0)
+            val rotPayload = aliceStore.initiateRotation(aliceEntry.id)!!
+
+            // Bob processes the batch — switches to T_AB_new, sends ack on T_BA_old.
+            val locPayload = EncryptedLocationPayload(seq = aliceSess0.sendSeq.toString(), ct = ct0)
+            bobStore.processBatch(bobEntry.id, listOf(locPayload, rotPayload))
+
+            // Bob has a PendingAck stored (ack was "lost" — not processed by Alice yet).
+            val bobWithPending = bobStore.getFriend(bobEntry.id)!!
+            assertNotNull(bobWithPending.pendingAck, "Bob must store a PendingAck after processing EpochRotation")
+            val pendingAck = bobWithPending.pendingAck!!
+
+            // The pending ack is addressed to T_BA_old (Alice's current recvToken).
+            val aliceFriend1 = aliceStore.getFriend(aliceEntry.id)!!
+            assertEquals(
+                aliceFriend1.session.recvToken.toHex(),
+                pendingAck.sendToken,
+                "PendingAck must target Alice's current recvToken (T_BA_old)",
+            )
+            // Alice has NOT committed yet.
+            assertNotNull(aliceFriend1.pendingRotation, "Alice must still have pendingRotation (ack not received)")
+
+            // Alice receives the re-posted ack and commits.
+            val repostedAck = RatchetAckPayload(ct = pendingAck.ackCt)
+            assertTrue(aliceStore.processRatchetAck(aliceEntry.id, repostedAck), "Alice must accept re-posted ack")
+            assertNull(aliceStore.getFriend(aliceEntry.id)!!.pendingRotation, "Alice must commit after receiving re-posted ack")
+
+            // Alice now sends on the new token (T_AB_new). Bob receives it and clears PendingAck.
+            val aliceCommitted = aliceStore.getFriend(aliceEntry.id)!!
+            val loc1 = LocationPlaintext(4.0, 5.0, 1.0, 2000L)
+            val (aliceSess1, ct1) = Session.encryptLocation(
+                aliceCommitted.session, loc1,
+                aliceCommitted.session.aliceFp, aliceCommitted.session.bobFp,
+            )
+            aliceStore.updateSession(aliceEntry.id, aliceSess1)
+
+            val result = bobStore.processBatch(
+                bobEntry.id,
+                listOf(EncryptedLocationPayload(seq = aliceSess1.sendSeq.toString(), ct = ct1)),
+            )!!
+            assertEquals(1, result.decryptedLocations.size, "Bob must decrypt Alice's post-commit location")
+            assertEquals(loc1.lat, result.decryptedLocations[0].lat)
+
+            // Bob's PendingAck is cleared — he knows Alice committed.
+            assertNull(bobStore.getFriend(bobEntry.id)!!.pendingAck, "Bob must clear PendingAck after Alice's first post-commit message")
+        }
 }
