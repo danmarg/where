@@ -98,7 +98,7 @@ class KeyExchangeTest {
             try {
                 KeyExchange.aliceProcessInit(badMsg, aliceEkPriv, qr.ekPub)
                 false
-            } catch (_: IllegalArgumentException) {
+            } catch (_: AuthenticationException) {
                 true
             }
         assertTrue(threw)

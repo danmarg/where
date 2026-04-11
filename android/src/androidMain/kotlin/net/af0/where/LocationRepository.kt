@@ -146,12 +146,22 @@ object LocationRepository : LocationSource {
 
     override fun onConnectionError(e: Throwable) {
         val msg =
-            when {
-                e.message?.contains("Unable to resolve host", ignoreCase = true) == true -> "Network error: Could not connect to the server. Please check your internet connection."
-                e.message?.contains("timeout", ignoreCase = true) == true -> "Network error: The connection timed out. Please try again."
-                e.message?.contains("ConnectException", ignoreCase = true) == true -> "Network error: Could not establish a connection. Please check your network."
-                e.message?.contains("500", ignoreCase = true) == true -> "Server error: Something went wrong on our end. Please try again later."
-                else -> "An unexpected error occurred. Please try re-pairing your device." // Generic fallback, sanitized
+            when (e) {
+                is net.af0.where.e2ee.ConnectException -> "No connection: Could not reach the server."
+                is net.af0.where.e2ee.TimeoutException -> "Request timed out. Please try again."
+                is net.af0.where.e2ee.ServerException -> "Server error ${e.statusCode}: Something went wrong on the server."
+                is net.af0.where.e2ee.AuthenticationException -> "Authentication failed. Please try re-pairing."
+                is net.af0.where.e2ee.ProtocolException -> "Protocol error: Session may be out of sync."
+                is net.af0.where.e2ee.CryptoException -> "Security error: Cryptographic validation failed."
+                is net.af0.where.e2ee.NetworkException -> "Network error: ${e.message}"
+                else -> {
+                    when {
+                        e.message?.contains("Unable to resolve host", ignoreCase = true) == true -> "No connection: Could not reach the server."
+                        e.message?.contains("timeout", ignoreCase = true) == true -> "Request timed out."
+                        e.message?.contains("ConnectException", ignoreCase = true) == true -> "No connection: Could not establish a connection."
+                        else -> "An unexpected error occurred. Please try again."
+                    }
+                }
             }
         _connectionStatus.value = ConnectionStatus.Error(msg)
     }
