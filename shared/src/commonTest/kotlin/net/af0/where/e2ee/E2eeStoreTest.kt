@@ -340,6 +340,64 @@ class E2eeStoreTest {
         }
 
     @Test
+    fun testEpochRotationAtomicSequenceReset() =
+        runBlocking {
+            // Verifies that sequence numbers (sendSeq and recvSeq) reset to 0 on BOTH sides
+            // after rotation and increment correctly thereafter, preventing replay/gap issues.
+            val qr = aliceStore.createInvite("Alice")
+            val (initPayload, bobEntry) = bobStore.processScannedQr(qr)
+            val aliceEntry = aliceStore.processKeyExchangeInit(initPayload, "Bob")!!
+
+            val bundle = bobStore.generateOpkBundle(bobEntry.id, count = 1)!!
+            aliceStore.storeOpkBundle(aliceEntry.id, bundle)
+
+            // 1. Advance sequence in Epoch 0
+            val loc0 = LocationPlaintext(1.0, 1.0, 1.0, 1000L)
+            val alice0 = aliceStore.getFriend(aliceEntry.id)!!
+            val (sess0_1, ct0_1) = Session.encryptLocation(alice0.session, loc0, alice0.session.aliceFp, alice0.session.bobFp)
+            aliceStore.updateSession(aliceEntry.id, sess0_1)
+            assertEquals(1L, sess0_1.sendSeq)
+
+            // 2. Perform Epoch Rotation
+            val rotPayload = aliceStore.initiateRotation(aliceEntry.id)!!
+            val ack = bobStore.processEpochRotation(bobEntry.id, rotPayload)!!
+            assertTrue(aliceStore.processRatchetAck(aliceEntry.id, ack))
+
+            val alice1 = aliceStore.getFriend(aliceEntry.id)!!
+            val bob1 = bobStore.getFriend(bobEntry.id)!!
+
+            // sendSeq and recvSeq must be reset to 0
+            assertEquals(0L, alice1.session.sendSeq)
+            assertEquals(0L, alice1.session.recvSeq)
+            assertEquals(0L, bob1.session.sendSeq)
+            assertEquals(0L, bob1.session.recvSeq)
+
+            // 3. Advance sequence in Epoch 1 (Alice to Bob)
+            val loc1 = LocationPlaintext(2.0, 2.0, 1.0, 2000L)
+            val (sess1_1, ct1_1) = Session.encryptLocation(alice1.session, loc1, alice1.session.aliceFp, alice1.session.bobFp)
+            aliceStore.updateSession(aliceEntry.id, sess1_1)
+            assertEquals(1L, sess1_1.sendSeq)
+
+            val (bobSess1_1, pt1_1) = Session.decryptLocation(bob1.session, ct1_1, 1L, bob1.session.aliceFp, bob1.session.bobFp)
+            bobStore.updateSession(bobEntry.id, bobSess1_1)
+            assertEquals(1L, bobSess1_1.recvSeq)
+            assertEquals(loc1.lat, pt1_1.lat)
+
+            // 4. Advance sequence in Epoch 1 (Bob to Alice)
+            val locB1 = LocationPlaintext(3.0, 3.0, 1.0, 3000L)
+            val bobAfterRecv = bobStore.getFriend(bobEntry.id)!!
+            val (bobSessB1, ctB1) = Session.encryptLocation(bobAfterRecv.session, locB1, bobAfterRecv.session.bobFp, bobAfterRecv.session.aliceFp)
+            bobStore.updateSession(bobEntry.id, bobSessB1)
+            assertEquals(1L, bobSessB1.sendSeq)
+
+            val aliceAfterSend = aliceStore.getFriend(aliceEntry.id)!!
+            val (aliceSessB1, ptB1) = Session.decryptLocation(aliceAfterSend.session, ctB1, 1L, aliceAfterSend.session.bobFp, aliceAfterSend.session.aliceFp)
+            aliceStore.updateSession(aliceEntry.id, aliceSessB1)
+            assertEquals(1L, aliceSessB1.recvSeq)
+            assertEquals(locB1.lat, ptB1.lat)
+        }
+
+    @Test
     fun testShouldInitiateRotation() =
         runBlocking {
             val qr = aliceStore.createInvite("Alice")
