@@ -111,7 +111,7 @@ For threat models that include a metadata-analyzing server, the mitigations in �
 
 This protocol uses **no long-term identity keys**. There is no `IK`, no `SigIK`, and no central registry. Identity is scoped entirely to a single friendship session, anchored by the ephemeral keys exchanged at bootstrap.
 
-This design decision is motivated by the device management policy (§3.3): when a device is lost or the app is reinstalled, all contacts must be manually re-added regardless. Because there is no long-term identity that survives a device loss, the X3DH model's primary benefit — binding a session to a stable device identity — does not apply here. Dropping long-term keys eliminates the exposure of a stable device identifier to the server (§4.4) and removes the risk that a long-term key compromise retroactively breaks all historical epoch keys.
+This design decision is motivated by the device management policy (§3.3): when a device is lost or the app is reinstalled, all contacts must be manually re-added regardless. Dropping long-term keys eliminates the exposure of a stable device identifier to the server (§4.4) and removes the risk that a long-term key compromise retroactively breaks all historical epoch keys.
 
 Each friendship session is identified by the pair `(EK_A.pub, EK_B.pub)` — the initial bootstrap ephemeral public keys from Alice and Bob respectively. These keys are used to derive the Safety Number (§3.4) and session fingerprints (§8.3). The session's root key `SK` is derived from a single X25519 operation over these keys; both private keys are deleted immediately after derivation.
 
@@ -272,11 +272,13 @@ The server cannot derive `SK` or link any routing token to a real identity witho
 
 ---
 
-## 5. Ratchet Design for Streaming Location Data
+## 5. Ratchet Design for Bidirectional Sessions with Streaming Data
 
 ### 5.0 Architectural Trade-offs vs. Signal Double Ratchet
 
-This protocol uses a hybrid ratchet designed for **one-way streaming** (Alice sends continuously; Bob is a passive receiver), but maintains bidirectional session state to support mutual location sharing. Compared to the previous X3DH-based design, the ephemeral-only bootstrap removes the static DH contributor (`IK.priv`), making PCS guarantees symmetric:
+This protocol uses a hybrid ratchet designed for **one-way streaming** at the application layer (Alice sends continuously; Bob is a passive receiver), but the underlying cryptographic session is **bidirectional**. This supports mutual post-compromise security (PCS) and allows for two-way communication (e.g., control messages or future messaging features).
+
+The ephemeral-only bootstrap removes any static DH contributor, making PCS guarantees symmetric:
 
 | Property | Signal Double Ratchet | This Protocol |
 |---|---|---|
@@ -296,7 +298,7 @@ The Double Ratchet algorithm ([Signal spec](https://signal.org/docs/specificatio
 
 2. **Diffie-Hellman ratchet:** Each party sends a fresh DH public key with each message. When a new DH public key is received, both parties compute a new DH output and use it to re-derive the root key and chain keys. This provides post-compromise security: if chain keys leak, the next DH ratchet step heals the session.
 
-**The core tension for Where:** The DH ratchet step requires bidirectional communication — Alice sends her DH ratchet key, Bob responds with his, and the exchange drives derivation of new chain keys. In a messaging app, every reply naturally carries a new DH ratchet key. In a location app, Alice broadcasts continuously and Bob never "replies" with location — he is a passive consumer of Alice's location.
+**The core tension for Where:** The DH ratchet step requires bidirectional communication — Alice sends her DH ratchet key, Bob responds with his, and the exchange drives derivation of new chain keys for **both directions**. In a messaging app, every reply naturally carries a new DH ratchet key. In a location app, Alice broadcasts continuously and Bob never "replies" with location — he is a passive consumer of Alice's location.
 
 ### 5.2 The Problem with Naive Double-Ratchet for Streaming
 
@@ -309,9 +311,11 @@ If we naively apply the Double Ratchet to Alice's location stream:
 - If Alice's current sending chain key is compromised, all future messages in that chain are recoverable until the root key is refreshed.
 - The DH ratchet step (which provides PCS) never fires.
 
-### 5.3 Ratchet Advancement Strategy: Asynchronous OPKs with Ack-Triggered Token Switch
+### 5.3 Ratchet Advancement Strategy: Asynchronous OPKs and Mutual DH Contributions
 
-To achieve Post-Compromise Security (PCS) without requiring Bob to be online when Alice rotates keys, the protocol uses **One-Time Pre-Keys (OPKs)** posted by Bob to the shared mailbox, and an **ack-triggered atomic token switch** to eliminate dual-polling windows.
+To achieve Post-Compromise Security (PCS) without requiring Bob to be online when Alice rotates keys, the protocol uses **One-Time Pre-Keys (OPKs)** posted by Bob to the shared mailbox, and a two-step DH exchange triggered by Alice's rotation.
+
+While the location stream is one-way, the **cryptographic session maintains independent send and receive chains**. Each full DH ratchet rotation (one Alice contribution + one Bob contribution) refreshes the root key twice and updates the chain keys for both directions.
 
 **1. Pre-Key Delivery (Bob):**
 Bob periodically generates a batch of fresh ephemeral X25519 keypairs (e.g., 20 OPKs) and posts the public keys to the shared mailbox as a `PreKeyBundle` (§9.3).
@@ -502,21 +506,23 @@ Because of the indistinguishable response invariant (§7.2), clients can impleme
 
 ### 8.2 Session State Per Friend-Pair
 
-Identity and session state are tied to a single bidirectional friendship. Both parties maintain:
+Each friendship has **two independent symmetric ratchets** (Send and Receive). While location data typically flows only in one direction, the protocol supports bidirectional messaging, and both ratchets are refreshed during the two-step DH rotation.
+
+Alice and Bob each maintain, for each friendship session:
 ```
 SessionState {
-  rootKey:         [32]byte   // current root key
-  sendChainKey:    [32]byte   // CK for outgoing direction
-  recvChainKey:    [32]byte   // CK for incoming direction
-  sendToken:       [16]byte   // token this client posts to
-  recvToken:       [16]byte   // token this client polls from
-  sendSeq:         uint64     // monotonically increasing counter
-  recvSeq:         uint64     // highest received seq (for replay rejection)
-  aliceEkPub:      [32]byte   // bootstrap public key EK_A.pub (for safety number)
-  bobEkPub:        [32]byte   // bootstrap public key EK_B.pub (for safety number)
-  aliceFp:         [32]byte   // SHA-256(EK_A.pub) — stable for session lifetime
-  bobFp:           [32]byte   // SHA-256(EK_B.pub) — stable for session lifetime
-  kBundle:         [32]byte   // HKDF(SK, "Where-v1-BundleAuth") — for verifying PreKeyBundle MACs
+  root_key:        [32]byte   // current root key
+  send_chain_key:  [32]byte   // CK for outgoing messages (e.g. Alice→Bob)
+  recv_chain_key:  [32]byte   // CK for incoming messages (e.g. Bob→Alice)
+  send_token:      [16]byte   // token this client posts to
+  recv_token:      [16]byte   // token this client polls from
+  send_seq:        uint64     // monotonically increasing counter
+  recv_seq:        uint64     // highest received seq (for replay rejection)
+  alice_ek_pub:    [32]byte   // bootstrap public key EK_A.pub (for safety number)
+  bob_ek_pub:      [32]byte   // bootstrap public key EK_B.pub (for safety number)
+  alice_fp:        [32]byte   // SHA-256(EK_A.pub) — stable for session lifetime
+  bob_fp:          [32]byte   // SHA-256(EK_B.pub) — stable for session lifetime
+  k_bundle:        [32]byte   // HKDF(SK, "Where-v1-BundleAuth") — for verifying PreKeyBundle MACs
 }
 ```
 
@@ -526,9 +532,9 @@ Note: `my_ek_priv` (Alice's rotation ephemeral private key) lives only in memory
 
 **KDF_RK (Diffie-Hellman ratchet step):**
 ```
-(newRootKey, newChainKey) = HKDF-SHA-256(
-    salt = currentRootKey,
-    ikm  = X25519(myEkPriv, theirEkPub),
+(new_root_key, new_chain_key) = HKDF-SHA-256(
+    salt = current_root_key,
+    ikm  = X25519(ek_priv, ek_pub),
     info = "Where-v1-RatchetStep"
 )
 ```
@@ -544,6 +550,28 @@ A full DH rotation involves two steps to advance both directions (mutual PFS):
    `(rootKey2, sendChainKey_BA) = KDF_RK(rootKey1, dh_out)`
 
 Both parties re-derive their routing tokens from the final `rootKey2`.
+
+**The Two-Step DH Rotation:**
+
+A full DH rotation consists of two steps to ensure mutual PFS and refresh both symmetric chains.
+
+1.  **Step 1 (Alice's Contribution):**
+    Alice uses a fresh ephemeral key (`alice_new_ek`) and one of Bob's pre-keys (`bob_opk`).
+    ```
+    (root_key_1, send_chain_key_AB) = KDF_RK(root_key, alice_new_ek_priv, bob_opk_pub)
+    ```
+    This refreshes the root key and Alice's sending chain (Bob's receiving chain).
+
+2.  **Step 2 (Bob's Contribution):**
+    When Bob processes Alice's rotation, he generates a fresh ephemeral key (`bob_new_ek`) and includes it in his `RatchetAck`.
+    ```
+    (root_key_2, send_chain_key_BA) = KDF_RK(root_key_1, bob_new_ek_priv, alice_new_ek_pub)
+    ```
+    This refreshes the root key again and Bob's sending chain (Alice's receiving chain).
+
+After Step 2, both parties have refreshed the root key twice and updated both directional chains.
+
+**Routing Token Derivation:**
 
 After each DH ratchet step, new routing tokens MUST be derived from the new root key:
 ```

@@ -173,10 +173,11 @@ object Session {
      * which performs step 2 (using Bob's fresh EK from the ack) and returns the final
      * committed session. Until then she continues using the current session for sends/receives.
      *
-     * Two-step protocol (§8.4):
+     * Two-step protocol (§8.3):
      *   Step 1 (here):    KDF_RK(rootKey,  DH(aliceNewEk, bobOpk))  → (rootKey1, chainKey_AB)
      *   Step 2 (on ack):  KDF_RK(rootKey1, DH(aliceNewEk, bobNewEk)) → (rootKey2, chainKey_BA)
-     * Both sides contribute a fresh ephemeral per rotation — mutual PFS.
+     * Both sides contribute a fresh ephemeral per rotation — mutual PFS. A single
+     * rotation updates both send and receive chain keys for the bidirectional session.
      *
      * @param state          Current session state.
      * @param aliceNewEkPriv Alice's fresh ephemeral X25519 private key for this step.
@@ -252,7 +253,7 @@ object Session {
      * (newState, ratchetAckCt). Bob MUST post [ratchetAckCt] on [state.sendToken]
      * (the **pre-rotation** sendToken) so Alice can receive it on her current recvToken.
      *
-     * Two-step protocol (§8.4):
+     * Two-step protocol (§8.3):
      *   Step 1: KDF_RK(rootKey,  DH(bobOpk,    aliceNewEk)) → (rootKey1, chainKey_AB)
      *   Step 2: KDF_RK(rootKey1, DH(bobNewEk,  aliceNewEk)) → (rootKey2, chainKey_BA)
      * Bob generates a fresh ephemeral [bobNewEk] and includes its public key in the
@@ -463,7 +464,7 @@ internal data class EpochRotationPlaintext(val opkId: Int, val newEkPub: ByteArr
  *
  * K_rot = HKDF(currentRootKey, salt=absent, info="Where-v1-EpochRotation", length=32).
  * K_rot is unique per rotation (root key advances after each DH step), so a fixed
- * all-zero nonce is safe (§8.4). Note that while the resulting ciphertext may be
+ * all-zero nonce is safe. Note that while the resulting ciphertext may be
  * re-sent multiple times (e.g., via pendingEpochRotation), the (K_rot, nonce) pair
  * is never used with *different* plaintext. This is safe deterministic replay, not
  * nonce reuse. The protocol ensures only one rotation is pending at a time.
@@ -482,7 +483,7 @@ internal fun buildEpochRotationCt(
     val kRot = hkdfSha256(currentRootKey, salt = null, INFO_EPOCH_ROTATION.encodeToByteArray(), 32)
     val plaintext = intToBeBytes(opkId) + newEkPub
     val aad = aliceFp + bobFp + sendToken
-    // K_rot is unique per rotation, so a fixed all-zero nonce is safe (§8.4).
+    // K_rot is unique per rotation, so a fixed all-zero nonce is safe.
     // Repeated posting of the same ciphertext (deterministic replay) is safe,
     // not nonce reuse with fresh plaintext.
     val nonce = ByteArray(12)
@@ -501,7 +502,7 @@ internal fun decryptEpochRotationCt(
 ): EpochRotationPlaintext {
     val kRot = hkdfSha256(currentRootKey, salt = null, INFO_EPOCH_ROTATION.encodeToByteArray(), 32)
     val aad = aliceFp + bobFp + sendToken
-    // K_rot is unique per rotation, so a fixed all-zero nonce is safe (§8.4).
+    // K_rot is unique per rotation, so a fixed all-zero nonce is safe.
     // Repeated posting of the same ciphertext (deterministic replay) is safe,
     // not nonce reuse with fresh plaintext.
     val nonce = ByteArray(12)
@@ -529,13 +530,13 @@ internal fun decryptEpochRotationCt(
  * A successful tag verification proves Bob performed the correct step 1 DH.
  *
  * Like EpochRotation, K_ack is unique per rotation, so a fixed all-zero nonce
- * is safe (§8.4). Repeated posting of the same RatchetAck ciphertext (for
+ * is safe. Repeated posting of the same RatchetAck ciphertext (for
  * lost-ack recovery) is safe deterministic replay, not nonce reuse with fresh plaintext.
  *
  * Plaintext: bobNewEkPub (32 bytes) — Bob's fresh ephemeral pub key for step 2.
  * AAD: bobFp || aliceFp || intermediateSendToken (T_BA from rootKey1).
  */
-internal fun buildRatchetAckCt(
+fun buildRatchetAckCt(
     intermediateRootKey: ByteArray,
     bobNewEkPub: ByteArray,
     bobFp: ByteArray,
@@ -544,7 +545,7 @@ internal fun buildRatchetAckCt(
 ): ByteArray {
     val kAck = hkdfSha256(intermediateRootKey, salt = null, INFO_RATCHET_ACK.encodeToByteArray(), 32)
     val aad = bobFp + aliceFp + intermediateSendToken
-    // K_ack is unique per rotation, so a fixed all-zero nonce is safe (§8.4).
+    // K_ack is unique per rotation, so a fixed all-zero nonce is safe.
     // Repeated posting of the same ciphertext (deterministic replay) is safe,
     // not nonce reuse with fresh plaintext.
     val nonce = ByteArray(12)

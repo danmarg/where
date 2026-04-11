@@ -58,9 +58,9 @@ The timer is adjusted at the end of each `firePoll` / `pollLoop` iteration to ma
 
 ## 4. Ratchet Ack Timeout (issue #38)
 
-The Double Ratchet protocol requires **Bob (recipient)** to post a `RatchetAck` back to Alice whenever Alice performs an epoch rotation. Alice rotates every 50 sends (≈4.2 hours at 5-min heartbeat rate), consuming one of Bob's cached one-time pre-keys (OPKs). Alice starts with 10 OPKs cached at pairing; without fresh acks (and thus fresh OPKs from Bob), her cache drains in ≈42 hours and she can no longer rotate epochs.
+The Double Ratchet protocol requires **Bob (recipient)** to post a `RatchetAck` back to Alice whenever Alice performs a DH ratchet rotation. Alice rotates whenever she has cached one-time pre-keys (OPKs) from Bob. Alice starts with 10 OPKs cached at pairing; without fresh acks (and thus fresh OPKs from Bob), her cache drains and she can no longer rotate the DH ratchet.
 
-If Alice cannot rotate, she continues sending in the **same epoch indefinitely**, silently losing forward secrecy. To make this failure visible and enforce a bound on key reuse:
+If Alice cannot rotate, she continues sending on the symmetric ratchet indefinitely, maintaining per-message forward secrecy but losing post-compromise security (PCS). To make this failure visible and enforce a bound on key reuse:
 
 1. **`lastAckTs`** is stored on every `FriendEntry` (Alice side only), initialized to the pairing timestamp and updated each time a valid `RatchetAck` is verified.
 2. **`E2eeStore.isAckTimedOut`** returns `true` when `now − lastAckTs > ACK_TIMEOUT_SECONDS` (7 days).

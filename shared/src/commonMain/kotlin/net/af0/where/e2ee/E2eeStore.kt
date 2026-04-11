@@ -44,6 +44,12 @@ data class FriendEntry(
     val lastAckTs: Long = Long.MAX_VALUE,
     val pendingRotation: PendingRotation? = null,
     val pendingAck: PendingAck? = null,
+    /**
+     * True if the key exchange handshake is fully confirmed (both sides derived SK).
+     * Alice is confirmed as soon as she processes KeyExchangeInit; Bob is confirmed
+     * once he receives any valid message (Location, OPK bundle) from Alice.
+     */
+    val isConfirmed: Boolean = false,
 ) {
     companion object {
         /** §12: Surface a "no recent location" warning after 2 days of silence. */
@@ -85,7 +91,9 @@ data class FriendEntry(
             lastLng == other.lastLng &&
             lastTs == other.lastTs &&
             pendingRotation == other.pendingRotation &&
-            pendingAck == other.pendingAck
+            pendingAck == other.pendingAck &&
+            lastAckTs == other.lastAckTs &&
+            isConfirmed == other.isConfirmed
     }
 
     override fun hashCode(): Int {
@@ -98,6 +106,8 @@ data class FriendEntry(
         result = 31 * result + (lastTs?.hashCode() ?: 0)
         result = 31 * result + (pendingRotation?.hashCode() ?: 0)
         result = 31 * result + (pendingAck?.hashCode() ?: 0)
+        result = 31 * result + lastAckTs.hashCode()
+        result = 31 * result + isConfirmed.hashCode()
         return result
     }
 }
@@ -152,9 +162,11 @@ class E2eeStore(
                             lastLat = s.lastLat,
                             lastLng = s.lastLng,
                             lastTs = s.lastTs,
-                            lastAckTs = s.lastAckTs,
+                            // 0L = field absent in old serialized data; load() converts 0L → currentTimeSeconds().
+                            lastAckTs = if (s.lastAckTs == 0L) currentTimeSeconds() else s.lastAckTs,
                             pendingRotation = s.pendingRotation,
                             pendingAck = s.pendingAck,
+                            isConfirmed = s.isConfirmed,
                         )
                     entry.id to entry
                 }.toMutableMap()
@@ -185,6 +197,7 @@ class E2eeStore(
                             lastAckTs = f.lastAckTs,
                             pendingRotation = f.pendingRotation,
                             pendingAck = f.pendingAck,
+                            isConfirmed = f.isConfirmed,
                         )
                     },
                 pendingInvite = pendingInvite,
@@ -233,6 +246,9 @@ class E2eeStore(
                     session = session,
                     // Bob scanned Alice's QR
                     isInitiator = false,
+                    // Start the ack-timeout clock from pairing time.
+                    lastAckTs = currentTimeSeconds(),
+                    isConfirmed = false,
                 )
             friends[entry.id] = entry
             save()
@@ -286,6 +302,7 @@ class E2eeStore(
                         // Alice created the QR
                         isInitiator = true,
                         lastAckTs = currentTimeSeconds(),
+                        isConfirmed = false,
                     )
                 friends[entry.id] = entry
                 pendingInvite = null
@@ -345,6 +362,37 @@ class E2eeStore(
             save()
         }
     }
+
+    /**
+     * Clear the previous receive token state (used during epoch rotation window).
+     * Zeroes out the old chain key before nulling it.
+     */
+    suspend fun clearPrevRecvState(id: String) {
+        stateLock.withLock {
+            val entry = friends[id] ?: return@withLock
+            val session = entry.session
+            if (session.prevRecvToken == null && session.prevRecvChainKey == null) return@withLock
+
+            session.prevRecvChainKey?.fill(0)
+            friends[id] =
+                entry.copy(
+                    session =
+                        session.copy(
+                            prevRecvToken = null,
+                            prevRecvTokenDeadline = 0L,
+                            prevRecvChainKey = null,
+                            prevRecvSeq = 0L,
+                        ),
+                )
+            save()
+        }
+    }
+
+    suspend fun isAckTimedOut(friendId: String): Boolean =
+        stateLock.withLock {
+            val entry = friends[friendId] ?: return@withLock false
+            entry.isInitiator && entry.lastAckTs != Long.MAX_VALUE && (currentTimeSeconds() - entry.lastAckTs) > FriendEntry.ACK_TIMEOUT_SECONDS
+        }
 
     // -----------------------------------------------------------------------
     // OPK management
@@ -544,7 +592,7 @@ class E2eeStore(
 
             val opkPriv = entry.myOpkPrivs[rotPt.opkId] ?: return@withLock null
 
-            val (newSession, ackCt) =
+            val (newState, ackCt) =
                 Session.bobProcessAliceRotation(
                     state = entry.session,
                     aliceNewEkPub = rotPt.newEkPub,
@@ -555,8 +603,17 @@ class E2eeStore(
 
             friends[friendId] =
                 entry.copy(
-                    session = newSession,
+                    session = newState,
                     myOpkPrivs = entry.myOpkPrivs - rotPt.opkId,
+                    isConfirmed = true,
+                    // Cache the ack for lost-ack recovery: re-posted on every poll until
+                    // Alice's first message on the new recvToken proves she committed.
+                    pendingAck =
+                        PendingAck(
+                            ackCt = ackCt,
+                            sendToken = entry.session.sendToken.toHex(), // Use entry.session.sendToken here
+                            expectedRecvToken = newState.recvToken.toHex(),
+                        ),
                 )
             save()
 
@@ -593,6 +650,7 @@ class E2eeStore(
                     session = committed,
                     pendingRotation = null,
                     lastAckTs = currentTimeSeconds(),
+                    isConfirmed = true,
                 )
             save()
             true
@@ -663,13 +721,25 @@ class E2eeStore(
                     continue
                 }
                 val newPubMap = entry.theirOpkPubs + msg.toOPKList().associate { it.id to it.pub }
-                friends[friendId] = entry.copy(theirOpkPubs = newPubMap)
+                friends[friendId] = entry.copy(theirOpkPubs = newPubMap, isConfirmed = true)
             }
 
-            // Step 2: Decrypt location updates BEFORE processing any epoch rotation.
-            // All EncryptedLocationPayloads on this token belong to the current session.
+            // Step 2: Decrypt location updates BEFORE processing epoch rotation.
+            // All EncryptedLocationPayloads on this token are from the same epoch.
             val sessionAtStart = friends[friendId]?.session ?: return@withLock PollBatchResult(emptyList(), emptyList())
-            var decryptionSession = sessionAtStart
+            val isPrevToken = sessionAtStart.prevRecvToken?.toHex() == recvToken
+
+            // Construct a temporary SessionState for decryption if this is the old token.
+            var decryptionSession =
+                if (isPrevToken && sessionAtStart.prevRecvChainKey != null) {
+                    sessionAtStart.copy(
+                        recvChainKey = sessionAtStart.prevRecvChainKey,
+                        recvSeq = sessionAtStart.prevRecvSeq,
+                    )
+                } else {
+                    sessionAtStart
+                }
+
 
             val sortedLocations = messages.filterIsInstance<EncryptedLocationPayload>().sortedBy { it.seqAsLong() }
             for (msg in sortedLocations) {
@@ -690,13 +760,30 @@ class E2eeStore(
             }
 
             val entryAfterDecryption = friends[friendId] ?: return@withLock PollBatchResult(decryptedLocations, emptyList())
-            friends[friendId] =
-                entryAfterDecryption.copy(
-                    session =
+            val updatedSession =
+                if (isPrevToken) {
+                    // If we decrypted messages on the old token, update the prevRecv fields.
+                    entryAfterDecryption.session.copy(
+                        prevRecvChainKey = decryptionSession.recvChainKey,
+                        prevRecvSeq = decryptionSession.recvSeq,
+                    )
+                } else {
+                    // If we decrypted messages on the new token, update the main recv fields.
+                    var s =
                         entryAfterDecryption.session.copy(
                             recvChainKey = decryptionSession.recvChainKey,
                             recvSeq = decryptionSession.recvSeq,
-                        ),
+                        )
+                    // §8.3: Stop polling the old token once we have a valid message on the new one.
+                    if (decryptedLocations.isNotEmpty() && s.prevRecvToken != null) {
+                        s = s.copy(prevRecvToken = null, prevRecvTokenDeadline = 0L, prevRecvChainKey = null, prevRecvSeq = 0L)
+                    }
+                    s
+                }
+            friends[friendId] =
+                entryAfterDecryption.copy(
+                    session = updatedSession,
+                    isConfirmed = if (decryptedLocations.isNotEmpty()) true else entryAfterDecryption.isConfirmed,
                     // If Bob had a pendingAck and Alice just sent us a message on the new
                     // recvToken, she has committed the rotation — ack was received, stop re-posting.
                     pendingAck =
@@ -745,6 +832,7 @@ class E2eeStore(
                     entry.copy(
                         session = newState,
                         myOpkPrivs = entry.myOpkPrivs - rotPt.opkId,
+                        isConfirmed = true,
                         // Cache the ack for lost-ack recovery: re-posted on every poll until
                         // Alice's first message on the new recvToken proves she committed.
                         pendingAck =
@@ -823,6 +911,8 @@ class E2eeStore(
                     entry.copy(
                         session = committed,
                         pendingRotation = null,
+                        lastAckTs = currentTimeSeconds(),
+                        isConfirmed = true,
                     )
             }
 
@@ -866,9 +956,11 @@ internal data class SerializedFriendEntry(
     val lastLat: Double? = null,
     val lastLng: Double? = null,
     val lastTs: Long? = null,
-    val lastAckTs: Long = Long.MAX_VALUE,
+    // Default 0L = field absent in old data; load() converts 0L → currentTimeSeconds().
+    val lastAckTs: Long = 0L,
     val pendingRotation: PendingRotation? = null,
     val pendingAck: PendingAck? = null,
+    val isConfirmed: Boolean = false,
 )
 
 @Serializable
