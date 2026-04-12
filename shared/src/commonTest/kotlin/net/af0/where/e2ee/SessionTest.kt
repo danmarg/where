@@ -171,7 +171,7 @@ class SessionTest {
 
         var aSess = aliceSession
         var lastMessage: EncryptedMessagePayload? = null
-        val target = 1024 + 2
+        val target = MAX_GAP + 2
         repeat(target) {
             val (newA, message) = Session.encryptMessage(aSess, loc)
             aSess = newA

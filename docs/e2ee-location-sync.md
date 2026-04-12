@@ -231,10 +231,11 @@ Both parties initialize their Double Ratchet state (§8.2) seeded with a root ke
 ```
 (chain_key_0 || chain_key_1 || root_key_0) = HKDF-SHA-256(
     ikm  = SK,
-    salt = <absent>,
+    salt = null,
     info = "Where-v1-KeyExchange",
     length = 96
 )
+// Split as: [0:32] = chain_key_0, [32:64] = chain_key_1, [64:96] = root_key_0.
 ```
 
 - **Alice:** Uses `send_chain = chain_key_0`, `recv_chain = chain_key_1`.
@@ -336,7 +337,7 @@ Forward secrecy is only as strong as the message key deletion discipline:
 - Chain keys `CK` MUST be deleted from memory after deriving the next step.
 - Root keys MUST be overwritten immediately after deriving new chain keys.
 - **Transactional Decryption**: The shared `SessionState` MUST NOT be updated until the message payload has been successfully authenticated via AEAD. Any intermediate keys generated during a speculative ratchet MUST be zeroed if authentication fails.
-- Ephemeral DH private keys (`local_dh_priv`) MUST be persisted securely so they survive app restarts, as they are required to successfully decrypt incoming DH ratchets. In a production implementation, these should be stored in a secure enclave.
+- **Persistence and Synchronization (Stability over Transience)**: Persist epoch state in keychain/keystore (**backup disabled**). Note: `localDhPriv` is currently persisted along with the state to ensure session continuity across restarts.
 - Ephemeral bootstrap private keys (`EK_A.priv`, `EK_B.priv`) MUST be deleted after computing the shared secret.
 - On Android, keys live in a `SecureRandom`-backed in-memory structure; `Arrays.fill(key, 0)` before GC. On iOS, `Data` is zeroed explicitly before dealloc.
 
@@ -514,9 +515,11 @@ Direction is encoded explicitly via the `sender_fp || recipient_fp` ordering in 
 ```
 (new_chain_key || message_key || message_nonce) = HKDF-SHA-256(
     ikm  = current_chain_key,
-    salt = <absent>,
-    info = "Where-v1-MsgStep"
-)[0:76]
+    salt = null,
+    info = "Where-v1-MsgStep",
+    length = 76
+)
+// Split as: [0:32] = next_chain_key, [32:64] = message_key, [64:76] = message_nonce.
 ```
 
 **Message encryption:**

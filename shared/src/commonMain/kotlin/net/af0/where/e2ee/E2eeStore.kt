@@ -40,6 +40,7 @@ data class FriendEntry(
      * once he receives any valid message from Alice.
      */
     val isConfirmed: Boolean = false,
+    val lastSentTs: Long = 0L,
 ) {
     companion object {
         /** §12: Surface a "no recent location" warning after 7 days of silence. */
@@ -137,6 +138,7 @@ class E2eeStore(
                             lastTs = s.lastTs,
                             lastRecvTs = if (s.lastRecvTs == 0L) currentTimeSeconds() else s.lastRecvTs,
                             isConfirmed = s.isConfirmed,
+                            lastSentTs = s.lastSentTs,
                         )
                     entry.id to entry
                 }.toMutableMap()
@@ -163,6 +165,7 @@ class E2eeStore(
                             lastTs = f.lastTs,
                             lastRecvTs = f.lastRecvTs,
                             isConfirmed = f.isConfirmed,
+                            lastSentTs = f.lastSentTs,
                         )
                     },
                 pendingInvite = pendingInvite,
@@ -266,7 +269,8 @@ class E2eeStore(
                         // Alice created the QR
                         isInitiator = true,
                         lastRecvTs = currentTimeSeconds(),
-                        isConfirmed = false,
+                        // Alice is confirmed as soon as she processes Bob's KeyExchangeInit
+                        isConfirmed = true,
                     )
                 friends[entry.id] = entry
                 pendingInvite = null
@@ -326,6 +330,14 @@ class E2eeStore(
             save()
         }
     }
+    suspend fun updateLastSentTs(id: String, ts: Long) {
+        stateLock.withLock {
+            val entry = friends[id] ?: return@withLock
+            friends[id] = entry.copy(lastSentTs = ts)
+            save()
+        }
+    }
+
 
 
     // -----------------------------------------------------------------------
@@ -369,8 +381,17 @@ class E2eeStore(
 
             val encryptedMessages = messages.filterIsInstance<EncryptedMessagePayload>()
                 .sortedWith(
-                    compareBy<EncryptedMessagePayload> { if (it.dhPub.contentEquals(entry.session.remoteDhPub)) 0 else 1 }
-                        .thenBy { it.seqAsLong() }
+                    compareBy<EncryptedMessagePayload> { msg ->
+                        // Multi-epoch sorting logic (§8.1):
+                        // 1. Previous epoch messages (dhPub == lastRemoteDhPub)
+                        // 2. Current epoch messages (dhPub == remoteDhPub)
+                        // 3. Future epoch messages (new ratchet)
+                        when {
+                            msg.dhPub.contentEquals(entry.session.lastRemoteDhPub) -> 0
+                            msg.dhPub.contentEquals(entry.session.remoteDhPub) -> 1
+                            else -> 2
+                        }
+                    }.thenBy { it.seqAsLong() }
                 )
             
             var currentSession = entry.session
@@ -402,6 +423,7 @@ class E2eeStore(
             friends[friendId] =
                 entry.copy(
                     session = currentSession,
+                    // Bob becomes confirmed once he receives any valid message from Alice
                     isConfirmed = true,
                     lastRecvTs = if (hadActivity) currentTimeSeconds() else entry.lastRecvTs,
                 )
@@ -430,6 +452,7 @@ internal data class SerializedFriendEntry(
     val lastTs: Long? = null,
     val lastRecvTs: Long = 0L,
     val isConfirmed: Boolean = false,
+    val lastSentTs: Long = 0L,
 )
 
 @Serializable
