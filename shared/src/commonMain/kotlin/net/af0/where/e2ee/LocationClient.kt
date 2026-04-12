@@ -14,14 +14,12 @@ import net.af0.where.model.UserLocation
 open class LocationClient(
     private val baseUrl: String,
     private val store: E2eeStore,
+    private val mailboxClient: MailboxClient = KtorMailboxClient,
 ) {
     private val pollMutex = Mutex()
 
     /**
      * Poll all friends and the pending invite (if any).
-     *
-     * Processes all incoming control messages (OPKs, RatchetAcks, EpochRotations) and
-     * automatically posts required responses back to the server.
      *
      * Poll calls are serialized to prevent concurrent ratchet state mutations.
      *
@@ -30,39 +28,32 @@ open class LocationClient(
      */
     suspend fun poll(isForeground: Boolean = true): List<UserLocation> =
         pollMutex.withLock {
+            processOutboxes()
             val allUpdates = mutableListOf<UserLocation>()
             var lastError: Exception? = null
 
             val friends = store.listFriends()
 
-            // If we have no friends, do a "health check" poll against a dummy token
-            // to ensure connectivity and surface network errors even when the user is alone.
-            // We only do this in the foreground to save on battery/server costs.
             if (friends.isEmpty() && isForeground) {
                 try {
-                    E2eeMailboxClient.poll(baseUrl, "00000000000000000000000000000000")
+                    mailboxClient.poll(baseUrl, "00000000000000000000000000000000")
                 } catch (e: ServerException) {
-                    // 404 is expected for a dummy token, means we reached the server.
                     if (e.statusCode != 404) lastError = e
                 } catch (e: Exception) {
                     lastError = e
                 }
             }
 
-            // 1. Poll each friend's current mailbox
             for (friend in friends) {
                 try {
+                    // RESTART RECOVERY (§5.5): If the session was regenerated on startup, 
+                    // force a keepalive now to establish a new memory-only DH epoch.
+                    if (friend.session.needsRatchet) {
+                        try { sendKeepalive(friend.id) } catch (_: Exception) { }
+                    }
+
                     val friendUpdates = pollFriend(friend.id)
                     allUpdates.addAll(friendUpdates)
-
-                    // 2. Proactively replenish OPKs if the local user (Bob) is running low.
-                    //    Bob periodically generates fresh OPKs and publishes them so Alice can
-                    //    rotate whenever she sends without waiting for Bob to respond.
-                    if (store.shouldReplenishOpks(friend.id)) {
-                        store.generateOpkBundle(friend.id)?.let { bundle ->
-                            E2eeMailboxClient.post(baseUrl, friend.session.sendToken.toHex(), bundle)
-                        }
-                    }
                 } catch (e: Exception) {
                     lastError = e
                 }
@@ -73,45 +64,58 @@ open class LocationClient(
         }
 
     /**
-     * Poll a specific friend's mailbox, handling all protocol messages.
-     * Bob always polls exactly one recvToken — no dual-polling window.
-     *
-     * Lost-ack recovery: if Bob has a [PendingAck] from a previous EpochRotation whose
-     * RatchetAck was never received by Alice, re-post it on every cycle. Alice polls
-     * T_BA_old (Bob's pre-rotation sendToken) until she commits, so she will eventually
-     * see the re-posted ack. [E2eeStore.processBatch] clears [PendingAck] as soon as
-     * Alice's first message on the new recvToken arrives.
+     * Poll a specific friend's mailbox.
      */
-    private suspend fun pollFriend(friendId: String): List<UserLocation> {
-        val friend = store.getFriend(friendId) ?: return emptyList()
+    internal suspend fun pollFriend(friendId: String): List<UserLocation> {
+        val resultLocations = mutableListOf<UserLocation>()
+        val friendBefore = store.getFriend(friendId) ?: return emptyList()
+        var currentTokenToPoll = friendBefore.session.recvToken.toHex()
 
-        // Re-post cached ack if present (best-effort; silently ignore network errors).
-        friend.pendingAck?.let { ack ->
-            try {
-                E2eeMailboxClient.post(baseUrl, ack.sendToken, RatchetAckPayload(ct = ack.ackCt))
-            } catch (_: Exception) { /* will retry next poll */ }
+        // We follow token rotations up to MAX_TOKEN_FOLLOWS_PER_POLL to prevent infinite loops 
+        // caused by adversarial server or client code injecting transition messages (§9.2).
+        var follows = 0
+        while (follows < MAX_TOKEN_FOLLOWS_PER_POLL) {
+            val messages = mailboxClient.poll(baseUrl, currentTokenToPoll)
+            if (messages.isEmpty()) break
+
+            val result = store.processBatch(friendId, currentTokenToPoll, messages) ?: break
+
+            for (out in result.outgoing) {
+                mailboxClient.post(baseUrl, out.token, out.payload)
+            }
+
+            resultLocations.addAll(result.decryptedLocations.map { loc ->
+                UserLocation(userId = friendId, lat = loc.lat, lng = loc.lng, timestamp = loc.ts)
+            })
+
+            // Did the recvToken change during processing? If so, follow it immediately.
+            val updatedFriend = store.getFriend(friendId) ?: break
+            val newToken = updatedFriend.session.recvToken.toHex()
+            if (newToken != currentTokenToPoll) {
+                currentTokenToPoll = newToken
+                follows++
+            } else {
+                break // No token rotation, we've caught up
+            }
         }
 
-        val messages = E2eeMailboxClient.poll(baseUrl, friend.session.recvToken.toHex())
-        if (messages.isEmpty()) return emptyList()
-
-        val result = store.processBatch(friendId, friend.session.recvToken.toHex(), messages) ?: return emptyList()
-
-        // Post any required protocol responses (RatchetAcks, OPK bundles).
-        for (out in result.outgoing) {
-            E2eeMailboxClient.post(baseUrl, out.token, out.payload)
+        // Automated keepalive (§5.3): send a keepalive message if we received a new DH key
+        // but are currently not sharing location, and the session is not stale.
+        val friendAfter = store.getFriend(friendId)
+        if (friendAfter != null && !friendBefore.session.remoteDhPub.contentEquals(friendAfter.session.remoteDhPub)) {
+            if (!friendAfter.sharingEnabled && !friendAfter.isStale) {
+                try {
+                    sendKeepalive(friendId)
+                } catch (_: Exception) {
+                }
+            }
         }
 
-        return result.decryptedLocations.map { loc ->
-            UserLocation(userId = friendId, lat = loc.lat, lng = loc.lng, timestamp = loc.ts)
-        }
+        return resultLocations
     }
 
     /**
      * Encrypt and send a location update to all active (non-paused) friends.
-     *
-     * If Alice has a pending rotation in flight, the [EpochRotationPayload] is resent
-     * alongside every location update until Bob acks.
      */
     open suspend fun sendLocation(
         lat: Double,
@@ -119,7 +123,7 @@ open class LocationClient(
         pausedFriendIds: Set<String> = emptySet(),
     ) {
         val ts = currentTimeSeconds()
-        val plaintext = LocationPlaintext(lat = lat, lng = lng, acc = 0.0, ts = ts)
+        val payload = MessagePlaintext.Location(lat = lat, lng = lng, acc = 0.0, ts = ts)
         var lastError: Exception? = null
 
         for (friend in store.listFriends()) {
@@ -128,12 +132,10 @@ open class LocationClient(
             // initiator (Alice), in which case we must send the first message to Bob to
             // trigger confirmation on his side.
             if (!friend.isConfirmed && !friend.isInitiator) continue
-            // Skip friends from whom Alice has not received a Ratchet Ack in 7 days.
-            // This prevents sending in a stale epoch with no forward secrecy and gives
-            // the user a visible signal that Bob's app is not processing location updates.
-            if (store.isAckTimedOut(friend.id)) continue
+            // Skip friends from whom Alice has not received a message in 7 days.
+            if (friend.isStale) continue
             try {
-                sendLocationToFriendInternal(friend.id, plaintext)
+                sendMessageToFriendInternal(friend.id, payload)
             } catch (e: Exception) {
                 lastError = e
             }
@@ -151,57 +153,89 @@ open class LocationClient(
         lng: Double,
     ) {
         val ts = currentTimeSeconds()
-        val plaintext = LocationPlaintext(lat = lat, lng = lng, acc = 0.0, ts = ts)
-        sendLocationToFriendInternal(friendId, plaintext)
+        val payload = MessagePlaintext.Location(lat = lat, lng = lng, acc = 0.0, ts = ts)
+        sendMessageToFriendInternal(friendId, payload)
     }
 
-    private suspend fun sendLocationToFriendInternal(
+    /**
+     * Send a keepalive message to a friend.
+     */
+    internal suspend fun sendKeepalive(friendId: String) {
+        sendMessageToFriendInternal(friendId, MessagePlaintext.Keepalive())
+    }
+
+    private suspend fun sendMessageToFriendInternal(
         friendId: String,
-        plaintext: LocationPlaintext,
+        payload: MessagePlaintext,
     ) {
-        // Initiate a DH ratchet rotation if possible (Alice only, no rotation in flight,
-        // and Bob has published OPKs). The new session is held as a PendingRotation and
-        // committed only when Bob acks.
-        if (store.shouldInitiateRotation(friendId)) {
-            store.initiateRotation(friendId)
+        // PERSISTENCE HYGIENE (§5.4): We advance the session and persist the 
+        // encrypted message in an ATOMIC OUTBOX update BEFORE posting.
+        // This ensures that if the app crashes during the post, we don't 
+        // reuse the same sequence number/nonce on restart, AND we have 
+        // the message ready to retry.
+        val message = store.encryptAndStore(friendId, payload)
+        
+        // Use the outbox's token to ensure we post to the correct endpoint
+        val friendAfter = store.getFriend(friendId) ?: return 
+        val tokenToUse = friendAfter.outbox?.token ?: throw Exception("Outbox missing after store")
+        
+        mailboxClient.post(baseUrl, tokenToUse, message)
+        store.clearOutbox(friendId)
+
+        if (payload is MessagePlaintext.Location) {
+            store.updateLastSentTs(friendId, currentTimeSeconds())
         }
 
-        val friend = store.getFriend(friendId) ?: return
-        val (newSession, ct) =
-            Session.encryptLocation(
-                state = friend.session,
-                location = plaintext,
-                senderFp = friend.session.aliceFp,
-                recipientFp = friend.session.bobFp,
-            )
-        store.updateSession(friendId, newSession)
+        // TOKEN TRANSITION (§5.4): If we were transitioning DH epochs, we have now 
+        // successfully flushed the final message of the old epoch. We must now
+        // clear the pending flag and trigger the fresh keepalive.
+        finalizeTokenTransition(friendId)
+    }
 
-        val payload =
-            EncryptedLocationPayload(
-                seq = newSession.sendSeq.toString(),
-                ct = ct,
-            )
-        E2eeMailboxClient.post(baseUrl, friend.session.sendToken.toHex(), payload)
-
-        // If a rotation is pending, include the EpochRotation after every location send
-        // until Bob acks. Bob processes them in the same batch (location first, then rotation).
-        store.pendingEpochRotation(friendId)?.let { rot ->
-            E2eeMailboxClient.post(baseUrl, friend.session.sendToken.toHex(), rot)
+    /**
+     * Finalizes the token transition after a successful post.
+     * Clears isSendTokenPending and sends a fresh keepalive if necessary.
+     * This is called by both the main send path and the outbox recovery path.
+     */
+    private suspend fun finalizeTokenTransition(friendId: String) {
+        // Tightened idempotency check: only act if transition is still marked pending in store.
+        val updatedFriend = store.getFriend(friendId) ?: return
+        if (updatedFriend.session.isSendTokenPending) {
+            val finalSession = updatedFriend.session.copy(isSendTokenPending = false)
+            store.updateSession(friendId, finalSession)
+            
+            // Only send fresh keepalive if we actually rotated tokens and haven't sent it.
+            // We send this regardless of sharingEnabled to ensure the peer's recvToken advances (§5.3).
+            if (!finalSession.sendToken.contentEquals(finalSession.prevSendToken)) {
+                try {
+                    sendKeepalive(friendId)
+                } catch (e: Exception) {
+                    println("[DEBUG] Fresh keepalive transition failed: ${e.message}")
+                }
+            }
         }
     }
 
     /**
-     * Explicitly post a new OPK bundle for a friend.
-     *
-     * Called by Bob to replenish his OPK supply so Alice can rotate without waiting
-     * for the next maintenance poll. Can be triggered manually (e.g., via UI) or
-     * automatically by [poll] when running low.
+     * Recovery logic (§5.4): drain any pending outboxes that were persisted
+     * but not successfully posted due to a crash or network failure.
      */
-    open suspend fun postOpkBundle(friendId: String) {
-        if (store.shouldReplenishOpks(friendId)) {
-            store.generateOpkBundle(friendId)?.let { bundle ->
-                val friend = store.getFriend(friendId) ?: return
-                E2eeMailboxClient.post(baseUrl, friend.session.sendToken.toHex(), bundle)
+    private suspend fun processOutboxes() {
+        for (friend in store.listFriends()) {
+            val outbox = friend.outbox ?: continue
+            try {
+                mailboxClient.post(baseUrl, outbox.token, outbox.payload)
+                store.clearOutbox(friend.id)
+                // TRANSACTIONAL RECOVERY (§5.4): After recovering a lost post, 
+                // we must also trigger the token transition cleanup.
+                finalizeTokenTransition(friend.id)
+            } catch (e: Exception) {
+                // Permanent failures (mailbox expired/deleted) should clear the outbox (§5.4).
+                val statusCode = (e as? ServerException)?.statusCode
+                if (statusCode == 404 || statusCode == 410) {
+                    store.clearOutbox(friend.id)
+                }
+                // Otherwise: Network failure or other server error: leave in outbox for next poll
             }
         }
     }

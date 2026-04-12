@@ -71,7 +71,7 @@ struct FriendsSheet: View {
                                         .font(.caption)
                                         .foregroundStyle(.secondary)
                                     if friend.isStale {
-                                        Text("Friend not seen recently")
+                                        Text("Friend inactive — sharing paused")
                                             .font(.caption)
                                             .foregroundStyle(.red)
                                     }

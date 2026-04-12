@@ -33,10 +33,6 @@ internal fun kdfRk(
     )
 }
 
-/**
- * Symmetric chain step.
- * @param chainKey  Current 32-byte chain key. MUST be zeroed by caller after this returns.
- */
 internal fun kdfCk(chainKey: ByteArray): ChainStep {
     val out =
         hkdfSha256(
@@ -98,3 +94,15 @@ internal fun longToBeBytes(v: Long): ByteArray =
         (v shr 8).toByte(),
         v.toByte(),
     )
+
+internal fun bytesToLong(bytes: ByteArray): Long {
+    require(bytes.size >= 8) { "at least 8 bytes required to decode long" }
+    return (bytes[0].toLong() and 0xFF shl 56) or
+        (bytes[1].toLong() and 0xFF shl 48) or
+        (bytes[2].toLong() and 0xFF shl 40) or
+        (bytes[3].toLong() and 0xFF shl 32) or
+        (bytes[4].toLong() and 0xFF shl 24) or
+        (bytes[5].toLong() and 0xFF shl 16) or
+        (bytes[6].toLong() and 0xFF shl 8) or
+        (bytes[7].toLong() and 0xFF)
+}
