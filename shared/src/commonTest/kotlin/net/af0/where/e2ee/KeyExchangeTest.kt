@@ -72,8 +72,29 @@ class KeyExchangeTest {
         val (msg, bobSession) = KeyExchange.bobProcessQr(qr, "Bob")
         val aliceSession = KeyExchange.aliceProcessInit(msg, aliceEkPriv, qr.ekPub)
 
-        assertContentEquals(aliceSession.sendToken, bobSession.recvToken, "Alice send = Bob recv")
-        assertContentEquals(aliceSession.recvToken, bobSession.sendToken, "Alice recv = Bob send")
+        // After exchange, Bob is on epoch 0 (derived from SK).
+        // Alice has already ratcheted to epoch 1.
+
+        // Let Alice send a message (using epoch 1 keys).
+        // Since isSendTokenPending is true, LocationClient would use prevSendToken.
+        // Session.encryptMessage handles epoch 1.
+        val (alice1, msg1) = Session.encryptMessage(aliceSession, MessagePlaintext.Location(0.0, 0.0, 0.0, 0L))
+
+        // Bob receives message 1.
+        // Bob sees A1, ratchets to epoch 1 (recv) and then epoch 2 (send).
+        val (bob1, _) = Session.decryptMessage(bobSession, msg1)
+
+        // Bob's recv chain matches Alice's send chain (epoch 1).
+        assertContentEquals(alice1.sendToken, bob1.recvToken, "Alice epoch 1 send token = Bob epoch 1 recv token")
+
+        // Bob sends message 2 (using epoch 2 keys).
+        val (bob2, msg2) = Session.encryptMessage(bob1, MessagePlaintext.Location(0.0, 0.0, 0.0, 0L))
+
+        // Alice receives message 2.
+        // Alice sees B1, ratchets to epoch 2 (recv) and then epoch 3 (send).
+        val (alice2, _) = Session.decryptMessage(alice1, msg2)
+
+        assertContentEquals(bob2.sendToken, alice2.recvToken, "Bob epoch 2 send token = Alice epoch 2 recv token")
     }
 
     @Test
@@ -82,10 +103,23 @@ class KeyExchangeTest {
         val (msg, bobSession) = KeyExchange.bobProcessQr(qr, "Bob")
         val aliceSession = KeyExchange.aliceProcessInit(msg, aliceEkPriv, qr.ekPub)
 
-        assertContentEquals(aliceSession.rootKey, bobSession.rootKey)
-        // Alice's send chain must equal Bob's receive chain, and vice versa.
-        assertContentEquals(aliceSession.sendChainKey, bobSession.recvChainKey)
-        assertContentEquals(aliceSession.recvChainKey, bobSession.sendChainKey)
+        // Alice sends message 1.
+        val (alice1, msg1) = Session.encryptMessage(aliceSession, MessagePlaintext.Location(0.0, 0.0, 0.0, 0L))
+
+        // Bob receives message 1.
+        val (bob1, _) = Session.decryptMessage(bobSession, msg1)
+
+        // Alice's send chain must equal Bob's receive chain.
+        assertContentEquals(alice1.sendChainKey, bob1.recvChainKey)
+
+        // Bob sends message 2.
+        val (bob2, msg2) = Session.encryptMessage(bob1, MessagePlaintext.Location(0.0, 0.0, 0.0, 0L))
+
+        // Alice receives message 2.
+        val (alice2, _) = Session.decryptMessage(alice1, msg2)
+
+        // Bob's send chain must equal Alice's receive chain.
+        assertContentEquals(bob2.sendChainKey, alice2.recvChainKey)
     }
 
     @Test
@@ -115,7 +149,6 @@ class KeyExchangeTest {
 
         // Both sides compute the same SK.
         val aliceSk = x25519(aliceEkPriv, msg.ekPub)
-        val bobSk = x25519(msg.ekPub, qr.ekPub) // just verify the HMAC directly
 
         // Build confirmation from SK, verify it round-trips.
         val confirmation = KeyExchange.buildKeyConfirmation(aliceSk, qr.ekPub, msg.ekPub)
@@ -214,7 +247,7 @@ class KeyExchangeTest {
     }
 
     @Test
-    fun `FriendEntry safetyNumber is stable across epoch rotations`() {
+    fun `FriendEntry safetyNumber is stable across DH ratchet steps`() {
         val (qr, aliceEkPriv) = KeyExchange.aliceCreateQrPayload("Alice")
         val (msg, bobSession) = KeyExchange.bobProcessQr(qr, "Bob")
         val aliceSession = KeyExchange.aliceProcessInit(msg, aliceEkPriv, qr.ekPub)
@@ -222,27 +255,24 @@ class KeyExchangeTest {
         // Safety number before rotation
         val snBefore = formatSafetyNumber(safetyNumber(aliceSession.aliceEkPub, aliceSession.bobEkPub))
 
-        // Simulate an epoch rotation (alice generates new EK, bob processes it)
-        val bobOpk = generateX25519KeyPair()
-        val aliceNewEk = generateX25519KeyPair()
-        val (aliceRotated, _, _, _) =
-            Session.aliceEpochRotation(
-                aliceSession,
-                aliceNewEk.priv,
-                aliceNewEk.pub,
-                bobOpk.pub,
-                opkId = 1,
-                aliceFp = aliceSession.aliceFp,
-                bobFp = aliceSession.bobFp,
-                createdAt = currentTimeSeconds(),
-            )
+        // Alice sends message 1
+        val (alice1, message1) = Session.encryptMessage(aliceSession, MessagePlaintext.Location(0.0, 0.0, 0.0, 0L))
 
-        // aliceEkPub and bobEkPub must be unchanged after rotation
-        assertContentEquals(aliceSession.aliceEkPub, aliceRotated.aliceEkPub)
-        assertContentEquals(aliceSession.bobEkPub, aliceRotated.bobEkPub)
+        // Bob receives message 1
+        val (bob1, _) = Session.decryptMessage(bobSession, message1)
 
-        val snAfter = formatSafetyNumber(safetyNumber(aliceRotated.aliceEkPub, aliceRotated.bobEkPub))
-        assertEquals(snBefore, snAfter, "Safety number changed after epoch rotation")
+        // Bob sends message 2 (new DH epoch for Alice)
+        val (bob2, message2) = Session.encryptMessage(bob1, MessagePlaintext.Location(0.0, 0.0, 0.0, 0L))
+
+        // Alice receives message 2 (advances DH)
+        val (alice2, _) = Session.decryptMessage(alice1, message2)
+
+        // aliceEkPub and bobEkPub must be unchanged after DH ratchet
+        assertContentEquals(aliceSession.aliceEkPub, alice2.aliceEkPub)
+        assertContentEquals(aliceSession.bobEkPub, alice2.bobEkPub)
+
+        val snAfter = formatSafetyNumber(safetyNumber(alice2.aliceEkPub, alice2.bobEkPub))
+        assertEquals(snBefore, snAfter, "Safety number changed after DH ratchet")
     }
 
     @Test
@@ -286,10 +316,8 @@ class KeyExchangeTest {
         // Alice processes the tampered message using KeyExchange.aliceProcessInit and derives a session.
         val aliceSession = KeyExchange.aliceProcessInit(tamperedMsg, aliceEkPriv, qr.ekPub)
 
-        // Verify that Alice's session keys (rootKey, sendChainKey, recvChainKey) are different from Bob's session keys.
+        // Verify that Alice's session keys (rootKey) are different from Bob's session keys.
         assertFalse(aliceSession.rootKey.contentEquals(bobSession.rootKey))
-        assertFalse(aliceSession.sendChainKey.contentEquals(bobSession.recvChainKey))
-        assertFalse(aliceSession.recvChainKey.contentEquals(bobSession.sendChainKey))
 
         // Verify that Alice's bobEkPub in her session state matches EK_M.pub, not EK_B.pub.
         assertContentEquals(ekM.pub, aliceSession.bobEkPub)
