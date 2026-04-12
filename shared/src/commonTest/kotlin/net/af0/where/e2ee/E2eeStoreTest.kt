@@ -89,7 +89,7 @@ class E2eeStoreTest {
 
             assertEquals(aliceEntryBefore.id, aliceEntryAfter.id)
             assertEquals(aliceEntryBefore.name, aliceEntryAfter.name)
-            
+
             // SessionState has transient fields (localDhPriv), so equals() might fail.
             // But we ensure stable fields are equal.
             assertEquals(aliceEntryBefore.session.rootKey.toHex(), aliceEntryAfter.session.rootKey.toHex())

@@ -16,6 +16,9 @@ open class LocationClient(
     private val store: E2eeStore,
     private val mailboxClient: MailboxClient = KtorMailboxClient,
 ) {
+    /** Secondary constructor for Swift/native compatibility (§9). */
+    constructor(baseUrl: String, store: E2eeStore) : this(baseUrl, store, KtorMailboxClient)
+
     private val pollMutex = Mutex()
 
     /**
@@ -46,10 +49,13 @@ open class LocationClient(
 
             for (friend in friends) {
                 try {
-                    // RESTART RECOVERY (§5.5): If the session was regenerated on startup, 
+                    // RESTART RECOVERY (§5.5): If the session was regenerated on startup,
                     // force a keepalive now to establish a new memory-only DH epoch.
                     if (friend.session.needsRatchet) {
-                        try { sendKeepalive(friend.id) } catch (_: Exception) { }
+                        try {
+                            sendKeepalive(friend.id)
+                        } catch (_: Exception) {
+                        }
                     }
 
                     val friendUpdates = pollFriend(friend.id)
@@ -64,6 +70,28 @@ open class LocationClient(
         }
 
     /**
+     * Poll the discovery mailbox for a pending invite.
+     * returns the first KeyExchangeInitPayload found, or null.
+     */
+    suspend fun pollPendingInvite(): KeyExchangeInitPayload? {
+        val qr = store.pendingQrPayload() ?: return null
+        val discoveryHex = qr.discoveryToken().toHex()
+        val messages = mailboxClient.poll(baseUrl, discoveryHex)
+        return messages.filterIsInstance<KeyExchangeInitPayload>().firstOrNull()
+    }
+
+    /**
+     * Post a KeyExchangeInit to the discovery mailbox.
+     */
+    suspend fun postKeyExchangeInit(
+        qr: QrPayload,
+        initPayload: KeyExchangeInitPayload,
+    ) {
+        val discoveryHex = qr.discoveryToken().toHex()
+        mailboxClient.post(baseUrl, discoveryHex, initPayload)
+    }
+
+    /**
      * Poll a specific friend's mailbox.
      */
     internal suspend fun pollFriend(friendId: String): List<UserLocation> {
@@ -71,7 +99,7 @@ open class LocationClient(
         val friendBefore = store.getFriend(friendId) ?: return emptyList()
         var currentTokenToPoll = friendBefore.session.recvToken.toHex()
 
-        // We follow token rotations up to MAX_TOKEN_FOLLOWS_PER_POLL to prevent infinite loops 
+        // We follow token rotations up to MAX_TOKEN_FOLLOWS_PER_POLL to prevent infinite loops
         // caused by adversarial server or client code injecting transition messages (§9.2).
         var follows = 0
         while (follows < MAX_TOKEN_FOLLOWS_PER_POLL) {
@@ -84,9 +112,11 @@ open class LocationClient(
                 mailboxClient.post(baseUrl, out.token, out.payload)
             }
 
-            resultLocations.addAll(result.decryptedLocations.map { loc ->
-                UserLocation(userId = friendId, lat = loc.lat, lng = loc.lng, timestamp = loc.ts)
-            })
+            resultLocations.addAll(
+                result.decryptedLocations.map { loc ->
+                    UserLocation(userId = friendId, lat = loc.lat, lng = loc.lng, timestamp = loc.ts)
+                },
+            )
 
             // Did the recvToken change during processing? If so, follow it immediately.
             val updatedFriend = store.getFriend(friendId) ?: break
@@ -168,17 +198,17 @@ open class LocationClient(
         friendId: String,
         payload: MessagePlaintext,
     ) {
-        // PERSISTENCE HYGIENE (§5.4): We advance the session and persist the 
+        // PERSISTENCE HYGIENE (§5.4): We advance the session and persist the
         // encrypted message in an ATOMIC OUTBOX update BEFORE posting.
-        // This ensures that if the app crashes during the post, we don't 
-        // reuse the same sequence number/nonce on restart, AND we have 
+        // This ensures that if the app crashes during the post, we don't
+        // reuse the same sequence number/nonce on restart, AND we have
         // the message ready to retry.
         val message = store.encryptAndStore(friendId, payload)
-        
+
         // Use the outbox's token to ensure we post to the correct endpoint
-        val friendAfter = store.getFriend(friendId) ?: return 
+        val friendAfter = store.getFriend(friendId) ?: return
         val tokenToUse = friendAfter.outbox?.token ?: throw Exception("Outbox missing after store")
-        
+
         mailboxClient.post(baseUrl, tokenToUse, message)
         store.clearOutbox(friendId)
 
@@ -186,7 +216,7 @@ open class LocationClient(
             store.updateLastSentTs(friendId, currentTimeSeconds())
         }
 
-        // TOKEN TRANSITION (§5.4): If we were transitioning DH epochs, we have now 
+        // TOKEN TRANSITION (§5.4): If we were transitioning DH epochs, we have now
         // successfully flushed the final message of the old epoch. We must now
         // clear the pending flag and trigger the fresh keepalive.
         finalizeTokenTransition(friendId)
@@ -203,7 +233,7 @@ open class LocationClient(
         if (updatedFriend.session.isSendTokenPending) {
             val finalSession = updatedFriend.session.copy(isSendTokenPending = false)
             store.updateSession(friendId, finalSession)
-            
+
             // Only send fresh keepalive if we actually rotated tokens and haven't sent it.
             // We send this regardless of sharingEnabled to ensure the peer's recvToken advances (§5.3).
             if (!finalSession.sendToken.contentEquals(finalSession.prevSendToken)) {
@@ -226,7 +256,7 @@ open class LocationClient(
             try {
                 mailboxClient.post(baseUrl, outbox.token, outbox.payload)
                 store.clearOutbox(friend.id)
-                // TRANSACTIONAL RECOVERY (§5.4): After recovering a lost post, 
+                // TRANSACTIONAL RECOVERY (§5.4): After recovering a lost post,
                 // we must also trigger the token transition cleanup.
                 finalizeTokenTransition(friend.id)
             } catch (e: Exception) {

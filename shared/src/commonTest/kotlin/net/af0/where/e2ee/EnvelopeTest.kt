@@ -6,7 +6,6 @@ import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
 
 class EnvelopeTest {
-
     @Test
     fun testEnvelopeEncryptionDecryption() {
         val key = randomBytes(32)
@@ -15,7 +14,7 @@ class EnvelopeTest {
         val pn = 45L
 
         val envelope = Session.encryptHeader(key, dhPub, seq, pn)
-        
+
         // Envelope should be 12 (nonce) + 49 (plain) + 16 (tag) = 77 bytes
         assertEquals(77, envelope.size)
 
@@ -30,9 +29,9 @@ class EnvelopeTest {
         val key1 = randomBytes(32)
         val key2 = randomBytes(32)
         val dhPub = randomBytes(32)
-        
+
         val envelope = Session.encryptHeader(key1, dhPub, 1L, 0L)
-        
+
         assertFailsWith<AuthenticationException> {
             Session.decryptHeader(key2, envelope)
         }
@@ -42,7 +41,7 @@ class EnvelopeTest {
     fun testEnvelopeCorruption() {
         val key = randomBytes(32)
         val envelope = Session.encryptHeader(key, randomBytes(32), 1L, 0L)
-        
+
         // Corrupt a byte in the encrypted portion
         envelope[20] = (envelope[20].toInt() xor 0xFF).toByte()
 

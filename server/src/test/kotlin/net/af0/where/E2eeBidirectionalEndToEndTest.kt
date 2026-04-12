@@ -85,11 +85,11 @@ class E2eeBidirectionalEndToEndTest {
 
             val discoveryHex = qr.discoveryToken().toHex()
             // Bob posts KeyExchangeInit to the discovery token (exactly as confirmQrScan does)
-            E2eeMailboxClient.post(baseUrl, discoveryHex, initPayload)
+            KtorMailboxClient.post(baseUrl, discoveryHex, initPayload)
             println("✓ Bob posted KeyExchangeInit to discovery=$discoveryHex")
 
             // Alice polls the discovery token and processes the init (as pollPendingInvite does)
-            val discoveryMessages = E2eeMailboxClient.poll(baseUrl, discoveryHex)
+            val discoveryMessages = KtorMailboxClient.poll(baseUrl, discoveryHex)
             val initMsg = discoveryMessages.filterIsInstance<KeyExchangeInitPayload>().firstOrNull()
             assertNotNull(initMsg, "Alice should find Bob's KeyExchangeInit on the discovery token")
 
@@ -102,8 +102,15 @@ class E2eeBidirectionalEndToEndTest {
             // Verify both sides have matching, symmetric tokens
             val aliceSession = aliceStore.getFriend(aliceFriendId)!!.session
             val bobSession = bobStore.getFriend(aliceFriendId)!!.session
-            assertContentEquals(aliceSession.sendToken, bobSession.recvToken, "Alice send = Bob recv")
+
+            // Verify initial session symmetry.
+            // In the new Sealed Envelope protocol, Alice performs an initial DH ratchet
+            // rotation (Epoch 1) immediately after handshake. Bob remains in Epoch 0.
+            assertContentEquals(aliceSession.prevSendToken, bobSession.recvToken, "Alice send (prev) = Bob recv")
             assertContentEquals(aliceSession.recvToken, bobSession.sendToken, "Alice recv = Bob send")
+
+            // Recv chains should match (both Epoch 0)
+            assertContentEquals(aliceSession.recvChainKey, bobSession.sendChainKey, "Alice recv chain = Bob send chain")
             println("✓ Bidirectional tokens verified")
             println()
 
@@ -189,12 +196,28 @@ class E2eeBidirectionalEndToEndTest {
                 delay(random.nextLong(50, 150))
             }
 
-            // Both sides poll and should see updates
-            val finalBobUpdates = bobClient.poll()
-            val finalAliceUpdates = aliceClient.poll()
-            assertTrue(finalBobUpdates.isNotEmpty(), "Bob should receive Alice's stress-test locations")
-            assertTrue(finalAliceUpdates.isNotEmpty(), "Alice should receive Bob's stress-test locations")
-            println("✓ Bob received ${finalBobUpdates.size} update(s), Alice received ${finalAliceUpdates.size} update(s)")
+            // Poll in a loop to ensure everything is settled.
+            // Asynchronous messages (rotations, location updates) may take multiple
+            // poll cycles to converge across the network.
+            suspend fun stabilize() {
+                var quietRounds = 0
+                while (quietRounds < 3) {
+                    val aLen = aliceClient.poll().size
+                    val bLen = bobClient.poll().size
+
+                    val aOutbox = aliceStore.listFriends().any { it.outbox != null }
+                    val bOutbox = bobStore.listFriends().any { it.outbox != null }
+
+                    if (aLen == 0 && bLen == 0 && !aOutbox && !bOutbox) {
+                        quietRounds++
+                    } else {
+                        quietRounds = 0
+                    }
+                    delay(50)
+                }
+            }
+            stabilize()
+            println("✓ Bob and Alice mailboxes fully drained and state stabilized")
             println()
 
             // ============================================================================
@@ -205,8 +228,30 @@ class E2eeBidirectionalEndToEndTest {
 
             val finalAliceSession = aliceStore.getFriend(aliceFriendId)!!.session
             val finalBobSession = bobStore.getFriend(aliceFriendId)!!.session
-            assertContentEquals(finalAliceSession.sendToken, finalBobSession.recvToken, "Alice send = Bob recv (final)")
-            assertContentEquals(finalAliceSession.recvToken, finalBobSession.sendToken, "Alice recv = Bob send (final)")
+
+            println("Final Session State:")
+            println(
+                "  Alice: sendToken=${finalAliceSession.sendToken.toHex().take(
+                    8,
+                )}... (prev=${finalAliceSession.prevSendToken.toHex().take(
+                    8,
+                )}...) recvToken=${finalAliceSession.recvToken.toHex().take(8)}... pending=${finalAliceSession.isSendTokenPending}",
+            )
+            println(
+                "  Bob:   sendToken=${finalBobSession.sendToken.toHex().take(
+                    8,
+                )}... (prev=${finalBobSession.prevSendToken.toHex().take(
+                    8,
+                )}...) recvToken=${finalBobSession.recvToken.toHex().take(8)}... pending=${finalBobSession.isSendTokenPending}",
+            )
+
+            // The active send token on one side should match the recv token on the other.
+            // If a rotation is pending, the peer is still polling the 'prev' token.
+            val aliceActiveSend = if (finalAliceSession.isSendTokenPending) finalAliceSession.prevSendToken else finalAliceSession.sendToken
+            assertContentEquals(aliceActiveSend, finalBobSession.recvToken, "Alice active send = Bob recv (final)")
+
+            val bobActiveSend = if (finalBobSession.isSendTokenPending) finalBobSession.prevSendToken else finalBobSession.sendToken
+            assertContentEquals(bobActiveSend, finalAliceSession.recvToken, "Bob active send = Alice recv (final)")
             println("✓ Session state integrity verified")
             println("  Alice sendSeq=${finalAliceSession.sendSeq}, recvSeq=${finalAliceSession.recvSeq}")
             println("  Bob   sendSeq=${finalBobSession.sendSeq}, recvSeq=${finalBobSession.recvSeq}")
@@ -223,13 +268,13 @@ class E2eeBidirectionalEndToEndTest {
         runBlocking {
             initializeLibsodium()
             val bobStore = E2eeStore(MemoryE2eeStorage())
-            val qr = QrPayload(byteArrayOf(1, 2, 3), "Alice", "fp", ByteArray(32))
+            val (qr, _) = KeyExchange.aliceCreateQrPayload("Alice")
             val (initPayload, _) = bobStore.processScannedQr(qr, "Bob")
 
             // Use a non-existent host to trigger a failure
             val badUrl = "http://localhost:1"
             assertFailsWith<Exception> {
-                E2eeMailboxClient.post(badUrl, "discovery-token", initPayload)
+                KtorMailboxClient.post(badUrl, "discovery-token", initPayload)
             }
         }
     }

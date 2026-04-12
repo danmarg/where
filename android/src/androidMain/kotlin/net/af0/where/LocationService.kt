@@ -22,7 +22,6 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
-import net.af0.where.e2ee.E2eeMailboxClient
 import net.af0.where.e2ee.E2eeStore
 import net.af0.where.e2ee.KeyExchangeInitPayload
 import net.af0.where.e2ee.LocationClient
@@ -244,17 +243,12 @@ class LocationService : Service() {
 
     private suspend fun pollPendingInvite() {
         if (locationSource.pendingInitPayload.value != null) return
-        val qr = e2eeStore.pendingQrPayload() ?: return
         try {
-            val discoveryHex = qr.discoveryToken().toHex()
-            Log.d(TAG, "pollPendingInvite: polling discoveryHex=$discoveryHex")
-            val messages = E2eeMailboxClient.poll(BuildConfig.SERVER_HTTP_URL, discoveryHex)
-            updateStatus(null)
-            val initPayload = messages.filterIsInstance<KeyExchangeInitPayload>().firstOrNull() ?: return
-
+            val initPayload = locationClient.pollPendingInvite() ?: return
             Log.d(TAG, "pollPendingInvite: received KeyExchangeInit from ${initPayload.suggestedName}")
             withContext(Dispatchers.Main) {
                 locationSource.onPendingInit(initPayload)
+                updateStatus(null)
             }
         } catch (e: Exception) {
             updateStatus(e)

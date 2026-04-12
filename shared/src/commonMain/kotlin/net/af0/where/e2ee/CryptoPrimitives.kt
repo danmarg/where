@@ -9,6 +9,9 @@ package net.af0.where.e2ee
 /** SHA-256 hash. Returns 32 bytes. */
 internal expect fun sha256(data: ByteArray): ByteArray
 
+/** SHA-512 hash. Returns 64 bytes. */
+internal expect fun sha512(data: ByteArray): ByteArray
+
 /** HMAC-SHA-256 (RFC 2104). Returns 32 bytes. */
 internal expect fun hmacSha256(
     key: ByteArray,

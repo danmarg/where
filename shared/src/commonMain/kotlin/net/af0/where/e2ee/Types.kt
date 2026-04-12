@@ -2,7 +2,6 @@ package net.af0.where.e2ee
 
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
-import kotlinx.serialization.Transient
 
 /**
  * Raw X25519 keypair. Both fields are 32-byte little-endian representations
@@ -27,14 +26,14 @@ data class SessionState(
     @Serializable(with = ByteArrayBase64Serializer::class) val recvToken: ByteArray,
     val sendSeq: Long,
     val recvSeq: Long,
-    // SECURITY NOTE: We rely on the app layer to store the serialized SessionState in 
-    // secure storage (e.g., iOS Keychain / Android EncryptedSharedPreferences) because 
+    // SECURITY NOTE: We rely on the app layer to store the serialized SessionState in
+    // secure storage (e.g., iOS Keychain / Android EncryptedSharedPreferences) because
     // localDhPriv MUST be persisted across app restarts to allow DH ratcheting.
     @Serializable(with = ByteArrayBase64Serializer::class) val localDhPriv: ByteArray,
     @Serializable(with = ByteArrayBase64Serializer::class) val localDhPub: ByteArray,
     @Serializable(with = ByteArrayBase64Serializer::class) val remoteDhPub: ByteArray,
     // The DH public key from the epoch immediately preceding remoteDhPub. Used for
-    // bucketed out-of-order message processing to prevent epoch rotation from 
+    // bucketed out-of-order message processing to prevent epoch rotation from
     // causing silent message loss if messages from prior epochs arrive late.
     @Serializable(with = ByteArrayBase64Serializer::class) val lastRemoteDhPub: ByteArray = ByteArray(0),
     @Serializable(with = ByteArrayBase64Serializer::class) val aliceEkPub: ByteArray,
@@ -46,7 +45,11 @@ data class SessionState(
     val isAlice: Boolean,
     // REPLAY PROTECTION & OUT-OF-ORDER SUPPORT
     // Map of (remoteDhPubHex + "_" + seq) to [MK (32) || Nonce (12)]
-    val skippedMessageKeys: Map<String, @Serializable(with = ByteArrayBase64Serializer::class) ByteArray> = emptyMap(),
+    val skippedMessageKeys: Map<
+        String,
+        @Serializable(with = ByteArrayBase64Serializer::class)
+        ByteArray,
+        > = emptyMap(),
     // Recent DH public keys seen (to reject replays from epochs older than lastRemoteDhPub)
     // Stored as hex strings for O(1) lookup and clean serialization.
     val seenRemoteDhPubs: Set<String> = emptySet(),
@@ -201,7 +204,7 @@ data class KeyExchangeInitMessage(
 data class EncryptedOutboxMessage(
     val v: Int = 1,
     val token: String,
-    val payload: MailboxPayload
+    val payload: MailboxPayload,
 )
 
 /** Output of a symmetric ratchet step (KDF_CK). */

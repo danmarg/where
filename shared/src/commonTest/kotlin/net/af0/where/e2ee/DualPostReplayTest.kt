@@ -1,8 +1,6 @@
 package net.af0.where.e2ee
 
 import kotlin.test.*
-import kotlinx.serialization.encodeToString
-import kotlinx.serialization.json.Json
 
 class DualPostReplayTest {
     init {
@@ -14,7 +12,7 @@ class DualPostReplayTest {
         val aliceEk = generateX25519KeyPair()
         val bobEk = generateX25519KeyPair()
         val sk = x25519(aliceEk.priv, bobEk.pub)
-        
+
         val aliceFp = fingerprint(aliceEk.pub)
         val bobFp = fingerprint(bobEk.pub)
 
@@ -42,13 +40,13 @@ class DualPostReplayTest {
         bobSession = bobState1
         println("Bob processed msg1: recvSeq=${bobSession.recvSeq}")
 
-        // 4. Bob receives msg2
-        val h2_bob = Session.decryptHeader(bobSession.headerKey, msg2.envelope)
-        println("Bob decrypting msg2: seq=${h2_bob.seq} current_recvSeq=${bobSession.recvSeq}")
+        // 4. Bob receives msg1
+        val h2Bob = Session.decryptHeader(bobSession.headerKey, msg2.envelope)
+        println("Bob decrypting msg2: seq=${h2Bob.seq} current_recvSeq=${bobSession.recvSeq}")
         val (bobState2, _) = Session.decryptMessage(bobSession, msg2)
         bobSession = bobState2
         println("Bob processed msg2: recvSeq=${bobSession.recvSeq}")
-        
+
         // 5. Simulate Replay: Bob receives msg2 AGAIN (e.g. from the old token)
         assertFailsWith<ProtocolException> {
             Session.decryptMessage(bobSession, msg2)
@@ -69,10 +67,12 @@ class DualPostReplayTest {
         // Create a message with a NEW DH key but TAMPERED ciphertext
         val attackerEk = generateX25519KeyPair()
         val envelope = Session.encryptHeader(bobSession.headerKey, attackerEk.pub, 1L, 0L)
-        val badMsg = EncryptedMessagePayload(
-            envelope = envelope,
-            ct = ByteArray(32) { 0xFF.toByte() } // Junk
-        )
+        val badMsg =
+            EncryptedMessagePayload(
+                envelope = envelope,
+                // Junk
+                ct = ByteArray(32) { 0xFF.toByte() },
+            )
 
         // Decryption must fail and State must remain UNCHANGED (transactional)
         assertFailsWith<AuthenticationException> {
