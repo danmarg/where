@@ -24,7 +24,14 @@ fun safetyNumber(
     remoteEkPub: ByteArray,
 ): ByteArray {
     val cmp = localEkPub.compare(remoteEkPub)
-    return if (cmp <= 0) sha512(localEkPub + remoteEkPub) else sha512(remoteEkPub + localEkPub)
+    val input = if (cmp <= 0) localEkPub + remoteEkPub else remoteEkPub + localEkPub
+    val ikm = sha256(input)
+    return hkdfSha256(
+        ikm = ikm,
+        salt = null,
+        info = "Where-v1-SafetyNumber".encodeToByteArray(),
+        length = 60,
+    )
 }
 
 /**
@@ -34,7 +41,7 @@ fun safetyNumber(
  * every 4 groups are followed by a newline.
  */
 fun formatSafetyNumber(sn: ByteArray): String {
-    require(sn.size == 64) { "safety number must be 64 bytes (SHA-512)" }
+    require(sn.size == 60) { "safety number must be 60 bytes (12 groups of 5)" }
     val groups =
         (0 until 12).map { i ->
             val offset = i * 5
