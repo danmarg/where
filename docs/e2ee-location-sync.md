@@ -215,13 +215,26 @@ key_confirmation = HMAC-SHA-256(key  = SK,
                                  data = "Where-v1-Confirm" || EK_A.pub || EK_B.pub)
 ```
 
-**Pairwise Session Initialization:**
-
-Both parties initialize their Double Ratchet state (§8.2) seeded with `root_key = SK`. Bob derives initial routing tokens from `SK`:
+Both parties initialize their Double Ratchet state (§8.2) seeded with a root key derived from `SK`. Alice and Bob expand `SK` over 96 bytes to obtain initial chain keys and the starting root key:
 
 ```
-T_AB_0 = deriveRoutingToken(SK, alice_fp, bob_fp) // Alice posts, Bob polls
-T_BA_0 = deriveRoutingToken(SK, bob_fp, alice_fp) // Bob posts, Alice polls
+(chain_key_0 || chain_key_1 || root_key_0) = HKDF-SHA-256(
+    ikm  = SK,
+    salt = <absent>,
+    info = "Where-v1-KeyExchange",
+    length = 96
+)
+```
+
+- **Alice:** Uses `send_chain = chain_key_0`, `recv_chain = chain_key_1`.
+- **Bob:** Uses `send_chain = chain_key_1`, `recv_chain = chain_key_0`.
+- **Root Key:** Both start with `root_key = root_key_0`.
+
+Initial routing tokens are also derived from `SK`:
+
+```
+T_AB_0 = HKDF-SHA-256(ikm=SK, salt=null, info="Where-v1-RoutingToken" || alice_fp || bob_fp, length=16)
+T_BA_0 = HKDF-SHA-256(ikm=SK, salt=null, info="Where-v1-RoutingToken" || bob_fp || alice_fp, length=16)
 ```
 
 Bob transmits:
@@ -466,7 +479,8 @@ SessionState {
 (new_root_key, new_chain_key) = HKDF-SHA-256(
     salt = current_root_key,
     ikm  = X25519(dh_priv, dh_pub),
-    info = "Where-v1-RatchetStep"
+    info = "Where-v1-RatchetStep",
+    length = 64
 )
 ```
 Output: 64 bytes split as `[0:32] = new_root_key`, `[32:64] = new_chain_key`.
@@ -478,8 +492,9 @@ After each DH ratchet step, new routing tokens MUST be derived from the new root
 new_token = HKDF-SHA-256(
     salt = root_key,
     ikm  = <absent>,
-    info = "Where-v1-RoutingToken" || sender_fp || recipient_fp
-)[0:16]
+    info = "Where-v1-RoutingToken" || sender_fp || recipient_fp,
+    length = 16
+)
 ```
 Direction is encoded explicitly via the `sender_fp || recipient_fp` ordering in the info field.
 

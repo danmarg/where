@@ -91,7 +91,7 @@ open class LocationClient(
         // Automated keepalive (§5.3): send a keepalive message if we received a new DH key
         // but are not currently sharing location.
         val friendAfter = store.getFriend(friendId)
-        if (friendAfter != null && friendBefore.session.remoteDhPub != friendAfter.session.remoteDhPub) {
+        if (friendAfter != null && !friendBefore.session.remoteDhPub.contentEquals(friendAfter.session.remoteDhPub)) {
             try {
                 sendKeepalive(friendId)
             } catch (_: Exception) {

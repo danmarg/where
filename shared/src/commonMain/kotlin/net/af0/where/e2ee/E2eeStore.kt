@@ -368,6 +368,11 @@ class E2eeStore(
             val outgoing = mutableListOf<OutgoingMessage>()
 
             val encryptedMessages = messages.filterIsInstance<EncryptedMessagePayload>()
+                .sortedWith(
+                    compareBy<EncryptedMessagePayload> { it.dhPub.contentEquals(entry.session.remoteDhPub) }
+                        .reversed()
+                        .thenBy { it.seqAsLong() }
+                )
             var currentSession = entry.session
 
             for (msg in encryptedMessages) {
