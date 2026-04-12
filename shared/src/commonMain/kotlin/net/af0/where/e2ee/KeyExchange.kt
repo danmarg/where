@@ -21,7 +21,7 @@ object KeyExchange {
      */
     fun aliceCreateQrPayload(suggestedName: String): Pair<QrPayload, ByteArray> {
         val ek = generateX25519KeyPair()
-        val fp = sha256(ek.pub).copyOfRange(0, 8).toHex()
+        val fp = sha256(ek.pub).copyOfRange(0, 20).toHex()
         val payload =
             QrPayload(
                 ekPub = ek.pub.copyOf(),
@@ -44,7 +44,7 @@ object KeyExchange {
         suggestedName: String,
     ): Pair<KeyExchangeInitMessage, SessionState> {
         // VERIFY FINGERPRINT (#157)
-        val expectedFp = sha256(qr.ekPub).copyOfRange(0, 8).toHex()
+        val expectedFp = sha256(qr.ekPub).copyOfRange(0, 20).toHex()
         if (expectedFp != qr.fingerprint) {
             throw AuthenticationException("QR code fingerprint mismatch — possible tampering or mis-scan")
         }

@@ -167,7 +167,7 @@ Alice opens "Add Friend" and generates a fresh ephemeral key pair `EK_A` and a f
 {
   "ek_pub":            base64(Alice.EK_A.pub),  // X25519 ephemeral public key (32 bytes)
   "suggested_name":    "Alice",
-  "fingerprint":       hex(SHA-256(EK_A.pub)[0:10]),
+  "fingerprint":       hex(SHA-256(EK_A.pub)[0:20]),
   "discovery_secret":  base64(random_32_bytes)   // fresh per QR; HKDF IKM for discovery token
 }
 ```

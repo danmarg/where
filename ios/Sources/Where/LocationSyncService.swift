@@ -51,7 +51,7 @@ private func urlToQrPayload(_ url: String) -> Shared.QrPayload? {
           ekPub.count == 32,
           let name = dict["suggested_name"] as? String,
           let fp = dict["fingerprint"] as? String,
-          fp.count == 16,
+          fp.count == 40,
           let discoverySecret = (dict["discovery_secret"] as? String).flatMap({ Data(base64Encoded: $0) }),
           discoverySecret.count == 32
     else { return nil }
