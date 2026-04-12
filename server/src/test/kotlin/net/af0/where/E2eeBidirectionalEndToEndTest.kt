@@ -11,7 +11,7 @@ import kotlin.test.*
  * End-to-end bidirectional E2EE test that validates the full production code paths:
  * 1. Key exchange with name verification (via real HTTP mailbox)
  * 2. Bidirectional location sharing via LocationClient.sendLocation() + poll()
- * 4. Random timing to catch async/concurrency bugs
+ * 3. Random timing to catch async/concurrency bugs
  *
  * Uses the same LocationClient / processBatch / sendLocation code as the real apps,
  * so bugs in those paths are caught here before manifesting on device.
