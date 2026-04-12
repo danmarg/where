@@ -95,8 +95,13 @@ data class SessionState(
         h = 31 * h + prevSendToken.contentHashCode()
         h = 31 * h + isSendTokenPending.hashCode()
         h = 31 * h + isAlice.hashCode()
-        h = 31 * h + skippedMessageKeys.hashCode()
-        h = 31 * h + seenRemoteDhPubs.hashCode()
+        // Content-based hash for collections containing ByteArrays
+        var skipHash = 0
+        skippedMessageKeys.forEach { (k, v) -> skipHash += 31 * k.hashCode() + v.contentHashCode() }
+        h = 31 * h + skipHash
+        var seenHash = 0
+        seenRemoteDhPubs.forEach { seenHash = 31 * seenHash + it.contentHashCode() }
+        h = 31 * h + seenHash
         h = 31 * h + needsRatchet.hashCode()
         return h
     }
