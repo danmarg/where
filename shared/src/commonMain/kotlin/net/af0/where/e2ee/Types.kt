@@ -45,7 +45,11 @@ data class SessionState(
     // Map of (remoteDhPubHex + "_" + seq) to [MK (32) || Nonce (12)]
     val skippedMessageKeys: Map<String, @Serializable(with = ByteArrayBase64Serializer::class) ByteArray> = emptyMap(),
     // Recent DH public keys seen (to reject replays from epochs older than lastRemoteDhPub)
-    val seenRemoteDhPubs: List<@Serializable(with = ByteArrayBase64Serializer::class) ByteArray> = emptyList(),
+    // Stored as hex strings for O(1) lookup and clean serialization.
+    val seenRemoteDhPubs: Set<String> = emptySet(),
+    // Previous send and receive chain lengths (§4.4) - used to bind sequence numbers across epochs in AAD.
+    val pn: Long = 0,
+    val pr: Long = 0,
     // Set to true if we've received a new DH key but haven't ratcheted our send chain yet.
     val needsRatchet: Boolean = false,
 ) {
@@ -71,8 +75,8 @@ data class SessionState(
             isAlice == other.isAlice &&
             skippedMessageKeys.size == other.skippedMessageKeys.size &&
             skippedMessageKeys.all { (k, v) -> other.skippedMessageKeys[k]?.contentEquals(v) == true } &&
-            seenRemoteDhPubs.size == other.seenRemoteDhPubs.size &&
-            seenRemoteDhPubs.zip(other.seenRemoteDhPubs).all { (a, b) -> a.contentEquals(b) } &&
+            seenRemoteDhPubs == other.seenRemoteDhPubs &&
+            pn == other.pn &&
             needsRatchet == other.needsRatchet
     }
 
@@ -99,9 +103,8 @@ data class SessionState(
         var skipHash = 0
         skippedMessageKeys.forEach { (k, v) -> skipHash += 31 * k.hashCode() + v.contentHashCode() }
         h = 31 * h + skipHash
-        var seenHash = 0
-        seenRemoteDhPubs.forEach { seenHash = 31 * seenHash + it.contentHashCode() }
-        h = 31 * h + seenHash
+        h = 31 * h + seenRemoteDhPubs.hashCode()
+        h = 31 * h + pn.hashCode()
         h = 31 * h + needsRatchet.hashCode()
         return h
     }

@@ -27,7 +27,7 @@ object Session {
         
         // AAD directionality: include sender and recipient fingerprints explicitly.
         val (sender, recipient) = if (state.isAlice) state.aliceFp to state.bobFp else state.bobFp to state.aliceFp
-        val aad = buildMessageAad(sender, recipient, seq, dhPub)
+        val aad = buildMessageAad(sender, recipient, seq, dhPub, state.pn)
         val plaintext = padToFixedSize(encodeMessage(payload), PADDING_SIZE)
         val ct = aeadEncrypt(step.messageKey, step.messageNonce, plaintext, aad)
 
@@ -69,7 +69,7 @@ object Session {
         if (cachedKey != null) {
             // AAD directionality: peer is the sender, I am the recipient.
             val (sender, recipient) = if (state.isAlice) state.bobFp to state.aliceFp else state.aliceFp to state.bobFp
-            val aad = buildMessageAad(sender, recipient, seq, remoteDhPub)
+            val aad = buildMessageAad(sender, recipient, seq, remoteDhPub, state.pr)
             
             // Cached key format: [MK (32) || Nonce (12)]
             if (cachedKey.size < 44) throw ProtocolException("invalid cached key size in cache")
@@ -103,7 +103,7 @@ object Session {
         if (remoteDhPub.contentEquals(state.lastRemoteDhPub)) {
             throw ProtocolException("replay: dhPub matched previous epoch (across-epoch replay)")
         }
-        if (state.seenRemoteDhPubs.any { it.contentEquals(remoteDhPub) }) {
+        if (state.seenRemoteDhPubs.contains(remoteDhPub.toHex())) {
             throw ProtocolException("replay: dhPub has already been superseded (old epoch)")
         }
 
@@ -168,7 +168,7 @@ object Session {
             val finalStep = currentStep ?: throw ProtocolException("failed to derive message key")
             // AAD directionality: peer is the sender, I am the recipient.
             val (sender, recipient) = if (state.isAlice) state.bobFp to state.aliceFp else state.aliceFp to state.bobFp
-            val aad = buildMessageAad(sender, recipient, seq, remoteDhPub)
+            val aad = buildMessageAad(sender, recipient, seq, remoteDhPub, speculativeState.pr)
             
             val plaintext = try {
                 aeadDecrypt(finalStep.messageKey, finalStep.messageNonce, message.ct, aad)
@@ -252,13 +252,17 @@ object Session {
         }
 
         // Track seen DH keys to avoid re-ratcheting to old epochs
-        val newSeenKeys = state.seenRemoteDhPubs.toMutableList()
-        newSeenKeys.add(state.remoteDhPub.copyOf())
-        if (newSeenKeys.size > 10) newSeenKeys.removeAt(0)
+        val newSeenKeys = LinkedHashSet(state.seenRemoteDhPubs)
+        newSeenKeys.add(state.remoteDhPub.toHex())
+        if (newSeenKeys.size > 100) {
+            val oldest = newSeenKeys.first()
+            newSeenKeys.remove(oldest)
+        }
 
         // NONCE UNIQUENESS (§5.4): Resetting sendSeq to 0 is safe because KDF_RK
         // includes the unique DH shared secret, ensuring the new rootKey and 
         // subsequent chain keys (and thus nonces) are unique to this epoch.
+        // We stash PN (§4.4) to bind the AAD across epochs.
         // Zero intermediate keys
         stepRecv.newRootKey.fill(0)
 
@@ -270,6 +274,8 @@ object Session {
             recvToken = newRecvToken,
             sendSeq = 0L,
             recvSeq = 0L,
+            pn = state.sendSeq,
+            pr = state.recvSeq,
             localDhPriv = newLocalDh.priv,
             localDhPub = newLocalDh.pub,
             remoteDhPub = remoteDhPub.copyOf(),
@@ -285,12 +291,14 @@ object Session {
         recipientFp: ByteArray,
         seq: Long,
         dhPub: ByteArray,
+        pn: Long,
     ): ByteArray {
         return AAD_PREFIX.encodeToByteArray() +
             intToBeBytes(PROTOCOL_VERSION) +
             senderFp +
             recipientFp +
             longToBeBytes(seq) +
+            longToBeBytes(pn) +
             dhPub
     }
 
@@ -348,18 +356,18 @@ object Session {
         val padCount = (padHighByte shl 8) or padByte
 
         require(padCount >= 2 && padCount <= data.size) { "invalid padding count: $padCount" }
-        // Full block validation: ensure all padding bytes match the length byte
-        for (i in data.size - padCount until data.size) {
-            require(data[i].toInt() and 0xFF == (if (i >= data.size - 2) data[i].toInt() and 0xFF else padByte)) {
-                "padding corruption at index $i"
-            }
-        }
-        // Actually, the padding bytes are identical (padByte). The length is just the count.
-        // Let's be more precise:
+        
+        // Constant-time full block validation: ensure all padding bytes match the length byte.
+        // We use an xor accumulator to detect any mismatch without early-exit.
+        var diff = 0
         for (i in data.size - padCount until data.size - 2) {
-            require(data[i].toInt() and 0xFF == padByte) { "padding corruption at index $i" }
+            diff = diff or (data[i].toInt() xor padByte)
         }
-        // We already checked padByte/padHighByte derived padCount.
+        
+        if ((diff and 0xFF) != 0) {
+            data.fill(0)
+            throw ProtocolException("padding corruption")
+        }
         
         return data.copyOfRange(0, data.size - padCount)
     }

@@ -127,8 +127,8 @@ object KeyExchange {
         // Tokens also rotate when the rootKey changes.
         val newSendToken = deriveRoutingToken(rkStep.newRootKey, aliceFp, bobFp)
         val nextAliceSession = session.copy(
-            rootKey = rkStep.newRootKey,
-            sendChainKey = rkStep.newChainKey,
+            rootKey = rkStep.newRootKey.copyOf(),
+            sendChainKey = rkStep.newChainKey.copyOf(),
             sendToken = newSendToken,
             // MEMORY HYGIENE NOTE (§5.5): localDhPriv is copied here to be persisted in 
             // the E2eeStore. This ensures session stability across app restarts, but means 
@@ -138,14 +138,19 @@ object KeyExchange {
             localDhPub = newLocalDh.pub.copyOf(),
             prevSendToken = session.sendToken.copyOf(),
             isSendTokenPending = true,
+            pn = session.sendSeq, // Stash length of chain A0 before resetting sendSeq to 0
+            pr = session.recvSeq, // Stash length of chain B0 before resetting recvSeq to 0
         )
 
         // Memory Hygiene: Wipe the bootstrap session's keys now that they are superseded by Epoch 1.
         // session.localDhPriv is a reference to aliceEkPriv, which is zeroed by the caller.
         session.rootKey.fill(0)
         session.sendChainKey.fill(0)
+        session.recvChainKey.fill(0)
 
         newLocalDh.priv.fill(0)
+        rkStep.newRootKey.fill(0)
+        rkStep.newChainKey.fill(0)
         return nextAliceSession
     }
 
@@ -214,6 +219,8 @@ object KeyExchange {
             prevSendToken = sendToken.copyOf(),
             isSendTokenPending = false,
             isAlice = isAlice,
+            pn = 0L,
+            pr = 0L,
         )
     }
 
