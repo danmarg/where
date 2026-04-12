@@ -229,7 +229,19 @@ object KeyExchange {
         sk: ByteArray,
         ekAPub: ByteArray,
         ekBPub: ByteArray,
-    ): ByteArray = hmacSha256(sk, CONFIRM_PREFIX.encodeToByteArray() + ekAPub + ekBPub)
+    ): ByteArray {
+        val kConfirm = hkdfSha256(
+            ikm = sk,
+            salt = null,
+            info = INFO_CONFIRM.encodeToByteArray(),
+            length = 32,
+        )
+        try {
+            return hmacSha256(kConfirm, CONFIRM_PREFIX.encodeToByteArray() + ekAPub + ekBPub)
+        } finally {
+            kConfirm.fill(0)
+        }
+    }
 
     internal fun verifyKeyConfirmation(
         sk: ByteArray,
