@@ -129,17 +129,15 @@ object KeyExchange {
         val nextAliceSession = session.copy(
             rootKey = rkStep.newRootKey.copyOf(),
             sendChainKey = rkStep.newChainKey.copyOf(),
+            headerKey = session.nextHeaderKey.copyOf(),
+            nextHeaderKey = rkStep.newHeaderKey.copyOf(),
             sendToken = newSendToken,
-            // MEMORY HYGIENE NOTE (§5.5): localDhPriv is copied here to be persisted in 
-            // the E2eeStore. This ensures session stability across app restarts, but means 
-            // that forward secrecy at rest is dependent on the security of the local 
-            // keychain/keystore (backup-excluded).
             localDhPriv = newLocalDh.priv.copyOf(),
             localDhPub = newLocalDh.pub.copyOf(),
             prevSendToken = session.sendToken.copyOf(),
             isSendTokenPending = true,
-            pn = session.sendSeq, // Stash length of chain A0 before resetting sendSeq to 0
-            pr = session.recvSeq, // Stash length of chain B0 before resetting recvSeq to 0
+            pn = session.sendSeq,
+            pr = session.recvSeq,
         )
 
         // Memory Hygiene: Wipe the bootstrap session's keys now that they are superseded by Epoch 1.
@@ -177,11 +175,13 @@ object KeyExchange {
                 ikm = sk,
                 salt = null,
                 info = INFO_KEY_EXCHANGE.encodeToByteArray(),
-                length = 96,
+                length = 160,
             )
         val chainKey0 = expanded.copyOfRange(0, 32)
         val chainKey1 = expanded.copyOfRange(32, 64)
         val initialRootKey = expanded.copyOfRange(64, 96)
+        val initialHeaderKey = expanded.copyOfRange(96, 128)
+        val nextHeaderKey = expanded.copyOfRange(128, 160)
 
         // Alice sends on chain 0, Bob receives on chain 0.
         // Bob sends on chain 1, Alice receives on chain 1.
@@ -222,6 +222,8 @@ object KeyExchange {
             isAlice = isAlice,
             pn = 0L,
             pr = 0L,
+            headerKey = initialHeaderKey,
+            nextHeaderKey = nextHeaderKey,
         )
     }
 

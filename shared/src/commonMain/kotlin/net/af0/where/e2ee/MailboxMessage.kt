@@ -52,13 +52,9 @@ sealed class MailboxPayload {
 @SerialName("EncryptedMessage")
 data class EncryptedMessagePayload(
     override val v: Int = 1,
-    @SerialName("dh_pub")
-    @Serializable(with = ByteArrayBase64Serializer::class) val dhPub: ByteArray,
-    val seq: String,
+    @Serializable(with = ByteArrayBase64Serializer::class) val envelope: ByteArray,
     @Serializable(with = ByteArrayBase64Serializer::class) val ct: ByteArray,
-) : MailboxPayload() {
-    fun seqAsLong(): Long = seq.toLongOrNull() ?: 0L
-}
+) : MailboxPayload()
 
 /**
  * Bob's KeyExchangeInit posted to the discovery token address (§4.2).

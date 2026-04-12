@@ -470,35 +470,42 @@ class E2eeStore(
             val decryptedLocations = mutableListOf<LocationPlaintext>()
             val outgoing = mutableListOf<OutgoingMessage>()
 
-            // Multi-epoch sorting logic (§8.1):
-            // We group by epoch and sort by sequence number within each epoch.
-            // Epochs are ordered as: [Previous] -> [Current] -> [Future(s) in arrival order].
-            val sortedMessages =
-                messages.filterIsInstance<EncryptedMessagePayload>().sortedWith { m1, m2 ->
-                    val b1 =
-                        when {
-                            m1.dhPub.contentEquals(entry.session.remoteDhPub) -> 0
-                            m1.dhPub.contentEquals(entry.session.lastRemoteDhPub) -> 1
-                            else -> 2
-                        }
-                    val b2 =
-                        when {
-                            m2.dhPub.contentEquals(entry.session.remoteDhPub) -> 0
-                            m2.dhPub.contentEquals(entry.session.lastRemoteDhPub) -> 1
-                            else -> 2
-                        }
-                    if (b1 != b2) {
-                        b1.compareTo(b2)
-                    } else {
-                        // Within the same bucket, maintain topological order (seq).
-                        m1.seqAsLong().compareTo(m2.seqAsLong())
+            // With Sealed Envelopes (#186), we must first decrypt headers to sort
+            val sortedMessagesWithHeaders = messages.filterIsInstance<EncryptedMessagePayload>().mapNotNull { msg ->
+                try {
+                    val header = try {
+                        Session.decryptHeader(entry.session.headerKey, msg.envelope)
+                    } catch (_: Exception) {
+                        Session.decryptHeader(entry.session.nextHeaderKey, msg.envelope)
                     }
+                    header to msg
+                } catch (_: Exception) {
+                    null // Un-decryptable header, likely not for us
                 }
+            }.sortedWith { (h1, _), (h2, _) ->
+                val b1 =
+                    when {
+                        h1.dhPub.contentEquals(entry.session.remoteDhPub) -> 0
+                        h1.dhPub.contentEquals(entry.session.lastRemoteDhPub) -> 1
+                        else -> 2
+                    }
+                val b2 =
+                    when {
+                        h2.dhPub.contentEquals(entry.session.remoteDhPub) -> 0
+                        h2.dhPub.contentEquals(entry.session.lastRemoteDhPub) -> 1
+                        else -> 2
+                    }
+                if (b1 != b2) {
+                    b1.compareTo(b2)
+                } else {
+                    h1.seq.compareTo(h2.seq)
+                }
+            }
             
             var currentSession = entry.session
             var anySuccess = false
 
-            for (msg in sortedMessages) {
+            for ((_, msg) in sortedMessagesWithHeaders) {
                 try {
                     // Sequential mutation of currentSession provides the replay guarantee:
                     // if multiple messages with the same new DH key arrive in one batch,
