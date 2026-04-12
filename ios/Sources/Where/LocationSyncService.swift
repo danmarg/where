@@ -660,7 +660,7 @@ final class LocationSyncService: ObservableObject {
             updateVisibleUsers()
 
             if updateUi {
-                await pollPendingInvite()
+                try await pollPendingInvite()
             }
             updateStatus(nil)
         } catch {
@@ -669,22 +669,14 @@ final class LocationSyncService: ObservableObject {
         }
     }
 
-    private func pollPendingInvite() async {
+    private func pollPendingInvite() async throws {
         if pendingInitPayload != nil { return }
         let pending = try? await e2eeStore.pendingQrPayload()
         guard let qr = pending ?? nil else { return }
         let discoveryHex = toHex(qr.discoveryToken())
-        let messages: [[String: Any]]
-        do {
-            messages = try await pollMailbox(token: discoveryHex)
-            if !messages.isEmpty {
-                debugLog { "pollPendingInvite: got \(messages.count) messages" }
-            }
-            updateStatus(nil)
-        } catch {
-            logger.error("pollPendingInvite error: \(error.localizedDescription)")
-            updateStatus(error)
-            return
+        let messages = try await pollMailbox(token: discoveryHex)
+        if !messages.isEmpty {
+            debugLog { "pollPendingInvite: got \(messages.count) messages" }
         }
         for msg in messages {
             let version = msg["v"] as? Int ?? 1
