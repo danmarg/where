@@ -526,10 +526,10 @@ Direction is encoded explicitly via the `sender_fp || recipient_fp` ordering in 
 ```
 // Nonce is derived deterministically from KDF_CK above
 aad   = "Where-v1-Message" || version (4 bytes, BE uint32 = 1)
-      || alice_fp (32 bytes)
-      || bob_fp   (32 bytes)
-      || seq      (8 bytes, BE uint64)
-      || dh_pub   (32 bytes, sender's current ratchet public key)
+      || sender_fp    (32 bytes)
+      || recipient_fp (32 bytes)
+      || seq          (8 bytes, BE uint64)
+      || dh_pub       (32 bytes, sender's current ratchet public key)
 (ciphertext, tag) = ChaCha20-Poly1305(key=message_key, nonce=message_nonce,
                                   plaintext=payload_json_padded, aad=aad)
 ```
@@ -578,8 +578,8 @@ All communication between friends uses a unified message envelope:
 ```
 aad = "Where-v1-Message" (16 bytes, UTF-8)
     || version      (4 bytes, big-endian uint32, currently 1)
-    || alice_fp     (32 bytes)
-    || bob_fp       (32 bytes)
+    || sender_fp    (32 bytes)
+    || recipient_fp (32 bytes)
     || seq          (8 bytes, big-endian uint64)
     || dh_pub       (32 bytes)
 ```

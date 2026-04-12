@@ -28,8 +28,9 @@ object Session {
         val seq = state.sendSeq + 1
         val dhPub = state.localDhPub
         
-        // AAD ordering: always (AliceFp, BobFp)
-        val aad = buildMessageAad(state.aliceFp, state.bobFp, seq, dhPub)
+        // AAD directionality: include sender and recipient fingerprints explicitly.
+        val (sender, recipient) = if (state.isAlice) state.aliceFp to state.bobFp else state.bobFp to state.aliceFp
+        val aad = buildMessageAad(sender, recipient, seq, dhPub)
         val plaintext = padToFixedSize(encodeMessage(payload), PADDING_SIZE)
         val ct = aeadEncrypt(step.messageKey, step.messageNonce, plaintext, aad)
 
@@ -39,6 +40,9 @@ object Session {
                 sendSeq = seq,
                 needsRatchet = false, // We've sent at least one message in this epoch
             )
+
+        // Memory Hygiene: Wipe the OLD chain key now that it is superseded
+        state.sendChainKey.fill(0)
 
         step.messageKey.fill(0)
         step.messageNonce.fill(0)
@@ -66,7 +70,9 @@ object Session {
         // 1. Check skipped message key cache first (out-of-order within prior epochs)
         val cachedKey = state.skippedMessageKeys[cacheKey]
         if (cachedKey != null) {
-            val aad = buildMessageAad(state.aliceFp, state.bobFp, seq, remoteDhPub)
+            // AAD directionality: peer is the sender, I am the recipient.
+            val (sender, recipient) = if (state.isAlice) state.bobFp to state.aliceFp else state.aliceFp to state.bobFp
+            val aad = buildMessageAad(sender, recipient, seq, remoteDhPub)
             
             // Cached key format: [MK (32) || Nonce (12)]
             if (cachedKey.size < 44) throw ProtocolException("invalid cached key size in cache")
@@ -161,7 +167,9 @@ object Session {
             }
 
             val finalStep = currentStep ?: throw ProtocolException("failed to derive message key")
-            val aad = buildMessageAad(state.aliceFp, state.bobFp, seq, remoteDhPub)
+            // AAD directionality: peer is the sender, I am the recipient.
+            val (sender, recipient) = if (state.isAlice) state.bobFp to state.aliceFp else state.aliceFp to state.bobFp
+            val aad = buildMessageAad(sender, recipient, seq, remoteDhPub)
             
             val plaintext = try {
                 aeadDecrypt(finalStep.messageKey, finalStep.messageNonce, message.ct, aad)
@@ -186,9 +194,12 @@ object Session {
                 skippedMessageKeys = newSkippedKeys,
             )
 
-            // Memory Hygiene: Wipe the OLD private key now that it is superseded
+            // Memory Hygiene: Wipe the OLD ratchet keys now that they are superseded
             if (isNewDhEpoch) {
                 state.localDhPriv.fill(0)
+                state.rootKey.fill(0)
+                state.sendChainKey.fill(0)
+                state.recvChainKey.fill(0)
             }
 
             val unpadded = try { unpad(plaintext) } catch (e: Exception) { 
@@ -268,16 +279,15 @@ object Session {
     }
 
     private fun buildMessageAad(
-        aliceFp: ByteArray,
-        bobFp: ByteArray,
+        senderFp: ByteArray,
+        recipientFp: ByteArray,
         seq: Long,
         dhPub: ByteArray,
     ): ByteArray {
-        // AAD ordering: always (AliceFp, BobFp) regardless of who is sender.
         return AAD_PREFIX.encodeToByteArray() +
             intToBeBytes(PROTOCOL_VERSION) +
-            aliceFp +
-            bobFp +
+            senderFp +
+            recipientFp +
             longToBeBytes(seq) +
             dhPub
     }
