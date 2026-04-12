@@ -55,9 +55,11 @@ data class EncryptedMessagePayload(
     @SerialName("dh_pub")
     @Serializable(with = ByteArrayBase64Serializer::class) val dhPub: ByteArray,
     val seq: String,
+    // Previous chain length (§4.4) - used for gap filling when moving to a new DH epoch.
+    val pn: Long = 0,
     @Serializable(with = ByteArrayBase64Serializer::class) val ct: ByteArray,
 ) : MailboxPayload() {
-    fun seqAsLong(): Long = seq.toLong()
+    fun seqAsLong(): Long = seq.toLongOrNull() ?: 0L
 }
 
 /**

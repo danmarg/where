@@ -33,6 +33,9 @@ data class SessionState(
     @Serializable(with = ByteArrayBase64Serializer::class) val localDhPriv: ByteArray,
     @Serializable(with = ByteArrayBase64Serializer::class) val localDhPub: ByteArray,
     @Serializable(with = ByteArrayBase64Serializer::class) val remoteDhPub: ByteArray,
+    // The DH public key from the epoch immediately preceding remoteDhPub. Used for
+    // bucketed out-of-order message processing to prevent epoch rotation from 
+    // causing silent message loss if messages from prior epochs arrive late.
     @Serializable(with = ByteArrayBase64Serializer::class) val lastRemoteDhPub: ByteArray = ByteArray(0),
     @Serializable(with = ByteArrayBase64Serializer::class) val aliceEkPub: ByteArray,
     @Serializable(with = ByteArrayBase64Serializer::class) val bobEkPub: ByteArray,
@@ -77,6 +80,7 @@ data class SessionState(
             skippedMessageKeys.all { (k, v) -> other.skippedMessageKeys[k]?.contentEquals(v) == true } &&
             seenRemoteDhPubs == other.seenRemoteDhPubs &&
             pn == other.pn &&
+            pr == other.pr &&
             needsRatchet == other.needsRatchet
     }
 
@@ -105,6 +109,7 @@ data class SessionState(
         h = 31 * h + skipHash
         h = 31 * h + seenRemoteDhPubs.hashCode()
         h = 31 * h + pn.hashCode()
+        h = 31 * h + pr.hashCode()
         h = 31 * h + needsRatchet.hashCode()
         return h
     }

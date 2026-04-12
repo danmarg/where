@@ -9,9 +9,13 @@ import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 
 private val json = Json {
+    prettyPrint = true
     ignoreUnknownKeys = true
     encodeDefaults = true
 }
+
+/** Platform-specific Unicode normalization (NFKC) for homograph protection. */
+internal expect fun normalizeName(name: String): String
 
 /**
  * Storage interface for persistent E2EE state.
@@ -323,6 +327,27 @@ class E2eeStore(
         }
     }
 
+    /**
+     * Atomically encrypts a message and updates the session state in a single transaction.
+     * Prevents TOCTOU races (§5.4) where concurrent sends could re-use sequence numbers.
+     */
+    suspend fun encryptAndStore(friendId: String, payload: MessagePlaintext): EncryptedMessagePayload =
+        stateLock.withLock {
+            val entry = friends[friendId] ?: throw Exception("Friend not found: $friendId")
+            val (newSession, message) = Session.encryptMessage(entry.session, payload)
+            
+            // Determine which token to use for posting
+            val tokenToUse = if (newSession.isSendTokenPending) newSession.prevSendToken else newSession.sendToken
+            
+            friends[friendId] = entry.copy(
+                session = newSession,
+                outbox = EncryptedOutboxMessage(token = tokenToUse.toHex(), payload = message),
+                lastSentTs = currentTimeSeconds()
+            )
+            save()
+            message
+        }
+
     suspend fun updateSession(
         id: String,
         newSession: SessionState,
@@ -492,8 +517,10 @@ class E2eeStore(
             PollBatchResult(decryptedLocations, outgoing)
         }
 
-    private fun sanitizeName(name: String): String =
-        name.take(64).filter { it.isLetterOrDigit() || it.isWhitespace() }.trim()
+    private fun sanitizeName(name: String): String {
+        val normalized = normalizeName(name)
+        return normalized.take(64).filter { it.isLetterOrDigit() || it.isWhitespace() }.trim()
+    }
 
     companion object {
         internal const val MAX_POLL_FOLLOWS = 2

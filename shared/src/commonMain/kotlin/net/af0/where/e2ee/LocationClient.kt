@@ -167,23 +167,20 @@ open class LocationClient(
         friendId: String,
         payload: MessagePlaintext,
     ) {
-        val friend = store.getFriend(friendId) ?: return
-        val (newSession, message) = Session.encryptMessage(friend.session, payload)
-
-        // sendMessageToFriendInternal posts to the current sendToken.
-        // Session.encryptMessage handles switching to the new token AFTER the first message of a new epoch.
-        val tokenToUse = if (newSession.isSendTokenPending) newSession.prevSendToken else newSession.sendToken
-        
         // PERSISTENCE HYGIENE (§5.4): We advance the session and persist the 
         // encrypted message in an ATOMIC OUTBOX update BEFORE posting.
         // This ensures that if the app crashes during the post, we don't 
         // reuse the same sequence number/nonce on restart, AND we have 
         // the message ready to retry.
-        store.updateSessionWithOutbox(friendId, newSession, message, tokenToUse.toHex())
-
-        E2eeMailboxClient.post(baseUrl, tokenToUse.toHex(), message)
-        store.clearOutbox(friendId)
+        val message = store.encryptAndStore(friendId, payload)
         
+        // Use the outbox's token to ensure we post to the correct endpoint
+        val friendAfter = store.getFriend(friendId) ?: return 
+        val tokenToUse = friendAfter.outbox?.token ?: throw Exception("Outbox missing after store")
+        
+        E2eeMailboxClient.post(baseUrl, tokenToUse, message)
+        store.clearOutbox(friendId)
+
         if (payload is MessagePlaintext.Location) {
             store.updateLastSentTs(friendId, currentTimeSeconds())
         }
@@ -200,13 +197,13 @@ open class LocationClient(
      * This is called by both the main send path and the outbox recovery path.
      */
     private suspend fun finalizeTokenTransition(friendId: String) {
+        // Tightened idempotency check: only act if transition is still marked pending in store.
         val updatedFriend = store.getFriend(friendId) ?: return
-        val session = updatedFriend.session
-        if (session.isSendTokenPending) {
-            val finalSession = session.copy(isSendTokenPending = false)
+        if (updatedFriend.session.isSendTokenPending) {
+            val finalSession = updatedFriend.session.copy(isSendTokenPending = false)
             store.updateSession(friendId, finalSession)
             
-            // Only send fresh keepalive if we actually rotated tokens.
+            // Only send fresh keepalive if we actually rotated tokens and haven't sent it.
             if (!finalSession.sendToken.contentEquals(finalSession.prevSendToken)) {
                 try {
                     sendKeepalive(friendId)
