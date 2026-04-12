@@ -490,46 +490,27 @@ final class LocationSyncService: ObservableObject {
             friends = try await e2eeStore.listFriends()
             updateVisibleUsers()
 
-            let discoveryHex = toHex(qrWithName.discoveryToken())
-            var ekPubData = toSwiftData(initPayload.ekPub)
-            var keyConfData = toSwiftData(initPayload.keyConfirmation)
-            defer {
-                ekPubData.zeroize()
-                keyConfData.zeroize()
-            }
+            do {
+                debugLog { "Posting KeyExchangeInit" }
+                try await locationClient.postKeyExchangeInit(qr: qrWithName, initPayload: initPayload)
+                debugLog { "KeyExchangeInit posted successfully" }
 
-            let payload: [String: Any] = [
-                "v": 1,
-                "type": "KeyExchangeInit",
-                "token": initPayload.token,
-                "ek_pub": ekPubData.base64EncodedString(),
-                "key_confirmation": keyConfData.base64EncodedString(),
-                "suggested_name": initPayload.suggestedName,
-            ]
-
-            if let bodyData = try? JSONSerialization.data(withJSONObject: payload) {
-                do {
-                    debugLog { "Posting KeyExchangeInit to mailbox with token: \(discoveryHex)" }
-                    try await postToMailbox(token: discoveryHex, bodyData: bodyData)
-                    debugLog { "KeyExchangeInit posted successfully" }
-
-                    if let last = LocationManager.shared.lastLocation {
-                        self.sendLocation(lat: last.coordinate.latitude, lng: last.coordinate.longitude, force: true)
-                    } else {
-                        logger.debug("confirmQrScan: lastLocation is nil, setting pendingForcedSendAfterPairing")
-                        self.pendingForcedSendAfterPairing = true
-                        LocationManager.shared.requestPermissionAndStart()
-                    }
-                    await pollAll(updateUi: true)
-                    friends = try await e2eeStore.listFriends()
-                    updateVisibleUsers()
-                    triggerRapidPoll()
-
-                    updateStatus(nil)
-                } catch {
-                    logger.error("Failed to post init: \(error.localizedDescription)")
-                    updateStatus(error)
+                if let last = LocationManager.shared.lastLocation {
+                    self.sendLocation(lat: last.coordinate.latitude, lng: last.coordinate.longitude, force: true)
+                } else {
+                    logger.debug("confirmQrScan: lastLocation is nil, setting pendingForcedSendAfterPairing")
+                    self.pendingForcedSendAfterPairing = true
+                    LocationManager.shared.requestPermissionAndStart()
                 }
+                await pollAll(updateUi: true)
+                friends = try await e2eeStore.listFriends()
+                updateVisibleUsers()
+                triggerRapidPoll()
+
+                updateStatus(nil)
+            } catch {
+                logger.error("Failed to post init: \(error.localizedDescription)")
+                updateStatus(error)
             }
         } catch {
             logger.error("confirmQrScan failed: \(error.localizedDescription)")
@@ -671,38 +652,11 @@ final class LocationSyncService: ObservableObject {
 
     private func pollPendingInvite() async throws {
         if pendingInitPayload != nil { return }
-        let pending = try? await e2eeStore.pendingQrPayload()
-        guard let qr = pending ?? nil else { return }
-        let discoveryHex = toHex(qr.discoveryToken())
-        let messages = try await pollMailbox(token: discoveryHex)
-        if !messages.isEmpty {
-            debugLog { "pollPendingInvite: got \(messages.count) messages" }
-        }
-        for msg in messages {
-            let version = msg["v"] as? Int ?? 1
-            guard version == 1,
-                  (msg["type"] as? String) == "KeyExchangeInit",
-                  let token = msg["token"] as? String,
-                  token.count == 32,
-                  let ekPubB64 = msg["ek_pub"] as? String, let ekPub = Data(base64Encoded: ekPubB64),
-                  ekPub.count == 32,
-                  let keyConfB64 = msg["key_confirmation"] as? String,
-                  let keyConfData = Data(base64Encoded: keyConfB64),
-                  keyConfData.count == 32
-            else { continue }
-            let suggestedName = msg["suggested_name"] as? String ?? ""
-            let initPayload = Shared.KeyExchangeInitPayload(
-                v: Int32(version),
-                token: token,
-                ekPub: kotlinByteArray(from: ekPub),
-                keyConfirmation: kotlinByteArray(from: keyConfData),
-                suggestedName: suggestedName
-            )
-
+        if let payload = try await locationClient.pollPendingInvite() {
+            debugLog { "pollPendingInvite: received KeyExchangeInit" }
             inviteState = .none   // dismiss the QR sheet so the naming alert can appear
-            pendingInitPayload = initPayload
+            pendingInitPayload = payload
             triggerRapidPoll()
-            break
         }
     }
 

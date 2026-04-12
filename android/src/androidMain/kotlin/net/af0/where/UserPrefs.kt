@@ -12,8 +12,9 @@ object UserPrefs {
     private const val KEY_LAST_ZOOM = "last_zoom"
 
     private fun prefs(context: Context): SharedPreferences {
-        val app = context.applicationContext as? WhereApplication
-            ?: return context.getSharedPreferences("where_prefs", Context.MODE_PRIVATE)
+        val app =
+            context.applicationContext as? WhereApplication
+                ?: return context.getSharedPreferences("where_prefs", Context.MODE_PRIVATE)
         return app.encryptedPrefs
     }
 

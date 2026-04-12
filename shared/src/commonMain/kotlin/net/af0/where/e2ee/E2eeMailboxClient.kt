@@ -21,8 +21,16 @@ import kotlinx.serialization.json.Json
  * interface for the mailbox service transport (§9).
  */
 interface MailboxClient {
-    suspend fun post(baseUrl: String, token: String, payload: MailboxPayload)
-    suspend fun poll(baseUrl: String, token: String): List<MailboxPayload>
+    suspend fun post(
+        baseUrl: String,
+        token: String,
+        payload: MailboxPayload,
+    )
+
+    suspend fun poll(
+        baseUrl: String,
+        token: String,
+    ): List<MailboxPayload>
 }
 
 object KtorMailboxClient : MailboxClient {

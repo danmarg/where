@@ -20,7 +20,6 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import net.af0.where.e2ee.E2eeMailboxClient
 import net.af0.where.e2ee.E2eeStore
 import net.af0.where.e2ee.FriendEntry
 import net.af0.where.e2ee.KeyExchangeInitPayload
@@ -278,10 +277,9 @@ class LocationViewModel(
                     locationSource.onFriendsUpdated(e2eeStore.listFriends())
                 }
                 try {
-                    val discoveryHex = qrWithName.discoveryToken().toHex()
                     try {
-                        Log.d(TAG, "confirmQrScan: posting KeyExchangeInit, discoveryHex=$discoveryHex")
-                        E2eeMailboxClient.post(BuildConfig.SERVER_HTTP_URL, discoveryHex, initPayload)
+                        Log.d(TAG, "confirmQrScan: posting KeyExchangeInit")
+                        locationClient.postKeyExchangeInit(qrWithName, initPayload)
                         Log.d(TAG, "confirmQrScan: mailbox post succeeded")
                     } catch (e: Exception) {
                         Log.e(TAG, "confirmQrScan: mailbox post failed", e)

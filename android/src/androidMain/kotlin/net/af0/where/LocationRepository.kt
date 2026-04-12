@@ -156,9 +156,11 @@ object LocationRepository : LocationSource {
                 is net.af0.where.e2ee.NetworkException -> "Network error: ${e.message}"
                 else -> {
                     when {
-                        e.message?.contains("Unable to resolve host", ignoreCase = true) == true -> "No connection: Could not reach the server."
+                        e.message?.contains("Unable to resolve host", ignoreCase = true) == true ->
+                            "No connection: Could not reach the server."
                         e.message?.contains("timeout", ignoreCase = true) == true -> "Request timed out."
-                        e.message?.contains("ConnectException", ignoreCase = true) == true -> "No connection: Could not establish a connection."
+                        e.message?.contains("ConnectException", ignoreCase = true) == true ->
+                            "No connection: Could not establish a connection."
                         else -> "An unexpected error occurred. Please try again."
                     }
                 }

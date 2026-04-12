@@ -33,13 +33,22 @@ object KeyExchange {
     }
 
     /**
-     * Bob: single-term DH, derive SK, compute key_confirmation HMAC,
-     * and return the KeyExchangeInit message plus the initial session state.
+     * Bob: verify the QR fingerprint, perform single-term DH, derive SK, compute
+     * key_confirmation HMAC, and return the KeyExchangeInit message plus the initial
+     * session state.
+     *
+     * Throws AuthenticationException if the fingerprint or key_confirmation fails.
      */
     fun bobProcessQr(
         qr: QrPayload,
         suggestedName: String,
     ): Pair<KeyExchangeInitMessage, SessionState> {
+        // VERIFY FINGERPRINT (#157)
+        val expectedFp = sha256(qr.ekPub).copyOfRange(0, 8).toHex()
+        if (expectedFp != qr.fingerprint) {
+            throw AuthenticationException("QR code fingerprint mismatch — possible tampering or mis-scan")
+        }
+
         val ekB = generateX25519KeyPair()
         val sk = x25519(ekB.priv, qr.ekPub)
 
@@ -56,15 +65,15 @@ object KeyExchange {
                 aliceFp = aliceFp,
                 bobFp = bobFp,
             )
-        
+
         val keyConfirmation = buildKeyConfirmation(sk, qr.ekPub, ekB.pub)
 
         // Initial token Bob sends to Alice for discovery is T_AB_0.
         val tokenAliceToBob = deriveRoutingToken(sk, aliceFp, bobFp)
 
-        // MEMORY HYGIENE NOTE (§5.5): Bob's initial ephemeral key (ekB.priv) is copied into 
-        // the session.localDhPriv buffer within initSession. We zero the local ephemeral 
-        // buffer here, but the copy in SessionState intentionally persists to enable 
+        // MEMORY HYGIENE NOTE (§5.5): Bob's initial ephemeral key (ekB.priv) is copied into
+        // the session.localDhPriv buffer within initSession. We zero the local ephemeral
+        // buffer here, but the copy in SessionState intentionally persists to enable
         // the first DH ratchet step when Alice responds.
         ekB.priv.fill(0)
         sk.fill(0)
@@ -100,15 +109,16 @@ object KeyExchange {
         val aliceFp = fingerprint(aliceEkPub)
         val bobFp = fingerprint(msg.ekPub)
 
-        val session = initSession(
-            sk = sk,
-            isAlice = true,
-            myDhPriv = aliceEkPriv,
-            myDhPub = aliceEkPub,
-            theirDhPub = msg.ekPub,
-            aliceFp = aliceFp,
-            bobFp = bobFp,
-        )
+        val session =
+            initSession(
+                sk = sk,
+                isAlice = true,
+                myDhPriv = aliceEkPriv,
+                myDhPub = aliceEkPub,
+                theirDhPub = msg.ekPub,
+                aliceFp = aliceFp,
+                bobFp = bobFp,
+            )
         sk.fill(0)
 
         // To break the Double Ratchet deadlock and ensure we don't just stay in the
@@ -118,28 +128,32 @@ object KeyExchange {
         // Bob will see A1 != A0 and ratchet his own side.
         val newLocalDh = generateX25519KeyPair()
         val dhOut = x25519(newLocalDh.priv, msg.ekPub)
-        val rkStep = try {
-            kdfRk(session.rootKey, dhOut)
-        } finally {
-            dhOut.fill(0)
-        }
+        val rkStep =
+            try {
+                kdfRk(session.rootKey, dhOut)
+            } finally {
+                dhOut.fill(0)
+            }
 
         // Tokens also rotate when the rootKey changes.
         val newSendToken = deriveRoutingToken(rkStep.newRootKey, aliceFp, bobFp)
-        val nextAliceSession = session.copy(
-            rootKey = rkStep.newRootKey.copyOf(),
-            sendChainKey = rkStep.newChainKey.copyOf(),
-            headerKey = session.nextHeaderKey.copyOf(),
-            sendHeaderKey = session.nextHeaderKey.copyOf(),
-            nextHeaderKey = rkStep.newHeaderKey.copyOf(),
-            sendToken = newSendToken,
-            localDhPriv = newLocalDh.priv.copyOf(),
-            localDhPub = newLocalDh.pub.copyOf(),
-            prevSendToken = session.sendToken.copyOf(),
-            isSendTokenPending = true,
-            pn = session.sendSeq,
-            pr = session.recvSeq,
-        )
+        val nextAliceSession =
+            session.copy(
+                rootKey = rkStep.newRootKey.copyOf(),
+                sendChainKey = rkStep.newChainKey.copyOf(),
+                // CRITICAL: Alice MUST keep the Epoch 0 headerKey for receiving Bob's
+                // initial messages (B0). She only advances HER send side to Epoch 1.
+                headerKey = session.headerKey.copyOf(),
+                sendHeaderKey = session.nextHeaderKey.copyOf(),
+                nextHeaderKey = rkStep.newHeaderKey.copyOf(),
+                sendToken = newSendToken,
+                localDhPriv = newLocalDh.priv.copyOf(),
+                localDhPub = newLocalDh.pub.copyOf(),
+                prevSendToken = session.sendToken.copyOf(),
+                isSendTokenPending = true,
+                pn = session.sendSeq,
+                pr = session.recvSeq,
+            )
 
         // Memory Hygiene: Wipe the bootstrap session's keys now that they are superseded by Epoch 1.
         // nextAliceSession preserves recvChainKey (Epoch 0 receiver) until Bob ratchets.
@@ -190,16 +204,18 @@ object KeyExchange {
         val recvChainKey = if (isAlice) chainKey1 else chainKey0
 
         // Initial tokens are also derived from SK.
-        val sendToken = if (isAlice) {
-            deriveRoutingToken(sk, aliceFp, bobFp)
-        } else {
-            deriveRoutingToken(sk, bobFp, aliceFp)
-        }
-        val recvToken = if (isAlice) {
-            deriveRoutingToken(sk, bobFp, aliceFp)
-        } else {
-            deriveRoutingToken(sk, aliceFp, bobFp)
-        }
+        val sendToken =
+            if (isAlice) {
+                deriveRoutingToken(sk, aliceFp, bobFp)
+            } else {
+                deriveRoutingToken(sk, bobFp, aliceFp)
+            }
+        val recvToken =
+            if (isAlice) {
+                deriveRoutingToken(sk, bobFp, aliceFp)
+            } else {
+                deriveRoutingToken(sk, aliceFp, bobFp)
+            }
 
         expanded.fill(0)
 
@@ -234,12 +250,13 @@ object KeyExchange {
         ekAPub: ByteArray,
         ekBPub: ByteArray,
     ): ByteArray {
-        val kConfirm = hkdfSha256(
-            ikm = sk,
-            salt = null,
-            info = INFO_CONFIRM.encodeToByteArray(),
-            length = 32,
-        )
+        val kConfirm =
+            hkdfSha256(
+                ikm = sk,
+                salt = null,
+                info = INFO_CONFIRM.encodeToByteArray(),
+                length = 32,
+            )
         try {
             return hmacSha256(kConfirm, CONFIRM_PREFIX.encodeToByteArray() + ekAPub + ekBPub)
         } finally {

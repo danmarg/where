@@ -8,11 +8,12 @@ import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 
-private val json = Json {
-    prettyPrint = true
-    ignoreUnknownKeys = true
-    encodeDefaults = true
-}
+private val json =
+    Json {
+        prettyPrint = true
+        ignoreUnknownKeys = true
+        encodeDefaults = true
+    }
 
 /** Platform-specific Unicode normalization (NFKC) for homograph protection. */
 internal expect fun normalizeName(name: String): String
@@ -59,7 +60,6 @@ data class FriendEntry(
         /** §12: Surface a "no recent location" warning after 7 days of silence. */
         const val ACK_TIMEOUT_SECONDS = 7 * 24 * 3600L
     }
-
 
     /**
      * Returns true if no messages have been received for [ACK_TIMEOUT_SECONDS].
@@ -336,26 +336,31 @@ class E2eeStore(
      * Atomically encrypts a message and updates the session state in a single transaction.
      * Prevents TOCTOU races (§5.4) where concurrent sends could re-use sequence numbers.
      */
-    suspend fun encryptAndStore(friendId: String, payload: MessagePlaintext): EncryptedMessagePayload =
+    suspend fun encryptAndStore(
+        friendId: String,
+        payload: MessagePlaintext,
+    ): EncryptedMessagePayload =
         stateLock.withLock {
             val entry = friends[friendId] ?: throw Exception("Friend not found: $friendId")
             val (newSession, message) = Session.encryptMessage(entry.session, payload)
-            
+
             // NONCE SAFETY ASSERTION (§5.4): The sequence number MUST advance.
-            // If we are transitioning tokens, the new root key ensures uniqueness even if 
+            // If we are transitioning tokens, the new root key ensures uniqueness even if
             // sendSeq resets; if we are not, sendSeq must be strictly greater.
-            val seqAdvanced = newSession.sendSeq > entry.session.sendSeq || 
-                            !newSession.rootKey.contentEquals(entry.session.rootKey)
+            val seqAdvanced =
+                newSession.sendSeq > entry.session.sendSeq ||
+                    !newSession.rootKey.contentEquals(entry.session.rootKey)
             check(seqAdvanced) { "Nonce safety violation: sequence number did not advance" }
 
             // Determine which token to use for posting
             val tokenToUse = if (newSession.isSendTokenPending) newSession.prevSendToken else newSession.sendToken
-            
-            friends[friendId] = entry.copy(
-                session = newSession,
-                outbox = EncryptedOutboxMessage(token = tokenToUse.toHex(), payload = message),
-                lastSentTs = currentTimeSeconds()
-            )
+
+            friends[friendId] =
+                entry.copy(
+                    session = newSession,
+                    outbox = EncryptedOutboxMessage(token = tokenToUse.toHex(), payload = message),
+                    lastSentTs = currentTimeSeconds(),
+                )
             save()
             message
         }
@@ -382,10 +387,11 @@ class E2eeStore(
     ) {
         stateLock.withLock {
             val entry = friends[id] ?: return@withLock
-            friends[id] = entry.copy(
-                session = newSession,
-                outbox = EncryptedOutboxMessage(token = token, payload = message)
-            )
+            friends[id] =
+                entry.copy(
+                    session = newSession,
+                    outbox = EncryptedOutboxMessage(token = token, payload = message),
+                )
             save()
         }
     }
@@ -413,7 +419,11 @@ class E2eeStore(
             save()
         }
     }
-    suspend fun updateLastSentTs(id: String, ts: Long) {
+
+    suspend fun updateLastSentTs(
+        id: String,
+        ts: Long,
+    ) {
         stateLock.withLock {
             val entry = friends[id] ?: return@withLock
             friends[id] = entry.copy(lastSentTs = ts)
@@ -421,15 +431,16 @@ class E2eeStore(
         }
     }
 
-    suspend fun updateFriend(id: String, transform: (FriendEntry) -> FriendEntry) {
+    suspend fun updateFriend(
+        id: String,
+        transform: (FriendEntry) -> FriendEntry,
+    ) {
         stateLock.withLock {
             val entry = friends[id] ?: return@withLock
             friends[id] = transform(entry)
             save()
         }
     }
-
-
 
     // -----------------------------------------------------------------------
     // Batch poll processing
@@ -471,37 +482,39 @@ class E2eeStore(
             val outgoing = mutableListOf<OutgoingMessage>()
 
             // With Sealed Envelopes (#186), we must first decrypt headers to sort
-            val sortedMessagesWithHeaders = messages.filterIsInstance<EncryptedMessagePayload>().mapNotNull { msg ->
-                try {
-                    val header = try {
-                        Session.decryptHeader(entry.session.headerKey, msg.envelope)
+            val sortedMessagesWithHeaders =
+                messages.filterIsInstance<EncryptedMessagePayload>().mapNotNull { msg ->
+                    try {
+                        val header =
+                            try {
+                                Session.decryptHeader(entry.session.headerKey, msg.envelope)
+                            } catch (_: Exception) {
+                                Session.decryptHeader(entry.session.nextHeaderKey, msg.envelope)
+                            }
+                        header to msg
                     } catch (_: Exception) {
-                        Session.decryptHeader(entry.session.nextHeaderKey, msg.envelope)
+                        null // Un-decryptable header, likely not for us
                     }
-                    header to msg
-                } catch (_: Exception) {
-                    null // Un-decryptable header, likely not for us
+                }.sortedWith { (h1, _), (h2, _) ->
+                    val b1 =
+                        when {
+                            h1.dhPub.contentEquals(entry.session.remoteDhPub) -> 0
+                            h1.dhPub.contentEquals(entry.session.lastRemoteDhPub) -> 1
+                            else -> 2
+                        }
+                    val b2 =
+                        when {
+                            h2.dhPub.contentEquals(entry.session.remoteDhPub) -> 0
+                            h2.dhPub.contentEquals(entry.session.lastRemoteDhPub) -> 1
+                            else -> 2
+                        }
+                    if (b1 != b2) {
+                        b1.compareTo(b2)
+                    } else {
+                        h1.seq.compareTo(h2.seq)
+                    }
                 }
-            }.sortedWith { (h1, _), (h2, _) ->
-                val b1 =
-                    when {
-                        h1.dhPub.contentEquals(entry.session.remoteDhPub) -> 0
-                        h1.dhPub.contentEquals(entry.session.lastRemoteDhPub) -> 1
-                        else -> 2
-                    }
-                val b2 =
-                    when {
-                        h2.dhPub.contentEquals(entry.session.remoteDhPub) -> 0
-                        h2.dhPub.contentEquals(entry.session.lastRemoteDhPub) -> 1
-                        else -> 2
-                    }
-                if (b1 != b2) {
-                    b1.compareTo(b2)
-                } else {
-                    h1.seq.compareTo(h2.seq)
-                }
-            }
-            
+
             var currentSession = entry.session
             var anySuccess = false
 
@@ -540,7 +553,7 @@ class E2eeStore(
                     isConfirmed = entry.isConfirmed || anySuccess,
                     lastRecvTs = if (hadActivity) currentTimeSeconds() else entry.lastRecvTs,
                 )
-            
+
             // The recvToken must only change if we had a successful decryption (§7.2).
             check(currentSession.recvToken.contentEquals(entry.session.recvToken) || anySuccess) {
                 "recvToken changed without any successful decryption — invariant violated"
