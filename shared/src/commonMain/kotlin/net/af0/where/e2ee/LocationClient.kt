@@ -14,6 +14,7 @@ import net.af0.where.model.UserLocation
 open class LocationClient(
     private val baseUrl: String,
     private val store: E2eeStore,
+    private val mailboxClient: MailboxClient = KtorMailboxClient,
 ) {
     private val pollMutex = Mutex()
 
@@ -35,7 +36,7 @@ open class LocationClient(
 
             if (friends.isEmpty() && isForeground) {
                 try {
-                    E2eeMailboxClient.poll(baseUrl, "00000000000000000000000000000000")
+                    mailboxClient.poll(baseUrl, "00000000000000000000000000000000")
                 } catch (e: ServerException) {
                     if (e.statusCode != 404) lastError = e
                 } catch (e: Exception) {
@@ -65,22 +66,22 @@ open class LocationClient(
     /**
      * Poll a specific friend's mailbox.
      */
-    private suspend fun pollFriend(friendId: String): List<UserLocation> {
+    internal suspend fun pollFriend(friendId: String): List<UserLocation> {
         val resultLocations = mutableListOf<UserLocation>()
         val friendBefore = store.getFriend(friendId) ?: return emptyList()
         var currentTokenToPoll = friendBefore.session.recvToken.toHex()
 
-        // We follow token rotations up to MAX_POLL_FOLLOWS to prevent infinite loops 
+        // We follow token rotations up to MAX_TOKEN_FOLLOWS_PER_POLL to prevent infinite loops 
         // caused by adversarial server or client code injecting transition messages (§9.2).
         var follows = 0
-        while (follows < MAX_POLL_FOLLOWS) {
-            val messages = E2eeMailboxClient.poll(baseUrl, currentTokenToPoll)
+        while (follows < MAX_TOKEN_FOLLOWS_PER_POLL) {
+            val messages = mailboxClient.poll(baseUrl, currentTokenToPoll)
             if (messages.isEmpty()) break
 
             val result = store.processBatch(friendId, currentTokenToPoll, messages) ?: break
 
             for (out in result.outgoing) {
-                E2eeMailboxClient.post(baseUrl, out.token, out.payload)
+                mailboxClient.post(baseUrl, out.token, out.payload)
             }
 
             resultLocations.addAll(result.decryptedLocations.map { loc ->
@@ -160,7 +161,7 @@ open class LocationClient(
      * Send a keepalive message to a friend.
      */
     internal suspend fun sendKeepalive(friendId: String) {
-        sendMessageToFriendInternal(friendId, MessagePlaintext.Keepalive)
+        sendMessageToFriendInternal(friendId, MessagePlaintext.Keepalive())
     }
 
     private suspend fun sendMessageToFriendInternal(
@@ -178,7 +179,7 @@ open class LocationClient(
         val friendAfter = store.getFriend(friendId) ?: return 
         val tokenToUse = friendAfter.outbox?.token ?: throw Exception("Outbox missing after store")
         
-        E2eeMailboxClient.post(baseUrl, tokenToUse, message)
+        mailboxClient.post(baseUrl, tokenToUse, message)
         store.clearOutbox(friendId)
 
         if (payload is MessagePlaintext.Location) {
@@ -203,8 +204,9 @@ open class LocationClient(
             val finalSession = updatedFriend.session.copy(isSendTokenPending = false)
             store.updateSession(friendId, finalSession)
             
-            // Only send fresh keepalive if we actually rotated tokens and haven't sent it.
-            if (!finalSession.sendToken.contentEquals(finalSession.prevSendToken)) {
+            // Only send fresh keepalive if we actually rotated tokens and haven't sent it,
+            // AND ensure it is only sent if sharing is currently enabled (§5.3).
+            if (!finalSession.sendToken.contentEquals(finalSession.prevSendToken) && updatedFriend.sharingEnabled) {
                 try {
                     sendKeepalive(friendId)
                 } catch (e: Exception) {
@@ -222,7 +224,7 @@ open class LocationClient(
         for (friend in store.listFriends()) {
             val outbox = friend.outbox ?: continue
             try {
-                E2eeMailboxClient.post(baseUrl, outbox.token, outbox.payload)
+                mailboxClient.post(baseUrl, outbox.token, outbox.payload)
                 store.clearOutbox(friend.id)
                 // TRANSACTIONAL RECOVERY (§5.4): After recovering a lost post, 
                 // we must also trigger the token transition cleanup.
