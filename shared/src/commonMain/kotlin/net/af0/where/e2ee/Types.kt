@@ -176,6 +176,15 @@ data class KeyExchangeInitMessage(
     override fun hashCode(): Int = token.contentHashCode()
 }
 
+/**
+ * A message that is pending delivery (used for transactional safety and recovery).
+ */
+@Serializable
+data class EncryptedOutboxMessage(
+    val token: String,
+    val payload: MailboxPayload
+)
+
 /** Output of a symmetric ratchet step (KDF_CK). */
 internal data class ChainStep(
     val newChainKey: ByteArray,

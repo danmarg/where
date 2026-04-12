@@ -41,6 +41,8 @@ data class FriendEntry(
      */
     val isConfirmed: Boolean = false,
     val lastSentTs: Long = 0L,
+    /** Optional outbox for transactional recovery (§5.4). */
+    val outbox: EncryptedOutboxMessage? = null,
 ) {
     companion object {
         /** §12: Surface a "no recent location" warning after 7 days of silence. */
@@ -85,6 +87,7 @@ data class FriendEntry(
         result = 31 * result + (lastTs?.hashCode() ?: 0)
         result = 31 * result + lastRecvTs.hashCode()
         result = 31 * result + isConfirmed.hashCode()
+        result = 31 * result + (outbox?.hashCode() ?: 0)
         return result
     }
 }
@@ -139,6 +142,7 @@ class E2eeStore(
                             lastRecvTs = if (s.lastRecvTs == 0L) currentTimeSeconds() else s.lastRecvTs,
                             isConfirmed = s.isConfirmed,
                             lastSentTs = s.lastSentTs,
+                            outbox = s.outbox,
                         )
                     entry.id to entry
                 }.toMutableMap()
@@ -166,6 +170,7 @@ class E2eeStore(
                             lastRecvTs = f.lastRecvTs,
                             isConfirmed = f.isConfirmed,
                             lastSentTs = f.lastSentTs,
+                            outbox = f.outbox,
                         )
                     },
                 pendingInvite = pendingInvite,
@@ -318,6 +323,36 @@ class E2eeStore(
         }
     }
 
+    /**
+     * Atomically updates a friend's session and populates their outbox for transactional retry.
+     */
+    suspend fun updateSessionWithOutbox(
+        id: String,
+        newSession: SessionState,
+        message: MailboxPayload,
+        token: String,
+    ) {
+        stateLock.withLock {
+            val entry = friends[id] ?: return@withLock
+            friends[id] = entry.copy(
+                session = newSession,
+                outbox = EncryptedOutboxMessage(token, message)
+            )
+            save()
+        }
+    }
+
+    /** Clears the outbox after successful delivery. */
+    suspend fun clearOutbox(id: String) {
+        stateLock.withLock {
+            val entry = friends[id] ?: return@withLock
+            if (entry.outbox != null) {
+                friends[id] = entry.copy(outbox = null)
+                save()
+            }
+        }
+    }
+
     suspend fun updateLastLocation(
         id: String,
         lat: Double,
@@ -457,6 +492,7 @@ internal data class SerializedFriendEntry(
     val lastRecvTs: Long = 0L,
     val isConfirmed: Boolean = false,
     val lastSentTs: Long = 0L,
+    val outbox: EncryptedOutboxMessage? = null,
 )
 
 @Serializable
