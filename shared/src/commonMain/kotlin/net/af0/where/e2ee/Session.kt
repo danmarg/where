@@ -17,7 +17,6 @@ object Session {
     private const val PROTOCOL_VERSION = 1
 
     internal const val PADDING_SIZE = 512
-    private const val MAX_GAP = 1024L
 
     fun encryptMessage(
         state: SessionState,
@@ -151,7 +150,10 @@ object Session {
                     
                     // Limit cache size with deterministic FIFO (LinkedHashMap order)
                     if (newSkippedKeys.size > MAX_SKIPPED_KEYS) {
-                        newSkippedKeys.remove(newSkippedKeys.keys.first())
+                        val oldestKey = newSkippedKeys.keys.first()
+                        // Memory Hygiene: Explicitly zero the evicted key before GC
+                        newSkippedKeys[oldestKey]?.fill(0)
+                        newSkippedKeys.remove(oldestKey)
                     }
                 } else {
                     currentStep = step
@@ -262,7 +264,6 @@ object Session {
             seenRemoteDhPubs = newSeenKeys,
             prevSendToken = state.sendToken.copyOf(),
             isSendTokenPending = true,
-            needsRatchet = true, // We successfully ratcheted, next send should use new epoch
         )
     }
 

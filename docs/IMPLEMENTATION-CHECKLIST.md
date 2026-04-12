@@ -10,7 +10,7 @@ Split into client-crypto, client-app, and server.
 
 ### Key material
 - No long-term device identity keys (no IK, no SigIK). All keys are session-scoped ephemeral X25519 keypairs.
-- For each friend, maintain `SessionState`: `root_key`, `send_chain_key`, `recv_chain_key`, `send_token`, `recv_token`, `send_seq`, `recv_seq`, `local_dh_priv` (in-memory only), `local_dh_pub`, `remote_dh_pub`, `alice_fp`, `bob_fp`.
+- For each friend, maintain `SessionState`: `root_key`, `send_chain_key`, `recv_chain_key`, `send_token`, `recv_token`, `send_seq`, `recv_seq`, `local_dh_priv`, `local_dh_pub`, `remote_dh_pub`, `alice_fp`, `bob_fp`. Note: `local_dh_priv` is currently persisted for stability.
 
 ### Key exchange
 - Generate fresh ephemeral X25519 keypair `EK_A` for Alice's QR code.
@@ -43,7 +43,7 @@ Split into client-crypto, client-app, and server.
 
 ### Secure storage
 - Wipe message/chain/ephemeral priv keys after use.
-- Persist only epoch state in keychain/keystore (**backup disabled**). `localDhPriv` is kept transient so current keys are not written to disk.
+- Persist epoch state in keychain/keystore (**backup disabled**). Note: `localDhPriv` is currently persisted along with the state to ensure session continuity across restarts.
 
 ## 2. Client App Logic
 

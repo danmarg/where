@@ -38,7 +38,7 @@ data class SessionState(
     @Serializable(with = ByteArrayBase64Serializer::class) val bobEkPub: ByteArray,
     @Serializable(with = ByteArrayBase64Serializer::class) val aliceFp: ByteArray,
     @Serializable(with = ByteArrayBase64Serializer::class) val bobFp: ByteArray,
-    val prevSendToken: ByteArray,
+    @Serializable(with = ByteArrayBase64Serializer::class) val prevSendToken: ByteArray,
     val isSendTokenPending: Boolean,
     val isAlice: Boolean,
     // REPLAY PROTECTION & OUT-OF-ORDER SUPPORT
