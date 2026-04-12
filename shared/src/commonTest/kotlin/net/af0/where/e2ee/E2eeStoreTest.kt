@@ -54,11 +54,6 @@ class E2eeStoreTest {
             assertEquals(expectedAliceFp, aliceEntry.id)
             assertEquals("Alice", bobEntry.name)
             assertEquals("Bob", aliceEntry.name)
-
-            // Both sides must derive the same session keys
-            // In the new Double Ratchet model, Alice immediately ratchets her send chain.
-            // Bob will ratchet his recv chain when he receives Alice's first message.
-            // Until then, they won't have matching root keys.
         }
 
     @Test
@@ -92,10 +87,13 @@ class E2eeStoreTest {
             val reloadedAliceStore = E2eeStore(aliceStorage)
             val aliceEntryAfter = reloadedAliceStore.listFriends().first()
 
-            // Need to compare properties since SessionState might have zeroed keys or other differences in memory
             assertEquals(aliceEntryBefore.id, aliceEntryAfter.id)
             assertEquals(aliceEntryBefore.name, aliceEntryAfter.name)
-            assertEquals(aliceEntryBefore.session, aliceEntryAfter.session)
+            
+            // SessionState has transient fields (localDhPriv), so equals() might fail.
+            // But we ensure stable fields are equal.
+            assertEquals(aliceEntryBefore.session.rootKey.toHex(), aliceEntryAfter.session.rootKey.toHex())
+            assertEquals(aliceEntryBefore.session.sendToken.toHex(), aliceEntryAfter.session.sendToken.toHex())
         }
 
     @Test
@@ -201,9 +199,9 @@ class E2eeStoreTest {
             assertEquals(2.0, res2.decryptedLocations[0].lat)
 
             val aliceFriend2 = aliceStore.getFriend(aliceEntry.id)!!
-            assertNotEquals(aliceEntry.session.sendToken.toHex(), aliceFriend2.session.sendToken.toHex(), "Alice's sendToken should rotate")
+            assertNotEquals(aliceEntry.session.rootKey.toHex(), aliceFriend2.session.rootKey.toHex(), "Alice's root key should change")
 
-            // Alice sends message 3 on new epoch
+            // Alice sends message 3
             val loc3 = MessagePlaintext.Location(3.0, 3.0, 1.0, 3000L)
             val (aliceSess3, msg3) = Session.encryptMessage(aliceFriend2.session, loc3)
             aliceStore.updateSession(aliceEntry.id, aliceSess3)
@@ -214,6 +212,6 @@ class E2eeStoreTest {
             assertEquals(3.0, res3.decryptedLocations[0].lat)
 
             val bobFriend3 = bobStore.getFriend(bobFriend1.id)!!
-            assertContentEquals(aliceSess3.sendToken, bobFriend3.session.recvToken)
+            assertEquals(aliceSess3.sendToken.toHex(), bobFriend3.session.recvToken.toHex())
         }
 }

@@ -145,7 +145,7 @@ fun FriendsSheet(
                                 )
                                 if (friend.isStale) {
                                     Text(
-                                        "Friend has not been seen recently — rotation may be stuck",
+                                        "Friend has not been seen recently — sharing paused for security",
                                         style = MaterialTheme.typography.bodySmall,
                                         color = MaterialTheme.colorScheme.error,
                                     )

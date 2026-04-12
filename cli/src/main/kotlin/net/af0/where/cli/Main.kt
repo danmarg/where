@@ -197,9 +197,6 @@ fun main(args: Array<String>) {
                     E2eeMailboxClient.post(host, discoveryHex, initPayload)
                     println("Posted KeyExchangeInit to mailbox")
                     println("Joined ${qr.suggestedName} as $name")
-
-                    // Bob posts initial OPK bundle
-                    locationClient.postOpkBundle(bobEntry.id)
                 } catch (e: Exception) {
                     println("Failed to join: ${e.message}")
                 }

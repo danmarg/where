@@ -27,7 +27,8 @@
 
 ### Real-time transport
 - **Mailbox API** on `/inbox/{token}` (Ktor REST endpoints).
-- Server routes opaque encrypted payloads by pairwise routing tokens.
+- Server routes opaque encrypted payloads using pairwise routing tokens. Messages are encapsulated in standard Double Ratchet envelopes.
+- Clients maintain post-compromise security (PCS) mathematically through automated Keepalives even if only one user is sharing location.
 - Clients poll for updates at a constant rate.
 
 ### User identity

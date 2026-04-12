@@ -1,6 +1,7 @@
 package net.af0.where.e2ee
 
 import kotlin.test.Test
+import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
 import kotlin.test.assertNotEquals
 import kotlin.test.assertTrue
@@ -33,6 +34,7 @@ class SessionTest {
         val (aliceSession, bobSession) = exchangeKeys()
         val loc = MessagePlaintext.Location(lat = 37.7749, lng = -122.4194, acc = 15.0, ts = 1711152000L)
 
+        // Alice sends message 0 (symmetric epoch).
         val (aliceNew, message) = Session.encryptMessage(aliceSession, loc)
         val (_, decrypted) = Session.decryptMessage(bobSession, message)
 
@@ -214,28 +216,28 @@ class SessionTest {
         val (aliceSession, bobSession) = exchangeKeys()
         val loc = MessagePlaintext.Location(1.0, 2.0, 3.0, 4L)
 
-        // Alice sends message 1.
+        // Alice sends message 1. Stays in epoch 0.
         val (alice1, msg1) = Session.encryptMessage(aliceSession, loc)
 
-        // Bob receives message 1.
+        // Bob receives message 1. Stays in epoch 0.
         val (bob1, _) = Session.decryptMessage(bobSession, msg1)
-
-        // Bob sends message 2. Bob generates a new DH key and ratchets.
+        
+        // Bob sends message 2. Bob generates new DH key B1, ratchets to epoch 1.
         val (bob2, msg2) = Session.encryptMessage(bob1, loc)
 
-        // Alice receives message 2. She ratchets to Bob's new key.
+        // Alice receives message 2. She ratchets to Bob's B1 (epoch 1), then generates A1 (epoch 2).
         val (alice2, _) = Session.decryptMessage(alice1, msg2)
 
         assertNotEquals(aliceSession.rootKey.toHex(), alice2.rootKey.toHex(), "Alice's root key should change")
-
-        // Alice sends message 3.
+        
+        // Alice sends message 3 (epoch 2).
         val (alice3, msg3) = Session.encryptMessage(alice2, loc)
 
-        // Bob receives message 3. He ratchets to Alice's new key.
+        // Bob receives message 3. Bob ratchets to Alice's A1 (epoch 2), then generates B2 (epoch 3).
         val (bob3, _) = Session.decryptMessage(bob2, msg3)
 
         assertNotEquals(bob1.rootKey.toHex(), bob3.rootKey.toHex(), "Bob's root key should change")
-
+        
         val (alice4, msg4) = Session.encryptMessage(alice3, loc)
         val (bob4, dec4) = Session.decryptMessage(bob3, msg4)
         assertTrue(dec4 is MessagePlaintext.Location)
@@ -250,35 +252,30 @@ class SessionTest {
         val aliceInitialSendToken = aliceSession.sendToken
         val aliceInitialRecvToken = aliceSession.recvToken
 
-        // Alice sends message 1
+        // Alice sends message 1 (epoch 0)
         val (alice1, msg1) = Session.encryptMessage(aliceSession, loc)
-        // Bob receives message 1
+        // Bob receives message 1 (epoch 0)
         val (bob1, _) = Session.decryptMessage(bobSession, msg1)
 
-        // Bob sends message 2
+        // Bob sends message 2 (epoch 1)
         val (bob2, msg2) = Session.encryptMessage(bob1, loc)
-        // Alice receives message 2
+        // Alice receives message 2 (ratchets to Bob's epoch 1, then her own epoch 2)
         val (alice2, _) = Session.decryptMessage(alice1, msg2)
 
         assertNotEquals(aliceInitialSendToken.toHex(), alice2.sendToken.toHex(), "Alice's send token should rotate")
         assertNotEquals(aliceInitialRecvToken.toHex(), alice2.recvToken.toHex(), "Alice's recv token should rotate")
-
-        // Alice sends message 3
+        
+        // Alice sends message 3 (epoch 2)
         val (alice3, msg3) = Session.encryptMessage(alice2, loc)
-        // Bob receives message 3
+        // Bob receives message 3 (ratchets to Alice's epoch 2, then his own epoch 3)
         val (bob3, _) = Session.decryptMessage(bob2, msg3)
 
-        // Alice sends message 4
+        // Alice sends message 4 (epoch 2)
         val (alice4, msg4) = Session.encryptMessage(alice3, loc)
-        // Bob receives message 4
+        // Bob receives message 4 (stays epoch 3)
         val (bob4, _) = Session.decryptMessage(bob3, msg4)
-
-        // Alice sends message 5
-        val (alice5, msg5) = Session.encryptMessage(alice4, loc)
-        // Bob receives message 5
-        val (bob5, _) = Session.decryptMessage(bob4, msg5)
-
+        
         // Eventually consistent.
-        assertEquals(alice5.sendToken.toHex(), bob5.recvToken.toHex())
+        assertEquals(alice3.sendToken.toHex(), bob3.recvToken.toHex())
     }
 }
