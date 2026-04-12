@@ -80,7 +80,21 @@ object Session {
         val isNewDhEpoch = !remoteDhPub.contentEquals(state.remoteDhPub)
         val seq = message.seqAsLong()
 
-        var currentState = state
+        // 1. Speculatively compute the ratchet pieces
+        var currentRootKey = state.rootKey
+        var currentRecvChainKey = state.recvChainKey
+        var currentSendChainKey = state.sendChainKey
+        var currentSendToken = state.sendToken
+        var currentRecvToken = state.recvToken
+        var currentSendSeq = state.sendSeq
+        var currentRecvSeq = state.recvSeq
+        var currentLocalDhPriv = state.localDhPriv
+        var currentLocalDhPub = state.localDhPub
+        var currentRemoteDhPub = state.remoteDhPub
+        var currentLastRemoteDhPub = state.lastRemoteDhPub
+        var currentPrevSendToken = state.prevSendToken
+        var currentIsSendTokenPending = state.isSendTokenPending
+
         if (isNewDhEpoch) {
             // DH ratchet step
             val dhOutRecv = x25519(state.localDhPriv, remoteDhPub)
@@ -92,51 +106,50 @@ object Session {
             val stepSend = kdfRk(stepRecv.newRootKey, dhOutSend)
             dhOutSend.fill(0)
 
-            // Derive new tokens
+            // Correctly derive new tokens using the spec-compliant root keys
             val aliceFp = state.aliceFp
             val bobFp = state.bobFp
 
-            // Recv token: sender is peer, recipient is me.
             val newRecvToken = if (state.isAlice) {
                 deriveRoutingToken(stepRecv.newRootKey, bobFp, aliceFp)
             } else {
                 deriveRoutingToken(stepRecv.newRootKey, aliceFp, bobFp)
             }
-            // Send token: sender is me, recipient is peer.
             val newSendToken = if (state.isAlice) {
                 deriveRoutingToken(stepSend.newRootKey, aliceFp, bobFp)
             } else {
                 deriveRoutingToken(stepSend.newRootKey, bobFp, aliceFp)
             }
 
-            currentState =
-                state.copy(
-                    rootKey = stepSend.newRootKey,
-                    recvChainKey = stepRecv.newChainKey,
-                    sendChainKey = stepSend.newChainKey,
-                    sendToken = newSendToken,
-                    recvToken = newRecvToken,
-                    sendSeq = 0L,
-                    recvSeq = 0L,
-                    localDhPriv = newLocalDh.priv,
-                    localDhPub = newLocalDh.pub,
-                    remoteDhPub = remoteDhPub.copyOf(),
-                    lastRemoteDhPub = state.remoteDhPub.copyOf(),
-                    prevSendToken = state.sendToken.copyOf(),
-                    isSendTokenPending = true,
-                )
+            // Zero intermediate keys that won't be in the final state
+            stepRecv.newRootKey.fill(0)
+
+            currentRootKey = stepSend.newRootKey
+            currentRecvChainKey = stepRecv.newChainKey
+            currentSendChainKey = stepSend.newChainKey
+            currentSendToken = newSendToken
+            currentRecvToken = newRecvToken
+            currentSendSeq = 0L
+            currentRecvSeq = 0L
+            currentLocalDhPriv = newLocalDh.priv
+            currentLocalDhPub = newLocalDh.pub
+            currentRemoteDhPub = remoteDhPub.copyOf()
+            currentLastRemoteDhPub = state.remoteDhPub.copyOf()
+            currentPrevSendToken = state.sendToken.copyOf()
+            currentIsSendTokenPending = true
         }
 
-        // Replay rejection
-        if (seq <= currentState.recvSeq) {
-            throw ProtocolException("replay: seq $seq <= recvSeq ${currentState.recvSeq}")
+        // 2. Replay rejection against speculative seq
+        if (seq <= currentRecvSeq) {
+            throw ProtocolException("replay: seq $seq <= recvSeq $currentRecvSeq")
         }
-        val stepsNeeded = seq - currentState.recvSeq
+        val stepsNeeded = seq - currentRecvSeq
         if (stepsNeeded > MAX_GAP + 1) {
             throw ProtocolException("gap too large: stepsNeeded $stepsNeeded")
         }
 
-        var chainKey = currentState.recvChainKey.copyOf()
+        // 3. Speculatively derive the message key
+        var chainKey = currentRecvChainKey.copyOf()
         var step: ChainStep? = null
         // Due to the MAX_GAP check above, we know stepsNeeded <= MAX_GAP, 
         // which fits comfortably within an Int, making the .toInt() cast safe.
@@ -146,16 +159,45 @@ object Session {
             chainKey = step!!.newChainKey
         }
         val finalStep = step!!
+        val speculativeRecvChainKey = chainKey
 
-        val aad = buildMessageAad(currentState.aliceFp, currentState.bobFp, seq, remoteDhPub)
+        // 4. Decrypt and verify
+        val aad = buildMessageAad(state.aliceFp, state.bobFp, seq, remoteDhPub)
         val plaintext =
             try {
                 aeadDecrypt(finalStep.messageKey, finalStep.messageNonce, message.ct, aad)
             } catch (e: Exception) {
                 finalStep.messageKey.fill(0)
                 finalStep.messageNonce.fill(0)
+                speculativeRecvChainKey.fill(0)
+                if (isNewDhEpoch) {
+                    currentRootKey.fill(0)
+                    currentRecvChainKey.fill(0)
+                    currentSendChainKey.fill(0)
+                    currentLocalDhPriv.fill(0)
+                }
                 throw AuthenticationException("decryption failed", e)
             }
+        
+        // 5. Success! Commit the state changes and zero message keys.
+        finalStep.messageKey.fill(0)
+        finalStep.messageNonce.fill(0)
+        
+        val newState = state.copy(
+            rootKey = currentRootKey,
+            sendChainKey = currentSendChainKey,
+            recvChainKey = speculativeRecvChainKey,
+            sendToken = currentSendToken,
+            recvToken = currentRecvToken,
+            sendSeq = currentSendSeq,
+            recvSeq = seq,
+            localDhPriv = currentLocalDhPriv,
+            localDhPub = currentLocalDhPub,
+            remoteDhPub = currentRemoteDhPub,
+            lastRemoteDhPub = currentLastRemoteDhPub,
+            prevSendToken = currentPrevSendToken,
+            isSendTokenPending = currentIsSendTokenPending,
+        )
 
         val unpadded =
             try {
@@ -169,18 +211,10 @@ object Session {
 
         val decoded = decodeMessage(unpadded)
 
-        val finalState =
-            currentState.copy(
-                recvChainKey = chainKey,
-                recvSeq = seq,
-            )
-
-        finalStep.messageKey.fill(0)
-        finalStep.messageNonce.fill(0)
         plaintext.fill(0)
         unpadded.fill(0)
 
-        return finalState to decoded
+        return newState to decoded
     }
 
     private fun buildMessageAad(
