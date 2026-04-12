@@ -140,7 +140,8 @@ Both sides can therefore assign human-readable names to each other at the time o
 This protocol uses **Trust-on-First-Use (TOFU)** with local session pinning.
 
 **Safety Numbers:** Two users can optionally verify their connection by comparing a safety number fingerprint.
-- **Calculation:** `SHA-256(lower_EK.pub || higher_EK.pub)`, where `lower_EK.pub` and `higher_EK.pub` are the two bootstrap ephemeral public keys sorted lexicographically by their raw 32-byte values. The result is displayed as a human-readable 40-character hex string or QR code.
+- **Calculation:** `HKDF-SHA-256(ikm=SHA-256(lower_EK.pub || higher_EK.pub), salt=null, info="Where-v1-SafetyNumber", length=60)`.
+- The result is displayed as 12 groups of 5 decimal digits (consistent with §8.3 format).
 - This is **session-scoped**: the Safety Number is unique to the specific pairing event, not to a device. Every re-pairing after a device reset produces a new Safety Number.
 - **Key-Change Detection:** If Alice receives a new `KeyExchangeInit` for a contact she already has an active session with (identified by local name), the app MUST display a "Session Reset" warning before replacing the old session. The user should compare the new Safety Number out-of-band before confirming. This can indicate: (1) the friend reinstalled and re-paired — expected; (2) a MITM substituted a key — suspicious.
 
@@ -215,7 +216,8 @@ alice_fp = SHA-256(EK_A.pub)   // 32 bytes
 bob_fp   = SHA-256(EK_B.pub)   // 32 bytes
 
 // Safety Number (for out-of-band verification)
-safety_number = SHA-256(lower_EK.pub || higher_EK.pub)   // sorted lexicographically
+safety_number_bytes = HKDF-SHA-256(ikm=SHA-256(lower_EK.pub || higher_EK.pub), salt=null, info="Where-v1-SafetyNumber", length=60)
+safety_number = formatSafetyNumber(safety_number_bytes)
 ```
 
 **Key Confirmation:**

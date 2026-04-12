@@ -245,10 +245,10 @@ class KeyExchangeTest {
     }
 
     @Test
-    fun `safetyNumber returns 64 bytes`() {
+    fun `safetyNumber returns 60 bytes`() {
         val ekA = generateX25519KeyPair().pub
         val ekB = generateX25519KeyPair().pub
-        assertEquals(64, safetyNumber(ekA, ekB).size)
+        assertEquals(60, safetyNumber(ekA, ekB).size)
     }
 
     @Test
