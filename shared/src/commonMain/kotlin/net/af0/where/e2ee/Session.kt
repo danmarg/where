@@ -49,6 +49,7 @@ object Session {
             EncryptedMessagePayload(
                 dhPub = dhPub,
                 seq = seq.toString(),
+                pn = state.pn,
                 ct = ct,
             )
 
@@ -99,21 +100,55 @@ object Session {
             return state.copy(skippedMessageKeys = newCache) to decoded
         }
 
-        // 2. Reject replays from already seen/processed epochs
-        if (remoteDhPub.contentEquals(state.lastRemoteDhPub)) {
-            throw ProtocolException("replay: dhPub matched previous epoch (across-epoch replay)")
-        }
-        if (state.seenRemoteDhPubs.contains(remoteDhPub.toHex())) {
-            throw ProtocolException("replay: dhPub has already been superseded (old epoch)")
-        }
-
         val isNewDhEpoch = !remoteDhPub.contentEquals(state.remoteDhPub)
         
         // 3. Speculatively perform DH and symmetric ratchet
         // We do NOT mutate the original 'state' or commit anything until decryption succeeds.
         var speculativeState = state
+        val newSkippedKeys = LinkedHashMap(state.skippedMessageKeys)
+
         if (isNewDhEpoch) {
-            speculativeState = performDhRatchet(state, remoteDhPub)
+            if (remoteDhPub.contentEquals(state.lastRemoteDhPub)) {
+                // Out-of-order message from the previous epoch. 
+                // It MUST be in the skipped key cache because we've already ratcheted forward.
+                // Since cachedKey was null, this is an unrecoverable gap or replay.
+                throw ProtocolException("missing key for previous epoch (out-of-order window closed)")
+            }
+            if (state.seenRemoteDhPubs.contains(remoteDhPub.toHex())) {
+                throw ProtocolException("replay: dhPub already superseded (old epoch)")
+            }
+
+            // Before ratcheting to a NEW epoch, we must skip any remaining messages in the 
+            // CURRENT receiving chain as indicated by the sender's 'pn' field.
+            val pn = message.pn
+            if (pn > state.recvSeq) {
+                val stepsToSkip = pn - state.recvSeq
+                if (stepsToSkip > MAX_GAP) throw ProtocolException("gap too large in previous chain")
+                
+                var oldChainKey = speculativeState.recvChainKey.copyOf()
+                repeat(stepsToSkip.toInt()) { i ->
+                    val step = kdfCk(oldChainKey)
+                    oldChainKey.fill(0)
+                    oldChainKey = step.newChainKey
+                    
+                    val skippedSeq = speculativeState.recvSeq + i + 1
+                    val mkKey = state.remoteDhPub.toHex() + "_" + skippedSeq
+                    newSkippedKeys[mkKey] = step.messageKey + step.messageNonce
+
+                    // Limit cache size
+                    if (newSkippedKeys.size > MAX_SKIPPED_KEYS) {
+                        newSkippedKeys.remove(newSkippedKeys.keys.first())?.fill(0)
+                    }
+                }
+                oldChainKey.fill(0)
+                speculativeState = speculativeState.copy(
+                    recvChainKey = oldChainKey, // technically zeroed, performDhRatchet will overwrite
+                    recvSeq = pn,
+                    skippedMessageKeys = newSkippedKeys
+                )
+            }
+
+            speculativeState = performDhRatchet(speculativeState, remoteDhPub)
         }
 
         // Replay rejection against speculative seq
@@ -126,7 +161,7 @@ object Session {
         }
 
         // Derivation loop for chain keys and skipped message keys
-        val newSkippedKeys = LinkedHashMap(speculativeState.skippedMessageKeys)
+        val derivationSkippedKeys = LinkedHashMap(speculativeState.skippedMessageKeys)
         
         // If we entered a new DH epoch, standard DR says we should eventually clear 
         // very old skipped keys. We'll clear keys belonging to epochs older than 'lastRemoteDhPub'.
@@ -151,14 +186,13 @@ object Session {
                     // Store intermediate message key for future out-of-order delivery
                     val mkPlusNonce = step.messageKey + step.messageNonce
                     val mkKey = remoteDhPub.toHex() + "_" + currentSeq
-                    newSkippedKeys[mkKey] = mkPlusNonce
-                    
-                    // Limit cache size with deterministic FIFO (LinkedHashMap order)
-                    if (newSkippedKeys.size > MAX_SKIPPED_KEYS) {
-                        val oldestKey = newSkippedKeys.keys.first()
+                    derivationSkippedKeys[mkKey] = mkPlusNonce
+                                        // Limit cache size with deterministic FIFO (LinkedHashMap order)
+                    if (derivationSkippedKeys.size > MAX_SKIPPED_KEYS) {
+                        val oldestKey = derivationSkippedKeys.keys.first()
                         // Memory Hygiene: Explicitly zero the evicted key before GC
-                        newSkippedKeys[oldestKey]?.fill(0)
-                        newSkippedKeys.remove(oldestKey)
+                        derivationSkippedKeys[oldestKey]?.fill(0)
+                        derivationSkippedKeys.remove(oldestKey)
                     }
                 } else {
                     currentStep = step
@@ -188,9 +222,15 @@ object Session {
 
             // Success! Commit the state.
             val newState = speculativeState.copy(
-                recvChainKey = chainKey,
+                rootKey = speculativeState.rootKey.copyOf(),
+                sendChainKey = speculativeState.sendChainKey.copyOf(),
+                recvChainKey = chainKey, // This is our new derived chain key
                 recvSeq = seq,
-                skippedMessageKeys = newSkippedKeys,
+                skippedMessageKeys = derivationSkippedKeys,
+                needsRatchet = isNewDhEpoch, // If DH bumped, we definitely need a response
+                seenRemoteDhPubs = if (isNewDhEpoch) {
+                    (speculativeState.seenRemoteDhPubs + state.remoteDhPub.toHex()).toList().takeLast(10).toSet()
+                } else speculativeState.seenRemoteDhPubs
             )
 
             // Memory Hygiene: Wipe the OLD ratchet keys now that they are superseded
