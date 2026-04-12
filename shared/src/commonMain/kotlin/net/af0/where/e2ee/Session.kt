@@ -14,6 +14,8 @@ import kotlinx.serialization.json.put
  */
 object Session {
     private const val PROTOCOL_VERSION = 1
+    private const val HEADER_NONCE_SIZE = 12
+    private const val HEADER_TAG_SIZE = 16
 
     fun encryptMessage(
         state: SessionState,
@@ -35,20 +37,22 @@ object Session {
             state.copy(
                 sendChainKey = step.newChainKey,
                 sendSeq = seq,
-                needsRatchet = false, // We've sent at least one message in this epoch
+                needsRatchet = false,
             )
 
-        // Memory Hygiene: Wipe the OLD chain key now that it is superseded
-        state.sendChainKey.fill(0)
+        // Seal the metadata into an envelope (#186)
+        val envelope = encryptHeader(state.headerKey, dhPub, seq, state.pn)
 
+        // Memory Hygiene
+        state.sendChainKey.fill(0)
         step.messageKey.fill(0)
         step.messageNonce.fill(0)
         plaintext.fill(0)
 
         val message =
             EncryptedMessagePayload(
-                dhPub = dhPub,
-                seq = seq.toString(),
+                v = PROTOCOL_VERSION,
+                envelope = envelope,
                 ct = ct,
             )
 
@@ -60,11 +64,24 @@ object Session {
         state: SessionState,
         message: EncryptedMessagePayload,
     ): Pair<SessionState, MessagePlaintext> {
-        val remoteDhPub = message.dhPub
-        val seq = message.seqAsLong()
+        // 1. Unwrap the envelope to reveal metadata (#186)
+        val header = try {
+            decryptHeader(state.headerKey, message.envelope)
+        } catch (_: Exception) {
+            // If current headerKey fails, Alice might have ratcheted DH. Try nextHeaderKey.
+            try {
+                decryptHeader(state.nextHeaderKey, message.envelope)
+            } catch (e: Exception) {
+                throw AuthenticationException("envelope decryption failed — incorrect key or corrupted metadata", e)
+            }
+        }
+        
+        val remoteDhPub = header.dhPub
+        val isNewDhEpoch = !remoteDhPub.contentEquals(state.remoteDhPub)
+        val seq = header.seq
         val cacheKey = remoteDhPub.toHex() + "_" + seq
 
-        // 1. Check skipped message key cache first (out-of-order within prior epochs)
+        // 2. Check skipped message key cache first
         val cachedKey = state.skippedMessageKeys[cacheKey]
         if (cachedKey != null) {
             // AAD directionality: peer is the sender, I am the recipient.
@@ -104,8 +121,6 @@ object Session {
             return state.copy(skippedMessageKeys = newCache) to decoded
         }
 
-        val isNewDhEpoch = !remoteDhPub.contentEquals(state.remoteDhPub)
-        
         // 3. Speculatively perform DH and symmetric ratchet
         // We do NOT mutate the original 'state' or commit anything until decryption succeeds.
         var speculativeState = state
@@ -117,7 +132,7 @@ object Session {
                 throw ProtocolException("replay: dhPub already superseded (out-of-order window closed)")
             }
             
-            // PH-3.3: We MUST ratchet DH before we can decrypt and see the hidden 'pn'.
+            // Ratchet state forward. Note: headerKey transition happens inside performDhRatchet.
             speculativeState = performDhRatchet(speculativeState, remoteDhPub)
         }
 
@@ -232,16 +247,18 @@ object Session {
             val newState = speculativeState.copy(
                 rootKey = speculativeState.rootKey.copyOf(),
                 sendChainKey = speculativeState.sendChainKey.copyOf(),
-                recvChainKey = chainKey, // This is our new derived chain key
+                headerKey = speculativeState.headerKey.copyOf(),
+                nextHeaderKey = speculativeState.nextHeaderKey.copyOf(),
+                recvChainKey = chainKey,
                 recvSeq = seq,
                 skippedMessageKeys = finalSkippedKeys,
-                needsRatchet = isNewDhEpoch, // If DH bumped, we definitely need a response
+                needsRatchet = isNewDhEpoch,
                 seenRemoteDhPubs = if (isNewDhEpoch) {
                     (speculativeState.seenRemoteDhPubs + state.remoteDhPub.toHex()).toList().takeLast(10).toSet()
                 } else speculativeState.seenRemoteDhPubs
             )
 
-            // Memory Hygiene: Wipe the OLD ratchet keys now that they are superseded
+            // Memory Hygiene
             if (isNewDhEpoch) {
                 state.localDhPriv.fill(0)
                 state.rootKey.fill(0)
@@ -301,17 +318,17 @@ object Session {
             newSeenKeys.remove(oldest)
         }
 
-        // NONCE UNIQUENESS (§5.4): Resetting sendSeq to 0 is safe because KDF_RK
-        // includes the unique DH shared secret, ensuring the new rootKey and 
-        // subsequent chain keys (and thus nonces) are unique to this epoch.
-        // We stash PN (§4.4) to bind the AAD across epochs.
-        // Zero intermediate keys
         stepRecv.newRootKey.fill(0)
 
+        // HEADER ENCRYPTION TRANSITION (#186):
+        // When we ratchet, our previous nextHeaderKey becomes the current headerKey 
+        // for the epoch we just entered. The nextHeaderKey is derived for the subsequent epoch.
         return state.copy(
             rootKey = stepSend.newRootKey,
             recvChainKey = stepRecv.newChainKey,
             sendChainKey = stepSend.newChainKey,
+            headerKey = state.nextHeaderKey.copyOf(),
+            nextHeaderKey = stepSend.newHeaderKey, // Already a copy from kdfRk
             sendToken = newSendToken,
             recvToken = newRecvToken,
             sendSeq = 0L,
@@ -326,6 +343,38 @@ object Session {
             prevSendToken = state.sendToken.copyOf(),
             isSendTokenPending = true,
         )
+    }
+
+    private fun encryptHeader(key: ByteArray, dhPub: ByteArray, seq: Long, pn: Long): ByteArray {
+        val plaintext = ByteArray(1 + 32 + 8 + 8)
+        plaintext[0] = PROTOCOL_VERSION.toByte()
+        dhPub.copyInto(plaintext, 1)
+        longToBeBytes(seq).copyInto(plaintext, 33)
+        longToBeBytes(pn).copyInto(plaintext, 41)
+
+        val nonce = randomBytes(HEADER_NONCE_SIZE)
+        val ct = aeadEncrypt(key, nonce, plaintext, aad = ByteArray(0))
+        return nonce + ct
+    }
+
+    internal data class DecryptedHeader(val dhPub: ByteArray, val seq: Long, val pn: Long)
+
+    internal fun decryptHeader(key: ByteArray, envelope: ByteArray): DecryptedHeader {
+        if (envelope.size < HEADER_NONCE_SIZE + HEADER_TAG_SIZE + 49) {
+            throw ProtocolException("header envelope too small")
+        }
+        val nonce = envelope.copyOfRange(0, HEADER_NONCE_SIZE)
+        val ct = envelope.copyOfRange(HEADER_NONCE_SIZE, envelope.size)
+        val plaintext = aeadDecrypt(key, nonce, ct, aad = ByteArray(0))
+
+        if (plaintext[0].toInt() != PROTOCOL_VERSION) {
+            throw ProtocolException("unsupported protocol version in header: ${plaintext[0].toInt()}")
+        }
+
+        val dhPub = plaintext.copyOfRange(1, 33)
+        val seq = bytesToLong(plaintext.copyOfRange(33, 41))
+        val pn = bytesToLong(plaintext.copyOfRange(41, 49))
+        return DecryptedHeader(dhPub, seq, pn)
     }
 
     private fun buildMessageAad(
