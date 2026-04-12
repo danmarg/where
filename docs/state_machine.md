@@ -56,19 +56,19 @@ The timer is adjusted at the end of each `firePoll` / `pollLoop` iteration to ma
 - **Movement throttle**: 15 seconds. Location is shared if the user has moved >10 m and the last send was >15 s ago.
 - **Heartbeat throttle**: 5 minutes. If stationary, a "last seen" update is sent every 5 minutes. Only fires when sharing is on.
 
-## 4. Ratchet Ack Timeout (issue #38)
+## 4. PCS Staleness Timeout (issue #38)
 
-The Double Ratchet protocol requires **Bob (recipient)** to post a `RatchetAck` back to Alice whenever Alice performs a DH ratchet rotation. Alice rotates whenever she has cached one-time pre-keys (OPKs) from Bob. Alice starts with 10 OPKs cached at pairing; without fresh acks (and thus fresh OPKs from Bob), her cache drains and she can no longer rotate the DH ratchet.
+The standard Double Ratchet protocol requires both peers to continually send messages to each other to rotate DH keys. If Alice continues sending locations to Bob indefinitely, but Bob never replies, Alice remains stuck on the same symmetric chain. This provides forward secrecy, but loses post-compromise security (PCS).
 
-If Alice cannot rotate, she continues sending on the symmetric ratchet indefinitely, maintaining per-message forward secrecy but losing post-compromise security (PCS). To make this failure visible and enforce a bound on key reuse:
+To make this failure visible and enforce a bound on key reuse:
 
-1. **`lastAckTs`** is stored on every `FriendEntry` (Alice side only), initialized to the pairing timestamp and updated each time a valid `RatchetAck` is verified.
-2. **`E2eeStore.isAckTimedOut`** returns `true` when `now − lastAckTs > ACK_TIMEOUT_SECONDS` (7 days).
-3. **`LocationClient.sendLocation`** skips friends whose ack is timed out, stopping location sharing to that specific friend.
-4. **UI warning**: both apps display a warning next to any friend whose ack is stale ("Not receiving acks — location sharing paused").
+1. **`lastRecvTs`** is stored on every `FriendEntry`, initialized to the handshake timestamp and updated each time ANY valid message (Location or Keepalive) is decrypted.
+2. **`FriendEntry.isStale`** returns `true` when `now − lastRecvTs > ACK_TIMEOUT_SECONDS` (7 days).
+3. **`LocationClient.sendLocation`** skips friends who are stale, stopping location sharing to that specific friend.
+4. **UI warning**: both apps display a warning next to any friend whose session is stale ("Friend inactive — sharing paused").
 
 ### Why 7 days?
-At a 30-min maintenance-poll interval (the background rate when sharing is off), Bob's app will process any pending epoch rotations and post acks within 30 minutes of the OS waking it — which happens at least occasionally for all background-capable apps. Seven days is generous enough that brief phone-off or airplane-mode periods don't trigger the warning, but short enough that a genuinely broken session (uninstalled app, lost key) is eventually surfaced to Alice.
+Seven days is generous enough that brief phone-off or airplane-mode periods don't trigger the warning, but short enough that a genuinely broken session (uninstalled app, lost key, or peer who no longer cares) is eventually surfaced to Alice, preventing indefinite symmetric chain progression.
 
 ### Maintenance poll (sharing off)
-To keep Ratchet Acks flowing even when the user turns off location sharing, the background poll continues at a reduced 30-minute interval. This poll does not send location (the heartbeat is gated on `isSharingLocation`) but it does process any `EpochRotation` messages from friends and posts the required `RatchetAck` and OPK bundle in response.
+To keep the Double Ratchet flowing even when the user turns off location sharing, the background poll continues at a reduced 30-minute interval. This poll does not send locations (the heartbeat is gated on `isSharingLocation`), but if a new DH key is received during the poll, it automatically posts a `Keepalive` message in response. This ensures that the peer's DH Ratchet advances and their PCS is maintained.

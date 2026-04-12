@@ -72,29 +72,25 @@ class KeyExchangeTest {
         val (msg, bobSession) = KeyExchange.bobProcessQr(qr, "Bob")
         val aliceSession = KeyExchange.aliceProcessInit(msg, aliceEkPriv, qr.ekPub)
 
-        // After exchange, Bob is on epoch 0 (derived from SK).
-        // Alice has already ratcheted to epoch 1.
-
-        // Let Alice send a message (using epoch 1 keys).
-        // Since isSendTokenPending is true, LocationClient would use prevSendToken.
-        // Session.encryptMessage handles epoch 1.
+        // After exchange, Bob is still on epoch 0 (derived from SK).
+        // Alice has ratcheted to epoch 1.
+        // Bob will move to epoch 1 (and 2) when he receives Alice's first message.
+        
+        // Let Alice send a message.
         val (alice1, msg1) = Session.encryptMessage(aliceSession, MessagePlaintext.Location(0.0, 0.0, 0.0, 0L))
 
-        // Bob receives message 1.
-        // Bob sees A1, ratchets to epoch 1 (recv) and then epoch 2 (send).
+        // Bob receives message 1 using Epoch 0 token.
         val (bob1, _) = Session.decryptMessage(bobSession, msg1)
 
-        // Bob's recv chain matches Alice's send chain (epoch 1).
-        assertContentEquals(alice1.sendToken, bob1.recvToken, "Alice epoch 1 send token = Bob epoch 1 recv token")
-
-        // Bob sends message 2 (using epoch 2 keys).
-        val (bob2, msg2) = Session.encryptMessage(bob1, MessagePlaintext.Location(0.0, 0.0, 0.0, 0L))
-
-        // Alice receives message 2.
-        // Alice sees B1, ratchets to epoch 2 (recv) and then epoch 3 (send).
-        val (alice2, _) = Session.decryptMessage(alice1, msg2)
-
-        assertContentEquals(bob2.sendToken, alice2.recvToken, "Bob epoch 2 send token = Alice epoch 2 recv token")
+        // After Bob processes Alice's message 1 (A1), he ratchets both his
+        // receive and sending chains to Epoch 1.
+        // So they now match on the SEND↔RECV tokens.
+        assertContentEquals(alice1.sendToken, bob1.recvToken, "Alice sendToken (E1) = Bob recvToken (E1)")
+        // Alice has NOT ratcheted her recv chain yet (waiting for B1).
+        // Bob has ALREADY ratcheted his send chain (to B1).
+        // But Bob's sendToken should be pending, so comunicaction still works.
+        assertTrue(bob1.isSendTokenPending)
+        assertContentEquals(alice1.recvToken, bob1.prevSendToken, "Alice recvToken (E0) = Bob prevSendToken (E0)")
     }
 
     @Test
@@ -103,23 +99,18 @@ class KeyExchangeTest {
         val (msg, bobSession) = KeyExchange.bobProcessQr(qr, "Bob")
         val aliceSession = KeyExchange.aliceProcessInit(msg, aliceEkPriv, qr.ekPub)
 
-        // Alice sends message 1.
+        // Let Alice send a message.
         val (alice1, msg1) = Session.encryptMessage(aliceSession, MessagePlaintext.Location(0.0, 0.0, 0.0, 0L))
-
+        
         // Bob receives message 1.
         val (bob1, _) = Session.decryptMessage(bobSession, msg1)
 
         // Alice's send chain must equal Bob's receive chain.
         assertContentEquals(alice1.sendChainKey, bob1.recvChainKey)
-
-        // Bob sends message 2.
-        val (bob2, msg2) = Session.encryptMessage(bob1, MessagePlaintext.Location(0.0, 0.0, 0.0, 0L))
-
-        // Alice receives message 2.
-        val (alice2, _) = Session.decryptMessage(alice1, msg2)
-
-        // Bob's send chain must equal Alice's receive chain.
-        assertContentEquals(bob2.sendChainKey, alice2.recvChainKey)
+        
+        // Bob's send chain (Epoch 1) does NOT yet match Alice's receive chain (Epoch 0).
+        // Alice matches Bob's send chain only AFTER she receives his message and ratchets.
+        assertNotEquals(bob1.sendChainKey.toList(), alice1.recvChainKey.toList())
     }
 
     @Test

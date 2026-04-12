@@ -30,12 +30,12 @@ object Session {
         state: SessionState,
         payload: MessagePlaintext,
     ): Pair<SessionState, EncryptedMessagePayload> {
-        require(state.sendSeq != Long.MAX_VALUE)
+        require(state.sendSeq != Long.MAX_VALUE) { "sequence number overflow" }
 
         val step = kdfCk(state.sendChainKey)
         val seq = state.sendSeq + 1
         val dhPub = state.localDhPub
-
+        
         // AAD ordering: always (AliceFp, BobFp)
         val aad = buildMessageAad(state.aliceFp, state.bobFp, seq, dhPub)
         val plaintext = padToFixedSize(encodeMessage(payload), PADDING_SIZE)
@@ -94,19 +94,17 @@ object Session {
             val bobFp = state.bobFp
 
             // Recv token: sender is peer, recipient is me.
-            val newRecvToken =
-                if (state.isAlice) {
-                    deriveRoutingToken(stepRecv.newRootKey, bobFp, aliceFp)
-                } else {
-                    deriveRoutingToken(stepRecv.newRootKey, aliceFp, bobFp)
-                }
+            val newRecvToken = if (state.isAlice) {
+                deriveRoutingToken(stepRecv.newRootKey, bobFp, aliceFp)
+            } else {
+                deriveRoutingToken(stepRecv.newRootKey, aliceFp, bobFp)
+            }
             // Send token: sender is me, recipient is peer.
-            val newSendToken =
-                if (state.isAlice) {
-                    deriveRoutingToken(stepSend.newRootKey, aliceFp, bobFp)
-                } else {
-                    deriveRoutingToken(stepSend.newRootKey, bobFp, aliceFp)
-                }
+            val newSendToken = if (state.isAlice) {
+                deriveRoutingToken(stepSend.newRootKey, aliceFp, bobFp)
+            } else {
+                deriveRoutingToken(stepSend.newRootKey, bobFp, aliceFp)
+            }
 
             currentState =
                 state.copy(
@@ -227,8 +225,8 @@ object Session {
         data: ByteArray,
         size: Int,
     ): ByteArray {
-        require(data.size > 0)
-        require(data.size <= size - 2)
+        require(data.size > 0) { "plaintext must not be empty" }
+        require(data.size <= size - 2) { "plaintext (${data.size} bytes) too large for PADDING_SIZE $size" }
 
         val padCount = size - data.size
         val padByte = (padCount and 0xFF).toByte()
@@ -242,14 +240,14 @@ object Session {
     }
 
     private fun unpad(data: ByteArray): ByteArray {
-        require(data.size >= 2)
+        require(data.size >= 2) { "padded data too small" }
         val padByte = data[data.size - 1].toInt() and 0xFF
         val padHighByte = data[data.size - 2].toInt() and 0xFF
         val padCount = (padHighByte shl 8) or padByte
 
-        require(padCount >= 2 && padCount <= data.size)
+        require(padCount >= 2 && padCount <= data.size) { "invalid padding count: $padCount" }
         for (i in data.size - padCount until data.size - 2) {
-            require(data[i].toInt() and 0xFF == padByte)
+            require(data[i].toInt() and 0xFF == padByte) { "padding corruption at index $i" }
         }
         return data.copyOfRange(0, data.size - padCount)
     }
@@ -257,6 +255,5 @@ object Session {
 
 sealed class MessagePlaintext {
     data class Location(val lat: Double, val lng: Double, val acc: Double, val ts: Long) : MessagePlaintext()
-
     object Keepalive : MessagePlaintext()
 }

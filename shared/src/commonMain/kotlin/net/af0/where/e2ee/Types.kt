@@ -2,6 +2,7 @@ package net.af0.where.e2ee
 
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.Transient
 
 /**
  * Raw X25519 keypair. Both fields are 32-byte little-endian representations
@@ -26,6 +27,9 @@ data class SessionState(
     @Serializable(with = ByteArrayBase64Serializer::class) val recvToken: ByteArray,
     val sendSeq: Long,
     val recvSeq: Long,
+    // SECURITY NOTE: We rely on the app layer to store the serialized SessionState in 
+    // secure storage (e.g., iOS Keychain / Android EncryptedSharedPreferences) because 
+    // localDhPriv MUST be persisted across app restarts to allow DH ratcheting.
     @Serializable(with = ByteArrayBase64Serializer::class) val localDhPriv: ByteArray,
     @Serializable(with = ByteArrayBase64Serializer::class) val localDhPub: ByteArray,
     @Serializable(with = ByteArrayBase64Serializer::class) val remoteDhPub: ByteArray,

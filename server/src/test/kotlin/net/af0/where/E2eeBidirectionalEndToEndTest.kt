@@ -10,8 +10,7 @@ import kotlin.test.*
 /**
  * End-to-end bidirectional E2EE test that validates the full production code paths:
  * 1. Key exchange with name verification (via real HTTP mailbox)
- * 2. OPK bundle posting (Bob → Alice)
- * 3. Bidirectional location sharing via LocationClient.sendLocation() + poll()
+ * 2. Bidirectional location sharing via LocationClient.sendLocation() + poll()
  * 4. Random timing to catch async/concurrency bugs
  *
  * Uses the same LocationClient / processBatch / sendLocation code as the real apps,
@@ -89,10 +88,6 @@ class E2eeBidirectionalEndToEndTest {
             E2eeMailboxClient.post(baseUrl, discoveryHex, initPayload)
             println("✓ Bob posted KeyExchangeInit to discovery=$discoveryHex")
 
-            // Bob posts his initial OPK bundle to his send token (exactly as the apps do)
-            bobClient.postOpkBundle(bobEntry.id)
-            println("✓ Bob posted OPK bundle to sendToken=${bobEntry.session.sendToken.toHex()}")
-
             // Alice polls the discovery token and processes the init (as pollPendingInvite does)
             val discoveryMessages = E2eeMailboxClient.poll(baseUrl, discoveryHex)
             val initMsg = discoveryMessages.filterIsInstance<KeyExchangeInitPayload>().firstOrNull()
@@ -110,11 +105,6 @@ class E2eeBidirectionalEndToEndTest {
             assertContentEquals(aliceSession.sendToken, bobSession.recvToken, "Alice send = Bob recv")
             assertContentEquals(aliceSession.recvToken, bobSession.sendToken, "Alice recv = Bob send")
             println("✓ Bidirectional tokens verified")
-
-            // Alice polls once to drain Bob's OPK bundle (mirrors the app's first poll after pairing)
-            val afterPairUpdates = aliceClient.poll()
-            assertEquals(0, afterPairUpdates.size, "OPK bundle poll should return 0 location updates")
-            println("✓ Alice drained Bob's OPK bundle (0 locations, as expected)")
             println()
 
             // ============================================================================

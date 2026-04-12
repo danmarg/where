@@ -84,11 +84,11 @@ For threat models that include a metadata-analyzing server, the mitigations in �
 
 ### 2.2 What This Protocol Protects Against
 
-- **Server compromise revealing historical locations.** *Forward secrecy (per-message):* deleting each message key `MK_n` immediately after use ensures that compromise of one key does not expose others. *Post-compromise security (per DH ratchet step):* the DH ratchet step with fresh OPK material limits how long a leaked chain key remains exploitable; the ratchet advances when Bob acks (§8.3).
+- **Server compromise revealing historical locations.** *Forward secrecy (per-message):* deleting each message key `MK_n` immediately after use ensures that compromise of one key does not expose others. *Post-compromise security (per DH ratchet step):* the DH ratchet step refreshing the root key and symmetric chains limits how long a leaked chain key remains exploitable.
 - **Passive eavesdropping.** All location payloads are encrypted with ephemeral symmetric keys derived from a per-friend ratchet. A passive observer with access to ciphertext learns nothing about coordinates.
-- **Replay attacks.** Each message carries a monotonically increasing sequence counter which is also authenticated (as AEAD additional data). The recipient rejects any frame with a counter it has already seen.
-- **Ciphertext forgery.** ChaCha20-Poly1305 authentication tags cover both the ciphertext and associated data (sender session fingerprint, sequence number). A server or attacker cannot modify a frame without detection.
-- **Ratchet hijacking.** `EpochRotation` and `RatchetAck` control messages are AEAD-encrypted under keys derived from the current session root key. An attacker without session state cannot forge or inject valid control messages.
+- **Replay attacks.** Each message carries a monotonically increasing sequence counter which is also authenticated (as AEAD additional data). The recipient rejects any frame with a counter it has already seen within the same DH epoch.
+- **Ciphertext forgery.** ChaCha20-Poly1305 authentication tags cover both the ciphertext and associated data (sender session fingerprints, sequence number, DH public key). A server or attacker cannot modify a frame without detection.
+- **Ratchet hijacking.** All messages are AEAD-encrypted under keys derived from the current session root key and symmetric chains. An attacker without session state cannot forge or inject valid messages.
 - **Key mismatch at bootstrap.** The `key_confirmation` field in `KeyExchangeInit` (§4.2) proves that both parties derived the same `SK` before any location data is shared.
 
 ### 2.3 What This Protocol Does NOT Protect Against
@@ -204,17 +204,6 @@ bob_fp   = SHA-256(EK_B.pub)   // 32 bytes
 
 // Safety Number (for out-of-band verification)
 safety_number = SHA-256(lower_EK.pub || higher_EK.pub)   // sorted lexicographically
-
-// Derive initial bootstrap routing tokens from SK
-// AliceToBob token (Alice posts, Bob polls)
-T_AB_0 = HKDF-SHA-256(IKM  = SK,
-                       salt = <absent>,
-                       info = "Where-v1-InitToken-AB")[0:16]
-// Note: HKDF with salt=<absent> uses HMAC-SHA-256 with a zero-filled key per RFC 5869, which is semantically equivalent to salt = ByteArray(32).
-// BobToAlice token (Bob posts, Alice polls)
-T_BA_0 = HKDF-SHA-256(IKM  = SK,
-                       salt = <absent>,
-                       info = "Where-v1-InitToken-BA")[0:16]
 ```
 
 **Key Confirmation:**
@@ -226,6 +215,15 @@ key_confirmation = HMAC-SHA-256(key  = SK,
                                  data = "Where-v1-Confirm" || EK_A.pub || EK_B.pub)
 ```
 
+**Pairwise Session Initialization:**
+
+Both parties initialize their Double Ratchet state (§8.2) seeded with `root_key = SK`. Bob derives initial routing tokens from `SK`:
+
+```
+T_AB_0 = deriveRoutingToken(SK, alice_fp, bob_fp) // Alice posts, Bob polls
+T_BA_0 = deriveRoutingToken(SK, bob_fp, alice_fp) // Bob posts, Alice polls
+```
+
 Bob transmits:
 ```json
 {
@@ -233,7 +231,7 @@ Bob transmits:
   "token":            "<base64, T_AB_0>",
   "ek_pub":           "<base64, Bob's X25519 ephemeral public key>",
   "suggested_name":   "Bob",
-  "key_confirmation": "<base64, HMAC-SHA-256(SK, 'Where-v1-Confirm' || EK_A.pub || EK_B.pub)>"
+  "key_confirmation": "<base64, key_confirmation>"
 }
 ```
 
@@ -244,7 +242,7 @@ Bob POSTs this to `POST /inbox/{hex(discovery_token_A)}`.
 Alice receives the `KeyExchangeInit` and:
 
 1. Derives `SK = X25519(Alice.EK_A.priv, Bob.EK_B.pub)`.
-2. Recomputes the expected `key_confirmation = HMAC-SHA-256(SK, "Where-v1-Confirm" || EK_A.pub || EK_B.pub)`.
+2. Recomputes the expected `key_confirmation`.
 3. **Aborts and discards** if the MAC does not match — this indicates `EK_B.pub` was corrupted or substituted in transit.
 4. Derives `alice_fp`, `bob_fp`, `T_AB_0`, `T_BA_0` using the same formulas above.
 5. **Deletes `EK_A.priv` immediately.**
@@ -252,23 +250,6 @@ Alice receives the `KeyExchangeInit` and:
 7. Stores the session.
 
 Bob **deletes `EK_B.priv` immediately** after posting the `KeyExchangeInit`.
-
-### 4.3 Option B: Out-of-Band Copy-Paste (Existing Flow Extension)
-
-Users share a link through any out-of-band channel (iMessage, Signal, in-person). The link is:
-```
-where://add?ek=<base64_ek_pub>&fp=<fingerprint>&name=<name>
-```
-
-The key agreement proceeds identically to Option A, using the same discovery token mechanism. The app MUST display a prominent prompt encouraging Safety Number verification after the friend is added via this path.
-
-### 4.4 What the Server Learns from Key Exchange
-
-- **Discovery phase:** A 16-byte token was used briefly for rendezvous. This token is derived from a random 32-byte `discovery_secret` embedded in the QR (not from `EK_A.pub`), so neither the server nor any observer who later sees `EK_A.pub` in a `KeyExchangeInit` message can compute or correlate the discovery-phase mailbox. The server observes that some IP polled it and another IP posted to it, but learns nothing about who those IPs represent.
-- **`KeyExchangeInit` phase:** The server sees Bob's `EK_B.pub` (ephemeral, 32 bytes) and the HMAC confirmation tag. Both are ephemeral and single-use. No stable long-term key material is exposed to the server at any point.
-- **Nothing** about the resulting shared secret `SK`, the session fingerprints, or the identities of the participants.
-
-The server cannot derive `SK` or link any routing token to a real identity without one of the parties' private keys.
 
 ---
 
@@ -280,7 +261,7 @@ This protocol uses a standard **Double Ratchet** session per friendship. This pr
 
 The Double Ratchet algorithm ([Signal spec](https://signal.org/docs/specifications/doubleratchet/)) combines two mechanisms:
 
-1.  **Symmetric-key ratchet (KDF chain):** Each message advances a hash chain. Given a chain key `CK`, each message derives `(CK', MK)` where `CK'` replaces `CK` for the next message and `MK` is the per-message encryption key. Deleting old keys provides forward secrecy.
+1.  **Symmetric-key ratchet (KDF chain):** Each message advances a hash chain. Given a chain key `CK`, each message derives `(CK', MK, nonce)` where `CK'` replaces `CK` for the next message, `MK` is the per-message encryption key, and `nonce` is derived deterministically from the same KDF step. Deleting old keys provides forward secrecy.
 
 2.  **Diffie-Hellman ratchet:** Each message carries the sender's current DH ratchet public key. When a new DH public key is received from the peer, both parties perform a DH calculation to refresh the root key and re-initialize the symmetric chains. This provides post-compromise security: if chain keys leak, the next DH ratchet step heals the session.
 
@@ -299,20 +280,28 @@ Both message types use the same unified wire format and both carry the sender's 
 To ensure post-compromise security even when only one side is sharing location, the non-sharing side sends periodic **keepalive messages**. These messages allow the active sender to receive fresh DH material and advance their DH ratchet.
 
 **Keepalive Cadence:**
--   If a peer is not currently sharing location, they SHOULD send a keepalive message whenever they poll and see that their friend has sent a new DH public key.
+-   If a peer is not currently sharing location, they SHOULD send a keepalive message whenever they poll and see that their friend has sent a message with a new DH public key.
 -   Additionally, a peer MAY send a keepalive on a regular slow cadence (e.g., once an hour) even if no new DH key was received, to ensure the ratchet advances periodically.
 
 **Degraded PCS:**
 If a peer is offline for an extended period, the active sender cannot receive fresh DH material. In this state, the protocol degrades gracefully to **symmetric-ratchet-only**. Per-message forward secrecy is maintained, but post-compromise security is paused until the peer returns and sends a message (location or keepalive) with a new DH key.
 
-### 5.4 Routing Token Rotation
+### 5.4 Routing Token Rotation and Reliability
 
 Routing tokens are derived from the current root key. Whenever the DH ratchet advances and a new root key is derived, new routing tokens are computed.
 
-To ensure reliability in a mailbox model without stable identifiers:
--   A peer switches their **receive token** immediately upon receiving a message that advances their receive DH ratchet.
--   A peer switches their **send token** only after they have successfully advanced their own send DH ratchet (which happens when they prepare their next outgoing message after having received a new DH key from the peer).
--   The first message of a new DH epoch MUST be sent to the **old token** so the receiver (who is still polling the old token) can see it and switch.
+**The Mailbox Synchronization Challenge:**
+In an anonymous mailbox model, a client polling token `T_old` will never see a message posted to `T_new`. If Alice switches her send token to `T_new` immediately upon deriving a new root key, Bob (who is still polling `T_old`) will never retrieve the message containing the new DH public key Alice used to derive `T_new`.
+
+**Solution: One-Message Lag for Send Tokens:**
+1.  When a DH ratchet step occurs, Alice derives the new root key and the corresponding `send_token_new`.
+2.  Alice marks the new token as **pending** (`isSendTokenPending = true`).
+3.  Alice prepares her next message using the new DH epoch keys, but **posts it to the old token** (`send_token_prev`).
+4.  Once the message is successfully posted, Alice clears the pending flag and switches to `send_token_new` for all subsequent messages.
+5.  Bob retrieves the message from the old token, processes the new DH key, and immediately switches his receive token to `recv_token_new`.
+
+**Receiver Policy:**
+A receiver switches their **receive token** immediately upon receiving a message with a new `dh_pub`. Messages are retrieved in arrival order from the server. If an old-epoch message arrives at the server *after* a new-epoch message has been retrieved and processed, the receiver has already switched tokens and the old message will be missed. This is an acceptable tradeoff for protocol simplicity.
 
 ### 5.5 Message Key Deletion Policy
 
@@ -321,11 +310,12 @@ Forward secrecy is only as strong as the message key deletion discipline:
 - Message keys `MK_n` MUST be deleted from memory immediately after encrypting/decrypting the corresponding frame.
 - Chain keys `CK` MUST be deleted from memory after deriving the next step.
 - Root keys MUST be overwritten immediately after deriving new chain keys.
-- Ephemeral DH private keys (`EK_A.priv`, `EK_B.priv`, OPK private keys) MUST be deleted after computing the shared secret.
+- Ephemeral DH private keys (`local_dh_priv`) MUST NOT be persisted to disk. They are stored in transient memory and cleared immediately after use in DH calculations (§8.3). On app restart, the Double Ratchet state resumes from the last known root key; the next outgoing message generates a fresh DH key pair.
+- Ephemeral bootstrap private keys (`EK_A.priv`, `EK_B.priv`) MUST be deleted after computing the shared secret.
 - On Android, keys live in a `SecureRandom`-backed in-memory structure; `Arrays.fill(key, 0)` before GC. On iOS, `Data` is zeroed explicitly before dealloc.
-- No message keys or chain keys are persisted to disk. If the app is killed and restarted, the session restarts from the last persisted state (root key + chain keys + routing tokens). The root key is stored in the platform keychain (Android Keystore / iOS Secure Enclave-backed Keychain).
+- No message keys or chain keys are persisted to disk. The session's root key and stable bootstrap public keys are stored in the platform keychain (Android Keystore / iOS Secure Enclave-backed Keychain).
 
-**Keychain backup and state-rollback risk:** Platform keychains may be backed up (iCloud Keychain on iOS, Google Play Backup on Android). If a backup is restored to a different device or is compromised, the attacker gains access to the stored root key and current chain key, and can re-derive message keys from the backed-up epoch forward — until the next DH ratchet step heals the session.
+**Keychain backup and state-rollback risk:** Platform keychains may be backed up (iCloud Keychain on iOS, Google Play Backup on Android). If a backup is restored to a different device or is compromised, the attacker gains access to the stored root key and can re-derive future message keys from the backed-up epoch forward — until the next DH ratchet step heals the session.
 
 Mandatory mitigations:
 - **iOS:** Mark all session-state keychain items with `kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly`. This attribute excludes the item from iCloud Backup.
@@ -352,9 +342,9 @@ When Alice sends a location update:
 1. She computes the plaintext: `loc = {lat, lng, accuracy, timestamp}`.
 2. For each friend `F_i` in her friend list:
    - Derive `MK_i` from Alice→F_i ratchet chain.
-   - Encrypt: `CT_i = ChaCha20-Poly1305(key=MK_i, plaintext=loc, aad=encode(alice_fp_i, bob_fp_i, seq_i))` where `alice_fp_i = SHA-256(EK_A_i.pub)` and `bob_fp_i = SHA-256(EK_B_i.pub)` — the session fingerprints for friendship i (see §8.3).
-   - Send `(send_token_i, CT_i, seq_i)` to the server.
-3. The server routes each `(send_token_i, CT_i)` frame to the corresponding mailbox.
+   - Encrypt: `CT_i = ChaCha20-Poly1305(key=MK_i, plaintext=loc, aad=buildAad(alice_fp_i, bob_fp_i, seq_i, dh_pub_i))` where `alice_fp_i` and `bob_fp_i` are the session fingerprints for friendship i (see §8.3).
+   - Post to `T_send_i`.
+3. The server routes each `(token_i, CT_i)` frame to the corresponding mailbox.
 
 **Bandwidth:** For N friends, Alice sends N encrypted frames per location update. At 30-second intervals with 20 friends and ~100 bytes per ciphertext, this is ~2,000 bytes per update — entirely within mobile data budgets.
 
@@ -442,7 +432,7 @@ Because of the indistinguishable response invariant (§7.2), clients can impleme
 | Message encryption | ChaCha20-Poly1305 | 256-bit | Per-message key; deleted after use |
 | Message authentication | ChaCha20-Poly1305 tag | 128-bit | Included in AEAD output; covers AAD |
 | Key exchange KDF | HKDF-SHA-256 | — | `info = "Where-v1-KeyExchange"` (initial SK) |
-| Initial routing tokens | HKDF-SHA-256 | 16-byte output each | `T_AB_0 = HKDF(SK, salt=absent, info="Where-v1-InitToken-AB")[0:16]`; `T_BA_0` uses `info="Where-v1-InitToken-BA"` |
+| Initial routing tokens | HKDF-SHA-256 | 16-byte output each | pair-wise derived from SK and fingerprints (§4.2) |
 | Discovery token | HKDF-SHA-256 | 16-byte output | `ikm = discovery_secret` (32-byte random, from QR payload), `salt = 0x00*32`, `info = "Where-v1-Discovery"` (§4.2) |
 
 ### 8.2 Session State Per Friend-Pair
@@ -451,20 +441,21 @@ Each friendship maintains a standard Double Ratchet state:
 
 ```
 SessionState {
-  root_key:        [32]byte   // current root key
-  send_chain_key:  [32]byte   // CK for outgoing messages
-  recv_chain_key:  [32]byte   // CK for incoming messages
-  send_token:      [16]byte   // token this client posts to
-  recv_token:      [16]byte   // token this client polls from
-  send_seq:        uint64     // outgoing monotone counter
-  recv_seq:        uint64     // highest received seq (for replay rejection)
-  local_dh_priv:   [32]byte   // current local ratchet private key
-  local_dh_pub:    [32]byte   // current local ratchet public key
-  remote_dh_pub:   [32]byte   // last received remote ratchet public key
-  alice_ek_pub:    [32]byte   // bootstrap public key EK_A.pub (for safety number)
-  bob_ek_pub:      [32]byte   // bootstrap public key EK_B.pub (for safety number)
-  alice_fp:        [32]byte   // SHA-256(EK_A.pub) — stable for session lifetime
-  bob_fp:          [32]byte   // SHA-256(EK_B.pub) — stable for session lifetime
+  root_key:           [32]byte   // current root key
+  send_chain_key:     [32]byte   // CK for outgoing messages
+  recv_chain_key:     [32]byte   // CK for incoming messages
+  send_token:         [16]byte   // token this client posts to
+  recv_token:         [16]byte   // token this client polls from
+  prev_send_token:    [16]byte   // one-message lookback token
+  is_token_pending:   bool       // true if next message must use prev_send_token
+  send_seq:           uint64     // outgoing monotone counter
+  recv_seq:           uint64     // highest received seq
+  local_dh_pub:       [32]byte   // current local ratchet public key
+  remote_dh_pub:      [32]byte   // last received remote ratchet public key
+  alice_ek_pub:       [32]byte   // bootstrap public key EK_A.pub (stable)
+  bob_ek_pub:         [32]byte   // bootstrap public key EK_B.pub (stable)
+  alice_fp:           [32]byte   // SHA-256(EK_A.pub) (stable)
+  bob_fp:             [32]byte   // SHA-256(EK_B.pub) (stable)
 }
 ```
 
@@ -484,13 +475,13 @@ Output: 64 bytes split as `[0:32] = new_root_key`, `[32:64] = new_chain_key`.
 
 After each DH ratchet step, new routing tokens MUST be derived from the new root key:
 ```
-new_send_token = HKDF-SHA-256(
-    salt = new_root_key,
-    ikm  = 0x00...00,
+new_token = HKDF-SHA-256(
+    salt = root_key,
+    ikm  = <absent>,
     info = "Where-v1-RoutingToken" || sender_fp || recipient_fp
 )[0:16]
 ```
-Direction is encoded implicitly via the `sender_fp || recipient_fp` ordering in the info field.
+Direction is encoded explicitly via the `sender_fp || recipient_fp` ordering in the info field.
 
 **KDF_CK (symmetric ratchet step):**
 ```
@@ -523,16 +514,6 @@ Each message frame carries a `seq` counter. Recipients enforce:
 2.  **Maximum gap (MAX_GAP):** recipients MUST enforce a maximum gap of 1024 for chain advancement.
 3.  **Chain advancement:** If a message is skipped, the recipient advances the symmetric ratchet and discards the intermediate message keys.
 4.  **Epoch transition:** When a message with a new `dh_pub` is received, the `seq` counter resets to 0 for the new DH epoch.
-
-### 8.4 Ratchet Advancement Policy
-
-1.  **Symmetric Ratchet:** Advanced on every message sent or received.
-2.  **DH Ratchet:**
-    -   When Alice receives a message from Bob with a `new_dh_pub_B`:
-        1. Alice performs DH: `RK, CK_recv = KDF_RK(RK, X25519(DH_priv_A, new_dh_pub_B))`.
-        2. Alice generates `new_DH_A`.
-        3. Alice performs DH: `RK, CK_send = KDF_RK(RK, X25519(new_DH_priv_A, new_dh_pub_B))`.
-    -   Alice includes her current `DH_pub_A` in every message header.
 
 ---
 
@@ -608,7 +589,7 @@ For a **Keepalive**:
   "token":            "<base64, T_AB_0>",
   "ek_pub":           "<base64, Bob's X25519 ephemeral public key>",
   "suggested_name":   "Bob",
-  "key_confirmation": "<base64, HMAC-SHA-256(SK, 'Where-v1-Confirm' || EK_A.pub || EK_B.pub)>"
+  "key_confirmation": "<base64, key_confirmation>"
 }
 ```
 

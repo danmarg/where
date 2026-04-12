@@ -384,17 +384,19 @@ class E2eeStore(
                             ),
                         )
                     }
-                } catch (_: Exception) {
+                } catch (e: Exception) {
+                    println("Decryption failed: ${e.message}")
+                    e.printStackTrace()
                     // Skip individually bad messages
                 }
             }
 
-            val hasChanges = decryptedLocations.isNotEmpty() || (encryptedMessages.isNotEmpty() && currentSession != entry.session)
+            val hadActivity = decryptedLocations.isNotEmpty() || (encryptedMessages.isNotEmpty() && currentSession != entry.session)
             friends[friendId] =
                 entry.copy(
                     session = currentSession,
                     isConfirmed = true,
-                    lastRecvTs = if (hasChanges) currentTimeSeconds() else entry.lastRecvTs,
+                    lastRecvTs = if (hadActivity) currentTimeSeconds() else entry.lastRecvTs,
                 )
 
             save()
