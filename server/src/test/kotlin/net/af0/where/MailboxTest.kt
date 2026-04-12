@@ -145,6 +145,24 @@ class MailboxTest {
         }
     }
 
+    @Test
+    fun `GET inbox returns 429 when rate-limited`() {
+        if (!isLocalhost()) return
+        testApplication {
+            application { module(ServerState()) }
+            val token = "ratelimit-get-token"
+
+            // Exhaust the rate limit
+            repeat(RATE_LIMIT_MAX_GETS) {
+                client.get("/inbox/$token")
+            }
+
+            // Next one should be 429
+            val response = client.get("/inbox/$token")
+            assertEquals(HttpStatusCode.TooManyRequests, response.status)
+        }
+    }
+
     // ---------------------------------------------------------------------------
     // Constant-time invariant: unknown tokens look like empty tokens (§7.2)
     // ---------------------------------------------------------------------------
@@ -181,7 +199,7 @@ class MailboxTest {
         state.evictForTest(rateLimitWindowMs = 0)
 
         // Drain should still return empty (no phantom entry).
-        assertTrue(state.drain(token).isEmpty(), "evicted mailbox entry should return empty")
+        assertTrue(state.drain(token)!!.isEmpty(), "evicted mailbox entry should return empty")
     }
 
     @Test
@@ -192,7 +210,7 @@ class MailboxTest {
         // Evict — the message has not expired so the entry should be retained.
         state.evictForTest(rateLimitWindowMs = 0)
 
-        assertEquals(1, state.drain("live").size, "live message should survive eviction")
+        assertEquals(1, state.drain("live")!!.size, "live message should survive eviction")
     }
 
     @Test

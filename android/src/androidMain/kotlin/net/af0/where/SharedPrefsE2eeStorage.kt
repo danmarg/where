@@ -10,8 +10,9 @@ import androidx.security.crypto.MasterKey
 import net.af0.where.e2ee.E2eeStorage
 
 class SharedPrefsE2eeStorage(context: Context) : E2eeStorage {
-    private val prefs = (context.applicationContext as? WhereApplication)?.encryptedPrefs
-        ?: context.getSharedPreferences(ENCRYPTED_PREFS_NAME, Context.MODE_PRIVATE)
+    private val prefs =
+        (context.applicationContext as? WhereApplication)?.encryptedPrefs
+            ?: context.getSharedPreferences(ENCRYPTED_PREFS_NAME, Context.MODE_PRIVATE)
 
     override fun getString(key: String): String? = prefs.getString(key, null)
 

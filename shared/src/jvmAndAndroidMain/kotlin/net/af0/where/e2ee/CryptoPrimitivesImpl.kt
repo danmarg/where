@@ -16,6 +16,10 @@ internal actual fun sha256(data: ByteArray): ByteArray {
     return Hash.sha256(data.toUByteArray()).toByteArray()
 }
 
+internal actual fun sha512(data: ByteArray): ByteArray {
+    return Hash.sha512(data.toUByteArray()).toByteArray()
+}
+
 // ---------------------------------------------------------------------------
 // HMAC-SHA-256
 // ---------------------------------------------------------------------------

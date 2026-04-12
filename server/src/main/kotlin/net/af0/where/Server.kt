@@ -39,6 +39,9 @@ private const val MAX_QUEUE_DEPTH = 100
 /** Maximum POST requests per token within the rate-limit window. */
 internal const val RATE_LIMIT_MAX_POSTS = 60
 
+/** Maximum GET (poll) requests per token within the rate-limit window. */
+internal const val RATE_LIMIT_MAX_GETS = 300
+
 /** Rate-limit window duration in milliseconds (1 minute). */
 private const val RATE_LIMIT_WINDOW_MS = 60_000L
 
@@ -66,8 +69,11 @@ interface MailboxStore {
         payload: JsonElement,
     ): Boolean
 
-    /** Destructively drain all non-expired messages for [token]. */
-    fun drain(token: String): List<JsonElement>
+    /**
+     * Destructively drain all non-expired messages for [token].
+     * Returns null if the request is rejected due to rate limiting.
+     */
+    fun drain(token: String): List<JsonElement>?
 
     /** Reclaim stale entries. No-op for implementations where the store handles expiry. */
     fun evict() {}
@@ -93,6 +99,9 @@ class InMemoryMailboxState : MailboxStore {
 
     /** Per-token post timestamps used for rate limiting (sliding window). */
     private val postTimes = ConcurrentHashMap<String, ConcurrentLinkedQueue<Long>>()
+
+    /** Per-token drain (poll) timestamps used for rate limiting. */
+    private val drainTimes = ConcurrentHashMap<String, ConcurrentLinkedQueue<Long>>()
 
     /** Internal dummy queue to equalize timing of unknown vs empty mailboxes (§7.2). */
     private val dummyQueue = ConcurrentLinkedQueue<MailboxEntry>()
@@ -148,8 +157,14 @@ class InMemoryMailboxState : MailboxStore {
         val now = System.currentTimeMillis()
         postTimes.forEach { (token, _) ->
             postTimes.computeIfPresent(token) { _, q ->
-                q.removeIf { it < now - rateLimitWindowMs }
+                q.removeIf { it <= now - rateLimitWindowMs }
                 if (q.isEmpty()) null else q // null return removes the entry
+            }
+        }
+        drainTimes.forEach { (token, _) ->
+            drainTimes.computeIfPresent(token) { _, q ->
+                q.removeIf { it <= now - rateLimitWindowMs }
+                if (q.isEmpty()) null else q
             }
         }
         mailboxes.forEach { (token, _) ->
@@ -162,10 +177,17 @@ class InMemoryMailboxState : MailboxStore {
 
     /**
      * Drain all non-expired messages for [token] and return them.
-     * Returns an empty list for unknown or empty tokens (§7.2: indistinguishable responses).
+     * Returns null if rate-limited (§7.2: indistinguishable responses for unknown vs empty,
+     * but rate-limiting returns 429).
      */
-    override fun drain(token: String): List<JsonElement> {
+    override fun drain(token: String): List<JsonElement>? {
         val now = System.currentTimeMillis()
+
+        // Rate-limit check for GET (§10)
+        val times = drainTimes.getOrPut(token) { ConcurrentLinkedQueue() }
+        times.removeIf { it < now - RATE_LIMIT_WINDOW_MS }
+        if (times.size >= RATE_LIMIT_MAX_GETS) return null
+        times.add(now)
 
         // Constant-Time Invariant (§7.2, §10.2):
         // Ensure mailbox lookup for empty/unknown tokens is indistinguishable from active tokens.
@@ -223,11 +245,19 @@ class RedisMailboxState(redisUrl: String) : MailboxStore {
         return 1
         """.trimIndent()
 
-    /** Atomically drain all messages for the token. */
+    /**
+     * Atomically: check rate limit for GET, then drain.
+     */
     private val drainScript =
         """
-        local msgs = redis.call('LRANGE', KEYS[1], 0, -1)
-        if #msgs > 0 then redis.call('DEL', KEYS[1]) end
+        local maxGets  = tonumber(ARGV[1])
+        local rlTtlSec = tonumber(ARGV[2])
+        local count = redis.call('INCR', KEYS[1])
+        if count == 1 then redis.call('EXPIRE', KEYS[1], rlTtlSec) end
+        if count > maxGets then return nil end
+
+        local msgs = redis.call('LRANGE', KEYS[2], 0, -1)
+        if #msgs > 0 then redis.call('DEL', KEYS[2]) end
         return msgs
         """.trimIndent()
 
@@ -250,10 +280,19 @@ class RedisMailboxState(redisUrl: String) : MailboxStore {
         return result == 1L
     }
 
-    override fun drain(token: String): List<JsonElement> {
+    override fun drain(token: String): List<JsonElement>? {
         @Suppress("UNCHECKED_CAST")
-        val msgs =
-            jedis.eval(drainScript, listOf("inbox:$token"), emptyList()) as List<*>
+        val result =
+            jedis.eval(
+                drainScript,
+                listOf("ratelimit-get:$token", "inbox:$token"),
+                listOf(
+                    RATE_LIMIT_MAX_GETS.toString(),
+                    (RATE_LIMIT_WINDOW_MS / 1000).toString(),
+                ),
+            ) ?: return null
+
+        val msgs = result as List<*>
         return msgs.map { item: Any? ->
             val str =
                 when (item) {
@@ -368,6 +407,11 @@ fun Application.module(state: ServerState = ServerState()) {
             if (state.debug) application.log.info("DEBUG: [Poll] token=$token")
 
             val messages = state.mailbox.drain(token)
+            if (messages == null) {
+                if (state.debug) application.log.info("DEBUG: [Poll] token=$token - Rejected (rate-limited)")
+                call.respond(HttpStatusCode.TooManyRequests)
+                return@get
+            }
 
             if (state.debug) application.log.info("DEBUG: [Poll] token=$token - Returning ${messages.size} messages")
 

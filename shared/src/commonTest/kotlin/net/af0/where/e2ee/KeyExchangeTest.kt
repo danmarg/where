@@ -75,7 +75,7 @@ class KeyExchangeTest {
         // After exchange, Bob is still on epoch 0 (derived from SK).
         // Alice has ratcheted to epoch 1.
         // Bob will move to epoch 1 (and 2) when he receives Alice's first message.
-        
+
         // Let Alice send a message.
         val (alice1, msg1) = Session.encryptMessage(aliceSession, MessagePlaintext.Location(0.0, 0.0, 0.0, 0L))
 
@@ -101,13 +101,13 @@ class KeyExchangeTest {
 
         // Let Alice send a message.
         val (alice1, msg1) = Session.encryptMessage(aliceSession, MessagePlaintext.Location(0.0, 0.0, 0.0, 0L))
-        
+
         // Bob receives message 1.
         val (bob1, _) = Session.decryptMessage(bobSession, msg1)
 
         // Alice's send chain must equal Bob's receive chain.
         assertContentEquals(alice1.sendChainKey, bob1.recvChainKey)
-        
+
         // Bob's send chain (Epoch 1) does NOT yet match Alice's receive chain (Epoch 0).
         // Alice matches Bob's send chain only AFTER she receives his message and ratchets.
         assertNotEquals(bob1.sendChainKey.toList(), alice1.recvChainKey.toList())
@@ -124,13 +124,13 @@ class KeyExchangeTest {
         // But her prevSendToken is derived from SK.
         // isSendTokenPending should be true.
         assertTrue(aliceSession.isSendTokenPending)
-        
-        // Alice sends her first location. 
+
+        // Alice sends her first location.
         // Protocol states she must use prevSendToken for the first message of a new epoch.
         val (_, aliceEnc) = Session.encryptMessage(aliceSession, MessagePlaintext.Location(1.0, 2.0, 3.0, 4L))
-        
-        // The token Alice actually posts to at the app layer (LocationClient logic) 
-        // would be prevSendToken. Let's verify that Alice's prevSendToken matches 
+
+        // The token Alice actually posts to at the app layer (LocationClient logic)
+        // would be prevSendToken. Let's verify that Alice's prevSendToken matches
         // Bob's initial recvToken.
         assertContentEquals(aliceSession.prevSendToken, bobSession.recvToken)
 
@@ -153,6 +153,21 @@ class KeyExchangeTest {
                 true
             }
         assertTrue(threw)
+    }
+
+    @Test
+    fun `bobProcessQr rejects tampered fingerprint`() {
+        val (qr, _) = KeyExchange.aliceCreateQrPayload("Alice")
+        val badQr = qr.copy(fingerprint = "0011223344556677") // Tampered fingerprint
+
+        val threw =
+            try {
+                KeyExchange.bobProcessQr(badQr, "Bob")
+                false
+            } catch (_: AuthenticationException) {
+                true
+            }
+        assertTrue(threw, "Expected AuthenticationException for tampered fingerprint")
     }
 
     // ---------------------------------------------------------------------------
@@ -230,10 +245,10 @@ class KeyExchangeTest {
     }
 
     @Test
-    fun `safetyNumber returns 32 bytes`() {
+    fun `safetyNumber returns 64 bytes`() {
         val ekA = generateX25519KeyPair().pub
         val ekB = generateX25519KeyPair().pub
-        assertEquals(32, safetyNumber(ekA, ekB).size)
+        assertEquals(64, safetyNumber(ekA, ekB).size)
     }
 
     @Test
@@ -247,14 +262,14 @@ class KeyExchangeTest {
     }
 
     @Test
-    fun `formatSafetyNumber produces two lines of 4 groups of 5 decimal digits`() {
+    fun `formatSafetyNumber produces three lines of 4 groups of 5 decimal digits`() {
         val ekA = generateX25519KeyPair().pub
         val ekB = generateX25519KeyPair().pub
         val formatted = formatSafetyNumber(safetyNumber(ekA, ekB))
         val lines = formatted.split("\n")
-        assertEquals(2, lines.size)
+        assertEquals(3, lines.size)
         val groups = lines.flatMap { it.split(" ") }
-        assertEquals(8, groups.size)
+        assertEquals(12, groups.size)
         for (group in groups) {
             assertEquals(5, group.length)
             assertTrue(group.all { it.isDigit() }, "Expected all digits but got: $group")

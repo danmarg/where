@@ -35,7 +35,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
-import net.af0.where.e2ee.E2eeStore
 import net.af0.where.e2ee.FriendEntry
 
 fun timeAgoString(lastPingMs: Long?): String {
@@ -107,8 +106,6 @@ fun FriendsSheet(
                     Text(" Scan")
                 }
             }
-
-
 
             if (friends.isNotEmpty()) {
                 Text("Friends (${friends.size})", style = MaterialTheme.typography.labelMedium)
