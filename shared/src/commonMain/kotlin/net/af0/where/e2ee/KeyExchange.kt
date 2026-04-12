@@ -58,7 +58,7 @@ object KeyExchange {
             )
         
         val keyConfirmation = buildKeyConfirmation(sk, qr.ekPub, ekB.pub)
-        
+
         // Initial token Bob sends to Alice for discovery is T_AB_0.
         val tokenAliceToBob = deriveRoutingToken(sk, aliceFp, bobFp)
 
@@ -153,16 +153,17 @@ object KeyExchange {
                 ikm = sk,
                 salt = null,
                 info = INFO_KEY_EXCHANGE.encodeToByteArray(),
-                length = 64,
+                length = 96,
             )
         val chainKey0 = expanded.copyOfRange(0, 32)
         val chainKey1 = expanded.copyOfRange(32, 64)
+        val initialRootKey = expanded.copyOfRange(64, 96)
 
         // Alice sends on chain 0, Bob receives on chain 0.
         // Bob sends on chain 1, Alice receives on chain 1.
         val sendChainKey = if (isAlice) chainKey0 else chainKey1
         val recvChainKey = if (isAlice) chainKey1 else chainKey0
-        
+
         // Initial tokens are also derived from SK.
         val sendToken = if (isAlice) {
             deriveRoutingToken(sk, aliceFp, bobFp)
@@ -178,7 +179,7 @@ object KeyExchange {
         expanded.fill(0)
 
         return SessionState(
-            rootKey = sk.copyOf(),
+            rootKey = initialRootKey,
             sendChainKey = sendChainKey,
             recvChainKey = recvChainKey,
             sendToken = sendToken,
