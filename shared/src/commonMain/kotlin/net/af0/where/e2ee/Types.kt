@@ -57,6 +57,7 @@ data class SessionState(
     val needsRatchet: Boolean = false,
     // HEADER ENCRYPTION (#186)
     @Serializable(with = ByteArrayBase64Serializer::class) val headerKey: ByteArray = ByteArray(0),
+    @Serializable(with = ByteArrayBase64Serializer::class) val sendHeaderKey: ByteArray = ByteArray(0),
     @Serializable(with = ByteArrayBase64Serializer::class) val nextHeaderKey: ByteArray = ByteArray(0),
 ) {
     override fun equals(other: Any?): Boolean {
@@ -86,6 +87,7 @@ data class SessionState(
             pr == other.pr &&
             needsRatchet == other.needsRatchet &&
             headerKey.contentEquals(other.headerKey) &&
+            sendHeaderKey.contentEquals(other.sendHeaderKey) &&
             nextHeaderKey.contentEquals(other.nextHeaderKey)
     }
 
@@ -117,6 +119,7 @@ data class SessionState(
         h = 31 * h + pr.hashCode()
         h = 31 * h + needsRatchet.hashCode()
         h = 31 * h + headerKey.contentHashCode()
+        h = 31 * h + sendHeaderKey.contentHashCode()
         h = 31 * h + nextHeaderKey.contentHashCode()
         return h
     }
