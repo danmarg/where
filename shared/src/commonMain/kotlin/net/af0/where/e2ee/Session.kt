@@ -19,7 +19,7 @@ object Session {
         state: SessionState,
         payload: MessagePlaintext,
     ): Pair<SessionState, EncryptedMessagePayload> {
-        require(state.sendSeq != Long.MAX_VALUE) { "sequence number overflow" }
+        if (state.sendSeq == Long.MAX_VALUE) throw SessionBrickedException("sequence number overflow")
 
         val step = kdfCk(state.sendChainKey)
         val seq = state.sendSeq + 1
@@ -27,7 +27,7 @@ object Session {
         
         // AAD directionality: include sender and recipient fingerprints explicitly.
         val (sender, recipient) = if (state.isAlice) state.aliceFp to state.bobFp else state.bobFp to state.aliceFp
-        val aad = buildMessageAad(sender, recipient, seq, dhPub, state.pn)
+        val aad = buildMessageAad(sender, recipient, seq, dhPub)
         val plaintext = padToFixedSize(encodeMessage(payload), PADDING_SIZE)
         val ct = aeadEncrypt(step.messageKey, step.messageNonce, plaintext, aad)
 
@@ -49,7 +49,6 @@ object Session {
             EncryptedMessagePayload(
                 dhPub = dhPub,
                 seq = seq.toString(),
-                pn = state.pn,
                 ct = ct,
             )
 
@@ -70,12 +69,15 @@ object Session {
         if (cachedKey != null) {
             // AAD directionality: peer is the sender, I am the recipient.
             val (sender, recipient) = if (state.isAlice) state.bobFp to state.aliceFp else state.aliceFp to state.bobFp
-            val aad = buildMessageAad(sender, recipient, seq, remoteDhPub, state.pr)
             
-            // Cached key format: [MK (32) || Nonce (12)]
-            if (cachedKey.size < 44) throw ProtocolException("invalid cached key size in cache")
+            // Cached key format ([§5.5]): [MK (32) || Nonce (12) || PN (8)]
+            if (cachedKey.size < 52) throw ProtocolException("invalid cached key size in cache")
             val mk = cachedKey.copyOfRange(0, 32)
             val nonce = cachedKey.copyOfRange(32, 44)
+            val cachedPn = bytesToLong(cachedKey.copyOfRange(44, 52))
+
+            // Use the new buildMessageAad signature (pn is now inside the ciphertext)
+            val aad = buildMessageAad(sender, recipient, seq, remoteDhPub)
             
             val plaintext = try {
                 aeadDecrypt(mk, nonce, message.ct, aad)
@@ -91,10 +93,12 @@ object Session {
             val decoded = decodeMessage(unpadded)
             plaintext.fill(0); unpadded.fill(0)
 
+            // Multi-epoch safety: ensure internal 'pn' matches what we had in the cache
+            if (decoded.pn != cachedPn) throw ProtocolException("message pn mismatch in cache")
+
             // Remove used key from cache
             val newCache = LinkedHashMap(state.skippedMessageKeys)
             val removed = newCache.remove(cacheKey)
-            // Memory Hygiene: Explicitly zero the combined MK || Nonce upon cache hit (§5.5)
             removed?.fill(0)
             
             return state.copy(skippedMessageKeys = newCache) to decoded
@@ -109,45 +113,13 @@ object Session {
 
         if (isNewDhEpoch) {
             if (remoteDhPub.contentEquals(state.lastRemoteDhPub)) {
-                // Out-of-order message from the previous epoch. 
-                // It MUST be in the skipped key cache because we've already ratcheted forward.
-                // Since cachedKey was null, this is an unrecoverable gap or replay.
                 throw ProtocolException("missing key for previous epoch (out-of-order window closed)")
             }
             if (state.seenRemoteDhPubs.contains(remoteDhPub.toHex())) {
                 throw ProtocolException("replay: dhPub already superseded (old epoch)")
             }
-
-            // Before ratcheting to a NEW epoch, we must skip any remaining messages in the 
-            // CURRENT receiving chain as indicated by the sender's 'pn' field.
-            val pn = message.pn
-            if (pn > state.recvSeq) {
-                val stepsToSkip = pn - state.recvSeq
-                if (stepsToSkip > MAX_GAP) throw ProtocolException("gap too large in previous chain")
-                
-                var oldChainKey = speculativeState.recvChainKey.copyOf()
-                repeat(stepsToSkip.toInt()) { i ->
-                    val step = kdfCk(oldChainKey)
-                    oldChainKey.fill(0)
-                    oldChainKey = step.newChainKey
-                    
-                    val skippedSeq = speculativeState.recvSeq + i + 1
-                    val mkKey = state.remoteDhPub.toHex() + "_" + skippedSeq
-                    newSkippedKeys[mkKey] = step.messageKey + step.messageNonce
-
-                    // Limit cache size
-                    if (newSkippedKeys.size > MAX_SKIPPED_KEYS) {
-                        newSkippedKeys.remove(newSkippedKeys.keys.first())?.fill(0)
-                    }
-                }
-                oldChainKey.fill(0)
-                speculativeState = speculativeState.copy(
-                    recvChainKey = oldChainKey, // technically zeroed, performDhRatchet will overwrite
-                    recvSeq = pn,
-                    skippedMessageKeys = newSkippedKeys
-                )
-            }
-
+            
+            // PH-3.3: We MUST ratchet DH before we can decrypt and see the hidden 'pn'.
             speculativeState = performDhRatchet(speculativeState, remoteDhPub)
         }
 
@@ -183,8 +155,10 @@ object Session {
                 
                 val currentSeq = speculativeState.recvSeq + i + 1
                 if (currentSeq < seq) {
-                    // Store intermediate message key for future out-of-order delivery
-                    val mkPlusNonce = step.messageKey + step.messageNonce
+                    // Store intermediate message key for future out-of-order delivery.
+                    // Cached format: [MK (32) || Nonce (12) || PN (8)]
+                    // We store 'speculativeState.pr' which is the 'pn' for CURRENT epoch messages.
+                    val mkPlusNonce = step.messageKey + step.messageNonce + longToBeBytes(speculativeState.pr)
                     val mkKey = remoteDhPub.toHex() + "_" + currentSeq
                     derivationSkippedKeys[mkKey] = mkPlusNonce
                                         // Limit cache size with deterministic FIFO (LinkedHashMap order)
@@ -202,7 +176,7 @@ object Session {
             val finalStep = currentStep ?: throw ProtocolException("failed to derive message key")
             // AAD directionality: peer is the sender, I am the recipient.
             val (sender, recipient) = if (state.isAlice) state.bobFp to state.aliceFp else state.aliceFp to state.bobFp
-            val aad = buildMessageAad(sender, recipient, seq, remoteDhPub, speculativeState.pr)
+            val aad = buildMessageAad(sender, recipient, seq, remoteDhPub)
             
             val plaintext = try {
                 aeadDecrypt(finalStep.messageKey, finalStep.messageNonce, message.ct, aad)
@@ -221,12 +195,48 @@ object Session {
             }
 
             // Success! Commit the state.
+            
+            val unpadded = try { unpad(plaintext) } catch (e: Exception) { 
+                plaintext.fill(0); throw DecryptionException("unpad failed", e) 
+            }
+            val decoded = decodeMessage(unpadded)
+            plaintext.fill(0); unpadded.fill(0)
+
+            // PH-3.3: Post-decryption gap filling for the PREVIOUS receiving chain.
+            // If we are in a new DH epoch, 'decoded.pn' tells us how many messages Bob sent
+            // in the epoch before this one. We only skip them if we haven't already.
+            val finalSkippedKeys = if (isNewDhEpoch && decoded.pn > state.recvSeq) {
+                val pnGaps = (decoded.pn - state.recvSeq).toInt()
+                if (pnGaps > MAX_GAP) throw ProtocolException("gap too large in previous chain")
+                
+                val updatedCache = LinkedHashMap(derivationSkippedKeys)
+                var oldChainKey = state.recvChainKey.copyOf()
+                repeat(pnGaps) { i ->
+                    val step = kdfCk(oldChainKey)
+                    oldChainKey.fill(0)
+                    oldChainKey = step.newChainKey
+                    
+                    val skippedSeq = state.recvSeq + i + 1
+                    val mkKey = state.remoteDhPub.toHex() + "_" + skippedSeq
+                    // Skip keys are stored with the 'pn' of THEIR epoch (state.pr)
+                    updatedCache[mkKey] = step.messageKey + step.messageNonce + longToBeBytes(state.pr)
+
+                    if (updatedCache.size > MAX_SKIPPED_KEYS) {
+                        updatedCache.remove(updatedCache.keys.first())?.fill(0)
+                    }
+                }
+                oldChainKey.fill(0)
+                updatedCache
+            } else {
+                derivationSkippedKeys
+            }
+
             val newState = speculativeState.copy(
                 rootKey = speculativeState.rootKey.copyOf(),
                 sendChainKey = speculativeState.sendChainKey.copyOf(),
                 recvChainKey = chainKey, // This is our new derived chain key
                 recvSeq = seq,
-                skippedMessageKeys = derivationSkippedKeys,
+                skippedMessageKeys = finalSkippedKeys,
                 needsRatchet = isNewDhEpoch, // If DH bumped, we definitely need a response
                 seenRemoteDhPubs = if (isNewDhEpoch) {
                     (speculativeState.seenRemoteDhPubs + state.remoteDhPub.toHex()).toList().takeLast(10).toSet()
@@ -240,12 +250,6 @@ object Session {
                 state.sendChainKey.fill(0)
                 state.recvChainKey.fill(0)
             }
-
-            val unpadded = try { unpad(plaintext) } catch (e: Exception) { 
-                plaintext.fill(0); throw DecryptionException("unpad failed", e) 
-            }
-            val decoded = decodeMessage(unpadded)
-            plaintext.fill(0); unpadded.fill(0)
 
             return newState to decoded
 
@@ -331,14 +335,12 @@ object Session {
         recipientFp: ByteArray,
         seq: Long,
         dhPub: ByteArray,
-        pn: Long,
     ): ByteArray {
         return AAD_PREFIX.encodeToByteArray() +
             intToBeBytes(PROTOCOL_VERSION) +
             senderFp +
             recipientFp +
             longToBeBytes(seq) +
-            longToBeBytes(pn) +
             dhPub
     }
 
@@ -355,19 +357,22 @@ object Session {
                     // empty object
                 }
             }
+            put("pn", msg.pn)
         }.let { Json.encodeToString(it) }.encodeToByteArray()
 
     private fun decodeMessage(bytes: ByteArray): MessagePlaintext {
         val obj = Json.decodeFromString<JsonObject>(bytes.decodeToString())
+        val pn = obj["pn"]?.jsonPrimitive?.long ?: 0L
         return if (obj.containsKey("lat")) {
             MessagePlaintext.Location(
                 lat = obj["lat"]!!.jsonPrimitive.double,
                 lng = obj["lng"]!!.jsonPrimitive.double,
                 acc = obj["acc"]!!.jsonPrimitive.double,
                 ts = obj["ts"]!!.jsonPrimitive.long,
+                pn = pn,
             )
         } else {
-            MessagePlaintext.Keepalive
+            MessagePlaintext.Keepalive(pn = pn)
         }
     }
 
@@ -414,6 +419,17 @@ object Session {
 }
 
 sealed class MessagePlaintext {
-    data class Location(val lat: Double, val lng: Double, val acc: Double, val ts: Long) : MessagePlaintext()
-    object Keepalive : MessagePlaintext()
+    abstract val pn: Long
+
+    data class Location(
+        val lat: Double,
+        val lng: Double,
+        val acc: Double,
+        val ts: Long,
+        override val pn: Long = 0,
+    ) : MessagePlaintext()
+
+    data class Keepalive(override val pn: Long = 0) : MessagePlaintext()
 }
+
+class SessionBrickedException(message: String) : WhereException(message)
