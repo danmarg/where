@@ -55,6 +55,9 @@ data class SessionState(
     val pr: Long = 0,
     // Set to true if we've received a new DH key but haven't ratcheted our send chain yet.
     val needsRatchet: Boolean = false,
+    // HEADER ENCRYPTION (#186)
+    @Serializable(with = ByteArrayBase64Serializer::class) val headerKey: ByteArray = ByteArray(0),
+    @Serializable(with = ByteArrayBase64Serializer::class) val nextHeaderKey: ByteArray = ByteArray(0),
 ) {
     override fun equals(other: Any?): Boolean {
         if (other !is SessionState) return false
@@ -81,7 +84,9 @@ data class SessionState(
             seenRemoteDhPubs == other.seenRemoteDhPubs &&
             pn == other.pn &&
             pr == other.pr &&
-            needsRatchet == other.needsRatchet
+            needsRatchet == other.needsRatchet &&
+            headerKey.contentEquals(other.headerKey) &&
+            nextHeaderKey.contentEquals(other.nextHeaderKey)
     }
 
     override fun hashCode(): Int {
@@ -111,6 +116,8 @@ data class SessionState(
         h = 31 * h + pn.hashCode()
         h = 31 * h + pr.hashCode()
         h = 31 * h + needsRatchet.hashCode()
+        h = 31 * h + headerKey.contentHashCode()
+        h = 31 * h + nextHeaderKey.contentHashCode()
         return h
     }
 }
@@ -205,4 +212,5 @@ internal data class ChainStep(
 internal data class RatchetStep(
     val newRootKey: ByteArray,
     val newChainKey: ByteArray,
+    val newHeaderKey: ByteArray,
 )

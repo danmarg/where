@@ -6,7 +6,7 @@ internal const val INFO_KEY_EXCHANGE = "Where-v1-KeyExchange"
 internal const val INFO_SESSION = "Where-v1-Session"
 internal const val INFO_ROUTING_TOKEN = "Where-v1-RoutingToken"
 internal const val INFO_CONFIRM = "Where-v1-Confirm"
-
+internal const val INFO_HEADER_KEY = "Where-v1-HeaderKey"
 
 // A legitimate DH ratchet produces at most 1 token rotation per message batch.
 // We allow 2 follows per poll cycle to handle the case where a message sent
