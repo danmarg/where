@@ -369,16 +369,18 @@ class E2eeStore(
 
             val encryptedMessages = messages.filterIsInstance<EncryptedMessagePayload>()
                 .sortedWith(
-                    compareBy<EncryptedMessagePayload> { it.dhPub.contentEquals(entry.session.remoteDhPub) }
-                        .reversed()
+                    compareBy<EncryptedMessagePayload> { if (it.dhPub.contentEquals(entry.session.remoteDhPub)) 0 else 1 }
                         .thenBy { it.seqAsLong() }
                 )
+            
             var currentSession = entry.session
+            var anySuccess = false
 
             for (msg in encryptedMessages) {
                 try {
                     val (newSession, pt) = Session.decryptMessage(currentSession, msg)
                     currentSession = newSession
+                    anySuccess = true
                     if (pt is MessagePlaintext.Location) {
                         decryptedLocations.add(
                             LocationPlaintext(
@@ -394,7 +396,9 @@ class E2eeStore(
                 }
             }
 
-            val hadActivity = decryptedLocations.isNotEmpty() || (encryptedMessages.isNotEmpty() && currentSession != entry.session)
+            // Persistence: we update the store with the latest successfully ratcheted state.
+            val hadActivity = decryptedLocations.isNotEmpty() || (anySuccess && currentSession != entry.session)
+
             friends[friendId] =
                 entry.copy(
                     session = currentSession,

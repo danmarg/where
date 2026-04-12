@@ -19,13 +19,6 @@ object Session {
     internal const val PADDING_SIZE = 512
     private const val MAX_GAP = 1024L
 
-    /**
-     * Encrypt a message (Location or Keepalive) for a single peer.
-     *
-     * @param state    Current session state.
-     * @param payload  Plaintext message to encrypt.
-     * @return Updated state and EncryptedMessagePayload.
-     */
     fun encryptMessage(
         state: SessionState,
         payload: MessagePlaintext,
@@ -45,6 +38,7 @@ object Session {
             state.copy(
                 sendChainKey = step.newChainKey,
                 sendSeq = seq,
+                needsRatchet = false, // We've sent at least one message in this epoch
             )
 
         step.messageKey.fill(0)
@@ -61,105 +55,107 @@ object Session {
         return newState to message
     }
 
-    /**
-     * Decrypt one incoming message. Handles DH ratchet advancement if needed.
-     *
-     * @param state   Current session state.
-     * @param message Encrypted message from the peer.
-     * @return Updated state and decrypted message.
-     */
     @Throws(WhereException::class)
     fun decryptMessage(
         state: SessionState,
         message: EncryptedMessagePayload,
     ): Pair<SessionState, MessagePlaintext> {
         val remoteDhPub = message.dhPub
+        val seq = message.seqAsLong()
+        val cacheKey = remoteDhPub.toHex() + "_" + seq
+
+        // 1. Check skipped message key cache first (out-of-order within prior epochs)
+        val cachedKey = state.skippedMessageKeys[cacheKey]
+        if (cachedKey != null) {
+            val aad = buildMessageAad(state.aliceFp, state.bobFp, seq, remoteDhPub)
+            // Note: In a production DR implementation, nonces for skipped keys must be 
+            // recovered/managed correctly. For simplicity here, we assume the message 
+            // contains enough info to re-derive or it is stored alongside the key.
+            // (Standard DR usually stores [key || nonce] or derives nonce from seq).
+            // Our kdfCk produces a unique nonce per step. 
+            // To simplify, we'll implement full Signal-style key derivation including nonces 
+            // if we were storing them. For now, we'll try to decrypt.
+            
+            // FIXME: Nonce management for cached keys. 
+            // Standard DR: nonce is either part of the cached key or implicit in seq.
+            // Our current kdfCk produces 76 bytes: [CK || MK || Nonce]. 
+            // Let's assume the cached value is [MK (32) || Nonce (12)].
+            if (cachedKey.size < 44) throw ProtocolException("invalid cached key size")
+            val mk = cachedKey.copyOfRange(0, 32)
+            val nonce = cachedKey.copyOfRange(32, 44)
+            
+            val plaintext = try {
+                aeadDecrypt(mk, nonce, message.ct, aad)
+            } catch (e: Exception) {
+                throw AuthenticationException("decryption failed with cached key", e)
+            } finally {
+                mk.fill(0); nonce.fill(0)
+            }
+            
+            val unpadded = try { unpad(plaintext) } catch (e: Exception) { 
+                plaintext.fill(0); throw DecryptionException("unpad failed", e) 
+            }
+            val decoded = decodeMessage(unpadded)
+            plaintext.fill(0); unpadded.fill(0)
+
+            // Remove used key from cache
+            val newCache = state.skippedMessageKeys.toMutableMap()
+            newCache.remove(cacheKey)
+            
+            return state.copy(skippedMessageKeys = newCache) to decoded
+        }
+
+        // 2. Reject replays from already seen/processed epochs
         if (remoteDhPub.contentEquals(state.lastRemoteDhPub)) {
             throw ProtocolException("replay: dhPub matched previous epoch (across-epoch replay)")
         }
+        if (state.seenRemoteDhPubs.any { it.contentEquals(remoteDhPub) }) {
+            throw ProtocolException("replay: dhPub has already been superseded (old epoch)")
+        }
+
         val isNewDhEpoch = !remoteDhPub.contentEquals(state.remoteDhPub)
-        val seq = message.seqAsLong()
-
-        // 1. Speculatively compute the ratchet pieces
-        var currentRootKey = state.rootKey
-        var currentRecvChainKey = state.recvChainKey
-        var currentSendChainKey = state.sendChainKey
-        var currentSendToken = state.sendToken
-        var currentRecvToken = state.recvToken
-        var currentSendSeq = state.sendSeq
-        var currentRecvSeq = state.recvSeq
-        var currentLocalDhPriv = state.localDhPriv
-        var currentLocalDhPub = state.localDhPub
-        var currentRemoteDhPub = state.remoteDhPub
-        var currentLastRemoteDhPub = state.lastRemoteDhPub
-        var currentPrevSendToken = state.prevSendToken
-        var currentIsSendTokenPending = state.isSendTokenPending
-
+        
+        // 3. Speculatively perform DH and symmetric ratchet
+        var speculativeState = state
         if (isNewDhEpoch) {
-            // DH ratchet step
-            val dhOutRecv = x25519(state.localDhPriv, remoteDhPub)
-            val stepRecv = kdfRk(state.rootKey, dhOutRecv)
-            dhOutRecv.fill(0)
-
-            val newLocalDh = generateX25519KeyPair()
-            val dhOutSend = x25519(newLocalDh.priv, remoteDhPub)
-            val stepSend = kdfRk(stepRecv.newRootKey, dhOutSend)
-            dhOutSend.fill(0)
-
-            // Correctly derive new tokens using the spec-compliant root keys
-            val aliceFp = state.aliceFp
-            val bobFp = state.bobFp
-
-            val newRecvToken = if (state.isAlice) {
-                deriveRoutingToken(stepRecv.newRootKey, bobFp, aliceFp)
-            } else {
-                deriveRoutingToken(stepRecv.newRootKey, aliceFp, bobFp)
-            }
-            val newSendToken = if (state.isAlice) {
-                deriveRoutingToken(stepSend.newRootKey, aliceFp, bobFp)
-            } else {
-                deriveRoutingToken(stepSend.newRootKey, bobFp, aliceFp)
-            }
-
-            // Zero intermediate keys that won't be in the final state
-            stepRecv.newRootKey.fill(0)
-
-            currentRootKey = stepSend.newRootKey
-            currentRecvChainKey = stepRecv.newChainKey
-            currentSendChainKey = stepSend.newChainKey
-            currentSendToken = newSendToken
-            currentRecvToken = newRecvToken
-            currentSendSeq = 0L
-            currentRecvSeq = 0L
-            currentLocalDhPriv = newLocalDh.priv
-            currentLocalDhPub = newLocalDh.pub
-            currentRemoteDhPub = remoteDhPub.copyOf()
-            currentLastRemoteDhPub = state.remoteDhPub.copyOf()
-            currentPrevSendToken = state.sendToken.copyOf()
-            currentIsSendTokenPending = true
+            speculativeState = performDhRatchet(state, remoteDhPub)
         }
 
-        // 2. Replay rejection against speculative seq
-        if (seq <= currentRecvSeq) {
-            throw ProtocolException("replay: seq $seq <= recvSeq $currentRecvSeq")
+        // Replay rejection against speculative seq
+        if (seq <= speculativeState.recvSeq) {
+            throw ProtocolException("replay: seq $seq <= recvSeq ${speculativeState.recvSeq}")
         }
-        val stepsNeeded = seq - currentRecvSeq
+        val stepsNeeded = seq - speculativeState.recvSeq
         if (stepsNeeded > MAX_GAP + 1) {
             throw ProtocolException("gap too large: stepsNeeded $stepsNeeded")
         }
 
-        // 3. Speculatively derive the message key
-        var chainKey = currentRecvChainKey.copyOf()
+        // Derivation loop for chain keys and skipped message keys
+        var chainKey = speculativeState.recvChainKey.copyOf()
+        val newSkippedKeys = speculativeState.skippedMessageKeys.toMutableMap()
         var step: ChainStep? = null
-        // Due to the MAX_GAP check above, we know stepsNeeded <= MAX_GAP, 
-        // which fits comfortably within an Int, making the .toInt() cast safe.
-        repeat(stepsNeeded.toInt()) {
+        
+        // Advance the chain to 'seq', storing intermediate message keys
+        repeat(stepsNeeded.toInt()) { i ->
             step = kdfCk(chainKey)
             chainKey.fill(0)
             chainKey = step!!.newChainKey
+            
+            val currentSeq = speculativeState.recvSeq + i + 1
+            if (currentSeq < seq) {
+                // Store intermediate message key for future out-of-order delivery
+                val mkPlusNonce = step!!.messageKey + step!!.messageNonce
+                val mkKey = remoteDhPub.toHex() + "_" + currentSeq
+                newSkippedKeys[mkKey] = mkPlusNonce
+                // Limit cache size
+                if (newSkippedKeys.size > 100) {
+                    val oldestKey = newSkippedKeys.keys.first()
+                    newSkippedKeys.remove(oldestKey)
+                }
+            }
         }
         val finalStep = step!!
-        val speculativeRecvChainKey = chainKey
+        val finalRecvChainKey = chainKey
 
         // 4. Decrypt and verify
         val aad = buildMessageAad(state.aliceFp, state.bobFp, seq, remoteDhPub)
@@ -169,52 +165,96 @@ object Session {
             } catch (e: Exception) {
                 finalStep.messageKey.fill(0)
                 finalStep.messageNonce.fill(0)
-                speculativeRecvChainKey.fill(0)
+                finalRecvChainKey.fill(0)
+                // If this was a new VH epoch, performDhRatchet generated keys we must wipe
                 if (isNewDhEpoch) {
-                    currentRootKey.fill(0)
-                    currentRecvChainKey.fill(0)
-                    currentSendChainKey.fill(0)
-                    currentLocalDhPriv.fill(0)
+                    speculativeState.localDhPriv.fill(0)
+                    speculativeState.rootKey.fill(0)
+                    speculativeState.recvChainKey.fill(0)
+                    speculativeState.sendChainKey.fill(0)
                 }
                 throw AuthenticationException("decryption failed", e)
             }
         
-        // 5. Success! Commit the state changes and zero message keys.
+        // 5. Success! Finalize state.
         finalStep.messageKey.fill(0)
         finalStep.messageNonce.fill(0)
         
-        val newState = state.copy(
-            rootKey = currentRootKey,
-            sendChainKey = currentSendChainKey,
-            recvChainKey = speculativeRecvChainKey,
-            sendToken = currentSendToken,
-            recvToken = currentRecvToken,
-            sendSeq = currentSendSeq,
+        val newState = speculativeState.copy(
+            recvChainKey = finalRecvChainKey,
             recvSeq = seq,
-            localDhPriv = currentLocalDhPriv,
-            localDhPub = currentLocalDhPub,
-            remoteDhPub = currentRemoteDhPub,
-            lastRemoteDhPub = currentLastRemoteDhPub,
-            prevSendToken = currentPrevSendToken,
-            isSendTokenPending = currentIsSendTokenPending,
+            skippedMessageKeys = newSkippedKeys,
         )
 
         val unpadded =
             try {
                 unpad(plaintext)
             } catch (e: Exception) {
-                finalStep.messageKey.fill(0)
-                finalStep.messageNonce.fill(0)
                 plaintext.fill(0)
                 throw DecryptionException("unpadding failed", e)
             }
 
         val decoded = decodeMessage(unpadded)
-
-        plaintext.fill(0)
-        unpadded.fill(0)
+        plaintext.fill(0); unpadded.fill(0)
 
         return newState to decoded
+    }
+
+    /**
+     * Perform the DH ratchet step (speculative).
+     * Returns a new SessionState with updated DH keys and tokens.
+     */
+    private fun performDhRatchet(state: SessionState, remoteDhPub: ByteArray): SessionState {
+        // DH ratchet step
+        val dhOutRecv = x25519(state.localDhPriv, remoteDhPub)
+        val stepRecv = kdfRk(state.rootKey, dhOutRecv)
+        dhOutRecv.fill(0)
+
+        val newLocalDh = generateX25519KeyPair()
+        val dhOutSend = x25519(newLocalDh.priv, remoteDhPub)
+        val stepSend = kdfRk(stepRecv.newRootKey, dhOutSend)
+        dhOutSend.fill(0)
+
+        // Derive new tokens
+        val aliceFp = state.aliceFp
+        val bobFp = state.bobFp
+
+        val newRecvToken = if (state.isAlice) {
+            deriveRoutingToken(stepRecv.newRootKey, bobFp, aliceFp)
+        } else {
+            deriveRoutingToken(stepRecv.newRootKey, aliceFp, bobFp)
+        }
+        val newSendToken = if (state.isAlice) {
+            deriveRoutingToken(stepSend.newRootKey, aliceFp, bobFp)
+        } else {
+            deriveRoutingToken(stepSend.newRootKey, bobFp, aliceFp)
+        }
+
+        // Track seen DH keys to avoid re-ratcheting to old epochs
+        val newSeenKeys = state.seenRemoteDhPubs.toMutableList()
+        newSeenKeys.add(state.remoteDhPub.copyOf())
+        if (newSeenKeys.size > 20) newSeenKeys.removeAt(0)
+
+        // Zero intermediate keys
+        stepRecv.newRootKey.fill(0)
+
+        return state.copy(
+            rootKey = stepSend.newRootKey,
+            recvChainKey = stepRecv.newChainKey,
+            sendChainKey = stepSend.newChainKey,
+            sendToken = newSendToken,
+            recvToken = newRecvToken,
+            sendSeq = 0L,
+            recvSeq = 0L,
+            localDhPriv = newLocalDh.priv,
+            localDhPub = newLocalDh.pub,
+            remoteDhPub = remoteDhPub.copyOf(),
+            lastRemoteDhPub = state.remoteDhPub.copyOf(),
+            seenRemoteDhPubs = newSeenKeys,
+            prevSendToken = state.sendToken.copyOf(),
+            isSendTokenPending = true,
+            needsRatchet = true, // Peer ratcheted us, we MUST ratchet our send chain back.
+        )
     }
 
     private fun buildMessageAad(

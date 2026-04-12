@@ -62,13 +62,12 @@ open class LocationClient(
         val resultLocations = mutableListOf<UserLocation>()
         val friendBefore = store.getFriend(friendId) ?: return emptyList()
         var currentTokenToPoll = friendBefore.session.recvToken.toHex()
-        var maxFollows = 5 // Prevent infinite loops just in case
 
-        while (maxFollows-- > 0) {
+        repeat(5) { // Prevent infinite loops just in case (§9.2)
             val messages = E2eeMailboxClient.poll(baseUrl, currentTokenToPoll)
-            if (messages.isEmpty()) break
+            if (messages.isEmpty()) return@repeat
 
-            val result = store.processBatch(friendId, currentTokenToPoll, messages) ?: break
+            val result = store.processBatch(friendId, currentTokenToPoll, messages) ?: return@repeat
 
             for (out in result.outgoing) {
                 E2eeMailboxClient.post(baseUrl, out.token, out.payload)
@@ -79,12 +78,12 @@ open class LocationClient(
             })
 
             // Did the recvToken change during processing? If so, follow it immediately.
-            val updatedFriend = store.getFriend(friendId) ?: break
+            val updatedFriend = store.getFriend(friendId) ?: return@repeat
             val newToken = updatedFriend.session.recvToken.toHex()
             if (newToken != currentTokenToPoll) {
                 currentTokenToPoll = newToken
             } else {
-                break // No token rotation, we've caught up
+                return@repeat // No token rotation, we've caught up
             }
         }
 
@@ -162,7 +161,12 @@ open class LocationClient(
         // Session.encryptMessage handles switching to the new token AFTER the first message of a new epoch.
         val tokenToUse = if (newSession.isSendTokenPending) newSession.prevSendToken else newSession.sendToken
         
-        // Post first, update store only on success to ensure reliability (§5.4).
+        // PERSISTENCE HYGIENE (§5.4): We update the session state with the new 
+        // sequence number/ratchet BEFORE posting. This ensures that if the app 
+        // crashes during the post, we don't accidentally reuse the same 
+        // sequence number/nonce for a different plaintext on restart.
+        store.updateSession(friendId, newSession)
+
         E2eeMailboxClient.post(baseUrl, tokenToUse.toHex(), message)
 
         // DUAL-POST MITIGATION (§5.4): If we are transitioning to a new epoch (isSendTokenPending),
@@ -176,8 +180,9 @@ open class LocationClient(
             }
         }
 
-        // Mark the token as no longer pending once successfully posted.
-        val finalSession = if (newSession.isSendTokenPending) newSession.copy(isSendTokenPending = false) else newSession
-        store.updateSession(friendId, finalSession)
+        // Once posted successfully, we can clear the pending flag.
+        if (newSession.isSendTokenPending) {
+            store.updateSession(friendId, newSession.copy(isSendTokenPending = false))
+        }
     }
 }
