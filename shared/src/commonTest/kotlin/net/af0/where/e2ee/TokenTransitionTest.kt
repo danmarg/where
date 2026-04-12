@@ -51,8 +51,8 @@ class TokenTransitionTest {
         val token0 = bobStore.getFriend(bobFriendId)!!.session.recvToken.toHex()
         val token1 = session1.sendToken.toHex() // Alice's sendToken matches Bob's recvToken
         
-        fakeMailbox.polls[token0] = mutableListOf(EncryptedMessagePayload(dhPub = msg1.dhPub, seq = msg1.seq, ct = msg1.ct))
-        fakeMailbox.polls[token1] = mutableListOf(EncryptedMessagePayload(dhPub = msg2.dhPub, seq = msg2.seq, ct = msg2.ct))
+        fakeMailbox.polls[token0] = mutableListOf(msg1)
+        fakeMailbox.polls[token1] = mutableListOf(msg2)
 
         // 5. Poll! Should follow from token0 -> token1 and get both locations
         val locations = client.pollFriend(bobFriendId)
@@ -87,7 +87,7 @@ class TokenTransitionTest {
         for (i in 1..5) {
             val (sess, msg) = Session.encryptMessage(aliceStore.getFriend(aliceFriendId)!!.session, MessagePlaintext.Location(i.toDouble(), 0.0, 0.0, 0))
             aliceStore.updateSession(aliceFriendId, sess)
-            fakeMailbox.polls[currentToken] = mutableListOf(EncryptedMessagePayload(dhPub = msg.dhPub, seq = msg.seq, ct = msg.ct))
+            fakeMailbox.polls[currentToken] = mutableListOf(msg)
             currentToken = sess.sendToken.toHex()
         }
 
@@ -135,7 +135,7 @@ class TokenTransitionTest {
         bobStore.updateSession(bobToAliceId, bState)
         
         val aliceRecvToken = aliceStore.getFriend(aliceToBobId)!!.session.recvToken.toHex()
-        fakeMailbox.polls[aliceRecvToken] = mutableListOf(EncryptedMessagePayload(dhPub = bMsg.dhPub, seq = bMsg.seq, ct = bMsg.ct))
+        fakeMailbox.polls[aliceRecvToken] = mutableListOf(bMsg)
         
         // 4. Alice polls. She should see the new DH, ratchet, and trigger an automated keepalive.
         // The keepalive itself triggers finalizeTokenTransition.

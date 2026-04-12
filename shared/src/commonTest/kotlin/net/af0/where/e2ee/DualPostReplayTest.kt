@@ -28,12 +28,14 @@ class DualPostReplayTest {
         // 1. Alice sends first message (seq 1, epoch 0)
         val (updatedAlice, msg1) = Session.encryptMessage(aliceSession, MessagePlaintext.Location(1.0, 1.0, 1.0, 100))
         aliceSession = updatedAlice
-        println("Alice sent msg1: seq=${msg1.seqAsLong()} dh=${msg1.dhPub.toHex()}")
+        val h1 = Session.decryptHeader(aliceSession.headerKey, msg1.envelope)
+        println("Alice sent msg1: seq=${h1.seq} dh=${h1.dhPub.toHex()}")
 
         // 2. Alice sends second message
         val (finalAlice, msg2) = Session.encryptMessage(aliceSession, MessagePlaintext.Location(2.0, 2.0, 1.0, 200))
         aliceSession = finalAlice
-        println("Alice sent msg2: seq=${msg2.seqAsLong()} dh=${msg2.dhPub.toHex()}")
+        val h2 = Session.decryptHeader(aliceSession.headerKey, msg2.envelope)
+        println("Alice sent msg2: seq=${h2.seq} dh=${h2.dhPub.toHex()}")
 
         // 3. Bob receives msg1
         val (bobState1, _) = Session.decryptMessage(bobSession, msg1)
@@ -41,7 +43,8 @@ class DualPostReplayTest {
         println("Bob processed msg1: recvSeq=${bobSession.recvSeq}")
 
         // 4. Bob receives msg2
-        println("Bob decrypting msg2: seq=${msg2.seqAsLong()} current_recvSeq=${bobSession.recvSeq}")
+        val h2_bob = Session.decryptHeader(bobSession.headerKey, msg2.envelope)
+        println("Bob decrypting msg2: seq=${h2_bob.seq} current_recvSeq=${bobSession.recvSeq}")
         val (bobState2, _) = Session.decryptMessage(bobSession, msg2)
         bobSession = bobState2
         println("Bob processed msg2: recvSeq=${bobSession.recvSeq}")
@@ -65,9 +68,9 @@ class DualPostReplayTest {
 
         // Create a message with a NEW DH key but TAMPERED ciphertext
         val attackerEk = generateX25519KeyPair()
+        val envelope = Session.encryptHeader(bobSession.headerKey, attackerEk.pub, 1L, 0L)
         val badMsg = EncryptedMessagePayload(
-            dhPub = attackerEk.pub,
-            seq = "1",
+            envelope = envelope,
             ct = ByteArray(32) { 0xFF.toByte() } // Junk
         )
 

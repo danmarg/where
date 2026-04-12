@@ -130,6 +130,7 @@ object KeyExchange {
             rootKey = rkStep.newRootKey.copyOf(),
             sendChainKey = rkStep.newChainKey.copyOf(),
             headerKey = session.nextHeaderKey.copyOf(),
+            sendHeaderKey = session.nextHeaderKey.copyOf(),
             nextHeaderKey = rkStep.newHeaderKey.copyOf(),
             sendToken = newSendToken,
             localDhPriv = newLocalDh.priv.copyOf(),
@@ -223,6 +224,7 @@ object KeyExchange {
             pn = 0L,
             pr = 0L,
             headerKey = initialHeaderKey,
+            sendHeaderKey = initialHeaderKey,
             nextHeaderKey = nextHeaderKey,
         )
     }
