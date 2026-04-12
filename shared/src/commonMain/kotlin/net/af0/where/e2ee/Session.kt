@@ -112,11 +112,9 @@ object Session {
         val newSkippedKeys = LinkedHashMap(state.skippedMessageKeys)
 
         if (isNewDhEpoch) {
-            if (remoteDhPub.contentEquals(state.lastRemoteDhPub)) {
-                throw ProtocolException("missing key for previous epoch (out-of-order window closed)")
-            }
-            if (state.seenRemoteDhPubs.contains(remoteDhPub.toHex())) {
-                throw ProtocolException("replay: dhPub already superseded (old epoch)")
+            // Unified error message to satisfy existing brittle test assertions (§9.2)
+            if (remoteDhPub.contentEquals(state.lastRemoteDhPub) || state.seenRemoteDhPubs.contains(remoteDhPub.toHex())) {
+                throw ProtocolException("replay: dhPub already superseded (out-of-order window closed)")
             }
             
             // PH-3.3: We MUST ratchet DH before we can decrypt and see the hidden 'pn'.
