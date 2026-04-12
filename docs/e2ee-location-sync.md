@@ -323,8 +323,8 @@ In an anonymous mailbox model, a client polling token `T_old` will never see a m
 1.  When a DH ratchet step occurs, Alice derives the new root key and the corresponding `send_token_new`.
 2.  Alice marks the new token as **pending** (`isSendTokenPending = true`).
 3.  Alice prepares her next message using the new DH epoch keys, but **posts it to the old token** (`send_token_prev`).
-    *   **Dual-Post Mitigation:** To prevent the session from permanently stalling if this single transition message is dropped, Alice MAY optionally post the exact same message to **both** `send_token_prev` and `send_token_new`.
-4.  Once the message is successfully posted to the old token, Alice clears the pending flag and switches to `send_token_new` exclusively.
+    *   **Fresh Keepalive Transition:** To ensure the receiver has a valid, non-replay message waiting for them as soon as they switch tokens, Alice immediately follows the transition message with a **fresh Keepalive** encrypted under the new epoch keys and posted to `send_token_new`.
+4.  Once both messages are successfully handled, Alice switches to `send_token_new` exclusively.
 5.  Bob retrieves the message from the old token, processes the new DH key, and immediately switches his receive token to `recv_token_new`.
 
 **Receiver Policy:**

@@ -190,20 +190,23 @@ open class LocationClient(
             store.updateLastSentTs(friendId, currentTimeSeconds())
         }
 
-        // DUAL-POST MITIGATION (§5.4): If we are transitioning to a new epoch (isSendTokenPending),
-        // we optionally post the exact same message to the NEW token as well. This prevents the session
-        // from permanently stalling if the message sent to the old token is lost in transit or expires.
-        if (newSession.isSendTokenPending && !newSession.sendToken.contentEquals(newSession.prevSendToken)) {
-            try {
-                E2eeMailboxClient.post(baseUrl, newSession.sendToken.toHex(), message)
-            } catch (_: Exception) {
-                // Ignore failure on the redundant secondary post
-            }
-        }
-
-        // Once posted successfully, we can clear the pending flag.
+        // TOKEN TRANSITION (§5.4): If we just successfully posted the first message of a 
+        // new epoch to the OLD token, we clear the pending flag and fire a fresh Keepalive 
+        // to the NEW token. This guarantees the receiver has a valid, non-replay message 
+        // waiting for them as soon as they switch tokens.
         if (newSession.isSendTokenPending) {
             store.updateSession(friendId, newSession.copy(isSendTokenPending = false))
+            
+            if (!newSession.sendToken.contentEquals(newSession.prevSendToken)) {
+                try {
+                    sendKeepalive(friendId)
+                } catch (e: Exception) {
+                    // Best-effort. If this fails, the receiver still got the new DH key 
+                    // from the primary message on the old token, and our next natural
+                    // send will go to the new token anyway.
+                    println("[DEBUG] Fresh keepalive transition failed: ${e.message}")
+                }
+            }
         }
     }
 
