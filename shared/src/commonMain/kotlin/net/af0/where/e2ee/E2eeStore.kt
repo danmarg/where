@@ -8,6 +8,11 @@ import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 
+private val json = Json {
+    ignoreUnknownKeys = true
+    encodeDefaults = true
+}
+
 /**
  * Storage interface for persistent E2EE state.
  * Actual implementations will wrap SharedPreferences/UserDefaults.
@@ -131,7 +136,7 @@ class E2eeStore(
     private fun load() {
         val jsonStr = storage.getString(STORAGE_KEY) ?: return
         try {
-            val serialized = Json.decodeFromString<SerializedStore>(jsonStr)
+            val serialized = json.decodeFromString<SerializedStore>(jsonStr)
             friends =
                 serialized.friends.associate { s ->
                     val entry =
@@ -180,7 +185,7 @@ class E2eeStore(
                     },
                 pendingInvite = pendingInvite,
             )
-        storage.putString(STORAGE_KEY, Json.encodeToString(serialized))
+        storage.putString(STORAGE_KEY, json.encodeToString(serialized))
     }
 
     /** The QR payload currently being displayed, or null if no invite is active. */
@@ -216,7 +221,7 @@ class E2eeStore(
         bobSuggestedName: String = "",
     ): Pair<KeyExchangeInitPayload, FriendEntry> =
         stateLock.withLock {
-            val sanitizedRequestedName = bobSuggestedName.take(64).filter { it.isLetterOrDigit() || it.isWhitespace() }
+            val sanitizedRequestedName = sanitizeName(bobSuggestedName)
             val (initMsg, session) = KeyExchange.bobProcessQr(qr, sanitizedRequestedName)
 
             val entry =
@@ -275,7 +280,7 @@ class E2eeStore(
                     )
                 val entry =
                     FriendEntry(
-                        name = bobName.take(64).filter { it.isLetterOrDigit() || it.isWhitespace() },
+                        name = sanitizeName(bobName),
                         session = session,
                         // Alice created the QR
                         isInitiator = true,
@@ -423,25 +428,32 @@ class E2eeStore(
             // Multi-epoch sorting logic (§8.1):
             // We group by epoch and sort by sequence number within each epoch.
             // Epochs are ordered as: [Previous] -> [Current] -> [Future(s) in arrival order].
-            val encryptedMessages = messages.filterIsInstance<EncryptedMessagePayload>()
-                .sortedWith(
-                    compareBy<EncryptedMessagePayload> { msg ->
+            val sortedMessages =
+                messages.filterIsInstance<EncryptedMessagePayload>().sortedWith { m1, m2 ->
+                    val b1 =
                         when {
-                            msg.dhPub.contentEquals(entry.session.lastRemoteDhPub) -> 0
-                            msg.dhPub.contentEquals(entry.session.remoteDhPub) -> 1
-                            else -> 2 // All future epochs
+                            m1.dhPub.contentEquals(entry.session.remoteDhPub) -> 0
+                            m1.dhPub.contentEquals(entry.session.lastRemoteDhPub) -> 1
+                            else -> 2
                         }
-                    }.thenBy { it.seqAsLong() }
-                )
-            // NOTE: The above handles N future epochs by grouping them together (bucket 2).
-            // Since .sortedWith is stable, messages within bucket 2 maintain their relative 
-            // arrival order from the server, which effectively provides the topological sort 
-            // needed for multiple future epochs.
+                    val b2 =
+                        when {
+                            m2.dhPub.contentEquals(entry.session.remoteDhPub) -> 0
+                            m2.dhPub.contentEquals(entry.session.lastRemoteDhPub) -> 1
+                            else -> 2
+                        }
+                    if (b1 != b2) {
+                        b1.compareTo(b2)
+                    } else {
+                        // Within the same bucket, maintain topological order (seq).
+                        m1.seqAsLong().compareTo(m2.seqAsLong())
+                    }
+                }
             
             var currentSession = entry.session
             var anySuccess = false
 
-            for (msg in encryptedMessages) {
+            for (msg in sortedMessages) {
                 try {
                     val (newSession, pt) = Session.decryptMessage(currentSession, msg)
                     currentSession = newSession
@@ -479,6 +491,9 @@ class E2eeStore(
             save()
             PollBatchResult(decryptedLocations, outgoing)
         }
+
+    private fun sanitizeName(name: String): String =
+        name.take(64).filter { it.isLetterOrDigit() || it.isWhitespace() }.trim()
 
     companion object {
         internal const val MAX_POLL_FOLLOWS = 2
