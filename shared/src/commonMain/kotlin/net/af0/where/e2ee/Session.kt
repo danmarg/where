@@ -13,10 +13,7 @@ import kotlinx.serialization.json.put
  * High-level session operations using a standard Double Ratchet.
  */
 object Session {
-    private const val AAD_PREFIX = "Where-v1-Message"
     private const val PROTOCOL_VERSION = 1
-
-    internal const val PADDING_SIZE = 512
 
     fun encryptMessage(
         state: SessionState,
@@ -94,7 +91,7 @@ object Session {
             plaintext.fill(0); unpadded.fill(0)
 
             // Remove used key from cache
-            val newCache = state.skippedMessageKeys.toMutableMap()
+            val newCache = LinkedHashMap(state.skippedMessageKeys)
             newCache.remove(cacheKey)
             
             return state.copy(skippedMessageKeys = newCache) to decoded
@@ -127,7 +124,7 @@ object Session {
         }
 
         // Derivation loop for chain keys and skipped message keys
-        val newSkippedKeys = speculativeState.skippedMessageKeys.toMutableMap()
+        val newSkippedKeys = LinkedHashMap(speculativeState.skippedMessageKeys)
         
         // If we entered a new DH epoch, standard DR says we should eventually clear 
         // very old skipped keys. We'll clear keys belonging to epochs older than 'lastRemoteDhPub'.
