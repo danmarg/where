@@ -86,7 +86,7 @@ For threat models that include a metadata-analyzing server, the mitigations in ย
 
 - **Server compromise revealing historical locations.** *Forward secrecy (per-message):* deleting each message key `MK_n` immediately after use ensures that compromise of one key does not expose others. *Post-compromise security (per DH ratchet step):* the DH ratchet step refreshing the root key and symmetric chains limits how long a leaked chain key remains exploitable.
 - **Passive eavesdropping.** All location payloads are encrypted with ephemeral symmetric keys derived from a per-friend ratchet. A passive observer with access to ciphertext learns nothing about coordinates.
-- **Replay attacks.** Each message carries a monotonically increasing sequence counter which is also authenticated (as AEAD additional data). The recipient rejects any frame with a counter it has already seen within the same DH epoch.
+- **Replay attacks.** Each message carries a monotonically increasing sequence counter which is also authenticated (as AEAD additional data). The recipient rejects any frame with a counter it has already seen within the same DH epoch. Across-epoch replay protection utilizes a sliding window of the most recent 10 DH public keys; replays from older epochs will trigger a speculative ratchet but always fail final AEAD authentication.
 - **Ciphertext forgery.** ChaCha20-Poly1305 authentication tags cover both the ciphertext and associated data (sender session fingerprints, sequence number, DH public key). A server or attacker cannot modify a frame without detection.
 - **Ratchet hijacking.** All messages are AEAD-encrypted under keys derived from the current session root key and symmetric chains. An attacker without session state cannot forge or inject valid messages.
 - **Key mismatch at bootstrap.** The `key_confirmation` field in `KeyExchangeInit` (ยง4.2) proves that both parties derived the same `SK` before any location data is shared.
@@ -341,6 +341,7 @@ To maximize forward secrecy, implementations should adhere to the following hygi
 2.  **Delete-after-use:** Each message key `MK_n` MUST be deleted (zeroed) from the `skipped_message_keys` cache immediately after successful decryption.
 3.  **Persistence Policy:** 
     - Full `SessionState` (including `localDhPriv`) is persisted to local storage to ensure session stability across app restarts and crashes.
+    - **Initial State Hygiene:** Bob's initial ephemeral private key (`ekB.priv`) is copied into `localDhPriv` in the `SessionState` to enable the first DH ratchet step when Alice responds. The original buffer is zeroed immediately after session initialization.
     - To mitigate backup-recovery risks, this state MUST be stored using device-local, backup-excluded security controls (e.g., `kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly` on iOS, `KeyStore`-backed encryption with `allowBackup=false` on Android).
     - If a device backup is nonetheless recovered by an attacker, the forward secrecy guarantee is reduced to the current DH epoch. Per-message forward secrecy is maintained against a server-side observer who does not have access to the device's persistent store.
 

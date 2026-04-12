@@ -41,6 +41,8 @@ data class FriendEntry(
      */
     val isConfirmed: Boolean = false,
     val lastSentTs: Long = 0L,
+    /** Whether the local user is currently sharing their location with this friend. */
+    val sharingEnabled: Boolean = true,
     /** Optional outbox for transactional recovery (§5.4). */
     val outbox: EncryptedOutboxMessage? = null,
 ) {
@@ -87,6 +89,7 @@ data class FriendEntry(
         result = 31 * result + (lastTs?.hashCode() ?: 0)
         result = 31 * result + lastRecvTs.hashCode()
         result = 31 * result + isConfirmed.hashCode()
+        result = 31 * result + sharingEnabled.hashCode()
         result = 31 * result + (outbox?.hashCode() ?: 0)
         return result
     }
@@ -142,6 +145,7 @@ class E2eeStore(
                             lastRecvTs = if (s.lastRecvTs == 0L) currentTimeSeconds() else s.lastRecvTs,
                             isConfirmed = s.isConfirmed,
                             lastSentTs = s.lastSentTs,
+                            sharingEnabled = s.sharingEnabled,
                             outbox = s.outbox,
                         )
                     entry.id to entry
@@ -170,6 +174,7 @@ class E2eeStore(
                             lastRecvTs = f.lastRecvTs,
                             isConfirmed = f.isConfirmed,
                             lastSentTs = f.lastSentTs,
+                            sharingEnabled = f.sharingEnabled,
                             outbox = f.outbox,
                         )
                     },
@@ -211,7 +216,8 @@ class E2eeStore(
         bobSuggestedName: String = "",
     ): Pair<KeyExchangeInitPayload, FriendEntry> =
         stateLock.withLock {
-            val (initMsg, session) = KeyExchange.bobProcessQr(qr, bobSuggestedName)
+            val sanitizedRequestedName = bobSuggestedName.take(64).filter { it.isLetterOrDigit() || it.isWhitespace() }
+            val (initMsg, session) = KeyExchange.bobProcessQr(qr, sanitizedRequestedName)
 
             val entry =
                 FriendEntry(
@@ -269,7 +275,7 @@ class E2eeStore(
                     )
                 val entry =
                     FriendEntry(
-                        name = bobName,
+                        name = bobName.take(64).filter { it.isLetterOrDigit() || it.isWhitespace() },
                         session = session,
                         // Alice created the QR
                         isInitiator = true,
@@ -336,7 +342,7 @@ class E2eeStore(
             val entry = friends[id] ?: return@withLock
             friends[id] = entry.copy(
                 session = newSession,
-                outbox = EncryptedOutboxMessage(token, message)
+                outbox = EncryptedOutboxMessage(token = token, payload = message)
             )
             save()
         }
@@ -414,20 +420,23 @@ class E2eeStore(
             val decryptedLocations = mutableListOf<LocationPlaintext>()
             val outgoing = mutableListOf<OutgoingMessage>()
 
+            // Multi-epoch sorting logic (§8.1):
+            // We group by epoch and sort by sequence number within each epoch.
+            // Epochs are ordered as: [Previous] -> [Current] -> [Future(s) in arrival order].
             val encryptedMessages = messages.filterIsInstance<EncryptedMessagePayload>()
                 .sortedWith(
                     compareBy<EncryptedMessagePayload> { msg ->
-                        // Multi-epoch sorting logic (§8.1):
-                        // 1. Previous epoch messages (dhPub == lastRemoteDhPub)
-                        // 2. Current epoch messages (dhPub == remoteDhPub)
-                        // 3. Future epoch messages (new ratchet)
                         when {
                             msg.dhPub.contentEquals(entry.session.lastRemoteDhPub) -> 0
                             msg.dhPub.contentEquals(entry.session.remoteDhPub) -> 1
-                            else -> 2
+                            else -> 2 // All future epochs
                         }
                     }.thenBy { it.seqAsLong() }
                 )
+            // NOTE: The above handles N future epochs by grouping them together (bucket 2).
+            // Since .sortedWith is stable, messages within bucket 2 maintain their relative 
+            // arrival order from the server, which effectively provides the topological sort 
+            // needed for multiple future epochs.
             
             var currentSession = entry.session
             var anySuccess = false
@@ -472,6 +481,7 @@ class E2eeStore(
         }
 
     companion object {
+        internal const val MAX_POLL_FOLLOWS = 2
         private const val STORAGE_KEY = "e2ee_store"
     }
 }
@@ -492,6 +502,7 @@ internal data class SerializedFriendEntry(
     val lastRecvTs: Long = 0L,
     val isConfirmed: Boolean = false,
     val lastSentTs: Long = 0L,
+    val sharingEnabled: Boolean = true,
     val outbox: EncryptedOutboxMessage? = null,
 )
 

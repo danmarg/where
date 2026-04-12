@@ -181,6 +181,7 @@ data class KeyExchangeInitMessage(
  */
 @Serializable
 data class EncryptedOutboxMessage(
+    val v: Int = 1,
     val token: String,
     val payload: MailboxPayload
 )
