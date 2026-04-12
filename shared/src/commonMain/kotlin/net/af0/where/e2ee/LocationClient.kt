@@ -63,7 +63,9 @@ open class LocationClient(
         val friendBefore = store.getFriend(friendId) ?: return emptyList()
         var currentTokenToPoll = friendBefore.session.recvToken.toHex()
 
-        repeat(5) { // Prevent infinite loops just in case (§9.2)
+        // We follow token rotations up to MAX_POLL_FOLLOWS to prevent infinite loops 
+        // caused by adversarial server or client code injecting transition messages (§9.2).
+        repeat(MAX_POLL_FOLLOWS) { 
             val messages = E2eeMailboxClient.poll(baseUrl, currentTokenToPoll)
             if (messages.isEmpty()) return@repeat
 
