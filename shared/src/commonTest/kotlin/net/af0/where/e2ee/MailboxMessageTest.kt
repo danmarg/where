@@ -18,107 +18,35 @@ class MailboxMessageTest {
     }
 
     // ---------------------------------------------------------------------------
-    // EncryptedLocationPayload round-trip
+    // EncryptedMessagePayload round-trip
     // ---------------------------------------------------------------------------
 
     @Test
-    fun `EncryptedLocationPayload serialises and deserialises`() {
+    fun `EncryptedMessagePayload serialises and deserialises`() {
+        val dhPub = ByteArray(32) { (it + 1).toByte() }
         val ct = ByteArray(32) { it.toByte() }
-        val original = EncryptedLocationPayload(seq = "12345", ct = ct)
+        val original = EncryptedMessagePayload(dhPub = dhPub, seq = "12345", ct = ct)
         val encoded = json.encodeToString(MailboxPayload.serializer(), original)
         val decoded = json.decodeFromString<MailboxPayload>(encoded)
-        assertIs<EncryptedLocationPayload>(decoded)
+        assertIs<EncryptedMessagePayload>(decoded)
+        assertContentEquals(dhPub, decoded.dhPub)
         assertEquals("12345", decoded.seq)
         assertContentEquals(ct, decoded.ct)
     }
 
     @Test
-    fun `EncryptedLocationPayload seqAsLong round-trips large uint64`() {
-        val payload = EncryptedLocationPayload(seq = "9007199254740993", ct = ByteArray(0))
+    fun `EncryptedMessagePayload seqAsLong round-trips large uint64`() {
+        val payload = EncryptedMessagePayload(dhPub = ByteArray(32), seq = "9007199254740993", ct = ByteArray(0))
         assertEquals(9007199254740993L, payload.seqAsLong())
     }
 
     @Test
-    fun `EncryptedLocationPayload type discriminator is EncryptedLocation`() {
-        val payload = EncryptedLocationPayload(seq = "1", ct = ByteArray(16))
+    fun `EncryptedMessagePayload type discriminator is EncryptedMessage`() {
+        val payload = EncryptedMessagePayload(dhPub = ByteArray(32), seq = "1", ct = ByteArray(16))
         val jsonStr = json.encodeToString(MailboxPayload.serializer(), payload)
-        assert(jsonStr.contains("\"type\":\"EncryptedLocation\"")) {
+        assert(jsonStr.contains("\"type\":\"EncryptedMessage\"")) {
             "Expected type discriminator in: $jsonStr"
         }
-    }
-
-    // ---------------------------------------------------------------------------
-    // PreKeyBundlePayload round-trip
-    // ---------------------------------------------------------------------------
-
-    @Test
-    fun `PreKeyBundlePayload serialises and deserialises`() {
-        val keys =
-            listOf(
-                OPKWire(id = 101, pub = ByteArray(32) { 0x01.toByte() }),
-                OPKWire(id = 102, pub = ByteArray(32) { 0x02.toByte() }),
-            )
-        val mac = ByteArray(32) { 0xFF.toByte() }
-        val original = PreKeyBundlePayload(keys = keys, mac = mac)
-        val encoded = json.encodeToString(MailboxPayload.serializer(), original)
-        val decoded = json.decodeFromString<MailboxPayload>(encoded)
-        assertIs<PreKeyBundlePayload>(decoded)
-        assertEquals(2, decoded.keys.size)
-        assertEquals(101, decoded.keys[0].id)
-        assertContentEquals(keys[0].pub, decoded.keys[0].pub)
-        assertContentEquals(mac, decoded.mac)
-    }
-
-    @Test
-    fun `PreKeyBundlePayload toOPKList converts correctly`() {
-        val keys = listOf(OPKWire(id = 5, pub = ByteArray(32) { it.toByte() }))
-        val payload = PreKeyBundlePayload(keys = keys, mac = ByteArray(32))
-        val opks = payload.toOPKList()
-        assertEquals(1, opks.size)
-        assertEquals(5, opks[0].id)
-        assertContentEquals(keys[0].pub, opks[0].pub)
-    }
-
-    // ---------------------------------------------------------------------------
-    // EpochRotationPayload round-trip
-    // ---------------------------------------------------------------------------
-
-    @Test
-    fun `EpochRotationPayload serialises and deserialises`() {
-        val ct = ByteArray(64) { 0xBB.toByte() }
-        val original = EpochRotationPayload(ct = ct)
-        val encoded = json.encodeToString(MailboxPayload.serializer(), original)
-        val decoded = json.decodeFromString<MailboxPayload>(encoded)
-        assertIs<EpochRotationPayload>(decoded)
-        assertContentEquals(ct, decoded.ct)
-    }
-
-    @Test
-    fun `EpochRotationPayload type discriminator is EpochRotation`() {
-        val payload = EpochRotationPayload(ct = ByteArray(32))
-        val encoded = json.encodeToString(MailboxPayload.serializer(), payload)
-        assert(encoded.contains("\"type\":\"EpochRotation\"")) { "Expected type discriminator in: $encoded" }
-    }
-
-    // ---------------------------------------------------------------------------
-    // RatchetAckPayload round-trip
-    // ---------------------------------------------------------------------------
-
-    @Test
-    fun `RatchetAckPayload serialises and deserialises`() {
-        val ct = ByteArray(32) { 0xCC.toByte() }
-        val original = RatchetAckPayload(ct = ct)
-        val encoded = json.encodeToString(MailboxPayload.serializer(), original)
-        val decoded = json.decodeFromString<MailboxPayload>(encoded)
-        assertIs<RatchetAckPayload>(decoded)
-        assertContentEquals(ct, decoded.ct)
-    }
-
-    @Test
-    fun `RatchetAckPayload type discriminator is RatchetAck`() {
-        val payload = RatchetAckPayload(ct = ByteArray(32))
-        val encoded = json.encodeToString(MailboxPayload.serializer(), payload)
-        assert(encoded.contains("\"type\":\"RatchetAck\"")) { "Expected type discriminator in: $encoded" }
     }
 
     // ---------------------------------------------------------------------------
@@ -126,13 +54,10 @@ class MailboxMessageTest {
     // ---------------------------------------------------------------------------
 
     @Test
-    fun `all five payload types round-trip via sealed class deserializer`() {
+    fun `all payload types round-trip via sealed class deserializer`() {
         val payloads: List<MailboxPayload> =
             listOf(
-                EncryptedLocationPayload(seq = "1", ct = ByteArray(32)),
-                PreKeyBundlePayload(keys = emptyList(), mac = ByteArray(32)),
-                EpochRotationPayload(ct = ByteArray(32)),
-                RatchetAckPayload(ct = ByteArray(32)),
+                EncryptedMessagePayload(dhPub = ByteArray(32), seq = "1", ct = ByteArray(32)),
                 KeyExchangeInitPayload(token = "deadbeef", ekPub = ByteArray(32), keyConfirmation = ByteArray(32), suggestedName = "Alice"),
             )
         for (payload in payloads) {

@@ -42,45 +42,36 @@ object KeyExchange {
     ): Pair<KeyExchangeInitMessage, SessionState> {
         val ekB = generateX25519KeyPair()
         val sk = x25519(ekB.priv, qr.ekPub)
-        ekB.priv.fill(0)
 
         val aliceFp = fingerprint(qr.ekPub)
         val bobFp = fingerprint(ekB.pub)
 
-        // Bob derives initial routing tokens using stable init-token KDF (not the ratchet token KDF).
-        // T_AB_0 = HKDF(SK, info="Where-v1-InitToken-AB")[0:16]; T_BA_0 = ...InitToken-BA.
-        val tokenAliceToBob = hkdfSha256(ikm = sk, salt = null, info = INFO_INIT_TOKEN_AB.encodeToByteArray(), length = 16)
-        val tokenBobToAlice = hkdfSha256(ikm = sk, salt = null, info = INFO_INIT_TOKEN_BA.encodeToByteArray(), length = 16)
-
-        val kBundle =
-            hkdfSha256(
-                ikm = sk,
-                salt = null,
-                info = INFO_BUNDLE_AUTH.encodeToByteArray(),
-                length = 32,
-            )
         val session =
             initSession(
                 sk = sk,
                 isAlice = false,
-                // DH already computed above; do not persist the priv key (§5.5).
-                myEkPriv = ByteArray(32),
-                myEkPub = ekB.pub,
-                theirEkPub = qr.ekPub,
-                sendToken = tokenBobToAlice,
-                recvToken = tokenAliceToBob,
+                myDhPriv = ekB.priv,
+                myDhPub = ekB.pub,
+                theirDhPub = qr.ekPub,
                 aliceFp = aliceFp,
                 bobFp = bobFp,
-                aliceEkPub = qr.ekPub,
-                bobEkPub = ekB.pub,
-                kBundle = kBundle,
             )
-
+        
         val keyConfirmation = buildKeyConfirmation(sk, qr.ekPub, ekB.pub)
+
+        // Initial token Bob sends to Alice for discovery is T_AB_0.
+        val tokenAliceToBob = deriveRoutingToken(sk, aliceFp, bobFp)
+
+        // MEMORY HYGIENE NOTE (§5.5): Bob's initial ephemeral key (ekB.priv) is copied into 
+        // the session.localDhPriv buffer within initSession. We zero the local ephemeral 
+        // buffer here, but the copy in SessionState intentionally persists to enable 
+        // the first DH ratchet step when Alice responds.
+        ekB.priv.fill(0)
+        sk.fill(0)
+
         val msg =
             KeyExchangeInitMessage(
-                // Bob sends to Alice's "AliceToBob" inbox for discovery
-                token = tokenAliceToBob.copyOf(),
+                token = tokenAliceToBob,
                 ekPub = ekB.pub.copyOf(),
                 keyConfirmation = keyConfirmation,
                 suggestedName = suggestedName,
@@ -102,37 +93,66 @@ object KeyExchange {
 
         // Verify key confirmation before proceeding.
         if (!verifyKeyConfirmation(sk, aliceEkPub, msg.ekPub, msg.keyConfirmation)) {
+            sk.fill(0)
             throw AuthenticationException("KeyExchangeInit key_confirmation failed — aborting key exchange")
         }
 
         val aliceFp = fingerprint(aliceEkPub)
         val bobFp = fingerprint(msg.ekPub)
-        // Alice derives initial routing tokens using stable init-token KDF (not the ratchet token KDF).
-        val tokenAliceToBob = hkdfSha256(ikm = sk, salt = null, info = INFO_INIT_TOKEN_AB.encodeToByteArray(), length = 16)
-        val tokenBobToAlice = hkdfSha256(ikm = sk, salt = null, info = INFO_INIT_TOKEN_BA.encodeToByteArray(), length = 16)
 
-        val kBundle =
-            hkdfSha256(
-                ikm = sk,
-                salt = null,
-                info = INFO_BUNDLE_AUTH.encodeToByteArray(),
-                length = 32,
-            )
-        // DH already computed above; do not persist the priv key (§5.5).
-        return initSession(
+        val session = initSession(
             sk = sk,
             isAlice = true,
-            myEkPriv = ByteArray(32),
-            myEkPub = aliceEkPub.copyOf(),
-            theirEkPub = msg.ekPub,
-            sendToken = tokenAliceToBob,
-            recvToken = tokenBobToAlice,
+            myDhPriv = aliceEkPriv,
+            myDhPub = aliceEkPub,
+            theirDhPub = msg.ekPub,
             aliceFp = aliceFp,
             bobFp = bobFp,
-            aliceEkPub = aliceEkPub,
-            bobEkPub = msg.ekPub,
-            kBundle = kBundle,
         )
+        sk.fill(0)
+
+        // To break the Double Ratchet deadlock and ensure we don't just stay in the
+        // bootstrap symmetric chain forever, Alice (the initiator) performs the FIRST
+        // DH ratchet step immediately after receiving Bob's bootstrap key (B0).
+        // This generates A1, which Alice will send in her first location message.
+        // Bob will see A1 != A0 and ratchet his own side.
+        val newLocalDh = generateX25519KeyPair()
+        val dhOut = x25519(newLocalDh.priv, msg.ekPub)
+        val rkStep = try {
+            kdfRk(session.rootKey, dhOut)
+        } finally {
+            dhOut.fill(0)
+        }
+
+        // Tokens also rotate when the rootKey changes.
+        val newSendToken = deriveRoutingToken(rkStep.newRootKey, aliceFp, bobFp)
+        val nextAliceSession = session.copy(
+            rootKey = rkStep.newRootKey.copyOf(),
+            sendChainKey = rkStep.newChainKey.copyOf(),
+            sendToken = newSendToken,
+            // MEMORY HYGIENE NOTE (§5.5): localDhPriv is copied here to be persisted in 
+            // the E2eeStore. This ensures session stability across app restarts, but means 
+            // that forward secrecy at rest is dependent on the security of the local 
+            // keychain/keystore (backup-excluded).
+            localDhPriv = newLocalDh.priv.copyOf(),
+            localDhPub = newLocalDh.pub.copyOf(),
+            prevSendToken = session.sendToken.copyOf(),
+            isSendTokenPending = true,
+            pn = session.sendSeq, // Stash length of chain A0 before resetting sendSeq to 0
+            pr = session.recvSeq, // Stash length of chain B0 before resetting recvSeq to 0
+        )
+
+        // Memory Hygiene: Wipe the bootstrap session's keys now that they are superseded by Epoch 1.
+        // nextAliceSession preserves recvChainKey (Epoch 0 receiver) until Bob ratchets.
+        // We MUST NOT wipe recvChainKey here because nextAliceSession is a shallow copy of session!
+        session.rootKey.fill(0)
+        session.sendChainKey.fill(0)
+        // session.recvChainKey is shared with nextAliceSession via shallow copy. DO NOT FILL(0).
+
+        newLocalDh.priv.fill(0)
+        rkStep.newRootKey.fill(0)
+        rkStep.newChainKey.fill(0)
+        return nextAliceSession
     }
 
     // ---------------------------------------------------------------------------
@@ -141,22 +161,16 @@ object KeyExchange {
 
     /**
      * Derive the initial session state from SK.
-     * HKDF expands SK to 96 bytes: [root_key (32) || chain_key_0 (32) || chain_key_1 (32)].
-     * chain_key_0 is Alice's send / Bob's recv; chain_key_1 is the reverse.
+     * Alice/Bob start with a symmetric chain derived from SK.
      */
     internal fun initSession(
         sk: ByteArray,
         isAlice: Boolean,
-        myEkPriv: ByteArray,
-        myEkPub: ByteArray,
-        theirEkPub: ByteArray,
-        sendToken: ByteArray,
-        recvToken: ByteArray,
+        myDhPriv: ByteArray,
+        myDhPub: ByteArray,
+        theirDhPub: ByteArray,
         aliceFp: ByteArray,
         bobFp: ByteArray,
-        aliceEkPub: ByteArray,
-        bobEkPub: ByteArray,
-        kBundle: ByteArray,
     ): SessionState {
         val expanded =
             hkdfSha256(
@@ -165,25 +179,49 @@ object KeyExchange {
                 info = INFO_KEY_EXCHANGE.encodeToByteArray(),
                 length = 96,
             )
-        val chainKey0 = expanded.copyOfRange(32, 64)
-        val chainKey1 = expanded.copyOfRange(64, 96)
+        val chainKey0 = expanded.copyOfRange(0, 32)
+        val chainKey1 = expanded.copyOfRange(32, 64)
+        val initialRootKey = expanded.copyOfRange(64, 96)
+
+        // Alice sends on chain 0, Bob receives on chain 0.
+        // Bob sends on chain 1, Alice receives on chain 1.
+        val sendChainKey = if (isAlice) chainKey0 else chainKey1
+        val recvChainKey = if (isAlice) chainKey1 else chainKey0
+
+        // Initial tokens are also derived from SK.
+        val sendToken = if (isAlice) {
+            deriveRoutingToken(sk, aliceFp, bobFp)
+        } else {
+            deriveRoutingToken(sk, bobFp, aliceFp)
+        }
+        val recvToken = if (isAlice) {
+            deriveRoutingToken(sk, bobFp, aliceFp)
+        } else {
+            deriveRoutingToken(sk, aliceFp, bobFp)
+        }
+
+        expanded.fill(0)
+
         return SessionState(
-            rootKey = expanded.copyOfRange(0, 32),
-            sendChainKey = if (isAlice) chainKey0 else chainKey1,
-            recvChainKey = if (isAlice) chainKey1 else chainKey0,
-            sendToken = sendToken.copyOf(),
-            recvToken = recvToken.copyOf(),
+            rootKey = initialRootKey,
+            sendChainKey = sendChainKey,
+            recvChainKey = recvChainKey,
+            sendToken = sendToken,
+            recvToken = recvToken,
             sendSeq = 0L,
             recvSeq = 0L,
-
-            myEkPriv = myEkPriv.copyOf(),
-            myEkPub = myEkPub.copyOf(),
-            theirEkPub = theirEkPub.copyOf(),
+            localDhPriv = myDhPriv.copyOf(),
+            localDhPub = myDhPub.copyOf(),
+            remoteDhPub = theirDhPub.copyOf(),
+            aliceEkPub = (if (isAlice) myDhPub else theirDhPub).copyOf(),
+            bobEkPub = (if (isAlice) theirDhPub else myDhPub).copyOf(),
             aliceFp = aliceFp.copyOf(),
             bobFp = bobFp.copyOf(),
-            aliceEkPub = aliceEkPub.copyOf(),
-            bobEkPub = bobEkPub.copyOf(),
-            kBundle = kBundle.copyOf(),
+            prevSendToken = sendToken.copyOf(),
+            isSendTokenPending = false,
+            isAlice = isAlice,
+            pn = 0L,
+            pr = 0L,
         )
     }
 

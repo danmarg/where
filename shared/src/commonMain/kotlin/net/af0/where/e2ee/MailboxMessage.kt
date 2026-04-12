@@ -41,81 +41,24 @@ sealed class MailboxPayload {
 }
 
 /**
- * An encrypted location frame (Alice → Bob, §9.1).
+ * An encrypted message frame (Alice ↔ Bob, §9.1).
  *
- * @property v    Protocol version.
- * @property seq  Monotone counter as a decimal string, to avoid JS uint64 precision loss.
- * @property ct   ChaCha20-Poly1305 ciphertext + 16-byte tag (base64 on the wire).
+ * @property v       Protocol version.
+ * @property dhPub   Sender's current DH ratchet public key.
+ * @property seq     Monotone counter as a decimal string.
+ * @property ct      ChaCha20-Poly1305 ciphertext + 16-byte tag.
  */
 @Serializable
-@SerialName("EncryptedLocation")
-data class EncryptedLocationPayload(
+@SerialName("EncryptedMessage")
+data class EncryptedMessagePayload(
     override val v: Int = 1,
+    @SerialName("dh_pub")
+    @Serializable(with = ByteArrayBase64Serializer::class) val dhPub: ByteArray,
     val seq: String,
     @Serializable(with = ByteArrayBase64Serializer::class) val ct: ByteArray,
 ) : MailboxPayload() {
-    /** Parses [seq] as a Long for use in protocol logic. */
-    fun seqAsLong(): Long = seq.toLong()
+    fun seqAsLong(): Long = seq.toLongOrNull() ?: 0L
 }
-
-/** Wire representation of a single One-Time Pre-Key (id + base64 public key). */
-@Serializable
-data class OPKWire(
-    val id: Int,
-    @Serializable(with = ByteArrayBase64Serializer::class) val pub: ByteArray,
-) {
-    fun toOPK(): OPK = OPK(id = id, pub = pub)
-}
-
-/**
- * Bob's authenticated batch of One-Time Pre-Keys (Bob → Alice, §9.3).
- *
- * @property v     Protocol version.
- * @property keys  OPKs in the bundle.
- * @property mac   HMAC-SHA-256 over the canonical binary encoding (see [PreKeyBundleOps]).
- */
-@Serializable
-@SerialName("PreKeyBundle")
-data class PreKeyBundlePayload(
-    override val v: Int = 1,
-    val keys: List<OPKWire>,
-    @Serializable(with = ByteArrayBase64Serializer::class) val mac: ByteArray,
-) : MailboxPayload() {
-    fun toOPKList(): List<OPK> = keys.map { it.toOPK() }
-}
-
-/**
- * DH ratchet rotation announcement (Alice → Bob, §9.3).
- *
- * All rotation parameters (new EK, OPK id, new routing token) are carried inside [ct],
- * which is an AEAD blob encrypted under K_rot (see [buildEpochRotationCt]).
- * K_rot is unique per rotation so a fixed all-zero nonce is safe.
- *
- * @property v   Protocol version.
- * @property ct  AEAD ciphertext authenticating the rotation (see [buildEpochRotationCt]).
- */
-@Serializable
-@SerialName("EpochRotation")
-data class EpochRotationPayload(
-    override val v: Int = 1,
-    @Serializable(with = ByteArrayBase64Serializer::class) val ct: ByteArray,
-) : MailboxPayload()
-
-/**
- * Acknowledgment from Bob confirming receipt of an EpochRotation (Bob → Alice, §9.3).
- *
- * All ack parameters (Bob's new EK) are carried inside [ct], which is an AEAD blob
- * encrypted under K_ack. K_ack is unique per ack so a fixed all-zero nonce is safe.
- *
- * @property v   Protocol version.
- * @property ct  AEAD ciphertext authenticating the ack (see [buildRatchetAckCt]).
- */
-@Serializable
-@SerialName("RatchetAck")
-data class RatchetAckPayload(
-    override val v: Int = 1,
-    @Serializable(with = ByteArrayBase64Serializer::class) val ct: ByteArray,
-) : MailboxPayload()
 
 /**
  * Bob's KeyExchangeInit posted to the discovery token address (§4.2).

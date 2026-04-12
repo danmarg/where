@@ -513,8 +513,6 @@ final class LocationSyncService: ObservableObject {
                     try await postToMailbox(token: discoveryHex, bodyData: bodyData)
                     debugLog { "KeyExchangeInit posted successfully" }
 
-                    try await locationClient.postOpkBundle(friendId: bobEntry.id)
-
                     if let last = LocationManager.shared.lastLocation {
                         self.sendLocation(lat: last.coordinate.latitude, lng: last.coordinate.longitude, force: true)
                     } else {
@@ -551,7 +549,6 @@ final class LocationSyncService: ObservableObject {
                 awaitingFirstUpdateIds.insert(entry.id)
                 friends = try await e2eeStore.listFriends()
                 updateVisibleUsers()
-                try await locationClient.postOpkBundle(friendId: entry.id)
 
                 if let last = LocationManager.shared.lastLocation {
                     self.sendLocation(lat: last.coordinate.latitude, lng: last.coordinate.longitude, force: true)

@@ -61,9 +61,9 @@ The following shell scripts are provided for convenience:
 
 ## Key Design Decisions
 - **Transport (Mailbox API):** Communication is handled via a stateless HTTP Mailbox API (`POST /inbox/{token}` to send, `GET /inbox/{token}` to poll).
-- **Directional Routing:** To prevent clients from polling their own messages, each session uses separate `sendToken` and `recvToken` derived using an `isAliceToBob` flag.
+- **Directional Routing:** To prevent clients from polling their own messages, each unified session uses separate `sendToken` and `recvToken` pairs symmetrically derived from the ratcheted root key using the sender and recipient fingerprints.
 - **Identity:** Identity is determined by the device key itself (ephemeral X25519 session keys). There are no stable random UUIDs or long-term identity keys. Fingerprints are derived from session-scoped ephemeral public keys.
-- **E2EE:** Uses a Double Ratchet-inspired protocol with X25519 ephemeral keys, HKDF-SHA-256 for ratcheting, and AES-256-GCM for encryption. Refer to `docs/e2ee-location-sync.md` for the protocol spec.
+- **E2EE:** Uses a standard, bidirectional Double Ratchet protocol with X25519 ephemeral keys, HKDF-SHA-256 for ratcheting, and AES-256-GCM for encryption. Security is maintained through symmetric DH ratcheting and automated Keepalive messages for Post-Compromise Security (PCS). Refer to `docs/e2ee-location-sync.md` for the protocol spec.
 
 ## Important Files
 - `CLAUDE.md`: Engineering standards and local configuration notes. 
