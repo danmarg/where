@@ -306,7 +306,7 @@ class SessionTest {
             Session.decryptMessage(bob3, msg1)
             kotlin.test.fail("Expected ProtocolException for across-epoch replay")
         } catch (e: ProtocolException) {
-            assertTrue(e.message?.contains("across-epoch replay") == true, "Message should be rejected explicitly as across-epoch replay")
+            assertTrue(e.message?.contains("out-of-order window closed") == true, "Message should be rejected as an unrecoverable gap/replay")
         }
     }
 

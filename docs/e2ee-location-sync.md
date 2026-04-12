@@ -98,7 +98,7 @@ For threat models that include a metadata-analyzing server, the mitigations in �
 - **A malicious friend.** If Bob is Alice's friend, Bob receives Alice's plaintext location after decryption on his device. Bob can log it, forward it, or otherwise misuse it. The protocol provides no cryptographic protection against a legitimate-but-adversarial recipient.
 - **Device seizure or compromise.** If an attacker has physical access to Alice's device, they can read decrypted locations from memory or reconstruct keys from the device's persistent state. This is a device-security problem, not a protocol problem.
 - **Metadata about the social graph.** The server never sees user IDs or UUIDs — routing tokens are opaque and random-looking. However, the server observes which IP addresses `POST` to and `GET` from each token. If Alice's IP consistently posts to token T and Bob's IP consistently polls T, the server can infer they share a friendship, even without decrypting any payload. Timing correlation reinforces this: correlated activity (Alice posts, Bob polls seconds later) on the same token is a strong signal. See §7 for partial mitigations (constant-rate polling, dummy tokens).
-- **Compromised backups revealing future epochs.** Because the current implementation persists the active ratchet private key (`localDhPriv`) to ensure session stability across app restarts (§5.5), an attacker who recovers a device backup (e.g., iCloud, Google Play Cloud Backup) can perform all future DH ratchet steps until the session is rotated out-of-band. **Forward secrecy holds at the DH-epoch granularity**, not per-message, against an attacker who recovers a backup. Per-message forward secrecy still holds against a server-side attacker.
+- **Compromised backups revealing future epochs.** Because the current implementation persists the active ratchet private key (`localDhPriv`) to ensure session stability across app restarts (§5.5), an attacker who recovers a device backup (e.g., iCloud, Google Play Cloud Backup) can perform all future DH ratchet steps until the session is rotated out-of-band. See §5.6 for a detailed analysis of compromise consequences and self-healing (PCS).
 - **Map tile server leakage.** When a recipient views a friend's location on a map, the map provider (e.g., Google Maps, Apple Maps, Mapbox) may infer the friend's location from which tiles the recipient's device requests. This can be mitigated at the application layer via tile pre-fetching or caching, but is outside the scope of this protocol.
 - **Denial of service.** This protocol does not protect against a server that drops or delays messages.
 - **Clock manipulation.** The protocol does not use wall-clock timestamps for message validity decisions, so clock-skew attacks have no cryptographic impact. Timestamps in location payloads are purely informational and are not authenticated as part of the AEAD AAD.
@@ -274,6 +274,7 @@ Alice receives the `KeyExchangeInit` and:
 5. **Deletes `EK_A.priv` immediately.**
 6. Prompts user to name Bob (pre-filled with `suggested_name` from `KeyExchangeInit`).
 7. Stores the session.
+   - **Bootstrapping the Ratchet:** Alice's initial `remoteDhPub` is set to `EK_B.pub`. This ensures her next outgoing message triggers a DH ratchet step on Bob's side, breaking the bootstrap deadlock. If Bob never sends a message, Alice's ratchet remains in this initial epoch; the periodic Keepalive mechanism (§5.3) is used to ensure eventual rotation even in asymmetric usage.
 
 Bob **deletes `EK_B.priv` immediately** after posting the `KeyExchangeInit`.
 
@@ -346,6 +347,29 @@ To maximize forward secrecy, implementations should adhere to the following hygi
     - If a device backup is nonetheless recovered by an attacker, the forward secrecy guarantee is reduced to the current DH epoch. Per-message forward secrecy is maintained against a server-side observer who does not have access to the device's persistent store.
 
 **Keychain backup and state-rollback risk:** Platform keychains may be backed up (iCloud Keychain on iOS, Google Play Backup on Android). If a backup is restored to a different device or is compromised, the attacker gains access to the stored root key and can re-derive future message keys from the backed-up epoch forward — until the next DH ratchet step heals the session.
+
+### 5.6 Security Consequences of `localDhPriv` Compromise
+
+If an attacker obtains a copy of a user's persistent session state (e.g., via a compromised device backup), they gain access to the active `localDhPriv` and the current `rootKey`.
+
+#### 5.6.1 What is Disclosed?
+
+*   **Selective Disclosure of Future Messages:** The attacker can decrypt all **incoming** messages sent by the peer that target the compromised `localDhPub`. They can also decrypt all **outgoing** messages sent by the compromised device for the current symmetric chain.
+*   **Integrity Violation:** The attacker can forge valid-looking messages to the peer, as they possess the necessary symmetric secrets.
+*   **Historical Forward Secrecy Holds:** All **past** messages remain secure. Because symmetric chain keys (`CK`) are advanced and deleted after every message (§5.5), an attacker gaining access to the current state cannot retroactively decrypt historical traffic.
+
+#### 5.6.2 Session Self-Healing (PCS)
+
+The Double Ratchet protocol is designed to "self-heal" over time. A session recovers from a one-time compromise through subsequent DH ratchet steps:
+
+1.  **Initiation:** The compromised side (Alice) sends a message or keepalive carrying a **new** `localDhPub`.
+2.  **Ratchet:** The peer (Bob) receives this new key, performs a DH step to move his root key to a new epoch, and responds with a message targeting Alice's new key.
+3.  **Recovery:** Once Alice receives Bob's response and ratchets her own root key, the old compromised `localDhPriv` is no longer used in root key calculations. The secrets known to the attacker are now "stale."
+4.  **Full PCS:** The session is fully healed once both parties have contributed fresh entropy to the root key derivation. An attacker who only possessed the state at timestamp `T_compromise` cannot derive the new root key at `T_healed`.
+
+#### 5.6.3 Risk Limitation: Symmetric-Chain Gaps
+
+For threat models where an attacker might have continuous read-access to the outbox (e.g., a server-side mirror of the mailbox), the session may never fully heal if the attacker can immediately use the compromised root key to stay ahead of the ratchet. This is mitigated by the **mailbox-polling model**: as long as the legitimate user rotates their ratchet keys, an attacker would need to maintain persistent, real-time access to the device's secure enclave to keep up.
 
 Mandatory mitigations:
 - **iOS:** Mark all session-state keychain items with `kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly`. This attribute excludes the item from iCloud Backup.
