@@ -103,7 +103,7 @@ curl localhost:8080/health   # → ok
 
 ### Local build configuration
 
-Machine-specific paths (build output dirs, SDK locations, cache dirs) must **never** be added to checked-in files (`gradle.properties`, `build.gradle.kts`, `flake.nix`, etc.). Use gitignored local overrides instead:
+Machine-specific paths (build output dirs, SDK locations, cache dirs) must **never** be added to checked-in files (`gradle.properties`, `build.gradle.kts`, etc.). Use gitignored local overrides instead:
 
 - **`local.gradle.kts`** (gitignored) — applied automatically by the root `build.gradle.kts` if present.
 - **`.envrc`** (gitignored) — use for env vars like `GRADLE_USER_HOME`, `KONAN_DATA_DIR`, `TMPDIR`.
