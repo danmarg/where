@@ -86,9 +86,9 @@ For threat models that include a metadata-analyzing server, the mitigations in �
 
 - **Server compromise revealing historical locations.** *Forward secrecy (per-message):* deleting each message key `MK_n` immediately after use ensures that compromise of one key does not expose others. *Post-compromise security (per DH ratchet step):* the DH ratchet step refreshing the root key and symmetric chains limits how long a leaked chain key remains exploitable.
 - **Passive eavesdropping.** All location payloads are encrypted with ephemeral symmetric keys derived from a per-friend ratchet. A passive observer with access to ciphertext learns nothing about coordinates.
-- **Replay attacks.** Each message carries a monotonically increasing sequence counter which is also authenticated (as AEAD additional data). The recipient rejects any frame with a counter it has already seen within the same DH epoch. Across-epoch replay protection utilizes a sliding window of the most recent 10 DH public keys; replays from older epochs will trigger a speculative ratchet but always fail final AEAD authentication.
-- **Ciphertext forgery.** ChaCha20-Poly1305 authentication tags cover both the ciphertext and associated data (sender session fingerprints, sequence number, DH public key). A server or attacker cannot modify a frame without detection.
-- **Ratchet hijacking.** All messages are AEAD-encrypted under keys derived from the current session root key and symmetric chains. An attacker without session state cannot forge or inject valid messages.
+- **Replay attacks.** Each message carries a monotonically increasing sequence counter which is also authenticated (as AEAD additional data for the body, and encrypted within the header envelope). The recipient rejects any frame with a counter it has already seen within the same DH epoch. Across-epoch replay protection utilizes a sliding window of the most recent 10 DH public keys; replays from older epochs will trigger a speculative ratchet but always fail final AEAD authentication.
+- **Ciphertext forgery.** ChaCha20-Poly1305 authentication tags cover both the ciphertext and associated data. In version 1, metadata (DH public key and sequence number) is sealed within an encrypted envelope, preventing a malicious server from reading or correlating them across token rotations.
+- **Ratchet hijacking.** All messages are AEAD-encrypted under keys derived from the current session root key and symmetric chains. An attacker without session state or header keys cannot forge or inject valid messages.
 - **Key mismatch at bootstrap.** The `key_confirmation` field in `KeyExchangeInit` (§4.2) detects corruption or bit-flips in `EK_B.pub` in transit. It does NOT authenticate the origin of the QR code or defeat an active MITM who can intercept and substitute the initial ephemeral key material. Trust establishment relies on TOFU + Safety Number verification (§3.4).
 
 ### 2.3 What This Protocol Does NOT Protect Against
@@ -229,16 +229,16 @@ key_confirmation = HMAC-SHA-256(key  = K_confirm,
                                  data = "Where-v1-Confirm" || EK_A.pub || EK_B.pub)
 ```
 
-Both parties initialize their Double Ratchet state (§8.2) seeded with a root key derived from `SK`. Alice and Bob expand `SK` over 96 bytes to obtain initial chain keys and the starting root key:
+Both parties initialize their Double Ratchet state (§8.2) seeded with a root key derived from `SK`. Alice and Bob expand `SK` over 128 bytes to obtain initial chain keys, the starting root key, and the initial header key:
 
 ```
-(chain_key_0 || chain_key_1 || root_key_0) = HKDF-SHA-256(
+(chain_key_0 || chain_key_1 || root_key_0 || header_key_0) = HKDF-SHA-256(
     ikm  = SK,
     salt = null,
     info = "Where-v1-KeyExchange",
-    length = 96
+    length = 128
 )
-// Split as: [0:32] = chain_key_0, [32:64] = chain_key_1, [64:96] = root_key_0.
+// Split as: [0:32] = chain_key_0, [32:64] = chain_key_1, [64:96] = root_key_0, [96:128] = header_key_0.
 ```
 
 - **Alice:** Uses `send_chain = chain_key_0`, `recv_chain = chain_key_1`.
@@ -568,16 +568,6 @@ Direction is encoded explicitly via the `sender_fp || recipient_fp` ordering in 
 // Split as: [0:32] = next_chain_key, [32:64] = message_key, [64:76] = message_nonce.
 ```
 
-**Message encryption:**
-```
-// Nonce is derived deterministically from KDF_CK above
-aad   = "Where-v1-Message" || version (4 bytes, BE uint32 = 1)
-      || sender_fp    (32 bytes)
-      || recipient_fp (32 bytes)
-      || seq          (8 bytes, BE uint64)
-      || dh_pub       (32 bytes, sender's current ratchet public key)
-(ciphertext, tag) = ChaCha20-Poly1305(key=message_key, nonce=message_nonce,
-                                  plaintext=payload_json_padded, aad=aad)
 ```
 
 The `dh_pub` is included in the AAD to cryptographically bind the message to the current DH epoch.
@@ -600,35 +590,46 @@ Each message frame carries a `seq` counter. Recipients enforce:
 
 All messages are JSON-encoded. Every message MUST include a top-level `"v"` field set to the current protocol version (currently `1`). This enables recipients to reject messages from incompatible future versions.
 
-### 9.1 Unified Message Envelope (Alice ↔ Server ↔ Bob)
+### 9.1 Encrypted Location Frame
 
-All communication between friends uses a unified message envelope:
+The mailbox payload for a standard location update is a JSON object with `type: "EncryptedMessage"`. Metadata (`dh_pub`, `seq`) is hidden within an encrypted `envelope` to prevent server correlation.
 
 ```json
 {
+  "type": "EncryptedMessage",
   "v": 1,
-  "type": "Post",
-  "token": "<routing_token_T>",
-  "payload": {
-    "type": "EncryptedMessage",
-    "dh_pub": "<base64, sender's current ratchet public key>",
-    "seq":    "42",
-    "ct":     "<base64, ChaCha20-Poly1305 ciphertext + 16-byte tag>"
-  }
+  "envelope": "base64(...)",
+  "ct": "base64(...)"
 }
 ```
 
-**Note on `dh_pub`:** This is the sender's current DH ratchet public key. The receiver performs a DH ratchet step whenever they receive a message with a `dh_pub` different from the last seen value.
+#### 9.1.1 Envelope Structure
 
-**AAD (authenticated, not encrypted):**
-```
-aad = "Where-v1-Message" (16 bytes, UTF-8)
-    || version      (4 bytes, big-endian uint32, currently 1)
-    || sender_fp    (32 bytes)
-    || recipient_fp (32 bytes)
-    || seq          (8 bytes, big-endian uint64)
-    || dh_pub       (32 bytes)
-```
+The `envelope` is a 77-byte binary blob consisting of:
+1. **Nonce (12 bytes)**: A random nonce used for header encryption.
+2. **Encrypted Header (65 bytes)**: ChaCha20-Poly1305 ciphertext of the metadata.
+
+**Header Plaintext (49 bytes):**
+- `PROTOCOL_VERSION` (1 byte, `0x01`)
+- `dh_pub` (32 bytes)
+- `seq` (8 bytes, big-endian Long)
+- `pn` (8 bytes, big-endian Long)
+
+The header is encrypted using the current `header_key` derived from the DH ratchet.
+
+#### 9.1.2 Ciphertext (ct)
+
+The `ct` field contains the ChaCha20-Poly1305 ciphertext of the location payload, plus a 16-byte authentication tag.
+
+**AAD for Ciphertext:**
+- `AAD_PREFIX` ("Where-v1-Message")
+- `PROTOCOL_VERSION` (4 bytes, `0x01`)
+- `sender_fp` (32 bytes)
+- `recipient_fp` (32 bytes)
+- `seq` (8 bytes)
+- `dh_pub` (32 bytes)
+
+Note that even though `seq` and `dh_pub` are hidden from the server in the envelope, the client uses the *decrypted* values to verify the body AAD, ensuring the body and header are cryptographically bound together.
 
 **Plaintext (before encryption):**
 The plaintext is a JSON object. It MUST be padded to exactly 512 bytes before encryption.
