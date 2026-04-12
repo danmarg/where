@@ -99,12 +99,10 @@ open class LocationClient(
         }
 
         // Automated keepalive (§5.3): send a keepalive message if we received a new DH key
-        // but are not currently sharing location (sharing = sent location in the last 15 mins).
+        // but are currently not sharing location (sharing configuration).
         val friendAfter = store.getFriend(friendId)
         if (friendAfter != null && !friendBefore.session.remoteDhPub.contentEquals(friendAfter.session.remoteDhPub)) {
-            val now = currentTimeSeconds()
-            val isSharingLocation = (now - friendAfter.lastSentTs) < 15 * 60
-            if (!isSharingLocation) {
+            if (!friendAfter.sharingEnabled) {
                 try {
                     sendKeepalive(friendId)
                 } catch (_: Exception) {
@@ -190,20 +188,16 @@ open class LocationClient(
             store.updateLastSentTs(friendId, currentTimeSeconds())
         }
 
-        // TOKEN TRANSITION (§5.4): If we just successfully posted the first message of a 
-        // new epoch to the OLD token, we clear the pending flag and fire a fresh Keepalive 
-        // to the NEW token. This guarantees the receiver has a valid, non-replay message 
-        // waiting for them as soon as they switch tokens.
+        // TOKEN TRANSITION (§5.4): If we are transitioning DH epochs, we advance
+        // the session to the new token and immediately trigger a fresh keepalive.
         if (newSession.isSendTokenPending) {
-            store.updateSession(friendId, newSession.copy(isSendTokenPending = false))
+            val finalSession = newSession.copy(isSendTokenPending = false)
+            store.updateSession(friendId, finalSession)
             
-            if (!newSession.sendToken.contentEquals(newSession.prevSendToken)) {
+            if (!finalSession.sendToken.contentEquals(finalSession.prevSendToken)) {
                 try {
                     sendKeepalive(friendId)
                 } catch (e: Exception) {
-                    // Best-effort. If this fails, the receiver still got the new DH key 
-                    // from the primary message on the old token, and our next natural
-                    // send will go to the new token anyway.
                     println("[DEBUG] Fresh keepalive transition failed: ${e.message}")
                 }
             }

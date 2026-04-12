@@ -309,4 +309,36 @@ class SessionTest {
             assertTrue(e.message?.contains("across-epoch replay") == true, "Message should be rejected explicitly as across-epoch replay")
         }
     }
+
+    @Test
+    fun `corrupted padding is rejected even if length is valid`() {
+        // Test padding logic directly.
+        val data = "hello".encodeToByteArray()
+        val padded = Session.padToFixedSize(data, 16)
+        assertEquals(11, padded[15].toInt() and 0xFF) // padCount = 16 - 5 = 11
+        
+        // Valid case
+        val unpadded = Session.unpad(padded)
+        assertContentEquals(data, unpadded)
+        
+        // Corrupted padding byte (not length)
+        val corruptedBody = padded.copyOf()
+        corruptedBody[8] = 0xEE.toByte() // inside padding area
+        try {
+            Session.unpad(corruptedBody)
+            kotlin.test.fail("Expected IllegalArgumentException for corrupted padding body")
+        } catch (e: Exception) {
+            // Success: unpad rejected the corruption
+        }
+
+        // Corrupted length
+        val corruptedLen = padded.copyOf()
+        corruptedLen[15] = 0x01.toByte() // says padCount=1 but it's >= 2
+        try {
+            Session.unpad(corruptedLen)
+            kotlin.test.fail("Expected IllegalArgumentException for invalid padCount")
+        } catch (e: Exception) {
+            // Success
+        }
+    }
 }
