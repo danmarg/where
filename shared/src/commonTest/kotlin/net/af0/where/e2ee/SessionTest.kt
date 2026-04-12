@@ -278,4 +278,35 @@ class SessionTest {
         // Eventually consistent.
         assertEquals(alice3.sendToken.toHex(), bob3.recvToken.toHex())
     }
+
+    @Test
+    fun `message from earlier epoch is rejected via lastRemoteDhPub`() {
+        val (aliceSession, bobSession) = exchangeKeys()
+        val loc = MessagePlaintext.Location(0.0, 0.0, 0.0, 0L)
+
+        // Alice sends message 1 (epoch 1)
+        val (alice1, msg1) = Session.encryptMessage(aliceSession, loc)
+        // Bob receives message 1
+        val (bob1, _) = Session.decryptMessage(bobSession, msg1)
+
+        // Bob sends message 2 (epoch 2)
+        val (bob2, msg2) = Session.encryptMessage(bob1, loc)
+        // Alice receives message 2
+        val (alice2, _) = Session.decryptMessage(alice1, msg2)
+
+        // Alice sends message 3 (epoch 3)
+        val (alice3, msg3) = Session.encryptMessage(alice2, loc)
+        // Bob receives message 3
+        val (bob3, _) = Session.decryptMessage(bob2, msg3)
+
+        // Now Bob receives msg1 AGAIN (from epoch 1). 
+        // Bob is currently holding state from epoch 3, so msg1's dhPub does not match Bob's current remoteDhPub.
+        // It SHOULD be rejected because it matches lastRemoteDhPub instead, WITHOUT crashing due to a spurious DH ratchet.
+        try {
+            Session.decryptMessage(bob3, msg1)
+            kotlin.test.fail("Expected ProtocolException for across-epoch replay")
+        } catch (e: ProtocolException) {
+            assertTrue(e.message?.contains("across-epoch replay") == true, "Message should be rejected explicitly as across-epoch replay")
+        }
+    }
 }

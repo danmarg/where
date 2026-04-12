@@ -384,9 +384,7 @@ class E2eeStore(
                             ),
                         )
                     }
-                } catch (e: Exception) {
-                    println("Decryption failed: ${e.message}")
-                    e.printStackTrace()
+                } catch (_: Exception) {
                     // Skip individually bad messages
                 }
             }

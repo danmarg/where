@@ -147,7 +147,7 @@ open class LocationClient(
     /**
      * Send a keepalive message to a friend.
      */
-    suspend fun sendKeepalive(friendId: String) {
+    internal suspend fun sendKeepalive(friendId: String) {
         sendMessageToFriendInternal(friendId, MessagePlaintext.Keepalive)
     }
 
@@ -158,12 +158,23 @@ open class LocationClient(
         val friend = store.getFriend(friendId) ?: return
         val (newSession, message) = Session.encryptMessage(friend.session, payload)
 
-        // sendMessageToFriendInternal always posts to the current sendToken.
+        // sendMessageToFriendInternal posts to the current sendToken.
         // Session.encryptMessage handles switching to the new token AFTER the first message of a new epoch.
         val tokenToUse = if (newSession.isSendTokenPending) newSession.prevSendToken else newSession.sendToken
         
         // Post first, update store only on success to ensure reliability (§5.4).
         E2eeMailboxClient.post(baseUrl, tokenToUse.toHex(), message)
+
+        // DUAL-POST MITIGATION (§5.4): If we are transitioning to a new epoch (isSendTokenPending),
+        // we optionally post the exact same message to the NEW token as well. This prevents the session
+        // from permanently stalling if the message sent to the old token is lost in transit or expires.
+        if (newSession.isSendTokenPending && !newSession.sendToken.contentEquals(newSession.prevSendToken)) {
+            try {
+                E2eeMailboxClient.post(baseUrl, newSession.sendToken.toHex(), message)
+            } catch (_: Exception) {
+                // Ignore failure on the redundant secondary post
+            }
+        }
 
         // Mark the token as no longer pending once successfully posted.
         val finalSession = if (newSession.isSendTokenPending) newSession.copy(isSendTokenPending = false) else newSession
