@@ -190,9 +190,20 @@ Using a random secret (rather than `EK_A.pub`) as HKDF IKM ensures that only som
 - Once Alice retrieves and processes the `KeyExchangeInit`, she switches to polling `recv_token` for all subsequent messages.
 - The discovery token is single-use and ephemeral: implementations MUST discard it after `aliceProcessInit` completes.
 
-**Key Agreement:**
+### 4.3 Option B: Out-of-Band (URI / Manual)
 
-Bob generates a fresh ephemeral key pair `EK_B` and computes:
+For situations where QR scanning is impossible (e.g., remote setup over a secure chat), Alice can encode the setup payload as a URI or a JSON string.
+
+**Format:**
+```
+where://invite?q=<Base64-JSON>
+```
+
+The payload is identical to the QR content defined in §4.2. Alice shares this URI via a secure out-of-band channel. Bob clicks the link or imports the string, and the process continues exactly as it would for a QR scan (polling the discovery mailbox).
+
+### 4.4 Key Agreement (Universal)
+
+Regardless of the discovery mechanism used (QR or URI), Bob generates a fresh ephemeral key pair `EK_B` and computes:
 
 ```
 SK = X25519(Bob.EK_B.priv, Alice.EK_A.pub)
@@ -525,10 +536,12 @@ The `dh_pub` is included in the AAD to cryptographically bind the message to the
 
 Each message frame carries a `seq` counter. Recipients enforce:
 
-1.  **Replay rejection:** Any frame with `seq <= max_seq_received` (within the same DH epoch) is dropped.
-2.  **Maximum gap (MAX_GAP):** recipients MUST enforce a maximum gap of 1024 for chain advancement.
-3.  **Chain advancement:** If a message is skipped, the recipient advances the symmetric ratchet and discards the intermediate message keys.
-4.  **Epoch transition:** When a message with a new `dh_pub` is received, the `seq` counter resets to 0 for the new DH epoch.
+1.  **Replay rejection:** Any frame with `seq <= max_seq_received` (within the same DH epoch) is dropped, EXCEPT if the key for that sequence number is present in the **skipped message key cache**.
+2.  **Maximum gap (MAX_GAP):** recipients MUST enforce a maximum gap of 1024 for chain advancement to prevent resource exhaustion attacks.
+3.  **OutOfOrder Support:** If a message is skipped (e.g., recipient receives seq=10 after seq=8), the recipient advances the symmetric ratchet to seq=10 and stores the intermediate message keys (seq=9) in a bounded cache (e.g., 100 entries).
+4.  **Epoch transition:** When a message with a new `dh_pub` is received, the `seq` counter resets to 0 for the new DH epoch. Previous epoch keys in the cache SHOULD be cleared or timed out.
+5.  **Across-Epoch Replay:** Recipients MUST keep track of recently seen `dh_pub` keys (epoch identifiers) and reject any message for an epoch that has already been superseded.
+
 
 ---
 

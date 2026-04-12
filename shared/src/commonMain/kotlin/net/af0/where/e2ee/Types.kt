@@ -38,9 +38,16 @@ data class SessionState(
     @Serializable(with = ByteArrayBase64Serializer::class) val bobEkPub: ByteArray,
     @Serializable(with = ByteArrayBase64Serializer::class) val aliceFp: ByteArray,
     @Serializable(with = ByteArrayBase64Serializer::class) val bobFp: ByteArray,
-    @Serializable(with = ByteArrayBase64Serializer::class) val prevSendToken: ByteArray,
+    val prevSendToken: ByteArray,
     val isSendTokenPending: Boolean,
     val isAlice: Boolean,
+    // REPLAY PROTECTION & OUT-OF-ORDER SUPPORT
+    // Map of (remoteDhPubHex + "_" + seq) to messageKey
+    val skippedMessageKeys: Map<String, @Serializable(with = ByteArrayBase64Serializer::class) ByteArray> = emptyMap(),
+    // Recent DH public keys seen (to reject replays from epochs older than lastRemoteDhPub)
+    val seenRemoteDhPubs: List<@Serializable(with = ByteArrayBase64Serializer::class) ByteArray> = emptyList(),
+    // Set to true if we've received a new DH key but haven't ratcheted our send chain yet.
+    val needsRatchet: Boolean = false,
 ) {
     override fun equals(other: Any?): Boolean {
         if (other !is SessionState) return false
@@ -61,7 +68,12 @@ data class SessionState(
             bobFp.contentEquals(other.bobFp) &&
             prevSendToken.contentEquals(other.prevSendToken) &&
             isSendTokenPending == other.isSendTokenPending &&
-            isAlice == other.isAlice
+            isAlice == other.isAlice &&
+            skippedMessageKeys.size == other.skippedMessageKeys.size &&
+            skippedMessageKeys.all { (k, v) -> other.skippedMessageKeys[k]?.contentEquals(v) == true } &&
+            seenRemoteDhPubs.size == other.seenRemoteDhPubs.size &&
+            seenRemoteDhPubs.zip(other.seenRemoteDhPubs).all { (a, b) -> a.contentEquals(b) } &&
+            needsRatchet == other.needsRatchet
     }
 
     override fun hashCode(): Int {
@@ -83,6 +95,9 @@ data class SessionState(
         h = 31 * h + prevSendToken.contentHashCode()
         h = 31 * h + isSendTokenPending.hashCode()
         h = 31 * h + isAlice.hashCode()
+        h = 31 * h + skippedMessageKeys.hashCode()
+        h = 31 * h + seenRemoteDhPubs.hashCode()
+        h = 31 * h + needsRatchet.hashCode()
         return h
     }
 }
