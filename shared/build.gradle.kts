@@ -67,6 +67,7 @@ kotlin {
 
         commonTest.dependencies {
             implementation(kotlin("test"))
+            implementation(libs.kotlinx.coroutines.test)
         }
 
         jvmTest.dependencies {
@@ -74,7 +75,6 @@ kotlin {
             implementation(libs.ktor.server.netty)
             implementation(libs.ktor.server.content.negotiation)
             implementation(libs.ktor.serialization.kotlinx.json)
-            implementation(libs.kotlinx.coroutines.test)
             implementation(libs.logback.classic)
         }
     }
