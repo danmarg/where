@@ -27,6 +27,7 @@ open class LocationClient(
      */
     suspend fun poll(isForeground: Boolean = true): List<UserLocation> =
         pollMutex.withLock {
+            processOutboxes()
             val allUpdates = mutableListOf<UserLocation>()
             var lastError: Exception? = null
 
@@ -175,13 +176,15 @@ open class LocationClient(
         // Session.encryptMessage handles switching to the new token AFTER the first message of a new epoch.
         val tokenToUse = if (newSession.isSendTokenPending) newSession.prevSendToken else newSession.sendToken
         
-        // PERSISTENCE HYGIENE (§5.4): We update the session state with the new 
-        // sequence number/ratchet BEFORE posting. This ensures that if the app 
-        // crashes during the post, we don't accidentally reuse the same 
-        // sequence number/nonce for a different plaintext on restart.
-        store.updateSession(friendId, newSession)
+        // PERSISTENCE HYGIENE (§5.4): We advance the session and persist the 
+        // encrypted message in an ATOMIC OUTBOX update BEFORE posting.
+        // This ensures that if the app crashes during the post, we don't 
+        // reuse the same sequence number/nonce on restart, AND we have 
+        // the message ready to retry.
+        store.updateSessionWithOutbox(friendId, newSession, message, tokenToUse.toHex())
 
         E2eeMailboxClient.post(baseUrl, tokenToUse.toHex(), message)
+        store.clearOutbox(friendId)
         
         if (payload is MessagePlaintext.Location) {
             store.updateLastSentTs(friendId, currentTimeSeconds())
@@ -201,6 +204,22 @@ open class LocationClient(
         // Once posted successfully, we can clear the pending flag.
         if (newSession.isSendTokenPending) {
             store.updateSession(friendId, newSession.copy(isSendTokenPending = false))
+        }
+    }
+
+    /**
+     * Recovery logic (§5.4): drain any pending outboxes that were persisted
+     * but not successfully posted due to a crash or network failure.
+     */
+    private suspend fun processOutboxes() {
+        for (friend in store.listFriends()) {
+            val outbox = friend.outbox ?: continue
+            try {
+                E2eeMailboxClient.post(baseUrl, outbox.token, outbox.payload)
+                store.clearOutbox(friend.id)
+            } catch (_: Exception) {
+                // Network failure or server error: leave in outbox for next poll
+            }
         }
     }
 }
