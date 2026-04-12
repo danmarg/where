@@ -288,7 +288,6 @@ class LocationViewModel(
                         updateStatus(e)
                         return@launch
                     }
-                    locationClient.postOpkBundle(bobEntry.id)
                     if (isSharingLocation.value) {
                         val intent =
                             Intent(getApplication(), LocationService::class.java).apply {
@@ -335,9 +334,6 @@ class LocationViewModel(
                     locationSource.triggerRapidPoll()
                     locationSource.wakePoll()
                     try {
-                        // Upload OPK bundle so Bob can decrypt our future location messages.
-                        locationClient.postOpkBundle(entry.id)
-                        Log.d(TAG, "confirmPendingInit: postOpkBundle succeeded")
                         if (isSharingLocation.value) {
                             val intent =
                                 Intent(getApplication(), LocationService::class.java).apply {

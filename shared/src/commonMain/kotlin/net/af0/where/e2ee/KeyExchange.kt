@@ -56,9 +56,9 @@ object KeyExchange {
                 aliceFp = aliceFp,
                 bobFp = bobFp,
             )
-
+        
         val keyConfirmation = buildKeyConfirmation(sk, qr.ekPub, ekB.pub)
-
+        
         // Initial token Bob sends to Alice for discovery is T_AB_0.
         val tokenAliceToBob = deriveRoutingToken(sk, aliceFp, bobFp)
 
@@ -96,35 +96,37 @@ object KeyExchange {
         val aliceFp = fingerprint(aliceEkPub)
         val bobFp = fingerprint(msg.ekPub)
 
-        val session =
-            initSession(
-                sk = sk,
-                isAlice = true,
-                myDhPriv = aliceEkPriv,
-                myDhPub = aliceEkPub.copyOf(),
-                theirDhPub = msg.ekPub,
-                aliceFp = aliceFp,
-                bobFp = bobFp,
-            )
+        val session = initSession(
+            sk = sk,
+            isAlice = true,
+            myDhPriv = aliceEkPriv,
+            myDhPub = aliceEkPub,
+            theirDhPub = msg.ekPub,
+            aliceFp = aliceFp,
+            bobFp = bobFp,
+        )
         sk.fill(0)
 
-        // Alice immediately performs her first DH ratchet step to generate a new key A2.
-        // This ensures her first message triggers a ratchet on Bob's side.
+        // To break the Double Ratchet deadlock and ensure we don't just stay in the
+        // bootstrap symmetric chain forever, Alice (the initiator) performs the FIRST
+        // DH ratchet step immediately after receiving Bob's bootstrap key (B0).
+        // This generates A1, which Alice will send in her first location message.
+        // Bob will see A1 != A0 and ratchet his own side.
         val newLocalDh = generateX25519KeyPair()
-        val dhOut = x25519(newLocalDh.priv, session.remoteDhPub)
-        val step = kdfRk(session.rootKey, dhOut)
+        val dhOut = x25519(newLocalDh.priv, msg.ekPub)
+        val rkStep = kdfRk(session.rootKey, dhOut)
         dhOut.fill(0)
 
-        val newSendToken = deriveRoutingToken(step.newRootKey, aliceFp, bobFp)
+        // Tokens also rotate when the rootKey changes.
+        val newSendToken = deriveRoutingToken(rkStep.newRootKey, aliceFp, bobFp)
 
         return session.copy(
-            rootKey = step.newRootKey,
-            sendChainKey = step.newChainKey,
+            rootKey = rkStep.newRootKey,
+            sendChainKey = rkStep.newChainKey,
             sendToken = newSendToken,
-            sendSeq = 0L,
             localDhPriv = newLocalDh.priv,
             localDhPub = newLocalDh.pub,
-            prevSendToken = session.sendToken.copyOf(),
+            prevSendToken = session.sendToken,
             isSendTokenPending = true,
         )
     }
@@ -160,21 +162,18 @@ object KeyExchange {
         // Bob sends on chain 1, Alice receives on chain 1.
         val sendChainKey = if (isAlice) chainKey0 else chainKey1
         val recvChainKey = if (isAlice) chainKey1 else chainKey0
-
-        // Send token: sender is me, recipient is peer.
-        val sendToken =
-            if (isAlice) {
-                deriveRoutingToken(sk, aliceFp, bobFp)
-            } else {
-                deriveRoutingToken(sk, bobFp, aliceFp)
-            }
-        // Recv token: sender is peer, recipient is me.
-        val recvToken =
-            if (isAlice) {
-                deriveRoutingToken(sk, bobFp, aliceFp)
-            } else {
-                deriveRoutingToken(sk, aliceFp, bobFp)
-            }
+        
+        // Initial tokens are also derived from SK.
+        val sendToken = if (isAlice) {
+            deriveRoutingToken(sk, aliceFp, bobFp)
+        } else {
+            deriveRoutingToken(sk, bobFp, aliceFp)
+        }
+        val recvToken = if (isAlice) {
+            deriveRoutingToken(sk, bobFp, aliceFp)
+        } else {
+            deriveRoutingToken(sk, aliceFp, bobFp)
+        }
 
         expanded.fill(0)
 

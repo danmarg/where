@@ -59,20 +59,46 @@ open class LocationClient(
      * Poll a specific friend's mailbox.
      */
     private suspend fun pollFriend(friendId: String): List<UserLocation> {
-        val friend = store.getFriend(friendId) ?: return emptyList()
+        val resultLocations = mutableListOf<UserLocation>()
+        val friendBefore = store.getFriend(friendId) ?: return emptyList()
+        var currentTokenToPoll = friendBefore.session.recvToken.toHex()
+        var maxFollows = 5 // Prevent infinite loops just in case
 
-        val messages = E2eeMailboxClient.poll(baseUrl, friend.session.recvToken.toHex())
-        if (messages.isEmpty()) return emptyList()
+        while (maxFollows-- > 0) {
+            val messages = E2eeMailboxClient.poll(baseUrl, currentTokenToPoll)
+            if (messages.isEmpty()) break
 
-        val result = store.processBatch(friendId, friend.session.recvToken.toHex(), messages) ?: return emptyList()
+            val result = store.processBatch(friendId, currentTokenToPoll, messages) ?: break
 
-        for (out in result.outgoing) {
-            E2eeMailboxClient.post(baseUrl, out.token, out.payload)
+            for (out in result.outgoing) {
+                E2eeMailboxClient.post(baseUrl, out.token, out.payload)
+            }
+
+            resultLocations.addAll(result.decryptedLocations.map { loc ->
+                UserLocation(userId = friendId, lat = loc.lat, lng = loc.lng, timestamp = loc.ts)
+            })
+
+            // Did the recvToken change during processing? If so, follow it immediately.
+            val updatedFriend = store.getFriend(friendId) ?: break
+            val newToken = updatedFriend.session.recvToken.toHex()
+            if (newToken != currentTokenToPoll) {
+                currentTokenToPoll = newToken
+            } else {
+                break // No token rotation, we've caught up
+            }
         }
 
-        return result.decryptedLocations.map { loc ->
-            UserLocation(userId = friendId, lat = loc.lat, lng = loc.lng, timestamp = loc.ts)
+        // Automated keepalive (§5.3): send a keepalive message if we received a new DH key
+        // but are not currently sharing location.
+        val friendAfter = store.getFriend(friendId)
+        if (friendAfter != null && friendBefore.session.remoteDhPub != friendAfter.session.remoteDhPub) {
+            try {
+                sendKeepalive(friendId)
+            } catch (_: Exception) {
+            }
         }
+
+        return resultLocations
     }
 
     /**
@@ -135,11 +161,12 @@ open class LocationClient(
         // sendMessageToFriendInternal always posts to the current sendToken.
         // Session.encryptMessage handles switching to the new token AFTER the first message of a new epoch.
         val tokenToUse = if (newSession.isSendTokenPending) newSession.prevSendToken else newSession.sendToken
+        
+        // Post first, update store only on success to ensure reliability (§5.4).
+        E2eeMailboxClient.post(baseUrl, tokenToUse.toHex(), message)
 
-        // Mark the token as no longer pending once used.
+        // Mark the token as no longer pending once successfully posted.
         val finalSession = if (newSession.isSendTokenPending) newSession.copy(isSendTokenPending = false) else newSession
         store.updateSession(friendId, finalSession)
-
-        E2eeMailboxClient.post(baseUrl, tokenToUse.toHex(), message)
     }
 }
