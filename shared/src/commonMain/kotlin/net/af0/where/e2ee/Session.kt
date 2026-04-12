@@ -74,6 +74,9 @@ object Session {
         message: EncryptedMessagePayload,
     ): Pair<SessionState, MessagePlaintext> {
         val remoteDhPub = message.dhPub
+        if (remoteDhPub.contentEquals(state.lastRemoteDhPub)) {
+            throw ProtocolException("replay: dhPub matched previous epoch (across-epoch replay)")
+        }
         val isNewDhEpoch = !remoteDhPub.contentEquals(state.remoteDhPub)
         val seq = message.seqAsLong()
 
@@ -118,6 +121,7 @@ object Session {
                     localDhPriv = newLocalDh.priv,
                     localDhPub = newLocalDh.pub,
                     remoteDhPub = remoteDhPub.copyOf(),
+                    lastRemoteDhPub = state.remoteDhPub.copyOf(),
                     prevSendToken = state.sendToken.copyOf(),
                     isSendTokenPending = true,
                 )
@@ -134,6 +138,8 @@ object Session {
 
         var chainKey = currentState.recvChainKey.copyOf()
         var step: ChainStep? = null
+        // Due to the MAX_GAP check above, we know stepsNeeded <= MAX_GAP, 
+        // which fits comfortably within an Int, making the .toInt() cast safe.
         repeat(stepsNeeded.toInt()) {
             step = kdfCk(chainKey)
             chainKey.fill(0)

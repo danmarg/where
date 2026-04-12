@@ -33,6 +33,7 @@ data class SessionState(
     @Serializable(with = ByteArrayBase64Serializer::class) val localDhPriv: ByteArray,
     @Serializable(with = ByteArrayBase64Serializer::class) val localDhPub: ByteArray,
     @Serializable(with = ByteArrayBase64Serializer::class) val remoteDhPub: ByteArray,
+    @Serializable(with = ByteArrayBase64Serializer::class) val lastRemoteDhPub: ByteArray = ByteArray(0),
     @Serializable(with = ByteArrayBase64Serializer::class) val aliceEkPub: ByteArray,
     @Serializable(with = ByteArrayBase64Serializer::class) val bobEkPub: ByteArray,
     @Serializable(with = ByteArrayBase64Serializer::class) val aliceFp: ByteArray,
@@ -53,6 +54,7 @@ data class SessionState(
             localDhPriv.contentEquals(other.localDhPriv) &&
             localDhPub.contentEquals(other.localDhPub) &&
             remoteDhPub.contentEquals(other.remoteDhPub) &&
+            lastRemoteDhPub.contentEquals(other.lastRemoteDhPub) &&
             aliceEkPub.contentEquals(other.aliceEkPub) &&
             bobEkPub.contentEquals(other.bobEkPub) &&
             aliceFp.contentEquals(other.aliceFp) &&
@@ -73,6 +75,7 @@ data class SessionState(
         h = 31 * h + localDhPriv.contentHashCode()
         h = 31 * h + localDhPub.contentHashCode()
         h = 31 * h + remoteDhPub.contentHashCode()
+        h = 31 * h + lastRemoteDhPub.contentHashCode()
         h = 31 * h + aliceEkPub.contentHashCode()
         h = 31 * h + bobEkPub.contentHashCode()
         h = 31 * h + aliceFp.contentHashCode()

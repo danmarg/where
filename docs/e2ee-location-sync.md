@@ -297,7 +297,8 @@ In an anonymous mailbox model, a client polling token `T_old` will never see a m
 1.  When a DH ratchet step occurs, Alice derives the new root key and the corresponding `send_token_new`.
 2.  Alice marks the new token as **pending** (`isSendTokenPending = true`).
 3.  Alice prepares her next message using the new DH epoch keys, but **posts it to the old token** (`send_token_prev`).
-4.  Once the message is successfully posted, Alice clears the pending flag and switches to `send_token_new` for all subsequent messages.
+    *   **Dual-Post Mitigation:** To prevent the session from permanently stalling if this single transition message is dropped, Alice MAY optionally post the exact same message to **both** `send_token_prev` and `send_token_new`.
+4.  Once the message is successfully posted to the old token, Alice clears the pending flag and switches to `send_token_new` exclusively.
 5.  Bob retrieves the message from the old token, processes the new DH key, and immediately switches his receive token to `recv_token_new`.
 
 **Receiver Policy:**
@@ -310,10 +311,9 @@ Forward secrecy is only as strong as the message key deletion discipline:
 - Message keys `MK_n` MUST be deleted from memory immediately after encrypting/decrypting the corresponding frame.
 - Chain keys `CK` MUST be deleted from memory after deriving the next step.
 - Root keys MUST be overwritten immediately after deriving new chain keys.
-- Ephemeral DH private keys (`local_dh_priv`) MUST NOT be persisted to disk. They are stored in transient memory and cleared immediately after use in DH calculations (§8.3). On app restart, the Double Ratchet state resumes from the last known root key; the next outgoing message generates a fresh DH key pair.
+- Ephemeral DH private keys (`local_dh_priv`) MUST be persisted securely so they survive app restarts, as they are required to successfully decrypt incoming DH ratchets. However, the App layer **MUST explicitly exclude** the session state from cloud backups (e.g., using `android:allowBackup="false"` on Android Keystore or `kSecAttrAccessibleWhenUnlockedThisDeviceOnly` on iOS). Leakage of `local_dh_priv` via backups breaks forward secrecy for the active epoch.
 - Ephemeral bootstrap private keys (`EK_A.priv`, `EK_B.priv`) MUST be deleted after computing the shared secret.
 - On Android, keys live in a `SecureRandom`-backed in-memory structure; `Arrays.fill(key, 0)` before GC. On iOS, `Data` is zeroed explicitly before dealloc.
-- No message keys or chain keys are persisted to disk. The session's root key and stable bootstrap public keys are stored in the platform keychain (Android Keystore / iOS Secure Enclave-backed Keychain).
 
 **Keychain backup and state-rollback risk:** Platform keychains may be backed up (iCloud Keychain on iOS, Google Play Backup on Android). If a backup is restored to a different device or is compromised, the attacker gains access to the stored root key and can re-derive future message keys from the backed-up epoch forward — until the next DH ratchet step heals the session.
 
