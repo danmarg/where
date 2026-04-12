@@ -1,6 +1,6 @@
 package net.af0.where.e2ee
 
-import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.test.runTest
 import kotlin.test.*
 
 class OutboxRecoveryTest {
@@ -18,7 +18,7 @@ class OutboxRecoveryTest {
     }
 
     @Test
-    fun testOutboxPersistence() = runBlocking {
+    fun testOutboxPersistence() = runTest {
         // Setup a friend session briefly
         val aliceStore = E2eeStore(MemoryStorage())
         val qr = aliceStore.createInvite("Alice")
@@ -50,5 +50,37 @@ class OutboxRecoveryTest {
         
         val friendFinal = recoveredStore.getFriend(friendId)
         assertTrue(friendFinal!!.session.sendSeq > originalSeq)
+    }
+
+    @Test
+    fun testOutboxPermanentFailureClearsOutbox() = runTest {
+        // use 'store' (Bob's side, pre-initialized with 'storage' in setup())
+        // and 'aliceStore' (Alice's side, sharing the same storage)
+        val aliceStore = E2eeStore(storage)
+
+        val qr = aliceStore.createInvite("Alice")
+        val (_, bobEntry) = store.processScannedQr(qr)
+        val friendId = bobEntry.id
+
+        // 1. Setup outbox with a message for Alice in Bob's store
+        store.encryptAndStore(friendId, MessagePlaintext.Keepalive())
+        assertNotNull(store.getFriend(friendId)?.outbox, "Outbox should be populated")
+
+        // 2. Setup mock client that throws 404
+        val fakeMailbox = object : MailboxClient {
+            override suspend fun post(baseUrl: String, token: String, payload: MailboxPayload) {
+                throw ServerException(404, "Not Found")
+            }
+            override suspend fun poll(baseUrl: String, token: String): List<MailboxPayload> = emptyList()
+        }
+        val client = LocationClient("http://fake", store, fakeMailbox)
+
+        // 3. Process outboxes.
+        // Recovery logic is triggered at the start of any poll (§5.4).
+        client.poll()
+
+        // 4. Verify outbox is cleared
+        val finalFriend = store.getFriend(friendId)
+        assertNull(finalFriend?.outbox, "Outbox should be cleared after 404")
     }
 }

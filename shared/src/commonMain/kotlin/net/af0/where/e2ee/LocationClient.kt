@@ -204,9 +204,9 @@ open class LocationClient(
             val finalSession = updatedFriend.session.copy(isSendTokenPending = false)
             store.updateSession(friendId, finalSession)
             
-            // Only send fresh keepalive if we actually rotated tokens and haven't sent it,
-            // AND ensure it is only sent if sharing is currently enabled (§5.3).
-            if (!finalSession.sendToken.contentEquals(finalSession.prevSendToken) && updatedFriend.sharingEnabled) {
+            // Only send fresh keepalive if we actually rotated tokens and haven't sent it.
+            // We send this regardless of sharingEnabled to ensure the peer's recvToken advances (§5.3).
+            if (!finalSession.sendToken.contentEquals(finalSession.prevSendToken)) {
                 try {
                     sendKeepalive(friendId)
                 } catch (e: Exception) {
@@ -229,8 +229,13 @@ open class LocationClient(
                 // TRANSACTIONAL RECOVERY (§5.4): After recovering a lost post, 
                 // we must also trigger the token transition cleanup.
                 finalizeTokenTransition(friend.id)
-            } catch (_: Exception) {
-                // Network failure or server error: leave in outbox for next poll
+            } catch (e: Exception) {
+                // Permanent failures (mailbox expired/deleted) should clear the outbox (§5.4).
+                val statusCode = (e as? ServerException)?.statusCode
+                if (statusCode == 404 || statusCode == 410) {
+                    store.clearOutbox(friend.id)
+                }
+                // Otherwise: Network failure or other server error: leave in outbox for next poll
             }
         }
     }

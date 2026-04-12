@@ -14,6 +14,7 @@ import io.ktor.http.ContentType
 import io.ktor.http.HttpStatusCode
 import io.ktor.http.contentType
 import io.ktor.serialization.kotlinx.json.json
+import kotlinx.io.IOException
 import kotlinx.serialization.json.Json
 
 /**
@@ -94,7 +95,7 @@ object KtorMailboxClient : MailboxClient {
         return when (e) {
             is ConnectTimeoutException, is HttpRequestTimeoutException, is SocketTimeoutException ->
                 TimeoutException("Network timeout", e)
-            is io.ktor.utils.io.errors.IOException -> {
+            is IOException -> {
                 val msg = e.message ?: "Connection failed"
                 if (msg.contains("resolve", ignoreCase = true) || msg.contains("connect", ignoreCase = true)) {
                     ConnectException(msg, e)
