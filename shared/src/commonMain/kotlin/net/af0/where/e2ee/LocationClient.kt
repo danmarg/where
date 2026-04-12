@@ -99,10 +99,10 @@ open class LocationClient(
         }
 
         // Automated keepalive (§5.3): send a keepalive message if we received a new DH key
-        // but are currently not sharing location (sharing configuration).
+        // but are currently not sharing location, and the session is not stale.
         val friendAfter = store.getFriend(friendId)
         if (friendAfter != null && !friendBefore.session.remoteDhPub.contentEquals(friendAfter.session.remoteDhPub)) {
-            if (!friendAfter.sharingEnabled) {
+            if (!friendAfter.sharingEnabled && !friendAfter.isStale) {
                 try {
                     sendKeepalive(friendId)
                 } catch (_: Exception) {
@@ -188,12 +188,25 @@ open class LocationClient(
             store.updateLastSentTs(friendId, currentTimeSeconds())
         }
 
-        // TOKEN TRANSITION (§5.4): If we are transitioning DH epochs, we advance
-        // the session to the new token and immediately trigger a fresh keepalive.
-        if (newSession.isSendTokenPending) {
-            val finalSession = newSession.copy(isSendTokenPending = false)
+        // TOKEN TRANSITION (§5.4): If we were transitioning DH epochs, we have now 
+        // successfully flushed the final message of the old epoch. We must now
+        // clear the pending flag and trigger the fresh keepalive.
+        finalizeTokenTransition(friendId)
+    }
+
+    /**
+     * Finalizes the token transition after a successful post.
+     * Clears isSendTokenPending and sends a fresh keepalive if necessary.
+     * This is called by both the main send path and the outbox recovery path.
+     */
+    private suspend fun finalizeTokenTransition(friendId: String) {
+        val updatedFriend = store.getFriend(friendId) ?: return
+        val session = updatedFriend.session
+        if (session.isSendTokenPending) {
+            val finalSession = session.copy(isSendTokenPending = false)
             store.updateSession(friendId, finalSession)
             
+            // Only send fresh keepalive if we actually rotated tokens.
             if (!finalSession.sendToken.contentEquals(finalSession.prevSendToken)) {
                 try {
                     sendKeepalive(friendId)
@@ -214,6 +227,9 @@ open class LocationClient(
             try {
                 E2eeMailboxClient.post(baseUrl, outbox.token, outbox.payload)
                 store.clearOutbox(friend.id)
+                // TRANSACTIONAL RECOVERY (§5.4): After recovering a lost post, 
+                // we must also trigger the token transition cleanup.
+                finalizeTokenTransition(friend.id)
             } catch (_: Exception) {
                 // Network failure or server error: leave in outbox for next poll
             }
