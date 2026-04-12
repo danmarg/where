@@ -7,17 +7,8 @@ cd "$(dirname "$0")"
 # DEBUG
 # set -x
 
-USE_NIX=false
-for arg in "$@"; do
-  [[ "$arg" == "--nix" ]] && USE_NIX=true
-done
-
 run() {
-  if $USE_NIX; then
-    nix develop --command "$@"
-  else
-    "$@"
-  fi
+  "$@"
 }
 
 # Load machine-specific environment if it exists
@@ -25,7 +16,7 @@ if [ -f .envrc ]; then
   source .envrc
 fi
 
-# Set TMPDIR early so nix and gradle can create temp files
+# Set TMPDIR early so gradle can create temp files
 export TMPDIR="${TMPDIR:-/tmp}"
 
 # Path defaults — override via environment variables or local.properties.

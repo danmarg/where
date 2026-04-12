@@ -9,13 +9,13 @@ The CLI tool allows you to simulate a user from your terminal. It supports creat
 ### Build and Run
 ```bash
 # Build the CLI
-nix develop --command ./gradlew :cli:installDist
+./gradlew :cli:installDist
 
 # Run the CLI (default host is http://localhost:8080)
-nix develop --command ./cli/build/install/cli/bin/cli help
+./cli/build/install/cli/bin/cli help
 
 # Specify a custom host
-nix develop --command ./cli/build/install/cli/bin/cli --host http://192.168.1.50:8080 help
+./cli/build/install/cli/bin/cli --host http://192.168.1.50:8080 help
 ```
 
 ### Basic Workflow
@@ -44,7 +44,7 @@ Android pulls the server URL from `local.properties`.
 1. **Enable Wireless Debugging** on your Android device.
 2. **Connect via ADB:**
    ```bash
-   nix develop --command adb connect <device-ip>:5555
+   adb connect <device-ip>:5555
    ```
 3. **Run the app:**
    ```bash
@@ -72,7 +72,7 @@ iOS uses `ServerConfig.swift` for configuration.
 1. **Connect your iPhone** via USB.
 2. **Open the project in Xcode:**
    ```bash
-   nix develop --command xcodegen generate
+   (cd ios && xcodegen generate)
    open ios/Where.xcodeproj
    ```
 3. **Select your device** and click **Run** (Play button) in Xcode.

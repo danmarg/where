@@ -2,22 +2,10 @@
 set -e
 cd "$(dirname "$0")"
 
-USE_NIX=false
-PASSTHROUGH_ARGS=()
-for arg in "$@"; do
-  if [[ "$arg" == "--nix" ]]; then
-    USE_NIX=true
-  else
-    PASSTHROUGH_ARGS+=("$arg")
-  fi
-done
+PASSTHROUGH_ARGS=("$@")
 
 run() {
-  if $USE_NIX; then
-    nix develop --command "$@"
-  else
-    "$@"
-  fi
+  "$@"
 }
 
 if [ ${#PASSTHROUGH_ARGS[@]} -eq 0 ]; then

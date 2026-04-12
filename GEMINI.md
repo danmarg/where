@@ -11,7 +11,7 @@ This document provides essential context and instructions for the **Where** proj
 - **Backend:** Ktor (Netty) with a REST-based Mailbox API.
 - **Data Serialization:** `kotlinx.serialization` (JSON).
 - **Dependency Management:** Gradle Version Catalog (`libs.versions.toml`).
-- **Build System:** Gradle (Kotlin DSL), Nix Flakes for environment reproducibility.
+- **Build System:** Gradle (Kotlin DSL).
 - **Maps:** Google Maps (Android), MapKit (iOS).
 
 ## Module Architecture
@@ -26,8 +26,6 @@ This document provides essential context and instructions for the **Where** proj
 ## Development Workflows
 
 ### Environment Setup
-The project uses **Nix** for a reproducible development environment.
-- Enter dev shell: `nix develop`
 - Machine-specific overrides should be placed in `local.gradle.kts` or `local.properties` (both gitignored).
 
 ### Building and Running
@@ -72,4 +70,3 @@ The following shell scripts are provided for convenience:
 - `gradle/libs.versions.toml`: Central dependency management.
 - `docs/e2ee-location-sync.md`: Full cryptographic protocol specification.
 - `docs/IMPLEMENTATION-CHECKLIST.md`: Implementation status and roadmap for E2EE features.
-- `flake.nix`: Nix environment definition.
