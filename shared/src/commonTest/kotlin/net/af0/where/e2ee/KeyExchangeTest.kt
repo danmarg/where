@@ -114,6 +114,32 @@ class KeyExchangeTest {
     }
 
     @Test
+    fun `testBootstrapTokenHandshake - Alice first ratcheted message matches Bob bootstrap recvToken`() {
+        val (qr, aliceEkPriv) = KeyExchange.aliceCreateQrPayload("Alice")
+        val (msg, bobSession) = KeyExchange.bobProcessQr(qr, "Bob")
+        val aliceSession = KeyExchange.aliceProcessInit(msg, aliceEkPriv, qr.ekPub)
+
+        // Alice's session was ratcheted IMMEDIATELY in aliceProcessInit.
+        // Her current sendToken is derived from RK1.
+        // But her prevSendToken is derived from SK.
+        // isSendTokenPending should be true.
+        assertTrue(aliceSession.isSendTokenPending)
+        
+        // Alice sends her first location. 
+        // Protocol states she must use prevSendToken for the first message of a new epoch.
+        val (_, aliceEnc) = Session.encryptMessage(aliceSession, MessagePlaintext.Location(1.0, 2.0, 3.0, 4L))
+        
+        // The token Alice actually posts to at the app layer (LocationClient logic) 
+        // would be prevSendToken. Let's verify that Alice's prevSendToken matches 
+        // Bob's initial recvToken.
+        assertContentEquals(aliceSession.prevSendToken, bobSession.recvToken)
+
+        // And verify decryption works.
+        val (_, pt) = Session.decryptMessage(bobSession, aliceEnc)
+        assertTrue(pt is MessagePlaintext.Location)
+    }
+
+    @Test
     fun `aliceProcessInit rejects tampered key_confirmation`() {
         val (qr, aliceEkPriv) = KeyExchange.aliceCreateQrPayload("Alice")
         val (msg, _) = KeyExchange.bobProcessQr(qr, "Bob")

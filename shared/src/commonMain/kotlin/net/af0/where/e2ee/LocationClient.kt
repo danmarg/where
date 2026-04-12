@@ -44,6 +44,12 @@ open class LocationClient(
 
             for (friend in friends) {
                 try {
+                    // RESTART RECOVERY (§5.5): If the session was regenerated on startup, 
+                    // force a keepalive now to establish a new memory-only DH epoch.
+                    if (friend.session.needsRatchet) {
+                        try { sendKeepalive(friend.id) } catch (_: Exception) { }
+                    }
+
                     val friendUpdates = pollFriend(friend.id)
                     allUpdates.addAll(friendUpdates)
                 } catch (e: Exception) {
@@ -90,12 +96,16 @@ open class LocationClient(
         }
 
         // Automated keepalive (§5.3): send a keepalive message if we received a new DH key
-        // but are not currently sharing location.
+        // but are not currently sharing location (sharing = sent location in the last 15 mins).
         val friendAfter = store.getFriend(friendId)
         if (friendAfter != null && !friendBefore.session.remoteDhPub.contentEquals(friendAfter.session.remoteDhPub)) {
-            try {
-                sendKeepalive(friendId)
-            } catch (_: Exception) {
+            val now = currentTimeSeconds()
+            val isSharingLocation = (now - friendAfter.lastSentTs) < 15 * 60
+            if (!isSharingLocation) {
+                try {
+                    sendKeepalive(friendId)
+                } catch (_: Exception) {
+                }
             }
         }
 
@@ -170,6 +180,10 @@ open class LocationClient(
         store.updateSession(friendId, newSession)
 
         E2eeMailboxClient.post(baseUrl, tokenToUse.toHex(), message)
+        
+        if (payload is MessagePlaintext.Location) {
+            store.updateLastSentTs(friendId, currentTimeSeconds())
+        }
 
         // DUAL-POST MITIGATION (§5.4): If we are transitioning to a new epoch (isSendTokenPending),
         // we optionally post the exact same message to the NEW token as well. This prevents the session

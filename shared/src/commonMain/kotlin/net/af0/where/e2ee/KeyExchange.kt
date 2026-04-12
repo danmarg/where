@@ -122,16 +122,18 @@ object KeyExchange {
 
         // Tokens also rotate when the rootKey changes.
         val newSendToken = deriveRoutingToken(rkStep.newRootKey, aliceFp, bobFp)
-
-        return session.copy(
+        val nextAliceSession = session.copy(
             rootKey = rkStep.newRootKey,
             sendChainKey = rkStep.newChainKey,
             sendToken = newSendToken,
-            localDhPriv = newLocalDh.priv,
-            localDhPub = newLocalDh.pub,
-            prevSendToken = session.sendToken,
+            localDhPriv = newLocalDh.priv.copyOf(),
+            localDhPub = newLocalDh.pub.copyOf(),
+            prevSendToken = session.sendToken.copyOf(),
             isSendTokenPending = true,
         )
+
+        newLocalDh.priv.fill(0)
+        return nextAliceSession
     }
 
     // ---------------------------------------------------------------------------
