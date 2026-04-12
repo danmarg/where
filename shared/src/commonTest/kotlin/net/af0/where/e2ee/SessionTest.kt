@@ -150,9 +150,9 @@ class SessionTest {
 
         // Create a message with a NEW DH key but corrupted ciphertext
         val newAliceDh = generateX25519KeyPair()
+        val envelope = Session.encryptHeader(bobSession.headerKey, newAliceDh.pub, 1L, 0L)
         val badMsg = EncryptedMessagePayload(
-            dhPub = newAliceDh.pub,
-            seq = "1",
+            envelope = envelope,
             ct = ByteArray(100) { 0xFF.toByte() }
         )
 
@@ -218,7 +218,8 @@ class SessionTest {
 
         // Attacker sends seq = 2^63 - 1
         val largeSeq = Long.MAX_VALUE
-        val message = EncryptedMessagePayload(dhPub = bobSession.remoteDhPub, seq = largeSeq.toString(), ct = dummyCt)
+        val envelope = Session.encryptHeader(bobSession.headerKey, bobSession.remoteDhPub, largeSeq, 0L)
+        val message = EncryptedMessagePayload(envelope = envelope, ct = dummyCt)
 
         val startTime = currentTimeMillis()
         try {
@@ -326,13 +327,13 @@ class SessionTest {
         val (bob3, _) = Session.decryptMessage(bob2, msg3)
 
         // Now Bob receives msg1 AGAIN (from epoch 1). 
-        // Bob is currently holding state from epoch 3, so msg1's dhPub does not match Bob's current remoteDhPub.
-        // It SHOULD be rejected because it matches lastRemoteDhPub instead, WITHOUT crashing due to a spurious DH ratchet.
+        // Bob is currently holding state from epoch 3, so msg1's header cannot be unsealed.
+        // It SHOULD be rejected as an authentication failure because the epoch 1 header key was rotated out.
         try {
             Session.decryptMessage(bob3, msg1)
-            kotlin.test.fail("Expected ProtocolException for across-epoch replay")
-        } catch (e: ProtocolException) {
-            assertTrue(e.message?.contains("out-of-order window closed") == true, "Message should be rejected as an unrecoverable gap/replay")
+            kotlin.test.fail("Expected AuthenticationException for across-epoch replay")
+        } catch (e: AuthenticationException) {
+            // Success: In Protocol V1 with Sealed Envelopes, old epochs are opaque once rotated out.
         }
     }
 
@@ -410,7 +411,8 @@ class SessionTest {
         assertTrue(aliceSession.seenRemoteDhPubs.contains(bobInitialDh.toHex()), "seenRemoteDhPubs should have Bob's initial DH")
 
         // 4. Attacker tries to send a message (seq=1) using Bob's initial DH key
-        val recycledPayload = EncryptedMessagePayload(dhPub = bobInitialDh, seq = "1", ct = ByteArray(32))
+        val recycledEnvelope = Session.encryptHeader(aliceSession.headerKey, bobInitialDh, 1L, 0L)
+        val recycledPayload = EncryptedMessagePayload(envelope = recycledEnvelope, ct = ByteArray(32))
         
         try {
             Session.decryptMessage(aliceSession, recycledPayload)

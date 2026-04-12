@@ -41,7 +41,7 @@ object Session {
             )
 
         // Seal the metadata into an envelope (#186)
-        val envelope = encryptHeader(state.headerKey, dhPub, seq, state.pn)
+        val envelope = encryptHeader(state.sendHeaderKey, dhPub, seq, state.pn)
 
         // Memory Hygiene
         state.sendChainKey.fill(0)
@@ -328,7 +328,8 @@ object Session {
             recvChainKey = stepRecv.newChainKey,
             sendChainKey = stepSend.newChainKey,
             headerKey = state.nextHeaderKey.copyOf(),
-            nextHeaderKey = stepSend.newHeaderKey, // Already a copy from kdfRk
+            sendHeaderKey = stepRecv.newHeaderKey,
+            nextHeaderKey = stepSend.newHeaderKey,
             sendToken = newSendToken,
             recvToken = newRecvToken,
             sendSeq = 0L,
@@ -345,7 +346,7 @@ object Session {
         )
     }
 
-    private fun encryptHeader(key: ByteArray, dhPub: ByteArray, seq: Long, pn: Long): ByteArray {
+    internal fun encryptHeader(key: ByteArray, dhPub: ByteArray, seq: Long, pn: Long): ByteArray {
         val plaintext = ByteArray(1 + 32 + 8 + 8)
         plaintext[0] = PROTOCOL_VERSION.toByte()
         dhPub.copyInto(plaintext, 1)
@@ -365,7 +366,11 @@ object Session {
         }
         val nonce = envelope.copyOfRange(0, HEADER_NONCE_SIZE)
         val ct = envelope.copyOfRange(HEADER_NONCE_SIZE, envelope.size)
-        val plaintext = aeadDecrypt(key, nonce, ct, aad = ByteArray(0))
+        val plaintext = try {
+            aeadDecrypt(key, nonce, ct, aad = ByteArray(0))
+        } catch (e: Exception) {
+            throw AuthenticationException("header decryption failed — signature mismatch or corrupted data", e)
+        }
 
         if (plaintext[0].toInt() != PROTOCOL_VERSION) {
             throw ProtocolException("unsupported protocol version in header: ${plaintext[0].toInt()}")
