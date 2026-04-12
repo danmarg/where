@@ -1,10 +1,7 @@
 package net.af0.where.e2ee
 
-import kotlin.test.Test
-import kotlin.test.assertContentEquals
-import kotlin.test.assertEquals
-import kotlin.test.assertNotEquals
-import kotlin.test.assertTrue
+import kotlinx.coroutines.test.runTest
+import kotlin.test.*
 
 class SessionTest {
     init {
@@ -30,13 +27,15 @@ class SessionTest {
     // ---------------------------------------------------------------------------
 
     @Test
-    fun `encrypt and decrypt location round-trip`() {
+    fun `encrypt and decrypt message round-trip`() {
         val (aliceSession, bobSession) = exchangeKeys()
-        val loc = LocationPlaintext(lat = 37.7749, lng = -122.4194, acc = 15.0, ts = 1711152000L)
+        val loc = MessagePlaintext.Location(lat = 37.7749, lng = -122.4194, acc = 15.0, ts = 1711152000L)
 
-        val (aliceNew, ct) = Session.encryptLocation(aliceSession, loc, aliceSession.aliceFp, aliceSession.bobFp)
-        val (_, decrypted) = Session.decryptLocation(bobSession, ct, aliceNew.sendSeq, bobSession.aliceFp, bobSession.bobFp)
+        // Alice sends message 0 (symmetric epoch).
+        val (aliceNew, message) = Session.encryptMessage(aliceSession, loc)
+        val (_, decrypted) = Session.decryptMessage(bobSession, message)
 
+        assertTrue(decrypted is MessagePlaintext.Location)
         assertEquals(loc.lat, decrypted.lat)
         assertEquals(loc.lng, decrypted.lng)
         assertEquals(loc.acc, decrypted.acc)
@@ -46,11 +45,11 @@ class SessionTest {
     @Test
     fun `seq advances on each encrypt`() {
         val (aliceSession, _) = exchangeKeys()
-        val loc = LocationPlaintext(0.0, 0.0, 0.0, 0L)
+        val loc = MessagePlaintext.Location(0.0, 0.0, 0.0, 0L)
 
-        val (s1, _) = Session.encryptLocation(aliceSession, loc, aliceSession.aliceFp, aliceSession.bobFp)
-        val (s2, _) = Session.encryptLocation(s1, loc, aliceSession.aliceFp, aliceSession.bobFp)
-        val (s3, _) = Session.encryptLocation(s2, loc, aliceSession.aliceFp, aliceSession.bobFp)
+        val (s1, _) = Session.encryptMessage(aliceSession, loc)
+        val (s2, _) = Session.encryptMessage(s1, loc)
+        val (s3, _) = Session.encryptMessage(s2, loc)
 
         assertEquals(1L, s1.sendSeq)
         assertEquals(2L, s2.sendSeq)
@@ -60,12 +59,12 @@ class SessionTest {
     @Test
     fun `each message produces a different ciphertext`() {
         val (aliceSession, _) = exchangeKeys()
-        val loc = LocationPlaintext(0.0, 0.0, 0.0, 0L)
+        val loc = MessagePlaintext.Location(0.0, 0.0, 0.0, 0L)
 
-        val (s1, ct1) = Session.encryptLocation(aliceSession, loc, aliceSession.aliceFp, aliceSession.bobFp)
-        val (_, ct2) = Session.encryptLocation(s1, loc, aliceSession.aliceFp, aliceSession.bobFp)
+        val (s1, m1) = Session.encryptMessage(aliceSession, loc)
+        val (_, m2) = Session.encryptMessage(s1, loc)
 
-        assertNotEquals(ct1.toList(), ct2.toList())
+        assertNotEquals(m1.ct.toList(), m2.ct.toList())
     }
 
     @Test
@@ -73,14 +72,15 @@ class SessionTest {
         val (aliceSession, bobSession) = exchangeKeys()
         val locs =
             (1..5).map { i ->
-                LocationPlaintext(lat = i.toDouble(), lng = i.toDouble(), acc = 1.0, ts = i.toLong())
+                MessagePlaintext.Location(lat = i.toDouble(), lng = i.toDouble(), acc = 1.0, ts = i.toLong())
             }
 
         var aSess = aliceSession
         var bSess = bobSession
         for (loc in locs) {
-            val (newA, ct) = Session.encryptLocation(aSess, loc, aSess.aliceFp, aSess.bobFp)
-            val (newB, dec) = Session.decryptLocation(bSess, ct, newA.sendSeq, bSess.aliceFp, bSess.bobFp)
+            val (newA, message) = Session.encryptMessage(aSess, loc)
+            val (newB, dec) = Session.decryptMessage(bSess, message)
+            assertTrue(dec is MessagePlaintext.Location)
             assertEquals(loc.lat, dec.lat)
             aSess = newA
             bSess = newB
@@ -94,15 +94,14 @@ class SessionTest {
     @Test
     fun `replay is rejected`() {
         val (aliceSession, bobSession) = exchangeKeys()
-        val loc = LocationPlaintext(1.0, 2.0, 3.0, 4L)
+        val loc = MessagePlaintext.Location(1.0, 2.0, 3.0, 4L)
 
-        val (aliceNew, ct) = Session.encryptLocation(aliceSession, loc, aliceSession.aliceFp, aliceSession.bobFp)
-        val seq = aliceNew.sendSeq
+        val (aliceNew, message) = Session.encryptMessage(aliceSession, loc)
 
-        val (bobNew, _) = Session.decryptLocation(bobSession, ct, seq, bobSession.aliceFp, bobSession.bobFp)
-        // Second delivery of the same seq must be rejected.
+        val (bobNew, _) = Session.decryptMessage(bobSession, message)
+        // Second delivery of the same message must be rejected.
         try {
-            Session.decryptLocation(bobNew, ct, seq, bobNew.aliceFp, bobNew.bobFp)
+            Session.decryptMessage(bobNew, message)
             kotlin.test.fail("Expected ProtocolException for replay")
         } catch (e: ProtocolException) {
             assertTrue(e.message?.contains("replay") == true)
@@ -110,34 +109,63 @@ class SessionTest {
     }
 
     @Test
-    fun `frame with lower seq than recvSeq is rejected`() {
+    fun `message with lower seq than recvSeq is rejected`() {
         val (aliceSession, bobSession) = exchangeKeys()
-        val loc = LocationPlaintext(0.0, 0.0, 0.0, 0L)
+        val loc = MessagePlaintext.Location(0.0, 0.0, 0.0, 0L)
 
         var aSess = aliceSession
         var bSess = bobSession
-        val cts = mutableListOf<Pair<Long, ByteArray>>()
+        val messages = mutableListOf<EncryptedMessagePayload>()
         repeat(3) {
-            val (newA, ct) = Session.encryptLocation(aSess, loc, aSess.aliceFp, aSess.bobFp)
-            cts += newA.sendSeq to ct
+            val (newA, message) = Session.encryptMessage(aSess, loc)
+            messages += message
             aSess = newA
         }
 
         // Deliver in order first.
-        for ((seq, ct) in cts) {
-            val res = Session.decryptLocation(bSess, ct, seq, bSess.aliceFp, bSess.bobFp)
+        for (message in messages) {
+            val res = Session.decryptMessage(bSess, message)
             bSess = res.first
         }
 
         // Re-deliver any of them — all should be rejected.
-        for ((seq, ct) in cts) {
+        for (message in messages) {
             try {
-                Session.decryptLocation(bSess, ct, seq, bSess.aliceFp, bSess.bobFp)
+                Session.decryptMessage(bSess, message)
                 kotlin.test.fail("Expected ProtocolException for lower seq")
             } catch (e: ProtocolException) {
                 assertTrue(e.message?.contains("replay") == true)
             }
         }
+    }
+
+    @Test
+    fun `transactional safety on authentication failure`() {
+        val (aliceSession, bobSession) = exchangeKeys()
+
+        // Save initial state
+        val initialRootKey = bobSession.rootKey.copyOf()
+        val initialLocalDhPriv = bobSession.localDhPriv.copyOf()
+        val initialRecvChainKey = bobSession.recvChainKey.copyOf()
+
+        // Create a message with a NEW DH key but corrupted ciphertext
+        val newAliceDh = generateX25519KeyPair()
+        val badMsg = EncryptedMessagePayload(
+            dhPub = newAliceDh.pub,
+            seq = "1",
+            ct = ByteArray(100) { 0xFF.toByte() }
+        )
+
+        // Decryption MUST fail
+        assertFailsWith<AuthenticationException> {
+            Session.decryptMessage(bobSession, badMsg)
+        }
+
+        // Verify state remains UNCHANGED
+        assertContentEquals(initialRootKey, bobSession.rootKey, "Root key must not change")
+        assertContentEquals(initialLocalDhPriv, bobSession.localDhPriv, "Local DH priv must not change")
+        assertContentEquals(initialRecvChainKey, bobSession.recvChainKey, "Recv chain key must not change")
+        assertEquals(0L, bobSession.recvSeq, "recvSeq must not change")
     }
 
     // ---------------------------------------------------------------------------
@@ -147,340 +175,249 @@ class SessionTest {
     @Test
     fun `exactly MAX_GAP missed messages is allowed`() {
         val (aliceSession, bobSession) = exchangeKeys()
-        val loc = LocationPlaintext(1.0, 2.0, 3.0, 4L)
+        val loc = MessagePlaintext.Location(1.0, 2.0, 3.0, 4L)
 
-        // Advance Alice's chain MAX_GAP + 1 times: skip the first MAX_GAP
-        // messages and deliver only the (MAX_GAP + 1)-th.
         var aSess = aliceSession
-        var lastCt = ByteArray(0)
-        val target = 1024 + 1 // MAX_GAP = 1024; seq starts at 1, so we send 1025 msgs
+        var lastMessage: EncryptedMessagePayload? = null
+        val target = MAX_GAP + 1 
         repeat(target) {
-            val (newA, ct) = Session.encryptLocation(aSess, loc, aSess.aliceFp, aSess.bobFp)
+            val (newA, message) = Session.encryptMessage(aSess, loc)
             aSess = newA
-            lastCt = ct
+            lastMessage = message
         }
-        // Bob has recvSeq=0; stepsNeeded = 1025 = MAX_GAP + 1; should be accepted.
-        val (_, decrypted) = Session.decryptLocation(bobSession, lastCt, aSess.sendSeq, bobSession.aliceFp, bobSession.bobFp)
+        val (_, decrypted) = Session.decryptMessage(bobSession, lastMessage!!)
+        assertTrue(decrypted is MessagePlaintext.Location)
         assertEquals(loc.lat, decrypted.lat)
     }
 
     @Test
     fun `MAX_GAP + 1 missed messages is rejected`() {
         val (aliceSession, bobSession) = exchangeKeys()
-        val loc = LocationPlaintext(1.0, 2.0, 3.0, 4L)
+        val loc = MessagePlaintext.Location(1.0, 2.0, 3.0, 4L)
 
-        // Send MAX_GAP + 2 messages (seq = 1026); stepsNeeded = 1026 > 1025.
         var aSess = aliceSession
-        var lastCt = ByteArray(0)
-        val target = 1024 + 2
+        var lastMessage: EncryptedMessagePayload? = null
+        val target = MAX_GAP + 2
         repeat(target) {
-            val (newA, ct) = Session.encryptLocation(aSess, loc, aSess.aliceFp, aSess.bobFp)
+            val (newA, message) = Session.encryptMessage(aSess, loc)
             aSess = newA
-            lastCt = ct
+            lastMessage = message
         }
         try {
-            Session.decryptLocation(bobSession, lastCt, aSess.sendSeq, bobSession.aliceFp, bobSession.bobFp)
+            Session.decryptMessage(bobSession, lastMessage!!)
             kotlin.test.fail("Expected ProtocolException for gap exceeding MAX_GAP")
         } catch (e: ProtocolException) {
-            assertTrue(e.message?.contains("exceeds maximum") == true)
+            assertTrue(e.message?.contains("gap too large") == true)
         }
     }
 
     @Test
     fun `malicious large seq is rejected immediately without work`() {
-        val (_, bobSession) = exchangeKeys()
-        val dummyCt = ByteArray(Session.PADDING_SIZE + 16)
+        val (aliceSession, bobSession) = exchangeKeys()
+        val dummyCt = ByteArray(PADDING_SIZE + 16)
 
         // Attacker sends seq = 2^63 - 1
         val largeSeq = Long.MAX_VALUE
+        val message = EncryptedMessagePayload(dhPub = bobSession.remoteDhPub, seq = largeSeq.toString(), ct = dummyCt)
 
         val startTime = currentTimeMillis()
         try {
-            Session.decryptLocation(bobSession, dummyCt, largeSeq, bobSession.aliceFp, bobSession.bobFp)
+            Session.decryptMessage(bobSession, message)
             kotlin.test.fail("Expected ProtocolException for large seq")
         } catch (e: ProtocolException) {
-            assertTrue(e.message?.contains("exceeds maximum") == true)
+            assertTrue(e.message?.contains("gap too large") == true)
         }
         val duration = currentTimeMillis() - startTime
 
         // Rejection should be near-instant (no HKDF iterations)
-        assertTrue(duration < 100, "Large seq rejection took too long: ${duration}ms")
+        assertTrue(duration < 100, "Large seq rejection took too long: \${duration}ms")
     }
 
     // ---------------------------------------------------------------------------
-    // AAD integrity
+    // DH Ratchet
     // ---------------------------------------------------------------------------
 
     @Test
-    fun `ciphertext is bound to sender fingerprint`() {
+    fun `DH ratchet advances correctly`() {
         val (aliceSession, bobSession) = exchangeKeys()
-        val eveFp = sha256(generateX25519KeyPair().pub)
+        val loc = MessagePlaintext.Location(1.0, 2.0, 3.0, 4L)
 
-        val loc = LocationPlaintext(1.0, 2.0, 3.0, 4L)
-        val (aliceNew, ct) = Session.encryptLocation(aliceSession, loc, aliceSession.aliceFp, aliceSession.bobFp)
+        // Alice sends message 1. Stays in epoch 0.
+        val (alice1, msg1) = Session.encryptMessage(aliceSession, loc)
 
-        // Decrypting with wrong sender fingerprint must fail.
-        val threw =
-            try {
-                Session.decryptLocation(bobSession, ct, aliceNew.sendSeq, eveFp, bobSession.bobFp)
-                false
-            } catch (_: Exception) {
-                true
-            }
-        assertTrue(threw, "Expected decryption to fail with wrong sender fingerprint")
+        // Bob receives message 1. Stays in epoch 0.
+        val (bob1, _) = Session.decryptMessage(bobSession, msg1)
+        
+        // Bob sends message 2. Bob generates new DH key B1, ratchets to epoch 1.
+        val (bob2, msg2) = Session.encryptMessage(bob1, loc)
+
+        // Alice receives message 2. She ratchets to Bob's B1 (epoch 1), then generates A1 (epoch 2).
+        val (alice2, _) = Session.decryptMessage(alice1, msg2)
+
+        assertNotEquals(aliceSession.rootKey.toHex(), alice2.rootKey.toHex(), "Alice's root key should change")
+        
+        // Alice sends message 3 (epoch 2).
+        val (alice3, msg3) = Session.encryptMessage(alice2, loc)
+
+        // Bob receives message 3. Bob ratchets to Alice's A1 (epoch 2), then generates B2 (epoch 3).
+        val (bob3, _) = Session.decryptMessage(bob2, msg3)
+
+        assertNotEquals(bob1.rootKey.toHex(), bob3.rootKey.toHex(), "Bob's root key should change")
+        
+        val (alice4, msg4) = Session.encryptMessage(alice3, loc)
+        val (bob4, dec4) = Session.decryptMessage(bob3, msg4)
+        assertTrue(dec4 is MessagePlaintext.Location)
     }
 
-    // ---------------------------------------------------------------------------
-    // Epoch rotation (DH ratchet)
-    // ---------------------------------------------------------------------------
-
     @Test
-    fun `epoch rotation produces different routing token and chain key`() {
+    fun `tokens rotate on DH ratchet`() {
         val (aliceSession, bobSession) = exchangeKeys()
+        val loc = MessagePlaintext.Location(1.0, 2.0, 3.0, 4L)
 
-        val bobOpk = generateX25519KeyPair()
-        val aliceNewEk = generateX25519KeyPair()
+        // Capture initial tokens.
+        val aliceInitialSendToken = aliceSession.sendToken
+        val aliceInitialRecvToken = aliceSession.recvToken
 
-        val pending =
-            Session.aliceEpochRotation(
-                state = aliceSession,
-                aliceNewEkPriv = aliceNewEk.priv,
-                aliceNewEkPub = aliceNewEk.pub,
-                bobOpkPub = bobOpk.pub,
-                opkId = 1,
-                aliceFp = aliceSession.aliceFp,
-                bobFp = aliceSession.bobFp,
-                createdAt = currentTimeSeconds(),
-            )
-        val (bobRotated, ackCt) =
-            Session.bobProcessAliceRotation(
-                state = bobSession,
-                aliceNewEkPub = aliceNewEk.pub,
-                bobOpkPriv = bobOpk.priv,
-                aliceFp = bobSession.aliceFp,
-                bobFp = bobSession.bobFp,
-            )
-        // Alice performs step 2 DH on commit — final tokens come from rootKey2.
-        val aliceCommitted =
-            Session.aliceProcessRatchetAck(
-                pendingRotation = pending,
-                ackCt = ackCt,
-                bobFp = aliceSession.bobFp,
-                aliceFp = aliceSession.aliceFp,
-            )
+        // Alice sends message 1 (epoch 0)
+        val (alice1, msg1) = Session.encryptMessage(aliceSession, loc)
+        // Bob receives message 1 (epoch 0)
+        val (bob1, _) = Session.decryptMessage(bobSession, msg1)
 
-        assertContentEquals(aliceCommitted.sendToken, bobRotated.recvToken, "Alice send = Bob recv after rotation")
-        assertContentEquals(aliceCommitted.recvToken, bobRotated.sendToken, "Alice recv = Bob send after rotation")
-        assertNotEquals(aliceSession.sendToken.toList(), aliceCommitted.sendToken.toList(), "Token changed after rotation")
-        assertContentEquals(aliceCommitted.rootKey, bobRotated.rootKey)
-        // Step 1: Alice's send chain = Bob's recv chain (chainKey_AB).
-        assertContentEquals(aliceCommitted.sendChainKey, bobRotated.recvChainKey, "chainKey_AB: Alice send = Bob recv")
-        // Step 2: Bob's send chain = Alice's recv chain (chainKey_BA) — mutual PFS.
-        assertContentEquals(bobRotated.sendChainKey, aliceCommitted.recvChainKey, "chainKey_BA: Bob send = Alice recv")
+        // Bob sends message 2 (epoch 1)
+        val (bob2, msg2) = Session.encryptMessage(bob1, loc)
+        // Alice receives message 2 (ratchets to Bob's epoch 1, then her own epoch 2)
+        val (alice2, _) = Session.decryptMessage(alice1, msg2)
+
+        assertNotEquals(aliceInitialSendToken.toHex(), alice2.sendToken.toHex(), "Alice's send token should rotate")
+        assertNotEquals(aliceInitialRecvToken.toHex(), alice2.recvToken.toHex(), "Alice's recv token should rotate")
+        
+        // Alice sends message 3 (epoch 2)
+        val (alice3, msg3) = Session.encryptMessage(alice2, loc)
+        // Bob receives message 3 (ratchets to Alice's epoch 2, then his own epoch 3)
+        val (bob3, _) = Session.decryptMessage(bob2, msg3)
+
+        // Alice sends message 4 (epoch 2)
+        val (alice4, msg4) = Session.encryptMessage(alice3, loc)
+        // Bob receives message 4 (stays epoch 3)
+        val (bob4, _) = Session.decryptMessage(bob3, msg4)
+        
+        // Eventually consistent.
+        assertEquals(alice3.sendToken.toHex(), bob3.recvToken.toHex())
     }
 
     @Test
-    fun `messages after epoch rotation can be decrypted`() {
+    fun `message from earlier epoch is rejected via lastRemoteDhPub`() {
         val (aliceSession, bobSession) = exchangeKeys()
+        val loc = MessagePlaintext.Location(0.0, 0.0, 0.0, 0L)
 
-        val bobOpk = generateX25519KeyPair()
-        val aliceNewEk = generateX25519KeyPair()
+        // Alice sends message 1 (epoch 1)
+        val (alice1, msg1) = Session.encryptMessage(aliceSession, loc)
+        // Bob receives message 1
+        val (bob1, _) = Session.decryptMessage(bobSession, msg1)
 
-        val pending =
-            Session.aliceEpochRotation(
-                aliceSession,
-                aliceNewEk.priv,
-                aliceNewEk.pub,
-                bobOpk.pub,
-                opkId = 1,
-                aliceFp = aliceSession.aliceFp,
-                bobFp = aliceSession.bobFp,
-                createdAt = currentTimeSeconds(),
-            )
-        val (bobRotated, ackCt) =
-            Session.bobProcessAliceRotation(
-                bobSession,
-                aliceNewEk.pub,
-                bobOpk.priv,
-                aliceFp = bobSession.aliceFp,
-                bobFp = bobSession.bobFp,
-            )
-        val aliceCommitted =
-            Session.aliceProcessRatchetAck(
-                pendingRotation = pending,
-                ackCt = ackCt,
-                bobFp = aliceSession.bobFp,
-                aliceFp = aliceSession.aliceFp,
-            )
+        // Bob sends message 2 (epoch 2)
+        val (bob2, msg2) = Session.encryptMessage(bob1, loc)
+        // Alice receives message 2
+        val (alice2, _) = Session.decryptMessage(alice1, msg2)
 
-        val loc = LocationPlaintext(lat = 48.8566, lng = 2.3522, acc = 5.0, ts = 1711155000L)
-        val (aliceAfter, ct) =
-            Session.encryptLocation(aliceCommitted, loc, aliceCommitted.aliceFp, aliceCommitted.bobFp)
-        val (_, decrypted) =
-            Session.decryptLocation(bobRotated, ct, aliceAfter.sendSeq, bobRotated.aliceFp, bobRotated.bobFp)
+        // Alice sends message 3 (epoch 3)
+        val (alice3, msg3) = Session.encryptMessage(alice2, loc)
+        // Bob receives message 3
+        val (bob3, _) = Session.decryptMessage(bob2, msg3)
 
-        assertEquals(loc.lat, decrypted.lat)
-        assertEquals(loc.lng, decrypted.lng)
-    }
-
-    // ---------------------------------------------------------------------------
-    // AEAD control message helpers
-    // ---------------------------------------------------------------------------
-
-    @Test
-    fun `EpochRotation AEAD round-trip`() {
-        val rootKey = ByteArray(32) { it.toByte() }
-        val sendToken = ByteArray(16) { (it + 1).toByte() }
-        val newEkPub = ByteArray(32) { (it + 64).toByte() }
-        val aliceFp = ByteArray(32) { it.toByte() }
-        val bobFp = ByteArray(32) { (it + 1).toByte() }
-
-        val ct =
-            buildEpochRotationCt(
-                currentRootKey = rootKey,
-                opkId = 7,
-                newEkPub = newEkPub,
-                aliceFp = aliceFp,
-                bobFp = bobFp,
-                sendToken = sendToken,
-            )
-
-        val plaintext =
-            decryptEpochRotationCt(
-                currentRootKey = rootKey,
-                ct = ct,
-                aliceFp = aliceFp,
-                bobFp = bobFp,
-                sendToken = sendToken,
-            )
-
-        assertEquals(7, plaintext.opkId)
-        assertContentEquals(newEkPub, plaintext.newEkPub)
+        // Now Bob receives msg1 AGAIN (from epoch 1). 
+        // Bob is currently holding state from epoch 3, so msg1's dhPub does not match Bob's current remoteDhPub.
+        // It SHOULD be rejected because it matches lastRemoteDhPub instead, WITHOUT crashing due to a spurious DH ratchet.
+        try {
+            Session.decryptMessage(bob3, msg1)
+            kotlin.test.fail("Expected ProtocolException for across-epoch replay")
+        } catch (e: ProtocolException) {
+            assertTrue(e.message?.contains("out-of-order window closed") == true, "Message should be rejected as an unrecoverable gap/replay")
+        }
     }
 
     @Test
-    fun `EpochRotation AEAD fails with wrong root key`() {
-        val rootKey = ByteArray(32) { it.toByte() }
-        val wrongKey = ByteArray(32) { (it + 1).toByte() }
-        val sendToken = ByteArray(16) { 0x01.toByte() }
-        val newEkPub = ByteArray(32)
-        val aliceFp = ByteArray(32)
-        val bobFp = ByteArray(32)
+    fun `corrupted padding is rejected even if length is valid`() {
+        // Test padding logic directly.
+        val data = "hello".encodeToByteArray()
+        val padded = Session.padToFixedSize(data, 16)
+        assertEquals(11, padded[15].toInt() and 0xFF) // padCount = 16 - 5 = 11
+        
+        // Valid case
+        val unpadded = Session.unpad(padded)
+        assertContentEquals(data, unpadded)
+        
+        // Corrupted padding byte (not length)
+        val corruptedBody = padded.copyOf()
+        corruptedBody[8] = 0xEE.toByte() // inside padding area
+        try {
+            Session.unpad(corruptedBody)
+            kotlin.test.fail("Expected IllegalArgumentException for corrupted padding body")
+        } catch (e: Exception) {
+            // Success: unpad rejected the corruption
+        }
 
-        val ct = buildEpochRotationCt(rootKey, opkId = 1, newEkPub = newEkPub, aliceFp = aliceFp, bobFp = bobFp, sendToken = sendToken)
-
-        val threw =
-            try {
-                decryptEpochRotationCt(wrongKey, ct, aliceFp, bobFp, sendToken)
-                false
-            } catch (_: Exception) {
-                true
-            }
-        assertTrue(threw, "Expected AEAD to fail with wrong root key")
+        // Corrupted length
+        val corruptedLen = padded.copyOf()
+        corruptedLen[15] = 0x01.toByte() // says padCount=1 but it's >= 2
+        try {
+            Session.unpad(corruptedLen)
+            kotlin.test.fail("Expected IllegalArgumentException for invalid padCount")
+        } catch (e: Exception) {
+            // Success
+        }
     }
 
     @Test
-    fun `RatchetAck AEAD round-trip`() {
-        val intermediateRootKey = ByteArray(32) { it.toByte() }
-        val intermediateSendToken = ByteArray(16) { (it + 1).toByte() }
-        val bobNewEkPub = ByteArray(32) { (it + 2).toByte() }
-        val bobFp = ByteArray(32) { it.toByte() }
-        val aliceFp = ByteArray(32) { (it + 1).toByte() }
+    fun testRecycledDhPubRejection() = runTest {
+        val aliceStore = E2eeStore(MemoryStorage())
+        val bobStore = E2eeStore(MemoryStorage())
+        
+        // 1. Establish session
+        val qr = aliceStore.createInvite("Alice")
+        val (initPayload, bobEntry) = bobStore.processScannedQr(qr)
+        aliceStore.processKeyExchangeInit(initPayload, "Bob")
+        val aliceToBobId = aliceStore.listFriends().first().id
+        val bobToAliceId = bobEntry.id
 
-        val ct =
-            buildRatchetAckCt(
-                intermediateRootKey = intermediateRootKey,
-                bobNewEkPub = bobNewEkPub,
-                bobFp = bobFp,
-                aliceFp = aliceFp,
-                intermediateSendToken = intermediateSendToken,
-            )
-        val recovered =
-            decryptRatchetAckCt(
-                intermediateRootKey = intermediateRootKey,
-                ct = ct,
-                bobFp = bobFp,
-                aliceFp = aliceFp,
-                intermediateSendToken = intermediateSendToken,
-            )
-        assertContentEquals(bobNewEkPub, recovered, "bobNewEkPub should round-trip through AEAD")
-    }
+        val aliceRecvToken = aliceStore.getFriend(aliceToBobId)!!.session.recvToken.toHex()
+        val bobRecvToken = bobStore.getFriend(bobToAliceId)!!.session.recvToken.toHex()
 
-    @Test
-    fun `RatchetAck AEAD fails with wrong routing token`() {
-        val intermediateRootKey = ByteArray(32) { it.toByte() }
-        val intermediateSendToken = ByteArray(16) { 0x01.toByte() }
-        val wrongToken = ByteArray(16) { 0x02.toByte() }
-        val bobNewEkPub = ByteArray(32)
-        val bobFp = ByteArray(32)
-        val aliceFp = ByteArray(32)
+        // Helper to perform a full turn: Alice sends, Bob receives, Bob sends, Alice receives.
+        // This advances the DH ratchet on both sides.
+        suspend fun HandshakeTurn() {
+            // Alice -> Bob
+            val (aState, aMsg) = Session.encryptMessage(aliceStore.getFriend(aliceToBobId)!!.session, MessagePlaintext.Keepalive())
+            aliceStore.updateSession(aliceToBobId, aState)
+            bobStore.processBatch(bobToAliceId, bobRecvToken, listOf(aMsg))
 
-        val ct =
-            buildRatchetAckCt(
-                intermediateRootKey = intermediateRootKey,
-                bobNewEkPub = bobNewEkPub,
-                bobFp = bobFp,
-                aliceFp = aliceFp,
-                intermediateSendToken = intermediateSendToken,
-            )
+            // Bob -> Alice
+            val (bState, bMsg) = Session.encryptMessage(bobStore.getFriend(bobToAliceId)!!.session, MessagePlaintext.Keepalive())
+            bobStore.updateSession(bobToAliceId, bState)
+            aliceStore.processBatch(aliceToBobId, aliceRecvToken, listOf(bMsg))
+        }
 
-        val threw =
-            try {
-                decryptRatchetAckCt(
-                    intermediateRootKey = intermediateRootKey,
-                    ct = ct,
-                    bobFp = bobFp,
-                    aliceFp = aliceFp,
-                    intermediateSendToken = wrongToken,
-                )
-                false
-            } catch (_: Exception) {
-                true
-            }
-        assertTrue(threw, "Expected AEAD to fail with wrong routing token")
-    }
+        // 2. Perform two turns to ensure seenRemoteDhPubs is populated with Bob's old keys.
+        // Turn 1: Alice sees Bob's B0, sends A1. Bob sees A1, rotates to B1. Bob sends B1. Alice sees B1, rotates to A2. seen={B0}
+        HandshakeTurn()
+        // Turn 2: Alice sends A2. Bob sees A2, rotates to B2. Bob sends B2. Alice sees B2, rotates to A3. seen={B0, B1}
+        HandshakeTurn()
 
-    @Test
-    fun `test private keys are zeroed after use`() {
-        val (aliceSession, bobSession) = exchangeKeys()
+        // 3. Alice's seenRemoteDhPubs should now contain Bob's initial and intermediate keys
+        val bobInitialDh = initPayload.ekPub
+        val aliceSession = aliceStore.getFriend(aliceToBobId)!!.session
+        
+        assertTrue(aliceSession.seenRemoteDhPubs.contains(bobInitialDh.toHex()), "seenRemoteDhPubs should have Bob's initial DH")
 
-        val aliceNewEk = generateX25519KeyPair()
-        val bobOpk = generateX25519KeyPair()
-
-        // aliceEpochRotation must zero the caller-supplied private key buffer.
-        // A copy is kept in PendingRotation.aliceNewEkPriv for step 2.
-        val pending =
-            Session.aliceEpochRotation(
-                state = aliceSession,
-                aliceNewEkPriv = aliceNewEk.priv,
-                aliceNewEkPub = aliceNewEk.pub,
-                bobOpkPub = bobOpk.pub,
-                opkId = 1,
-                aliceFp = aliceSession.aliceFp,
-                bobFp = aliceSession.bobFp,
-                createdAt = currentTimeSeconds(),
-            )
-        assertTrue(aliceNewEk.priv.all { it == 0.toByte() }, "caller's aliceNewEkPriv should be zeroed")
-        assertTrue(pending.aliceNewEkPriv.any { it != 0.toByte() }, "PendingRotation must hold a live copy of aliceNewEkPriv")
-
-        // bobProcessAliceRotation must zero the OPK private key buffer
-        val (_, ackCt) =
-            Session.bobProcessAliceRotation(
-                state = bobSession,
-                aliceNewEkPub = aliceNewEk.pub,
-                bobOpkPriv = bobOpk.priv,
-                aliceFp = bobSession.aliceFp,
-                bobFp = bobSession.bobFp,
-            )
-        assertTrue(bobOpk.priv.all { it == 0.toByte() }, "bobOpkPriv should be zeroed")
-
-        // aliceProcessRatchetAck must zero the live aliceNewEkPriv copy in PendingRotation
-        Session.aliceProcessRatchetAck(
-            pendingRotation = pending,
-            ackCt = ackCt,
-            bobFp = aliceSession.bobFp,
-            aliceFp = aliceSession.aliceFp,
-        )
-        assertTrue(pending.aliceNewEkPriv.all { it == 0.toByte() }, "PendingRotation.aliceNewEkPriv should be zeroed after commit")
+        // 4. Attacker tries to send a message (seq=1) using Bob's initial DH key
+        val recycledPayload = EncryptedMessagePayload(dhPub = bobInitialDh, seq = "1", ct = ByteArray(32))
+        
+        try {
+            Session.decryptMessage(aliceSession, recycledPayload)
+            kotlin.test.fail("Expected ProtocolException for recycled/replayed DH public key")
+        } catch (e: ProtocolException) {
+            println("[DEBUG] Caught expected exception: ${e.message}")
+            assertTrue(e.message!!.contains("dhPub already superseded"), "Error should indicate superseded/old DH: ${e.message}")
+        }
     }
 }
