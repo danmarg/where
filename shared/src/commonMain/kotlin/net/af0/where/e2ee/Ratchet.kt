@@ -33,10 +33,6 @@ internal fun kdfRk(
     )
 }
 
-/**
- * Symmetric chain step.
- * @param chainKey  Current 32-byte chain key. MUST be zeroed by caller after this returns.
- */
 internal fun kdfCk(chainKey: ByteArray): ChainStep {
     val out =
         hkdfSha256(

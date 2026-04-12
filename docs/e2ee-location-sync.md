@@ -335,7 +335,8 @@ Forward secrecy is only as strong as the message key deletion discipline:
 - Message keys `MK_n` MUST be deleted from memory immediately after encrypting/decrypting the corresponding frame.
 - Chain keys `CK` MUST be deleted from memory after deriving the next step.
 - Root keys MUST be overwritten immediately after deriving new chain keys.
-- Ephemeral DH private keys (`local_dh_priv`) MUST be persisted securely so they survive app restarts, as they are required to successfully decrypt incoming DH ratchets. However, the App layer **MUST explicitly exclude** the session state from cloud backups (e.g., using `android:allowBackup="false"` on Android Keystore or `kSecAttrAccessibleWhenUnlockedThisDeviceOnly` on iOS). Leakage of `local_dh_priv` via backups breaks forward secrecy for the active epoch.
+- **Transactional Decryption**: The shared `SessionState` MUST NOT be updated until the message payload has been successfully authenticated via AEAD. Any intermediate keys generated during a speculative ratchet MUST be zeroed if authentication fails.
+- Ephemeral DH private keys (`local_dh_priv`) MUST be persisted securely so they survive app restarts, as they are required to successfully decrypt incoming DH ratchets. In a production implementation, these should be stored in a secure enclave.
 - Ephemeral bootstrap private keys (`EK_A.priv`, `EK_B.priv`) MUST be deleted after computing the shared secret.
 - On Android, keys live in a `SecureRandom`-backed in-memory structure; `Arrays.fill(key, 0)` before GC. On iOS, `Data` is zeroed explicitly before dealloc.
 
@@ -537,10 +538,11 @@ The `dh_pub` is included in the AAD to cryptographically bind the message to the
 Each message frame carries a `seq` counter. Recipients enforce:
 
 1.  **Replay rejection:** Any frame with `seq <= max_seq_received` (within the same DH epoch) is dropped, EXCEPT if the key for that sequence number is present in the **skipped message key cache**.
-2.  **Maximum gap (MAX_GAP):** recipients MUST enforce a maximum gap of 1024 for chain advancement to prevent resource exhaustion attacks.
-3.  **OutOfOrder Support:** If a message is skipped (e.g., recipient receives seq=10 after seq=8), the recipient advances the symmetric ratchet to seq=10 and stores the intermediate message keys (seq=9) in a bounded cache (e.g., 100 entries).
-4.  **Epoch transition:** When a message with a new `dh_pub` is received, the `seq` counter resets to 0 for the new DH epoch. Previous epoch keys in the cache SHOULD be cleared or timed out.
-5.  **Across-Epoch Replay:** Recipients MUST keep track of recently seen `dh_pub` keys (epoch identifiers) and reject any message for an epoch that has already been superseded.
+2.  **Maximum gap (MAX_GAP):** recipients MUST enforce a maximum gap (default 2000) for chain advancement to prevent resource exhaustion attacks.
+3.  **OutOfOrder Support:** If a message is skipped (e.g., recipient receives seq=10 after seq=8), the recipient advances the symmetric ratchet to seq=10 and stores the intermediate message keys in a bounded cache (100 entries).
+4.  **Transactional Commitment:** The receiving state (receiving chain, root key, skipped keys) MUST only be updated if the message AEAD authentication succeeds.
+5.  **Epoch Transition:** When a message with a new `dh_pub` is received, the `seq` counter resets to 0. All skipped message keys belonging to epochs older than the *previous* valid epoch MUST be cleared.
+6.  **Across-Epoch Replay:** Recipients MUST keep track of recently seen `dh_pub` keys (epoch identifiers) and reject any message for an epoch that has already been superseded.
 
 
 ---
