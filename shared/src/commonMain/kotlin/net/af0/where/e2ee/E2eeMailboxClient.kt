@@ -16,7 +16,15 @@ import io.ktor.http.contentType
 import io.ktor.serialization.kotlinx.json.json
 import kotlinx.serialization.json.Json
 
-object E2eeMailboxClient {
+/**
+ * interface for the mailbox service transport (§9).
+ */
+interface MailboxClient {
+    suspend fun post(baseUrl: String, token: String, payload: MailboxPayload)
+    suspend fun poll(baseUrl: String, token: String): List<MailboxPayload>
+}
+
+object KtorMailboxClient : MailboxClient {
     private val json =
         Json {
             classDiscriminator = "type"
@@ -42,7 +50,7 @@ object E2eeMailboxClient {
      * @param token Hex-encoded mailbox address (routing token or discovery token).
      * @param payload The encrypted or handshake payload to send.
      */
-    suspend fun post(
+    override suspend fun post(
         baseUrl: String,
         token: String,
         payload: MailboxPayload,
@@ -67,7 +75,7 @@ object E2eeMailboxClient {
      * @param token Hex-encoded mailbox address.
      * @return List of payloads, or empty if none.
      */
-    suspend fun poll(
+    override suspend fun poll(
         baseUrl: String,
         token: String,
     ): List<MailboxPayload> {

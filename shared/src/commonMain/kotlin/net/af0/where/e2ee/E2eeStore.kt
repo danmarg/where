@@ -42,7 +42,7 @@ data class FriendEntry(
     val lastLat: Double? = null,
     val lastLng: Double? = null,
     val lastTs: Long? = null,
-    val lastRecvTs: Long = Long.MAX_VALUE,
+    val lastRecvTs: Long = currentTimeSeconds(),
     /**
      * True if the key exchange handshake is fully confirmed (both sides derived SK).
      * Alice is confirmed as soon as she processes KeyExchangeInit; Bob is confirmed
@@ -336,6 +336,13 @@ class E2eeStore(
             val entry = friends[friendId] ?: throw Exception("Friend not found: $friendId")
             val (newSession, message) = Session.encryptMessage(entry.session, payload)
             
+            // NONCE SAFETY ASSERTION (§5.4): The sequence number MUST advance.
+            // If we are transitioning tokens, the new root key ensures uniqueness even if 
+            // sendSeq resets; if we are not, sendSeq must be strictly greater.
+            val seqAdvanced = newSession.sendSeq > entry.session.sendSeq || 
+                            !newSession.rootKey.contentEquals(entry.session.rootKey)
+            check(seqAdvanced) { "Nonce safety violation: sequence number did not advance" }
+
             // Determine which token to use for posting
             val tokenToUse = if (newSession.isSendTokenPending) newSession.prevSendToken else newSession.sendToken
             
@@ -512,6 +519,13 @@ class E2eeStore(
                     isConfirmed = entry.isConfirmed || anySuccess,
                     lastRecvTs = if (hadActivity) currentTimeSeconds() else entry.lastRecvTs,
                 )
+            
+            // The recvToken can only change if AEAD authentication succeeded for
+            // a message with a new dhPub. Assert this invariant so future refactors
+            // cannot silently break the safety property.
+            check(
+                !hadActivity || currentSession.recvToken.contentEquals(entry.session.recvToken) || anySuccess
+            ) { "recvToken changed without any successful decryption — invariant violated" }
 
             save()
             PollBatchResult(decryptedLocations, outgoing)
@@ -523,7 +537,6 @@ class E2eeStore(
     }
 
     companion object {
-        internal const val MAX_POLL_FOLLOWS = 2
         private const val STORAGE_KEY = "e2ee_store"
     }
 }

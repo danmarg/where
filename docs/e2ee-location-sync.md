@@ -302,16 +302,18 @@ Each peer sends messages to the other's inbox. A message is either:
 
 Both message types use the same unified wire format and both carry the sender's current DH ratchet public key in the header.
 
-### 5.3 Keepalive Policy and PCS
+### 5.3 Gap-Filling and Multi-Epoch Reliability
 
-To ensure post-compromise security even when only one side is sharing location, the non-sharing side sends periodic **keepalive messages**. These messages allow the active sender to receive fresh DH material and advance their DH ratchet.
+To handle out-of-order delivery across DH ratchet steps, the receiver maintains a **skipped message key cache** (§5.5). When a receiver observes a gap in sequence numbers, they derive the missing keys and store them for future use.
 
-**Keepalive Cadence:**
--   If a peer is not currently sharing location, they SHOULD send a keepalive message whenever they poll and see that their friend has sent a message with a new DH public key.
--   Additionally, a peer MAY send a keepalive on a regular slow cadence (e.g., once an hour) even if no new DH key was received, to ensure the ratchet advances periodically.
+**Out-of-Order DH Epoch Transitions:**
+If Alice ratchets her DH key from `dh_1` to `dh_2`, Bob may receive `Msg(dh_2, seq=1)` before he receives `Msg(dh_1, seq=last)`.
+1.  **Speculative Ratchet:** Bob moves to the new DH epoch upon receiving `Msg(dh_2)`.
+2.  **Decryption:** Bob decrypts the payload of `Msg(dh_2)` to extract the **encrypted `pn` field** (§7.4).
+3.  **Gap Filling:** The `pn` field tells Bob exactly how many messages Alice sent in epoch `dh_1`. Bob goes back to the old chain, derives all remaining keys up to `pn`, and stores them in the cache.
+4.  **Historical Delivery:** When `Msg(dh_1, seq=last)` eventually arrives, Bob retrieves the key from the cache, verifies the AAD (using the `pn` stored in the cache entry), and decrypts.
 
-**Degraded PCS:**
-If a peer is offline for an extended period, the active sender cannot receive fresh DH material. In this state, the protocol degrades gracefully to **symmetric-ratchet-only**. Per-message forward secrecy is maintained, but post-compromise security is paused until the peer returns and sends a message (location or keepalive) with a new DH key.
+This ensures that gaps are filled deterministically even when the metadata needed for gap calculation is hidden behind the AEAD boundary.
 
 ### 5.4 Routing Token Rotation and Reliability
 
@@ -324,9 +326,9 @@ In an anonymous mailbox model, a client polling token `T_old` will never see a m
 1.  When a DH ratchet step occurs, Alice derives the new root key and the corresponding `send_token_new`.
 2.  Alice marks the new token as **pending** (`isSendTokenPending = true`).
 3.  Alice prepares her next message using the new DH epoch keys, but **posts it to the old token** (`send_token_prev`).
-    *   **Fresh Keepalive Transition:** To ensure the receiver has a valid, non-replay message waiting for them as soon as they switch tokens, Alice immediately follows the transition message with a **fresh Keepalive** encrypted under the new epoch keys and posted to `send_token_new`.
+    *   **Fresh Keepalive Transition:** To ensure the receiver has a valid, non-replay message waiting for them as soon as they switch tokens, Alice immediately follows the transition message with a **fresh Keepalive** encrypted under the new epoch keys and posted to `send_token_new`. This keepalive is gated on `sharingEnabled` to preserve the periodic PCS property even when active location sharing is toggled off (§5.3).
 4.  Once both messages are successfully handled, Alice switches to `send_token_new` exclusively.
-5.  Bob retrieves the message from the old token, processes the new DH key, and immediately switches his receive token to `recv_token_new`.
+5.  Bob retrieves the message from the old token, processes the new DH key (extracting the hidden `pn` for gap filling), and immediately switches his receive token to `recv_token_new`.
 
 **Receiver Policy:**
 A receiver switches their **receive token** immediately upon receiving a message with a new `dh_pub`. Messages are retrieved in arrival order from the server. If an old-epoch message arrives at the server *after* a new-epoch message has been retrieved and processed, the receiver has already switched tokens and the old message will be missed. This is an acceptable tradeoff for protocol simplicity.
@@ -344,6 +346,7 @@ To maximize forward secrecy, implementations should adhere to the following hygi
     - Full `SessionState` (including `localDhPriv`) is persisted to local storage to ensure session stability across app restarts and crashes.
     - **Initial State Hygiene:** Bob's initial ephemeral private key (`ekB.priv`) is copied into `localDhPriv` in the `SessionState` to enable the first DH ratchet step when Alice responds. The original buffer is zeroed immediately after session initialization.
     - To mitigate backup-recovery risks, this state MUST be stored using device-local, backup-excluded security controls (e.g., `kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly` on iOS, `KeyStore`-backed encryption with `allowBackup=false` on Android).
+    - **Sequence Safety:** If the sequence number `sendSeq` reaches its 64-bit maximum (`Long.MAX_VALUE`), the session is considered "bricked" (`SessionBrickedException`) and no further messages can be sent. This prevents nonce reuse. A full out-of-band session reset is required.
     - If a device backup is nonetheless recovered by an attacker, the forward secrecy guarantee is reduced to the current DH epoch. Per-message forward secrecy is maintained against a server-side observer who does not have access to the device's persistent store.
 
 **Keychain backup and state-rollback risk:** Platform keychains may be backed up (iCloud Keychain on iOS, Google Play Backup on Android). If a backup is restored to a different device or is compromised, the attacker gains access to the stored root key and can re-derive future message keys from the backed-up epoch forward — until the next DH ratchet step heals the session.
@@ -447,6 +450,17 @@ To prevent the server from learning whether a routing token corresponds to a rea
 **The server MUST return an identical response (HTTP 200 OK with `[]`) for all token queries where no messages are pending, regardless of whether the token has ever been "registered" or used.**
 
 There is no "create mailbox" or "register token" step. Mailboxes exist implicitly upon the first `POST`. A `GET` for a non-existent token is indistinguishable from a `GET` for an empty real mailbox.
+
+### 7.4 Metadata Obfuscation: Hidden Chain Length (pn)
+
+Standard Double Ratchet protocols leak the length of the previous symmetric chain (`pn`) in the unencrypted header. This allows a server to observe activity patterns (e.g., "Alice sent 142 messages in her last 30-minute epoch").
+
+To mitigate this, Where moves `pn` into the **encrypted payload**:
+1. **Encrypted Envelope:** The `MessagePlaintext` JSON object includes a top-level `pn` field.
+2. **Post-Decryption Extraction:** The receiver first ratchets DH, derives the message key, decrypts the payload, and *then* reads `pn` to perform historical gap-filling of the old chain (§5.3).
+3. **Cache Storage:** When storing skipped keys for out-of-order delivery, the receiver stores the active `pn` alongside the message key: `(MK_n, Nonce_n, PN_n)`. This ensures that if the message arrives later, the AAD can be re-verified against the correct historical `pn`.
+
+This removes the last piece of unauthenticated chain metadata from the wire format, leaving only `dh_pub` and `seq` visible to the server.
 
 ### 7.3 Metadata Exposure and Traffic Analysis
 
