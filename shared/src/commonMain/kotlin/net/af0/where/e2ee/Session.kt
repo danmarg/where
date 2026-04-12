@@ -252,7 +252,7 @@ object Session {
         // Track seen DH keys to avoid re-ratcheting to old epochs
         val newSeenKeys = state.seenRemoteDhPubs.toMutableList()
         newSeenKeys.add(state.remoteDhPub.copyOf())
-        if (newSeenKeys.size > 20) newSeenKeys.removeAt(0)
+        if (newSeenKeys.size > 10) newSeenKeys.removeAt(0)
 
         // Zero intermediate keys
         stepRecv.newRootKey.fill(0)

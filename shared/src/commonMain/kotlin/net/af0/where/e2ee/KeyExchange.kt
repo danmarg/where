@@ -126,6 +126,10 @@ object KeyExchange {
             rootKey = rkStep.newRootKey,
             sendChainKey = rkStep.newChainKey,
             sendToken = newSendToken,
+            // MEMORY HYGIENE NOTE (§5.5): localDhPriv is copied here to be persisted in 
+            // the E2eeStore. This ensures session stability across app restarts, but means 
+            // that forward secrecy at rest is dependent on the security of the local 
+            // keychain/keystore (backup-excluded).
             localDhPriv = newLocalDh.priv.copyOf(),
             localDhPub = newLocalDh.pub.copyOf(),
             prevSendToken = session.sendToken.copyOf(),

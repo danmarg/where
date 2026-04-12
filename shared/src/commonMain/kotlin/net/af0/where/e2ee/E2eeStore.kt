@@ -463,7 +463,7 @@ class E2eeStore(
                 entry.copy(
                     session = currentSession,
                     // Bob becomes confirmed once he receives any valid message from Alice
-                    isConfirmed = true,
+                    isConfirmed = entry.isConfirmed || anySuccess,
                     lastRecvTs = if (hadActivity) currentTimeSeconds() else entry.lastRecvTs,
                 )
 
