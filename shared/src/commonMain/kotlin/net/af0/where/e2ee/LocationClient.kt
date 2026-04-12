@@ -71,11 +71,12 @@ open class LocationClient(
 
         // We follow token rotations up to MAX_POLL_FOLLOWS to prevent infinite loops 
         // caused by adversarial server or client code injecting transition messages (§9.2).
-        repeat(MAX_POLL_FOLLOWS) { 
+        var follows = 0
+        while (follows < MAX_POLL_FOLLOWS) {
             val messages = E2eeMailboxClient.poll(baseUrl, currentTokenToPoll)
-            if (messages.isEmpty()) return@repeat
+            if (messages.isEmpty()) break
 
-            val result = store.processBatch(friendId, currentTokenToPoll, messages) ?: return@repeat
+            val result = store.processBatch(friendId, currentTokenToPoll, messages) ?: break
 
             for (out in result.outgoing) {
                 E2eeMailboxClient.post(baseUrl, out.token, out.payload)
@@ -86,12 +87,13 @@ open class LocationClient(
             })
 
             // Did the recvToken change during processing? If so, follow it immediately.
-            val updatedFriend = store.getFriend(friendId) ?: return@repeat
+            val updatedFriend = store.getFriend(friendId) ?: break
             val newToken = updatedFriend.session.recvToken.toHex()
             if (newToken != currentTokenToPoll) {
                 currentTokenToPoll = newToken
+                follows++
             } else {
-                return@repeat // No token rotation, we've caught up
+                break // No token rotation, we've caught up
             }
         }
 
