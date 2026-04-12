@@ -132,6 +132,11 @@ object KeyExchange {
             isSendTokenPending = true,
         )
 
+        // Memory Hygiene: Wipe the bootstrap session's keys now that they are superseded by Epoch 1.
+        // session.localDhPriv is a reference to aliceEkPriv, which is zeroed by the caller.
+        session.rootKey.fill(0)
+        session.sendChainKey.fill(0)
+
         newLocalDh.priv.fill(0)
         return nextAliceSession
     }
