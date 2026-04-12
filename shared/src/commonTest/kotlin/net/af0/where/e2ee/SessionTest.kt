@@ -1,10 +1,7 @@
 package net.af0.where.e2ee
 
-import kotlin.test.Test
-import kotlin.test.assertContentEquals
-import kotlin.test.assertEquals
-import kotlin.test.assertNotEquals
-import kotlin.test.assertTrue
+import kotlinx.coroutines.test.runTest
+import kotlin.test.*
 
 class SessionTest {
     init {
@@ -140,6 +137,35 @@ class SessionTest {
                 assertTrue(e.message?.contains("replay") == true)
             }
         }
+    }
+
+    @Test
+    fun `transactional safety on authentication failure`() {
+        val (aliceSession, bobSession) = exchangeKeys()
+
+        // Save initial state
+        val initialRootKey = bobSession.rootKey.copyOf()
+        val initialLocalDhPriv = bobSession.localDhPriv.copyOf()
+        val initialRecvChainKey = bobSession.recvChainKey.copyOf()
+
+        // Create a message with a NEW DH key but corrupted ciphertext
+        val newAliceDh = generateX25519KeyPair()
+        val badMsg = EncryptedMessagePayload(
+            dhPub = newAliceDh.pub,
+            seq = "1",
+            ct = ByteArray(100) { 0xFF.toByte() }
+        )
+
+        // Decryption MUST fail
+        assertFailsWith<AuthenticationException> {
+            Session.decryptMessage(bobSession, badMsg)
+        }
+
+        // Verify state remains UNCHANGED
+        assertContentEquals(initialRootKey, bobSession.rootKey, "Root key must not change")
+        assertContentEquals(initialLocalDhPriv, bobSession.localDhPriv, "Local DH priv must not change")
+        assertContentEquals(initialRecvChainKey, bobSession.recvChainKey, "Recv chain key must not change")
+        assertEquals(0L, bobSession.recvSeq, "recvSeq must not change")
     }
 
     // ---------------------------------------------------------------------------
@@ -339,6 +365,59 @@ class SessionTest {
             kotlin.test.fail("Expected IllegalArgumentException for invalid padCount")
         } catch (e: Exception) {
             // Success
+        }
+    }
+
+    @Test
+    fun testRecycledDhPubRejection() = runTest {
+        val aliceStore = E2eeStore(MemoryStorage())
+        val bobStore = E2eeStore(MemoryStorage())
+        
+        // 1. Establish session
+        val qr = aliceStore.createInvite("Alice")
+        val (initPayload, bobEntry) = bobStore.processScannedQr(qr)
+        aliceStore.processKeyExchangeInit(initPayload, "Bob")
+        val aliceToBobId = aliceStore.listFriends().first().id
+        val bobToAliceId = bobEntry.id
+
+        val aliceRecvToken = aliceStore.getFriend(aliceToBobId)!!.session.recvToken.toHex()
+        val bobRecvToken = bobStore.getFriend(bobToAliceId)!!.session.recvToken.toHex()
+
+        // Helper to perform a full turn: Alice sends, Bob receives, Bob sends, Alice receives.
+        // This advances the DH ratchet on both sides.
+        suspend fun HandshakeTurn() {
+            // Alice -> Bob
+            val (aState, aMsg) = Session.encryptMessage(aliceStore.getFriend(aliceToBobId)!!.session, MessagePlaintext.Keepalive())
+            aliceStore.updateSession(aliceToBobId, aState)
+            bobStore.processBatch(bobToAliceId, bobRecvToken, listOf(aMsg))
+
+            // Bob -> Alice
+            val (bState, bMsg) = Session.encryptMessage(bobStore.getFriend(bobToAliceId)!!.session, MessagePlaintext.Keepalive())
+            bobStore.updateSession(bobToAliceId, bState)
+            aliceStore.processBatch(aliceToBobId, aliceRecvToken, listOf(bMsg))
+        }
+
+        // 2. Perform two turns to ensure seenRemoteDhPubs is populated with Bob's old keys.
+        // Turn 1: Alice sees Bob's B0, sends A1. Bob sees A1, rotates to B1. Bob sends B1. Alice sees B1, rotates to A2. seen={B0}
+        HandshakeTurn()
+        // Turn 2: Alice sends A2. Bob sees A2, rotates to B2. Bob sends B2. Alice sees B2, rotates to A3. seen={B0, B1}
+        HandshakeTurn()
+
+        // 3. Alice's seenRemoteDhPubs should now contain Bob's initial and intermediate keys
+        val bobInitialDh = initPayload.ekPub
+        val aliceSession = aliceStore.getFriend(aliceToBobId)!!.session
+        
+        assertTrue(aliceSession.seenRemoteDhPubs.contains(bobInitialDh.toHex()), "seenRemoteDhPubs should have Bob's initial DH")
+
+        // 4. Attacker tries to send a message (seq=1) using Bob's initial DH key
+        val recycledPayload = EncryptedMessagePayload(dhPub = bobInitialDh, seq = "1", ct = ByteArray(32))
+        
+        try {
+            Session.decryptMessage(aliceSession, recycledPayload)
+            kotlin.test.fail("Expected ProtocolException for recycled/replayed DH public key")
+        } catch (e: ProtocolException) {
+            println("[DEBUG] Caught expected exception: ${e.message}")
+            assertTrue(e.message!!.contains("dhPub already superseded"), "Error should indicate superseded/old DH: ${e.message}")
         }
     }
 }

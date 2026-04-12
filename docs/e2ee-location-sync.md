@@ -451,7 +451,13 @@ To prevent the server from learning whether a routing token corresponds to a rea
 
 There is no "create mailbox" or "register token" step. Mailboxes exist implicitly upon the first `POST`. A `GET` for a non-existent token is indistinguishable from a `GET` for an empty real mailbox.
 
-### 7.4 Metadata Obfuscation: Hidden Chain Length (pn)
+### 7.3 Metadata Exposure and Traffic Analysis
+
+The server can still observe the timing and frequency of `POST` and `GET` requests for specific tokens. IP correlation can be used to infer relationships over time.
+
+### 7.4 Mitigations
+
+#### 7.4.1 Metadata Obfuscation: Hidden Chain Length (pn)
 
 Standard Double Ratchet protocols leak the length of the previous symmetric chain (`pn`) in the unencrypted header. This allows a server to observe activity patterns (e.g., "Alice sent 142 messages in her last 30-minute epoch").
 
@@ -462,15 +468,11 @@ To mitigate this, Where moves `pn` into the **encrypted payload**:
 
 This removes the last piece of unauthenticated chain metadata from the wire format, leaving only `dh_pub` and `seq` visible to the server.
 
-### 7.3 Metadata Exposure and Traffic Analysis
-
-The server can still observe the timing and frequency of `POST` and `GET` requests for specific tokens. IP correlation can be used to infer relationships over time.
-
-### 7.4 Mitigations
+#### 7.4.2 Payload padding
 
 - **Payload padding (mandatory):** All payloads MUST be padded to a fixed length (512 bytes recommended) before encryption. 256 bytes is insufficient: a JSON location payload plus GCM overhead already approaches ~150 bytes, leaving little headroom for variable-length fields. 512 bytes provides comfortable clearance while remaining a small fixed multiple of a cache line.
 
-### 7.4.1 Polling Strategy
+#### 7.4.3 Polling Strategy
 
 To prevent timing-based social-graph inference, Bob MUST poll at a **constant rate** regardless of whether messages are expected. Polling more frequently when a location update is expected, or less frequently when offline, creates a timing side-channel the server can exploit to infer when friends are actively sharing.
 

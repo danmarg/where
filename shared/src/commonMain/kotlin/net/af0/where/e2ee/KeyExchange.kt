@@ -143,10 +143,11 @@ object KeyExchange {
         )
 
         // Memory Hygiene: Wipe the bootstrap session's keys now that they are superseded by Epoch 1.
-        // session.localDhPriv is a reference to aliceEkPriv, which is zeroed by the caller.
+        // nextAliceSession preserves recvChainKey (Epoch 0 receiver) until Bob ratchets.
+        // We MUST NOT wipe recvChainKey here because nextAliceSession is a shallow copy of session!
         session.rootKey.fill(0)
         session.sendChainKey.fill(0)
-        session.recvChainKey.fill(0)
+        // session.recvChainKey is shared with nextAliceSession via shallow copy. DO NOT FILL(0).
 
         newLocalDh.priv.fill(0)
         rkStep.newRootKey.fill(0)

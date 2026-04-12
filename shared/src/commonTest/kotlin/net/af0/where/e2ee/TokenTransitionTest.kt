@@ -1,6 +1,6 @@
 package net.af0.where.e2ee
 
-import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.test.runTest
 import net.af0.where.model.UserLocation
 import kotlin.test.*
 
@@ -25,7 +25,7 @@ class TokenTransitionTest {
     }
 
     @Test
-    fun testTokenFollowLimit() = runBlocking {
+    fun testTokenFollowLimit() = runTest {
         val aliceStore = E2eeStore(MemoryStorage())
         val bobStore = E2eeStore(MemoryStorage())
         val fakeMailbox = FakeMailboxClient()
@@ -68,7 +68,7 @@ class TokenTransitionTest {
     }
 
     @Test
-    fun testTokenFollowLimitExceeded() = runBlocking {
+    fun testTokenFollowLimitExceeded() = runTest {
         val aliceStore = E2eeStore(MemoryStorage())
         val bobStore = E2eeStore(MemoryStorage())
         val fakeMailbox = FakeMailboxClient()
@@ -101,5 +101,57 @@ class TokenTransitionTest {
         
         assertEquals(2, locations.size, "Should have stopped after 2 follows")
         assertEquals(2, fakeMailbox.pollCount) 
+    }
+    
+    @Test
+    fun testTransitionKeepaliveWhenSharingDisabled() = runTest {
+        val aliceStore = E2eeStore(MemoryStorage())
+        val bobStore = E2eeStore(MemoryStorage())
+        val fakeMailbox = FakeMailboxClient()
+        val aliceClient = LocationClient("http://fake", aliceStore, fakeMailbox)
+
+        // 1. Establish session
+        val qr = aliceStore.createInvite("Alice")
+        val (initPayload, bobEntry) = bobStore.processScannedQr(qr)
+        aliceStore.processKeyExchangeInit(initPayload, "Bob")
+        
+        val aliceToBobId = aliceStore.listFriends().first().id
+        val bobToAliceId = bobEntry.id
+        
+        // 2. Alice disables sharing
+        aliceStore.updateFriend(aliceToBobId) { it.copy(sharingEnabled = false) }
+        
+        // 3. Bob sends a message to Alice (triggers DH ratchet on Alice's side)
+        // To trigger a REAL DH ratchet, Alice must first send a message to Bob,
+        // then Bob sends a message back with his NEW DH key.
+        
+        // Alice -> Bob (DH=A0)
+        val (aState, aMsg) = Session.encryptMessage(aliceStore.getFriend(aliceToBobId)!!.session, MessagePlaintext.Keepalive())
+        aliceStore.updateSession(aliceToBobId, aState)
+        bobStore.processBatch(bobToAliceId, bobStore.getFriend(bobToAliceId)!!.session.recvToken.toHex(), listOf(aMsg))
+
+        // Bob -> Alice (DH=B1). This will trigger isNewDhEpoch and commitRatchetSend at Alice.
+        val (bState, bMsg) = Session.encryptMessage(bobStore.getFriend(bobToAliceId)!!.session, MessagePlaintext.Keepalive())
+        bobStore.updateSession(bobToAliceId, bState)
+        
+        val aliceRecvToken = aliceStore.getFriend(aliceToBobId)!!.session.recvToken.toHex()
+        fakeMailbox.polls[aliceRecvToken] = mutableListOf(EncryptedMessagePayload(dhPub = bMsg.dhPub, seq = bMsg.seq, ct = bMsg.ct))
+        
+        // 4. Alice polls. She should see the new DH, ratchet, and trigger an automated keepalive.
+        // The keepalive itself triggers finalizeTokenTransition.
+        // Alice's pollFriend detects Bob's new DH key in the batch,
+        // which triggers Alice to rotate her own keys and set isSendTokenPending = true.
+        // It then immediately calls sendKeepalive() which should clear the flag.
+        aliceClient.pollFriend(aliceToBobId)
+        
+        // Assert: Alice should have posted at least one keepalive to advance Bob's recvToken
+        val aliceFinal = aliceStore.getFriend(aliceToBobId)!!
+        assertFalse(aliceFinal.session.isSendTokenPending, "isSendTokenPending should be cleared after finishing transitions")
+        
+        // Check that something was posted to Bob
+        println("[DEBUG] FakeMailbox posts: ${fakeMailbox.posts.size}")
+        assertTrue(fakeMailbox.posts.isNotEmpty(), "Alice should have posted at least one message during transition")
+        // We expect Alice to rotate because bob advanced his epoch.
+        assertTrue(aliceFinal.session.sendSeq > 0, "Alice should have sent a keepalive (sendSeq > 0)")
     }
 }

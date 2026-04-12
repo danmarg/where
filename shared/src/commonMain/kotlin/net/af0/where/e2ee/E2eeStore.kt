@@ -60,6 +60,7 @@ data class FriendEntry(
         const val ACK_TIMEOUT_SECONDS = 7 * 24 * 3600L
     }
 
+
     /**
      * Returns true if no messages have been received for [ACK_TIMEOUT_SECONDS].
      * This is a heuristic for UI to show a "not seen recently" warning.
@@ -132,6 +133,10 @@ class E2eeStore(
     // This prevents TOCTOU races where a key rotation and outgoing message
     // could concurrently access and update the same session state.
     private val stateLock = Mutex()
+
+    /**
+     * Atomically update a friend's metadata in the store.
+     */
 
     init {
         load()
@@ -416,6 +421,14 @@ class E2eeStore(
         }
     }
 
+    suspend fun updateFriend(id: String, transform: (FriendEntry) -> FriendEntry) {
+        stateLock.withLock {
+            val entry = friends[id] ?: return@withLock
+            friends[id] = transform(entry)
+            save()
+        }
+    }
+
 
 
     // -----------------------------------------------------------------------
@@ -487,6 +500,11 @@ class E2eeStore(
 
             for (msg in sortedMessages) {
                 try {
+                    // Sequential mutation of currentSession provides the replay guarantee:
+                    // if multiple messages with the same new DH key arrive in one batch,
+                    // the first one processed updates currentSession.recvSeq = seq.
+                    // Subequent replays in the same for-loop will be rejected by decryptMessage
+                    // because they are checked against the updated recvSeq.
                     val (newSession, pt) = Session.decryptMessage(currentSession, msg)
                     currentSession = newSession
                     anySuccess = true
@@ -501,10 +519,6 @@ class E2eeStore(
                         )
                     }
                 } catch (e: Exception) {
-                    // Log security-relevant events for diagnostics (§10.1)
-                    if (e is AuthenticationException || e is ProtocolException) {
-                        println("[SECURITY] decryption failed for friend $friendId, seq ${msg.seq}: ${e.message}")
-                    }
                     // Skip individually bad messages to prevent head-of-line blocking
                 }
             }
@@ -520,12 +534,10 @@ class E2eeStore(
                     lastRecvTs = if (hadActivity) currentTimeSeconds() else entry.lastRecvTs,
                 )
             
-            // The recvToken can only change if AEAD authentication succeeded for
-            // a message with a new dhPub. Assert this invariant so future refactors
-            // cannot silently break the safety property.
-            check(
-                !hadActivity || currentSession.recvToken.contentEquals(entry.session.recvToken) || anySuccess
-            ) { "recvToken changed without any successful decryption — invariant violated" }
+            // The recvToken must only change if we had a successful decryption (§7.2).
+            check(currentSession.recvToken.contentEquals(entry.session.recvToken) || anySuccess) {
+                "recvToken changed without any successful decryption — invariant violated"
+            }
 
             save()
             PollBatchResult(decryptedLocations, outgoing)
