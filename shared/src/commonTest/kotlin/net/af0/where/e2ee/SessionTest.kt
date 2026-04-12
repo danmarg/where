@@ -188,7 +188,7 @@ class SessionTest {
     @Test
     fun `malicious large seq is rejected immediately without work`() {
         val (aliceSession, bobSession) = exchangeKeys()
-        val dummyCt = ByteArray(Session.PADDING_SIZE + 16)
+        val dummyCt = ByteArray(PADDING_SIZE + 16)
 
         // Attacker sends seq = 2^63 - 1
         val largeSeq = Long.MAX_VALUE

@@ -412,8 +412,12 @@ class E2eeStore(
                             ),
                         )
                     }
-                } catch (_: Exception) {
-                    // Skip individually bad messages
+                } catch (e: Exception) {
+                    // Log security-relevant events for diagnostics (§10.1)
+                    if (e is AuthenticationException || e is ProtocolException) {
+                        println("[SECURITY] decryption failed for friend $friendId, seq ${msg.seq}: ${e.message}")
+                    }
+                    // Skip individually bad messages to prevent head-of-line blocking
                 }
             }
 
