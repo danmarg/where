@@ -298,7 +298,7 @@ object Session {
         // Track seen DH keys to avoid re-ratcheting to old epochs
         val newSeenKeys = LinkedHashSet(state.seenRemoteDhPubs)
         newSeenKeys.add(state.remoteDhPub.toHex())
-        if (newSeenKeys.size > 100) {
+        if (newSeenKeys.size > 5) {
             val oldest = newSeenKeys.first()
             newSeenKeys.remove(oldest)
         }
