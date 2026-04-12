@@ -34,16 +34,19 @@ private val json =
 private const val MAILBOX_TTL_MS = 60 * 60 * 1000L
 
 /** Maximum messages retained per token. Prevents unbounded memory growth from floods. */
-private const val MAX_QUEUE_DEPTH = 100
+private const val MAX_QUEUE_DEPTH = 1000
 
 /** Maximum POST requests per token within the rate-limit window. */
-internal const val RATE_LIMIT_MAX_POSTS = 60
+internal const val RATE_LIMIT_MAX_POSTS = 10
 
 /** Maximum GET (poll) requests per token within the rate-limit window. */
 internal const val RATE_LIMIT_MAX_GETS = 300
 
 /** Rate-limit window duration in milliseconds (1 minute). */
 private const val RATE_LIMIT_WINDOW_MS = 60_000L
+
+/** Baseline latency for mailbox poll requests to mitigate timing side-channel (§10.2). */
+private const val POLL_BASELINE_LATENCY_MS = 10L
 
 /** How often the background eviction job sweeps stale map entries (in-memory only). */
 private const val EVICTION_INTERVAL_MS = 5 * 60_000L
@@ -256,8 +259,8 @@ class RedisMailboxState(redisUrl: String) : MailboxStore {
         if count == 1 then redis.call('EXPIRE', KEYS[1], rlTtlSec) end
         if count > maxGets then return nil end
 
-        local msgs = redis.call('LRANGE', KEYS[2], 0, -1)
-        if #msgs > 0 then redis.call('DEL', KEYS[2]) end
+        local msgs = redis.call('LRANGE', KEYS[2], 0, 49)
+        if #msgs > 0 then redis.call('LTRIM', KEYS[2], #msgs, -1) end
         return msgs
         """.trimIndent()
 
@@ -389,7 +392,7 @@ fun Application.module(state: ServerState = ServerState()) {
                 return@post
             }
             if (!state.mailbox.post(token, payload)) {
-                if (state.debug) application.log.info("DEBUG: [Post] token=$token - Rejected (full or rate-limited)")
+                application.log.info("Rejected [Post] token=$token - (full or rate-limited)")
                 call.respond(HttpStatusCode.TooManyRequests)
                 return@post
             }
@@ -406,16 +409,23 @@ fun Application.module(state: ServerState = ServerState()) {
 
             if (state.debug) application.log.info("DEBUG: [Poll] token=$token")
 
+            val startTime = System.currentTimeMillis()
             val messages = state.mailbox.drain(token)
             if (messages == null) {
-                if (state.debug) application.log.info("DEBUG: [Poll] token=$token - Rejected (rate-limited)")
+                application.log.info("Rejected [Poll] token=$token - (rate-limited)")
                 call.respond(HttpStatusCode.TooManyRequests)
                 return@get
             }
 
             if (state.debug) application.log.info("DEBUG: [Poll] token=$token - Returning ${messages.size} messages")
 
-            call.respond(JsonArray(messages))
+            val response = JsonArray(messages)
+            val elapsed = System.currentTimeMillis() - startTime
+            if (elapsed < POLL_BASELINE_LATENCY_MS) {
+                delay(POLL_BASELINE_LATENCY_MS - elapsed)
+            }
+ 
+            call.respond(response)
         }
     }
 }

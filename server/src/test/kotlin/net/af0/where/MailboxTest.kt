@@ -163,6 +163,55 @@ class MailboxTest {
         }
     }
 
+    @Test
+    fun `POST inbox returns 429 when rate-limited`() {
+        if (!isLocalhost()) return
+        testApplication {
+            application { module(ServerState()) }
+            val token = "ratelimit-post-token"
+
+            // Exhaust the rate limit
+            repeat(RATE_LIMIT_MAX_POSTS) {
+                client.post("/inbox/$token") {
+                    contentType(ContentType.Application.Json)
+                    setBody("""{"msg":"test"}""")
+                }
+            }
+
+            // Next one should be 429
+            val response =
+                client.post("/inbox/$token") {
+                    contentType(ContentType.Application.Json)
+                    setBody("""{"msg":"test"}""")
+                }
+            assertEquals(HttpStatusCode.TooManyRequests, response.status)
+        }
+    }
+
+    @Test
+    fun `POST inbox returns 429 when queue depth reached`() {
+        if (!isLocalhost()) return
+        testApplication {
+            val state = InMemoryMailboxState()
+            application { module(ServerState(mailbox = state)) }
+            val token = "queuedepth-token"
+
+            // We need to bypass rate-limiting to test queue depth.
+            // We'll fill the queue manually in the state object (since it's internal to the test app).
+            repeat(1000) { i ->
+                state.post(token, JsonPrimitive(i))
+            }
+
+            // The 1001st message should be rejected (returns false from state.post, leading to 429 in route).
+            val response =
+                client.post("/inbox/$token") {
+                    contentType(ContentType.Application.Json)
+                    setBody("""{"msg":"overflow"}""")
+                }
+            assertEquals(HttpStatusCode.TooManyRequests, response.status)
+        }
+    }
+
     // ---------------------------------------------------------------------------
     // Constant-time invariant: unknown tokens look like empty tokens (§7.2)
     // ---------------------------------------------------------------------------
@@ -232,6 +281,30 @@ class MailboxTest {
             val emptyResponse = client.get("/inbox/$posted").bodyAsText()
 
             assertEquals(unknownResponse, emptyResponse, "Unknown and empty-inbox responses must be identical")
+        }
+    }
+ 
+    @Test
+    fun `GET inbox timing is normalized`() {
+        if (!isLocalhost()) return
+        testApplication {
+            application { module(ServerState()) }
+            val token = "timing-test-token"
+            
+            // Baseline should be ~10ms. We check it's at least 9ms to account for system precision.
+            val start1 = System.currentTimeMillis()
+            client.get("/inbox/nonexistent")
+            val elapsed1 = System.currentTimeMillis() - start1
+            assertTrue(elapsed1 >= 9, "Poll for nonexistent token took $elapsed1 ms, expected >= 10ms")
+ 
+            client.post("/inbox/$token") {
+                contentType(ContentType.Application.Json)
+                setBody("""{"msg":"test"}""")
+            }
+            val start2 = System.currentTimeMillis()
+            client.get("/inbox/$token")
+            val elapsed2 = System.currentTimeMillis() - start2
+            assertTrue(elapsed2 >= 9, "Poll for existing token took $elapsed2 ms, expected >= 10ms")
         }
     }
 }
