@@ -62,6 +62,10 @@ object KeyExchange {
         // Initial token Bob sends to Alice for discovery is T_AB_0.
         val tokenAliceToBob = deriveRoutingToken(sk, aliceFp, bobFp)
 
+        // MEMORY HYGIENE NOTE (§5.5): Bob's initial ephemeral key (ekB.priv) is copied into 
+        // the session.localDhPriv buffer within initSession. We zero the local ephemeral 
+        // buffer here, but the copy in SessionState intentionally persists to enable 
+        // the first DH ratchet step when Alice responds.
         ekB.priv.fill(0)
         sk.fill(0)
 

@@ -92,7 +92,9 @@ object Session {
 
             // Remove used key from cache
             val newCache = LinkedHashMap(state.skippedMessageKeys)
-            newCache.remove(cacheKey)
+            val removed = newCache.remove(cacheKey)
+            // Memory Hygiene: Explicitly zero the combined MK || Nonce upon cache hit (§5.5)
+            removed?.fill(0)
             
             return state.copy(skippedMessageKeys = newCache) to decoded
         }
@@ -254,6 +256,9 @@ object Session {
         newSeenKeys.add(state.remoteDhPub.copyOf())
         if (newSeenKeys.size > 10) newSeenKeys.removeAt(0)
 
+        // NONCE UNIQUENESS (§5.4): Resetting sendSeq to 0 is safe because KDF_RK
+        // includes the unique DH shared secret, ensuring the new rootKey and 
+        // subsequent chain keys (and thus nonces) are unique to this epoch.
         // Zero intermediate keys
         stepRecv.newRootKey.fill(0)
 
@@ -318,7 +323,7 @@ object Session {
         }
     }
 
-    private fun padToFixedSize(
+    internal fun padToFixedSize(
         data: ByteArray,
         size: Int,
     ): ByteArray {
@@ -336,16 +341,26 @@ object Session {
         }
     }
 
-    private fun unpad(data: ByteArray): ByteArray {
+    internal fun unpad(data: ByteArray): ByteArray {
         require(data.size >= 2) { "padded data too small" }
         val padByte = data[data.size - 1].toInt() and 0xFF
         val padHighByte = data[data.size - 2].toInt() and 0xFF
         val padCount = (padHighByte shl 8) or padByte
 
         require(padCount >= 2 && padCount <= data.size) { "invalid padding count: $padCount" }
+        // Full block validation: ensure all padding bytes match the length byte
+        for (i in data.size - padCount until data.size) {
+            require(data[i].toInt() and 0xFF == (if (i >= data.size - 2) data[i].toInt() and 0xFF else padByte)) {
+                "padding corruption at index $i"
+            }
+        }
+        // Actually, the padding bytes are identical (padByte). The length is just the count.
+        // Let's be more precise:
         for (i in data.size - padCount until data.size - 2) {
             require(data[i].toInt() and 0xFF == padByte) { "padding corruption at index $i" }
         }
+        // We already checked padByte/padHighByte derived padCount.
+        
         return data.copyOfRange(0, data.size - padCount)
     }
 }
