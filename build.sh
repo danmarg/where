@@ -12,7 +12,6 @@ fi
 export TMPDIR="${TMPDIR:-/tmp}"
 
 # Parse arguments
-USE_NIX=false
 SERVER_URL="https://where-api.af0.net"
 BUILD_FLAVOR="debug"
 ANDROID_FORMAT="aab"  # aab or apk
@@ -21,10 +20,6 @@ DO_INSTALL=false
 IOS_TARGET="device"  # device or simulator
 while [[ $# -gt 0 ]]; do
   case $1 in
-    --nix)
-      USE_NIX=true
-      shift
-      ;;
     --server-url)
       SERVER_URL="$2"
       shift 2
@@ -57,11 +52,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 run() {
-  if $USE_NIX; then
-    nix develop --command "$@"
-  else
-    "$@"
-  fi
+  "$@"
 }
 
 # Validate flavor
