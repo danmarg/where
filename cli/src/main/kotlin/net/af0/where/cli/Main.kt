@@ -194,7 +194,7 @@ fun main(args: Array<String>) {
                 println("Bob discovery token: $discoveryHex")
                 println("Bob ID: ${bobEntry.id}")
                 try {
-                    E2eeMailboxClient.post(host, discoveryHex, initPayload)
+                    KtorMailboxClient.post(host, discoveryHex, initPayload)
                     println("Posted KeyExchangeInit to mailbox")
                     println("Joined ${qr.suggestedName} as $name")
                 } catch (e: Exception) {
@@ -272,7 +272,7 @@ suspend fun poll(
     store.pendingQrPayload()?.let { qr ->
         val discoveryHex = qr.discoveryToken().toHex()
         println("Alice polling mailbox with token: $discoveryHex")
-        val messages = E2eeMailboxClient.poll(host, discoveryHex)
+        val messages = KtorMailboxClient.poll(host, discoveryHex)
         println("Alice got ${messages.size} messages from mailbox")
         messages.filterIsInstance<KeyExchangeInitPayload>().firstOrNull()?.let { init ->
             println("Received KeyExchangeInit from ${init.suggestedName}")
