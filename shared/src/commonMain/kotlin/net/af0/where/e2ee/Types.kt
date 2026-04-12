@@ -42,7 +42,7 @@ data class SessionState(
     val isSendTokenPending: Boolean,
     val isAlice: Boolean,
     // REPLAY PROTECTION & OUT-OF-ORDER SUPPORT
-    // Map of (remoteDhPubHex + "_" + seq) to messageKey
+    // Map of (remoteDhPubHex + "_" + seq) to [MK (32) || Nonce (12)]
     val skippedMessageKeys: Map<String, @Serializable(with = ByteArrayBase64Serializer::class) ByteArray> = emptyMap(),
     // Recent DH public keys seen (to reject replays from epochs older than lastRemoteDhPub)
     val seenRemoteDhPubs: List<@Serializable(with = ByteArrayBase64Serializer::class) ByteArray> = emptyList(),
