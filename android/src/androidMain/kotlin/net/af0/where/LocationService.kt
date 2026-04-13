@@ -248,10 +248,11 @@ class LocationService : Service() {
     private suspend fun pollPendingInvite() {
         if (locationSource.pendingInitPayload.value != null) return
         try {
-            val initPayload = locationClient.pollPendingInvite() ?: return
-            Log.d(TAG, "pollPendingInvite: received KeyExchangeInit from ${initPayload.suggestedName}")
+            val result = locationClient.pollPendingInvite() ?: return
+            val initPayload = result.payload
+            Log.d(TAG, "pollPendingInvite: received KeyExchangeInit from ${initPayload.suggestedName} (multipleScans=${result.multipleScansDetected})")
             withContext(Dispatchers.Main) {
-                locationSource.onPendingInit(initPayload)
+                locationSource.onPendingInit(initPayload, result.multipleScansDetected)
                 updateStatus(null)
             }
         } catch (e: Exception) {

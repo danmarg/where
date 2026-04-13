@@ -25,6 +25,7 @@ interface LocationSource {
     val connectionStatus: StateFlow<ConnectionStatus>
     val isAppInForeground: StateFlow<Boolean>
     val pendingInitPayload: StateFlow<KeyExchangeInitPayload?>
+    val multipleScansDetected: StateFlow<Boolean>
     val isSharingLocation: StateFlow<Boolean>
     val pausedFriendIds: StateFlow<Set<String>>
     val friends: StateFlow<List<FriendEntry>>
@@ -52,7 +53,10 @@ interface LocationSource {
 
     fun setAppForeground(foreground: Boolean)
 
-    fun onPendingInit(payload: KeyExchangeInitPayload?)
+    fun onPendingInit(
+        payload: KeyExchangeInitPayload?,
+        multipleScans: Boolean = false,
+    )
 
     fun setSharingLocation(sharing: Boolean)
 
@@ -99,6 +103,9 @@ object LocationRepository : LocationSource {
     @get:VisibleForTesting
     internal val _pendingInitPayload = MutableStateFlow<KeyExchangeInitPayload?>(null)
     override val pendingInitPayload: StateFlow<KeyExchangeInitPayload?> = _pendingInitPayload.asStateFlow()
+
+    private val _multipleScansDetected = MutableStateFlow(false)
+    override val multipleScansDetected: StateFlow<Boolean> = _multipleScansDetected.asStateFlow()
 
     private val _isSharingLocation = MutableStateFlow(false)
     override val isSharingLocation: StateFlow<Boolean> = _isSharingLocation.asStateFlow()
@@ -172,8 +179,12 @@ object LocationRepository : LocationSource {
         _isAppInForeground.value = foreground
     }
 
-    override fun onPendingInit(payload: KeyExchangeInitPayload?) {
+    override fun onPendingInit(
+        payload: KeyExchangeInitPayload?,
+        multipleScans: Boolean,
+    ) {
         _pendingInitPayload.value = payload
+        _multipleScansDetected.value = multipleScans
     }
 
     /** Called by ViewModel to notify Bob scanned a QR and is naming the friend. */
@@ -242,6 +253,7 @@ object LocationRepository : LocationSource {
         _connectionStatus.value = ConnectionStatus.Ok
         _isAppInForeground.value = false
         _pendingInitPayload.value = null
+        _multipleScansDetected.value = false
         _isSharingLocation.value = false
         _pausedFriendIds.value = emptySet()
         _friends.value = emptyList()

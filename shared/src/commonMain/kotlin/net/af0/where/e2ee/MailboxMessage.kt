@@ -51,7 +51,7 @@ sealed class MailboxPayload {
 @Serializable
 @SerialName("EncryptedMessage")
 data class EncryptedMessagePayload(
-    override val v: Int = 1,
+    override val v: Int = PROTOCOL_VERSION,
     @Serializable(with = ByteArrayBase64Serializer::class) val envelope: ByteArray,
     @Serializable(with = ByteArrayBase64Serializer::class) val ct: ByteArray,
 ) : MailboxPayload()
@@ -68,7 +68,7 @@ data class EncryptedMessagePayload(
 @Serializable
 @SerialName("KeyExchangeInit")
 data class KeyExchangeInitPayload(
-    override val v: Int = 1,
+    override val v: Int = PROTOCOL_VERSION,
     val token: String,
     @SerialName("ek_pub")
     @Serializable(with = ByteArrayBase64Serializer::class) val ekPub: ByteArray,

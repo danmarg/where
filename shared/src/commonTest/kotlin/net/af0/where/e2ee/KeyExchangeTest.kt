@@ -3,6 +3,7 @@ package net.af0.where.e2ee
 import kotlin.test.Test
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertNotEquals
 import kotlin.test.assertTrue
@@ -410,5 +411,28 @@ class KeyExchangeTest {
         val aliceSession = KeyExchange.aliceProcessInit(initMsg, aliceEkPriv, qr.ekPub)
         assertNotEquals(qr.discoveryToken().toList(), aliceSession.sendToken.toList(), "Discovery token ≠ send token")
         assertNotEquals(qr.discoveryToken().toList(), aliceSession.recvToken.toList(), "Discovery token ≠ recv token")
+    }
+
+    // ---------------------------------------------------------------------------
+    // Protocol Versioning (#194)
+    // ---------------------------------------------------------------------------
+
+    @Test
+    fun `bobProcessQr rejects higher protocol version`() {
+        val (qr, _) = KeyExchange.aliceCreateQrPayload("Alice")
+        val highV = qr.copy(protocolVersion = SUPPORTED_MAX_VERSION + 1)
+        assertFailsWith<ProtocolVersionException> {
+            KeyExchange.bobProcessQr(highV, "Bob")
+        }
+    }
+
+    @Test
+    fun `aliceProcessInit rejects higher protocol version`() {
+        val (qr, aliceEkPriv) = KeyExchange.aliceCreateQrPayload("Alice")
+        val (msg, _) = KeyExchange.bobProcessQr(qr, "Bob")
+        val highV = msg.copy(protocolVersion = SUPPORTED_MAX_VERSION + 1)
+        assertFailsWith<ProtocolVersionException> {
+            KeyExchange.aliceProcessInit(highV, aliceEkPriv, qr.ekPub)
+        }
     }
 }
