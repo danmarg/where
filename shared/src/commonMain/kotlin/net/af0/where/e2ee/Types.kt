@@ -155,7 +155,8 @@ data class LocationPlaintext(
             copy(
                 lat = kotlin.math.round(lat * 100.0) / 100.0,
                 lng = kotlin.math.round(lng * 100.0) / 100.0,
-                acc = kotlin.math.max(acc, 1100.0), // ~1.1km minimum accuracy for coarse
+                // ~1.1km minimum accuracy for coarse
+                acc = kotlin.math.max(acc, 1100.0),
             )
         } else {
             this

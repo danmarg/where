@@ -23,10 +23,7 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import net.af0.where.e2ee.E2eeStore
-import net.af0.where.e2ee.KeyExchangeInitPayload
 import net.af0.where.e2ee.LocationClient
-import net.af0.where.e2ee.discoveryToken
-import net.af0.where.e2ee.toHex
 
 private const val TAG = "LocationService"
 
