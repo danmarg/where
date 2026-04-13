@@ -24,6 +24,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -34,8 +35,10 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.draw.scale
 import androidx.compose.ui.unit.dp
 import net.af0.where.e2ee.FriendEntry
+import net.af0.where.e2ee.LocationPrecision
 
 fun timeAgoString(lastPingMs: Long?): String {
     if (lastPingMs == null) return "never"
@@ -62,6 +65,7 @@ fun FriendsSheet(
     onPasteUrl: (String) -> Unit,
     onRename: (String, String) -> Unit,
     onRemove: (String) -> Unit,
+    onSetPrecision: (String, LocationPrecision) -> Unit,
     onDismiss: () -> Unit,
     onZoomTo: (String) -> Unit = {},
 ) {
@@ -145,6 +149,24 @@ fun FriendsSheet(
                                         "Friend has not been seen recently — sharing paused for security",
                                         style = MaterialTheme.typography.bodySmall,
                                         color = MaterialTheme.colorScheme.error,
+                                    )
+                                }
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    Text(
+                                        "High Precision",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                    Switch(
+                                        checked = friend.precision == LocationPrecision.FINE,
+                                        onCheckedChange = { isFine ->
+                                            onSetPrecision(friend.id, if (isFine) LocationPrecision.FINE else LocationPrecision.COARSE)
+                                        },
+                                        modifier = Modifier.scale(0.7f)
                                     )
                                 }
                             }

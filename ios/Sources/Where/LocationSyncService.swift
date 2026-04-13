@@ -600,6 +600,16 @@ final class LocationSyncService: ObservableObject {
             logger.error("renameFriend failed: \(error.localizedDescription)")
         }
     }
+ 
+    func setFriendPrecision(id: String, precision: Shared.LocationPrecision) async {
+        do {
+            try await e2eeStore.updateFriendPrecision(id: id, precision: precision)
+            friends = try await e2eeStore.listFriends()
+            updateVisibleUsers()
+        } catch {
+            logger.error("setFriendPrecision failed: \(error.localizedDescription)")
+        }
+    }
 
     func togglePauseFriend(id: String) {
         if pausedFriendIds.contains(id) {

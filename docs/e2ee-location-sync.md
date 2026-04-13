@@ -642,9 +642,11 @@ For a **Location Update**:
   "lat": 37.7749,
   "lng": -122.4194,
   "acc": 15.0,
-  "ts":  1711152000
+  "ts":  1711152000,
+  "precision": "FINE"
 }
 ```
+*   `precision` (string, optional): One of `"FINE"` (exact) or `"COARSE"` (rounded to ~1.1km). If absent, defaults to `"FINE"`.
 
 For a **Keepalive**:
 ```json
