@@ -82,8 +82,7 @@ class LocationViewModel(
     val inviteState: StateFlow<InviteState> = _inviteState
     private var inviteJob: Job? = null
 
-    private val _pendingQrForNaming = MutableStateFlow<QrPayload?>(null)
-    val pendingQrForNaming: StateFlow<QrPayload?> = _pendingQrForNaming
+    val pendingQrForNaming: StateFlow<QrPayload?> = locationSource.pendingQrForNaming
 
     val pendingInitPayload: StateFlow<KeyExchangeInitPayload?> = locationSource.pendingInitPayload
 
@@ -144,10 +143,7 @@ class LocationViewModel(
             pendingInitPayload.collect { payload ->
                 if (payload != null) {
                     inviteJob?.cancel()
-                    val current = _inviteState.value
-                    if (current is InviteState.Pending) {
-                        _inviteState.value = InviteState.None
-                    }
+                    _inviteState.value = InviteState.None
                 }
             }
         }
@@ -231,7 +227,7 @@ class LocationViewModel(
         inviteJob =
             viewModelScope.launch {
                 try {
-                    val qr = e2eeStore.createInvite(_displayName.value.ifEmpty { "Me" })
+                    val qr = e2eeStore.createInvite(_displayName.value)
                     _inviteState.value = InviteState.Pending(qr)
                     triggerRapidPoll()
                 } finally {
@@ -263,15 +259,13 @@ class LocationViewModel(
                 return false
             }
         Log.d(TAG, "processQrUrl: parsed qr, suggestedName=${qr.suggestedName}")
-        _pendingQrForNaming.value = qr
-        if (locationSource is LocationRepository) locationSource.onPendingQrForNaming(qr)
+        locationSource.onPendingQrForNaming(qr)
         triggerRapidPoll()
         return true
     }
 
     fun cancelQrScan() {
-        _pendingQrForNaming.value = null
-        if (locationSource is LocationRepository) locationSource.onPendingQrForNaming(null)
+        locationSource.onPendingQrForNaming(null)
         locationSource.resetRapidPoll()
     }
 
@@ -280,8 +274,8 @@ class LocationViewModel(
         friendName: String,
     ) {
         Log.d(TAG, "confirmQrScan: friendName=$friendName")
-        _pendingQrForNaming.value = null
-        if (locationSource is LocationRepository) locationSource.onPendingQrForNaming(null)
+        locationSource.onPendingQrForNaming(null)
+        locationSource.confirmQrScan()
         val qrWithName = qr.copy(suggestedName = friendName)
         val currentInvite = _inviteState.value
         _isExchanging.value = true
