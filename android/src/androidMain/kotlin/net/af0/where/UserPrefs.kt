@@ -69,12 +69,12 @@ object UserPrefs {
             .putFloat(KEY_LAST_ZOOM, zoom)
             .apply()
     }
- 
+
     fun getDefaultPrecision(context: Context): net.af0.where.e2ee.LocationPrecision =
         prefs(context).getString(KEY_DEFAULT_PRECISION, null)?.let {
             net.af0.where.e2ee.LocationPrecision.valueOf(it)
         } ?: net.af0.where.e2ee.LocationPrecision.FINE
- 
+
     fun setDefaultPrecision(
         context: Context,
         precision: net.af0.where.e2ee.LocationPrecision,
