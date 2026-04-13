@@ -251,6 +251,7 @@ class E2eeStore(
             save()
             val payload =
                 KeyExchangeInitPayload(
+                    v = initMsg.protocolVersion,
                     token = initMsg.token.toHex(),
                     ekPub = initMsg.ekPub,
                     keyConfirmation = initMsg.keyConfirmation,
@@ -279,6 +280,7 @@ class E2eeStore(
             val pending = pendingInvite ?: return@withLock null
             val msg =
                 KeyExchangeInitMessage(
+                    protocolVersion = payload.v,
                     token = payload.token.hexToByteArray(),
                     ekPub = payload.ekPub,
                     keyConfirmation = payload.keyConfirmation,

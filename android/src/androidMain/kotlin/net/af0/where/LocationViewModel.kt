@@ -87,6 +87,8 @@ class LocationViewModel(
 
     val pendingInitPayload: StateFlow<KeyExchangeInitPayload?> = locationSource.pendingInitPayload
 
+    val multipleScansDetected: StateFlow<Boolean> = locationSource.multipleScansDetected
+
     private val _isExchanging = MutableStateFlow(false)
     val isExchanging: StateFlow<Boolean> = _isExchanging
 

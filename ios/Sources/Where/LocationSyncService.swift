@@ -157,6 +157,7 @@ final class LocationSyncService: ObservableObject {
 
     @Published var pendingQrForNaming: Shared.QrPayload? = nil
     @Published var pendingInitPayload: Shared.KeyExchangeInitPayload? = nil
+    @Published var multipleScansDetected: Bool = false
     @Published var isExchanging: Bool = false
     private var inviteTask: Task<Void, Never>? = nil
     @Published var visibleUsers: [Shared.UserLocation] = []
@@ -532,6 +533,7 @@ final class LocationSyncService: ObservableObject {
     func confirmPendingInit(payload: Shared.KeyExchangeInitPayload, name: String) async {
         isExchanging = true
         pendingInitPayload = nil
+        multipleScansDetected = false
 
         defer { isExchanging = false }
         do {
@@ -563,6 +565,7 @@ final class LocationSyncService: ObservableObject {
         guard pendingInitPayload != nil || hasInviteState else { return }
         await clearInvite()
         pendingInitPayload = nil
+        multipleScansDetected = false
         resetRapidPoll()
         inviteState = .none
     }
@@ -673,11 +676,12 @@ final class LocationSyncService: ObservableObject {
 
     private func pollPendingInvite() async throws {
         if pendingInitPayload != nil { return }
-        if let payload = try await locationClient.pollPendingInvite() {
-            debugLog { "pollPendingInvite: received KeyExchangeInit" }
+        if let result = try await locationClient.pollPendingInvite() {
+            debugLog { "pollPendingInvite: received KeyExchangeInit (multipleScans=\(result.multipleScansDetected))" }
             inviteTask?.cancel()
             inviteState = .none   // dismiss the QR sheet so the naming alert can appear
-            pendingInitPayload = payload
+            multipleScansDetected = result.multipleScansDetected
+            pendingInitPayload = result.payload
             triggerRapidPoll()
         }
     }

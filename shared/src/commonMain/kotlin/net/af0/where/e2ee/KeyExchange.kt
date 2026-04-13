@@ -43,6 +43,11 @@ object KeyExchange {
         qr: QrPayload,
         suggestedName: String,
     ): Pair<KeyExchangeInitMessage, SessionState> {
+        // VERIFY PROTOCOL VERSION (#194)
+        if (qr.protocolVersion > SUPPORTED_MAX_VERSION) {
+            throw ProtocolVersionException("Unsupported protocol version ${qr.protocolVersion}")
+        }
+
         // VERIFY FINGERPRINT (#157)
         val expectedFp = qrFingerprint(qr.ekPub)
         if (expectedFp != qr.fingerprint) {
@@ -98,6 +103,11 @@ object KeyExchange {
         aliceEkPriv: ByteArray,
         aliceEkPub: ByteArray,
     ): SessionState {
+        // VERIFY PROTOCOL VERSION (#194)
+        if (msg.protocolVersion > SUPPORTED_MAX_VERSION) {
+            throw ProtocolVersionException("Unsupported protocol version ${msg.protocolVersion}")
+        }
+
         val sk = x25519(aliceEkPriv, msg.ekPub)
 
         // Verify key confirmation before proceeding.
