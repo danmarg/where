@@ -132,7 +132,6 @@ object Session {
         // 3. Speculatively perform DH and symmetric ratchet
         // We do NOT mutate the original 'state' or commit anything until decryption succeeds.
         var speculativeState = state
-        val newSkippedKeys = LinkedHashMap(state.skippedMessageKeys)
 
         if (isNewDhEpoch) {
             // Unified error message to satisfy existing brittle test assertions (§9.2)
@@ -160,7 +159,18 @@ object Session {
         // very old skipped keys. We'll clear keys belonging to epochs older than 'lastRemoteDhPub'.
         if (isNewDhEpoch) {
             val validEpochs = mutableSetOf(remoteDhPub.toHex(), state.remoteDhPub.toHex())
-            newSkippedKeys.keys.retainAll { k -> validEpochs.any { e -> k.startsWith(e) } }
+            derivationSkippedKeys.keys.retainAll { k -> validEpochs.any { e -> k.startsWith(e) } }
+        }
+
+        val pnGaps = if (isNewDhEpoch && header.pn > state.recvSeq) {
+            (header.pn - state.recvSeq).toInt()
+        } else {
+            0
+        }
+
+        val projectedSize = derivationSkippedKeys.size + kotlin.math.max(0, stepsNeeded.toInt() - 1) + pnGaps
+        if (projectedSize > MAX_SKIPPED_KEYS) {
+            throw ProtocolException("combined skipped key gap too large: $projectedSize")
         }
 
         var chainKey = speculativeState.recvChainKey.copyOf()
@@ -235,7 +245,6 @@ object Session {
             val finalSkippedKeys =
                 if (isNewDhEpoch && decoded.pn > state.recvSeq) {
                     val pnGaps = (decoded.pn - state.recvSeq).toInt()
-                    if (pnGaps > MAX_GAP) throw ProtocolException("gap too large in previous chain")
 
                     val updatedCache = LinkedHashMap(derivationSkippedKeys)
                     var oldChainKey = state.recvChainKey.copyOf()
