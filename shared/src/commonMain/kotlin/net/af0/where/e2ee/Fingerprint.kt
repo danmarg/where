@@ -15,8 +15,8 @@ internal fun qrFingerprint(ekPub: ByteArray): String = sha256(ekPub).copyOfRange
 
 /**
  * Safety number for out-of-band verification.
- * Returns the full 64-byte SHA-512(lower_EK.pub || higher_EK.pub), where
- * "lower/higher" is lexicographic order of the two bootstrap EK.pub values.
+ * Returns the full 60-byte HKDF-SHA-256(ikm=SHA-256(lower_EK.pub || higher_EK.pub), info="Where-v1-SafetyNumber"),
+ * where "lower/higher" is lexicographic order of the two bootstrap EK.pub values.
  *
  * IMPORTANT: callers must pass the *bootstrap* EK_A.pub and EK_B.pub (the keys
  * exchanged at pairing time), not the current-epoch ephemeral keys. Use
@@ -41,7 +41,7 @@ fun safetyNumber(
 }
 
 /**
- * Format the 64-byte safety number as 12 groups of 5 decimal digits each.
+ * Format the 60-byte safety number as 12 groups of 5 decimal digits each.
  * Each group is derived from 5 bytes interpreted as a 40-bit big-endian value,
  * taken modulo 100,000, and zero-padded to 5 digits. Groups are separated by spaces;
  * every 4 groups are followed by a newline.
