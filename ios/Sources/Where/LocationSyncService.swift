@@ -5,6 +5,7 @@ import UIKit
 import CoreLocation
 import Combine
 private let logger = Logger(subsystem: "net.af0.where", category: "LocationSync")
+private let PROTOCOL_VERSION: Int32 = 1
 
 @inline(__always)
 private func debugLog(_ msg: () -> String) {
@@ -41,7 +42,7 @@ func qrPayloadToUrl(_ qr: Shared.QrPayload) -> String? {
     }
 }
 
-private func urlToQrPayload(protocolVersion = PROTOCOL_VERSION, _ url: String) -> Shared.QrPayload? {
+private func urlToQrPayload(protocolVersion: Int32 = PROTOCOL_VERSION, _ url: String) -> Shared.QrPayload? {
     guard let fragment = URLComponents(string: url)?.fragment, !fragment.isEmpty else { return nil }
     var b64 = fragment.replacingOccurrences(of: "-", with: "+").replacingOccurrences(of: "_", with: "/")
     while b64.count % 4 != 0 { b64 += "=" }
@@ -55,7 +56,7 @@ private func urlToQrPayload(protocolVersion = PROTOCOL_VERSION, _ url: String) -
           let discoverySecret = (dict["discovery_secret"] as? String).flatMap({ Data(base64Encoded: $0) }),
           discoverySecret.count == 32
     else { return nil }
-    return Shared.QrPayload(protocolVersion: PROTOCOL_VERSION, protocolVersion = PROTOCOL_VERSION, 
+    return Shared.QrPayload(protocolVersion: PROTOCOL_VERSION, 
         ekPub: kotlinByteArray(from: ekPub),
         suggestedName: name,
         fingerprint: fp,
@@ -464,7 +465,7 @@ final class LocationSyncService: ObservableObject {
 
     @discardableResult
     func processQrUrl(_ url: String) -> Bool {
-        guard let qr = urlToQrPayload(protocolVersion = PROTOCOL_VERSION, url) else {
+        guard let qr = urlToQrPayload(protocolVersion: PROTOCOL_VERSION, url) else {
             updateStatus(NSError(domain: "Where", code: 400, userInfo: [NSLocalizedDescriptionKey: "Invalid QR code"]))
             return false
         }
@@ -475,7 +476,7 @@ final class LocationSyncService: ObservableObject {
 
     func confirmQrScan(qr: Shared.QrPayload, friendName: String) async {
         pendingQrForNaming = nil
-        let qrWithName = Shared.QrPayload(protocolVersion: PROTOCOL_VERSION, protocolVersion = PROTOCOL_VERSION, 
+        let qrWithName = Shared.QrPayload(protocolVersion: PROTOCOL_VERSION, 
             ekPub: qr.ekPub,
             suggestedName: friendName,
             fingerprint: qr.fingerprint,
