@@ -341,7 +341,7 @@ fun Application.module(state: ServerState = ServerState()) {
     install(ContentNegotiation) { json(json) }
     install(CallLogging)
 
-    environment.monitor.subscribe(ApplicationStopped) { state.mailbox.close() }
+    monitor.subscribe(ApplicationStopped) { state.mailbox.close() }
 
     // Background eviction: remove zombie token entries from the in-memory mailbox and
     // rate-limit maps. This is a no-op when using RedisMailboxState (TTL handles it).
