@@ -280,7 +280,7 @@ object Session {
                     needsRatchet = isNewDhEpoch,
                     seenRemoteDhPubs =
                         if (isNewDhEpoch) {
-                            (speculativeState.seenRemoteDhPubs + state.remoteDhPub.toHex()).toList().takeLast(10).toSet()
+                            (speculativeState.seenRemoteDhPubs + state.remoteDhPub.toHex()).toList().takeLast(MAX_SEEN_DH_PUBS).toSet()
                         } else {
                             speculativeState.seenRemoteDhPubs
                         },
@@ -345,7 +345,7 @@ object Session {
         // Track seen DH keys to avoid re-ratcheting to old epochs
         val newSeenKeys = LinkedHashSet(state.seenRemoteDhPubs)
         newSeenKeys.add(state.remoteDhPub.toHex())
-        if (newSeenKeys.size > 5) {
+        if (newSeenKeys.size > MAX_SEEN_DH_PUBS) {
             val oldest = newSeenKeys.first()
             newSeenKeys.remove(oldest)
         }
