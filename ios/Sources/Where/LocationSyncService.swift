@@ -158,6 +158,7 @@ final class LocationSyncService: ObservableObject {
     @Published var pendingQrForNaming: Shared.QrPayload? = nil
     @Published var pendingInitPayload: Shared.KeyExchangeInitPayload? = nil
     @Published var isExchanging: Bool = false
+    private var inviteTask: Task<Void, Never>? = nil
     @Published var visibleUsers: [Shared.UserLocation] = []
     var isInviteActive: Bool { if case .pending = inviteState { return true } else { return false } }
 
@@ -430,15 +431,24 @@ final class LocationSyncService: ObservableObject {
     }
 
     func createInvite() async {
-        do {
-            let qr = try await e2eeStore.createInvite(suggestedName: displayName.isEmpty ? "Me" : displayName)
-            debugLog { "Created invite: discovery=\(toHex(qr.discoveryToken()))" }
-            inviteState = .pending(qr)
-            triggerRapidPoll()
-        } catch {
-            logger.error("Failed to create invite: \(error.localizedDescription)")
-            updateStatus(error)
+        inviteTask?.cancel()
+        guard pendingInitPayload == nil && pendingQrForNaming == nil else { return }
+ 
+        inviteTask = Task {
+            do {
+                let qr = try await e2eeStore.createInvite(suggestedName: displayName.isEmpty ? "Me" : displayName)
+                try Task.checkCancellation()
+                debugLog { "Created invite: discovery=\(toHex(qr.discoveryToken()))" }
+                inviteState = .pending(qr)
+                triggerRapidPoll()
+            } catch is CancellationError {
+                // Ignore
+            } catch {
+                logger.error("Failed to create invite: \(error.localizedDescription)")
+                updateStatus(error)
+            }
         }
+        await inviteTask?.value
     }
 
     func clearInvite() async {
@@ -471,6 +481,7 @@ final class LocationSyncService: ObservableObject {
             discoverySecret: qr.discoverySecret
         )
         debugLog { "Scanning QR: discovery=\(toHex(qrWithName.discoveryToken())), friendName=\(friendName)" }
+        inviteTask?.cancel()
         isExchanging = true
         triggerRapidPoll()
 
@@ -654,6 +665,7 @@ final class LocationSyncService: ObservableObject {
         if pendingInitPayload != nil { return }
         if let payload = try await locationClient.pollPendingInvite() {
             debugLog { "pollPendingInvite: received KeyExchangeInit" }
+            inviteTask?.cancel()
             inviteState = .none   // dismiss the QR sheet so the naming alert can appear
             pendingInitPayload = payload
             triggerRapidPoll()
