@@ -476,40 +476,28 @@ object Session {
         size: Int,
     ): ByteArray {
         require(data.size > 0) { "plaintext must not be empty" }
-        require(data.size <= size - 2) { "plaintext (${data.size} bytes) too large for PADDING_SIZE $size" }
-
-        val padCount = size - data.size
-        val padByte = (padCount and 0xFF).toByte()
-        val padHighByte = ((padCount shr 8) and 0xFF).toByte()
+        require(data.size < size) { "plaintext (${data.size} bytes) too large for PADDING_SIZE $size" }
 
         return data.copyOf(size).also { padded ->
-            for (i in data.size until size - 2) padded[i] = padByte
-            padded[size - 2] = padHighByte
-            padded[size - 1] = padByte
+            padded[data.size] = 0x80.toByte()
+            // remaining bytes are already 0x00 from copyOf
         }
     }
 
     internal fun unpad(data: ByteArray): ByteArray {
-        require(data.size >= 2) { "padded data too small" }
-        val padByte = data[data.size - 1].toInt() and 0xFF
-        val padHighByte = data[data.size - 2].toInt() and 0xFF
-        val padCount = (padHighByte shl 8) or padByte
-
-        require(padCount >= 2 && padCount <= data.size) { "invalid padding count: $padCount" }
-
-        // Constant-time full block validation: ensure all padding bytes match the length byte.
-        // We use an xor accumulator to detect any mismatch without early-exit.
+        var markerIdx = -1
         var diff = 0
-        for (i in data.size - padCount until data.size - 2) {
-            diff = diff or (data[i].toInt() xor padByte)
+        for (j in data.indices.reversed()) {
+            val isMarker = (data[j].toInt() and 0xFF) xor 0x80
+            val notYetFound = if (markerIdx == -1) 1 else 0
+            if (isMarker == 0 && notYetFound == 1) markerIdx = j
+            else if (notYetFound == 1) diff = diff or (data[j].toInt() and 0xFF) // must be 0x00
         }
-
-        if ((diff and 0xFF) != 0) {
+        if (diff != 0 || markerIdx < 0) {
             data.fill(0)
             throw ProtocolException("padding corruption")
         }
-
-        return data.copyOfRange(0, data.size - padCount)
+        return data.copyOfRange(0, markerIdx)
     }
 }
 
