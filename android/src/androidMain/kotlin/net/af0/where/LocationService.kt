@@ -22,6 +22,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import net.af0.where.e2ee.ConnectionStatus
 import net.af0.where.e2ee.E2eeStore
 import net.af0.where.e2ee.LocationClient
 

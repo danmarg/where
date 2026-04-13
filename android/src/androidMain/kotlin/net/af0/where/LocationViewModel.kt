@@ -21,26 +21,24 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import net.af0.where.e2ee.ConnectionStatus
 import net.af0.where.e2ee.E2eeStore
 import net.af0.where.e2ee.FriendEntry
+import net.af0.where.e2ee.InviteState
 import net.af0.where.e2ee.KeyExchangeInitPayload
 import net.af0.where.e2ee.LocationClient
 import net.af0.where.e2ee.QrPayload
+import net.af0.where.e2ee.UserStore
 import net.af0.where.e2ee.toHex
 import net.af0.where.model.UserLocation
 
 private const val TAG = "LocationViewModel"
 
-sealed interface InviteState {
-    object None : InviteState
-
-    data class Pending(val qr: QrPayload) : InviteState
-}
-
 class LocationViewModel(
     app: Application,
-    e2eeStore: E2eeStore? = null,
-    locationClient: LocationClient? = null,
+    e2eeStoreParam: E2eeStore? = null,
+    userStoreParam: UserStore? = null,
+    locationClientParam: LocationClient? = null,
     startPolling: Boolean = true,
     private val clock: () -> Long = { System.currentTimeMillis() },
     private val locationSource: LocationSource = LocationRepository,
@@ -49,22 +47,25 @@ class LocationViewModel(
     // E2EE state. Fall back to creating new instances when running under test (app is not
     // WhereApplication in unit tests).
     private val e2eeStore: E2eeStore =
-        e2eeStore
+        e2eeStoreParam
             ?: (app as? WhereApplication)?.e2eeStore
             ?: E2eeStore(SharedPrefsE2eeStorage(app))
+    private val userStore: UserStore =
+        userStoreParam
+            ?: (app as? WhereApplication)?.userStore
+            ?: UserStore(SharedPrefsE2eeStorage(app))
     private val locationClient: LocationClient =
-        locationClient
+        locationClientParam
             ?: (app as? WhereApplication)?.locationClient
             ?: LocationClient(BuildConfig.SERVER_HTTP_URL, this.e2eeStore)
 
-    val isSharingLocation: StateFlow<Boolean> = locationSource.isSharingLocation
+    val isSharingLocation: StateFlow<Boolean> = userStore.isSharingLocation
 
-    private val _displayName = MutableStateFlow(UserPrefs.getDisplayName(app))
-    val displayName: StateFlow<String> = _displayName
+    val displayName: StateFlow<String> = userStore.displayName
 
     val friends: StateFlow<List<FriendEntry>> = locationSource.friends
 
-    val pausedFriendIds: StateFlow<Set<String>> = locationSource.pausedFriendIds
+    val pausedFriendIds: StateFlow<Set<String>> = userStore.pausedFriendIds
 
     val friendLocations: StateFlow<Map<String, UserLocation>> =
         combine(locationSource.friendLocations, friends) { locations, friendList ->
@@ -109,9 +110,13 @@ class LocationViewModel(
 
     init {
         Log.d(TAG, "LocationViewModel init: server=${BuildConfig.SERVER_HTTP_URL}")
-        // Restore initial sharing state synchronously so observers (like LocationService)
-        // see the correct value immediately.
-        locationSource.setSharingLocation(UserPrefs.isSharing(app))
+        // Sync sharing state to LocationSource for the background service.
+        viewModelScope.launch {
+            isSharingLocation.collect { sharing ->
+                locationSource.setSharingLocation(sharing)
+                manageForegroundService(sharing)
+            }
+        }
 
         viewModelScope.launch {
             val savedFriends = this@LocationViewModel.e2eeStore.listFriends()
@@ -128,13 +133,6 @@ class LocationViewModel(
                 }
             }
             locationSource.setInitialFriendLocations(initialLocations, initialLastPing)
-            locationSource.setPausedFriends(UserPrefs.getPausedFriends(app))
-        }
-
-        viewModelScope.launch {
-            isSharingLocation.collect { sharing ->
-                manageForegroundService(sharing)
-            }
         }
 
         // When a friend response (init payload) arrives from the service, flip the invite
@@ -155,8 +153,7 @@ class LocationViewModel(
 
     fun setDisplayName(name: String) {
         check(Looper.myLooper() == Looper.getMainLooper()) { "setDisplayName must be called on the main thread" }
-        _displayName.value = name
-        UserPrefs.setDisplayName(getApplication(), name)
+        userStore.setDisplayName(name)
         // If an invite is active, we should update it.
         if (_inviteState.value is InviteState.Pending) {
             createInvite()
@@ -165,17 +162,12 @@ class LocationViewModel(
 
     fun toggleSharing() {
         check(Looper.myLooper() == Looper.getMainLooper()) { "toggleSharing must be called on the main thread" }
-        val new = !isSharingLocation.value
-        locationSource.setSharingLocation(new)
-        UserPrefs.setSharing(getApplication(), new)
+        userStore.setSharing(!isSharingLocation.value)
     }
 
     fun togglePauseFriend(id: String) {
         check(Looper.myLooper() == Looper.getMainLooper()) { "togglePauseFriend must be called on the main thread" }
-        val current = pausedFriendIds.value
-        val new = if (id in current) current - id else current + id
-        locationSource.setPausedFriends(new)
-        UserPrefs.setPausedFriends(getApplication(), new)
+        userStore.togglePauseFriend(id)
     }
 
     fun setFriendPrecision(
@@ -205,15 +197,9 @@ class LocationViewModel(
         check(Looper.myLooper() == Looper.getMainLooper()) { "removeFriend must be called on the main thread" }
         viewModelScope.launch {
             e2eeStore.deleteFriend(id)
+            userStore.removePausedFriend(id)
             val updatedFriends = e2eeStore.listFriends()
             withContext(Dispatchers.Main.immediate) {
-                val currentPaused = pausedFriendIds.value
-                val newPaused = if (id in currentPaused) currentPaused - id else null
-
-                if (newPaused != null) {
-                    locationSource.setPausedFriends(newPaused)
-                    UserPrefs.setPausedFriends(getApplication(), newPaused)
-                }
                 locationSource.onFriendRemoved(id)
                 locationSource.onFriendsUpdated(updatedFriends)
             }
@@ -227,7 +213,7 @@ class LocationViewModel(
         inviteJob =
             viewModelScope.launch {
                 try {
-                    val qr = e2eeStore.createInvite(_displayName.value)
+                    val qr = e2eeStore.createInvite(displayName.value)
                     _inviteState.value = InviteState.Pending(qr)
                     triggerRapidPoll()
                 } finally {
@@ -253,11 +239,10 @@ class LocationViewModel(
 
     fun processQrUrl(url: String): Boolean {
         Log.d(TAG, "processQrUrl: url=$url")
-        val qr =
-            QrUtils.urlToPayload(url) ?: run {
-                Log.e(TAG, "processQrUrl: failed to parse URL")
-                return false
-            }
+        val qr = QrPayload.fromUrl(url) ?: run {
+            Log.e(TAG, "processQrUrl: failed to parse URL")
+            return false
+        }
         Log.d(TAG, "processQrUrl: parsed qr, suggestedName=${qr.suggestedName}")
         locationSource.onPendingQrForNaming(qr)
         triggerRapidPoll()
@@ -285,7 +270,7 @@ class LocationViewModel(
                     e2eeStore.clearInvite()
                     _inviteState.value = InviteState.None
                 }
-                val (initPayload, bobEntry) = e2eeStore.processScannedQr(qrWithName, _displayName.value.ifEmpty { "" })
+                val (initPayload, bobEntry) = e2eeStore.processScannedQr(qrWithName, displayName.value)
                 val sendToken = bobEntry.session.sendToken.toHex()
                 Log.d(
                     TAG,

@@ -30,6 +30,9 @@ import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import com.journeyapps.barcodescanner.ScanContract
 import com.journeyapps.barcodescanner.ScanOptions
+import kotlinx.coroutines.flow.StateFlow
+import net.af0.where.e2ee.InviteState
+import net.af0.where.model.UserLocation
 
 class MainActivity : ComponentActivity() {
     private val viewModel: LocationViewModel by viewModels { LocationViewModel.Factory }

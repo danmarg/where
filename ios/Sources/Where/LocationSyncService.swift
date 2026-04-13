@@ -18,50 +18,11 @@ private func debugLog(_ msg: () -> String) {
 // MARK: - QR payload URL helpers
 
 func qrPayloadToUrl(_ qr: Shared.QrPayload) -> String? {
-    var ekPubData = toSwiftData(qr.ekPub)
-    defer { ekPubData.zeroize() }
-    var secretData = toSwiftData(qr.discoverySecret)
-    defer { secretData.zeroize() }
-
-    let dict: [String: Any] = [
-        "ek_pub": ekPubData.base64EncodedString(),
-        "suggested_name": qr.suggestedName,
-        "fingerprint": qr.fingerprint,
-        "discovery_secret": secretData.base64EncodedString(),
-    ]
-    do {
-        let jsonData = try JSONSerialization.data(withJSONObject: dict)
-        let b64 = jsonData.base64EncodedString()
-            .replacingOccurrences(of: "+", with: "-")
-            .replacingOccurrences(of: "/", with: "_")
-            .replacingOccurrences(of: "=", with: "")
-        return "https://where.af0.net/invite#\(b64)"
-    } catch {
-        logger.error("Failed to serialize QR payload: \(error.localizedDescription)")
-        return nil
-    }
+    return qr.toUrl()
 }
 
-private func urlToQrPayload(protocolVersion: Int32 = PROTOCOL_VERSION, _ url: String) -> Shared.QrPayload? {
-    guard let fragment = URLComponents(string: url)?.fragment, !fragment.isEmpty else { return nil }
-    var b64 = fragment.replacingOccurrences(of: "-", with: "+").replacingOccurrences(of: "_", with: "/")
-    while b64.count % 4 != 0 { b64 += "=" }
-    guard let data = Data(base64Encoded: b64),
-          let dict = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-          let ekPub = (dict["ek_pub"] as? String).flatMap({ Data(base64Encoded: $0) }),
-          ekPub.count == 32,
-          let name = dict["suggested_name"] as? String,
-          let fp = dict["fingerprint"] as? String,
-          fp.count == 40,
-          let discoverySecret = (dict["discovery_secret"] as? String).flatMap({ Data(base64Encoded: $0) }),
-          discoverySecret.count == 32
-    else { return nil }
-    return Shared.QrPayload(protocolVersion: PROTOCOL_VERSION, 
-        ekPub: kotlinByteArray(from: ekPub),
-        suggestedName: name,
-        fingerprint: fp,
-        discoverySecret: kotlinByteArray(from: discoverySecret)
-    )
+private func urlToQrPayload(_ url: String) -> Shared.QrPayload? {
+    return Shared.QrPayload.companion.fromUrl(url: url)
 }
 
 // MARK: - HTTP mailbox helpers
@@ -112,35 +73,23 @@ private func pollMailbox(token: String) async throws -> [[String: Any]] {
 
 // MARK: - LocationSyncService
 
-enum ConnectionStatus: Sendable {
-    case ok
-    case error(message: String)
-}
-
-enum InviteState: Sendable {
-    case none
-    case pending(Shared.QrPayload)
-}
-
 @MainActor
 final class LocationSyncService: ObservableObject {
     static let shared = LocationSyncService()
 
     @Published var friendLocations: [String: (lat: Double, lng: Double, ts: Int64)] = [:]
     @Published var friendLastPing: [String: Date] = [:]
-    @Published var connectionStatus: ConnectionStatus = .ok
+    @Published var connectionStatus: Shared.ConnectionStatus = Shared.ConnectionStatusOk()
     @Published var friends: [Shared.FriendEntry] = []
-    @Published var inviteState: InviteState = .none
+    @Published var inviteState: Shared.InviteState = Shared.InviteStateNone()
     @Published var isSharingLocation: Bool {
         didSet {
-            let keychain = KeychainE2eeStorage()
-            keychain.putString(key: "where_is_sharing", value: isSharingLocation ? "true" : "false")
+            userStore.setSharing(sharing: isSharingLocation)
         }
     }
     @Published var displayName: String {
         didSet {
-            let keychain = KeychainE2eeStorage()
-            keychain.putString(key: "display_name", value: displayName)
+            userStore.setDisplayName(name: displayName)
             if isInviteActive {
                 Task { await createInvite() }
             }
@@ -148,11 +97,7 @@ final class LocationSyncService: ObservableObject {
     }
     @Published var pausedFriendIds: Set<String> {
         didSet {
-            let keychain = KeychainE2eeStorage()
-            let json = try? JSONSerialization.data(withJSONObject: Array(pausedFriendIds))
-            if let json = json, let jsonStr = String(data: json, encoding: .utf8) {
-                keychain.putString(key: "paused_friends", value: jsonStr)
-            }
+            userStore.setPausedFriends(ids: pausedFriendIds)
         }
     }
 
@@ -162,7 +107,7 @@ final class LocationSyncService: ObservableObject {
     @Published var isExchanging: Bool = false
     private var inviteTask: Task<Void, Never>? = nil
     @Published var visibleUsers: [Shared.UserLocation] = []
-    var isInviteActive: Bool { if case .pending = inviteState { return true } else { return false } }
+    var isInviteActive: Bool { inviteState is Shared.InviteStatePending }
 
     var lastRapidPollTrigger: Date = Date(timeIntervalSince1970: 0)  // internal for testing
     var pollTimer: Timer?  // internal for testing
@@ -198,32 +143,21 @@ final class LocationSyncService: ObservableObject {
     }
 
     let e2eeStore: Shared.E2eeStore
+    let userStore: Shared.UserStore
     let locationClient: Shared.LocationClient
 
-    init(e2eeStore: Shared.E2eeStore? = nil, locationClient: Shared.LocationClient? = nil) {
+    init(e2eeStore: Shared.E2eeStore? = nil, userStore: Shared.UserStore? = nil, locationClient: Shared.LocationClient? = nil) {
         logger.debug("LocationSyncService init: serverUrl=\(ServerConfig.httpBaseUrl)")
 
-        let store = e2eeStore ?? Shared.E2eeStore(storage: KeychainE2eeStorage())
+        let keychain = KeychainE2eeStorage()
+        let store = e2eeStore ?? Shared.E2eeStore(storage: keychain)
         self.e2eeStore = store
+        self.userStore = userStore ?? Shared.UserStore(storage: keychain)
         self.locationClient = locationClient ?? Shared.LocationClient(baseUrl: ServerConfig.httpBaseUrl, store: store)
 
-        let keychain = KeychainE2eeStorage()
-
-        if let sharingStr = keychain.getString(key: "where_is_sharing") {
-            isSharingLocation = sharingStr == "true"
-        } else {
-            isSharingLocation = true
-        }
-
-        displayName = keychain.getString(key: "display_name") ?? ""
-
-        if let pausedJsonStr = keychain.getString(key: "paused_friends"),
-           let pausedData = pausedJsonStr.data(using: .utf8),
-           let pausedArray = try? JSONSerialization.jsonObject(with: pausedData) as? [String] {
-            pausedFriendIds = Set(pausedArray)
-        } else {
-            pausedFriendIds = []
-        }
+        self.isSharingLocation = self.userStore.isSharingLocation.value
+        self.displayName = self.userStore.displayName.value
+        self.pausedFriendIds = Set(self.userStore.pausedFriendIds.value as? Set<String> ?? [])
 
         Task { @MainActor in
             do {
@@ -441,7 +375,7 @@ final class LocationSyncService: ObservableObject {
                 let qr = try await e2eeStore.createInvite(suggestedName: displayName)
                 try Task.checkCancellation()
                 debugLog { "Created invite: discovery=\(toHex(qr.discoveryToken()))" }
-                inviteState = .pending(qr)
+                inviteState = Shared.InviteStatePending(qr: qr)
                 triggerRapidPoll()
             } catch is CancellationError {
                 // Ignore
@@ -460,7 +394,7 @@ final class LocationSyncService: ObservableObject {
             logger.error("Failed to clear invite: \(error.localizedDescription)")
         }
         resetRapidPoll()
-        inviteState = .none
+        inviteState = Shared.InviteStateNone()
     }
 
     @discardableResult
@@ -562,13 +496,13 @@ final class LocationSyncService: ObservableObject {
     }
 
     func cancelPendingInit() async {
-        let hasInviteState = if case .none = inviteState { false } else { true }
+        let hasInviteState = !(inviteState is Shared.InviteStateNone)
         guard pendingInitPayload != nil || hasInviteState else { return }
         await clearInvite()
         pendingInitPayload = nil
         multipleScansDetected = false
         resetRapidPoll()
-        inviteState = .none
+        inviteState = Shared.InviteStateNone()
     }
 
     func wakePoll() {
@@ -680,7 +614,7 @@ final class LocationSyncService: ObservableObject {
         if let result = try await locationClient.pollPendingInvite() {
             debugLog { "pollPendingInvite: received KeyExchangeInit (multipleScans=\(result.multipleScansDetected))" }
             inviteTask?.cancel()
-            inviteState = .none   // dismiss the QR sheet so the naming alert can appear
+            inviteState = Shared.InviteStateNone()   // dismiss the QR sheet so the naming alert can appear
             multipleScansDetected = result.multipleScansDetected
             pendingInitPayload = result.payload
             triggerRapidPoll()
@@ -737,9 +671,9 @@ final class LocationSyncService: ObservableObject {
                     msg = String(desc.prefix(32))
                 }
             }
-            connectionStatus = .error(message: msg)
+            connectionStatus = Shared.ConnectionStatusError(message: msg)
         } else {
-            connectionStatus = .ok
+            connectionStatus = Shared.ConnectionStatusOk()
         }
     }
 }

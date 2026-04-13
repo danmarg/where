@@ -1,84 +1,38 @@
 package net.af0.where
 
 import android.content.Context
-import android.content.SharedPreferences
+import net.af0.where.e2ee.LocationPrecision
+import net.af0.where.e2ee.UserStore
 
+/**
+ * Android-specific wrapper for accessing the shared UserStore.
+ * Delegates most calls to the application-level UserStore singleton.
+ */
 object UserPrefs {
-    private const val KEY_DISPLAY_NAME = "display_name"
-    private const val KEY_IS_SHARING = "is_sharing"
-    private const val KEY_PAUSED_FRIENDS = "paused_friends"
-    private const val KEY_LAST_LAT = "last_lat"
-    private const val KEY_LAST_LNG = "last_lng"
-    private const val KEY_LAST_ZOOM = "last_zoom"
-    private const val KEY_DEFAULT_PRECISION = "default_precision"
-
-    private fun prefs(context: Context): SharedPreferences {
-        val app =
-            context.applicationContext as? WhereApplication
-                ?: return context.getSharedPreferences("where_prefs", Context.MODE_PRIVATE)
-        return app.encryptedPrefs
+    private fun store(context: Context): UserStore {
+        val app = context.applicationContext as? WhereApplication
+            ?: throw IllegalStateException("Context must be an instance of WhereApplication or provide one")
+        return app.userStore
     }
 
-    fun getDisplayName(context: Context): String = prefs(context).getString(KEY_DISPLAY_NAME, "") ?: ""
+    fun getDisplayName(context: Context): String = store(context).displayName.value
 
-    fun setDisplayName(
-        context: Context,
-        name: String,
-    ) {
-        prefs(context).edit().putString(KEY_DISPLAY_NAME, name).apply()
-    }
+    fun setDisplayName(context: Context, name: String) = store(context).setDisplayName(name)
 
-    fun isSharing(context: Context): Boolean = prefs(context).getBoolean(KEY_IS_SHARING, true)
+    fun isSharing(context: Context): Boolean = store(context).isSharingLocation.value
 
-    fun setSharing(
-        context: Context,
-        sharing: Boolean,
-    ) {
-        prefs(context).edit().putBoolean(KEY_IS_SHARING, sharing).apply()
-    }
+    fun setSharing(context: Context, sharing: Boolean) = store(context).setSharing(sharing)
 
-    fun getPausedFriends(context: Context): Set<String> =
-        prefs(context).getString(KEY_PAUSED_FRIENDS, "")?.split(",")?.filter { it.isNotEmpty() }?.toSet() ?: emptySet()
+    fun getPausedFriends(context: Context): Set<String> = store(context).pausedFriendIds.value
 
-    fun setPausedFriends(
-        context: Context,
-        paused: Set<String>,
-    ) {
-        prefs(context).edit().putString(KEY_PAUSED_FRIENDS, paused.joinToString(",")).apply()
-    }
+    fun setPausedFriends(context: Context, paused: Set<String>) = store(context).setPausedFriends(paused)
 
-    fun getLastLocation(context: Context): Triple<Double, Double, Float>? {
-        val p = prefs(context)
-        if (!p.contains(KEY_LAST_LAT)) return null
-        return Triple(
-            p.getFloat(KEY_LAST_LAT, 0f).toDouble(),
-            p.getFloat(KEY_LAST_LNG, 0f).toDouble(),
-            p.getFloat(KEY_LAST_ZOOM, 0f),
-        )
-    }
+    fun getLastLocation(context: Context): Triple<Double, Double, Float>? = store(context).lastMapCamera.value
 
-    fun setLastLocation(
-        context: Context,
-        lat: Double,
-        lng: Double,
-        zoom: Float,
-    ) {
-        prefs(context).edit()
-            .putFloat(KEY_LAST_LAT, lat.toFloat())
-            .putFloat(KEY_LAST_LNG, lng.toFloat())
-            .putFloat(KEY_LAST_ZOOM, zoom)
-            .apply()
-    }
+    fun setLastLocation(context: Context, lat: Double, lng: Double, zoom: Float) =
+        store(context).setLastMapCamera(lat, lng, zoom)
 
-    fun getDefaultPrecision(context: Context): net.af0.where.e2ee.LocationPrecision =
-        prefs(context).getString(KEY_DEFAULT_PRECISION, null)?.let {
-            net.af0.where.e2ee.LocationPrecision.valueOf(it)
-        } ?: net.af0.where.e2ee.LocationPrecision.FINE
+    fun getDefaultPrecision(context: Context): LocationPrecision = store(context).defaultPrecision.value
 
-    fun setDefaultPrecision(
-        context: Context,
-        precision: net.af0.where.e2ee.LocationPrecision,
-    ) {
-        prefs(context).edit().putString(KEY_DEFAULT_PRECISION, precision.name).apply()
-    }
+    fun setDefaultPrecision(context: Context, precision: LocationPrecision) = store(context).setDefaultPrecision(precision)
 }
