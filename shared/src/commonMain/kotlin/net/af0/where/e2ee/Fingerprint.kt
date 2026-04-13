@@ -8,6 +8,12 @@ package net.af0.where.e2ee
 internal fun fingerprint(ekPub: ByteArray): ByteArray = sha256(ekPub)
 
 /**
+ * QR fingerprint: hex(SHA-256(EK.pub)[0:20]). 40 hex characters (160 bits).
+ * Truncated version used for visual verification in QR codes and out-of-band links.
+ */
+internal fun qrFingerprint(ekPub: ByteArray): String = sha256(ekPub).copyOfRange(0, 20).toHex()
+
+/**
  * Safety number for out-of-band verification.
  * Returns the full 64-byte SHA-512(lower_EK.pub || higher_EK.pub), where
  * "lower/higher" is lexicographic order of the two bootstrap EK.pub values.
