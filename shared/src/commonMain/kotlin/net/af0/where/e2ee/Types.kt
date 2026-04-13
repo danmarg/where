@@ -172,6 +172,8 @@ data class LocationPlaintext(
  */
 @Serializable
 data class QrPayload(
+    @SerialName("protocol_version")
+    val protocolVersion: Int = PROTOCOL_VERSION,
     // Alice's ephemeral X25519 public key (32 bytes)
     @SerialName("ek_pub")
     @Serializable(with = ByteArrayBase64Serializer::class) val ekPub: ByteArray,
@@ -185,12 +187,13 @@ data class QrPayload(
 ) {
     override fun equals(other: Any?): Boolean {
         if (other !is QrPayload) return false
-        return ekPub.contentEquals(other.ekPub) && suggestedName == other.suggestedName &&
+        return protocolVersion == other.protocolVersion && ekPub.contentEquals(other.ekPub) && suggestedName == other.suggestedName &&
             fingerprint == other.fingerprint && discoverySecret.contentEquals(other.discoverySecret)
     }
 
     override fun hashCode(): Int {
-        var h = ekPub.contentHashCode()
+        var h = protocolVersion
+        h = 31 * h + ekPub.contentHashCode()
         h = 31 * h + suggestedName.hashCode()
         h = 31 * h + fingerprint.hashCode()
         h = 31 * h + discoverySecret.contentHashCode()
@@ -200,6 +203,7 @@ data class QrPayload(
 
 /** Bob's KeyExchangeInit message sent to the mailbox. */
 data class KeyExchangeInitMessage(
+    val protocolVersion: Int = PROTOCOL_VERSION,
     // T_AB_0 (16 bytes) — mailbox address
     @Serializable(with = ByteArrayBase64Serializer::class) val token: ByteArray,
     // Bob's ephemeral X25519 public key
@@ -210,12 +214,23 @@ data class KeyExchangeInitMessage(
 ) {
     override fun equals(other: Any?): Boolean {
         if (other !is KeyExchangeInitMessage) return false
-        return token.contentEquals(other.token) && ekPub.contentEquals(other.ekPub) &&
+        return protocolVersion == other.protocolVersion && token.contentEquals(other.token) && ekPub.contentEquals(other.ekPub) &&
             keyConfirmation.contentEquals(other.keyConfirmation) && suggestedName == other.suggestedName
     }
 
-    override fun hashCode(): Int = token.contentHashCode()
+    override fun hashCode(): Int {
+        var h = protocolVersion
+        h = 31 * h + token.contentHashCode()
+        return h
+    }
 }
+
+/** Result of Alice polling for a pending invite scan (#176). */
+data class PendingInviteResult(
+    val payload: KeyExchangeInitPayload,
+    /** True if multiple people (or multiple scans) were detected in the discovery mailbox. */
+    val multipleScansDetected: Boolean,
+)
 
 /**
  * A message that is pending delivery (used for transactional safety and recovery).

@@ -61,13 +61,16 @@ open class LocationClient(
 
     /**
      * Poll the discovery mailbox for a pending invite.
-     * returns the first KeyExchangeInitPayload found, or null.
+     * returns the most recent KeyExchangeInitPayload found, plus a flag if multiple were detected.
      */
-    suspend fun pollPendingInvite(): KeyExchangeInitPayload? {
+    suspend fun pollPendingInvite(): PendingInviteResult? {
         val qr = store.pendingQrPayload() ?: return null
         val discoveryHex = qr.discoveryToken().toHex()
         val messages = mailboxClient.poll(baseUrl, discoveryHex)
-        return messages.filterIsInstance<KeyExchangeInitPayload>().firstOrNull()
+        val inits = messages.filterIsInstance<KeyExchangeInitPayload>()
+        val last = inits.lastOrNull() ?: return null
+        // Use lastOrNull() to pick the most recent scan/retry in the FIFO queue (#176).
+        return PendingInviteResult(last, inits.size > 1)
     }
 
     /**

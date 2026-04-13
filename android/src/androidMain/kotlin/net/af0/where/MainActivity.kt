@@ -68,6 +68,7 @@ class MainActivity : ComponentActivity() {
                 val inviteState by viewModel.inviteState.collectAsState()
                 val pendingQrForNaming by viewModel.pendingQrForNaming.collectAsState()
                 val pendingInitPayload by viewModel.pendingInitPayload.collectAsState()
+                val multipleScansDetected by viewModel.multipleScansDetected.collectAsState()
                 val isExchanging by viewModel.isExchanging.collectAsState()
                 val connectionStatus by viewModel.connectionStatus.collectAsState()
 
@@ -194,6 +195,15 @@ class MainActivity : ComponentActivity() {
                         text = {
                             Column {
                                 Text("A new friend has scanned your QR code.")
+                                if (multipleScansDetected) {
+                                    Spacer(Modifier.height(8.dp))
+                                    Text(
+                                        "Warning: Multiple scans detected for this invite. " +
+                                            "Ensure you only add people you trust.",
+                                        color = MaterialTheme.colorScheme.error,
+                                        style = MaterialTheme.typography.bodySmall,
+                                    )
+                                }
                                 Spacer(Modifier.height(8.dp))
                                 OutlinedTextField(
                                     value = name,
