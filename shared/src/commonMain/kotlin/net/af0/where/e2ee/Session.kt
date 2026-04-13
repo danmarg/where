@@ -13,7 +13,6 @@ import kotlinx.serialization.json.put
  * High-level session operations using a standard Double Ratchet.
  */
 object Session {
-    private const val PROTOCOL_VERSION = 1
     private const val HEADER_NONCE_SIZE = 12
     private const val HEADER_TAG_SIZE = 16
 

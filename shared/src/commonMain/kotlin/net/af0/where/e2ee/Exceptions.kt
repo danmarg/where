@@ -24,5 +24,8 @@ class DecryptionException(message: String, cause: Throwable? = null) : CryptoExc
 /** Thrown when authentication fails (e.g., bad signature or key confirmation). */
 class AuthenticationException(message: String, cause: Throwable? = null) : CryptoException(message, cause)
 
+/** Thrown when a protocol version mismatch occurs (#194). */
+class ProtocolVersionException(message: String) : CryptoException(message)
+
 /** Thrown when a protocol-level validation fails (e.g., seq replay, huge gap). */
 class ProtocolException(message: String) : CryptoException(message)
