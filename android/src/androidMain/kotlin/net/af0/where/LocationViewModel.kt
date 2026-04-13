@@ -18,6 +18,7 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import net.af0.where.e2ee.E2eeStore
@@ -80,6 +81,7 @@ class LocationViewModel(
 
     private val _inviteState = MutableStateFlow<InviteState>(InviteState.None)
     val inviteState: StateFlow<InviteState> = _inviteState
+    private var inviteJob: Job? = null
 
     private val _pendingQrForNaming = MutableStateFlow<QrPayload?>(null)
     val pendingQrForNaming: StateFlow<QrPayload?> = _pendingQrForNaming
@@ -140,6 +142,7 @@ class LocationViewModel(
         viewModelScope.launch {
             pendingInitPayload.collect { payload ->
                 if (payload != null) {
+                    inviteJob?.cancel()
                     val current = _inviteState.value
                     if (current is InviteState.Pending) {
                         _inviteState.value = InviteState.None
@@ -209,11 +212,21 @@ class LocationViewModel(
     }
 
     fun createInvite() {
-        viewModelScope.launch {
-            val qr = e2eeStore.createInvite(_displayName.value.ifEmpty { "Me" })
-            _inviteState.value = InviteState.Pending(qr)
-            triggerRapidPoll()
-        }
+        inviteJob?.cancel()
+        if (locationSource.pendingInitPayload.value != null) return
+ 
+        inviteJob =
+            viewModelScope.launch {
+                try {
+                    val qr = e2eeStore.createInvite(_displayName.value.ifEmpty { "Me" })
+                    _inviteState.value = InviteState.Pending(qr)
+                    triggerRapidPoll()
+                } finally {
+                    if (inviteJob?.isCancelled == false) {
+                        // We don't null it out because we might want to cancel it later
+                    }
+                }
+            }
     }
 
     fun clearInvite() {
