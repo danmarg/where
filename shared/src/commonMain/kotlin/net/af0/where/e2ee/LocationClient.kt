@@ -37,16 +37,6 @@ open class LocationClient(
 
             val friends = store.listFriends()
 
-            if (friends.isEmpty() && isForeground) {
-                try {
-                    mailboxClient.poll(baseUrl, "00000000000000000000000000000000")
-                } catch (e: ServerException) {
-                    if (e.statusCode != 404) lastError = e
-                } catch (e: Exception) {
-                    lastError = e
-                }
-            }
-
             for (friend in friends) {
                 try {
                     // RESTART RECOVERY (§5.5): If the session was regenerated on startup,
