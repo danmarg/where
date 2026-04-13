@@ -6,16 +6,11 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
+import net.af0.where.e2ee.ConnectionStatus
 import net.af0.where.e2ee.FriendEntry
 import net.af0.where.e2ee.KeyExchangeInitPayload
 import net.af0.where.e2ee.QrPayload
 import net.af0.where.model.UserLocation
-
-sealed class ConnectionStatus {
-    object Ok : ConnectionStatus()
-
-    data class Error(val message: String) : ConnectionStatus()
-}
 
 /** Minimal interface over the shared location state, making it injectable for tests. */
 interface LocationSource {

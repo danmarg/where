@@ -2,6 +2,15 @@ package net.af0.where.e2ee
 
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.Json
+import kotlin.io.encoding.Base64
+import kotlin.io.encoding.ExperimentalEncodingApi
+
+@OptIn(ExperimentalEncodingApi::class)
+private val qrJson = Json {
+    ignoreUnknownKeys = true
+    encodeDefaults = true
+}
 
 /**
  * Raw X25519 keypair. Both fields are 32-byte little-endian representations
@@ -199,6 +208,30 @@ data class QrPayload(
         h = 31 * h + discoverySecret.contentHashCode()
         return h
     }
+
+    /** Encodes the payload as a Base64 URL-safe string for use in invite links. */
+    @OptIn(ExperimentalEncodingApi::class)
+    fun toUrl(): String {
+        val jsonStr = qrJson.encodeToString(serializer(), this)
+        val encoded = Base64.UrlSafe.encode(jsonStr.encodeToByteArray()).trimEnd('=')
+        return "https://where.af0.net/invite#$encoded"
+    }
+
+    companion object {
+        /** Decodes a QrPayload from an invite link URL. */
+        @OptIn(ExperimentalEncodingApi::class)
+        fun fromUrl(url: String): QrPayload? {
+            val fragment = url.substringAfter("#", "")
+            if (fragment.isEmpty()) return null
+            return try {
+                // Base64.UrlSafe.decode handles missing padding
+                val decoded = Base64.UrlSafe.decode(fragment).decodeToString()
+                qrJson.decodeFromString(serializer(), decoded)
+            } catch (_: Exception) {
+                null
+            }
+        }
+    }
 }
 
 /** Bob's KeyExchangeInit message sent to the mailbox. */
@@ -223,6 +256,24 @@ data class KeyExchangeInitMessage(
         h = 31 * h + token.contentHashCode()
         return h
     }
+}
+
+@Serializable
+sealed class InviteState {
+    @Serializable
+    object None : InviteState()
+
+    @Serializable
+    data class Pending(val qr: QrPayload) : InviteState()
+}
+
+@Serializable
+sealed class ConnectionStatus {
+    @Serializable
+    object Ok : ConnectionStatus()
+
+    @Serializable
+    data class Error(val message: String) : ConnectionStatus()
 }
 
 /** Result of Alice polling for a pending invite scan (#176). */

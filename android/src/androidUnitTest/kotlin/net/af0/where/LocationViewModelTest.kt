@@ -4,6 +4,7 @@ import android.app.Application
 import android.content.Context
 import android.content.SharedPreferences
 import android.text.TextUtils
+import androidx.test.core.app.ApplicationProvider
 import io.mockk.every
 import io.mockk.mockk
 import io.mockk.mockkStatic
@@ -18,15 +19,18 @@ import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
+import net.af0.where.e2ee.ConnectionStatus
 import net.af0.where.e2ee.E2eeStorage
 import net.af0.where.e2ee.E2eeStore
 import net.af0.where.e2ee.FriendEntry
+import net.af0.where.e2ee.InviteState
 import net.af0.where.e2ee.KeyExchangeInitPayload
 import net.af0.where.e2ee.KtorMailboxClient
 import net.af0.where.e2ee.LocationClient
 import net.af0.where.e2ee.PROTOCOL_VERSION
 import net.af0.where.e2ee.QrPayload
 import net.af0.where.e2ee.SessionState
+import net.af0.where.e2ee.UserStore
 import net.af0.where.model.UserLocation
 import org.junit.After
 import org.junit.Before
@@ -195,9 +199,9 @@ private class FakeE2eeStorage : E2eeStorage {
 
 @OptIn(ExperimentalCoroutinesApi::class)
 @RunWith(RobolectricTestRunner::class)
-@Config(sdk = [33], manifest = Config.NONE)
+@Config(sdk = [33], manifest = Config.NONE, application = TestWhereApplication::class)
 class LocationViewModelTest {
-    private val app: Application = mockk(relaxed = true)
+    private val app: Application = ApplicationProvider.getApplicationContext<Application>()
     private val prefs: SharedPreferences = mockk(relaxed = true)
     private val testDispatcher = StandardTestDispatcher()
     private var viewModel: LocationViewModel? = null
@@ -207,10 +211,6 @@ class LocationViewModelTest {
         net.af0.where.initializeLibsodium()
         Dispatchers.setMain(testDispatcher)
         LocationService.clock = { 1_000_000L }
-        every { app.applicationContext } returns app
-        every { app.getSharedPreferences("where_prefs", Context.MODE_PRIVATE) } returns prefs
-        every { prefs.getBoolean("is_sharing", true) } returns false
-        every { prefs.getString("display_name", "") } returns "Alice"
 
         mockkStatic(android.util.Log::class)
         every { android.util.Log.d(any(), any()) } returns 0
@@ -246,7 +246,13 @@ class LocationViewModelTest {
             val store = E2eeStore(FakeE2eeStorage())
             val client = LocationClient("http://localhost", store)
             // Disable automatic polling loop to prevent hangs
-            viewModel = LocationViewModel(app, store, client, startPolling = false, locationSource = fakeLocationSource)
+            viewModel = LocationViewModel(
+                app,
+                e2eeStoreParam = store,
+                locationClientParam = client,
+                startPolling = false,
+                locationSource = fakeLocationSource
+            )
             val vm = viewModel!!
 
             // 1. Create invite
@@ -287,7 +293,12 @@ class LocationViewModelTest {
     fun testCancelQrScan_BobSide() =
         runTest {
             val source = TestFakeLocationSource()
-            viewModel = LocationViewModel(app, E2eeStore(FakeE2eeStorage()), startPolling = false, locationSource = source)
+            viewModel = LocationViewModel(
+                app,
+                e2eeStoreParam = E2eeStore(FakeE2eeStorage()),
+                startPolling = false,
+                locationSource = source
+            )
             val vm = viewModel!!
 
             val qr = QrPayload(
@@ -317,8 +328,8 @@ class LocationViewModelTest {
             viewModel =
                 LocationViewModel(
                     app,
-                    e2eeStore = store,
-                    locationClient = client,
+                    e2eeStoreParam = store,
+                    locationClientParam = client,
                     startPolling = false,
                     locationSource = source,
                 )
@@ -356,8 +367,8 @@ class LocationViewModelTest {
             viewModel =
                 LocationViewModel(
                     app,
-                    e2eeStore = store,
-                    locationClient = client,
+                    e2eeStoreParam = store,
+                    locationClientParam = client,
                     startPolling = false,
                     locationSource = source,
                 )
@@ -395,8 +406,8 @@ class LocationViewModelTest {
             viewModel =
                 LocationViewModel(
                     app,
-                    e2eeStore = store,
-                    locationClient = client,
+                    e2eeStoreParam = store,
+                    locationClientParam = client,
                     startPolling = false,
                     locationSource = source,
                 )
@@ -441,8 +452,8 @@ class LocationViewModelTest {
             viewModel =
                 LocationViewModel(
                     app,
-                    e2eeStore = store,
-                    locationClient = client,
+                    e2eeStoreParam = store,
+                    locationClientParam = client,
                     startPolling = false,
                     locationSource = source,
                 )
@@ -476,8 +487,8 @@ class LocationViewModelTest {
             viewModel =
                 LocationViewModel(
                     app,
-                    e2eeStore = store,
-                    locationClient = client,
+                    e2eeStoreParam = store,
+                    locationClientParam = client,
                     startPolling = false,
                     locationSource = source,
                 )

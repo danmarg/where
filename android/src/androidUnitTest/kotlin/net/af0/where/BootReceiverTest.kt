@@ -30,8 +30,7 @@ class BootReceiverTest {
     @Test
     fun testOnReceiveRespectsSharingPreference() {
         val context = ApplicationProvider.getApplicationContext<Context>()
-        val prefs = (context as WhereApplication).encryptedPrefs
-        prefs.edit().putBoolean("is_sharing", false).commit()
+        UserPrefs.setSharing(context, false)
 
         val receiver = BootReceiver()
         val intent = Intent(Intent.ACTION_BOOT_COMPLETED)
