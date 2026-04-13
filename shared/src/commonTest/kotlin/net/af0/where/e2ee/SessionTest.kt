@@ -109,6 +109,42 @@ class SessionTest {
     }
 
     @Test
+    fun `combined skipped key gap too large`() {
+        val (aliceSession, bobSession) = exchangeKeys()
+        val loc = MessagePlaintext.Location(0.0, 0.0, 0.0, 0L)
+
+        // Alice encrypts 60 messages in Epoch 1. None are delivered to Bob.
+        var aSess = aliceSession
+        repeat(60) {
+            val (newA, _) = Session.encryptMessage(aSess, loc)
+            aSess = newA
+        }
+
+        // Bob sends 1 message in Epoch 1 to trigger Alice's DH ratchet.
+        val (bSess, bMsg) = Session.encryptMessage(bobSession, loc)
+
+        // Alice receives Bob's message, ratchets DH (now in Epoch 2), and sets pn=60.
+        val (newA, _) = Session.decryptMessage(aSess, bMsg)
+        aSess = newA
+
+        // Alice encrypts 60 messages in Epoch 2.
+        var aMsg2: EncryptedMessagePayload? = null
+        repeat(60) {
+            val (newA2, msg) = Session.encryptMessage(aSess, loc)
+            aSess = newA2
+            aMsg2 = msg
+        }
+
+        // Bob receives only the 60th message of Epoch 2.
+        // This will attempt to skip 60 messages in Epoch 1 (pnGaps = 60)
+        // and 59 messages in Epoch 2 (stepsNeeded = 60).
+        // Total projected cache size = 119 > 100.
+        assertFailsWith<ProtocolException> {
+            Session.decryptMessage(bSess, aMsg2!!)
+        }
+    }
+
+    @Test
     fun `message with lower seq than recvSeq is rejected`() {
         val (aliceSession, bobSession) = exchangeKeys()
         val loc = MessagePlaintext.Location(0.0, 0.0, 0.0, 0L)
