@@ -16,6 +16,7 @@ internal const val INFO_HEADER_KEY = "Where-v1-HeaderKey"
 internal const val MAX_TOKEN_FOLLOWS_PER_POLL = 2
 internal const val MAX_GAP = 100
 internal const val MAX_SKIPPED_KEYS = 100
+internal const val MAX_KEY_AGE_MS = 604_800_000L // 7 days in milliseconds
 internal const val MAX_SEEN_DH_PUBS = 10
 internal const val PROTOCOL_VERSION = 1
 internal const val AAD_PREFIX = "Where-v1-Message"
