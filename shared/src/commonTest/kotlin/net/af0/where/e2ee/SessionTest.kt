@@ -449,7 +449,7 @@ class SessionTest {
         val size = 512
         val data = ByteArray(10) { it.toByte() }
         val padded = Session.padToFixedSize(data, size)
-        
+
         // Marker should be at index 10
         assertEquals(0x80.toByte(), padded[10])
         for (i in 11 until size) {

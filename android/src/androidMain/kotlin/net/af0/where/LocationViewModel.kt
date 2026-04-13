@@ -11,6 +11,7 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -18,7 +19,6 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
-import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import net.af0.where.e2ee.E2eeStore
@@ -26,7 +26,6 @@ import net.af0.where.e2ee.FriendEntry
 import net.af0.where.e2ee.KeyExchangeInitPayload
 import net.af0.where.e2ee.LocationClient
 import net.af0.where.e2ee.QrPayload
-import net.af0.where.e2ee.discoveryToken
 import net.af0.where.e2ee.toHex
 import net.af0.where.model.UserLocation
 
@@ -180,7 +179,7 @@ class LocationViewModel(
         locationSource.setPausedFriends(new)
         UserPrefs.setPausedFriends(getApplication(), new)
     }
- 
+
     fun setFriendPrecision(
         id: String,
         precision: net.af0.where.e2ee.LocationPrecision,
@@ -226,7 +225,7 @@ class LocationViewModel(
     fun createInvite() {
         inviteJob?.cancel()
         if (locationSource.pendingInitPayload.value != null) return
- 
+
         inviteJob =
             viewModelScope.launch {
                 try {

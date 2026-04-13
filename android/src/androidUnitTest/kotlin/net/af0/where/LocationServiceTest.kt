@@ -385,14 +385,14 @@ class LocationServiceTest {
                 // Since pollLoop is private and runs in serviceScope, we can't easily call it.
                 // But we can verify the logic by making forceLocationUpdate internal/visible.
                 // Wait, I already implemented the check in pollLoop.
-                
+
                 // Let's test forceLocationUpdate directly since it's the core of the fix.
                 val method = LocationService::class.java.getDeclaredMethod("forceLocationUpdate")
                 method.isAccessible = true
                 method.invoke(service)
 
-                io.mockk.verify(exactly = 1) { 
-                    mockFused.getCurrentLocation(com.google.android.gms.location.Priority.PRIORITY_HIGH_ACCURACY, null) 
+                io.mockk.verify(exactly = 1) {
+                    mockFused.getCurrentLocation(com.google.android.gms.location.Priority.PRIORITY_HIGH_ACCURACY, null)
                 }
             } finally {
                 controller.destroy()

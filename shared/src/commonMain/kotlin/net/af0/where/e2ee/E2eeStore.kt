@@ -328,7 +328,7 @@ class E2eeStore(
             save()
         }
     }
- 
+
     suspend fun updateFriendPrecision(
         id: String,
         precision: LocationPrecision,
@@ -358,7 +358,7 @@ class E2eeStore(
     ): EncryptedMessagePayload =
         stateLock.withLock {
             val entry = friends[friendId] ?: throw Exception("Friend not found: $friendId")
- 
+
             // Apply location blurring if coarse precision is requested (§4)
             val finalPayload =
                 if (payload is MessagePlaintext.Location) {
@@ -366,7 +366,7 @@ class E2eeStore(
                 } else {
                     payload
                 }
- 
+
             val (newSession, message) = Session.encryptMessage(entry.session, finalPayload)
 
             // NONCE SAFETY ASSERTION (§5.4): The sequence number MUST advance.

@@ -103,7 +103,8 @@ object Session {
         val cachedKey = cleanState.skippedMessageKeys[cacheKey]
         if (cachedKey != null) {
             // AAD directionality: peer is the sender, I am the recipient.
-            val (sender, recipient) = if (cleanState.isAlice) cleanState.bobFp to cleanState.aliceFp else cleanState.aliceFp to cleanState.bobFp
+            val (sender, recipient) =
+                if (cleanState.isAlice) cleanState.bobFp to cleanState.aliceFp else cleanState.aliceFp to cleanState.bobFp
 
             // Cached key format ([§5.5]): [MK (32) || Nonce (12) || PN (8)]
             if (cachedKey.size < 52) throw ProtocolException("invalid cached key size in cache")
@@ -179,11 +180,12 @@ object Session {
             derivationSkippedKeys.keys.retainAll { k -> validEpochs.any { e -> k.startsWith(e) } }
         }
 
-        val pnGaps = if (isNewDhEpoch && header.pn > cleanState.recvSeq) {
-            (header.pn - cleanState.recvSeq).toInt()
-        } else {
-            0
-        }
+        val pnGaps =
+            if (isNewDhEpoch && header.pn > cleanState.recvSeq) {
+                (header.pn - cleanState.recvSeq).toInt()
+            } else {
+                0
+            }
 
         val projectedSize = derivationSkippedKeys.size + kotlin.math.max(0, stepsNeeded.toInt() - 1) + pnGaps
         if (projectedSize > MAX_SKIPPED_KEYS) {
@@ -223,7 +225,8 @@ object Session {
 
             val finalStep = currentStep ?: throw ProtocolException("failed to derive message key")
             // AAD directionality: peer is the sender, I am the recipient.
-            val (sender, recipient) = if (cleanState.isAlice) cleanState.bobFp to cleanState.aliceFp else cleanState.aliceFp to cleanState.bobFp
+            val (sender, recipient) =
+                if (cleanState.isAlice) cleanState.bobFp to cleanState.aliceFp else cleanState.aliceFp to cleanState.bobFp
             val aad = buildMessageAad(sender, recipient, seq, remoteDhPub)
 
             val plaintext =
@@ -507,8 +510,11 @@ object Session {
         for (j in data.indices.reversed()) {
             val isMarker = (data[j].toInt() and 0xFF) xor 0x80
             val notYetFound = if (markerIdx == -1) 1 else 0
-            if (isMarker == 0 && notYetFound == 1) markerIdx = j
-            else if (notYetFound == 1) diff = diff or (data[j].toInt() and 0xFF) // must be 0x00
+            if (isMarker == 0 && notYetFound == 1) {
+                markerIdx = j
+            } else if (notYetFound == 1) {
+                diff = diff or (data[j].toInt() and 0xFF) // must be 0x00
+            }
         }
         if (diff != 0 || markerIdx < 0) {
             data.fill(0)
