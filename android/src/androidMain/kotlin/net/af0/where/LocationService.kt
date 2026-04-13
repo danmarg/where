@@ -185,8 +185,15 @@ class LocationService : Service() {
             doPoll()
             // Heartbeat: ensure we send at least once every 5 minutes when stationary.
             // Runs regardless of foreground state so background location stays alive.
-            locationSource.lastLocation.value?.let { (lat, lng) ->
-                sendLocationIfNeeded(lat, lng, isHeartbeat = true)
+            if (isSharing) {
+                val now = clock()
+                if (now - lastSentTime > STATIONARY_FORCE_UPDATE_THRESHOLD_MS) {
+                    Log.d(TAG, "Stationary threshold exceeded; forcing fresh location fix.")
+                    forceLocationUpdate()
+                }
+                locationSource.lastLocation.value?.let { (lat, lng) ->
+                    sendLocationIfNeeded(lat, lng, isHeartbeat = true)
+                }
             }
             locationSource.awaitPollWake(pollInterval(rapid, inForeground, isSharing))
         }
@@ -290,6 +297,23 @@ class LocationService : Service() {
         }
     }
 
+    private fun forceLocationUpdate() {
+        try {
+            fusedClient.getCurrentLocation(Priority.PRIORITY_HIGH_ACCURACY, null)
+                .addOnSuccessListener { loc ->
+                    if (loc != null) {
+                        Log.d(TAG, "Forced location fix successful: ${loc.latitude}, ${loc.longitude}")
+                        locationSource.onLocation(loc.latitude, loc.longitude)
+                    }
+                }
+                .addOnFailureListener { e ->
+                    Log.e(TAG, "Forced location fix failed: ${e.message}")
+                }
+        } catch (e: SecurityException) {
+            Log.e(TAG, "SecurityException during forced location fix: ${e.message}")
+        }
+    }
+
     private fun updateStatus(e: Throwable?) {
         if (e == null) {
             locationSource.onConnectionStatus(ConnectionStatus.Ok)
@@ -318,6 +342,13 @@ class LocationService : Service() {
     companion object {
         const val ACTION_FORCE_PUBLISH = "net.af0.where.ACTION_FORCE_PUBLISH"
         const val EXTRA_FRIEND_ID = "friend_id"
+
+        /**
+         * Interval to wait before forcing a fresh GPS fix if stationary (§5.3).
+         * This "pokes" the fused location provider to ensure background updates
+         * flow even when the OS throttles streaming updates in sleep mode.
+         */
+        const val STATIONARY_FORCE_UPDATE_THRESHOLD_MS = 5 * 60 * 1000L
 
         /** Overridable in tests; defaults to the production singleton. */
         var locationSource: LocationSource = LocationRepository
