@@ -436,6 +436,7 @@ object Session {
                     put("lng", msg.lng)
                     put("acc", msg.acc)
                     put("ts", msg.ts)
+                    put("precision", msg.precision.name)
                 }
                 is MessagePlaintext.Keepalive -> {
                     // empty object
@@ -453,6 +454,7 @@ object Session {
                 lng = obj["lng"]!!.jsonPrimitive.double,
                 acc = obj["acc"]!!.jsonPrimitive.double,
                 ts = obj["ts"]!!.jsonPrimitive.long,
+                precision = obj["precision"]?.jsonPrimitive?.content?.let { LocationPrecision.valueOf(it) } ?: LocationPrecision.FINE,
                 pn = pn,
             )
         } else {
@@ -510,8 +512,20 @@ sealed class MessagePlaintext {
         val lng: Double,
         val acc: Double,
         val ts: Long,
+        val precision: LocationPrecision = LocationPrecision.FINE,
         override val pn: Long = 0,
-    ) : MessagePlaintext()
+    ) : MessagePlaintext() {
+        fun blur(): Location =
+            if (precision == LocationPrecision.COARSE) {
+                copy(
+                    lat = kotlin.math.round(lat * 100.0) / 100.0,
+                    lng = kotlin.math.round(lng * 100.0) / 100.0,
+                    acc = kotlin.math.max(acc, 1100.0),
+                )
+            } else {
+                this
+            }
+    }
 
     data class Keepalive(override val pn: Long = 0) : MessagePlaintext()
 }

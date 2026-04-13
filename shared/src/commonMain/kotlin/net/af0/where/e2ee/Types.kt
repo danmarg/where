@@ -135,13 +135,32 @@ fun String.hexToByteArray(): ByteArray {
     return ByteArray(length / 2) { i -> substring(i * 2, i * 2 + 2).toInt(16).toByte() }
 }
 
+@Serializable
+enum class LocationPrecision {
+    FINE,
+    COARSE,
+}
+
 /** Plaintext location payload (before encryption / after decryption). */
+@Serializable
 data class LocationPlaintext(
     val lat: Double,
     val lng: Double,
     val acc: Double,
     val ts: Long,
-)
+    val precision: LocationPrecision = LocationPrecision.FINE,
+) {
+    fun blur(): LocationPlaintext =
+        if (precision == LocationPrecision.COARSE) {
+            copy(
+                lat = kotlin.math.round(lat * 100.0) / 100.0,
+                lng = kotlin.math.round(lng * 100.0) / 100.0,
+                acc = kotlin.math.max(acc, 1100.0), // ~1.1km minimum accuracy for coarse
+            )
+        } else {
+            this
+        }
+}
 
 /**
  * Alice's QR / invite-link payload.

@@ -10,6 +10,7 @@ object UserPrefs {
     private const val KEY_LAST_LAT = "last_lat"
     private const val KEY_LAST_LNG = "last_lng"
     private const val KEY_LAST_ZOOM = "last_zoom"
+    private const val KEY_DEFAULT_PRECISION = "default_precision"
 
     private fun prefs(context: Context): SharedPreferences {
         val app =
@@ -67,5 +68,17 @@ object UserPrefs {
             .putFloat(KEY_LAST_LNG, lng.toFloat())
             .putFloat(KEY_LAST_ZOOM, zoom)
             .apply()
+    }
+ 
+    fun getDefaultPrecision(context: Context): net.af0.where.e2ee.LocationPrecision =
+        prefs(context).getString(KEY_DEFAULT_PRECISION, null)?.let {
+            net.af0.where.e2ee.LocationPrecision.valueOf(it)
+        } ?: net.af0.where.e2ee.LocationPrecision.FINE
+ 
+    fun setDefaultPrecision(
+        context: Context,
+        precision: net.af0.where.e2ee.LocationPrecision,
+    ) {
+        prefs(context).edit().putString(KEY_DEFAULT_PRECISION, precision.name).apply()
     }
 }
