@@ -208,6 +208,8 @@ struct ContentView: View {
         } message: {
             if syncService.pendingQrForNaming != nil {
                 Text("Enter a name for this friend.")
+            } else if syncService.multipleScansDetected {
+                Text("Warning: Multiple scans detected for this invite. Ensure you only add people you trust.")
             } else {
                 Text("A new friend has scanned your QR code.")
             }
