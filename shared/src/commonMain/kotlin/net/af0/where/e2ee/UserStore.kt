@@ -80,11 +80,6 @@ class UserStore(private val storage: E2eeStorage) {
     private val _lastMapCamera = MutableStateFlow(loadLastMapCamera())
     val lastMapCamera: StateFlow<Triple<Double, Double, Float>?> = _lastMapCamera.asStateFlow()
 
-    private val _defaultPrecision = MutableStateFlow(
-        storage.getString(KEY_DEFAULT_PRECISION)?.let { LocationPrecision.valueOf(it) } ?: LocationPrecision.FINE
-    )
-    val defaultPrecision: StateFlow<LocationPrecision> = _defaultPrecision.asStateFlow()
-
     private fun loadLastMapCamera(): Triple<Double, Double, Float>? {
         val lat = storage.getString(KEY_LAST_LAT)?.toDoubleOrNull() ?: return null
         val lng = storage.getString(KEY_LAST_LNG)?.toDoubleOrNull() ?: return null
@@ -99,11 +94,6 @@ class UserStore(private val storage: E2eeStorage) {
         storage.putString(KEY_LAST_ZOOM, zoom.toString())
     }
 
-    fun setDefaultPrecision(precision: LocationPrecision) {
-        _defaultPrecision.value = precision
-        storage.putString(KEY_DEFAULT_PRECISION, precision.name)
-    }
-
     companion object {
         private const val KEY_IS_SHARING = "is_sharing"
         private const val KEY_DISPLAY_NAME = "display_name"
@@ -111,6 +101,5 @@ class UserStore(private val storage: E2eeStorage) {
         private const val KEY_LAST_LAT = "last_lat"
         private const val KEY_LAST_LNG = "last_lng"
         private const val KEY_LAST_ZOOM = "last_zoom"
-        private const val KEY_DEFAULT_PRECISION = "default_precision"
     }
 }

@@ -130,7 +130,6 @@ struct ContentView: View {
                     syncService.processQrUrl(url)
                 },
                 onRemove: { id in Task { await syncService.removeFriend(id: id) } },
-                onSetPrecision: { id, precision in Task { await syncService.setFriendPrecision(id: id, precision: precision) } },
                 onZoomTo: { friendId in
                     if let loc = syncService.friendLocations[friendId] {
                         zoomTarget = CLLocationCoordinate2D(latitude: loc.lat, longitude: loc.lng)

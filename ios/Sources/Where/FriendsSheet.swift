@@ -21,7 +21,6 @@ struct FriendsSheet: View {
     let onRename: (String, String) -> Void
     let onPasteUrl: (String) -> Void
     let onRemove: (String) -> Void
-    let onSetPrecision: (String, Shared.LocationPrecision) -> Void
     let onZoomTo: (String) -> Void
 
     @State private var friendToRemove: Shared.FriendEntry? = nil
@@ -76,21 +75,6 @@ struct FriendsSheet: View {
                                             .font(.caption)
                                             .foregroundStyle(.red)
                                     }
-                                    
-                                    Toggle(isOn: Binding(
-                                        get: { friend.precision == .fine },
-                                        set: { isFine in
-                                            onSetPrecision(friend.id, isFine ? .fine : .coarse)
-                                        }
-                                    )) {
-                                        Text("High Precision")
-                                            .font(.caption)
-                                            .foregroundStyle(.secondary)
-                                    }
-                                    .labelsHidden()
-                                    .scaleEffect(0.8)
-                                    .frame(maxWidth: .infinity, alignment: .leading)
-                                    .padding(.top, 2)
                                 }
                                 Spacer()
                                 
