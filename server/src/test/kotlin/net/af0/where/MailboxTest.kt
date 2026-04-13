@@ -283,20 +283,20 @@ class MailboxTest {
             assertEquals(unknownResponse, emptyResponse, "Unknown and empty-inbox responses must be identical")
         }
     }
- 
+
     @Test
     fun `GET inbox timing is normalized`() {
         if (!isLocalhost()) return
         testApplication {
             application { module(ServerState()) }
             val token = "timing-test-token"
-            
+
             // Baseline should be ~10ms. We check it's at least 9ms to account for system precision.
             val start1 = System.currentTimeMillis()
             client.get("/inbox/nonexistent")
             val elapsed1 = System.currentTimeMillis() - start1
             assertTrue(elapsed1 >= 9, "Poll for nonexistent token took $elapsed1 ms, expected >= 10ms")
- 
+
             client.post("/inbox/$token") {
                 contentType(ContentType.Application.Json)
                 setBody("""{"msg":"test"}""")

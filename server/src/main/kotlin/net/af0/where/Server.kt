@@ -424,7 +424,7 @@ fun Application.module(state: ServerState = ServerState()) {
             if (elapsed < POLL_BASELINE_LATENCY_MS) {
                 delay(POLL_BASELINE_LATENCY_MS - elapsed)
             }
- 
+
             call.respond(response)
         }
     }

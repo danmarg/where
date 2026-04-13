@@ -23,6 +23,7 @@ import com.google.android.gms.maps.model.CameraPosition
 import com.google.android.gms.maps.model.LatLng
 import com.google.maps.android.compose.*
 import net.af0.where.e2ee.FriendEntry
+import net.af0.where.e2ee.LocationPrecision
 import net.af0.where.model.UserLocation
 
 @OptIn(ExperimentalPermissionsApi::class, ExperimentalMaterial3Api::class)
