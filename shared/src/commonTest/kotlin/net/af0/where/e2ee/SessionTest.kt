@@ -109,6 +109,43 @@ class SessionTest {
     }
 
     @Test
+    fun `skipped message keys expire after 7 days`() {
+        val (aliceSession, bobSession) = exchangeKeys()
+        val loc = MessagePlaintext.Location(0.0, 0.0, 0.0, 0L)
+
+        // Alice sends message 1, Bob misses it.
+        val (aS1, _) = Session.encryptMessage(aliceSession, loc)
+        // Alice sends message 2, Bob receives it.
+        val (aS2, m2) = Session.encryptMessage(aS1, loc)
+
+        // Bob receives m2, skipping m1.
+        val (bS2, _) = Session.decryptMessage(bobSession, m2)
+
+        // Bob should have 1 skipped key.
+        assertEquals(1, bS2.skippedMessageKeys.size)
+
+        // Now manually modify the timestamp of the skipped key to be 8 days ago.
+        val cacheKey = bS2.skippedMessageKeys.keys.first()
+        val oldKeyData = bS2.skippedMessageKeys[cacheKey]!!
+        // The new format is 60 bytes. Let's make sure it is at least that.
+        assertTrue(oldKeyData.size >= 60, "Key data should include timestamp (60 bytes total)")
+        val expiredKeyData = oldKeyData.copyOf()
+        val eightDaysAgo = currentTimeMillis() - (8 * 24 * 60 * 60 * 1000L)
+        longToBeBytes(eightDaysAgo).copyInto(expiredKeyData, 52)
+
+        val expiredBobSession = bS2.copy(skippedMessageKeys = mapOf(cacheKey to expiredKeyData))
+
+        // Alice sends message 3.
+        val (aS3, m3) = Session.encryptMessage(aS2, loc)
+
+        // Bob receives m3. This should trigger the purge of the expired key.
+        val (bS3, _) = Session.decryptMessage(expiredBobSession, m3)
+
+        // The expired key should be gone.
+        assertEquals(0, bS3.skippedMessageKeys.size)
+    }
+
+    @Test
     fun `combined skipped key gap too large`() {
         val (aliceSession, bobSession) = exchangeKeys()
         val loc = MessagePlaintext.Location(0.0, 0.0, 0.0, 0L)
