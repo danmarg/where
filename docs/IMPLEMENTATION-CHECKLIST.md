@@ -14,7 +14,7 @@ Split into client-crypto, client-app, and server.
 
 ### Key exchange
 - Generate fresh ephemeral X25519 keypair `EK_A` for Alice's QR code.
-- **QR payload**: `ek_pub` (Alice's `EK_A.pub`, base64), `fingerprint` (first 8 bytes of `SHA-256(EK_A.pub)`, hex), `name` (Alice's display name). Link format: `where://add?ek=<base64>&fp=<fingerprint>&name=<name>`.
+- **QR payload**: `ek_pub` (Alice's `EK_A.pub`, base64), `fingerprint` (first 20 bytes of `SHA-256(EK_A.pub)`, hex), `name` (Alice's display name). Link format: `where://add?ek=<base64>&fp=<fingerprint>&name=<name>`.
 - Alice persists `EK_A.priv` until the exchange completes (Bob replies with `KeyExchangeInit`).
 - Bob scans Alice's QR, generates his own `EK_B`, and sends `KeyExchangeInit`:
   - `SK = X25519(EK_B.priv, EK_A.pub)`.
