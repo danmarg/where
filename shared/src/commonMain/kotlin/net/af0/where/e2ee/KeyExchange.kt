@@ -109,6 +109,13 @@ object KeyExchange {
         val aliceFp = fingerprint(aliceEkPub)
         val bobFp = fingerprint(msg.ekPub)
 
+        // VERIFY TOKEN (#168): Alice MUST verify that Bob computed the same initial routing token.
+        val expectedToken = deriveRoutingToken(sk, aliceFp, bobFp)
+        if (!expectedToken.contentEquals(msg.token)) {
+            sk.fill(0)
+            throw AuthenticationException("KeyExchangeInit token mismatch — possible tampering or protocol error")
+        }
+
         val session =
             initSession(
                 sk = sk,
