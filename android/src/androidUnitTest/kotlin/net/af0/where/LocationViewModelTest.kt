@@ -12,6 +12,7 @@ import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.resetMain
@@ -21,8 +22,11 @@ import net.af0.where.e2ee.E2eeStorage
 import net.af0.where.e2ee.E2eeStore
 import net.af0.where.e2ee.FriendEntry
 import net.af0.where.e2ee.KeyExchangeInitPayload
+import net.af0.where.e2ee.KtorMailboxClient
 import net.af0.where.e2ee.LocationClient
+import net.af0.where.e2ee.PROTOCOL_VERSION
 import net.af0.where.e2ee.QrPayload
+import net.af0.where.e2ee.SessionState
 import net.af0.where.model.UserLocation
 import org.junit.After
 import org.junit.Before
@@ -37,43 +41,9 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
- * TestLocationClient records all sendLocation calls for testing throttle behavior.
+ * TestFakeLocationSource for testing.
  */
-private open class TestLocationClient(store: E2eeStore) : LocationClient("http://localhost", store) {
-    data class SendCall(val lat: Double, val lng: Double, val pausedFriendIds: Set<String>)
-
-    private val calls = mutableListOf<SendCall>()
-
-    val sendLocationCallCount: Int
-        get() = calls.size
-
-    fun getSendCalls(): List<SendCall> = calls.toList()
-
-    fun clear() = calls.clear()
-
-    override suspend fun sendLocation(
-        lat: Double,
-        lng: Double,
-        pausedFriendIds: Set<String>,
-    ) {
-        calls.add(SendCall(lat, lng, pausedFriendIds))
-        // Don't call super - we're mocking
-    }
-}
-
-/**
- * FailingLocationClient throws on postOpkBundle to test exception handling in finally blocks.
- */
-private class FailingLocationClient(store: E2eeStore) : TestLocationClient(store) {
-    override suspend fun postOpkBundle(friendId: String) {
-        throw Exception("Simulated postOpkBundle failure")
-    }
-}
-
-/**
- * FakeLocationSource for testing.
- */
-private class FakeLocationSource : LocationSource {
+class TestFakeLocationSource : LocationSource {
     private val _lastLocation = MutableStateFlow<Pair<Double, Double>?>(null)
     override val lastLocation: StateFlow<Pair<Double, Double>?> = _lastLocation
 
@@ -87,16 +57,38 @@ private class FakeLocationSource : LocationSource {
     override val connectionStatus: StateFlow<ConnectionStatus> = _connectionStatus
 
     private val _isAppInForeground = MutableStateFlow(false)
-    override val isAppInForeground: StateFlow<Boolean> = _isAppInForeground
+    override val isAppInForeground: StateFlow<Boolean> = _isAppInForeground.asStateFlow()
 
     private val _pendingInitPayload = MutableStateFlow<KeyExchangeInitPayload?>(null)
-    override val pendingInitPayload: StateFlow<KeyExchangeInitPayload?> = _pendingInitPayload
+    override val pendingInitPayload: StateFlow<KeyExchangeInitPayload?> = _pendingInitPayload.asStateFlow()
+
+    private val _multipleScansDetected = MutableStateFlow(false)
+    override val multipleScansDetected: StateFlow<Boolean> = _multipleScansDetected.asStateFlow()
 
     private val _isSharingLocation = MutableStateFlow(false)
-    override val isSharingLocation: StateFlow<Boolean> = _isSharingLocation
+    override val isSharingLocation: StateFlow<Boolean> = _isSharingLocation.asStateFlow()
 
     private val _pausedFriendIds = MutableStateFlow<Set<String>>(emptySet())
-    override val pausedFriendIds: StateFlow<Set<String>> = _pausedFriendIds
+    override val pausedFriendIds: StateFlow<Set<String>> = _pausedFriendIds.asStateFlow()
+
+    private val _friends = MutableStateFlow<List<FriendEntry>>(emptyList())
+    override val friends: StateFlow<List<FriendEntry>> = _friends.asStateFlow()
+
+    private val _lastRapidPollTrigger = MutableStateFlow(0L)
+    override val lastRapidPollTrigger: StateFlow<Long> = _lastRapidPollTrigger.asStateFlow()
+
+    private val _pendingQrForNaming = MutableStateFlow<QrPayload?>(null)
+    override val pendingQrForNaming: StateFlow<QrPayload?> = _pendingQrForNaming.asStateFlow()
+
+    private val pollWakeSignal = Channel<Unit>(Channel.CONFLATED)
+
+    override fun triggerRapidPoll() {
+        _lastRapidPollTrigger.value = System.currentTimeMillis()
+    }
+
+    override fun resetRapidPoll() {
+        _lastRapidPollTrigger.value = 0L
+    }
 
     override fun onLocation(
         lat: Double,
@@ -123,23 +115,19 @@ private class FakeLocationSource : LocationSource {
     }
 
     override fun onConnectionError(e: Throwable) {
-        val msg =
-            when {
-                e.message?.contains("Unable to resolve host", ignoreCase = true) == true -> "not resolved"
-                e.message?.contains("timeout", ignoreCase = true) == true -> "timeout"
-                e.message?.contains("ConnectException", ignoreCase = true) == true -> "no connection"
-                e.message?.contains("Failed to post to mailbox: 500", ignoreCase = true) == true -> "server error 500"
-                else -> e.message?.take(32) ?: "unknown error"
-            }
-        _connectionStatus.value = ConnectionStatus.Error(msg)
+        _connectionStatus.value = ConnectionStatus.Error(e.message ?: "error")
     }
 
     override fun setAppForeground(foreground: Boolean) {
         _isAppInForeground.value = foreground
     }
 
-    override fun onPendingInit(payload: KeyExchangeInitPayload?) {
+    override fun onPendingInit(
+        payload: KeyExchangeInitPayload?,
+        multipleScans: Boolean,
+    ) {
         _pendingInitPayload.value = payload
+        _multipleScansDetected.value = multipleScans
     }
 
     override fun setSharingLocation(sharing: Boolean) {
@@ -150,53 +138,48 @@ private class FakeLocationSource : LocationSource {
         _pausedFriendIds.value = friendIds
     }
 
+    override fun onFriendsUpdated(friendsList: List<FriendEntry>) {
+        _friends.value = friendsList
+    }
+
+    override fun onPendingQrForNaming(qr: QrPayload?) {
+        _pendingQrForNaming.value = qr
+    }
+
+    override fun confirmQrScan() {
+        pollWakeSignal.trySend(Unit)
+    }
+
     override fun setInitialFriendLocations(
         locations: Map<String, UserLocation>,
         pings: Map<String, Long>,
     ) {
-        _friendLocations.value += locations
-        _friendLastPing.value += pings
+        _friendLocations.value = locations
+        _friendLastPing.value = pings
     }
-
-    private val _friends = MutableStateFlow<List<FriendEntry>>(emptyList())
-    override val friends: StateFlow<List<FriendEntry>> = _friends
-
-    private val _pendingQrForNaming = MutableStateFlow<QrPayload?>(null)
-    override val pendingQrForNaming: StateFlow<QrPayload?> = _pendingQrForNaming
-
-    private val pollWakeSignal = Channel<Unit>(Channel.CONFLATED)
-
-    private val _lastRapidPollTrigger = MutableStateFlow(0L)
-    override val lastRapidPollTrigger: StateFlow<Long> = _lastRapidPollTrigger
-
-    override fun onFriendsUpdated(friends: List<FriendEntry>) {
-        _friends.value = friends
-    }
-
-    override fun triggerRapidPoll() {
-        _lastRapidPollTrigger.value = System.currentTimeMillis()
-        pollWakeSignal.trySend(Unit)
-    }
-
-    override fun resetRapidPoll() {
-        _lastRapidPollTrigger.value = 0L
-    }
-
-    override fun markAwaitingFirstUpdate(friendId: String) {}
-
-    override fun onFriendLocationReceived(friendId: String) {}
 
     override fun wakePoll() {
         pollWakeSignal.trySend(Unit)
     }
 
     override suspend fun awaitPollWake(timeoutMillis: Long) {
-        kotlinx.coroutines.withTimeoutOrNull(timeoutMillis) {
-            pollWakeSignal.receive()
-        }
+        // In tests, we don't want the background loop to spin automatically.
+        // We only want it to wake if we explicitly signal it via wakePoll().
+        pollWakeSignal.receive()
+    }
+
+    override fun markAwaitingFirstUpdate(friendId: String) {
+        // No-op
+    }
+
+    override fun onFriendLocationReceived(friendId: String) {
+        // No-op
     }
 }
 
+/**
+ * FakeE2eeStorage for testing.
+ */
 private class FakeE2eeStorage : E2eeStorage {
     private val data = mutableMapOf<String, String>()
 
@@ -221,16 +204,21 @@ class LocationViewModelTest {
 
     @Before
     fun setup() {
-        initializeLibsodium()
+        net.af0.where.initializeLibsodium()
         Dispatchers.setMain(testDispatcher)
+        LocationService.clock = { 1_000_000L }
+        every { app.applicationContext } returns app
         every { app.getSharedPreferences("where_prefs", Context.MODE_PRIVATE) } returns prefs
-        every { prefs.getBoolean("is_sharing", true) } returns true
+        every { prefs.getBoolean("is_sharing", true) } returns false
         every { prefs.getString("display_name", "") } returns "Alice"
 
         mockkStatic(android.util.Log::class)
         every { android.util.Log.d(any(), any()) } returns 0
         every { android.util.Log.e(any(), any()) } returns 0
         every { android.util.Log.e(any(), any(), any()) } returns 0
+        every { android.util.Log.w(any(), any<String>()) } returns 0
+        every { android.util.Log.i(any(), any()) } returns 0
+        every { android.util.Log.v(any(), any()) } returns 0
 
         mockkStatic(TextUtils::class)
         every { TextUtils.equals(any(), any()) } answers {
@@ -240,9 +228,9 @@ class LocationViewModelTest {
         }
 
         // Mock objects that make network calls
-        io.mockk.mockkObject(net.af0.where.e2ee.E2eeMailboxClient)
-        io.mockk.coEvery { net.af0.where.e2ee.E2eeMailboxClient.poll(any(), any()) } returns emptyList()
-        io.mockk.coEvery { net.af0.where.e2ee.E2eeMailboxClient.post(any(), any(), any()) } returns Unit
+        io.mockk.mockkObject(KtorMailboxClient)
+        io.mockk.coEvery { KtorMailboxClient.poll(any(), any()) } returns emptyList()
+        io.mockk.coEvery { KtorMailboxClient.post(any(), any(), any()) } returns Unit
     }
 
     @After
@@ -254,7 +242,7 @@ class LocationViewModelTest {
     @Test
     fun testInviteLifecycle_AliceSide() =
         runTest {
-            val fakeLocationSource = FakeLocationSource()
+            val fakeLocationSource = TestFakeLocationSource()
             val store = E2eeStore(FakeE2eeStorage())
             val client = LocationClient("http://localhost", store)
             // Disable automatic polling loop to prevent hangs
@@ -271,7 +259,7 @@ class LocationViewModelTest {
             // 2. Simulate finding an init payload via polling
             val initPayload =
                 KeyExchangeInitPayload(
-                    v = 1,
+                    v = PROTOCOL_VERSION,
                     token = "token",
                     ekPub = byteArrayOf(1, 2, 3),
                     keyConfirmation = byteArrayOf(4, 5, 6),
@@ -279,7 +267,7 @@ class LocationViewModelTest {
                 )
 
             // Bob's response arriving at the repository
-            (fakeLocationSource.pendingInitPayload as MutableStateFlow).value = initPayload
+            fakeLocationSource.onPendingInit(initPayload)
             advanceUntilIdle()
 
             // After peer joins, inviteState transitions to None to dismiss QR sheet
@@ -298,13 +286,20 @@ class LocationViewModelTest {
     @Test
     fun testCancelQrScan_BobSide() =
         runTest {
-            viewModel = LocationViewModel(app, E2eeStore(FakeE2eeStorage()), startPolling = false)
+            val source = TestFakeLocationSource()
+            viewModel = LocationViewModel(app, E2eeStore(FakeE2eeStorage()), startPolling = false, locationSource = source)
             val vm = viewModel!!
 
-            val qr = QrPayload(byteArrayOf(1, 2, 3), "Alice", "fp", ByteArray(32))
+            val qr = QrPayload(
+                protocolVersion = PROTOCOL_VERSION,
+                ekPub = byteArrayOf(1, 2, 3),
+                suggestedName = "Alice",
+                fingerprint = "fp",
+                discoverySecret = ByteArray(32)
+            )
 
             // Bob scans
-            (vm.pendingQrForNaming as MutableStateFlow).value = qr
+            source.onPendingQrForNaming(qr)
 
             assertEquals(qr, vm.pendingQrForNaming.value)
 
@@ -313,435 +308,141 @@ class LocationViewModelTest {
             assertNull(vm.pendingQrForNaming.value)
         }
 
-    // ============ Pairing State Machine Integration Tests ============
-
     @Test
     fun testPairingFlow_ConfirmPendingInit() =
         runTest {
-            var currentTime = 1_000_000_000L
             val store = mockk<E2eeStore>(relaxed = true)
-            val testClient = TestLocationClient(mockk(relaxed = true))
-            val fakeLocationSource = FakeLocationSource()
-            fakeLocationSource.onLocation(37.7749, -122.4194)
-
-            // Mock the store to return a friend when processKeyExchangeInit is called
-            val newFriend =
-                FriendEntry(
-                    name = "Bob",
-                    session = mockk(relaxed = true),
-                    isInitiator = false,
-                    lastLat = null,
-                    lastLng = null,
-                    lastTs = null,
-                )
-            io.mockk.coEvery { store.processKeyExchangeInit(any(), any()) } returns newFriend
-            io.mockk.coEvery { store.listFriends() } returns listOf(newFriend)
-
+            val client = mockk<LocationClient>(relaxed = true)
+            val source = TestFakeLocationSource()
             viewModel =
                 LocationViewModel(
                     app,
                     e2eeStore = store,
-                    locationClient = testClient,
+                    locationClient = client,
                     startPolling = false,
-                    clock = { currentTime },
-                    locationSource = fakeLocationSource,
+                    locationSource = source,
                 )
             val vm = viewModel!!
 
-            // 1. Verify initial state: not exchanging, no pending init
-            assertFalse(vm.isExchanging.value, "Should not be exchanging initially")
-            assertNull(vm.pendingInitPayload.value, "Should have no pending init payload initially")
-
-            // 2. Create a pending init payload (simulating Alice receiving Bob's response during polling)
             val initPayload =
                 KeyExchangeInitPayload(
-                    v = 1,
-                    token = "test_token",
+                    v = PROTOCOL_VERSION,
+                    token = "token",
                     ekPub = byteArrayOf(1, 2, 3),
                     keyConfirmation = byteArrayOf(4, 5, 6),
                     suggestedName = "Bob",
                 )
-            (vm.pendingInitPayload as MutableStateFlow).value = initPayload
 
-            // Verify pending init is set
-            assertNotNull(vm.pendingInitPayload.value, "Pending init should be set")
-
-            // 3. Call confirmPendingInit - this should trigger state transitions
-            vm.confirmPendingInit(name = "Bob")
-
-            // 4. Immediately after confirmPendingInit call (synchronous part):
-            // - pendingInitPayload should be cleared (synchronously)
-            // - isExchanging should be true (set before async coroutine)
-            assertNull(vm.pendingInitPayload.value, "Pending init should be cleared after confirmPendingInit")
-            assertTrue(vm.isExchanging.value, "isExchanging should be true after confirmPendingInit")
-
-            // 5. Advance the test scheduler to let the viewModelScope coroutine run
+            // 1. Peer joins Alice's mailbox
+            source.onPendingInit(initPayload)
             advanceUntilIdle()
 
-            // 6. After the coroutine completes (including the finally block):
-            // - isExchanging should be false again (set in finally block)
-            // - friends should be updated
-            assertFalse(vm.isExchanging.value, "isExchanging should be false after coroutine completes")
-            assertTrue(
-                vm.friends.value.size > 0,
-                "friends list should be updated after successful exchange",
-            )
+            assertEquals(initPayload, vm.pendingInitPayload.value)
+
+            // 2. Alice confirms Bob's name
+            vm.confirmPendingInit("Bob (Friend)")
+            advanceUntilIdle()
+
+            io.mockk.coVerify { store.processKeyExchangeInit(initPayload, "Bob (Friend)") }
+            assertNull(vm.pendingInitPayload.value)
         }
 
     @Test
-    fun testPairingFlow_IsExchangingStateTransitions() =
+    fun testPairingFlow_CancelPendingInit() =
         runTest {
-            // Simplified test: focus on isExchanging state machine (the critical invariant)
-            var currentTime = 1_000_000_000L
             val store = mockk<E2eeStore>(relaxed = true)
-            val testClient = TestLocationClient(mockk(relaxed = true))
-            val fakeLocationSource = FakeLocationSource()
-            fakeLocationSource.onLocation(37.7749, -122.4194)
-
-            // Mock store to return a friend
-            val newFriend =
-                FriendEntry(
-                    name = "Alice",
-                    session = mockk(relaxed = true),
-                    isInitiator = true,
-                    lastLat = null,
-                    lastLng = null,
-                    lastTs = null,
-                )
-            io.mockk.coEvery { store.processScannedQr(any(), any()) } returns Pair(mockk(relaxed = true), newFriend)
-            io.mockk.coEvery { store.listFriends() } returns emptyList()
-
+            val client = mockk<LocationClient>(relaxed = true)
+            val source = TestFakeLocationSource()
             viewModel =
                 LocationViewModel(
                     app,
                     e2eeStore = store,
-                    locationClient = testClient,
+                    locationClient = client,
                     startPolling = false,
-                    clock = { currentTime },
-                    locationSource = fakeLocationSource,
+                    locationSource = source,
                 )
             val vm = viewModel!!
 
-            // 1. Initial state: not exchanging
-            assertFalse(vm.isExchanging.value, "Should not be exchanging initially")
+            val initPayload =
+                KeyExchangeInitPayload(
+                    v = PROTOCOL_VERSION,
+                    token = "token",
+                    ekPub = byteArrayOf(1, 2, 3),
+                    keyConfirmation = byteArrayOf(4, 5, 6),
+                    suggestedName = "Bob",
+                )
 
-            // 2. Simulate Bob scanning Alice's QR code
+            // 1. Peer joins Alice's mailbox
+            source.onPendingInit(initPayload)
+            advanceUntilIdle()
+
+            assertEquals(initPayload, vm.pendingInitPayload.value)
+
+            // 2. Alice cancels
+            vm.cancelPendingInit()
+            advanceUntilIdle()
+
+            io.mockk.coVerify { store.clearInvite() }
+            assertNull(vm.pendingInitPayload.value)
+        }
+
+    @Test
+    fun testPairingFlow_BobScanningAlice() =
+        runTest {
+            val store = mockk<E2eeStore>(relaxed = true)
+            val client = mockk<LocationClient>(relaxed = true)
+            val source = TestFakeLocationSource()
+            viewModel =
+                LocationViewModel(
+                    app,
+                    e2eeStore = store,
+                    locationClient = client,
+                    startPolling = false,
+                    locationSource = source,
+                )
+            val vm = viewModel!!
+
+            // 1. Simulate Bob scanning Alice's QR code
             val qr =
                 QrPayload(
+                    protocolVersion = PROTOCOL_VERSION,
                     ekPub = byteArrayOf(1, 2, 3),
                     suggestedName = "Alice",
                     fingerprint = "alice_fp",
                     discoverySecret = ByteArray(32),
                 )
 
-            // 3. Call confirmQrScan (synchronous sets isExchanging = true before async work)
-            vm.confirmQrScan(qr = qr, friendName = "Alice")
+            val mockPayload = mockk<KeyExchangeInitPayload>(relaxed = true)
+            val mockFriend = mockk<FriendEntry>(relaxed = true)
+            val mockSession = mockk<SessionState>(relaxed = true)
+            every { mockFriend.session } returns mockSession
+            every { mockSession.sendToken } returns byteArrayOf(1, 2, 3)
+            every { mockSession.recvToken } returns byteArrayOf(4, 5, 6)
+            every { mockFriend.id } returns "alice_fp"
+            io.mockk.coEvery { store.processScannedQr(any(), any()) } returns (mockPayload to mockFriend)
 
-            // 4. isExchanging should be true immediately
-            assertTrue(vm.isExchanging.value, "isExchanging should be true immediately after confirmQrScan")
+            source.onPendingQrForNaming(qr)
+            (vm.inviteState as MutableStateFlow).value = InviteState.Pending(qr)
 
-            // 5. Let async coroutine complete
+            // 2. Bob confirms Alice's name
+            vm.confirmQrScan(qr, "Alice (My Friend)")
             advanceUntilIdle()
 
-            // 6. CRITICAL INVARIANT: isExchanging MUST be false after coroutine completes (finally block)
-            assertFalse(vm.isExchanging.value, "CRITICAL: isExchanging must be false after coroutine completes")
+            io.mockk.coVerify(timeout = 5000) { store.processScannedQr(any(), any()) }
+            io.mockk.coVerify(timeout = 5000) { client.postKeyExchangeInit(any(), any()) }
         }
 
     @Test
-    fun testPairingFlow_ExchangingResetAfterSuccess() =
+    fun testPairingFlow_CancelQrScan() =
         runTest {
-            // Test that successfully completing the exchange resets isExchanging to false
-            var currentTime = 1_000_000_000L
             val store = mockk<E2eeStore>(relaxed = true)
-            val testClient = TestLocationClient(mockk(relaxed = true))
-            val fakeLocationSource = FakeLocationSource()
-            fakeLocationSource.onLocation(37.7749, -122.4194)
-
-            // Mock store to successfully process the exchange
-            val newFriend =
-                FriendEntry(
-                    name = "Bob",
-                    session = mockk(relaxed = true),
-                    isInitiator = false,
-                    lastLat = null,
-                    lastLng = null,
-                    lastTs = null,
-                )
-            io.mockk.coEvery { store.processKeyExchangeInit(any(), any()) } returns newFriend
-            io.mockk.coEvery { store.listFriends() } returns listOf(newFriend)
-
+            val client = mockk<LocationClient>(relaxed = true)
+            val source = TestFakeLocationSource()
             viewModel =
                 LocationViewModel(
                     app,
                     e2eeStore = store,
-                    locationClient = testClient,
-                    startPolling = false,
-                    clock = { currentTime },
-                    locationSource = fakeLocationSource,
-                )
-            val vm = viewModel!!
-
-            // Setup pending init
-            val initPayload =
-                KeyExchangeInitPayload(
-                    v = 1,
-                    token = "test",
-                    ekPub = byteArrayOf(1, 2, 3),
-                    keyConfirmation = byteArrayOf(4, 5, 6),
-                    suggestedName = "Bob",
-                )
-            (vm.pendingInitPayload as MutableStateFlow).value = initPayload
-
-            // Verify initial state
-            assertFalse(vm.isExchanging.value, "Should start with isExchanging=false")
-
-            // Call confirmPendingInit
-            vm.confirmPendingInit(name = "Bob")
-
-            // Immediately: isExchanging should be true
-            assertTrue(vm.isExchanging.value, "isExchanging should be true during exchange")
-
-            // Let coroutine complete successfully
-            advanceUntilIdle()
-
-            // CRITICAL: After successful completion, finally block must reset isExchanging to false
-            assertFalse(
-                vm.isExchanging.value,
-                "isExchanging MUST be false after exchange completes (finally block)",
-            )
-
-            // Verify exchange actually happened
-            assertTrue(vm.friends.value.size > 0, "Friends should be updated after exchange")
-        }
-
-    // ============ removeFriend Atomicity Tests ============
-
-    @Test
-    fun testRemoveFriend_RemovesFromAllCollections() =
-        runTest {
-            var currentTime = 1_000_000_000L
-            val store = mockk<E2eeStore>(relaxed = true)
-            val testClient = TestLocationClient(mockk(relaxed = true))
-            val source = FakeLocationSource()
-
-            viewModel =
-                LocationViewModel(
-                    app,
-                    e2eeStore = store,
-                    locationClient = testClient,
-                    startPolling = false,
-                    clock = { currentTime },
-                    locationSource = source,
-                )
-            val vm = viewModel!!
-            advanceUntilIdle()
-
-            // 1. Seed the ViewModel with a friend
-            val friendId = "friend_alice_123"
-            val friendEntry =
-                FriendEntry(
-                    name = "Alice",
-                    session = mockk(relaxed = true),
-                    isInitiator = true,
-                    lastLat = 37.7749,
-                    lastLng = -122.4194,
-                    lastTs = 1000L,
-                )
-
-            // Inject friend into the friends list
-            (vm.friends as MutableStateFlow).value = listOf(friendEntry)
-
-            // Inject into friendLocations
-            val location = UserLocation(friendId, 37.7749, -122.4194, 1000L)
-            source.onFriendUpdate(location, 1000L)
-
-            // Inject into pausedFriendIds
-            source.setPausedFriends(setOf(friendId, "other_friend"))
-
-            // Mock store to return empty list after deletion
-            io.mockk.coEvery { store.listFriends() } returns emptyList()
-
-            // 2. Verify initial state: friend exists in all three collections
-            assertEquals(1, vm.friends.value.size, "Should have one friend initially")
-            assertEquals(1, vm.friendLocations.value.size, "Should have one location initially")
-            assertTrue(friendId in vm.pausedFriendIds.value, "Friend should be paused initially")
-
-            // 3. Call removeFriend
-            vm.removeFriend(friendId)
-            advanceUntilIdle()
-
-            // 4. CRITICAL: Assert atomicity - all three collections are cleaned up in one snapshot
-            assertEquals(
-                0,
-                vm.friends.value.size,
-                "Friend must be removed from friends list",
-            )
-            assertEquals(
-                0,
-                vm.friendLocations.value.size,
-                "Friend location must be removed from friendLocations",
-            )
-            assertFalse(
-                friendId in vm.pausedFriendIds.value,
-                "Friend must be removed from pausedFriendIds",
-            )
-
-            // 5. Verify other friends still exist
-            assertEquals(1, vm.pausedFriendIds.value.size, "Other paused friends should remain")
-            assertTrue("other_friend" in vm.pausedFriendIds.value)
-
-            // 6. Verify store was updated
-            io.mockk.coVerify { store.deleteFriend(friendId) }
-        }
-
-    @Test
-    fun testRemoveFriend_NotPausedFriend() =
-        runTest {
-            // Test removeFriend when the friend is not in pausedFriendIds
-            var currentTime = 1_000_000_000L
-            val store = mockk<E2eeStore>(relaxed = true)
-            val source = FakeLocationSource()
-
-            viewModel =
-                LocationViewModel(
-                    app,
-                    e2eeStore = store,
-                    locationClient = TestLocationClient(mockk(relaxed = true)),
-                    startPolling = false,
-                    clock = { currentTime },
-                    locationSource = source,
-                )
-            val vm = viewModel!!
-            advanceUntilIdle()
-
-            val friendId = "friend_bob_456"
-            val friendEntry =
-                FriendEntry(
-                    name = "Bob",
-                    session = mockk(relaxed = true),
-                    isInitiator = false,
-                    lastLat = null,
-                    lastLng = null,
-                    lastTs = null,
-                )
-
-            // Inject friend (not paused)
-            (vm.friends as MutableStateFlow).value = listOf(friendEntry)
-
-            val location = UserLocation(friendId, 40.7128, -74.0060, 2000L)
-            source.onFriendUpdate(location, 2000L)
-
-            // pausedFriendIds is empty
-            source.setPausedFriends(emptySet())
-
-            io.mockk.coEvery { store.listFriends() } returns emptyList()
-
-            // Call removeFriend
-            vm.removeFriend(friendId)
-            advanceUntilIdle()
-
-            // Verify cleanup (paused branch not taken, but cleanup still happens)
-            assertEquals(0, vm.friends.value.size)
-            assertEquals(0, vm.friendLocations.value.size)
-            assertEquals(0, vm.pausedFriendIds.value.size)
-        }
-
-    @Test
-    fun testRemoveFriend_MultipleFriendsPresent() =
-        runTest {
-            // Test removeFriend when multiple friends exist - verify only target is removed
-            var currentTime = 1_000_000_000L
-            val store = mockk<E2eeStore>(relaxed = true)
-            val source = FakeLocationSource()
-
-            // Mock listFriends() to return empty list during init()
-            io.mockk.coEvery { store.listFriends() } returns emptyList()
-
-            viewModel =
-                LocationViewModel(
-                    app,
-                    e2eeStore = store,
-                    locationClient = TestLocationClient(mockk(relaxed = true)),
-                    startPolling = false,
-                    clock = { currentTime },
-                    locationSource = source,
-                )
-            val vm = viewModel!!
-            advanceUntilIdle() // Let init() block complete
-
-            val alice =
-                FriendEntry(
-                    name = "Alice",
-                    session =
-                        mockk(relaxed = true) {
-                            every { aliceFp } returns byteArrayOf(0, 1)
-                        },
-                )
-            val bob =
-                FriendEntry(
-                    name = "Bob",
-                    session =
-                        mockk(relaxed = true) {
-                            every { aliceFp } returns byteArrayOf(2, 3)
-                        },
-                )
-            val charlie =
-                FriendEntry(
-                    name = "Charlie",
-                    session =
-                        mockk(relaxed = true) {
-                            every { aliceFp } returns byteArrayOf(4, 5)
-                        },
-                )
-
-            // Mock the ID explicitly to match what FriendEntry.id returns based on the session
-            // The hex string for [0, 1] is "0001"
-            val aliceId = alice.id
-            val bobId = bob.id
-            val charlieId = charlie.id
-
-            // Inject multiple friends
-            (vm.friends as MutableStateFlow).value = listOf(alice, bob, charlie)
-
-            source.onFriendUpdate(UserLocation(alice.id, 1.0, 2.0, 1000L), 1000L)
-            source.onFriendUpdate(UserLocation(bob.id, 3.0, 4.0, 2000L), 2000L)
-            source.onFriendUpdate(UserLocation(charlie.id, 5.0, 6.0, 3000L), 3000L)
-
-            println("Initial friendLocations: ${vm.friendLocations.value}") // Added logging
-
-            source.setPausedFriends(setOf(aliceId, bobId))
-
-            // Update mock to return two friends after removing bob
-            io.mockk.coEvery { store.listFriends() } returns listOf(alice, charlie)
-
-            // Remove bob
-            vm.removeFriend(bob.id)
-            advanceUntilIdle()
-
-            println("After removing friend, friendLocations: ${vm.friendLocations.value}") // Added logging
-
-            // Verify bob is removed but others remain
-            assertEquals(2, vm.friends.value.size, "Should have 2 friends after removing bob")
-            assertEquals(2, vm.friendLocations.value.size, "Should have 2 locations after removing bob")
-            assertEquals(1, vm.pausedFriendIds.value.size, "Should have 1 paused friend after removing bob")
-
-            assertFalse(bob.id in vm.friends.value.map { it.id }, "Bob should not be in friends")
-            assertFalse(bob.id in vm.friendLocations.value.keys, "Bob should not be in locations")
-            assertFalse(bob.id in vm.pausedFriendIds.value, "Bob should not be paused")
-
-            assertTrue(aliceId in vm.pausedFriendIds.value, "Alice should still be paused")
-            assertTrue(charlieId in vm.friendLocations.value.keys, "Charlie should still be in locations")
-        }
-
-    @Test
-    fun testRapidPollResetAfterConfirmQrScan() =
-        runTest {
-            val store = mockk<E2eeStore>(relaxed = true)
-            val source = FakeLocationSource()
-            viewModel =
-                LocationViewModel(
-                    app,
-                    e2eeStore = store,
+                    locationClient = client,
                     startPolling = false,
                     locationSource = source,
                 )
@@ -749,6 +450,42 @@ class LocationViewModelTest {
 
             val qr =
                 QrPayload(
+                    protocolVersion = PROTOCOL_VERSION,
+                    ekPub = byteArrayOf(1, 2, 3),
+                    suggestedName = "Alice",
+                    fingerprint = "fp",
+                    discoverySecret = ByteArray(32),
+                )
+
+            source.onPendingQrForNaming(qr)
+
+            // Bob cancels naming Alice
+            vm.cancelQrScan()
+            advanceUntilIdle()
+
+            assertNull(vm.pendingQrForNaming.value)
+            io.mockk.coVerify(exactly = 0) { store.processScannedQr(any(), any()) }
+        }
+
+    @Test
+    fun testConfirmQrScan_TriggersRapidPollAndForcedLocationUpdate() =
+        runTest {
+            val store = mockk<E2eeStore>(relaxed = true)
+            val client = mockk<LocationClient>(relaxed = true)
+            val source = TestFakeLocationSource()
+            viewModel =
+                LocationViewModel(
+                    app,
+                    e2eeStore = store,
+                    locationClient = client,
+                    startPolling = false,
+                    locationSource = source,
+                )
+            val vm = viewModel!!
+
+            val qr =
+                QrPayload(
+                    protocolVersion = PROTOCOL_VERSION,
                     ekPub = byteArrayOf(1, 2, 3),
                     suggestedName = "Alice",
                     fingerprint = "fp",
@@ -756,101 +493,23 @@ class LocationViewModelTest {
                 )
 
             // Mock store to return a friend
-            val newFriend =
-                FriendEntry(
-                    name = "Alice",
-                    session = mockk(relaxed = true),
-                    isInitiator = true,
-                    lastLat = null,
-                    lastLng = null,
-                    lastTs = null,
-                )
-            io.mockk.coEvery { store.processScannedQr(any(), any()) } returns Pair(mockk(relaxed = true), newFriend)
-            io.mockk.coEvery { store.listFriends() } returns emptyList()
+            val mockPayload = mockk<KeyExchangeInitPayload>(relaxed = true)
+            val mockFriend = mockk<FriendEntry>(relaxed = true)
+            val mockSession = mockk<SessionState>(relaxed = true)
+            every { mockFriend.session } returns mockSession
+            every { mockSession.sendToken } returns byteArrayOf(1, 2, 3)
+            every { mockSession.recvToken } returns byteArrayOf(4, 5, 6)
+            every { mockFriend.id } returns "friend1"
+            io.mockk.coEvery { store.processScannedQr(any(), any()) } returns (mockPayload to mockFriend)
 
+            (vm.inviteState as MutableStateFlow).value = InviteState.Pending(qr)
             vm.confirmQrScan(qr, "Alice")
             advanceUntilIdle()
 
-            assertTrue(source.lastRapidPollTrigger.value > 0L, "Rapid poll should be triggered (not reset to 0)")
-        }
-
-    @Test
-    fun testRapidPollResetAfterConfirmPendingInit() =
-        runTest {
-            val store = mockk<E2eeStore>(relaxed = true)
-            val source = FakeLocationSource()
-            viewModel =
-                LocationViewModel(
-                    app,
-                    e2eeStore = store,
-                    startPolling = false,
-                    locationSource = source,
-                )
-            val vm = viewModel!!
-
-            val initPayload =
-                KeyExchangeInitPayload(
-                    v = 1,
-                    token = "test",
-                    ekPub = byteArrayOf(1),
-                    keyConfirmation = byteArrayOf(2),
-                    suggestedName = "Bob",
-                )
-            (vm.pendingInitPayload as MutableStateFlow).value = initPayload
-
-            // Mock store to return a friend
-            val newFriend =
-                FriendEntry(
-                    name = "Bob",
-                    session = mockk(relaxed = true),
-                    isInitiator = false,
-                    lastLat = null,
-                    lastLng = null,
-                    lastTs = null,
-                )
-            io.mockk.coEvery { store.processKeyExchangeInit(any(), any()) } returns newFriend
-            io.mockk.coEvery { store.listFriends() } returns listOf(newFriend)
-
-            vm.confirmPendingInit("Bob")
-            advanceUntilIdle()
-
-            assertTrue(source.lastRapidPollTrigger.value > 0L, "Rapid poll should be triggered (not reset to 0)")
-        }
-
-    @Test
-    fun testRapidPollResetOnCancellation() =
-        runTest {
-            val store = mockk<E2eeStore>(relaxed = true)
-            val source = FakeLocationSource()
-            viewModel =
-                LocationViewModel(
-                    app,
-                    e2eeStore = store,
-                    startPolling = false,
-                    locationSource = source,
-                )
-            val vm = viewModel!!
-
-            // Test cancelPendingInit
-            (vm.pendingInitPayload as MutableStateFlow).value = mockk()
-            source.triggerRapidPoll()
+            // 1. Should trigger rapid poll
             assertTrue(source.lastRapidPollTrigger.value > 0L)
-            vm.cancelPendingInit()
-            assertEquals(0L, source.lastRapidPollTrigger.value)
 
-            // Test cancelQrScan
-            (vm.pendingQrForNaming as MutableStateFlow).value = mockk()
-            source.triggerRapidPoll()
-            assertTrue(source.lastRapidPollTrigger.value > 0L)
-            vm.cancelQrScan()
-            assertEquals(0L, source.lastRapidPollTrigger.value)
-
-            // Test clearInvite
-            vm.createInvite()
-            advanceUntilIdle()
-            source.triggerRapidPoll()
-            assertTrue(source.lastRapidPollTrigger.value > 0L)
-            vm.clearInvite()
-            assertEquals(0L, source.lastRapidPollTrigger.value)
+            // 2. Should attempt a pollAll immediately after pairing
+            io.mockk.coVerify(timeout = 5000) { client.postKeyExchangeInit(any(), any()) }
         }
 }

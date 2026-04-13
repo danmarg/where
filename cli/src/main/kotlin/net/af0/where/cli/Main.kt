@@ -100,6 +100,7 @@ fun urlToQrPayload(url: String): QrPayload? {
     val discoverySecret = map["discoverySecret"]?.let { Base64.getDecoder().decode(it) } ?: return null
     if (ekPub.size != 32 || discoverySecret.size != 32) return null
     return QrPayload(
+        protocolVersion = PROTOCOL_VERSION,
         ekPub = ekPub,
         suggestedName = map["suggestedName"] ?: "Friend",
         fingerprint = map["fingerprint"] ?: "",

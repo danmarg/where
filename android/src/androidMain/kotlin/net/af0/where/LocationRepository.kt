@@ -69,6 +69,10 @@ interface LocationSource {
 
     fun onFriendsUpdated(friends: List<FriendEntry>)
 
+    fun onPendingQrForNaming(qr: QrPayload?)
+
+    fun confirmQrScan()
+
     fun triggerRapidPoll()
 
     fun resetRapidPoll()
@@ -188,8 +192,12 @@ object LocationRepository : LocationSource {
     }
 
     /** Called by ViewModel to notify Bob scanned a QR and is naming the friend. */
-    fun onPendingQrForNaming(qr: QrPayload?) {
+    override fun onPendingQrForNaming(qr: QrPayload?) {
         _pendingQrForNaming.value = qr
+    }
+
+    override fun confirmQrScan() {
+        pollWakeSignal.trySend(Unit)
     }
 
     override fun setSharingLocation(sharing: Boolean) {
