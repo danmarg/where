@@ -375,32 +375,60 @@ class SessionTest {
     }
 
     @Test
-    fun `corrupted padding is rejected even if length is valid`() {
+    fun `corrupted padding is rejected even if marker is valid`() {
         // Test padding logic directly.
         val data = "hello".encodeToByteArray()
         val padded = Session.padToFixedSize(data, 16)
-        assertEquals(11, padded[15].toInt() and 0xFF) // padCount = 16 - 5 = 11
+        assertEquals(0x80.toByte(), padded[5]) // first pad byte is 0x80
 
         // Valid case
         val unpadded = Session.unpad(padded)
         assertContentEquals(data, unpadded)
 
-        // Corrupted padding byte (not length)
+        // Corrupted padding byte (not marker)
         val corruptedBody = padded.copyOf()
-        corruptedBody[8] = 0xEE.toByte() // inside padding area
+        corruptedBody[8] = 0xEE.toByte() // inside padding area (should be 0x00)
         try {
             Session.unpad(corruptedBody)
-            kotlin.test.fail("Expected IllegalArgumentException for corrupted padding body")
+            kotlin.test.fail("Expected ProtocolException for corrupted padding body")
         } catch (e: Exception) {
             // Success: unpad rejected the corruption
         }
 
-        // Corrupted length
-        val corruptedLen = padded.copyOf()
-        corruptedLen[15] = 0x01.toByte() // says padCount=1 but it's >= 2
+        // Missing marker
+        val missingMarker = padded.copyOf()
+        missingMarker[5] = 0x00.toByte()
         try {
-            Session.unpad(corruptedLen)
-            kotlin.test.fail("Expected IllegalArgumentException for invalid padCount")
+            Session.unpad(missingMarker)
+            kotlin.test.fail("Expected ProtocolException for missing marker")
+        } catch (e: Exception) {
+            // Success
+        }
+    }
+
+    @Test
+    fun `large padding counts work correctly and are validated`() {
+        // Test padding logic for data smaller than size - 255 (issue #191 scenario)
+        val size = 512
+        val data = ByteArray(10) { it.toByte() }
+        val padded = Session.padToFixedSize(data, size)
+        
+        // Marker should be at index 10
+        assertEquals(0x80.toByte(), padded[10])
+        for (i in 11 until size) {
+            assertEquals(0x00.toByte(), padded[i])
+        }
+
+        // Valid case
+        val unpadded = Session.unpad(padded)
+        assertContentEquals(data, unpadded)
+
+        // Corrupted high-range padding (which was the bug in #191)
+        val corrupted = padded.copyOf()
+        corrupted[500] = 0x01.toByte() // Flip a byte in the large padding area
+        try {
+            Session.unpad(corrupted)
+            kotlin.test.fail("Expected ProtocolException for corrupted large padding")
         } catch (e: Exception) {
             // Success
         }
