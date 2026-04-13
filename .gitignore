@@ -14,3 +14,7 @@ xcuserdata/
 DerivedData/
 .build/
 *.log
+.android*
+.gradle_home/
+holes.sb
+.kotlin/
