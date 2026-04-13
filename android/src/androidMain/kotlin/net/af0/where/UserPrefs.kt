@@ -1,7 +1,6 @@
 package net.af0.where
 
 import android.content.Context
-import net.af0.where.e2ee.LocationPrecision
 import net.af0.where.e2ee.UserStore
 
 /**
@@ -31,8 +30,4 @@ object UserPrefs {
 
     fun setLastLocation(context: Context, lat: Double, lng: Double, zoom: Float) =
         store(context).setLastMapCamera(lat, lng, zoom)
-
-    fun getDefaultPrecision(context: Context): LocationPrecision = store(context).defaultPrecision.value
-
-    fun setDefaultPrecision(context: Context, precision: LocationPrecision) = store(context).setDefaultPrecision(precision)
 }

@@ -24,7 +24,6 @@ import com.google.android.gms.maps.model.LatLng
 import com.google.maps.android.compose.*
 import net.af0.where.e2ee.ConnectionStatus
 import net.af0.where.e2ee.FriendEntry
-import net.af0.where.e2ee.LocationPrecision
 import net.af0.where.model.UserLocation
 
 @OptIn(ExperimentalPermissionsApi::class, ExperimentalMaterial3Api::class)
@@ -46,7 +45,6 @@ fun MapScreen(
     friendLastPing: Map<String, Long>,
     onRenameFriend: (String, String) -> Unit,
     onRemoveFriend: (String) -> Unit,
-    onSetPrecision: (String, LocationPrecision) -> Unit,
     onLocationPermissionGranted: () -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
@@ -337,7 +335,6 @@ fun MapScreen(
             onPasteUrl = onPasteUrl,
             onRename = onRenameFriend,
             onRemove = onRemoveFriend,
-            onSetPrecision = onSetPrecision,
             onDismiss = { showFriends = false },
             onZoomTo = { zoomToUserId = it },
         )

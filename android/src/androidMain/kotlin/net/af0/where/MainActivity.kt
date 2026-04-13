@@ -109,7 +109,6 @@ class MainActivity : ComponentActivity() {
                     friendLastPing = friendLastPing,
                     onRenameFriend = { id, name -> viewModel.renameFriend(id, name) },
                     onRemoveFriend = { viewModel.removeFriend(it) },
-                    onSetPrecision = { id, precision -> viewModel.setFriendPrecision(id, precision) },
                     onLocationPermissionGranted = ::startLocationService,
                 )
 

@@ -55,8 +55,6 @@ data class FriendEntry(
     val sharingEnabled: Boolean = true,
     /** Optional outbox for transactional recovery (§5.4). */
     val outbox: EncryptedOutboxMessage? = null,
-    /** Location precision for sharing with this friend. */
-    val precision: LocationPrecision = LocationPrecision.FINE,
 ) {
     companion object {
         /** §12: Surface a "no recent location" warning after 7 days of silence. */
@@ -103,7 +101,6 @@ data class FriendEntry(
         result = 31 * result + isConfirmed.hashCode()
         result = 31 * result + sharingEnabled.hashCode()
         result = 31 * result + (outbox?.hashCode() ?: 0)
-        result = 31 * result + precision.hashCode()
         return result
     }
 }
@@ -164,7 +161,6 @@ class E2eeStore(
                             lastSentTs = s.lastSentTs,
                             sharingEnabled = s.sharingEnabled,
                             outbox = s.outbox,
-                            precision = s.precision,
                         )
                     entry.id to entry
                 }.toMutableMap()
@@ -194,7 +190,6 @@ class E2eeStore(
                             lastSentTs = f.lastSentTs,
                             sharingEnabled = f.sharingEnabled,
                             outbox = f.outbox,
-                            precision = f.precision,
                         )
                     },
                 pendingInvite = pendingInvite,
@@ -331,17 +326,6 @@ class E2eeStore(
         }
     }
 
-    suspend fun updateFriendPrecision(
-        id: String,
-        precision: LocationPrecision,
-    ) {
-        stateLock.withLock {
-            val entry = friends[id] ?: return@withLock
-            friends[id] = entry.copy(precision = precision)
-            save()
-        }
-    }
-
     suspend fun deleteFriend(id: String) {
         stateLock.withLock {
             if (friends.remove(id) != null) {
@@ -361,15 +345,7 @@ class E2eeStore(
         stateLock.withLock {
             val entry = friends[friendId] ?: throw Exception("Friend not found: $friendId")
 
-            // Apply location blurring if coarse precision is requested (§4)
-            val finalPayload =
-                if (payload is MessagePlaintext.Location) {
-                    payload.copy(precision = entry.precision).blur()
-                } else {
-                    payload
-                }
-
-            val (newSession, message) = Session.encryptMessage(entry.session, finalPayload)
+            val (newSession, message) = Session.encryptMessage(entry.session, payload)
 
             // NONCE SAFETY ASSERTION (§5.4): The sequence number MUST advance.
             // If we are transitioning tokens, the new root key ensures uniqueness even if
@@ -618,7 +594,6 @@ internal data class SerializedFriendEntry(
     val lastSentTs: Long = 0L,
     val sharingEnabled: Boolean = true,
     val outbox: EncryptedOutboxMessage? = null,
-    val precision: LocationPrecision = LocationPrecision.FINE,
 )
 
 @Serializable
