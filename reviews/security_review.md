@@ -280,7 +280,7 @@ There is no implementation of this dual-polling logic in any of the reviewed fil
 | `Session.kt` | `aliceEpochRotation` return | §8.3 Token Transition | API does not enforce that `EpochRotation` is sent on the *old* `sendToken`. Old token is not returned; caller must capture it before calling the function. Easy to misuse. | **Medium** |
 | `Session.kt` | `bobProcessAliceRotation` | §8.3 Token Transition | Dual-polling window not implemented. Old `recvToken` is immediately discarded. Bob may miss frames in the overlap window. | **Medium** |
 | `Session.kt` | `encryptLocation` KDoc | §3.4 / §8.3 | KDoc describes `senderFp` as `SHA-256(IK.pub \|\| SigIK.pub)` — X3DH leftover. Spec defines `alice_fp = SHA-256(EK_A.pub)`. Wrong documentation could cause callers to pass incorrect fingerprints, silently producing wrong AAD. | **Low** |
-| `Fingerprint.kt` | `formatSafetyNumber` | §3.4 | Safety number formatted as 8 groups of 5 decimal digits (mod 100000 per 4-byte chunks). Spec says *"40-character hex string or QR code"*. Format mismatch with spec display requirement. | **Low** |
+| `Fingerprint.kt` | `formatSafetyNumber` | §3.4 | Safety number formatted as 12 groups of 5 decimal digits per spec. | **PASS** |
 | `Session.kt` | `encryptLocation`, seq starts at 1 | §9.1 | `seq = state.sendSeq + 1` starts at 1 (sendSeq initialised to 0). Spec does not define the first seq value explicitly but §8.3.1 assumes `incoming_seq > current_seq` with `recvSeq` starting at 0, which is consistent. Benign but worth noting. | **Info** |
 | `ProtocolConstants.kt` | line 4 | §8.1 | `INFO_SESSION = "Where-v1-Session"` is defined but never used in any reviewed file. Dead constant; possible leftover from refactor. | **Info** |
 
