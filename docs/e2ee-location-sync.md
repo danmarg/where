@@ -258,7 +258,7 @@ Bob transmits:
 ```json
 {
   "type":             "KeyExchangeInit",
-  "token":            "<base64, T_AB_0>",
+  "token":            "<hex, T_AB_0>",
   "ek_pub":           "<base64, Bob's X25519 ephemeral public key>",
   "suggested_name":   "Bob",
   "key_confirmation": "<base64, key_confirmation>"
@@ -350,6 +350,8 @@ To maximize forward secrecy, implementations should adhere to the following hygi
     - Full `SessionState` (including `localDhPriv`) is persisted to local storage to ensure session stability across app restarts and crashes.
     - **Initial State Hygiene:** Bob's initial ephemeral private key (`ekB.priv`) is copied into `localDhPriv` in the `SessionState` to enable the first DH ratchet step when Alice responds. The original buffer is zeroed immediately after session initialization.
     - To mitigate backup-recovery risks, this state MUST be stored using device-local, backup-excluded security controls (e.g., `kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly` on iOS, `KeyStore`-backed encryption with `allowBackup=false` on Android).
+    - **Android 9+:** Use `setIsStrongBoxBacked(true)` if available. If hardware is unavailable, fall back to TEE-backed Keystore with `setUserAuthenticationRequired(true)` and ensure the manifest has `allowBackup=false`.
+    - **JVM Memory Hygiene:** On the JVM, `Arrays.fill()` is inherently limited by garbage collector behavior, which may relocate byte arrays and leave stale copies in memory. For improved hygiene, consider using off-heap storage (`DirectByteBuffer`), Conscrypt's `SecretKey` wrappers, or native bindings to libsodium (which handles zeroization natively).
     - **Sequence Safety:** If the sequence number `sendSeq` reaches its 64-bit maximum (`Long.MAX_VALUE`), the session is considered "bricked" (`SessionBrickedException`) and no further messages can be sent. This prevents nonce reuse. A full out-of-band session reset is required.
     - If a device backup is nonetheless recovered by an attacker, the forward secrecy guarantee is reduced to the current DH epoch. Per-message forward secrecy is maintained against a server-side observer who does not have access to the device's persistent store.
 
@@ -628,13 +630,15 @@ The `ct` field contains the ChaCha20-Poly1305 ciphertext of the location payload
 - `PROTOCOL_VERSION` (4 bytes, `0x01`)
 - `sender_fp` (32 bytes)
 - `recipient_fp` (32 bytes)
-- `seq` (8 bytes)
+- `seq` (8 bytes, big-endian uint64)
 - `dh_pub` (32 bytes)
+
+Implementations MUST parse the `seq` field as a uint64 integer and serialize it as 8 bytes in big-endian order for AAD computation. Never hash the decimal JSON string directly.
 
 Note that even though `seq` and `dh_pub` are hidden from the server in the envelope, the client uses the *decrypted* values to verify the body AAD, ensuring the body and header are cryptographically bound together.
 
 **Plaintext (before encryption):**
-The plaintext is a JSON object. It MUST be padded to exactly 512 bytes before encryption.
+The plaintext is a JSON object. All plaintext payloads MUST be padded with 0x80 then 0x00 bytes to a fixed 512-byte length **before** encryption. The padding is included in the plaintext and authenticated by the AEAD tag.
 
 For a **Location Update**:
 ```json
@@ -655,13 +659,9 @@ For a **Keepalive**:
 
 ### 9.2 Poll Request (Bob → Server)
 
-```json
-{
-  "v": 1,
-  "type": "Poll",
-  "token": "<recv_token_T>"
-}
-```
+Bob retrieves pending messages by performing a `GET` request to his pairwise receive token: `GET /inbox/{hex(recv_token_T)}`. There is no JSON payload for the poll request itself.
+
+The server returns a JSON array of `MailboxPayload` objects, or an empty array `[]` if no messages are pending (§7.2).
 
 ### 9.3 KeyExchangeInit
 
@@ -670,7 +670,7 @@ For a **Keepalive**:
 {
   "v": 1,
   "type": "KeyExchangeInit",
-  "token":            "<base64, T_AB_0>",
+  "token":            "<hex, T_AB_0>",
   "ek_pub":           "<base64, Bob's X25519 ephemeral public key>",
   "suggested_name":   "Bob",
   "key_confirmation": "<base64, key_confirmation>"
