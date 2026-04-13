@@ -35,21 +35,20 @@ internal fun kdfRk(
 }
 
 internal fun kdfCk(chainKey: ByteArray): ChainStep {
-    val out =
+    val messageKey = hmacSha256(chainKey, byteArrayOf(0x01))
+    val newChainKey = hmacSha256(chainKey, byteArrayOf(0x02))
+    val nonce =
         hkdfSha256(
-            ikm = chainKey,
+            ikm = messageKey,
             salt = null,
-            info = INFO_MSG_STEP.encodeToByteArray(),
-            length = 76,
+            info = INFO_MSG_NONCE.encodeToByteArray(),
+            length = 12,
         )
-    val step =
-        ChainStep(
-            newChainKey = out.copyOfRange(0, 32),
-            messageKey = out.copyOfRange(32, 64),
-            messageNonce = out.copyOfRange(64, 76),
-        )
-    out.fill(0)
-    return step
+    return ChainStep(
+        newChainKey = newChainKey,
+        messageKey = messageKey,
+        messageNonce = nonce,
+    )
 }
 
 /**
