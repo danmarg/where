@@ -180,6 +180,18 @@ class LocationViewModel(
         locationSource.setPausedFriends(new)
         UserPrefs.setPausedFriends(getApplication(), new)
     }
+ 
+    fun setFriendPrecision(
+        id: String,
+        precision: net.af0.where.e2ee.LocationPrecision,
+    ) {
+        check(Looper.myLooper() == Looper.getMainLooper()) { "setFriendPrecision must be called on the main thread" }
+        viewModelScope.launch {
+            e2eeStore.updateFriendPrecision(id, precision)
+            // Trigger UI update: re-list friends
+            locationSource.onFriendsUpdated(e2eeStore.listFriends())
+        }
+    }
 
     fun renameFriend(
         id: String,
