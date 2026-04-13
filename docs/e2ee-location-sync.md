@@ -225,7 +225,7 @@ safety_number = formatSafetyNumber(safety_number_bytes)
 Bob MUST include a key confirmation MAC in his `KeyExchangeInit` to prove he derived the same `SK` as Alice. Without this, a bit-flip or substitution of `EK_B.pub` in transit would cause Alice to compute an incorrect `SK` and stream location data into a void, with neither party detecting the mismatch.
 
 ```
-K_confirm = HKDF-SHA-256(ikm=SK, salt=null, info="Where-v1-Confirm", length=32)
+K_confirm = HKDF-SHA-256(ikm=SK, salt=null, info="Where-v1-ConfirmKey", length=32)
 
 key_confirmation = HMAC-SHA-256(key  = K_confirm,
                                  data = "Where-v1-Confirm" || EK_A.pub || EK_B.pub)
