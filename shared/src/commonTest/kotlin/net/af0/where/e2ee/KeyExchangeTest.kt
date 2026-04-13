@@ -156,6 +156,22 @@ class KeyExchangeTest {
     }
 
     @Test
+    fun `aliceProcessInit rejects tampered token`() {
+        val (qr, aliceEkPriv) = KeyExchange.aliceCreateQrPayload("Alice")
+        val (msg, _) = KeyExchange.bobProcessQr(qr, "Bob")
+        val badMsg = msg.copy(token = ByteArray(16) { 0x42.toByte() })
+
+        val threw =
+            try {
+                KeyExchange.aliceProcessInit(badMsg, aliceEkPriv, qr.ekPub)
+                false
+            } catch (_: AuthenticationException) {
+                true
+            }
+        assertTrue(threw, "Expected AuthenticationException for tampered token")
+    }
+
+    @Test
     fun `bobProcessQr rejects tampered fingerprint`() {
         val (qr, _) = KeyExchange.aliceCreateQrPayload("Alice")
         val badQr = qr.copy(fingerprint = "0".repeat(40)) // Tampered fingerprint
@@ -336,10 +352,12 @@ class KeyExchangeTest {
 
         // Attacker constructs a tampered KeyExchangeInitMessage with EK_M.pub and a keyConfirmation
         // correctly computed over (SK_AM, EK_A.pub, EK_M.pub) using KeyExchange.buildKeyConfirmation.
-        // Attacker knows the discovery token.
+        // Attacker must also compute the "correct" tampered token to pass verification.
+        val aliceFp = fingerprint(qr.ekPub)
+        val attackerFp = fingerprint(ekM.pub)
         val tamperedMsg =
             KeyExchangeInitMessage(
-                token = deriveDiscoveryToken(qr.discoverySecret),
+                token = deriveRoutingToken(skAM, aliceFp, attackerFp),
                 ekPub = ekM.pub.copyOf(),
                 keyConfirmation = KeyExchange.buildKeyConfirmation(skAM, qr.ekPub, ekM.pub),
                 suggestedName = "Attacker",

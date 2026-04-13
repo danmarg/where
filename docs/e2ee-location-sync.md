@@ -275,9 +275,10 @@ Alice receives the `KeyExchangeInit` and:
 2. Recomputes the expected `key_confirmation`.
 3. **Aborts and discards** if the MAC does not match — this indicates `EK_B.pub` was corrupted or substituted in transit.
 4. Derives `alice_fp`, `bob_fp`, `T_AB_0`, `T_BA_0` using the same formulas above.
-5. **Deletes `EK_A.priv` immediately.**
-6. Prompts user to name Bob (pre-filled with `suggested_name` from `KeyExchangeInit`).
-7. Stores the session.
+5. **Alice MUST verify** that the `token` in `KeyExchangeInit` matches her independently derived `T_AB_0`. If they do not match, she MUST abort and discard the session.
+6. **Deletes `EK_A.priv` immediately.**
+7. Prompts user to name Bob (pre-filled with `suggested_name` from `KeyExchangeInit`).
+8. Stores the session.
    - **Bootstrapping the Ratchet:** Alice's initial `remoteDhPub` is set to `EK_B.pub`. This ensures her next outgoing message triggers a DH ratchet step on Bob's side, breaking the bootstrap deadlock. If Bob never sends a message, Alice's ratchet remains in this initial epoch; the periodic Keepalive mechanism (§5.3) is used to ensure eventual rotation even in asymmetric usage.
 
 Bob **deletes `EK_B.priv` immediately** after posting the `KeyExchangeInit`.
