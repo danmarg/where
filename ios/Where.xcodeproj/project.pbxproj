@@ -14,7 +14,6 @@
 		296E222ADF2ED6BA05F597CC /* FriendsSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 28DD2FC8358389E8C9F6ABE6 /* FriendsSheet.swift */; };
 		2F25461E66995FAC063DAD07 /* LocationSyncServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9849DF78DF23CE90DE4F7F10 /* LocationSyncServiceTests.swift */; };
 		3A351D2D318606B612957163 /* Security in Frameworks */ = {isa = PBXBuildFile; fileRef = 072A149EB28769F34BCED9D8 /* Security */; };
-		4A8A07DB9013B997E0C41EFB /* FriendsStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 87F9371D289CC150DF786A96 /* FriendsStore.swift */; };
 		5EF9E5113CEBF25BACE77F5E /* WhereMapView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2421CE3D6966994F4875E311 /* WhereMapView.swift */; };
 		60D8A627443A5ADF3F5C00CB /* WhereApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7A1BBBBE8782378C8B03BB4C /* WhereApp.swift */; };
 		6CB91DD32C87A081852B00C4 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D43663670EB5FB46B5C7C4EA /* ContentView.swift */; };
@@ -38,8 +37,8 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
-		072A149EB28769F34BCED9D8 /* Security */ = {isa = PBXFileReference; lastKnownFileType = text; path = Security; sourceTree = "<group>"; };
-		18F48F8FCFBE392E06CD2BB3 /* CoreLocation */ = {isa = PBXFileReference; lastKnownFileType = text; path = CoreLocation; sourceTree = "<group>"; };
+		072A149EB28769F34BCED9D8 /* Security */ = {isa = PBXFileReference; path = Security; sourceTree = "<group>"; };
+		18F48F8FCFBE392E06CD2BB3 /* CoreLocation */ = {isa = PBXFileReference; path = CoreLocation; sourceTree = "<group>"; };
 		1CDCC10A00DAB4D475C2B7C1 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		1D232AA64C61387DE75E8145 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		220A8EA077B99368AF6DA3D4 /* QrScannerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QrScannerView.swift; sourceTree = "<group>"; };
@@ -50,16 +49,15 @@
 		4CCEF0D6661013EBFBD2A61F /* Shared.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = Shared.xcframework; path = "../shared/build/XCFrameworks/$(CONFIGURATION:lower)/Shared.xcframework"; sourceTree = "<group>"; };
 		5DBE659D6FC99FBE57AB21DB /* QrCodeView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QrCodeView.swift; sourceTree = "<group>"; };
 		7A1BBBBE8782378C8B03BB4C /* WhereApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WhereApp.swift; sourceTree = "<group>"; };
-		87F9371D289CC150DF786A96 /* FriendsStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FriendsStore.swift; sourceTree = "<group>"; };
 		9849DF78DF23CE90DE4F7F10 /* LocationSyncServiceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocationSyncServiceTests.swift; sourceTree = "<group>"; };
 		AC2B156B7AAD99EBB5C7C775 /* KotlinByteArrayUtils.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KotlinByteArrayUtils.swift; sourceTree = "<group>"; };
-		CFF6771BE7FE45B2F4F8952B /* MapKit */ = {isa = PBXFileReference; lastKnownFileType = text; path = MapKit; sourceTree = "<group>"; };
+		CFF6771BE7FE45B2F4F8952B /* MapKit */ = {isa = PBXFileReference; path = MapKit; sourceTree = "<group>"; };
 		D11AE7B7423D7D8B04C7C2C2 /* KeychainE2eeStorage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeychainE2eeStorage.swift; sourceTree = "<group>"; };
 		D43663670EB5FB46B5C7C4EA /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
 		D4B36665B05EA8E1F42A11EA /* LocationSyncService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocationSyncService.swift; sourceTree = "<group>"; };
 		D50607048DEAB44CE2CAD7BA /* Where.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = Where.entitlements; sourceTree = "<group>"; };
 		E54EC15388BAF720E7755291 /* ServerConfig.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ServerConfig.swift; sourceTree = "<group>"; };
-		EA47D2499F3983EF98B459AB /* Where.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Where.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		EA47D2499F3983EF98B459AB /* Where.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = Where.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		EE1A058D7818BC3CADF5B72E /* Local.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Local.xcconfig; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
@@ -114,7 +112,6 @@
 				1CDCC10A00DAB4D475C2B7C1 /* Assets.xcassets */,
 				D43663670EB5FB46B5C7C4EA /* ContentView.swift */,
 				28DD2FC8358389E8C9F6ABE6 /* FriendsSheet.swift */,
-				87F9371D289CC150DF786A96 /* FriendsStore.swift */,
 				1D232AA64C61387DE75E8145 /* Info.plist */,
 				D11AE7B7423D7D8B04C7C2C2 /* KeychainE2eeStorage.swift */,
 				AC2B156B7AAD99EBB5C7C775 /* KotlinByteArrayUtils.swift */,
@@ -207,6 +204,7 @@
 				LastUpgradeCheck = 1430;
 				TargetAttributes = {
 					02B551C6DB1927ABD876665A = {
+						DevelopmentTeam = REDACTED_TEAM_ID;
 						ProvisioningStyle = Automatic;
 					};
 				};
@@ -257,7 +255,6 @@
 			files = (
 				6CB91DD32C87A081852B00C4 /* ContentView.swift in Sources */,
 				296E222ADF2ED6BA05F597CC /* FriendsSheet.swift in Sources */,
-				4A8A07DB9013B997E0C41EFB /* FriendsStore.swift in Sources */,
 				283CFCE7F99DA35571F0EA88 /* KeychainE2eeStorage.swift in Sources */,
 				FC1918F51962F01656F21EE5 /* KotlinByteArrayUtils.swift in Sources */,
 				B60DEE3289B4F67659B77C8A /* LocationManager.swift in Sources */,
@@ -385,10 +382,8 @@
 				CODE_SIGN_ENTITLEMENTS = Sources/Where/Where.entitlements;
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
-				DEVELOPMENT_TEAM = 5PM2V9LTHC;
 				FRAMEWORK_SEARCH_PATHS = (
-					"$(inherited)",
-					"$(SRCROOT)/../shared/build/XCFrameworks/$(CONFIGURATION:lower)",
+					"$(inherited) $(SRCROOT)/../shared/build/XCFrameworks/$(CONFIGURATION:lower)",
 					"\".\"",
 					"\"../shared/build/XCFrameworks/$(CONFIGURATION:lower)\"",
 				);
@@ -412,10 +407,8 @@
 				CODE_SIGN_ENTITLEMENTS = Sources/Where/Where.entitlements;
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
-				DEVELOPMENT_TEAM = 5PM2V9LTHC;
 				FRAMEWORK_SEARCH_PATHS = (
-					"$(inherited)",
-					"$(SRCROOT)/../shared/build/XCFrameworks/$(CONFIGURATION:lower)",
+					"$(inherited) $(SRCROOT)/../shared/build/XCFrameworks/$(CONFIGURATION:lower)",
 					"\".\"",
 					"\"../shared/build/XCFrameworks/$(CONFIGURATION:lower)\"",
 				);
