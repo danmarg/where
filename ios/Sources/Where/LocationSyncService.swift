@@ -5,7 +5,6 @@ import UIKit
 import CoreLocation
 import Combine
 private let logger = Logger(subsystem: "net.af0.where", category: "LocationSync")
-private let PROTOCOL_VERSION: Int32 = 1
 
 @MainActor
 protocol LocationClientProtocol: AnyObject, Sendable {
@@ -24,64 +23,6 @@ private func debugLog(_ msg: () -> String) {
     logger.debug("\(message)")
     #endif
 }
-
-// MARK: - QR payload URL helpers
-
-func qrPayloadToUrl(_ qr: Shared.QrPayload) -> String? {
-    return qr.toUrl()
-}
-
-private func urlToQrPayload(_ url: String) -> Shared.QrPayload? {
-    return Shared.QrPayload.companion.fromUrl(url: url)
-}
-
-// MARK: - HTTP mailbox helpers
-
-// Ephemeral session: no URLCache, no cookie storage, no disk persistence.
-private let noCacheSession: URLSession = {
-    URLSession(configuration: .ephemeral)
-}()
-
-@MainActor
-private func postToMailbox(token: String, bodyData: Data) async throws {
-    guard let url = URL(string: "\(ServerConfig.httpBaseUrl)/inbox/\(token)") else {
-        logger.error("Invalid mailbox URL")
-        return
-    }
-    debugLog { "Posting to mailbox: \(url.absoluteString), bodySize=\(bodyData.count)" }
-    var req = URLRequest(url: url)
-    req.httpMethod = "POST"
-    req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-    req.httpBody = bodyData
-    req.cachePolicy = .reloadIgnoringLocalCacheData
-    let (_, response) = try await noCacheSession.data(for: req)
-    if let http = response as? HTTPURLResponse, http.statusCode != 200 && http.statusCode != 204 {
-        logger.error("Mailbox POST failed: \(http.statusCode)")
-        throw NSError(domain: "Where", code: http.statusCode, userInfo: [NSLocalizedDescriptionKey: "Server returned \(http.statusCode)"])
-    }
-    debugLog { "Mailbox POST succeeded: \((response as? HTTPURLResponse)?.statusCode ?? 0)" }
-}
-
-@MainActor
-private func pollMailbox(token: String) async throws -> [[String: Any]] {
-    guard let url = URL(string: "\(ServerConfig.httpBaseUrl)/inbox/\(token)") else { return [] }
-    debugLog { "Polling mailbox: \(url.absoluteString)" }
-    var req = URLRequest(url: url)
-    req.cachePolicy = .reloadIgnoringLocalCacheData
-    let (data, response) = try await noCacheSession.data(for: req)
-    if let http = response as? HTTPURLResponse, http.statusCode != 200 {
-        logger.error("Mailbox poll failed: \(http.statusCode)")
-        throw NSError(domain: "Where", code: http.statusCode, userInfo: [NSLocalizedDescriptionKey: "Server returned \(http.statusCode)"])
-    }
-    if let raw = String(data: data, encoding: .utf8) {
-        debugLog { "Raw mailbox data: \(raw)" }
-    }
-    guard let arr = try JSONSerialization.jsonObject(with: data) as? [[String: Any]] else { return [] }
-    debugLog { "Polled mailbox, got \(arr.count) messages" }
-    return arr
-}
-
-// MARK: - LocationSyncService
 
 @MainActor
 final class LocationSyncService: ObservableObject {
@@ -208,200 +149,135 @@ final class LocationSyncService: ObservableObject {
         }
     }
 
-    func isRapidPolling() async -> Bool {
-        let now = Date()
-        // Kotlin suspend functions returning optional types appear as T?? in Swift.
-        // We use ?? nil to flatten them to T?.
-        let pending = try? await e2eeStore.pendingQrPayload()
-        let isPairing = (pending ?? nil) != nil || pendingInitPayload != nil || pendingQrForNaming != nil
-        let recentlyTriggered = now.timeIntervalSince(lastRapidPollTrigger) < 5 * 60
-        return isPairing || recentlyTriggered
+    func setDisplayName(name: String) {
+        displayName = name
     }
 
-    /// If true, updateVisibleUsers is a no-op. Used in unit tests to avoid UI side effects.
-    var skipUpdateVisibleUsers: Bool = false
-
-    private func updateVisibleUsers() {
-        if skipUpdateVisibleUsers { return }
-        let confirmedIds = Set(friends.filter { $0.isConfirmed }.map { $0.id })
-        visibleUsers = friendLocations
-            .filter { confirmedIds.contains($0.key) }
-            .map { (friendId, locData) in
-                Shared.UserLocation(userId: friendId, lat: locData.lat, lng: locData.lng, timestamp: locData.ts)
-            }
+    func toggleSharing() {
+        isSharingLocation.toggle()
     }
 
-    // Poll timer: handles inbound friend-location polling and the outbound heartbeat.
-    // Movement-driven sends are handled by LocationManager's CoreLocation delegate.
-    // Since UIBackgroundModes contains "location", CoreLocation wakes the app in the
-    // background and delivers didUpdateLocations callbacks — no BGAppRefreshTask required.
-    // However, when the device is stationary CoreLocation may not fire for extended periods,
-    // so the poll timer also triggers a heartbeat send (throttled to 5 minutes by sendLocation).
-    func startPolling() {
-        logger.debug("startPolling called")
-        guard pollTimer?.isValid != true else { return }
-        schedulePollTimer(interval: Self.normalPollInterval)
-        Task {
-            await firePoll()
-        }
-    }
-
-    func stopPolling() {
-        pollTimer?.invalidate()
-        pollTimer = nil
-    }
-
-    private func schedulePollTimer(interval: TimeInterval) {
-        pollTimer?.invalidate()
-        let t = Timer(timeInterval: interval, repeats: true) { [weak self] _ in
-            Task { @MainActor [weak self] in
-                guard let self = self else { return }
-                let backgroundTask = self.startBackgroundTask("PollTimer")
-                defer { backgroundTask.end() }
-                await self.firePoll()
-            }
-        }
-        RunLoop.main.add(t, forMode: .common)
-        pollTimer = t
-    }
-
-    func firePoll() async {  // internal for testing
-        guard !isPollInFlight else { return }
-        isPollInFlight = true
-        defer { isPollInFlight = false }
-
-        let inForeground = isInForeground()
-        let isRapid = await isRapidPolling()
-
-        // Always poll — even when sharing is off we need to process incoming
-        // EpochRotations and post Ratchet Acks so Alice's location doesn't get stuck.
-        // The timer interval drops to 30 min in that case (maintenance-only).
-        // updateUi (which drives pollPendingInvite) is only needed in foreground/rapid.
-        await pollAll(updateUi: inForeground || isRapid)
-        // Heartbeat always runs: covers the stationary background case where
-        // didUpdateLocations never fires (distanceFilter suppresses updates).
-        if let loc = locationProvider.lastLocation {
-            sendLocation(lat: loc.coordinate.latitude, lng: loc.coordinate.longitude, isHeartbeat: true)
-        }
-
-        // Adjust timer interval based on app state.
-        let targetInterval: TimeInterval
-        if isRapid {
-            targetInterval = Self.rapidPollInterval        // 1s: pairing
-        } else if inForeground {
-            targetInterval = Self.normalPollInterval       // 60s: user watching map
-        } else if isSharingLocation {
-            targetInterval = 5 * 60                       // 5 min: heartbeat + friend poll
+    func togglePauseFriend(id: String) {
+        if pausedFriendIds.contains(id) {
+            pausedFriendIds.remove(id)
         } else {
-            targetInterval = Self.maintenancePollInterval  // 30 min: Ratchet Ack maintenance
-        }
-        if let t = pollTimer, abs(t.timeInterval - targetInterval) > 0.1 {
-            schedulePollTimer(interval: targetInterval)
-        }
-    }
-
-    @MainActor
-    func sendLocation(lat: Double, lng: Double, isHeartbeat: Bool = false, force: Bool = false) {
-        MainActor.assertIsolated()
-
-        // pendingForcedSendAfterPairing is read here so the CoreLocation delegate path
-        // (which calls sendLocation without force) still picks up post-pairing forced sends.
-        let effectiveForce = force || pendingForcedSendAfterPairing
-        guard isSharingLocation else { return }
-
-        // If a task is already in-flight, skip this update unless it's forced
-        // or we're replacing an in-flight heartbeat with a movement update.
-        let replacingHeartbeat = !isHeartbeat && isCurrentSendHeartbeat
-        if currentSendTask != nil && !effectiveForce && !replacingHeartbeat { return }
-
-        // Cancel existing task if this is a forced update or if we're replacing a heartbeat.
-        // Bump the generation so the cancelled task's deferred cleanup won't clear the new task.
-        if (effectiveForce || replacingHeartbeat), let existing = currentSendTask {
-            sendTaskGeneration += 1
-            existing.cancel()
-            currentSendTask = nil
-            isCurrentSendHeartbeat = false
-        }
-
-        let now = Date()
-        let shouldSend = effectiveForce || replacingHeartbeat || lastSentLocation == nil ||
-                        (!isHeartbeat && now.timeIntervalSince(lastSentTime) > 15) ||
-                        (isHeartbeat && now.timeIntervalSince(lastSentTime) > 5 * 60)
-
-        guard shouldSend else { return }
-
-        // Update throttle markers immediately *before* spawning the task to ensure
-        // concurrent triggers are correctly throttled.
-        lastSentLocation = (lat: lat, lng: lng)
-        lastSentTime = now
-
-        // Capture whether the pairing flag contributed before clearing it.
-        // We clear optimistically to prevent concurrent forced sends; on failure we restore it.
-        let wasForcedByPairing = pendingForcedSendAfterPairing
-        if effectiveForce {
-            pendingForcedSendAfterPairing = false
-        }
-
-        logger.debug("Sending location: \(lat), \(lng) (heartbeat=\(isHeartbeat), force=\(force), effectiveForce=\(effectiveForce))")
-
-        isCurrentSendHeartbeat = isHeartbeat
-        sendTaskGeneration += 1
-        let myGeneration = sendTaskGeneration
-        let backgroundTask = self.startBackgroundTask("SendLocation")
-        currentSendTask = Task {
-            // Re-check isSharingLocation inside Task if needed,
-            // but for simplicity we rely on the main-actor throttle check above.
-
-            var sendSucceeded = false
-            defer {
-                backgroundTask.end()
-                // Synchronously clear task state on @MainActor — no nested Task needed,
-                // avoiding the race where a forced send still sees a non-nil currentSendTask.
-                // Only clear state if this task is still the current one; a stale cleanup
-                // from a cancelled task must not overwrite state set by a newer task.
-                if self.sendTaskGeneration == myGeneration {
-                    self.currentSendTask = nil
-                    self.isCurrentSendHeartbeat = false
-                }
-                // Restore the pairing flag if the send did not succeed (error or cancellation)
-                // and no newer task has taken over. This covers both thrown errors and silent
-                // cancellation paths where the underlying call returns without throwing.
-                if wasForcedByPairing && !sendSucceeded && self.sendTaskGeneration == myGeneration {
-                    self.pendingForcedSendAfterPairing = true
-                }
-            }
-
-            do {
-                try await locationClient.sendLocation(lat: lat, lng: lng, pausedFriendIds: pausedFriendIds)
-                sendSucceeded = true
-                logger.debug("Location sent successfully")
-                updateStatus(nil)
-            } catch {
-                logger.error("Failed to send location: \(error.localizedDescription)")
-                updateStatus(error)
-            }
+            pausedFriendIds.insert(id)
         }
     }
 
     func createInvite() async {
-        inviteTask?.cancel()
-        guard pendingInitPayload == nil && pendingQrForNaming == nil else { return }
- 
-        inviteTask = Task {
-            do {
-                let qr = try await e2eeStore.createInvite(suggestedName: displayName)
-                try Task.checkCancellation()
-                debugLog { "Created invite: discovery=\(toHex(qr.discoveryToken()))" }
-                inviteState = Shared.InviteState.Pending(qr: qr)
-                triggerRapidPoll()
-            } catch is CancellationError {
-                // Ignore
-            } catch {
-                logger.error("Failed to create invite: \(error.localizedDescription)")
-                updateStatus(error)
+        do {
+            let qr = try await e2eeStore.createInvite(suggestedName: displayName)
+            inviteState = Shared.InviteState.Pending(qr: qr)
+            triggerRapidPoll()
+        } catch {
+            logger.error("Failed to create invite: \(error.localizedDescription)")
+            updateStatus(error)
+        }
+    }
+
+    private func resetRapidPoll() {
+        lastRapidPollTrigger = Date(timeIntervalSince1970: 0)
+        awaitingFirstUpdateIds.removeAll()
+    }
+
+    func triggerRapidPoll() {
+        lastRapidPollTrigger = Date()
+        wakePoll()
+    }
+
+    func wakePoll() {
+        if isPollInFlight { return }
+        pollTimer?.fire()
+    }
+
+    func startPolling() {
+        pollTimer?.invalidate()
+        pollTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
+            guard let self = self else { return }
+            Task { @MainActor in
+                await self.tick()
             }
         }
-        await inviteTask?.value
+    }
+
+    private func tick() async {
+        if isPollInFlight { return }
+
+        let now = Date()
+        let interval = await targetPollInterval()
+        let lastPoll = pollTimer?.fireDate.addingTimeInterval(-1.0) ?? Date(timeIntervalSince1970: 0)
+
+        if now.timeIntervalSince(lastPoll) >= interval {
+            await pollAll()
+        }
+    }
+
+    private func targetPollInterval() async -> TimeInterval {
+        if await isRapidPolling() {
+            return Self.rapidPollInterval
+        }
+        if isInForeground() {
+            return Self.normalPollInterval
+        }
+        return isSharingLocation ? Self.normalPollInterval : Self.maintenancePollInterval
+    }
+
+    func isRapidPolling() async -> Bool {
+        if !awaitingFirstUpdateIds.isEmpty { return true }
+        return Date().timeIntervalSince(lastRapidPollTrigger) < 60.0
+    }
+
+    private func onFriendLocationReceived(friendId: String) {
+        if awaitingFirstUpdateIds.remove(friendId) != nil {
+            if awaitingFirstUpdateIds.isEmpty {
+                resetRapidPoll()
+            }
+        }
+    }
+
+    func pollAll(updateUi: Bool = true) async {
+        logger.debug("Polling for location updates (updateUi=\(updateUi))")
+        let identifier = self.beginBackgroundTask("PollAll") {
+            // Task expired
+        }
+
+        defer {
+            if identifier != .invalid {
+                self.endBackgroundTask(identifier)
+            }
+        }
+        do {
+            let updates = try await locationClient.poll(isForeground: isInForeground())
+            logger.debug("Got \(updates.count) location updates")
+            for update in updates {
+                try? await e2eeStore.updateLastLocation(id: update.userId, lat: update.lat, lng: update.lng, ts: Int64(Date().timeIntervalSince1970))
+                friendLocations[update.userId] = (lat: update.lat, lng: update.lng, ts: update.timestamp)
+                friendLastPing[update.userId] = Date()
+                onFriendLocationReceived(friendId: update.userId)
+            }
+
+            friends = try await e2eeStore.listFriends()
+            // Always update visibleUsers to ensure map is fresh when returning to foreground.
+            updateVisibleUsers()
+
+            if updateUi {
+                try await pollPendingInvite()
+            }
+            updateStatus(nil)
+        } catch {
+            logger.error("Poll failed: \(error.localizedDescription)")
+            updateStatus(error)
+        }
+    }
+
+    private func pollPendingInvite() async throws {
+        if pendingInitPayload != nil { return }
+        if let result = try await locationClient.pollPendingInvite() {
+            pendingInitPayload = result.payload
+            multipleScansDetected = result.multipleScansDetected
+            triggerRapidPoll()
+        }
     }
 
     func clearInvite() async {
@@ -416,7 +292,7 @@ final class LocationSyncService: ObservableObject {
 
     @discardableResult
     func processQrUrl(_ url: String) -> Bool {
-        guard let qr = urlToQrPayload(url) else {
+        guard let qr = Shared.QrPayload.companion.fromUrl(url: url) else {
             updateStatus(NSError(domain: "Where", code: 400, userInfo: [NSLocalizedDescriptionKey: "Invalid QR code"]))
             return false
         }
@@ -427,13 +303,13 @@ final class LocationSyncService: ObservableObject {
 
     func confirmQrScan(qr: Shared.QrPayload, friendName: String) async {
         pendingQrForNaming = nil
-        let qrWithName = Shared.QrPayload(protocolVersion: PROTOCOL_VERSION, 
+        let qrWithName = Shared.QrPayload(protocolVersion: Shared.ProtocolConstantsKt.PROTOCOL_VERSION, 
             ekPub: qr.ekPub,
             suggestedName: friendName,
             fingerprint: qr.fingerprint,
             discoverySecret: qr.discoverySecret
         )
-        debugLog { "Scanning QR: discovery=\(toHex(qrWithName.discoveryToken())), friendName=\(friendName)" }
+        debugLog { "Scanning QR: discovery=\(qrWithName.discoveryToken().toHex()), friendName=\(friendName)" }
         inviteTask?.cancel()
         isExchanging = true
         triggerRapidPoll()
@@ -518,32 +394,6 @@ final class LocationSyncService: ObservableObject {
         await clearInvite()
         pendingInitPayload = nil
         multipleScansDetected = false
-        resetRapidPoll()
-        inviteState = Shared.InviteState.None()
-    }
-
-    func wakePoll() {
-        Task { @MainActor in
-            let backgroundTask = self.startBackgroundTask("WakePoll")
-            defer { backgroundTask.end() }
-            await firePoll()
-        }
-    }
-
-    private func triggerRapidPoll() {
-        lastRapidPollTrigger = Date()
-        schedulePollTimer(interval: Self.rapidPollInterval)
-        Task { @MainActor in
-            let backgroundTask = self.startBackgroundTask("RapidPoll")
-            defer { backgroundTask.end() }
-            await firePoll()
-        }
-    }
-
-    func resetRapidPoll() {
-        lastRapidPollTrigger = Date(timeIntervalSince1970: 0)
-        awaitingFirstUpdateIds.removeAll()
-        schedulePollTimer(interval: Self.normalPollInterval)
     }
 
     func renameFriend(id: String, newName: String) async {
@@ -552,15 +402,7 @@ final class LocationSyncService: ObservableObject {
             friends = try await e2eeStore.listFriends()
             updateVisibleUsers()
         } catch {
-            logger.error("renameFriend failed: \(error.localizedDescription)")
-        }
-    }
- 
-    func togglePauseFriend(id: String) {
-        if pausedFriendIds.contains(id) {
-            pausedFriendIds.remove(id)
-        } else {
-            pausedFriendIds.insert(id)
+            logger.error("Failed to rename friend: \(error.localizedDescription)")
         }
     }
 
@@ -569,181 +411,70 @@ final class LocationSyncService: ObservableObject {
             try await e2eeStore.deleteFriend(id: id)
             friends = try await e2eeStore.listFriends()
             friendLocations.removeValue(forKey: id)
-            pausedFriendIds.remove(id)
-        } catch {
-            logger.error("removeFriend failed: \(error.localizedDescription)")
-        }
-    }
-
-    // MARK: - Internal polling
-
-    private func onFriendLocationReceived(friendId: String) {
-        if awaitingFirstUpdateIds.remove(friendId) != nil {
-            if awaitingFirstUpdateIds.isEmpty {
-                resetRapidPoll()
-            }
-        }
-    }
-
-    func pollAll(updateUi: Bool = true) async {
-        logger.debug("Polling for location updates (updateUi=\(updateUi))")
-        let backgroundTask = self.startBackgroundTask("PollAll")
-
-        defer {
-            backgroundTask.end()
-        }
-        do {
-            let updates = try await locationClient.poll(isForeground: isInForeground())
-            logger.debug("Got \(updates.count) location updates")
-            for update in updates {
-                try? await e2eeStore.updateLastLocation(id: update.userId, lat: update.lat, lng: update.lng, ts: Int64(Date().timeIntervalSince1970))
-                friendLocations[update.userId] = (lat: update.lat, lng: update.lng, ts: update.timestamp)
-                friendLastPing[update.userId] = Date()
-                onFriendLocationReceived(friendId: update.userId)
-            }
-
-            friends = try await e2eeStore.listFriends()
-            // Always update visibleUsers to ensure map is fresh when returning to foreground.
+            friendLastPing.removeValue(forKey: id)
             updateVisibleUsers()
-
-            if updateUi {
-                try await pollPendingInvite()
-            }
-            updateStatus(nil)
         } catch {
-            logger.error("Poll failed: \(error.localizedDescription)")
-            updateStatus(error)
+            logger.error("Failed to remove friend: \(error.localizedDescription)")
         }
     }
 
-    private func pollPendingInvite() async throws {
-        if pendingInitPayload != nil { return }
-        if let result = try await locationClient.pollPendingInvite() {
-            debugLog { "pollPendingInvite: received KeyExchangeInit (multipleScans=\(result.multipleScansDetected))" }
-            inviteTask?.cancel()
-            inviteState = Shared.InviteState.None()   // dismiss the QR sheet so the naming alert can appear
-            multipleScansDetected = result.multipleScansDetected
-            pendingInitPayload = result.payload
-            triggerRapidPoll()
-        }
-    }
+    func sendLocation(lat: Double, lng: Double, force: Bool = false) {
+        let now = Date()
+        let timeSinceLast = now.timeIntervalSince(lastSentTime)
 
-    @MainActor
-    func startBackgroundTask(_ name: String) -> BackgroundTaskBox {
-        let endOp = self.endBackgroundTask
-        let backgroundTask = BackgroundTaskBox(end: { id in
-            endOp(id)
-        })
-        let id = self.beginBackgroundTask(name) {
-            backgroundTask.end()
+        // Throttle: 30s unless forced.
+        if !force && timeSinceLast < 30.0 {
+            return
         }
-        backgroundTask.identifier = id
-        return backgroundTask
+
+        lastSentLocation = (lat: lat, lng: lng)
+        lastSentTime = now
+        pendingForcedSendAfterPairing = false
+
+        let identifier = self.beginBackgroundTask("SendLocation") {
+            // Task expired
+        }
+        let gen = sendTaskGeneration + 1
+        sendTaskGeneration = gen
+
+        currentSendTask?.cancel()
+        currentSendTask = Task {
+            defer {
+                if identifier != .invalid {
+                    self.endBackgroundTask(identifier)
+                }
+            }
+            do {
+                try await locationClient.sendLocation(lat: lat, lng: lng, pausedFriendIds: pausedFriendIds)
+                updateStatus(nil)
+            } catch {
+                logger.error("Failed to send location: \(error.localizedDescription)")
+                updateStatus(error)
+            }
+        }
     }
 
     private func updateStatus(_ error: Error?) {
         if let error = error {
-            let msg: String
-            if let whereEx = error as? Shared.WhereException {
-                if let netEx = whereEx as? Shared.NetworkException {
-                    if netEx is Shared.ConnectException {
-                        msg = "No connection"
-                    } else if netEx is Shared.TimeoutException {
-                        msg = "Request timed out"
-                    } else if let serverEx = netEx as? Shared.ServerException {
-                        msg = "Server error \(serverEx.statusCode)"
-                    } else {
-                        msg = "Network error"
-                    }
-                } else if let cryptoEx = whereEx as? Shared.CryptoException {
-                    if cryptoEx is Shared.AuthenticationException {
-                        msg = "Authentication failed"
-                    } else if cryptoEx is Shared.ProtocolException {
-                        msg = "Protocol error"
-                    } else {
-                        msg = "Security error"
-                    }
-                } else {
-                    msg = "Internal error"
-                }
-            } else {
-                let desc = error.localizedDescription.lowercased()
-                if desc.contains("timeout") {
-                    msg = "Timeout"
-                } else if desc.contains("not resolved") || desc.contains("connection") {
-                    msg = "No connection"
-                } else if let nsError = error as NSError?, nsError.domain == "Where" {
-                    msg = "Server error \(nsError.code)"
-                } else {
-                    msg = String(desc.prefix(32))
-                }
-            }
-            connectionStatus = Shared.ConnectionStatus.Error(message: msg)
+            connectionStatus = Shared.ConnectionStatus.Error(message: error.localizedDescription)
         } else {
             connectionStatus = Shared.ConnectionStatus.Ok()
         }
     }
-}
 
-// MARK: - Sendable extensions for Kotlin types
-
-extension Shared.E2eeStore: @unchecked @retroactive Sendable {}
-extension Shared.QrPayload: @unchecked @retroactive Sendable {}
-extension Shared.FriendEntry: @unchecked @retroactive Sendable {}
-extension Shared.KeyExchangeInitPayload: @unchecked @retroactive Sendable {}
-extension Shared.UserLocation: @unchecked @retroactive Sendable {}
-extension Shared.LocationClient: @unchecked @retroactive Sendable {}
-extension Shared.KotlinPair: @unchecked @retroactive Sendable {}
-extension Shared.LocationPlaintext: @unchecked @retroactive Sendable {}
-
-/// Thread-safe wrapper for UIBackgroundTaskIdentifier to prevent races between
-/// the expiry handler and the normal completion path.
-final class BackgroundTaskBox: @unchecked Sendable {
-    private let lock = NSLock()
-    private var _identifier: UIBackgroundTaskIdentifier = .invalid
-    private var isEnded = false
-    private var isExpired = false
-    private let endOp: @Sendable (UIBackgroundTaskIdentifier) -> Void
-
-    var identifier: UIBackgroundTaskIdentifier {
-        get {
-            lock.lock()
-            defer { lock.unlock() }
-            return _identifier
+    func updateVisibleUsers() {
+        // Skip updating visible users if not sharing location or app is in background.
+        // This is a power optimization.
+        if !isSharingLocation && isInForeground() {
+            visibleUsers = []
+            return
         }
-        set {
-            var idToEnd: UIBackgroundTaskIdentifier = .invalid
-            lock.lock()
-            _identifier = newValue
-            // If the task was already expired by the handler before we even got the ID,
-            // end it immediately.
-            if isExpired && !isEnded && newValue != .invalid {
-                isEnded = true
-                idToEnd = newValue
-            }
-            lock.unlock()
-            if idToEnd != .invalid {
-                endOp(idToEnd)
-            }
-        }
-    }
 
-    init(end: @Sendable @escaping (UIBackgroundTaskIdentifier) -> Void) {
-        self.endOp = end
-    }
-
-    func end() {
-        var idToEnd: UIBackgroundTaskIdentifier = .invalid
-        lock.lock()
-        if !isEnded && _identifier != .invalid {
-            isEnded = true
-            idToEnd = _identifier
+        var updates: [Shared.UserLocation] = []
+        for (id, loc) in friendLocations {
+            if pausedFriendIds.contains(id) { continue }
+            updates.append(Shared.UserLocation(userId: id, lat: loc.lat, lng: loc.lng, timestamp: loc.ts))
         }
-        isExpired = true
-        lock.unlock()
-
-        if idToEnd != .invalid {
-            endOp(idToEnd)
-        }
+        visibleUsers = updates
     }
 }

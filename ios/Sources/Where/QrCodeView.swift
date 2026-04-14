@@ -84,10 +84,10 @@ struct InviteSheet: View {
             .padding(32)
         }
         .onAppear {
-            cachedQrUrl = qrPayloadToUrl(qrPayload) ?? ""
+            cachedQrUrl = qrPayload.toUrl()
         }
         .onChange(of: qrPayload) { oldValue, newValue in
-            cachedQrUrl = qrPayloadToUrl(newValue) ?? ""
+            cachedQrUrl = newValue.toUrl()
         }
         .sheet(isPresented: $showShareSheet) {
             ShareSheet(items: [cachedQrUrl])

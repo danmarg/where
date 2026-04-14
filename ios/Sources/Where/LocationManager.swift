@@ -1,5 +1,6 @@
 import CoreLocation
 import Combine
+import UIKit
 
 @MainActor
 protocol LocationProviding: AnyObject {
@@ -61,8 +62,14 @@ final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelega
     nonisolated func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
         guard let loc = locations.last else { return }
         Task { @MainActor in
-            let backgroundTask = LocationSyncService.shared.startBackgroundTask("LocationUpdate")
-            defer { backgroundTask.end() }
+            let identifier = UIApplication.shared.beginBackgroundTask(withName: "LocationUpdate") {
+                // Task expired
+            }
+            defer {
+                if identifier != .invalid {
+                    UIApplication.shared.endBackgroundTask(identifier)
+                }
+            }
             self.location = loc
             LocationSyncService.shared.sendLocation(lat: loc.coordinate.latitude, lng: loc.coordinate.longitude)
             // Ensure we also poll for updates when the OS wakes us for a location fix.

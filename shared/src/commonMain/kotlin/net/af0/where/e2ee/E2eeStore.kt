@@ -165,7 +165,9 @@ class E2eeStore(
                     entry.id to entry
                 }.toMutableMap()
             pendingInvite = serialized.pendingInvite
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+            println("[E2eeStore] Error loading state: ${e.message}")
+            e.printStackTrace()
             // Error loading state, possibly corrupted; reset
             friends = mutableMapOf()
             pendingInvite = null
