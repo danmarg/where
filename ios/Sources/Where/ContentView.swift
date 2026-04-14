@@ -57,13 +57,13 @@ struct ContentView: View {
                     VStack(alignment: .leading, spacing: 2) {
                         HStack(spacing: 6) {
                             Circle()
-                                .fill(syncService.connectionStatus is Shared.ConnectionStatusOk ? Color.green : Color.orange)
+                                .fill(syncService.connectionStatus is Shared.ConnectionStatus.Ok ? Color.green : Color.orange)
                                 .frame(width: 8, height: 8)
                             Text("You")
                                 .font(.caption)
                                 .foregroundStyle(.white)
                         }
-                        if let error = syncService.connectionStatus as? Shared.ConnectionStatusError {
+                        if let error = syncService.connectionStatus as? Shared.ConnectionStatus.Error {
                             Text(error.message)
                                 .font(.system(size: 8))
                                 .foregroundStyle(.orange)
@@ -76,7 +76,7 @@ struct ContentView: View {
                     .clipShape(Capsule())
                     .contentShape(Capsule())
                     .onTapGesture {
-                        if syncService.connectionStatus is Shared.ConnectionStatusError {
+                        if syncService.connectionStatus is Shared.ConnectionStatus.Error {
                             showErrorAlert = true
                         } else if let loc = locationManager.location {
                             zoomTarget = CLLocationCoordinate2D(latitude: loc.coordinate.latitude, longitude: loc.coordinate.longitude)
@@ -154,7 +154,7 @@ struct ContentView: View {
             .ignoresSafeArea()
         }
         .sheet(isPresented: Binding(
-            get: { syncService.inviteState is Shared.InviteStatePending },
+            get: { syncService.inviteState is Shared.InviteState.Pending },
             set: { if !$0 {
                 // If we're dismissing because a peer joined (pendingInitPayload is set),
                 // do NOT clear the store yet, as we need the ephemeral keys to derive the session.
@@ -163,7 +163,7 @@ struct ContentView: View {
                 }
             } }
         )) {
-            if let pending = syncService.inviteState as? Shared.InviteStatePending {
+            if let pending = syncService.inviteState as? Shared.InviteState.Pending {
                 InviteSheet(
                     qrPayload: pending.qr,
                     displayName: $syncService.displayName,
@@ -216,12 +216,8 @@ struct ContentView: View {
         .onAppear {
             locationManager.requestPermissionAndStart()
         }
-        .onChange(of: scenePhase) { oldPhase, newPhase in
-            if newPhase == .background {
-                // Timer keeps running to fire background heartbeat sends.
-            } else if newPhase == .active {
-                syncService.startPolling()
-            }
+        .onChange(of: scenePhase) { _, newPhase in
+            handlePhaseChange(newPhase)
         }
         .onReceive(syncService.$pendingQrForNaming) { qr in
             if let qr = qr { newFriendName = qr.suggestedName } else { newFriendName = "" }
@@ -235,16 +231,23 @@ struct ContentView: View {
         .alert("Connection Error", isPresented: $showErrorAlert) {
             Button("OK", role: .cancel) { }
         } message: {
-            if case .error(let msg) = syncService.connectionStatus {
-                Text(msg)
+            if let error = syncService.connectionStatus as? Shared.ConnectionStatus.Error {
+                Text(error.message)
             }
+        }
+    }
+
+    private func handlePhaseChange(_ phase: ScenePhase) {
+        if phase == .background {
+            // Timer keeps running to fire background heartbeat sends.
+        } else if phase == .active {
+            syncService.startPolling()
         }
     }
 }
 
 extension ConnectionStatus {
     var isOk: Bool {
-        if case .ok = self { return true }
-        return false
+        return self is Shared.ConnectionStatus.Ok
     }
 }

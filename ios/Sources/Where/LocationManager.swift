@@ -2,23 +2,41 @@ import CoreLocation
 import Combine
 
 @MainActor
-final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelegate {
+protocol LocationProviding: AnyObject {
+    var locationPublisher: AnyPublisher<CLLocation?, Never> { get }
+    var lastLocation: CLLocation? { get }
+    func requestPermissionAndStart()
+}
+
+@MainActor
+final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelegate, LocationProviding {
     static let shared = LocationManager()
 
     @Published var location: CLLocation?
     var lastLocation: CLLocation? { location }
+    var locationPublisher: AnyPublisher<CLLocation?, Never> {
+        $location.eraseToAnyPublisher()
+    }
     @Published var authorizationStatus: CLAuthorizationStatus = .notDetermined
 
-    private let manager = CLLocationManager()
+    private let manager: CLLocationManager?
 
     override init() {
+        if NSClassFromString("XCTestCase") != nil {
+            self.manager = nil
+            super.init()
+            return
+        }
+        let m = CLLocationManager()
+        self.manager = m
         super.init()
-        manager.delegate = self
-        manager.desiredAccuracy = kCLLocationAccuracyHundredMeters
-        manager.distanceFilter = 50 // meters — heartbeat timer covers stationary case
+        m.delegate = self
+        m.desiredAccuracy = kCLLocationAccuracyHundredMeters
+        m.distanceFilter = 50 // meters — heartbeat timer covers stationary case
     }
 
     func requestPermissionAndStart() {
+        guard let manager = manager else { return }
         switch manager.authorizationStatus {
         case .notDetermined:
             manager.requestAlwaysAuthorization()
@@ -33,6 +51,7 @@ final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelega
     }
 
     private func startUpdating() {
+        guard let manager = manager else { return }
         manager.allowsBackgroundLocationUpdates = (manager.authorizationStatus == .authorizedAlways)
         manager.pausesLocationUpdatesAutomatically = false
         manager.startUpdatingLocation()
@@ -55,7 +74,7 @@ final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelega
         let status = manager.authorizationStatus
         Task { @MainActor in
             self.authorizationStatus = status
-            self.manager.allowsBackgroundLocationUpdates = (status == .authorizedAlways)
+            self.manager?.allowsBackgroundLocationUpdates = (status == .authorizedAlways)
             if status == .authorizedWhenInUse || status == .authorizedAlways {
                 self.startUpdating()
             }
