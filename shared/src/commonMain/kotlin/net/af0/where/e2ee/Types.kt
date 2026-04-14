@@ -189,6 +189,7 @@ data class QrPayload(
     @SerialName("suggested_name")
     val suggestedName: String,
     // hex(SHA-256(ekPub)[0:20])
+    @SerialName("fingerprint")
     val fingerprint: String,
     // Fresh random 32-byte secret; HKDF IKM for the discovery token (§4.2).
     @SerialName("discovery_secret")
@@ -221,7 +222,12 @@ data class QrPayload(
         /** Decodes a QrPayload from an invite link URL. */
         @OptIn(ExperimentalEncodingApi::class)
         fun fromUrl(url: String): QrPayload? {
-            val fragment = url.substringAfter("#", "")
+            // Support both https://where.af0.net/invite#$encoded AND where://invite?q=$encoded
+            val fragment = if (url.startsWith("where://")) {
+                url.substringAfter("q=", "")
+            } else {
+                url.substringAfter("#", "")
+            }
             if (fragment.isEmpty()) return null
             return try {
                 // Base64.UrlSafe.decode handles missing padding
