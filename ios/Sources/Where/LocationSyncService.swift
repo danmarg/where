@@ -59,14 +59,17 @@ final class LocationSyncService: ObservableObject {
     private var inviteTask: Task<Void, Never>? = nil
     @Published var visibleUsers: [Shared.UserLocation] = []
     var isInviteActive: Bool { inviteState is Shared.InviteState.Pending }
+    var skipUpdateVisibleUsers: Bool = false
 
     var lastRapidPollTrigger: Date = Date(timeIntervalSince1970: 0)  // internal for testing
+    var lastPollTime: Date = Date(timeIntervalSince1970: 0)  // internal for testing
     var pollTimer: Timer?  // internal for testing
     private var isPollInFlight = false
     /// Overridable in tests to simulate foreground/background without UIKit.
     var isInForeground: () -> Bool = { UIApplication.shared.applicationState == .active }
     private static let rapidPollInterval: TimeInterval = 1.0
-    private static let normalPollInterval: TimeInterval = 60.0
+    private static let foregroundPollInterval: TimeInterval = 60.0
+    private static let normalPollInterval: TimeInterval = 300.0 // 5 min (background sharing)
     private static let maintenancePollInterval: TimeInterval = 30 * 60  // ack-only when not sharing
     private var visibleUsersCancellables = Set<AnyCancellable>()
 
@@ -206,19 +209,18 @@ final class LocationSyncService: ObservableObject {
 
         let now = Date()
         let interval = await targetPollInterval()
-        let lastPoll = pollTimer?.fireDate.addingTimeInterval(-1.0) ?? Date(timeIntervalSince1970: 0)
 
-        if now.timeIntervalSince(lastPoll) >= interval {
+        if now.timeIntervalSince(lastPollTime) >= interval {
             await pollAll()
         }
     }
 
-    private func targetPollInterval() async -> TimeInterval {
+    func targetPollInterval() async -> TimeInterval {
         if await isRapidPolling() {
             return Self.rapidPollInterval
         }
         if isInForeground() {
-            return Self.normalPollInterval
+            return Self.foregroundPollInterval
         }
         return isSharingLocation ? Self.normalPollInterval : Self.maintenancePollInterval
     }
@@ -226,6 +228,10 @@ final class LocationSyncService: ObservableObject {
     func isRapidPolling() async -> Bool {
         if !awaitingFirstUpdateIds.isEmpty { return true }
         return Date().timeIntervalSince(lastRapidPollTrigger) < 60.0
+    }
+
+    func firePoll() async {
+        await pollAll()
     }
 
     private func onFriendLocationReceived(friendId: String) {
@@ -237,12 +243,16 @@ final class LocationSyncService: ObservableObject {
     }
 
     func pollAll(updateUi: Bool = true) async {
+        if isPollInFlight { return }
+        isPollInFlight = true
+        lastPollTime = Date()
         logger.debug("Polling for location updates (updateUi=\(updateUi))")
         let identifier = self.beginBackgroundTask("PollAll") {
             // Task expired
         }
 
         defer {
+            isPollInFlight = false
             if identifier != .invalid {
                 self.endBackgroundTask(identifier)
             }
@@ -463,6 +473,8 @@ final class LocationSyncService: ObservableObject {
     }
 
     func updateVisibleUsers() {
+        if skipUpdateVisibleUsers { return }
+
         // Skip updating visible users if not sharing location or app is in background.
         // This is a power optimization.
         if !isSharingLocation && isInForeground() {
@@ -476,5 +488,15 @@ final class LocationSyncService: ObservableObject {
             updates.append(Shared.UserLocation(userId: id, lat: loc.lat, lng: loc.lng, timestamp: loc.ts))
         }
         visibleUsers = updates
+    }
+}
+
+private extension UIBackgroundTaskIdentifier {
+    func end() {
+        if self != .invalid {
+            MainActor.assumeIsolated {
+                UIApplication.shared.endBackgroundTask(self)
+            }
+        }
     }
 }

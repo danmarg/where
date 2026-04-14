@@ -156,7 +156,8 @@ class LocationSyncServiceTests: XCTestCase {
 
         await service.firePoll()
 
-        XCTAssertEqual(service.pollTimer?.timeInterval ?? 0, 30 * 60, accuracy: 0.1,
+        let interval = await service.targetPollInterval()
+        XCTAssertEqual(interval, 30 * 60, accuracy: 0.1,
                        "Background maintenance poll (not sharing) should be 30 min")
     }
 
@@ -182,7 +183,8 @@ class LocationSyncServiceTests: XCTestCase {
 
         await service.firePoll()
 
-        XCTAssertEqual(service.pollTimer?.timeInterval ?? 0, 60, accuracy: 0.1,
+        let interval = await service.targetPollInterval()
+        XCTAssertEqual(interval, 60, accuracy: 0.1,
                        "Foreground poll interval should be 60s")
     }
 
@@ -194,7 +196,8 @@ class LocationSyncServiceTests: XCTestCase {
 
         await service.firePoll()
 
-        XCTAssertEqual(service.pollTimer?.timeInterval ?? 0, 5 * 60, accuracy: 0.1,
+        let interval = await service.targetPollInterval()
+        XCTAssertEqual(interval, 5 * 60, accuracy: 0.1,
                        "Background poll interval (sharing) should be 5 min")
     }
 
