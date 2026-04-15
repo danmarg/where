@@ -233,16 +233,16 @@ key_confirmation = HMAC-SHA-256(key  = K_confirm,
                                  data = "Where-v1-Confirm" || EK_A.pub || EK_B.pub)
 ```
 
-Both parties initialize their Double Ratchet state (§8.2) seeded with a root key derived from `SK`. Alice and Bob expand `SK` over 128 bytes to obtain initial chain keys, the starting root key, and the initial header key:
+Both parties initialize their Double Ratchet state (§8.2) seeded with a root key derived from `SK`. Alice and Bob expand `SK` over 160 bytes to obtain initial chain keys, the starting root key, and the initial header keys:
 
 ```
-(chain_key_0 || chain_key_1 || root_key_0 || header_key_0) = HKDF-SHA-256(
+(chain_key_0 || chain_key_1 || root_key_0 || header_key_0 || next_header_key) = HKDF-SHA-256(
     ikm  = SK,
     salt = null,
     info = "Where-v1-KeyExchange",
-    length = 128
+    length = 160
 )
-// Split as: [0:32] = chain_key_0, [32:64] = chain_key_1, [64:96] = root_key_0, [96:128] = header_key_0.
+// Split as: [0:32] = chain_key_0, [32:64] = chain_key_1, [64:96] = root_key_0, [96:128] = header_key_0, [128:160] = next_header_key.
 ```
 
 - **Alice:** Uses `send_chain = chain_key_0`, `recv_chain = chain_key_1`.
@@ -542,22 +542,22 @@ SessionState {
 
 **KDF_RK (Diffie-Hellman ratchet step):**
 ```
-(new_root_key, new_chain_key) = HKDF-SHA-256(
+(new_root_key, new_chain_key, new_header_key) = HKDF-SHA-256(
     salt = current_root_key,
     ikm  = X25519(dh_priv, dh_pub),
     info = "Where-v1-RatchetStep",
-    length = 64
+    length = 96
 )
 ```
-Output: 64 bytes split as `[0:32] = new_root_key`, `[32:64] = new_chain_key`.
+Output: 96 bytes split as `[0:32] = new_root_key`, `[32:64] = new_chain_key`, `[64:96] = new_header_key`.
 
 **Routing Token Derivation:**
 
 After each DH ratchet step, new routing tokens MUST be derived from the new root key:
 ```
 new_token = HKDF-SHA-256(
-    salt = root_key,
-    ikm  = <absent>,
+    ikm  = root_key,
+    salt = null,
     info = "Where-v1-RoutingToken" || sender_fp || recipient_fp,
     length = 16
 )
@@ -566,14 +566,12 @@ Direction is encoded explicitly via the `sender_fp || recipient_fp` ordering in 
 
 **KDF_CK (symmetric ratchet step):**
 ```
-(new_chain_key || message_key || message_nonce) = HKDF-SHA-256(
-    ikm  = current_chain_key,
-    salt = null,
-    info = "Where-v1-MsgStep",
-    length = 76
-)
-// Split as: [0:32] = next_chain_key, [32:64] = message_key, [64:76] = message_nonce.
+message_key     = HMAC-SHA-256(key = current_chain_key, data = 0x01)
+next_chain_key  = HMAC-SHA-256(key = current_chain_key, data = 0x02)
+message_nonce   = HKDF-SHA-256(ikm = message_key, salt = null, info = "Where-v1-MsgNonce", length = 12)
 ```
+The message key is used for AEAD encryption of the payload, and the nonce is derived from it to ensure uniqueness without needing a separate per-message nonce counter in the wire format.
+
 
 ```
 
