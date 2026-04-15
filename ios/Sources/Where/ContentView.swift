@@ -183,14 +183,14 @@ struct ContentView: View {
             TextField(MR.strings().friend_name_label.localized(), text: $newFriendName)
             if let qr = syncService.pendingQrForNaming {
                 Button(MR.strings().add.localized()) {
-                    let name = newFriendName.isEmpty ? MR.strings().friend.localized() : newFriendName
+                    let name = newFriendName.isEmpty ? MR.strings().friend_.localized() : newFriendName
                     syncService.pendingQrForNaming = nil
                     newFriendName = ""
                     Task { await syncService.confirmQrScan(qr: qr, friendName: name) }
                 }
             } else if let payload = syncService.pendingInitPayload {
                 Button(MR.strings().save.localized()) {
-                    let name = newFriendName.isEmpty ? MR.strings().friend.localized() : newFriendName
+                    let name = newFriendName.isEmpty ? MR.strings().friend_.localized() : newFriendName
                     Task {
                         await syncService.confirmPendingInit(payload: payload, name: name)
                         newFriendName = ""

@@ -26,6 +26,7 @@ import kotlinx.coroutines.withContext
 import net.af0.where.e2ee.ConnectionStatus
 import net.af0.where.e2ee.E2eeStore
 import net.af0.where.e2ee.LocationClient
+import net.af0.where.shared.MR
 
 private const val TAG = "LocationService"
 
@@ -84,6 +85,12 @@ class LocationService : Service() {
         }
 
         ensureLocationRegistration()
+
+        serviceScope.launch {
+            locationSource.isSharingLocation.collect {
+                updateNotification()
+            }
+        }
 
         serviceScope.launch { pollLoop() }
         serviceScope.launch {
@@ -153,7 +160,9 @@ class LocationService : Service() {
             fusedClient.requestLocationUpdates(request, locationCallback, mainLooper)
             isRegistered = true
         } catch (_: SecurityException) {
-            stopSelf()
+            // If we don't have permission, we just won't update our own location,
+            // but we can still poll for friend updates.
+            Log.w(TAG, "No location permission; skipping GPS updates.")
         }
     }
 
@@ -328,22 +337,34 @@ class LocationService : Service() {
         }
     }
 
+    private fun stringResource(resource: dev.icerock.moko.resources.StringResource): String {
+        return resource.getString(this)
+    }
+
     private fun createNotificationChannel() {
         val channel =
             NotificationChannel(
                 CHANNEL_ID,
-                "Where Location",
+                stringResource(MR.strings.where_location),
                 NotificationManager.IMPORTANCE_LOW,
             )
         getSystemService(NotificationManager::class.java).createNotificationChannel(channel)
     }
 
-    private fun buildNotification(): Notification =
-        Notification.Builder(this, CHANNEL_ID)
-            .setContentTitle("Where")
-            .setContentText("Sharing your location")
+    private fun buildNotification(): Notification {
+        val sharing = LocationRepository.isSharingLocation.value
+        val text = if (sharing) stringResource(MR.strings.sharing_your_location) else stringResource(MR.strings.location_sharing_paused)
+        return Notification.Builder(this, CHANNEL_ID)
+            .setContentTitle(stringResource(MR.strings.app_name))
+            .setContentText(text)
             .setSmallIcon(android.R.drawable.ic_menu_mylocation)
             .build()
+    }
+
+    private fun updateNotification() {
+        val notificationManager = getSystemService(NotificationManager::class.java)
+        notificationManager.notify(NOTIFICATION_ID, buildNotification())
+    }
 
     companion object {
         const val ACTION_FORCE_PUBLISH = "net.af0.where.ACTION_FORCE_PUBLISH"

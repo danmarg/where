@@ -5,11 +5,17 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.launch
 import net.af0.where.e2ee.ConnectionStatus
 import net.af0.where.e2ee.FriendEntry
 import net.af0.where.e2ee.KeyExchangeInitPayload
 import net.af0.where.e2ee.QrPayload
+import net.af0.where.e2ee.format
 import net.af0.where.model.UserLocation
+import net.af0.where.shared.MR
+import dev.icerock.moko.resources.desc.Resource
+import dev.icerock.moko.resources.desc.StringDesc
+
 
 /** Minimal interface over the shared location state, making it injectable for tests. */
 interface LocationSource {
@@ -148,23 +154,24 @@ object LocationRepository : LocationSource {
     }
 
     override fun onConnectionError(e: Throwable) {
+        if (e is kotlinx.coroutines.CancellationException) return
         val msg =
             when (e) {
-                is net.af0.where.e2ee.ConnectException -> "No connection: Could not reach the server."
-                is net.af0.where.e2ee.TimeoutException -> "Request timed out. Please try again."
-                is net.af0.where.e2ee.ServerException -> "Server error ${e.statusCode}: Something went wrong on the server."
-                is net.af0.where.e2ee.AuthenticationException -> "Authentication failed. Please try re-pairing."
-                is net.af0.where.e2ee.ProtocolException -> "Protocol error: Session may be out of sync."
-                is net.af0.where.e2ee.CryptoException -> "Security error: Cryptographic validation failed."
+                is net.af0.where.e2ee.ConnectException -> StringDesc.Resource(MR.strings.error_no_connection).toString()
+                is net.af0.where.e2ee.TimeoutException -> StringDesc.Resource(MR.strings.error_timeout).toString()
+                is net.af0.where.e2ee.ServerException -> MR.strings.error_server.format(e.statusCode)
+                is net.af0.where.e2ee.AuthenticationException -> StringDesc.Resource(MR.strings.error_auth).toString()
+                is net.af0.where.e2ee.ProtocolException -> StringDesc.Resource(MR.strings.error_protocol).toString()
+                is net.af0.where.e2ee.CryptoException -> StringDesc.Resource(MR.strings.error_crypto).toString()
                 is net.af0.where.e2ee.NetworkException -> "Network error: ${e.message}"
                 else -> {
                     when {
                         e.message?.contains("Unable to resolve host", ignoreCase = true) == true ->
-                            "No connection: Could not reach the server."
-                        e.message?.contains("timeout", ignoreCase = true) == true -> "Request timed out."
+                            StringDesc.Resource(MR.strings.error_no_connection).toString()
+                        e.message?.contains("timeout", ignoreCase = true) == true -> StringDesc.Resource(MR.strings.error_timeout).toString()
                         e.message?.contains("ConnectException", ignoreCase = true) == true ->
-                            "No connection: Could not establish a connection."
-                        else -> "An unexpected error occurred. Please try again."
+                            StringDesc.Resource(MR.strings.error_no_connection).toString()
+                        else -> StringDesc.Resource(MR.strings.error_unexpected).toString()
                     }
                 }
             }

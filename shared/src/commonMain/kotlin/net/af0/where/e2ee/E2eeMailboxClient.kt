@@ -107,6 +107,9 @@ object KtorMailboxClient : MailboxClient {
                 TimeoutException("Network timeout", e)
             is IOException -> {
                 val msg = e.message ?: "Connection failed"
+                if (msg.contains("job was cancelled", ignoreCase = true)) {
+                    throw CancellationException(msg)
+                }
                 if (msg.contains("resolve", ignoreCase = true) || msg.contains("connect", ignoreCase = true)) {
                     ConnectException(msg, e)
                 } else {

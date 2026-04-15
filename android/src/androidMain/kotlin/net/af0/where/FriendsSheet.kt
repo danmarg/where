@@ -114,7 +114,10 @@ fun FriendsSheet(
             }
 
             if (friends.isNotEmpty()) {
-                Text(stringResource(MR.strings.friends) + " (${friends.size})", style = MaterialTheme.typography.labelMedium)
+                Text(
+                    stringResource(MR.strings.friends) + " (${friends.size})",
+                    style = MaterialTheme.typography.labelMedium,
+                )
                 LazyColumn(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                     items(friends, key = { it.id }) { friend ->
                         Row(
@@ -130,7 +133,11 @@ fun FriendsSheet(
                         ) {
                             Column(modifier = Modifier.weight(1f)) {
                                 Text(
-                                    if (friend.isConfirmed) friend.name else "${friend.name} (" + stringResource(MR.strings.pending) + ")",
+                                    if (friend.isConfirmed) {
+                                        friend.name
+                                    } else {
+                                        "${friend.name} (" + stringResource(MR.strings.pending) + ")"
+                                    },
                                     style = MaterialTheme.typography.bodyLarge,
                                     maxLines = 1,
                                     overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,

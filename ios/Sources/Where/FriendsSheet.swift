@@ -61,7 +61,9 @@ struct FriendsSheet: View {
                         ForEach(friends, id: \.id) { friend in
                             HStack {
                                 VStack(alignment: .leading, spacing: 2) {
-                                    Text(friend.isConfirmed ? friend.name : "\(friend.name) (" + MR.strings().pending.localized() + ")")
+                                    let pendingText = "(" + MR.strings().pending.localized() + ")"
+                                    let displayName = friend.isConfirmed ? friend.name : "\(friend.name) \(pendingText)"
+                                    Text(displayName)
                                         .font(.body)
                                     Text(friend.safetyNumber)
                                         .font(.caption2)
@@ -118,7 +120,7 @@ struct FriendsSheet: View {
             .navigationTitle(MR.strings().friends.localized())
             .navigationBarTitleDisplayMode(.inline)
             .confirmationDialog(
-                (MR.strings().remove_friend_title.localized()) + " (\(friendToRemove?.name ?? MR.strings().friend.localized()))?",
+                (MR.strings().remove_friend_title.localized()) + " (\(friendToRemove?.name ?? MR.strings().friend_.localized()))?",
                 isPresented: Binding(get: { friendToRemove != nil }, set: { if !$0 { friendToRemove = nil } }),
                 titleVisibility: .visible
             ) {

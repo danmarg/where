@@ -110,11 +110,13 @@ class LocationViewModel(
 
     init {
         Log.d(TAG, "LocationViewModel init: server=${BuildConfig.SERVER_HTTP_URL}")
-        // Sync sharing state to LocationSource for the background service.
+        // Sync sharing state and foreground state to manage the background service.
         viewModelScope.launch {
-            isSharingLocation.collect { sharing ->
+            combine(isSharingLocation, locationSource.isAppInForeground) { sharing, inForeground ->
+                Pair(sharing, inForeground)
+            }.collect { (sharing, inForeground) ->
                 locationSource.setSharingLocation(sharing)
-                manageForegroundService(sharing)
+                manageForegroundService(sharing, inForeground)
             }
         }
 
@@ -369,7 +371,10 @@ class LocationViewModel(
     }
 
     @MainThread
-    private fun manageForegroundService(sharing: Boolean) {
+    private fun manageForegroundService(
+        sharing: Boolean,
+        inForeground: Boolean,
+    ) {
         check(Looper.myLooper() == Looper.getMainLooper())
         val intent = Intent(getApplication(), LocationService::class.java)
         val hasLocationPermission =
@@ -377,7 +382,7 @@ class LocationViewModel(
                 PackageManager.PERMISSION_GRANTED ||
                 ContextCompat.checkSelfPermission(getApplication(), Manifest.permission.ACCESS_COARSE_LOCATION) ==
                 PackageManager.PERMISSION_GRANTED
-        if (sharing && hasLocationPermission) {
+        if ((sharing && hasLocationPermission) || inForeground) {
             getApplication<Application>().startForegroundService(intent)
         } else if (!sharing) {
             getApplication<Application>().stopService(intent)
