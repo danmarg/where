@@ -46,10 +46,10 @@ internal actual fun hmacSha256(
     val result = sha256(opad + innerHash)
 
     // Security: zero out sensitive material
-    k.fill(0)
-    ipad.fill(0)
-    opad.fill(0)
-    innerHash.fill(0)
+    k.zeroize()
+    ipad.zeroize()
+    opad.zeroize()
+    innerHash.zeroize()
 
     return result
 }
@@ -116,4 +116,12 @@ internal actual fun aeadDecrypt(
     } catch (e: Exception) {
         throw IllegalArgumentException("AEAD authentication failed", e)
     }
+}
+
+// ---------------------------------------------------------------------------
+// Memory Hygiene
+// ---------------------------------------------------------------------------
+
+internal actual fun ByteArray.zeroize() {
+    this.fill(0)
 }
