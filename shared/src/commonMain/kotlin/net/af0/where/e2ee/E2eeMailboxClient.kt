@@ -14,6 +14,7 @@ import io.ktor.http.ContentType
 import io.ktor.http.HttpStatusCode
 import io.ktor.http.contentType
 import io.ktor.serialization.kotlinx.json.json
+import kotlinx.coroutines.CancellationException
 import kotlinx.io.IOException
 import kotlinx.serialization.json.Json
 
@@ -101,6 +102,7 @@ object KtorMailboxClient : MailboxClient {
 
     private fun mapException(e: Exception): Exception {
         return when (e) {
+            is CancellationException -> throw e
             is ConnectTimeoutException, is HttpRequestTimeoutException, is SocketTimeoutException ->
                 TimeoutException("Network timeout", e)
             is IOException -> {

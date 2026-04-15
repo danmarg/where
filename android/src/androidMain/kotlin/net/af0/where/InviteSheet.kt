@@ -22,7 +22,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import dev.icerock.moko.resources.compose.stringResource
 import net.af0.where.e2ee.QrPayload
+import net.af0.where.shared.MR
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -45,16 +47,16 @@ fun InviteSheet(
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.spacedBy(16.dp),
         ) {
-            Text("Invite a Friend", style = MaterialTheme.typography.titleLarge)
+            Text(stringResource(MR.strings.invite_a_friend), style = MaterialTheme.typography.titleLarge)
             Text(
-                "Have them scan this QR code or send the link.",
+                stringResource(MR.strings.invite_message),
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
             OutlinedTextField(
                 value = displayName,
                 onValueChange = onDisplayNameChange,
-                label = { Text("Your Name") },
+                label = { Text(stringResource(MR.strings.your_name)) },
                 modifier = Modifier.fillMaxWidth(),
                 singleLine = true,
             )
@@ -65,18 +67,21 @@ fun InviteSheet(
                     modifier = Modifier.size(240.dp),
                 )
             }
+            val joinMeSubject = stringResource(MR.strings.join_me_on_where)
+            val shareInviteTitle = stringResource(MR.strings.share_invite)
+
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedButton(onClick = onDismiss) { Text("Cancel") }
+                OutlinedButton(onClick = onDismiss) { Text(stringResource(MR.strings.cancel)) }
                 Button(onClick = {
                     val intent =
                         Intent(Intent.ACTION_SEND).apply {
                             type = "text/plain"
                             putExtra(Intent.EXTRA_TEXT, qrUrl)
-                            putExtra(Intent.EXTRA_SUBJECT, "Join me on Where")
+                            putExtra(Intent.EXTRA_SUBJECT, joinMeSubject)
                         }
-                    context.startActivity(Intent.createChooser(intent, "Share invite"))
+                    context.startActivity(Intent.createChooser(intent, shareInviteTitle))
                 }) {
-                    Text("Share Link")
+                    Text(stringResource(MR.strings.share_link))
                 }
             }
         }

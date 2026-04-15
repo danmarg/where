@@ -37,16 +37,20 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
+import dev.icerock.moko.resources.StringResource
+import dev.icerock.moko.resources.compose.stringResource
 import net.af0.where.e2ee.FriendEntry
+import net.af0.where.shared.MR
 
+@Composable
 fun timeAgoString(lastPingMs: Long?): String {
-    if (lastPingMs == null) return "never"
+    if (lastPingMs == null) return stringResource(MR.strings.never)
     val seconds = (System.currentTimeMillis() - lastPingMs) / 1000
     return when {
-        seconds < 60 -> "just now"
-        seconds < 3600 -> "${seconds / 60}m ago"
-        seconds < 86400 -> "${seconds / 3600}h ago"
-        else -> "${seconds / 86400}d ago"
+        seconds < 60 -> stringResource(MR.strings.just_now)
+        seconds < 3600 -> stringResource(MR.strings.m_ago, seconds / 60)
+        seconds < 86400 -> stringResource(MR.strings.h_ago, seconds / 3600)
+        else -> stringResource(MR.strings.d_ago, seconds / 86400)
     }
 }
 
@@ -81,7 +85,7 @@ fun FriendsSheet(
                     .padding(bottom = 32.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp),
         ) {
-            Text("Friends", style = MaterialTheme.typography.titleLarge)
+            Text(stringResource(MR.strings.friends), style = MaterialTheme.typography.titleLarge)
 
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -95,7 +99,7 @@ fun FriendsSheet(
                     modifier = Modifier.weight(1f),
                 ) {
                     Icon(Icons.Default.QrCode, contentDescription = null, modifier = Modifier.size(16.dp))
-                    Text(" Invite")
+                    Text(" " + stringResource(MR.strings.invite))
                 }
                 FilledTonalButton(
                     onClick = {
@@ -105,12 +109,12 @@ fun FriendsSheet(
                     modifier = Modifier.weight(1f),
                 ) {
                     Icon(Icons.Default.QrCodeScanner, contentDescription = null, modifier = Modifier.size(16.dp))
-                    Text(" Scan")
+                    Text(" " + stringResource(MR.strings.scan))
                 }
             }
 
             if (friends.isNotEmpty()) {
-                Text("Friends (${friends.size})", style = MaterialTheme.typography.labelMedium)
+                Text(stringResource(MR.strings.friends) + " (${friends.size})", style = MaterialTheme.typography.labelMedium)
                 LazyColumn(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                     items(friends, key = { it.id }) { friend ->
                         Row(
@@ -126,7 +130,7 @@ fun FriendsSheet(
                         ) {
                             Column(modifier = Modifier.weight(1f)) {
                                 Text(
-                                    if (friend.isConfirmed) friend.name else "${friend.name} (Pending)",
+                                    if (friend.isConfirmed) friend.name else "${friend.name} (" + stringResource(MR.strings.pending) + ")",
                                     style = MaterialTheme.typography.bodyLarge,
                                     maxLines = 1,
                                     overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
@@ -144,7 +148,7 @@ fun FriendsSheet(
                                 )
                                 if (friend.isStale) {
                                     Text(
-                                        "Friend has not been seen recently — sharing paused for security",
+                                        stringResource(MR.strings.stale_friend_warning),
                                         style = MaterialTheme.typography.bodySmall,
                                         color = MaterialTheme.colorScheme.error,
                                     )
@@ -152,21 +156,21 @@ fun FriendsSheet(
                             }
 
                             IconButton(onClick = { renameFriend = friend }) {
-                                Icon(Icons.Default.Edit, contentDescription = "Rename", modifier = Modifier.size(20.dp))
+                                Icon(Icons.Default.Edit, contentDescription = stringResource(MR.strings.rename), modifier = Modifier.size(20.dp))
                             }
 
                             val isPaused = friend.id in pausedFriendIds
                             IconButton(onClick = { onTogglePause(friend.id) }) {
                                 Icon(
                                     if (isPaused) Icons.Default.PlayArrow else Icons.Default.Pause,
-                                    contentDescription = if (isPaused) "Resume" else "Pause",
+                                    contentDescription = if (isPaused) stringResource(MR.strings.resume) else stringResource(MR.strings.pause),
                                 )
                             }
 
                             IconButton(onClick = { confirmDeleteFriend = friend }) {
                                 Icon(
                                     Icons.Default.Delete,
-                                    contentDescription = "Remove",
+                                    contentDescription = stringResource(MR.strings.remove),
                                     tint = MaterialTheme.colorScheme.error,
                                 )
                             }
@@ -175,7 +179,7 @@ fun FriendsSheet(
                 }
             } else {
                 Text(
-                    "No friends yet. Tap Invite to share your QR code.",
+                    stringResource(MR.strings.no_friends_yet),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -186,8 +190,8 @@ fun FriendsSheet(
     confirmDeleteFriend?.let { friend ->
         AlertDialog(
             onDismissRequest = { confirmDeleteFriend = null },
-            title = { Text("Remove Friend") },
-            text = { Text("Remove ${friend.name}? This will permanently delete the key.") },
+            title = { Text(stringResource(MR.strings.remove_friend_title)) },
+            text = { Text(stringResource(MR.strings.remove_friend_message, friend.name)) },
             confirmButton = {
                 TextButton(
                     onClick = {
@@ -195,12 +199,12 @@ fun FriendsSheet(
                         confirmDeleteFriend = null
                     },
                 ) {
-                    Text("Remove", color = MaterialTheme.colorScheme.error)
+                    Text(stringResource(MR.strings.remove), color = MaterialTheme.colorScheme.error)
                 }
             },
             dismissButton = {
                 TextButton(onClick = { confirmDeleteFriend = null }) {
-                    Text("Cancel")
+                    Text(stringResource(MR.strings.cancel))
                 }
             },
         )
@@ -210,12 +214,12 @@ fun FriendsSheet(
         var newName by remember { mutableStateOf(friend.name) }
         AlertDialog(
             onDismissRequest = { renameFriend = null },
-            title = { Text("Rename Friend") },
+            title = { Text(stringResource(MR.strings.rename_friend_title)) },
             text = {
                 OutlinedTextField(
                     value = newName,
                     onValueChange = { newName = it },
-                    label = { Text("Friend's Name") },
+                    label = { Text(stringResource(MR.strings.friend_name_label)) },
                     singleLine = true,
                 )
             },
@@ -226,12 +230,12 @@ fun FriendsSheet(
                         renameFriend = null
                     },
                 ) {
-                    Text("Rename")
+                    Text(stringResource(MR.strings.rename))
                 }
             },
             dismissButton = {
                 TextButton(onClick = { renameFriend = null }) {
-                    Text("Cancel")
+                    Text(stringResource(MR.strings.cancel))
                 }
             },
         )

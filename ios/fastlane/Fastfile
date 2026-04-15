@@ -1,0 +1,14 @@
+default_platform(:ios)
+
+platform :ios do
+  desc "Push a new beta build to TestFlight"
+  lane :beta do
+    build_app(scheme: "Where")
+    upload_to_testflight
+  end
+
+  desc "Build debug app"
+  lane :build_debug do
+    build_app(scheme: "Where", configuration: "Debug")
+  end
+end
