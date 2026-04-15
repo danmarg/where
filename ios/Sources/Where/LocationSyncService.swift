@@ -9,6 +9,7 @@ private let logger = Logger(subsystem: "net.af0.where", category: "LocationSync"
 @MainActor
 protocol LocationClientProtocol: AnyObject, Sendable {
     func sendLocation(lat: Double, lng: Double, pausedFriendIds: Set<String>) async throws
+    func sendLocationToFriend(friendId: String, lat: Double, lng: Double) async throws
     func poll(isForeground: Bool) async throws -> [Shared.UserLocation]
     func pollPendingInvite() async throws -> Shared.PendingInviteResult?
     func postKeyExchangeInit(qr: Shared.QrPayload, initPayload: Shared.KeyExchangeInitPayload) async throws
@@ -77,7 +78,6 @@ final class LocationSyncService: ObservableObject {
     private var lastSentTime: Date = Date(timeIntervalSince1970: 0)
     var pendingForcedSendAfterPairing: Bool = false
     private var currentSendTask: Task<Void, Never>? = nil
-    private var isCurrentSendHeartbeat: Bool = false
     private var awaitingFirstUpdateIds: Set<String> = []
     // Monotonically increasing counter used to prevent stale task cleanup from
     // clearing a newer task's state. Incremented each time a new send task is created.
@@ -112,7 +112,7 @@ final class LocationSyncService: ObservableObject {
         self.locationClient = locationClient ?? Shared.LocationClient(baseUrl: ServerConfig.httpBaseUrl, store: store)
         self.locationProvider = locationProvider ?? LocationManager.shared
 
-        self.isSharingLocation = userStoreValue.isSharingLocation.value as? Bool ?? true
+        self.isSharingLocation = (userStoreValue.isSharingLocation.value as? Shared.KotlinBoolean)?.boolValue ?? true
         self.displayName = userStoreValue.displayName.value as? String ?? ""
         self.pausedFriendIds = Set(userStoreValue.pausedFriendIds.value as? Set<String> ?? [])
 
@@ -169,6 +169,10 @@ final class LocationSyncService: ObservableObject {
     }
 
     func createInvite() async {
+        guard pendingInitPayload == nil && pendingQrForNaming == nil else {
+            logger.debug("createInvite: pairing already in flight, skipping")
+            return
+        }
         do {
             let qr = try await e2eeStore.createInvite(suggestedName: displayName)
             inviteState = Shared.InviteState.Pending(qr: qr)
@@ -199,24 +203,38 @@ final class LocationSyncService: ObservableObject {
         pollTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
             guard let self = self else { return }
             Task { @MainActor in
-                await self.tick()
+                self.tick()
             }
         }
     }
 
-    private func tick() async {
+    private func tick() {
         if isPollInFlight { return }
 
         let now = Date()
-        let interval = await targetPollInterval()
+        let interval = targetPollInterval()
 
         if now.timeIntervalSince(lastPollTime) >= interval {
-            await pollAll()
+            Task {
+                await pollAll()
+            }
+        }
+
+        // Heartbeat: Send location periodically if sharing.
+        // We use a 5-minute threshold for stationary updates, similar to Android.
+        if isSharingLocation {
+            let heartbeatInterval: TimeInterval = 300.0 // 5 minutes
+            if now.timeIntervalSince(lastSentTime) >= heartbeatInterval {
+                if let last = locationProvider.lastLocation {
+                    debugLog { "Stationary heartbeat: sending location" }
+                    self.sendLocation(lat: last.coordinate.latitude, lng: last.coordinate.longitude)
+                }
+            }
         }
     }
 
-    func targetPollInterval() async -> TimeInterval {
-        if await isRapidPolling() {
+    func targetPollInterval() -> TimeInterval {
+        if isRapidPolling() {
             return Self.rapidPollInterval
         }
         if isInForeground() {
@@ -225,7 +243,7 @@ final class LocationSyncService: ObservableObject {
         return isSharingLocation ? Self.normalPollInterval : Self.maintenancePollInterval
     }
 
-    func isRapidPolling() async -> Bool {
+    func isRapidPolling() -> Bool {
         if !awaitingFirstUpdateIds.isEmpty { return true }
         return Date().timeIntervalSince(lastRapidPollTrigger) < 60.0
     }
@@ -286,6 +304,7 @@ final class LocationSyncService: ObservableObject {
         if let result = try await locationClient.pollPendingInvite() {
             pendingInitPayload = result.payload
             multipleScansDetected = result.multipleScansDetected
+            inviteState = Shared.InviteState.None()
             triggerRapidPoll()
         }
     }
@@ -346,7 +365,10 @@ final class LocationSyncService: ObservableObject {
                 debugLog { "KeyExchangeInit posted successfully" }
 
                 if let last = locationProvider.lastLocation {
-                    self.sendLocation(lat: last.coordinate.latitude, lng: last.coordinate.longitude, force: true)
+                    // Proactively send our first location update to Alice to trigger confirmation on her side.
+                    // We use sendLocationToFriend here to bypass the !isConfirmed check in sendLocation().
+                    try? await locationClient.sendLocationToFriend(friendId: bobEntry.id, lat: last.coordinate.latitude, lng: last.coordinate.longitude)
+                    self.lastSentTime = Date()
                 } else {
                     logger.debug("confirmQrScan: lastLocation is nil, setting pendingForcedSendAfterPairing")
                     self.pendingForcedSendAfterPairing = true
@@ -383,7 +405,9 @@ final class LocationSyncService: ObservableObject {
                 updateVisibleUsers()
 
                 if let last = locationProvider.lastLocation {
-                    self.sendLocation(lat: last.coordinate.latitude, lng: last.coordinate.longitude, force: true)
+                    // Proactively send our first location update to Bob to trigger confirmation on his side.
+                    try? await locationClient.sendLocationToFriend(friendId: entry.id, lat: last.coordinate.latitude, lng: last.coordinate.longitude)
+                    self.lastSentTime = Date()
                 } else {
                     self.pendingForcedSendAfterPairing = true
                     locationProvider.requestPermissionAndStart()
@@ -419,6 +443,7 @@ final class LocationSyncService: ObservableObject {
     func removeFriend(id: String) async {
         do {
             try await e2eeStore.deleteFriend(id: id)
+            pausedFriendIds.remove(id)
             friends = try await e2eeStore.listFriends()
             friendLocations.removeValue(forKey: id)
             friendLastPing.removeValue(forKey: id)
@@ -456,10 +481,14 @@ final class LocationSyncService: ObservableObject {
             }
             do {
                 try await locationClient.sendLocation(lat: lat, lng: lng, pausedFriendIds: pausedFriendIds)
-                updateStatus(nil)
+                if !Task.isCancelled && gen == self.sendTaskGeneration {
+                    updateStatus(nil)
+                }
             } catch {
-                logger.error("Failed to send location: \(error.localizedDescription)")
-                updateStatus(error)
+                if !Task.isCancelled && gen == self.sendTaskGeneration {
+                    logger.error("Failed to send location: \(error.localizedDescription)")
+                    updateStatus(error)
+                }
             }
         }
     }
@@ -475,9 +504,9 @@ final class LocationSyncService: ObservableObject {
     func updateVisibleUsers() {
         if skipUpdateVisibleUsers { return }
 
-        // Skip updating visible users if not sharing location or app is in background.
+        // Skip updating visible users if not sharing location AND app is in background.
         // This is a power optimization.
-        if !isSharingLocation && isInForeground() {
+        if !isSharingLocation && !isInForeground() {
             visibleUsers = []
             return
         }
