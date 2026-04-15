@@ -47,24 +47,7 @@ fun String.hexToByteArray(): ByteArray {
 }
 
 fun qrPayloadToUrl(qr: QrPayload): String {
-    val json =
-        Json {
-            ignoreUnknownKeys = true
-            encodeDefaults = true
-        }
-    // Mimic the iOS/Android URL format
-    // {"ekPub": "...", "suggestedName": "...", "fingerprint": "..."}
-    val ekPubB64 = Base64.getEncoder().encodeToString(qr.ekPub)
-    val secretB64 = Base64.getEncoder().encodeToString(qr.discoverySecret)
-    val map =
-        mapOf(
-            "ekPub" to ekPubB64,
-            "suggestedName" to qr.suggestedName,
-            "fingerprint" to qr.fingerprint,
-            "discoverySecret" to secretB64,
-        )
-    val b64 = Base64.getUrlEncoder().withoutPadding().encodeToString(json.encodeToString(map).toByteArray())
-    return "where://invite?q=$b64"
+    return qr.toUrl()
 }
 
 fun printQrCode(url: String) {
@@ -88,24 +71,7 @@ fun printQrCode(url: String) {
 }
 
 fun urlToQrPayload(url: String): QrPayload? {
-    val q = url.substringAfter("q=").substringBefore("&")
-    val json =
-        Json {
-            ignoreUnknownKeys = true
-            encodeDefaults = true
-        }
-    val decoded = String(Base64.getUrlDecoder().decode(q))
-    val map: Map<String, String> = json.decodeFromString(decoded)
-    val ekPub = Base64.getDecoder().decode(map["ekPub"] ?: return null)
-    val discoverySecret = map["discoverySecret"]?.let { Base64.getDecoder().decode(it) } ?: return null
-    if (ekPub.size != 32 || discoverySecret.size != 32) return null
-    return QrPayload(
-        protocolVersion = PROTOCOL_VERSION,
-        ekPub = ekPub,
-        suggestedName = map["suggestedName"] ?: "Friend",
-        fingerprint = map["fingerprint"] ?: "",
-        discoverySecret = discoverySecret,
-    )
+    return QrPayload.fromUrl(url)
 }
 
 fun main(args: Array<String>) {

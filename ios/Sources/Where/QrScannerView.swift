@@ -17,7 +17,7 @@ struct QrScannerView: View {
 struct SimulatorQrScannerView: View {
     let onScan: (String) -> Void
     let onDismiss: () -> Void
-    @State private var manualUrl: String = "where://invite?..."
+    @State private var manualUrl: String = "https://where.af0.net/invite#..."
 
     var body: some View {
         NavigationStack {
@@ -35,7 +35,7 @@ struct SimulatorQrScannerView: View {
                     .multilineTextAlignment(.center)
                     .padding(.horizontal)
 
-                TextField("where://invite?...", text: $manualUrl)
+                TextField("https://where.af0.net/invite#...", text: $manualUrl)
                     .textFieldStyle(.roundedBorder)
                     .padding(.horizontal)
                     .autocorrectionDisabled()

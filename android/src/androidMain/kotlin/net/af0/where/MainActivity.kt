@@ -122,7 +122,7 @@ class MainActivity : ComponentActivity() {
                 }
 
                 if (showSimulatorScanner) {
-                    var manualUrl by remember { mutableStateOf("where://invite?q=...") }
+                    var manualUrl by remember { mutableStateOf("https://where.af0.net/invite#...") }
                     AlertDialog(
                         onDismissRequest = { showSimulatorScanner = false },
                         title = { Text("QR Scanner (Simulator)") },

@@ -214,7 +214,7 @@ data class QrPayload(
     @OptIn(ExperimentalEncodingApi::class)
     fun toUrl(): String {
         val jsonStr = qrJson.encodeToString(serializer(), this)
-        val encoded = Base64.UrlSafe.encode(jsonStr.encodeToByteArray()).trimEnd('=')
+        val encoded = Base64.UrlSafe.encode(jsonStr.encodeToByteArray())
         return "https://where.af0.net/invite#$encoded"
     }
 
@@ -224,14 +224,15 @@ data class QrPayload(
         fun fromUrl(url: String): QrPayload? {
             // Support both https://where.af0.net/invite#$encoded AND where://invite?q=$encoded
             val fragment = if (url.startsWith("where://")) {
-                url.substringAfter("q=", "")
+                url.substringAfter("q=", "").substringBefore("&")
             } else {
                 url.substringAfter("#", "")
             }
             if (fragment.isEmpty()) return null
             return try {
-                // Base64.UrlSafe.decode handles missing padding
-                val decoded = Base64.UrlSafe.decode(fragment).decodeToString()
+                // Base64.UrlSafe.withPadding(Base64.PaddingOption.PRESENT_OPTIONAL) handles both padded and unpadded.
+                val decoder = Base64.UrlSafe.withPadding(Base64.PaddingOption.PRESENT_OPTIONAL)
+                val decoded = decoder.decode(fragment).decodeToString()
                 qrJson.decodeFromString(serializer(), decoded)
             } catch (_: Exception) {
                 null
