@@ -17,6 +17,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
@@ -240,6 +241,8 @@ class LocationService : Service() {
                 locationSource.onFriendsUpdated(e2eeStore.listFriends())
                 updateStatus(null)
             }
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             Log.e(TAG, "Poll failed: ${e.message}")
             updateStatus(e)
@@ -256,6 +259,8 @@ class LocationService : Service() {
                 locationSource.onPendingInit(initPayload, result.multipleScansDetected)
                 updateStatus(null)
             }
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             updateStatus(e)
         }
@@ -286,6 +291,8 @@ class LocationService : Service() {
         try {
             locationClient.sendLocation(lat, lng, locationSource.pausedFriendIds.value)
             updateStatus(null)
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             // Restore lastSentTime on failure so the next update can retry immediately.
             sendLock.withLock {

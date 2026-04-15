@@ -22,9 +22,11 @@ import com.google.android.gms.maps.CameraUpdateFactory
 import com.google.android.gms.maps.model.CameraPosition
 import com.google.android.gms.maps.model.LatLng
 import com.google.maps.android.compose.*
+import dev.icerock.moko.resources.compose.stringResource
 import net.af0.where.e2ee.ConnectionStatus
 import net.af0.where.e2ee.FriendEntry
 import net.af0.where.model.UserLocation
+import net.af0.where.shared.MR
 
 @OptIn(ExperimentalPermissionsApi::class, ExperimentalMaterial3Api::class)
 @Composable
@@ -84,21 +86,18 @@ fun MapScreen(
     if (showBackgroundRationale) {
         AlertDialog(
             onDismissRequest = { showBackgroundRationale = false },
-            title = { Text("Background Location") },
+            title = { Text(stringResource(MR.strings.background_location_title)) },
             text = {
-                Text(
-                    "Allow Where to access your location in the background so friends can " +
-                        "see your position even when the app is not open.",
-                )
+                Text(stringResource(MR.strings.background_location_message))
             },
             confirmButton = {
                 TextButton(onClick = {
                     showBackgroundRationale = false
                     backgroundLocationPermission?.launchPermissionRequest()
-                }) { Text("Allow") }
+                }) { Text(stringResource(MR.strings.allow)) }
             },
             dismissButton = {
-                TextButton(onClick = { showBackgroundRationale = false }) { Text("Skip") }
+                TextButton(onClick = { showBackgroundRationale = false }) { Text(stringResource(MR.strings.skip)) }
             },
         )
     }
@@ -106,9 +105,9 @@ fun MapScreen(
     if (!locationPermissions.allPermissionsGranted) {
         Box(modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
             Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                Text("Location permission is required")
+                Text(stringResource(MR.strings.location_permission_required))
                 Button(onClick = { locationPermissions.launchMultiplePermissionRequest() }) {
-                    Text("Grant Permission")
+                    Text(stringResource(MR.strings.grant_permission))
                 }
             }
         }
@@ -171,6 +170,7 @@ fun MapScreen(
         GoogleMap(
             modifier = Modifier.fillMaxSize(),
             cameraPositionState = cameraPositionState,
+            contentPadding = PaddingValues(bottom = 96.dp),
         ) {
             ownLocation?.let { own ->
                 key("__own__") {
@@ -186,7 +186,7 @@ fun MapScreen(
                                 shadowElevation = 2.dp,
                             ) {
                                 Text(
-                                    text = if (displayName.isNotEmpty()) displayName else "You",
+                                    text = if (displayName.isNotEmpty()) displayName else stringResource(MR.strings.you),
                                     modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
                                     style = MaterialTheme.typography.labelSmall,
                                     maxLines = 1,
@@ -262,7 +262,7 @@ fun MapScreen(
                     modifier = Modifier.size(16.dp),
                 )
                 Spacer(Modifier.width(4.dp))
-                Text(if (isSharing) "Sharing" else "Paused", style = MaterialTheme.typography.labelMedium)
+                Text(if (isSharing) stringResource(MR.strings.sharing) else stringResource(MR.strings.paused), style = MaterialTheme.typography.labelMedium)
             }
 
             // Your Name chip + Connection status
@@ -296,7 +296,7 @@ fun MapScreen(
                     )
                     Column {
                         Text(
-                            text = "You",
+                            text = stringResource(MR.strings.you),
                             color = Color.White,
                             style = MaterialTheme.typography.labelSmall,
                         )
@@ -343,10 +343,10 @@ fun MapScreen(
     if (showErrorAlert && connectionStatus is ConnectionStatus.Error) {
         AlertDialog(
             onDismissRequest = { showErrorAlert = false },
-            title = { Text("Connection Error") },
+            title = { Text(stringResource(MR.strings.connection_error)) },
             text = { Text(connectionStatus.message) },
             confirmButton = {
-                TextButton(onClick = { showErrorAlert = false }) { Text("OK") }
+                TextButton(onClick = { showErrorAlert = false }) { Text(stringResource(MR.strings.ok)) }
             },
         )
     }

@@ -117,4 +117,5 @@ dependencies {
     implementation(libs.accompanist.permissions)
     implementation(libs.zxing.core)
     implementation(libs.zxing.android.embedded)
+    implementation(libs.moko.resources.compose)
 }

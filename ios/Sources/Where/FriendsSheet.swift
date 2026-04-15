@@ -2,12 +2,12 @@ import Shared
 import SwiftUI
 
 func timeAgoString(_ date: Date?) -> String {
-    guard let date = date else { return "never" }
+    guard let date = date else { return MR.strings().never.localized() }
     let seconds = Date().timeIntervalSince(date)
-    if seconds < 60 { return "just now" }
-    if seconds < 3600 { return "\(Int(seconds / 60))m ago" }
-    if seconds < 86400 { return "\(Int(seconds / 3600))h ago" }
-    return "\(Int(seconds / 86400))d ago"
+    if seconds < 60 { return MR.strings().just_now.localized() }
+    if seconds < 3600 { return MR.strings().m_ago.localized(args: [Int32(seconds / 60)]) }
+    if seconds < 86400 { return MR.strings().h_ago.localized(args: [Int32(seconds / 3600)]) }
+    return MR.strings().d_ago.localized(args: [Int32(seconds / 86400)])
 }
 
 struct FriendsSheet: View {
@@ -38,7 +38,7 @@ struct FriendsSheet: View {
                             Button {
                                 onCreateInvite()
                             } label: {
-                                Label("Invite", systemImage: "qrcode")
+                                Label(MR.strings().invite.localized(), systemImage: "qrcode")
                                     .frame(maxWidth: .infinity)
                             }
                             .buttonStyle(.bordered)
@@ -46,7 +46,7 @@ struct FriendsSheet: View {
                             Button {
                                 onScanQr()
                             } label: {
-                                Label("Scan", systemImage: "qrcode.viewfinder")
+                                Label(MR.strings().scan.localized(), systemImage: "qrcode.viewfinder")
                                     .frame(maxWidth: .infinity)
                             }
                             .buttonStyle(.bordered)
@@ -57,11 +57,11 @@ struct FriendsSheet: View {
                 }
 
                 if !friends.isEmpty {
-                    Section("Friends (\(friends.count))") {
+                    Section(MR.strings().friends.localized() + " (\(friends.count))") {
                         ForEach(friends, id: \.id) { friend in
                             HStack {
                                 VStack(alignment: .leading, spacing: 2) {
-                                    Text(friend.isConfirmed ? friend.name : "\(friend.name) (Pending)")
+                                    Text(friend.isConfirmed ? friend.name : "\(friend.name) (" + MR.strings().pending.localized() + ")")
                                         .font(.body)
                                     Text(friend.safetyNumber)
                                         .font(.caption2)
@@ -71,7 +71,7 @@ struct FriendsSheet: View {
                                         .font(.caption)
                                         .foregroundStyle(.secondary)
                                     if friend.isStale {
-                                        Text("Friend inactive — sharing paused")
+                                        Text(MR.strings().friend_inactive_warning.localized())
                                             .font(.caption)
                                             .foregroundStyle(.red)
                                     }
@@ -101,7 +101,7 @@ struct FriendsSheet: View {
                             .contentShape(Rectangle())
                             .onTapGesture { onZoomTo(friend.id) }
                             .swipeActions {
-                                Button("Remove", role: .destructive) { 
+                                Button(MR.strings().remove.localized(), role: .destructive) { 
                                     friendToRemove = friend
                                 }
                             }
@@ -109,35 +109,35 @@ struct FriendsSheet: View {
                     }
                 } else {
                     Section {
-                        Text("No friends yet. Tap Invite to share your QR code.")
+                        Text(MR.strings().no_friends_yet.localized())
                             .foregroundStyle(.secondary)
                             .font(.subheadline)
                     }
                 }
             }
-            .navigationTitle("Friends")
+            .navigationTitle(MR.strings().friends.localized())
             .navigationBarTitleDisplayMode(.inline)
             .confirmationDialog(
-                "Remove \(friendToRemove?.name ?? "friend")?",
+                (MR.strings().remove_friend_title.localized()) + " (\(friendToRemove?.name ?? MR.strings().friend.localized()))?",
                 isPresented: Binding(get: { friendToRemove != nil }, set: { if !$0 { friendToRemove = nil } }),
                 titleVisibility: .visible
             ) {
-                Button("Remove", role: .destructive) {
+                Button(MR.strings().remove.localized(), role: .destructive) {
                     if let friend = friendToRemove {
                         onRemove(friend.id)
                     }
                 }
             } message: {
-                Text("This will permanently delete the key.")
+                Text(MR.strings().permanently_delete_key_warning.localized())
             }
-            .alert("Rename Friend", isPresented: Binding(get: { friendToRename != nil }, set: { if !$0 { friendToRename = nil } })) {
-                TextField("Friend's Name", text: $newFriendName)
-                Button("Rename") {
+            .alert(MR.strings().rename_friend_title.localized(), isPresented: Binding(get: { friendToRename != nil }, set: { if !$0 { friendToRename = nil } })) {
+                TextField(MR.strings().friend_name_label.localized(), text: $newFriendName)
+                Button(MR.strings().rename.localized()) {
                     if let friend = friendToRename {
                         onRename(friend.id, newFriendName)
                     }
                 }
-                Button("Cancel", role: .cancel) {
+                Button(MR.strings().cancel.localized(), role: .cancel) {
                     friendToRename = nil
                 }
             }

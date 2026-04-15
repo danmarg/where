@@ -41,7 +41,7 @@ struct ContentView: View {
                         syncService.isSharingLocation.toggle()
                     } label: {
                         Label(
-                            syncService.isSharingLocation ? "Sharing" : "Paused",
+                            syncService.isSharingLocation ? MR.strings().sharing.localized() : MR.strings().paused.localized(),
                             systemImage: syncService.isSharingLocation ? "location.fill" : "location.slash.fill"
                         )
                         .font(.caption)
@@ -59,7 +59,7 @@ struct ContentView: View {
                             Circle()
                                 .fill(syncService.connectionStatus is Shared.ConnectionStatus.Ok ? Color.green : Color.orange)
                                 .frame(width: 8, height: 8)
-                            Text("You")
+                            Text(MR.strings().you.localized())
                                 .font(.caption)
                                 .foregroundStyle(.white)
                         }
@@ -171,7 +171,7 @@ struct ContentView: View {
                 )
             }
         }
-        .alert("Name this contact", isPresented: Binding(
+        .alert(MR.strings().name_this_contact.localized(), isPresented: Binding(
             get: { (syncService.pendingQrForNaming != nil || syncService.pendingInitPayload != nil) && !syncService.isInviteActive },
             set: { if !$0 {
                 syncService.pendingQrForNaming = nil
@@ -180,17 +180,17 @@ struct ContentView: View {
                 newFriendName = ""
             } }
         )) {
-            TextField("Friend's Name", text: $newFriendName)
+            TextField(MR.strings().friend_name_label.localized(), text: $newFriendName)
             if let qr = syncService.pendingQrForNaming {
-                Button("Add") {
-                    let name = newFriendName.isEmpty ? "Friend" : newFriendName
+                Button(MR.strings().add.localized()) {
+                    let name = newFriendName.isEmpty ? MR.strings().friend.localized() : newFriendName
                     syncService.pendingQrForNaming = nil
                     newFriendName = ""
                     Task { await syncService.confirmQrScan(qr: qr, friendName: name) }
                 }
             } else if let payload = syncService.pendingInitPayload {
-                Button("Save") {
-                    let name = newFriendName.isEmpty ? "Friend" : newFriendName
+                Button(MR.strings().save.localized()) {
+                    let name = newFriendName.isEmpty ? MR.strings().friend.localized() : newFriendName
                     Task {
                         await syncService.confirmPendingInit(payload: payload, name: name)
                         newFriendName = ""
@@ -198,7 +198,7 @@ struct ContentView: View {
                     }
                 }
             }
-            Button("Cancel", role: .cancel) {
+            Button(MR.strings().cancel.localized(), role: .cancel) {
                 syncService.pendingQrForNaming = nil
                 syncService.pendingInitPayload = nil
                 Task { await syncService.cancelPendingInit() }
@@ -206,11 +206,11 @@ struct ContentView: View {
             }
         } message: {
             if syncService.pendingQrForNaming != nil {
-                Text("Enter a name for this friend.")
+                Text(MR.strings().enter_name_for_friend.localized())
             } else if syncService.multipleScansDetected {
-                Text("Warning: Multiple scans detected for this invite. Ensure you only add people you trust.")
+                Text(MR.strings().multiple_scans_detected_warning.localized())
             } else {
-                Text("A new friend has scanned your QR code.")
+                Text(MR.strings().new_friend_scanned_qr.localized())
             }
         }
         .onAppear {
@@ -228,8 +228,8 @@ struct ContentView: View {
         .onOpenURL { url in
             syncService.processQrUrl(url.absoluteString)
         }
-        .alert("Connection Error", isPresented: $showErrorAlert) {
-            Button("OK", role: .cancel) { }
+        .alert(MR.strings().connection_error.localized(), isPresented: $showErrorAlert) {
+            Button(MR.strings().ok.localized(), role: .cancel) { }
         } message: {
             if let error = syncService.connectionStatus as? Shared.ConnectionStatus.Error {
                 Text(error.message)

@@ -54,16 +54,16 @@ struct InviteSheet: View {
     var body: some View {
         NavigationStack {
             VStack(spacing: 24) {
-                Text("Invite a Friend")
+                Text(MR.strings().invite_a_friend.localized())
                     .font(.title2)
                     .bold()
 
-                Text("Have them scan this QR code or share the link.")
+                Text(MR.strings().invite_message.localized())
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
 
-                TextField("Your Name", text: $displayName)
+                TextField(MR.strings().your_name.localized(), text: $displayName)
                     .textFieldStyle(.roundedBorder)
                     .multilineTextAlignment(.center)
 
@@ -74,9 +74,9 @@ struct InviteSheet: View {
                     .shadow(radius: 4)
 
                 HStack(spacing: 12) {
-                    Button("Cancel", role: .cancel) { onDismiss() }
+                    Button(MR.strings().cancel.localized(), role: .cancel) { onDismiss() }
                         .buttonStyle(.bordered)
-                    Button("Share Link") { showShareSheet = true }
+                    Button(MR.strings().share_link.localized()) { showShareSheet = true }
                         .buttonStyle(.borderedProminent)
                         .disabled(cachedQrUrl.isEmpty)
                 }

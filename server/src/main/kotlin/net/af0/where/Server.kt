@@ -15,6 +15,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
@@ -46,7 +47,7 @@ internal const val RATE_LIMIT_MAX_GETS = 300
 private const val RATE_LIMIT_WINDOW_MS = 60_000L
 
 /** Baseline latency for mailbox poll requests to mitigate timing side-channel (§10.2). */
-private const val POLL_BASELINE_LATENCY_MS = 10L
+private const val POLL_BASELINE_LATENCY_MS = 50L
 
 /** How often the background eviction job sweeps stale map entries (in-memory only). */
 private const val EVICTION_INTERVAL_MS = 5 * 60_000L
@@ -419,13 +420,13 @@ fun Application.module(state: ServerState = ServerState()) {
 
             if (state.debug) application.log.info("DEBUG: [Poll] token=$token - Returning ${messages.size} messages")
 
-            val response = JsonArray(messages)
+            val responseString = json.encodeToString(messages)
             val elapsed = System.currentTimeMillis() - startTime
             if (elapsed < POLL_BASELINE_LATENCY_MS) {
                 delay(POLL_BASELINE_LATENCY_MS - elapsed)
             }
 
-            call.respond(response)
+            call.respondText(responseString, ContentType.Application.Json)
         }
     }
 }

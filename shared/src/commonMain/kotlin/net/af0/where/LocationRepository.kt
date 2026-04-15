@@ -1,6 +1,5 @@
 package net.af0.where
 
-import androidx.annotation.VisibleForTesting
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -37,7 +36,7 @@ interface LocationSource {
 
     fun onFriendUpdate(
         update: UserLocation,
-        timestamp: Long = System.currentTimeMillis(),
+        timestamp: Long = net.af0.where.e2ee.currentTimeMillis(),
     )
 
     fun onFriendRemoved(id: String)
@@ -99,7 +98,6 @@ object LocationRepository : LocationSource {
     private val _isAppInForeground = MutableStateFlow(false)
     override val isAppInForeground: StateFlow<Boolean> = _isAppInForeground.asStateFlow()
 
-    @get:VisibleForTesting
     internal val _pendingInitPayload = MutableStateFlow<KeyExchangeInitPayload?>(null)
     override val pendingInitPayload: StateFlow<KeyExchangeInitPayload?> = _pendingInitPayload.asStateFlow()
 
@@ -122,7 +120,6 @@ object LocationRepository : LocationSource {
 
     private val pollWakeSignal = Channel<Unit>(Channel.CONFLATED)
 
-    @get:VisibleForTesting
     internal val _lastRapidPollTrigger = MutableStateFlow(0L)
     override val lastRapidPollTrigger: StateFlow<Long> = _lastRapidPollTrigger.asStateFlow()
 
@@ -217,7 +214,7 @@ object LocationRepository : LocationSource {
     }
 
     override fun triggerRapidPoll() {
-        _lastRapidPollTrigger.value = LocationService.clock()
+        _lastRapidPollTrigger.value = net.af0.where.e2ee.currentTimeMillis()
         pollWakeSignal.trySend(Unit)
     }
 
