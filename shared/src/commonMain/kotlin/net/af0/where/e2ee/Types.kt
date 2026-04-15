@@ -65,6 +65,14 @@ data class SessionState(
     // Recent DH public keys seen (to reject replays from epochs older than lastRemoteDhPub)
     // Stored as hex strings for O(1) lookup and clean serialization.
     val seenRemoteDhPubs: Set<String> = emptySet(),
+    // Header keys for prior epochs that still have skipped message keys in the cache.
+    // Keyed by remoteDhPub.toHex(); needed to decrypt the envelope of late-arriving
+    // messages from an epoch we have already ratcheted past.
+    val skippedEpochHeaderKeys: Map<
+        String,
+        @Serializable(with = ByteArrayBase64Serializer::class)
+        ByteArray,
+        > = emptyMap(),
     // Previous send and receive chain lengths (§4.4) - used to bind sequence numbers across epochs in AAD.
     val pn: Long = 0,
     val pr: Long = 0,
@@ -98,6 +106,8 @@ data class SessionState(
             skippedMessageKeys.size == other.skippedMessageKeys.size &&
             skippedMessageKeys.all { (k, v) -> other.skippedMessageKeys[k]?.contentEquals(v) == true } &&
             seenRemoteDhPubs == other.seenRemoteDhPubs &&
+            skippedEpochHeaderKeys.size == other.skippedEpochHeaderKeys.size &&
+            skippedEpochHeaderKeys.all { (k, v) -> other.skippedEpochHeaderKeys[k]?.contentEquals(v) == true } &&
             pn == other.pn &&
             pr == other.pr &&
             needsRatchet == other.needsRatchet &&
@@ -130,6 +140,9 @@ data class SessionState(
         skippedMessageKeys.forEach { (k, v) -> skipHash += 31 * k.hashCode() + v.contentHashCode() }
         h = 31 * h + skipHash
         h = 31 * h + seenRemoteDhPubs.hashCode()
+        var epochHkHash = 0
+        skippedEpochHeaderKeys.forEach { (k, v) -> epochHkHash += 31 * k.hashCode() + v.contentHashCode() }
+        h = 31 * h + epochHkHash
         h = 31 * h + pn.hashCode()
         h = 31 * h + pr.hashCode()
         h = 31 * h + needsRatchet.hashCode()

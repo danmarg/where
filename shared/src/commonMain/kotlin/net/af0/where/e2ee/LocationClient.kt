@@ -187,6 +187,15 @@ open class LocationClient(
         friendId: String,
         payload: MessagePlaintext,
     ) {
+        // RECOVERY (§5.4): If we crashed between clearOutbox and finalizeTokenTransition,
+        // we must still finalize the transition now before sending the next message.
+        // We detect this by checking if isSendTokenPending is true, outbox is null,
+        // but sendSeq > 0 (meaning the first message of the new epoch was already sent).
+        val friendBefore = store.getFriend(friendId) ?: return
+        if (friendBefore.outbox == null && friendBefore.session.isSendTokenPending && friendBefore.session.sendSeq > 0) {
+            finalizeTokenTransition(friendId)
+        }
+
         // PERSISTENCE HYGIENE (§5.4): We advance the session and persist the
         // encrypted message in an ATOMIC OUTBOX update BEFORE posting.
         // This ensures that if the app crashes during the post, we don't
@@ -229,7 +238,8 @@ open class LocationClient(
                 try {
                     sendKeepalive(friendId)
                 } catch (e: Exception) {
-                    println("[DEBUG] Fresh keepalive transition failed: ${e.message}")
+                    // Swallow: if the fresh ratchet transition fails (e.g., transport error during flush),
+                    // we'll try again next time we process the outbox.
                 }
             }
         }
@@ -241,7 +251,17 @@ open class LocationClient(
      */
     private suspend fun processOutboxes() {
         for (friend in store.listFriends()) {
-            val outbox = friend.outbox ?: continue
+            val outbox = friend.outbox
+            if (outbox == null) {
+                // RECOVERY (§5.4): If we crashed between clearOutbox and finalizeTokenTransition,
+                // we must still finalize the transition now.
+                // We detect this by checking if isSendTokenPending is true and sendSeq > 0
+                // (meaning the first message of the new epoch was already sent).
+                if (friend.session.isSendTokenPending && friend.session.sendSeq > 0) {
+                    finalizeTokenTransition(friend.id)
+                }
+                continue
+            }
             try {
                 mailboxClient.post(baseUrl, outbox.token, outbox.payload)
                 store.clearOutbox(friend.id)
