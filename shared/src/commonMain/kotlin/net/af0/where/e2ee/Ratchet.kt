@@ -27,11 +27,15 @@ internal fun kdfRk(
             info = INFO_RATCHET_STEP.encodeToByteArray(),
             length = 96,
         )
-    return RatchetStep(
-        newRootKey = out.copyOfRange(0, 32),
-        newChainKey = out.copyOfRange(32, 64),
-        newHeaderKey = out.copyOfRange(64, 96),
-    )
+    try {
+        return RatchetStep(
+            newRootKey = out.copyOfRange(0, 32),
+            newChainKey = out.copyOfRange(32, 64),
+            newHeaderKey = out.copyOfRange(64, 96),
+        )
+    } finally {
+        out.zeroize()
+    }
 }
 
 internal fun kdfCk(chainKey: ByteArray): ChainStep {

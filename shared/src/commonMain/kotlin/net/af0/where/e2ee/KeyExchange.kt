@@ -80,8 +80,8 @@ object KeyExchange {
         // the session.localDhPriv buffer within initSession. We zero the local ephemeral
         // buffer here, but the copy in SessionState intentionally persists to enable
         // the first DH ratchet step when Alice responds.
-        ekB.priv.fill(0)
-        sk.fill(0)
+        ekB.priv.zeroize()
+        sk.zeroize()
 
         val msg =
             KeyExchangeInitMessage(
@@ -112,7 +112,7 @@ object KeyExchange {
 
         // Verify key confirmation before proceeding.
         if (!verifyKeyConfirmation(sk, aliceEkPub, msg.ekPub, msg.keyConfirmation)) {
-            sk.fill(0)
+            sk.zeroize()
             throw AuthenticationException("KeyExchangeInit key_confirmation failed — aborting key exchange")
         }
 
@@ -122,7 +122,7 @@ object KeyExchange {
         // VERIFY TOKEN (#168): Alice MUST verify that Bob computed the same initial routing token.
         val expectedToken = deriveRoutingToken(sk, aliceFp, bobFp)
         if (!expectedToken.contentEquals(msg.token)) {
-            sk.fill(0)
+            sk.zeroize()
             throw AuthenticationException("KeyExchangeInit token mismatch — possible tampering or protocol error")
         }
 
@@ -136,7 +136,7 @@ object KeyExchange {
                 aliceFp = aliceFp,
                 bobFp = bobFp,
             )
-        sk.fill(0)
+        sk.zeroize()
 
         // To break the Double Ratchet deadlock and ensure we don't just stay in the
         // bootstrap symmetric chain forever, Alice (the initiator) performs the FIRST
@@ -149,7 +149,7 @@ object KeyExchange {
             try {
                 kdfRk(session.rootKey, dhOut)
             } finally {
-                dhOut.fill(0)
+                dhOut.zeroize()
             }
 
         // Tokens also rotate when the rootKey changes.
@@ -175,13 +175,13 @@ object KeyExchange {
         // Memory Hygiene: Wipe the bootstrap session's keys now that they are superseded by Epoch 1.
         // nextAliceSession preserves recvChainKey (Epoch 0 receiver) until Bob ratchets.
         // We MUST NOT wipe recvChainKey here because nextAliceSession is a shallow copy of session!
-        session.rootKey.fill(0)
-        session.sendChainKey.fill(0)
+        session.rootKey.zeroize()
+        session.sendChainKey.zeroize()
         // session.recvChainKey is shared with nextAliceSession via shallow copy. DO NOT FILL(0).
 
-        newLocalDh.priv.fill(0)
-        rkStep.newRootKey.fill(0)
-        rkStep.newChainKey.fill(0)
+        newLocalDh.priv.zeroize()
+        rkStep.newRootKey.zeroize()
+        rkStep.newChainKey.zeroize()
         return nextAliceSession
     }
 
@@ -234,7 +234,7 @@ object KeyExchange {
                 deriveRoutingToken(sk, aliceFp, bobFp)
             }
 
-        expanded.fill(0)
+        expanded.zeroize()
 
         return SessionState(
             rootKey = initialRootKey,
@@ -277,7 +277,7 @@ object KeyExchange {
         try {
             return hmacSha256(kConfirm, CONFIRM_PREFIX.encodeToByteArray() + ekAPub + ekBPub)
         } finally {
-            kConfirm.fill(0)
+            kConfirm.zeroize()
         }
     }
 

@@ -1,5 +1,3 @@
-# Where — Android ProGuard/R8 rules
-
 # Kotlin Serialization
 # https://github.com/Kotlin/kotlinx.serialization#android
 -keepattributes *Annotation*, EnclosingMethod, InnerClasses, Signature

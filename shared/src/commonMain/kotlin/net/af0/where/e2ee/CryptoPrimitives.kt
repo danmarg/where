@@ -65,3 +65,9 @@ internal expect fun aeadDecrypt(
     ciphertext: ByteArray,
     aad: ByteArray,
 ): ByteArray
+
+/**
+ * Securely zeros out the byte array to prevent sensitive material from lingering in memory.
+ * Implementation MUST use a method that prevents compiler/JIT elision (e.g. memset_s or fill(0)).
+ */
+internal expect fun ByteArray.zeroize()

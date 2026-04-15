@@ -43,10 +43,10 @@ object Session {
         val envelope = encryptHeader(state.sendHeaderKey, dhPub, seq, state.pn)
 
         // Memory Hygiene
-        state.sendChainKey.fill(0)
-        step.messageKey.fill(0)
-        step.messageNonce.fill(0)
-        plaintext.fill(0)
+        state.sendChainKey.zeroize()
+        step.messageKey.zeroize()
+        step.messageNonce.zeroize()
+        plaintext.zeroize()
 
         val message =
             EncryptedMessagePayload(
@@ -73,7 +73,7 @@ object Session {
             val v = entry.value
             // Format: [MK (32) || Nonce (12) || PN (8) || Timestamp (8)]
             if (v.size >= 60 && (now - bytesToLong(v.copyOfRange(52, 60))) > MAX_KEY_AGE_MS) {
-                v.fill(0)
+                v.zeroize()
                 it.remove()
                 modified = true
             }
@@ -120,20 +120,20 @@ object Session {
                 } catch (e: Exception) {
                     throw AuthenticationException("decryption failed with cached key", e)
                 } finally {
-                    mk.fill(0)
-                    nonce.fill(0)
+                    mk.zeroize()
+                    nonce.zeroize()
                 }
 
             val unpadded =
                 try {
                     unpad(plaintext)
                 } catch (e: Exception) {
-                    plaintext.fill(0)
+                    plaintext.zeroize()
                     throw DecryptionException("unpad failed", e)
                 }
             val decoded = decodeMessage(unpadded)
-            plaintext.fill(0)
-            unpadded.fill(0)
+            plaintext.zeroize()
+            unpadded.zeroize()
 
             // Multi-epoch safety: ensure internal 'pn' matches what we had in the cache
             if (decoded.pn != cachedPn) throw ProtocolException("message pn mismatch in cache")
@@ -141,7 +141,7 @@ object Session {
             // Remove used key from cache
             val newCache = LinkedHashMap(cleanState.skippedMessageKeys)
             val removed = newCache.remove(cacheKey)
-            removed?.fill(0)
+            removed?.zeroize()
 
             return cleanState.copy(skippedMessageKeys = newCache) to decoded
         }
@@ -199,7 +199,7 @@ object Session {
             repeat(stepsNeeded.toInt()) { i ->
                 val step = kdfCk(chainKey)
                 // Zero OLD chain key immediately after step
-                chainKey.fill(0)
+                chainKey.zeroize()
                 chainKey = step.newChainKey
 
                 val currentSeq = speculativeState.recvSeq + i + 1
@@ -214,7 +214,7 @@ object Session {
                     if (derivationSkippedKeys.size > MAX_SKIPPED_KEYS) {
                         val oldestKey = derivationSkippedKeys.keys.first()
                         // Memory Hygiene: Explicitly zero the evicted key before GC
-                        derivationSkippedKeys[oldestKey]?.fill(0)
+                        derivationSkippedKeys[oldestKey]?.zeroize()
                         derivationSkippedKeys.remove(oldestKey)
                     }
                 } else {
@@ -234,15 +234,15 @@ object Session {
                 } catch (e: Exception) {
                     // Decryption failure: Wipe all speculative keys and throw
                     if (isNewDhEpoch) {
-                        speculativeState.localDhPriv.fill(0)
-                        speculativeState.rootKey.fill(0)
+                        speculativeState.localDhPriv.zeroize()
+                        speculativeState.rootKey.zeroize()
                     }
                     // Also wipe the derived chainKey on failure since we won't commit it
-                    chainKey.fill(0)
+                    chainKey.zeroize()
                     throw AuthenticationException("decryption failed", e)
                 } finally {
-                    finalStep.messageKey.fill(0)
-                    finalStep.messageNonce.fill(0)
+                    finalStep.messageKey.zeroize()
+                    finalStep.messageNonce.zeroize()
                 }
 
             // Success! Commit the state.
@@ -251,12 +251,12 @@ object Session {
                 try {
                     unpad(plaintext)
                 } catch (e: Exception) {
-                    plaintext.fill(0)
+                    plaintext.zeroize()
                     throw DecryptionException("unpad failed", e)
                 }
             val decoded = decodeMessage(unpadded)
-            plaintext.fill(0)
-            unpadded.fill(0)
+            plaintext.zeroize()
+            unpadded.zeroize()
 
             // PH-3.3: Post-decryption gap filling for the PREVIOUS receiving chain.
             // If we are in a new DH epoch, 'decoded.pn' tells us how many messages Bob sent
@@ -269,7 +269,7 @@ object Session {
                     var oldChainKey = cleanState.recvChainKey.copyOf()
                     repeat(pnGaps) { i ->
                         val step = kdfCk(oldChainKey)
-                        oldChainKey.fill(0)
+                        oldChainKey.zeroize()
                         oldChainKey = step.newChainKey
 
                         val skippedSeq = cleanState.recvSeq + i + 1
@@ -278,10 +278,10 @@ object Session {
                         updatedCache[mkKey] = step.messageKey + step.messageNonce + longToBeBytes(cleanState.pr) + longToBeBytes(now)
 
                         if (updatedCache.size > MAX_SKIPPED_KEYS) {
-                            updatedCache.remove(updatedCache.keys.first())?.fill(0)
+                            updatedCache.remove(updatedCache.keys.first())?.zeroize()
                         }
                     }
-                    oldChainKey.fill(0)
+                    oldChainKey.zeroize()
                     updatedCache
                 } else {
                     derivationSkippedKeys
@@ -307,10 +307,10 @@ object Session {
 
             // Memory Hygiene
             if (isNewDhEpoch) {
-                cleanState.localDhPriv.fill(0)
-                cleanState.rootKey.fill(0)
-                cleanState.sendChainKey.fill(0)
-                cleanState.recvChainKey.fill(0)
+                cleanState.localDhPriv.zeroize()
+                cleanState.rootKey.zeroize()
+                cleanState.sendChainKey.zeroize()
+                cleanState.recvChainKey.zeroize()
             }
 
             return newState to decoded
@@ -319,7 +319,7 @@ object Session {
             // (Most errors are already caught and re-thrown inside the inner catch)
             if (e !is WhereException) {
                 // Wipe chainKey if we crashed unexpectedly
-                chainKey.fill(0)
+                chainKey.zeroize()
             }
             throw e
         }
@@ -337,12 +337,12 @@ object Session {
         // DH ratchet step
         val dhOutRecv = x25519(state.localDhPriv, remoteDhPub)
         val stepRecv = kdfRk(state.rootKey, dhOutRecv)
-        dhOutRecv.fill(0)
+        dhOutRecv.zeroize()
 
         val newLocalDh = generateX25519KeyPair()
         val dhOutSend = x25519(newLocalDh.priv, remoteDhPub)
         val stepSend = kdfRk(stepRecv.newRootKey, dhOutSend)
-        dhOutSend.fill(0)
+        dhOutSend.zeroize()
 
         // Derive new tokens
         val aliceFp = state.aliceFp
@@ -369,7 +369,7 @@ object Session {
             newSeenKeys.remove(oldest)
         }
 
-        stepRecv.newRootKey.fill(0)
+        stepRecv.newRootKey.zeroize()
 
         // HEADER ENCRYPTION TRANSITION (#186):
         // When we ratchet, our previous nextHeaderKey becomes the current headerKey
@@ -516,7 +516,7 @@ object Session {
             }
         }
         if (diff != 0 || markerIdx < 0) {
-            data.fill(0)
+            data.zeroize()
             throw ProtocolException("padding corruption")
         }
         return data.copyOfRange(0, markerIdx)

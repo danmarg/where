@@ -7,6 +7,10 @@ import com.ionspin.kotlin.crypto.box.Box
 import com.ionspin.kotlin.crypto.hash.Hash
 import com.ionspin.kotlin.crypto.scalarmult.ScalarMultiplication
 import com.ionspin.kotlin.crypto.util.LibsodiumRandom
+import kotlinx.cinterop.ExperimentalForeignApi
+import kotlinx.cinterop.addressOf
+import kotlinx.cinterop.usePinned
+import platform.posix.memset_s
 
 // ---------------------------------------------------------------------------
 // SHA-256
@@ -46,10 +50,10 @@ internal actual fun hmacSha256(
     val result = sha256(opad + innerHash)
 
     // Security: zero out sensitive material
-    k.fill(0)
-    ipad.fill(0)
-    opad.fill(0)
-    innerHash.fill(0)
+    k.zeroize()
+    ipad.zeroize()
+    opad.zeroize()
+    innerHash.zeroize()
 
     return result
 }
@@ -115,5 +119,17 @@ internal actual fun aeadDecrypt(
         ).toByteArray()
     } catch (e: Exception) {
         throw IllegalArgumentException("AEAD authentication failed", e)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Memory Hygiene
+// ---------------------------------------------------------------------------
+
+@OptIn(ExperimentalForeignApi::class, ExperimentalUnsignedTypes::class)
+internal actual fun ByteArray.zeroize() {
+    if (this.isEmpty()) return
+    this.usePinned { pinned ->
+        memset_s(pinned.addressOf(0), this.size.toULong(), 0, this.size.toULong())
     }
 }
