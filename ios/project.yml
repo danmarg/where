@@ -25,7 +25,7 @@ targets:
       Release: Local.xcconfig
     dependencies:
       - framework: ../shared/build/XCFrameworks/$(CONFIGURATION:lower)/Shared.xcframework
-        embed: false
+        embed: true
       - framework: Security
         embed: false
       - framework: MapKit

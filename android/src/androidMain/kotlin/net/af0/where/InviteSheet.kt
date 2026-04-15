@@ -63,7 +63,7 @@ fun InviteSheet(
             qrBitmap?.let {
                 Image(
                     bitmap = it.asImageBitmap(),
-                    contentDescription = "Invite QR code",
+                    contentDescription = stringResource(MR.strings.invite),
                     modifier = Modifier.size(240.dp),
                 )
             }

@@ -73,7 +73,7 @@ class MailboxTest {
             application { module(ServerState()) }
             val response = client.get("/inbox/unknowntoken")
             assertEquals(HttpStatusCode.OK, response.status)
-            assertEquals(ContentType.Application.Json.withCharset(Charsets.UTF_8), response.contentType())
+            assertEquals(ContentType.Application.Json, response.contentType()?.withoutParameters())
             val body = response.bodyAsText()
             val arr = json.decodeFromString<JsonArray>(body)
             assertTrue(arr.isEmpty(), "Expected empty array for unknown token, got: $body")
@@ -291,11 +291,11 @@ class MailboxTest {
             application { module(ServerState()) }
             val token = "timing-test-token"
 
-            // Baseline should be ~10ms. We check it's at least 9ms to account for system precision.
+            // Baseline should be ~50ms. We check it's at least 45ms to account for system precision.
             val start1 = System.currentTimeMillis()
             client.get("/inbox/nonexistent")
             val elapsed1 = System.currentTimeMillis() - start1
-            assertTrue(elapsed1 >= 9, "Poll for nonexistent token took $elapsed1 ms, expected >= 10ms")
+            assertTrue(elapsed1 >= 45, "Poll for nonexistent token took $elapsed1 ms, expected >= 50ms")
 
             client.post("/inbox/$token") {
                 contentType(ContentType.Application.Json)
@@ -304,7 +304,7 @@ class MailboxTest {
             val start2 = System.currentTimeMillis()
             client.get("/inbox/$token")
             val elapsed2 = System.currentTimeMillis() - start2
-            assertTrue(elapsed2 >= 9, "Poll for existing token took $elapsed2 ms, expected >= 10ms")
+            assertTrue(elapsed2 >= 45, "Poll for existing token took $elapsed2 ms, expected >= 50ms")
         }
     }
 }

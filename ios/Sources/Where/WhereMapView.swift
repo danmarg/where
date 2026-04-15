@@ -130,7 +130,7 @@ func updateUIView(_ mapView: MKMapView, context: Context) {
                 ?? MKMarkerAnnotationView(annotation: annotation, reuseIdentifier: id)
             view.annotation = annotation
             view.markerTintColor = userAnnotation.isOwn ? .systemBlue : .systemRed
-            view.glyphText = userAnnotation.isOwn ? "Me" : nil
+            view.glyphText = userAnnotation.isOwn ? MR.strings().me.localized() : nil
             view.canShowCallout = true
 
             if !userAnnotation.isOwn {
@@ -166,7 +166,7 @@ final class UserAnnotation: NSObject, MKAnnotation {
     init(ownCoordinate: CLLocationCoordinate2D) {
         self.userId = "__own__"
         self.coordinate = ownCoordinate
-        self.title = "You"
+        self.title = MR.strings().you.localized()
         self.subtitle = nil
         self.isOwn = true
     }

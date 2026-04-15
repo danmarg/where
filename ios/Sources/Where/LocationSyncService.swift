@@ -322,7 +322,7 @@ final class LocationSyncService: ObservableObject {
     @discardableResult
     func processQrUrl(_ url: String) -> Bool {
         guard let qr = Shared.QrPayload.companion.fromUrl(url: url) else {
-            updateStatus(NSError(domain: "Where", code: 400, userInfo: [NSLocalizedDescriptionKey: "Invalid QR code"]))
+            updateStatus(NSError(domain: "Where", code: 400, userInfo: [NSLocalizedDescriptionKey: MR.strings().invalid_qr_code.localized()]))
             return false
         }
         pendingQrForNaming = qr
@@ -348,7 +348,7 @@ final class LocationSyncService: ObservableObject {
             let result = try await e2eeStore.processScannedQr(qr: qrWithName, bobSuggestedName: displayName)
             guard let initPayload = result.first, let bobEntry = result.second else {
                 logger.error("processScannedQr returned nil components")
-                updateStatus(NSError(domain: "Where", code: -1, userInfo: [NSLocalizedDescriptionKey: "Pairing failed: invalid response"]))
+                updateStatus(NSError(domain: "Where", code: -1, userInfo: [NSLocalizedDescriptionKey: MR.strings().pairing_failed.localized()]))
                 return
             }
 

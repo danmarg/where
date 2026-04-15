@@ -1,5 +1,6 @@
 import SwiftUI
 import VisionKit
+import Shared
 
 struct QrScannerView: View {
     let onScan: (String) -> Void
@@ -26,10 +27,10 @@ struct SimulatorQrScannerView: View {
                     .font(.system(size: 80))
                     .foregroundStyle(.secondary)
                 
-                Text("QR Scanner (Simulator)")
+                Text(MR.strings().qr_scanner_simulator.localized())
                     .font(.headline)
                 
-                Text("Camera is unavailable in the simulator. You can simulate a scan by entering a URL below.")
+                Text(MR.strings().camera_unavailable_emulator.localized())
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
@@ -41,7 +42,7 @@ struct SimulatorQrScannerView: View {
                     .autocorrectionDisabled()
                     .textInputAutocapitalization(.never)
 
-                Button("Simulate Scan") {
+                Button(MR.strings().simulate_scan.localized()) {
                     onScan(manualUrl)
                 }
                 .buttonStyle(.borderedProminent)
@@ -52,7 +53,7 @@ struct SimulatorQrScannerView: View {
             .padding(.top, 40)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
-                    Button("Cancel") {
+                    Button(MR.strings().cancel.localized()) {
                         onDismiss()
                     }
                 }

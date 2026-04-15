@@ -45,6 +45,24 @@
     <string name="new_friend_scanned_qr">A new friend has scanned your QR code.</string>
     <string name="name_this_contact">Name this contact</string>
     <string name="friend">Friend</string>
+    <string name="friend_">Friend</string>
     <string name="friend_inactive_warning">Friend inactive — sharing paused</string>
     <string name="permanently_delete_key_warning">This will permanently delete the key.</string>
+    <string name="qr_scanner_simulator">QR Scanner (Simulator)</string>
+    <string name="camera_unavailable_emulator">Camera is unavailable in the emulator. Enter an invite URL manually.</string>
+    <string name="invite_url">Invite URL</string>
+    <string name="simulate_scan">Simulate Scan</string>
+    <string name="me">Me</string>
+    <string name="location_sharing_paused">Location sharing is paused</string>
+    <string name="sharing_your_location">Sharing your location</string>
+    <string name="where_location">Where Location</string>
+    <string name="invalid_qr_code">Invalid QR code</string>
+    <string name="pairing_failed">Pairing failed: invalid response</string>
+    <string name="error_no_connection">No connection: Could not reach the server.</string>
+    <string name="error_timeout">Request timed out. Please try again.</string>
+    <string name="error_server">Server error %d: Something went wrong on the server.</string>
+    <string name="error_auth">Authentication failed. Please try re-pairing.</string>
+    <string name="error_protocol">Protocol error: Session may be out of sync.</string>
+    <string name="error_crypto">Security error: Cryptographic validation failed.</string>
+    <string name="error_unexpected">An unexpected error occurred. Please try again.</string>
 </resources>

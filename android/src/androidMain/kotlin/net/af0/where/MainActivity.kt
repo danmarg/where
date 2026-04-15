@@ -27,6 +27,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import net.af0.where.shared.MR
+import dev.icerock.moko.resources.compose.stringResource
 import androidx.core.content.ContextCompat
 import com.journeyapps.barcodescanner.ScanContract
 import com.journeyapps.barcodescanner.ScanOptions
@@ -125,15 +127,15 @@ class MainActivity : ComponentActivity() {
                     var manualUrl by remember { mutableStateOf("https://where.af0.net/invite#...") }
                     AlertDialog(
                         onDismissRequest = { showSimulatorScanner = false },
-                        title = { Text("QR Scanner (Simulator)") },
+                        title = { Text(stringResource(MR.strings.qr_scanner_simulator)) },
                         text = {
                             Column {
-                                Text("Camera is unavailable in the emulator. Enter an invite URL manually.")
+                                Text(stringResource(MR.strings.camera_unavailable_emulator))
                                 Spacer(Modifier.height(8.dp))
                                 OutlinedTextField(
                                     value = manualUrl,
                                     onValueChange = { manualUrl = it },
-                                    label = { Text("Invite URL") },
+                                    label = { Text(stringResource(MR.strings.invite_url)) },
                                     singleLine = true,
                                 )
                             }
@@ -143,12 +145,12 @@ class MainActivity : ComponentActivity() {
                                 viewModel.processQrUrl(manualUrl)
                                 showSimulatorScanner = false
                             }) {
-                                Text("Simulate Scan")
+                                Text(stringResource(MR.strings.simulate_scan))
                             }
                         },
                         dismissButton = {
                             TextButton(onClick = { showSimulatorScanner = false }) {
-                                Text("Cancel")
+                                Text(stringResource(MR.strings.cancel))
                             }
                         },
                     )
@@ -167,23 +169,24 @@ class MainActivity : ComponentActivity() {
                     var name by remember(qr) { mutableStateOf(qr.suggestedName) }
                     AlertDialog(
                         onDismissRequest = { viewModel.cancelQrScan() },
-                        title = { Text("Name this contact") },
+                        title = { Text(stringResource(MR.strings.name_this_contact)) },
                         text = {
                             OutlinedTextField(
                                 value = name,
                                 onValueChange = { name = it },
-                                label = { Text("Friend's Name") },
+                                label = { Text(stringResource(MR.strings.friend_name_label)) },
                                 singleLine = true,
                             )
                         },
                         confirmButton = {
-                            TextButton(onClick = { viewModel.confirmQrScan(qr, name.ifEmpty { "Friend" }) }) {
-                                Text("Add")
+                            val friendDefault = stringResource(MR.strings.friend)
+                            TextButton(onClick = { viewModel.confirmQrScan(qr, name.ifEmpty { friendDefault }) }) {
+                                Text(stringResource(MR.strings.add))
                             }
                         },
                         dismissButton = {
                             TextButton(onClick = { viewModel.cancelQrScan() }) {
-                                Text("Cancel")
+                                Text(stringResource(MR.strings.cancel))
                             }
                         },
                     )
@@ -193,15 +196,14 @@ class MainActivity : ComponentActivity() {
                     var name by remember(payload) { mutableStateOf(payload.suggestedName) }
                     AlertDialog(
                         onDismissRequest = { viewModel.cancelPendingInit() },
-                        title = { Text("Name this contact") },
+                        title = { Text(stringResource(MR.strings.name_this_contact)) },
                         text = {
                             Column {
-                                Text("A new friend has scanned your QR code.")
+                                Text(stringResource(MR.strings.new_friend_scanned_qr))
                                 if (multipleScansDetected) {
                                     Spacer(Modifier.height(8.dp))
                                     Text(
-                                        "Warning: Multiple scans detected for this invite. " +
-                                            "Ensure you only add people you trust.",
+                                        stringResource(MR.strings.multiple_scans_detected_warning),
                                         color = MaterialTheme.colorScheme.error,
                                         style = MaterialTheme.typography.bodySmall,
                                     )
@@ -210,19 +212,20 @@ class MainActivity : ComponentActivity() {
                                 OutlinedTextField(
                                     value = name,
                                     onValueChange = { name = it },
-                                    label = { Text("Friend's Name") },
+                                    label = { Text(stringResource(MR.strings.friend_name_label)) },
                                     singleLine = true,
                                 )
                             }
                         },
                         confirmButton = {
-                            TextButton(onClick = { viewModel.confirmPendingInit(name.ifEmpty { "Friend" }) }) {
-                                Text("Save")
+                            val friendDefault = stringResource(MR.strings.friend)
+                            TextButton(onClick = { viewModel.confirmPendingInit(name.ifEmpty { friendDefault }) }) {
+                                Text(stringResource(MR.strings.save))
                             }
                         },
                         dismissButton = {
                             TextButton(onClick = { viewModel.cancelPendingInit() }) {
-                                Text("Cancel")
+                                Text(stringResource(MR.strings.cancel))
                             }
                         },
                     )
