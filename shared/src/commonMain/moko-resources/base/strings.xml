@@ -33,7 +33,7 @@
     <string name="rename_friend_title">Rename Friend</string>
     <string name="friend_name_label">Friend\'s Name</string>
     <string name="invite_a_friend">Invite a Friend</string>
-    <string name="invite_message">Have them scan this QR code or send the link.</string>
+    <string name="invite_message">Single-use code — works for one person only. Tap Share Link to send a link instead.</string>
     <string name="your_name">Your Name</string>
     <string name="share_link">Share Link</string>
     <string name="join_me_on_where">Join me on Where</string>
