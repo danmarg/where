@@ -30,6 +30,10 @@
 # JNI reflection; R8 must not rename or remove them.
 -keep class com.sun.jna.** { *; }
 -keepclassmembers class com.sun.jna.** { *; }
+# JNA's Native$AWT class references java.awt.* (desktop Java) which doesn't
+# exist on Android. Suppress the missing-class warnings; this code path is
+# never reachable on Android.
+-dontwarn java.awt.**
 
 # Google Maps
 -keep class com.google.android.gms.maps.** { *; }
