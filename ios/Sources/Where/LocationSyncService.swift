@@ -75,7 +75,7 @@ final class LocationSyncService: ObservableObject {
     private var visibleUsersCancellables = Set<AnyCancellable>()
 
     private var lastSentLocation: (lat: Double, lng: Double)? = nil
-    private var lastSentTime: Date = Date(timeIntervalSince1970: 0)
+    var lastSentTime: Date = Date(timeIntervalSince1970: 0)  // internal for testing
     var pendingForcedSendAfterPairing: Bool = false
     private var currentSendTask: Task<Void, Never>? = nil
     private var awaitingFirstUpdateIds: Set<String> = []

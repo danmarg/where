@@ -97,6 +97,9 @@ class LocationSyncServiceTests: XCTestCase {
         func sendLocation(lat: Double, lng: Double, pausedFriendIds: Set<String>) async throws {
             sendLocationCallback?()
         }
+        func sendLocationToFriend(friendId: String, lat: Double, lng: Double) async throws {
+            sendLocationCallback?()
+        }
         func poll(isForeground: Bool) async throws -> [Shared.UserLocation] {
             _pollCallCount += 1
             return pollResult
@@ -231,6 +234,46 @@ class LocationSyncServiceTests: XCTestCase {
             XCTAssertFalse(isRapidAfterComplete)
             XCTAssertEqual(service.lastRapidPollTrigger.timeIntervalSince1970, 0, accuracy: 0.1)
         }
+    }
+
+    // MARK: - Heartbeat-in-pollAll
+
+    func testPollAllTriggersHeartbeatWhenOverdue() async throws {
+        let mockClient = MockLocationClient()
+        service = LocationSyncService(e2eeStore: service.e2eeStore, userStore: service.userStore, locationClient: mockClient, locationProvider: mockLocationProvider)
+        service.isSharingLocation = true
+        service.lastSentTime = Date(timeIntervalSinceNow: -400) // > 300s ago — heartbeat due
+        mockLocationProvider.location = CLLocation(latitude: 37.7749, longitude: -122.4194)
+
+        let sendCountBox = SendCountBox()
+        mockClient.sendLocationCallback = { sendCountBox.increment() }
+
+        await service.pollAll(updateUi: false)
+
+        // sendLocation() dispatches an async Task; spin briefly to let it run.
+        for _ in 0..<100 {
+            if sendCountBox.getCount() >= 1 { break }
+            try? await Task.sleep(nanoseconds: 10_000_000)
+        }
+        XCTAssertGreaterThan(sendCountBox.getCount(), 0,
+            "pollAll() should trigger a heartbeat send when no location has been sent for >5 min")
+    }
+
+    func testPollAllDoesNotTriggerHeartbeatWhenRecentlySent() async throws {
+        let mockClient = MockLocationClient()
+        service = LocationSyncService(e2eeStore: service.e2eeStore, userStore: service.userStore, locationClient: mockClient, locationProvider: mockLocationProvider)
+        service.isSharingLocation = true
+        service.lastSentTime = Date(timeIntervalSinceNow: -10) // just 10s ago — no heartbeat due
+        mockLocationProvider.location = CLLocation(latitude: 37.7749, longitude: -122.4194)
+
+        let sendCountBox = SendCountBox()
+        mockClient.sendLocationCallback = { sendCountBox.increment() }
+
+        await service.pollAll(updateUi: false)
+        try? await Task.sleep(nanoseconds: 100_000_000)
+
+        XCTAssertEqual(sendCountBox.getCount(), 0,
+            "pollAll() should NOT send a heartbeat when location was sent recently")
     }
 
     // MARK: - Persistent Storage Tests
