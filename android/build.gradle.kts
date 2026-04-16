@@ -44,8 +44,8 @@ android {
         applicationId = "net.af0.where"
         minSdk = 26
         targetSdk = 35
-        versionCode = 2
-        versionName = "0.1.1"
+        versionCode = 8
+        versionName = "2026.04.17.2"
         manifestPlaceholders["MAPS_API_KEY"] = localProperties.getProperty("MAPS_API_KEY") ?: ""
     }
 
@@ -91,7 +91,7 @@ android {
                 "proguard-rules.pro",
             )
             signingConfig = signingConfigs.getByName("release")
-            buildConfigField("String", "SERVER_HTTP_URL", "\"https://where.af0.net\"")
+            buildConfigField("String", "SERVER_HTTP_URL", "\"https://where-api.af0.net\"")
         }
         debug {
             buildConfigField(

@@ -22,6 +22,7 @@ import com.google.android.gms.maps.CameraUpdateFactory
 import com.google.android.gms.maps.model.CameraPosition
 import com.google.android.gms.maps.model.LatLng
 import com.google.maps.android.compose.*
+import androidx.compose.ui.platform.LocalContext
 import dev.icerock.moko.resources.compose.stringResource
 import net.af0.where.e2ee.ConnectionStatus
 import net.af0.where.e2ee.FriendEntry
@@ -50,6 +51,7 @@ fun MapScreen(
     onLocationPermissionGranted: () -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
+    val context = LocalContext.current
     val locationPermissions =
         rememberMultiplePermissionsState(
             listOf(
@@ -302,7 +304,7 @@ fun MapScreen(
                         )
                         if (connectionStatus is ConnectionStatus.Error) {
                             Text(
-                                text = connectionStatus.message,
+                                text = connectionStatus.message.toString(context),
                                 color = Color(0xFFFFA500),
                                 style = MaterialTheme.typography.labelSmall,
                                 maxLines = 1,
@@ -344,7 +346,7 @@ fun MapScreen(
         AlertDialog(
             onDismissRequest = { showErrorAlert = false },
             title = { Text(stringResource(MR.strings.connection_error)) },
-            text = { Text(connectionStatus.message) },
+            text = { Text(connectionStatus.message.toString(context)) },
             confirmButton = {
                 TextButton(onClick = { showErrorAlert = false }) { Text(stringResource(MR.strings.ok)) }
             },

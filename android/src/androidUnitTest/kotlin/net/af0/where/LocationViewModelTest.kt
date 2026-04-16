@@ -19,6 +19,7 @@ import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
+import dev.icerock.moko.resources.desc.StringDesc
 import net.af0.where.e2ee.ConnectionStatus
 import net.af0.where.e2ee.E2eeStorage
 import net.af0.where.e2ee.E2eeStore
@@ -119,7 +120,7 @@ class TestFakeLocationSource : LocationSource {
     }
 
     override fun onConnectionError(e: Throwable) {
-        _connectionStatus.value = ConnectionStatus.Error(e.message ?: "error")
+        _connectionStatus.value = ConnectionStatus.Error(StringDesc.Raw(e.message ?: "error"))
     }
 
     override fun setAppForeground(foreground: Boolean) {
