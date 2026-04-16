@@ -1,15 +1,36 @@
 default_platform(:android)
 
+# Signing for release builds is read from env vars by android/build.gradle.kts:
+#   KEYSTORE_FILE     — absolute path to the .jks keystore
+#   KEYSTORE_PASSWORD — keystore password
+#   KEY_PASSWORD      — key password (alias is hardcoded to "where" in build.gradle.kts)
+
 platform :android do
-  desc "Build debug and release AAB"
-  lane :build do
-    gradle(task: "bundle", build_type: "Release")
-    gradle(task: "bundle", build_type: "Debug")
+  desc "Build a debug APK"
+  lane :build_debug do
+    gradle(
+      project_dir: "../",
+      task: "assemble",
+      build_type: "Debug",
+    )
   end
 
-  desc "Deploy a new version to the Google Play Store"
+  desc "Build a release AAB (requires signing env vars)"
+  lane :build_release do
+    gradle(
+      project_dir: "../",
+      task: "bundle",
+      build_type: "Release",
+    )
+  end
+
+  desc "Build a release AAB and upload to Google Play (internal track)"
   lane :deploy do
-    gradle(task: "bundle", build_type: "Release")
-    upload_to_play_store
+    gradle(
+      project_dir: "../",
+      task: "bundle",
+      build_type: "Release",
+    )
+    upload_to_play_store(track: "internal")
   end
 end

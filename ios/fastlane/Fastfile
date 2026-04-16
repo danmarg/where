@@ -1,14 +1,34 @@
 default_platform(:ios)
 
 platform :ios do
-  desc "Push a new beta build to TestFlight"
-  lane :beta do
-    build_app(scheme: "Where")
-    upload_to_testflight
+  # Build the KMP shared framework for the given configuration (Debug or Release).
+  # Uses the Gradle XCFramework assembly tasks rather than embedAndSignAppleFrameworkForXcode,
+  # which requires Xcode environment variables and only works from within an Xcode build.
+  private_lane :build_kmp_framework do |options|
+    configuration = options[:configuration] || "Debug"
+    task = "assembleShared#{configuration}XCFramework"
+    sh("cd ../../ && source .envrc 2>/dev/null; ./gradlew :shared:#{task}")
   end
 
-  desc "Build debug app"
+  desc "Build a debug app for the simulator (no signing required)"
   lane :build_debug do
-    build_app(scheme: "Where", configuration: "Debug")
+    build_kmp_framework(configuration: "Debug")
+    build_app(
+      scheme: "Where",
+      configuration: "Debug",
+      destination: "generic/platform=iOS Simulator",
+      skip_codesigning: true,
+    )
+  end
+
+  desc "Build a release app and upload to TestFlight"
+  lane :beta do
+    build_kmp_framework(configuration: "Release")
+    build_app(
+      scheme: "Where",
+      configuration: "Release",
+      export_method: "app-store",
+    )
+    upload_to_testflight
   end
 end
