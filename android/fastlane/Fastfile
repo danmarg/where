@@ -31,6 +31,6 @@ platform :android do
       task: "bundle",
       build_type: "Release",
     )
-    upload_to_play_store(track: "internal")
+    upload_to_play_store(track: "internal", skip_upload_apk: true)
   end
 end
