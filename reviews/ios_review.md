@@ -1,83 +1,176 @@
-<img src="https://r2cdn.perplexity.ai/pplx-full-logo-primary-dark%402x.png" style="height:64px;margin-right:32px"/>
+# iOS Platform Review
 
-# You are a senior iOS engineer reviewing the Swift/SwiftUI implementation of a location-sharing app. Fetch and read the full contents of the ios/ directory at:
+**Reviewed:** `ios/Sources/Where/`, `ios/Tests/WhereTests/`
 
-[https://github.com/danmarg/where/tree/main/ios](https://github.com/danmarg/where/tree/main/ios)
+---
 
-Also read the protocol spec section on iOS key storage (§5.5 of https://github.com/danmarg/where/blob/main/docs/e2ee-location-sync.md) and the build script at:
-[https://github.com/danmarg/where/blob/main/build.sh](https://github.com/danmarg/where/blob/main/build.sh)
+## MEDIUM: `updateLastLocation` Stores Reception Time Instead of Sender Timestamp
 
-Review the following areas, citing specific files and line numbers:
+**File:** `LocationSyncService.swift:282`
 
-Keychain integration. The spec requires all session keychain items to use kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly to exclude them from iCloud Backup. Verify that every Keychain write uses this attribute. Are there any session state items persisted to UserDefaults or other unprotected storage instead?
+```swift
+try? await e2eeStore.updateLastLocation(
+    id: update.userId,
+    lat: update.lat,
+    lng: update.lng,
+    ts: Int64(Date().timeIntervalSince1970)  // BUG: should be update.timestamp
+)
+```
 
-Memory handling for key material. The spec requires Data buffers holding key material to be zeroed before dealloc. Identify all locations where key bytes (EK.priv, OPK.priv, root key, chain key, message key) are held in Swift Data or [UInt8] and whether they are explicitly zeroed after use. Swift ARC does not guarantee immediate dealloc — assess the risk.
+`UserLocation.timestamp` carries the sender's GPS fix timestamp from the decrypted payload. The call uses `Date().timeIntervalSince1970` (the receiver's current clock) instead. `FriendEntry.lastTs` therefore stores when the local device received the message, not when the friend's device recorded its position.
 
-Background location. How does the iOS app handle location updates when backgrounded (CLLocationManager background modes, allowsBackgroundLocationUpdates, significant-location-change mode)? Is the polling loop for receiving friends' locations reliable in background?
+This produces misleading "last updated" display: a location update sent 5 minutes ago will appear to be "just now" if received at the current time.
 
-KMP integration. How does the Swift code interface with the KMP shared module for crypto operations? Are there any type marshalling issues (e.g., ByteArray to Data conversions) that could silently truncate or misalign byte buffers passed to crypto functions?
+**Fix:** Use `update.timestamp` directly:
+```swift
+ts: update.timestamp
+```
 
-Session lifecycle and state machine. How does the iOS app manage the E2EE session state machine transitions (pairing → active → epoch rotation → re-keying)? Is there a SwiftUI state management issue where session state could be read before it's fully initialized?
+Same bug is present in `LocationService.kt:247` on Android.
 
-QR code / invite link security. How is the QR code or invite link generated and displayed? Is the ephemeral public key EK_A.pub generated fresh each time the "Add Friend" view is presented, or is it cached from a previous session? Does the app prevent screenshots of the QR in environments where that is a risk?
+---
 
-Entitlements and capabilities. Review the .entitlements file and Info.plist for: location usage descriptions, background modes, Keychain sharing groups (is the Keychain access group app-scoped or shared?), and any over-broad entitlements.
-Produce a prioritized finding list with severity labels.
+## MEDIUM: Pending QR Invite Cleared on Every App Launch
 
-Here is the full review. The downloadable report above contains all findings with exact line-level analysis, code excerpts, and recommendations.
+**File:** `LocationSyncService.swift:147-151`
 
-***
+```swift
+Task {
+    // Clear any stale invite from a previous session before first poll.
+    if (try? await store.pendingQrPayload()) ?? nil != nil {
+        try? await store.clearInvite()
+    }
+    startPolling()
+}
+```
 
-## Prioritized Findings
+Any pending QR invite is discarded every time `LocationSyncService.init` runs. If Alice:
+1. Opens "Add Friend" and shows her QR
+2. Moves the app to the background
+3. The OS terminates and relaunches the app (common under memory pressure)
 
-| \# | Severity | Area | Finding |
-| :-- | :-- | :-- | :-- |
-| F-01 | **CRITICAL** | Memory | Zero key material never called |
-| F-02 | **HIGH** | Storage | `where_user_id` in unprotected `UserDefaults` |
-| F-03 | **MEDIUM** | Storage | `isSharingLocation`, `displayName`, `pausedFriendIds` in `UserDefaults` |
-| F-04 | **HIGH** | QR/Invite | Stale ephemeral key reuse across invite presentations |
-| F-05 | **HIGH** | KMP Bridge | No key-size validation before `kotlinByteArray` conversion |
-| F-06 | **MEDIUM** | Background | Timer-based poll suspended when device is stationary |
-| F-07 | **LOW** | QR/Invite | No screenshot detection on `InviteSheet` |
-| F-08 | **LOW** | Entitlements | No explicit Keychain access group in `Where.entitlements` |
-| F-09 | **MEDIUM** | Stability | `try!` and `result.first!` in crypto code paths |
-| F-10 | **LOW** | State machine | Fragile ordering between `inviteState` and `pendingInitPayload` writes |
-| F-11 | **LOW** | Build | Keystore password exported as env var; key/store password shared |
+…her invite is cleared before she notices, and Bob's scan would fail silently or be directed to a now-cleared mailbox.
 
+**Fix:** Only clear invites that are genuinely stale (e.g., older than a configurable timeout, say 5 minutes). Store a creation timestamp with `PendingInvite` and compare on load:
+```swift
+if let age = pendingInvite?.createdAt, Date().timeIntervalSince(age) > 300 {
+    try? await store.clearInvite()
+}
+```
 
-***
+---
 
-## F-01 · CRITICAL — Key Material Never Zeroed
+## LOW: Background Task Expiration Handlers Are Empty
 
-`KotlinByteArrayUtils.swift` creates a Swift `Data` copy of every KMP `KotlinByteArray` (EK.priv, root key, chain key, message key) but never zeroes it.  Swift ARC does not guarantee prompt deallocation, and `Data` values may linger in heap memory for seconds after their last reference is dropped — particularly inside `Task` closures awaiting at suspension points. The spec (§5.5) explicitly requires zeroing before dealloc. The fix is a `memset_s`-based `Data.zeroize()` extension called in `defer` blocks immediately after each key buffer is consumed.
+**File:** `LocationSyncService.swift:268-270`, `LocationSyncService.swift:469-471`
 
-***
+```swift
+let identifier = self.beginBackgroundTask("PollAll") {
+    // Task expired
+}
+```
 
-## F-02 · HIGH — `where_user_id` Bypasses Keychain
+When iOS terminates a background task due to expiration (~30s limit), the expiration handler is called on the main thread with a short grace period to clean up. Empty handlers mean any in-flight `URLSession` requests (via Ktor's network client) are abandoned without cancellation, potentially leaving the ratchet state partially advanced — specifically, `encryptAndStore` may have run and persisted a new session state + outbox, but the subsequent `post` call may have timed out mid-flight.
 
-`UserIdentity.swift` writes the permanent device routing identifier to `UserDefaults.standard`, not the Keychain.  This means the value is included in iCloud Backup and iTunes encrypted backups, directly violating the spec's §5.5 requirement that all session-state items use `kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly`.  `KeychainE2eeStorage.putString(key:value:)` already correctly applies this attribute — the fix is simply routing `where_user_id` through it.
+The outbox recovery mechanism (`LocationClient.processOutboxes`) handles the recovery correctly on the next poll, so this is not a data-loss issue. However, cancelling the in-flight Task would be cleaner:
 
-***
+```swift
+var pollTask: Task<Void, Error>? = nil
+let identifier = self.beginBackgroundTask("PollAll") {
+    self.pollTask?.cancel()
+}
+defer { 
+    endBackgroundTask(identifier)
+}
+pollTask = Task { try await locationClient.poll(...) }
+```
 
-## F-04 · HIGH — Stale Ephemeral QR Key Reused Across Sessions
+---
 
-`InviteSheet` receives a `qrPayload` binding from `ContentView`. If the user opens the invite sheet, dismisses it without completing the exchange, and re-opens it, the `inviteState` conditional in the dismiss handler can skip `clearInvite()` — meaning `EK_A.pub` from the first session is served to a second scanner.  The spec (§4.1) requires a fresh ephemeral key per invite presentation. The `cachedImage` in `QrCodeView` compounds this: the QR image is only regenerated when `content` changes, so an identical payload silently displays the old QR.
+## LOW: GPS Accuracy Not Forwarded to Encrypted Payload
 
-***
+**File:** `LocationSyncService.swift:457` → `LocationClient.kt:148`
 
-## F-05 · HIGH — KMP Bridge: No Key Length Validation
+```swift
+service.sendLocation(lat: last.coordinate.latitude, lng: last.coordinate.longitude)
+```
 
-`kotlinByteArray(from:)` passes any `Data` to the KMP X25519 layer without asserting the expected 32-byte length.  A server-provided oversized buffer will either trap on the `Int32(data.count)` conversion or crash inside the Kotlin native runtime, enabling a denial-of-service attack from a malicious server. For cryptographic key material specifically, a `guard data.count == 32` precondition must be added before crossing the bridge.
+`CLLocation.horizontalAccuracy` is not forwarded. `LocationClient.sendLocation` hardcodes `acc = 0.0`. Recipients always see zero accuracy.
 
-***
+**Fix:** Add `acc` parameter to `sendLocation`:
+```swift
+service.sendLocation(lat: last.coordinate.latitude, lng: last.coordinate.longitude,
+                     acc: last.horizontalAccuracy)
+```
 
-## F-06 · MEDIUM — Background Poll: Stationary Device Receives No Friend Updates
+---
 
-`Info.plist` declares only `UIBackgroundModes: location`. The inbound poll timer runs on `RunLoop.main`, which is suspended when the app backgrounds.  CoreLocation only wakes the app when the device moves — so a stationary user will not see friend location updates until they move or foreground the app, regardless of the configured 5-minute heartbeat. Registering a `BGAppRefreshTask` would fix this.
+## LOW: Foreground vs Background Poll Intervals — Good
 
-***
+**File:** `LocationSyncService.swift:71-74`
 
-## Keychain Audit: What's Correct
+```swift
+private static let rapidPollInterval: TimeInterval = 1.0
+private static let foregroundPollInterval: TimeInterval = 60.0
+private static let normalPollInterval: TimeInterval = 300.0 // 5 min (background sharing)
+private static let maintenancePollInterval: TimeInterval = 30 * 60  // ack-only
+```
 
-`KeychainE2eeStorage` correctly applies `kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly` on both the `SecItemAdd` and `SecItemUpdate` paths — every Keychain write through this class satisfies the spec.  The only gap is that session-adjacent data (`userId`, `displayName`, `pausedFriendIds`, `isSharingLocation`) bypasses this class entirely and goes to `UserDefaults`.
+The iOS foreground interval (60s) matches the spec recommendation (§7.4.3). (Note: Android uses 10s — inconsistency flagged in `android_review.md`.)
 
+---
+
+## LOW: `pollAll` Always Updates `lastLocation` from `updateLastLocation` with Current Time
+
+See the timestamp bug above. `friendLastPing` is set correctly from `Date()` (which is the receipt time — appropriate for "last ping" display):
+
+```swift
+friendLastPing[update.userId] = Date()
+```
+
+But `e2eeStore.updateLastLocation(... ts: Int64(Date().timeIntervalSince1970))` conflates the ping time with the sender timestamp. Fix the `ts:` argument as noted above.
+
+---
+
+## PASS: Keychain Storage Security
+
+**File:** `KeychainE2eeStorage.swift`
+
+Session state is stored using:
+```swift
+kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+```
+
+This is correct per spec §5.6:
+- Excludes the item from iCloud Backup ✓
+- Makes the item accessible after first unlock (needed for background operation) ✓
+- Tied to `ThisDeviceOnly` — not transferable to other devices ✓
+
+---
+
+## PASS: Rapid Poll Mechanism
+
+The 1-second timer + `isPollInFlight` guard correctly prevents concurrent polls. `triggerRapidPoll()` sets `lastRapidPollTrigger` and fires the timer, allowing rapid polling during key exchange without busy-waiting. The 60-second rapid-poll window is reasonable.
+
+---
+
+## PASS: `@MainActor` Isolation
+
+`LocationSyncService` is correctly annotated `@MainActor`. All `@Published` properties are accessed on the main actor. Injected closures (`beginBackgroundTask`, `endBackgroundTask`) use `MainActor.assumeIsolated` to safely call UIKit APIs. Swift 6 strict concurrency compliance is maintained.
+
+---
+
+## PASS: Name Sanitization
+
+`E2eeStore.sanitizeName` is called by `processScannedQr` (via `bobSuggestedName` parameter) and `processKeyExchangeInit` (via `bobName`). The `normalizeName` (NFKC) call prevents homograph attacks. The 64-character limit and letter/digit/whitespace filter prevent injection of control characters into the UI.
+
+---
+
+## Summary
+
+| Issue | Severity | File |
+|-------|----------|------|
+| `lastTs` stores reception time, not sender timestamp | Medium | `LocationSyncService.swift:282` |
+| Pending QR invite cleared on every app launch | Medium | `LocationSyncService.swift:147-151` |
+| Empty background task expiration handlers | Low | `LocationSyncService.swift:268, 469` |
+| GPS accuracy not forwarded | Low | `LocationSyncService.swift:457` |
