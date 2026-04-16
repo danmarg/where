@@ -28,3 +28,8 @@
 # Google Maps
 -keep class com.google.android.gms.maps.** { *; }
 -keep interface com.google.android.gms.maps.** { *; }
+
+# ViewModels (keep constructors for reflection)
+-keepclassmembers class * extends androidx.lifecycle.ViewModel {
+    <init>(...);
+}
