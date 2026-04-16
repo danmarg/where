@@ -130,6 +130,37 @@ class E2eeStoreTest {
         }
 
     @Test
+    fun testSelfScanRejected() =
+        runBlocking {
+            // Alice creates an invite QR.
+            val qr = aliceStore.createInvite("Alice")
+
+            // Alice tries to scan her own QR — must be rejected.
+            val ex = assertFailsWith<IllegalArgumentException> {
+                aliceStore.processScannedQr(qr)
+            }
+            assertTrue(ex.message?.contains("yourself") == true)
+
+            // Invite must still be present (no side-effects from the rejected scan).
+            assertNotNull(aliceStore.pendingQrPayload())
+            Unit
+        }
+
+    @Test
+    fun testSelfScanRejectedOnlyWhenEkPubMatches() =
+        runBlocking {
+            // Alice creates an invite QR.
+            val aliceQr = aliceStore.createInvite("Alice")
+
+            // Bob has a different pending invite but scans Alice's QR — must succeed.
+            bobStore.createInvite("Bob")
+            val (initPayload, bobEntry) = bobStore.processScannedQr(aliceQr)
+            // Both components must be non-null
+            assertEquals(initPayload.v, 1)
+            assertEquals(bobEntry.name, "Alice")
+        }
+
+    @Test
     fun testProcessKeyExchangeInitFailsWithoutPendingInvite() =
         runBlocking {
             val qr = bobStore.createInvite("Bob")
