@@ -43,6 +43,9 @@ class LocationViewModel(
     private val clock: () -> Long = { System.currentTimeMillis() },
     private val locationSource: LocationSource = LocationRepository,
 ) : AndroidViewModel(app) {
+    // Secondary constructor for reflection-based instantiation in release builds.
+    constructor(app: Application) : this(app, null, null, null, true)
+
     // Use the Application-level singletons so LocationService and this ViewModel share the same
     // E2EE state. Fall back to creating new instances when running under test (app is not
     // WhereApplication in unit tests).
