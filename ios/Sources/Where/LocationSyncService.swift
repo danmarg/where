@@ -292,6 +292,20 @@ final class LocationSyncService: ObservableObject {
             if updateUi {
                 try await pollPendingInvite()
             }
+
+            // Heartbeat: if we're awake enough to poll, also send location if one is due.
+            // This covers wakeups that don't go through tick() (e.g. didUpdateLocations,
+            // background-app-refresh, or any direct pollAll() call).
+            if isSharingLocation {
+                let heartbeatInterval: TimeInterval = 300.0
+                if Date().timeIntervalSince(lastSentTime) >= heartbeatInterval {
+                    if let last = locationProvider.lastLocation {
+                        debugLog { "Stationary heartbeat (via poll): sending location" }
+                        sendLocation(lat: last.coordinate.latitude, lng: last.coordinate.longitude)
+                    }
+                }
+            }
+
             updateStatus(nil)
         } catch {
             logger.error("Poll failed: \(error.localizedDescription)")
