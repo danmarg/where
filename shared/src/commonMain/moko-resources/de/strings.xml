@@ -33,7 +33,7 @@
     <string name="rename_friend_title">Freund umbenennen</string>
     <string name="friend_name_label">Name des Freundes</string>
     <string name="invite_a_friend">Freund einladen</string>
-    <string name="invite_message">Einmaliger Code – funktioniert nur für eine Person. Tippe auf Link teilen, um stattdessen einen Link zu senden.</string>
+    <string name="invite_message">Einmaliger Code – tippe auf Link teilen für einen einmaligen Link.</string>
     <string name="your_name">Dein Name</string>
     <string name="share_link">Link teilen</string>
     <string name="join_me_on_where">Komm zu mir auf Where</string>
