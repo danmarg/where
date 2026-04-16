@@ -4,7 +4,6 @@ import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import net.af0.where.shared.MR
-import dev.icerock.moko.resources.desc.Resource
 import dev.icerock.moko.resources.desc.StringDesc
 import kotlin.io.encoding.Base64
 import kotlin.io.encoding.ExperimentalEncodingApi
@@ -160,28 +159,6 @@ fun String.hexToByteArray(): ByteArray {
     return ByteArray(length / 2) { i -> substring(i * 2, i * 2 + 2).toInt(16).toByte() }
 }
 
-/**
- * Format a StringResource with arguments. On Android, this uses String.format;
- * on other platforms, it uses a basic replacement since they don't have a 
- * standard JVM-like String.format.
- */
-fun dev.icerock.moko.resources.StringResource.format(vararg args: Any?): String {
-    // This is a simplified implementation. moko-resources usually handles this 
-    // platform-specifically, but for a common helper we'll do this.
-    // In a real app, you'd want to use the platform's native string formatting.
-    val raw = StringDesc.Resource(this).toString()
-    var result = raw
-    args.forEachIndexed { i, arg ->
-        val placeholder = "%${i + 1}\$s"
-        val simplePlaceholder = "%s"
-        val digitPlaceholder = "%d"
-        // Try all common placeholders
-        result = result.replace(placeholder, arg.toString())
-            .replace(simplePlaceholder, arg.toString())
-            .replace(digitPlaceholder, arg.toString())
-    }
-    return result
-}
 
 @Serializable
 enum class LocationPrecision {
@@ -313,13 +290,9 @@ sealed class InviteState {
     data class Pending(val qr: QrPayload) : InviteState()
 }
 
-@Serializable
 sealed class ConnectionStatus {
-    @Serializable
     object Ok : ConnectionStatus()
-
-    @Serializable
-    data class Error(val message: String) : ConnectionStatus()
+    data class Error(val message: StringDesc) : ConnectionStatus()
 }
 
 /** Result of Alice polling for a pending invite scan (#176). */
