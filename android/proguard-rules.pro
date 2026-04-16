@@ -25,6 +25,12 @@
     native <methods>;
 }
 
+# JNA (Java Native Access) - used by libsodium-kmp to load the native library.
+# JNA's native code looks up fields (e.g. Pointer.peer) and methods by name via
+# JNI reflection; R8 must not rename or remove them.
+-keep class com.sun.jna.** { *; }
+-keepclassmembers class com.sun.jna.** { *; }
+
 # Google Maps
 -keep class com.google.android.gms.maps.** { *; }
 -keep interface com.google.android.gms.maps.** { *; }
