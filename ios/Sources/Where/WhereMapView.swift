@@ -78,11 +78,12 @@ func updateUIView(_ mapView: MKMapView, context: Context) {
                     coord.latitude += radius * cos(angle)
                     coord.longitude += radius * sin(angle)
                 }
+                let friend = friends.first { $0.id == user.userId }
+                let friendName = friend?.name ?? String(user.userId.prefix(8))
                 if let pin = existingById[user.userId] {
                     pin.coordinate = coord
+                    pin.title = friendName
                 } else {
-                    let friend = friends.first { $0.id == user.userId }
-                    let friendName = friend?.name ?? String(user.userId.prefix(8))
                     mapView.addAnnotation(UserAnnotation(user: user, coordinate: coord, friendName: friendName))
                 }
             }
@@ -151,7 +152,7 @@ func updateUIView(_ mapView: MKMapView, context: Context) {
 final class UserAnnotation: NSObject, MKAnnotation {
     let userId: String
     @objc dynamic var coordinate: CLLocationCoordinate2D
-    let title: String?
+    var title: String?
     let subtitle: String?
     let isOwn: Bool
 

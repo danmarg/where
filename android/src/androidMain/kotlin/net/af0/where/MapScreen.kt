@@ -186,7 +186,7 @@ fun MapScreen(
                                 shadowElevation = 2.dp,
                             ) {
                                 Text(
-                                    text = if (displayName.isNotEmpty()) displayName else stringResource(MR.strings.you),
+                                    text = stringResource(MR.strings.you),
                                     modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
                                     style = MaterialTheme.typography.labelSmall,
                                     maxLines = 1,
@@ -205,7 +205,7 @@ fun MapScreen(
             }
             users.forEach { user ->
                 val name = friends.find { it.id == user.userId }?.name ?: user.userId.take(8)
-                key(user.userId) {
+                key(user.userId, name) {
                     MarkerComposable(
                         state = MarkerState(position = LatLng(user.lat, user.lng)),
                         anchor = Offset(0.5f, 1f),
