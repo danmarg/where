@@ -40,7 +40,10 @@ targets:
         NSLocationWhenInUseUsageDescription: "Where needs your location to show it on the map."
         NSLocationAlwaysAndWhenInUseUsageDescription: "Where needs your location in the background to keep sharing it."
         NSCameraUsageDescription: "Where needs the camera to scan friend invite QR codes."
+        BGTaskSchedulerPermittedIdentifiers:
+          - net.af0.where.heartbeat
         UIBackgroundModes:
+          - fetch
           - location
         UIApplicationSceneManifest:
           UIApplicationSupportsMultipleScenes: true

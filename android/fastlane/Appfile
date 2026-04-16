@@ -1,2 +1,6 @@
-json_key_file("") # Path to the json secret file - leave blank for now
-package_name("net.af0.where") # e.g. com.krausefx.app
+# Path to the Google Play service account JSON key.
+# Generate at: Play Console → Setup → API access → Service accounts
+# Store outside the repo (e.g. ~/.config/where/play-store-key.json) and set here.
+json_key_file(ENV["PLAY_STORE_JSON_KEY"] || File.expand_path("~/.config/where/play-store-key.json"))
+
+package_name("net.af0.where")
