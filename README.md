@@ -6,6 +6,13 @@ A cross-platform, end-to-end encrypted real-time location sharing app for iOS an
 
 ---
 
+## Links
+
+- **Webpage:** [where.af0.net](https://where.af0.net)
+- **Android:** [Google Play](https://play.google.com/store/apps/details?id=net.af0.where)
+- **iOS:** Coming soon
+- **Beta Testing:** [Join the closed testing group](https://groups.google.com/g/where-app-testers)
+
 ## Privacy model
 
 Where is designed so the server learns as little as possible:
