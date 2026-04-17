@@ -13,22 +13,30 @@ platform :ios do
   desc "Build a debug app for the simulator (no signing required)"
   lane :build_debug do
     build_kmp_framework(configuration: "Debug")
-    build_app(
-      scheme: "Where",
-      configuration: "Debug",
-      destination: "generic/platform=iOS Simulator",
-      skip_codesigning: true,
-    )
+    # build_app (gym) uses xcodebuild archive which does not support simulator targets.
+    # Use xcodebuild build directly instead.
+    sh("cd .. && xcodebuild build \
+      -scheme Where \
+      -configuration Debug \
+      -sdk iphonesimulator \
+      -derivedDataPath build \
+      CODE_SIGN_IDENTITY='' \
+      CODE_SIGNING_REQUIRED=NO")
   end
 
   desc "Build a release app and upload to TestFlight"
   lane :beta do
+    api_key = app_store_connect_api_key(
+      key_id: ENV["APP_STORE_CONNECT_KEY_ID"],
+      issuer_id: ENV["APP_STORE_CONNECT_ISSUER_ID"],
+      key_content: ENV["APP_STORE_CONNECT_KEY_CONTENT"],
+    )
     build_kmp_framework(configuration: "Release")
     build_app(
       scheme: "Where",
       configuration: "Release",
       export_method: "app-store",
     )
-    upload_to_testflight
+    upload_to_testflight(api_key: api_key, skip_waiting_for_build_processing: true)
   end
 end
