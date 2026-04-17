@@ -168,10 +168,11 @@ fun MapScreen(
     }
 
     Box(modifier.fillMaxSize()) {
+        val navBarBottom = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
         GoogleMap(
             modifier = Modifier.fillMaxSize(),
             cameraPositionState = cameraPositionState,
-            contentPadding = PaddingValues(bottom = 96.dp),
+            contentPadding = PaddingValues(bottom = 96.dp + navBarBottom),
         ) {
             ownLocation?.let { own ->
                 key("__own__") {
@@ -243,7 +244,8 @@ fun MapScreen(
             modifier =
                 Modifier
                     .align(Alignment.BottomCenter)
-                    .padding(horizontal = 16.dp, vertical = 24.dp)
+                    .navigationBarsPadding()
+                    .padding(horizontal = 16.dp, vertical = 16.dp)
                     .fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(8.dp),
             verticalAlignment = Alignment.CenterVertically,
