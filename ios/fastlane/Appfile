@@ -1,5 +1,5 @@
 app_identifier("net.af0.Where") # The bundle identifier of your app
-apple_id("REDACTED_EMAIL")
+apple_id(ENV["APPLE_ID"])       # Set APPLE_ID env var to your Apple ID email
 
 itc_team_id("REDACTED_TEAM_ID") # App Store Connect Team ID
 team_id("REDACTED_TEAM_ID")     # Developer Portal Team ID

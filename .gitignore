@@ -18,3 +18,4 @@ DerivedData/
 .gradle_home/
 holes.sb
 .kotlin/
+ios/Local.xcconfig

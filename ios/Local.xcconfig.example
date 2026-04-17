@@ -1,6 +1,5 @@
-// Local build configuration - DO NOT COMMIT
-// Copy this file from Local.xcconfig.example and fill in your values.
-// This file is gitignored.
+// Local build configuration template.
+// Copy to Local.xcconfig and fill in your values. Do not commit Local.xcconfig.
 
 // Your Apple Developer Team ID (10-character string from developer.apple.com)
 // DEVELOPMENT_TEAM = XXXXXXXXXX
