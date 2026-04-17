@@ -2,13 +2,9 @@ name: Build iOS & Android
 
 on:
   push:
-    tags:
-      - 'v*'
-      - 'test-*'
+    branches: [ main ]
+  pull_request:
   workflow_dispatch:
-
-env:
-  IS_RELEASE: ${{ startsWith(github.ref, 'refs/tags/v') }}
 
 jobs:
   build-android:
@@ -34,47 +30,17 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libsodium-dev
 
-      - uses: ruby/setup-ruby@v1
-        with:
-          ruby-version: '3.3'
-          bundler-cache: true
-          working-directory: android
-
-      - name: Decode keystore
-        if: env.IS_RELEASE == 'true'
-        run: |
-          echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 --decode > $HOME/where-release-key.jks
-          echo "KEYSTORE_FILE=$HOME/where-release-key.jks" >> $GITHUB_ENV
-
-      - name: Decode Play Store key
-        if: env.IS_RELEASE == 'true'
-        run: |
-          echo "${{ secrets.PLAY_STORE_JSON_KEY_JSON }}" > $HOME/play-store-key.json
-          echo "PLAY_STORE_JSON_KEY=$HOME/play-store-key.json" >> $GITHUB_ENV
-
-      - name: Build release AAB & upload to Play Store (internal track)
-        if: env.IS_RELEASE == 'true'
-        working-directory: android
-        env:
-          LD_LIBRARY_PATH: /usr/lib/x86_64-linux-gnu
-          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
-          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
-        run: bundle exec fastlane deploy
-
       - name: Build debug APK
-        if: env.IS_RELEASE != 'true'
-        working-directory: android
         env:
           LD_LIBRARY_PATH: /usr/lib/x86_64-linux-gnu
-        run: bundle exec fastlane build_debug
+        run: ./gradlew :android:assembleDebug
 
       - name: Upload debug APK
-        if: env.IS_RELEASE != 'true'
         uses: actions/upload-artifact@v4
         with:
           name: android-debug-apk
           path: android/build/outputs/apk/debug/*.apk
-          retention-days: 30
+          retention-days: 14
 
   build-ios:
     runs-on: macos-latest
@@ -97,45 +63,23 @@ jobs:
       - name: Generate Xcode project
         run: cd ios && xcodegen
 
-      - uses: ruby/setup-ruby@v1
-        with:
-          ruby-version: '3.3'
-          bundler-cache: true
-          working-directory: ios
+      - name: Build KMP shared framework
+        run: ./gradlew :shared:assembleSharedDebugXCFramework
 
-      - name: Import distribution certificate
-        if: env.IS_RELEASE == 'true'
-        env:
-          DIST_CERT_BASE64: ${{ secrets.DIST_CERT_BASE64 }}
-          DIST_CERT_PASSWORD: ${{ secrets.DIST_CERT_PASSWORD }}
+      - name: Build debug app (simulator)
         run: |
-          KEYCHAIN_PATH=$RUNNER_TEMP/app-signing.keychain-db
-          security create-keychain -p "" "$KEYCHAIN_PATH"
-          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
-          security unlock-keychain -p "" "$KEYCHAIN_PATH"
-          echo "$DIST_CERT_BASE64" | base64 --decode > $RUNNER_TEMP/dist-cert.p12
-          security import "$RUNNER_TEMP/dist-cert.p12" -P "$DIST_CERT_PASSWORD" \
-            -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
-          security list-keychain -d user -s "$KEYCHAIN_PATH"
-
-      - name: Build release & upload to TestFlight
-        if: env.IS_RELEASE == 'true'
-        working-directory: ios
-        env:
-          APP_STORE_CONNECT_KEY_ID: ${{ secrets.APP_STORE_CONNECT_KEY_ID }}
-          APP_STORE_CONNECT_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
-          APP_STORE_CONNECT_KEY_CONTENT: ${{ secrets.APP_STORE_CONNECT_KEY_CONTENT }}
-        run: bundle exec fastlane beta
-
-      - name: Build debug (simulator)
-        if: env.IS_RELEASE != 'true'
-        working-directory: ios
-        run: bundle exec fastlane build_debug
+          cd ios
+          xcodebuild build \
+            -scheme Where \
+            -configuration Debug \
+            -sdk iphonesimulator \
+            -derivedDataPath build \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGNING_REQUIRED=NO
 
       - name: Upload iOS debug app
-        if: env.IS_RELEASE != 'true'
         uses: actions/upload-artifact@v4
         with:
           name: ios-debug-app
           path: ios/build/Build/Products/Debug-iphonesimulator/Where.app
-          retention-days: 30
+          retention-days: 14
