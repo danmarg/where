@@ -1,12 +1,15 @@
 package net.af0.where
 
+import android.Manifest
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.Service
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.os.IBinder
 import android.util.Log
+import androidx.core.content.ContextCompat
 import androidx.annotation.VisibleForTesting
 import com.google.android.gms.location.LocationCallback
 import com.google.android.gms.location.LocationRequest
@@ -59,6 +62,14 @@ class LocationService : Service() {
         super.onCreate()
         Log.d(TAG, "onCreate")
         createNotificationChannel()
+        val hasLocationPermission =
+            ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED ||
+                ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED
+        if (!hasLocationPermission) {
+            Log.w(TAG, "Location permission not granted; stopping service.")
+            stopSelf()
+            return
+        }
         startForeground(NOTIFICATION_ID, buildNotification())
 
         // Initialise repository sharing state from prefs before starting any collection.
