@@ -51,7 +51,6 @@ fun MapScreen(
     onLocationPermissionGranted: () -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
-    val context = LocalContext.current
     val locationPermissions =
         rememberMultiplePermissionsState(
             listOf(
