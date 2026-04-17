@@ -118,7 +118,7 @@ fun MapScreen(
     var showFriends by remember { mutableStateOf(false) }
     var zoomToUserId by remember { mutableStateOf<String?>(null) }
     var showErrorAlert by remember { mutableStateOf(false) }
-    val context = androidx.compose.ui.platform.LocalContext.current
+    val context = LocalContext.current
 
     val initialPosition =
         remember {
