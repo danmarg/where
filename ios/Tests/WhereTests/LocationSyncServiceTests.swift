@@ -320,6 +320,63 @@ class LocationSyncServiceTests: XCTestCase {
         XCTAssertNil(UserDefaults.standard.string(forKey: "display_name"))
     }
 
+    // MARK: - sendLocationOnBackground
+
+    func testSendLocationOnBackground_SendsWhenSharingAndLocationAvailable() async throws {
+        let mockClient = MockLocationClient()
+        service = LocationSyncService(e2eeStore: service.e2eeStore, userStore: service.userStore, locationClient: mockClient, locationProvider: mockLocationProvider)
+        service.isSharingLocation = true
+        service.beginBackgroundTask = { _, _ in .invalid }
+        service.endBackgroundTask = { _ in }
+        service.lastSentTime = Date(timeIntervalSinceNow: -60) // > 30s ago, not throttled
+        mockLocationProvider.location = CLLocation(latitude: 37.7749, longitude: -122.4194)
+
+        let sendCountBox = SendCountBox()
+        mockClient.sendLocationCallback = { sendCountBox.increment() }
+
+        service.sendLocationOnBackground()
+
+        for _ in 0..<100 {
+            if sendCountBox.getCount() >= 1 { break }
+            try? await Task.sleep(nanoseconds: 10_000_000)
+        }
+        XCTAssertGreaterThan(sendCountBox.getCount(), 0, "Should send when sharing and location available")
+    }
+
+    func testSendLocationOnBackground_SkipsWhenNotSharing() async throws {
+        let mockClient = MockLocationClient()
+        service = LocationSyncService(e2eeStore: service.e2eeStore, userStore: service.userStore, locationClient: mockClient, locationProvider: mockLocationProvider)
+        service.isSharingLocation = false
+        service.beginBackgroundTask = { _, _ in .invalid }
+        service.endBackgroundTask = { _ in }
+        mockLocationProvider.location = CLLocation(latitude: 37.7749, longitude: -122.4194)
+
+        let sendCountBox = SendCountBox()
+        mockClient.sendLocationCallback = { sendCountBox.increment() }
+
+        service.sendLocationOnBackground()
+        try? await Task.sleep(nanoseconds: 100_000_000)
+
+        XCTAssertEqual(sendCountBox.getCount(), 0, "Should not send when not sharing")
+    }
+
+    func testSendLocationOnBackground_SkipsWhenNoLocation() async throws {
+        let mockClient = MockLocationClient()
+        service = LocationSyncService(e2eeStore: service.e2eeStore, userStore: service.userStore, locationClient: mockClient, locationProvider: mockLocationProvider)
+        service.isSharingLocation = true
+        service.beginBackgroundTask = { _, _ in .invalid }
+        service.endBackgroundTask = { _ in }
+        // mockLocationProvider.location is nil
+
+        let sendCountBox = SendCountBox()
+        mockClient.sendLocationCallback = { sendCountBox.increment() }
+
+        service.sendLocationOnBackground()
+        try? await Task.sleep(nanoseconds: 100_000_000)
+
+        XCTAssertEqual(sendCountBox.getCount(), 0, "Should not send when no location available")
+    }
+
     func testIsRapidPolling() async throws {
         service.lastRapidPollTrigger = Date(timeIntervalSinceNow: -10)
         let isRapid1 = await service.isRapidPolling()
