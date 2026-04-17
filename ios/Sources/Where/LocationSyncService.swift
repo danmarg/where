@@ -232,8 +232,10 @@ final class LocationSyncService: ObservableObject {
             let heartbeatInterval: TimeInterval = 300.0 // 5 minutes
             if now.timeIntervalSince(lastSentTime) >= heartbeatInterval {
                 if let last = locationProvider.lastLocation {
-                    debugLog { "Stationary heartbeat: sending location" }
+                    logger.info("tick: stationary heartbeat — sending location")
                     self.sendLocation(lat: last.coordinate.latitude, lng: last.coordinate.longitude)
+                } else {
+                    logger.info("tick: heartbeat due but no location available")
                 }
             }
         }
@@ -304,10 +306,13 @@ final class LocationSyncService: ObservableObject {
             // background-app-refresh, or any direct pollAll() call).
             if isSharingLocation {
                 let heartbeatInterval: TimeInterval = 300.0
-                if Date().timeIntervalSince(lastSentTime) >= heartbeatInterval {
+                let elapsed = Date().timeIntervalSince(lastSentTime)
+                if elapsed >= heartbeatInterval {
                     if let last = locationProvider.lastLocation {
-                        debugLog { "Stationary heartbeat (via poll): sending location" }
+                        logger.info("pollAll: heartbeat due (elapsed=\(Int(elapsed))s) — sending location")
                         sendLocation(lat: last.coordinate.latitude, lng: last.coordinate.longitude)
+                    } else {
+                        logger.info("pollAll: heartbeat due but no location available (elapsed=\(Int(elapsed))s)")
                     }
                 }
             }
@@ -473,6 +478,16 @@ final class LocationSyncService: ObservableObject {
         }
     }
 
+    func sendLocationOnBackground() {
+        guard isSharingLocation else { return }
+        guard let last = locationProvider.lastLocation else {
+            logger.info("sendLocationOnBackground: skipped — no last location available")
+            return
+        }
+        logger.info("sendLocationOnBackground: sending location before app suspends")
+        sendLocation(lat: last.coordinate.latitude, lng: last.coordinate.longitude)
+    }
+
     func sendLocation(lat: Double, lng: Double, force: Bool = false) {
         let now = Date()
         let timeSinceLast = now.timeIntervalSince(lastSentTime)
@@ -502,6 +517,7 @@ final class LocationSyncService: ObservableObject {
             do {
                 try await locationClient.sendLocation(lat: lat, lng: lng, pausedFriendIds: pausedFriendIds)
                 if !Task.isCancelled && gen == self.sendTaskGeneration {
+                    logger.info("sendLocation: succeeded (lat=\(lat), lng=\(lng))")
                     updateStatus(nil)
                 }
             } catch {

@@ -239,7 +239,9 @@ struct ContentView: View {
 
     private func handlePhaseChange(_ phase: ScenePhase) {
         if phase == .background {
-            // Timer keeps running to fire background heartbeat sends.
+            // Send location immediately when entering background so Android has fresh
+            // data even when BGAppRefreshTask doesn't fire for a long time.
+            syncService.sendLocationOnBackground()
         } else if phase == .active {
             syncService.startPolling()
         }
