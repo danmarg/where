@@ -26,6 +26,20 @@ platform :android do
 
   desc "Build a release AAB and upload to Google Play (internal track)"
   lane :deploy do
+    gradle_file = "../build.gradle.kts"
+    today = Time.now.strftime("%Y.%m.%d")
+
+    content = File.read(gradle_file)
+    current_name = content.match(/versionName\s*=\s*"([^"]+)"/)[1]
+    new_version_name = if current_name.start_with?(today)
+      "#{today}.#{current_name.split('.').last.to_i + 1}"
+    else
+      "#{today}.1"
+    end
+
+    android_set_version_name(gradle_file: gradle_file, version_name: new_version_name)
+    increment_version_code(gradle_file_path: gradle_file)
+
     gradle(
       project_dir: "../",
       task: "bundle",
