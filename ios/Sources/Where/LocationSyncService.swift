@@ -304,15 +304,18 @@ final class LocationSyncService: ObservableObject {
             // Heartbeat: if we're awake enough to poll, also send location if one is due.
             // This covers wakeups that don't go through tick() (e.g. didUpdateLocations,
             // background-app-refresh, or any direct pollAll() call).
+            let heartbeatInterval: TimeInterval = 300.0
+            let elapsed = Date().timeIntervalSince(lastSentTime)
+            let hasLocation = locationProvider.lastLocation != nil
+            let sharing = isSharingLocation
+            logger.info("pollAll: sharing=\(sharing) elapsed=\(Int(elapsed))s hasLocation=\(hasLocation)")
             if isSharingLocation {
-                let heartbeatInterval: TimeInterval = 300.0
-                let elapsed = Date().timeIntervalSince(lastSentTime)
                 if elapsed >= heartbeatInterval {
                     if let last = locationProvider.lastLocation {
-                        logger.info("pollAll: heartbeat due (elapsed=\(Int(elapsed))s) — sending location")
+                        logger.info("pollAll: heartbeat due — sending location")
                         sendLocation(lat: last.coordinate.latitude, lng: last.coordinate.longitude)
                     } else {
-                        logger.info("pollAll: heartbeat due but no location available (elapsed=\(Int(elapsed))s)")
+                        logger.info("pollAll: heartbeat due but lastLocation is nil — no GPS fix")
                     }
                 }
             }
