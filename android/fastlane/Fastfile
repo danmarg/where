@@ -33,4 +33,25 @@ platform :android do
     )
     upload_to_play_store(track: "internal", skip_upload_apk: true)
   end
+
+  desc "Promote the internal version to closed testing (alpha)"
+  lane :promote_to_closed do
+    key_path = ENV["PLAY_STORE_JSON_KEY"] || File.expand_path("~/.config/where/play-store-key.json")
+    package_name = CredentialsManager::AppfileConfig.try_fetch_value(:package_name) || "net.af0.where"
+    
+    UI.message("Promoting version from 'internal' to 'alpha'...")
+    UI.message("Using JSON key at: #{key_path}")
+    UI.message("Package name: #{package_name}")
+    
+    upload_to_play_store(
+      json_key: key_path,
+      package_name: package_name,
+      track: "internal",
+      track_promote_to: "alpha",
+      skip_upload_aab: true,
+      skip_upload_metadata: true,
+      skip_upload_images: true,
+      skip_upload_screenshots: true
+    )
+  end
 end
