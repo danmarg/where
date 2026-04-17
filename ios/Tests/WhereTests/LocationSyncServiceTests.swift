@@ -259,6 +259,23 @@ class LocationSyncServiceTests: XCTestCase {
             "pollAll() should trigger a heartbeat send when no location has been sent for >5 min")
     }
 
+    func testPollAllSkipsHeartbeatWhenNoLocationAvailable() async throws {
+        let mockClient = MockLocationClient()
+        service = LocationSyncService(e2eeStore: service.e2eeStore, userStore: service.userStore, locationClient: mockClient, locationProvider: mockLocationProvider)
+        service.isSharingLocation = true
+        service.lastSentTime = Date(timeIntervalSinceNow: -400) // > 300s — heartbeat due
+        // mockLocationProvider.location is nil (simulates first-ever launch before any GPS fix)
+
+        let sendCountBox = SendCountBox()
+        mockClient.sendLocationCallback = { sendCountBox.increment() }
+
+        await service.pollAll(updateUi: false)
+        try? await Task.sleep(nanoseconds: 100_000_000)
+
+        XCTAssertEqual(sendCountBox.getCount(), 0,
+            "pollAll() should not crash or send when lastLocation is nil — LocationManager.init() should have pre-populated from UserDefaults in production")
+    }
+
     func testPollAllDoesNotTriggerHeartbeatWhenRecentlySent() async throws {
         let mockClient = MockLocationClient()
         service = LocationSyncService(e2eeStore: service.e2eeStore, userStore: service.userStore, locationClient: mockClient, locationProvider: mockLocationProvider)

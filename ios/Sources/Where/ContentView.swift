@@ -64,7 +64,7 @@ struct ContentView: View {
                                 .foregroundStyle(.white)
                         }
                         if let error = syncService.connectionStatus as? Shared.ConnectionStatus.Error {
-                            Text(error.message)
+                            Text(error.message.localized())
                                 .font(.system(size: 8))
                                 .foregroundStyle(.orange)
                                 .lineLimit(1)
@@ -232,7 +232,7 @@ struct ContentView: View {
             Button(MR.strings().ok.localized(), role: .cancel) { }
         } message: {
             if let error = syncService.connectionStatus as? Shared.ConnectionStatus.Error {
-                Text(error.message)
+                Text(error.message.localized())
             }
         }
     }

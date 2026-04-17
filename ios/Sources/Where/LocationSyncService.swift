@@ -6,6 +6,12 @@ import CoreLocation
 import Combine
 private let logger = Logger(subsystem: "net.af0.where", category: "LocationSync")
 
+private class RawStringDesc: NSObject, Shared.ResourcesStringDesc {
+    private let value: String
+    init(_ value: String) { self.value = value }
+    func localized() -> String { value }
+}
+
 @MainActor
 protocol LocationClientProtocol: AnyObject, Sendable {
     func sendLocation(lat: Double, lng: Double, pausedFriendIds: Set<String>) async throws
@@ -509,7 +515,7 @@ final class LocationSyncService: ObservableObject {
 
     private func updateStatus(_ error: Error?) {
         if let error = error {
-            connectionStatus = Shared.ConnectionStatus.Error(message: error.localizedDescription)
+            connectionStatus = Shared.ConnectionStatus.Error(message: RawStringDesc(error.localizedDescription))
         } else {
             connectionStatus = Shared.ConnectionStatus.Ok()
         }
