@@ -22,6 +22,9 @@ final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelega
 
     private let manager: CLLocationManager?
 
+    private static let lastLatKey = "location_last_lat"
+    private static let lastLngKey = "location_last_lng"
+
     override init() {
         if NSClassFromString("XCTestCase") != nil {
             self.manager = nil
@@ -30,6 +33,12 @@ final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelega
         }
         let m = CLLocationManager()
         self.manager = m
+        // Restore last known location so heartbeat has a value immediately on fresh launch.
+        let lat = UserDefaults.standard.double(forKey: Self.lastLatKey)
+        let lng = UserDefaults.standard.double(forKey: Self.lastLngKey)
+        if lat != 0 || lng != 0 {
+            self.location = CLLocation(latitude: lat, longitude: lng)
+        }
         super.init()
         m.delegate = self
         m.desiredAccuracy = kCLLocationAccuracyHundredMeters
@@ -71,6 +80,8 @@ final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelega
                 }
             }
             self.location = loc
+            UserDefaults.standard.set(loc.coordinate.latitude, forKey: Self.lastLatKey)
+            UserDefaults.standard.set(loc.coordinate.longitude, forKey: Self.lastLngKey)
             LocationSyncService.shared.sendLocation(lat: loc.coordinate.latitude, lng: loc.coordinate.longitude)
             // Ensure we also poll for updates when the OS wakes us for a location fix.
             await LocationSyncService.shared.pollAll(updateUi: false)
