@@ -366,7 +366,7 @@ class LocationSyncServiceTests: XCTestCase {
         service.isSharingLocation = true
         service.beginBackgroundTask = { _, _ in .invalid }
         service.endBackgroundTask = { _ in }
-        // mockLocationProvider.location is nil
+        // mockLocationProvider.location is nil and no prior send
 
         let sendCountBox = SendCountBox()
         mockClient.sendLocationCallback = { sendCountBox.increment() }
@@ -374,7 +374,56 @@ class LocationSyncServiceTests: XCTestCase {
         service.sendLocationOnBackground()
         try? await Task.sleep(nanoseconds: 100_000_000)
 
-        XCTAssertEqual(sendCountBox.getCount(), 0, "Should not send when no location available")
+        XCTAssertEqual(sendCountBox.getCount(), 0, "Should not send when no location and no prior send")
+    }
+
+    func testSendLocationOnBackground_UsesLastSentLocationWhenGpsUnavailable() async throws {
+        let mockClient = MockLocationClient()
+        service = LocationSyncService(e2eeStore: service.e2eeStore, userStore: service.userStore, locationClient: mockClient, locationProvider: mockLocationProvider)
+        service.isSharingLocation = true
+        service.beginBackgroundTask = { _, _ in .invalid }
+        service.endBackgroundTask = { _ in }
+        // No GPS fix
+        // Simulate a prior send having happened
+        service.sendLocation(lat: 37.1, lng: -122.1)
+        // Advance lastSentTime so throttle doesn't block next call
+        service.lastSentTime = Date(timeIntervalSinceNow: -60)
+
+        let sendCountBox = SendCountBox()
+        mockClient.sendLocationCallback = { sendCountBox.increment() }
+
+        service.sendLocationOnBackground()
+
+        for _ in 0..<100 {
+            if sendCountBox.getCount() >= 1 { break }
+            try? await Task.sleep(nanoseconds: 10_000_000)
+        }
+        XCTAssertGreaterThan(sendCountBox.getCount(), 0,
+            "Should fall back to lastSentLocation when GPS unavailable")
+    }
+
+    func testHeartbeatFallsBackToLastSentLocationWhenGpsUnavailable() async throws {
+        let mockClient = MockLocationClient()
+        service = LocationSyncService(e2eeStore: service.e2eeStore, userStore: service.userStore, locationClient: mockClient, locationProvider: mockLocationProvider)
+        service.isSharingLocation = true
+        service.beginBackgroundTask = { _, _ in .invalid }
+        service.endBackgroundTask = { _ in }
+        // No GPS fix, but we have a prior send
+        service.sendLocation(lat: 37.1, lng: -122.1)
+        // Make heartbeat due
+        service.lastSentTime = Date(timeIntervalSinceNow: -400)
+
+        let sendCountBox = SendCountBox()
+        mockClient.sendLocationCallback = { sendCountBox.increment() }
+
+        await service.pollAll(updateUi: false)
+
+        for _ in 0..<100 {
+            if sendCountBox.getCount() >= 1 { break }
+            try? await Task.sleep(nanoseconds: 10_000_000)
+        }
+        XCTAssertGreaterThan(sendCountBox.getCount(), 0,
+            "pollAll heartbeat should use lastSentLocation when GPS unavailable")
     }
 
     func testIsRapidPolling() async throws {

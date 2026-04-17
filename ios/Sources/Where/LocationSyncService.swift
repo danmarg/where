@@ -81,6 +81,14 @@ final class LocationSyncService: ObservableObject {
     private var visibleUsersCancellables = Set<AnyCancellable>()
 
     private var lastSentLocation: (lat: Double, lng: Double)? = nil
+
+    /// Best available location for heartbeat sends: live GPS first, then last sent.
+    private var bestAvailableLocation: (lat: Double, lng: Double)? {
+        if let loc = locationProvider.lastLocation {
+            return (lat: loc.coordinate.latitude, lng: loc.coordinate.longitude)
+        }
+        return lastSentLocation
+    }
     var lastSentTime: Date = Date(timeIntervalSince1970: 0)  // internal for testing
     var pendingForcedSendAfterPairing: Bool = false
     private var currentSendTask: Task<Void, Never>? = nil
@@ -231,9 +239,9 @@ final class LocationSyncService: ObservableObject {
         if isSharingLocation {
             let heartbeatInterval: TimeInterval = 300.0 // 5 minutes
             if now.timeIntervalSince(lastSentTime) >= heartbeatInterval {
-                if let last = locationProvider.lastLocation {
+                if let loc = bestAvailableLocation {
                     logger.info("tick: stationary heartbeat — sending location")
-                    self.sendLocation(lat: last.coordinate.latitude, lng: last.coordinate.longitude)
+                    self.sendLocation(lat: loc.lat, lng: loc.lng)
                 } else {
                     logger.info("tick: heartbeat due but no location available")
                 }
@@ -311,11 +319,11 @@ final class LocationSyncService: ObservableObject {
             logger.info("pollAll: sharing=\(sharing) elapsed=\(Int(elapsed))s hasLocation=\(hasLocation)")
             if isSharingLocation {
                 if elapsed >= heartbeatInterval {
-                    if let last = locationProvider.lastLocation {
+                    if let loc = bestAvailableLocation {
                         logger.info("pollAll: heartbeat due — sending location")
-                        sendLocation(lat: last.coordinate.latitude, lng: last.coordinate.longitude)
+                        sendLocation(lat: loc.lat, lng: loc.lng)
                     } else {
-                        logger.info("pollAll: heartbeat due but lastLocation is nil — no GPS fix")
+                        logger.info("pollAll: heartbeat due but no location available — no GPS fix and no prior send")
                     }
                 }
             }
@@ -483,12 +491,12 @@ final class LocationSyncService: ObservableObject {
 
     func sendLocationOnBackground() {
         guard isSharingLocation else { return }
-        guard let last = locationProvider.lastLocation else {
-            logger.info("sendLocationOnBackground: skipped — no last location available")
+        guard let loc = bestAvailableLocation else {
+            logger.info("sendLocationOnBackground: skipped — no location available")
             return
         }
         logger.info("sendLocationOnBackground: sending location before app suspends")
-        sendLocation(lat: last.coordinate.latitude, lng: last.coordinate.longitude)
+        sendLocation(lat: loc.lat, lng: loc.lng)
     }
 
     func sendLocation(lat: Double, lng: Double, force: Bool = false) {
