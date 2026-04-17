@@ -33,6 +33,8 @@ open class LocationClient(
         pollMutex.withLock {
             processOutboxes()
             val allUpdates = mutableListOf<UserLocation>()
+            var successCount = 0
+            var failCount = 0
             var lastError: Exception? = null
 
             val friends = store.listFriends()
@@ -50,12 +52,18 @@ open class LocationClient(
 
                     val friendUpdates = pollFriend(friend.id)
                     allUpdates.addAll(friendUpdates)
+                    successCount++
                 } catch (e: Exception) {
                     lastError = e
+                    failCount++
                 }
             }
 
-            lastError?.let { throw it }
+            // Only throw if EVERY friend failed. If we got updates or at least one
+            // success, return what we have to prevent data loss (§5.4).
+            if (successCount == 0 && failCount > 0) {
+                lastError?.let { throw it }
+            }
             allUpdates
         }
 
@@ -147,20 +155,27 @@ open class LocationClient(
     ) {
         val ts = currentTimeSeconds()
         val payload = MessagePlaintext.Location(lat = lat, lng = lng, acc = 0.0, ts = ts)
+        var successCount = 0
+        var failCount = 0
         var lastError: Exception? = null
 
-        for (friend in store.listFriends()) {
-            if (friend.id in pausedFriendIds) continue
-            // Skip friends from whom we have not received a message in 7 days.
-            if (friend.isStale) continue
+        val activeFriends = store.listFriends().filter { it.id !in pausedFriendIds && !it.isStale }
+
+        for (friend in activeFriends) {
             try {
                 sendMessageToFriendInternal(friend.id, payload)
+                successCount++
             } catch (e: Exception) {
                 lastError = e
+                failCount++
             }
         }
 
-        lastError?.let { throw it }
+        // Only throw if EVERY active friend failed. If we succeeded for at least
+        // one, the failed ones will be retried on the next heartbeat (§5.4).
+        if (successCount == 0 && failCount > 0) {
+            lastError?.let { throw it }
+        }
     }
 
     /**
