@@ -1,11 +1,7 @@
 #!/usr/bin/env bash
 set -e
 set -o pipefail
-cd "$(dirname "$0")"
-
-run() {
-  "$@"
-}
+cd "$(dirname "$0")/.."
 
 # Load machine-specific environment if it exists
 if [ -f .envrc ]; then
@@ -14,6 +10,10 @@ fi
 
 # Set TMPDIR early
 export TMPDIR="${TMPDIR:-/tmp}"
+
+run() {
+  "$@"
+}
 
 # Path defaults — override via environment variables or local.properties.
 APP_PATH="${APP_PATH:-ios/build/Build/Products/Debug-iphonesimulator/Where.app}"
@@ -39,10 +39,12 @@ fi
 # Open Simulator.app so the window appears
 open -a Simulator
 
-echo "Building Shared XCFramework..."
-run ./gradlew :shared:assembleSharedXCFramework
+echo "=== Building KMP shared framework ==="
+run ./gradlew :shared:assembleSharedDebugXCFramework
+echo "✓ KMP shared framework built"
+echo ""
 
-echo "Building iOS app..."
+echo "=== Building iOS app ==="
 if ! run xcodebuild \
   -project ios/Where.xcodeproj \
   -scheme Where \
@@ -50,17 +52,22 @@ if ! run xcodebuild \
   -configuration Debug \
   -derivedDataPath ios/build \
   build 2>&1 | tee ios_build.log | grep -E "error:|BUILD SUCCEEDED|BUILD FAILED"; then
-  echo "Build command failed."
+  echo "iOS build failed."
   exit 1
 fi
 
 if grep -q "BUILD FAILED" ios_build.log; then
-  echo "Xcode build failed."
+  echo "iOS build failed."
   exit 1
 fi
+echo "✓ iOS app built"
+echo ""
 
-echo "Installing..."
+echo "=== Installing ==="
 run xcrun simctl install "$SIMULATOR_ID" "$APP_PATH"
+echo "✓ App installed"
+echo ""
 
-echo "Launching..."
+echo "=== Launching ==="
 run xcrun simctl launch "$SIMULATOR_ID" net.af0.where
+echo "✓ App launched"
