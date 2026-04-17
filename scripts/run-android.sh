@@ -1,15 +1,7 @@
 #!/usr/bin/env bash
 set -e
-# Disable pipefail because grep -q returning non-zero in a pipe can kill the script.
-# set -o pipefail
-cd "$(dirname "$0")"
-
-# DEBUG
-# set -x
-
-run() {
-  "$@"
-}
+set -o pipefail
+cd "$(dirname "$0")/.."
 
 # Load machine-specific environment if it exists
 if [ -f .envrc ]; then
@@ -18,6 +10,10 @@ fi
 
 # Set TMPDIR early so gradle can create temp files
 export TMPDIR="${TMPDIR:-/tmp}"
+
+run() {
+  "$@"
+}
 
 # Path defaults — override via environment variables or local.properties.
 ANDROID_SDK_BASE="${ANDROID_SDK_BASE:-$HOME/Library/Android/sdk}"
@@ -30,15 +26,14 @@ if [ -z "$JAVA_HOME" ]; then
   fi
 fi
 
-# Use run -q to suppress noisy output if needed, but let's keep it simple.
 BUILD_DIR="${BUILD_DIR:-$(run ./gradlew -q :android:printBuildDir 2>/dev/null || echo "android/build")}"
 
 # Also read from local.properties if the env vars are not set
 if [ -f local.properties ]; then
   _PROP_SDK=$(grep "^sdk.dir=" local.properties 2>/dev/null | cut -d= -f2 | tr -d '[:space:]' || true)
   _PROP_BUILD=$(grep "^BUILD_DIR=" local.properties 2>/dev/null | cut -d= -f2 | tr -d '[:space:]' || true)
-  [ -n "$_PROP_SDK" ] && ANDROID_SDK_BASE="$_PROP_SDK"
-  [ -n "$_PROP_BUILD" ] && BUILD_DIR="$_PROP_BUILD"
+  [[ -n "$_PROP_SDK" ]] && ANDROID_SDK_BASE="$_PROP_SDK"
+  [[ -n "$_PROP_BUILD" ]] && BUILD_DIR="$_PROP_BUILD"
 fi
 
 export ANDROID_HOME="$ANDROID_SDK_BASE"
@@ -46,8 +41,7 @@ export ANDROID_SDK_ROOT="$ANDROID_SDK_BASE"
 export ANDROID_AVD_HOME
 export PATH="$ANDROID_SDK_BASE/emulator:$ANDROID_SDK_BASE/platform-tools:$ANDROID_SDK_BASE/cmdline-tools/latest/bin:$PATH"
 
-# Dynamically fetch the 'pixel9' AVD
-echo "Finding AVD..."
+echo "=== Finding AVD ==="
 AVD_NAME=$(run emulator -list-avds 2>/dev/null | grep "pixel9" | head -1 || true)
 
 if [ -z "$AVD_NAME" ]; then
@@ -96,15 +90,20 @@ fi
 
 echo "Using device: $EMU_SERIAL"
 
-echo "Building Android app..."
+echo "=== Building Android app ==="
 if ! run ./gradlew :android:assembleDebug; then
-  echo "Gradle build failed."
+  echo "Android build failed."
   exit 1
 fi
+echo "✓ Android app built"
+echo ""
 
 APK_PATH="${BUILD_DIR}/outputs/apk/debug/android-debug.apk"
-echo "Installing APK from $APK_PATH..."
+echo "=== Installing ==="
 run adb -s "$EMU_SERIAL" install -r "$APK_PATH"
+echo "✓ APK installed"
+echo ""
 
-echo "Launching app..."
+echo "=== Launching ==="
 run adb -s "$EMU_SERIAL" shell am start -n net.af0.where/.MainActivity
+echo "✓ App launched"

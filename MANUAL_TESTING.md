@@ -50,7 +50,7 @@ Android pulls the server URL from `local.properties`.
    ```bash
    # Specify the host in local.properties as ANDROID_ADB_HOST for the script to find it
    echo "ANDROID_ADB_HOST=<device-ip>" >> local.properties
-   ./run-android.sh
+   ./scripts/run-android.sh
    ```
 
 ---
@@ -78,7 +78,7 @@ iOS uses `ServerConfig.swift` for configuration.
 3. **Select your device** and click **Run** (Play button) in Xcode.
 4. If you prefer the command line (requires `ios-deploy`):
    ```bash
-   ./run-ios.sh  # Note: This script currently targets the simulator.
+   ./scripts/run-ios.sh  # Note: This script currently targets the simulator.
    ```
    *Note: For real devices, it is recommended to use Xcode to handle signing certificates and provisioning profiles.*
 

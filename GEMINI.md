@@ -30,12 +30,12 @@ This document provides essential context and instructions for the **Where** proj
 
 ### Building and Running
 The following shell scripts are provided for convenience:
-- **Server:** `./run-server.sh` or `./gradlew :server:run`
-- **CLI:** `./run-cli.sh` or `./gradlew :cli:run`
-- **Android:** `./run-android.sh` or `./gradlew :android:assembleDebug`
+- **Server:** `./scripts/run-server.sh` or `./gradlew :server:run`
+- **CLI:** `./scripts/run-cli.sh` or `./gradlew :cli:run`
+- **Android:** `./scripts/run-android.sh` or `./gradlew :android:assembleDebug`
 - **iOS:** 
     1. `cd ios && xcodegen` (Generates `.xcodeproj`)
-    2. `./run-ios.sh` or open `Where.xcodeproj` in Xcode.
+    2. `./scripts/run-ios.sh` or open `Where.xcodeproj` in Xcode.
 
 ### Testing
 - **Shared Tests:** `./gradlew :shared:jvmTest` (Note: requires a Java Runtime in the environment).
