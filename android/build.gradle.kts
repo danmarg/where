@@ -31,6 +31,7 @@ kotlin {
             implementation(libs.mockk)
             implementation(libs.kotlinx.coroutines.test)
             implementation(libs.libsodium.kmp.jvm)
+            implementation(libs.moko.resources)
             implementation("app.cash.turbine:turbine:1.1.0")
         }
     }

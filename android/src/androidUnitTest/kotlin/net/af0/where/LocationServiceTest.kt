@@ -16,6 +16,7 @@ import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
 import kotlinx.coroutines.test.resetMain
 import dev.icerock.moko.resources.desc.StringDesc
+import dev.icerock.moko.resources.desc.Raw
 import net.af0.where.e2ee.ConnectionStatus
 import net.af0.where.e2ee.FriendEntry
 import net.af0.where.e2ee.KeyExchangeInitPayload
@@ -26,8 +27,10 @@ import org.junit.After
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
+import android.Manifest
 import org.robolectric.Robolectric
 import org.robolectric.RobolectricTestRunner
+import org.robolectric.Shadows.shadowOf
 import org.robolectric.annotation.Config
 import org.robolectric.shadows.ShadowLog
 import kotlin.test.assertEquals
@@ -190,6 +193,7 @@ class LocationServiceTest {
     fun setup() {
         Dispatchers.setMain(testDispatcher)
         ShadowLog.stream = System.out
+        shadowOf(context).grantPermissions(Manifest.permission.ACCESS_FINE_LOCATION)
         fakeLocationSource = ServiceFakeLocationSource()
         LocationService.clock = { System.currentTimeMillis() }
         LocationService.locationSource = fakeLocationSource
