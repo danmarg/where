@@ -5,6 +5,7 @@ import Shared
 struct WhereMapView: UIViewRepresentable {
     let users: [Shared.UserLocation]
     let friends: [Shared.FriendEntry]
+    let friendLastPing: [String: Date]
     var ownLocation: CLLocationCoordinate2D? = nil
     var zoomTarget: CLLocationCoordinate2D? = nil
     var onZoomConsumed: () -> Void = {}
@@ -80,11 +81,13 @@ func updateUIView(_ mapView: MKMapView, context: Context) {
                 }
                 let friend = friends.first { $0.id == user.userId }
                 let friendName = friend?.name ?? String(user.userId.prefix(8))
+                let lastPing = friendLastPing[user.userId]
                 if let pin = existingById[user.userId] {
                     pin.coordinate = coord
                     pin.title = friendName
+                    pin.subtitle = timeAgoString(lastPing)
                 } else {
-                    mapView.addAnnotation(UserAnnotation(user: user, coordinate: coord, friendName: friendName))
+                    mapView.addAnnotation(UserAnnotation(userId: user.userId, coordinate: coord, friendName: friendName, lastPing: lastPing))
                 }
             }
         }
@@ -153,14 +156,14 @@ final class UserAnnotation: NSObject, MKAnnotation {
     let userId: String
     @objc dynamic var coordinate: CLLocationCoordinate2D
     var title: String?
-    let subtitle: String?
+    var subtitle: String?
     let isOwn: Bool
 
-    init(user: Shared.UserLocation, coordinate: CLLocationCoordinate2D, friendName: String) {
-        self.userId = user.userId
+    init(userId: String, coordinate: CLLocationCoordinate2D, friendName: String, lastPing: Date?) {
+        self.userId = userId
         self.coordinate = coordinate
         self.title = friendName
-        self.subtitle = user.userId.prefix(8).description
+        self.subtitle = timeAgoString(lastPing)
         self.isOwn = false
     }
 

@@ -1,15 +1,6 @@
 import Shared
 import SwiftUI
 
-func timeAgoString(_ date: Date?) -> String {
-    guard let date = date else { return MR.strings().never.localized() }
-    let seconds = Date().timeIntervalSince(date)
-    if seconds < 60 { return MR.strings().just_now.localized() }
-    if seconds < 3600 { return MR.strings().m_ago.localized(args: [Int32(seconds / 60)]) }
-    if seconds < 86400 { return MR.strings().h_ago.localized(args: [Int32(seconds / 3600)]) }
-    return MR.strings().d_ago.localized(args: [Int32(seconds / 86400)])
-}
-
 struct FriendsSheet: View {
     @Binding var displayName: String
     let friends: [Shared.FriendEntry]

@@ -24,6 +24,7 @@
 		B60DEE3289B4F67659B77C8A /* LocationManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3ADAF0FD19742D151B957FD9 /* LocationManager.swift */; };
 		C6B7D5B6964E195E120267EE /* QrScannerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 220A8EA077B99368AF6DA3D4 /* QrScannerView.swift */; };
 		D66FFD9563E853E9385BD61B /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 1CDCC10A00DAB4D475C2B7C1 /* Assets.xcassets */; };
+		D7007E992960E1C9307F8221 /* TimeUtils.swift in Sources */ = {isa = PBXBuildFile; fileRef = 304D2BD0F9737BE6C9A22125 /* TimeUtils.swift */; };
 		FC1918F51962F01656F21EE5 /* KotlinByteArrayUtils.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC2B156B7AAD99EBB5C7C775 /* KotlinByteArrayUtils.swift */; };
 		FD798F619BC7B55144C1A274 /* QrCodeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5DBE659D6FC99FBE57AB21DB /* QrCodeView.swift */; };
 /* End PBXBuildFile section */
@@ -61,6 +62,7 @@
 		2421CE3D6966994F4875E311 /* WhereMapView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WhereMapView.swift; sourceTree = "<group>"; };
 		2785C3E616D50F787106E3D5 /* WhereTests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = WhereTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		28DD2FC8358389E8C9F6ABE6 /* FriendsSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FriendsSheet.swift; sourceTree = "<group>"; };
+		304D2BD0F9737BE6C9A22125 /* TimeUtils.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TimeUtils.swift; sourceTree = "<group>"; };
 		3ADAF0FD19742D151B957FD9 /* LocationManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocationManager.swift; sourceTree = "<group>"; };
 		4CCEF0D6661013EBFBD2A61F /* Shared.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = Shared.xcframework; path = "../shared/build/XCFrameworks/$(CONFIGURATION:lower)/Shared.xcframework"; sourceTree = "<group>"; };
 		5DBE659D6FC99FBE57AB21DB /* QrCodeView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QrCodeView.swift; sourceTree = "<group>"; };
@@ -138,6 +140,7 @@
 				220A8EA077B99368AF6DA3D4 /* QrScannerView.swift */,
 				E54EC15388BAF720E7755291 /* ServerConfig.swift */,
 				7BE943A4DFDA9252F1EC7A4C /* StringResourceExtensions.swift */,
+				304D2BD0F9737BE6C9A22125 /* TimeUtils.swift */,
 				D50607048DEAB44CE2CAD7BA /* Where.entitlements */,
 				7A1BBBBE8782378C8B03BB4C /* WhereApp.swift */,
 				2421CE3D6966994F4875E311 /* WhereMapView.swift */,
@@ -276,6 +279,7 @@
 				C6B7D5B6964E195E120267EE /* QrScannerView.swift in Sources */,
 				1FFAFDE1493671FC1146F2E3 /* ServerConfig.swift in Sources */,
 				5DA2E3F14E66CA37B7867851 /* StringResourceExtensions.swift in Sources */,
+				D7007E992960E1C9307F8221 /* TimeUtils.swift in Sources */,
 				60D8A627443A5ADF3F5C00CB /* WhereApp.swift in Sources */,
 				5EF9E5113CEBF25BACE77F5E /* WhereMapView.swift in Sources */,
 			);
