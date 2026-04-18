@@ -75,7 +75,7 @@ final class LocationSyncService: ObservableObject {
     /// Overridable in tests to simulate foreground/background without UIKit.
     var isInForeground: () -> Bool = { UIApplication.shared.applicationState == .active }
     private static let rapidPollInterval: TimeInterval = 1.0
-    private static let foregroundPollInterval: TimeInterval = 60.0
+    private static let foregroundPollInterval: TimeInterval = 10.0
     private static let normalPollInterval: TimeInterval = 300.0 // 5 min (background sharing)
     private static let maintenancePollInterval: TimeInterval = 30 * 60  // ack-only when not sharing
     private var visibleUsersCancellables = Set<AnyCancellable>()
