@@ -210,8 +210,27 @@ class LocationService : Service() {
                     Log.d(TAG, "Stationary threshold exceeded; forcing fresh location fix.")
                     forceLocationUpdate()
                 }
-                locationSource.lastLocation.value?.let { (lat, lng) ->
-                    sendLocationIfNeeded(lat, lng, isHeartbeat = true)
+
+                val lastLoc = locationSource.lastLocation.value
+                if (lastLoc != null) {
+                    // Force the heartbeat send. The pollLoop timing (5 mins) is already
+                    // what we want for stationary updates, and 'force' ensures we bypass
+                    // the internal 5-min de-duplication check which might be too tight.
+                    sendLocationIfNeeded(lastLoc.first, lastLoc.second, isHeartbeat = true, force = true)
+                } else {
+                    // RECOVERY (§5.3): If we have no GPS fix but are sharing, send a
+                    // keepalive message to all active friends to keep the session alive
+                    // and let them know we're still there.
+                    try {
+                        val activeFriends = e2eeStore.listFriends().filter {
+                            it.id !in locationSource.pausedFriendIds.value && !it.isStale
+                        }
+                        for (friend in activeFriends) {
+                            locationClient.sendKeepalive(friend.id)
+                        }
+                        lastSentTime = now
+                    } catch (_: Exception) {
+                    }
                 }
             }
             locationSource.awaitPollWake(pollInterval(rapid, inForeground, isSharing))
@@ -244,7 +263,6 @@ class LocationService : Service() {
         return hasPendingQr || locationSource.pendingInitPayload.value != null || recentlyTriggered || isNaming
     }
 
-    @VisibleForTesting
     internal suspend fun doPoll() {
         try {
             Log.d(TAG, "Polling for location updates")
@@ -255,7 +273,8 @@ class LocationService : Service() {
                 for (update in updates) {
                     locationSource.onFriendUpdate(update, now)
                     locationSource.onFriendLocationReceived(update.userId)
-                    e2eeStore.updateLastLocation(update.userId, update.lat, update.lng, now / 1000L)
+                    // Persistence: use the timestamp from the update payload.
+                    e2eeStore.updateLastLocation(update.userId, update.lat, update.lng, update.timestamp)
                 }
                 pollPendingInvite()
                 locationSource.onFriendsUpdated(e2eeStore.listFriends())
