@@ -189,21 +189,19 @@ fun MapScreen(
                         }
                     ) {
                         Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                            if (isSelected) {
-                                Surface(
-                                    shape = MaterialTheme.shapes.small,
-                                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.9f),
-                                    contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    shadowElevation = 2.dp,
-                                ) {
-                                    Text(
-                                        text = stringResource(MR.strings.you),
-                                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
-                                        style = MaterialTheme.typography.labelSmall,
-                                        maxLines = 1,
-                                        overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
-                                    )
-                                }
+                            Surface(
+                                shape = MaterialTheme.shapes.small,
+                                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.9f),
+                                contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                                shadowElevation = 2.dp,
+                            ) {
+                                Text(
+                                    text = stringResource(MR.strings.you),
+                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                                    style = MaterialTheme.typography.labelSmall,
+                                    maxLines = 1,
+                                    overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                                )
                             }
                             Icon(
                                 imageVector = Icons.Default.Place,
@@ -228,7 +226,6 @@ fun MapScreen(
                         }
                     ) {
                         Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                            if (isSelected) {
                                 Surface(
                                     shape = MaterialTheme.shapes.small,
                                     color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.9f),
@@ -245,14 +242,15 @@ fun MapScreen(
                                             maxLines = 1,
                                             overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
                                         )
-                                        Text(
-                                            text = timeAgoStringFromMs(friendLastPing[user.userId]),
-                                            style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp),
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
-                                        )
+                                        if (isSelected) {
+                                            Text(
+                                                text = timeAgoStringFromMs(friendLastPing[user.userId]),
+                                                style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp),
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
+                                            )
+                                        }
                                     }
                                 }
-                            }
                             Icon(
                                 imageVector = Icons.Default.Place,
                                 contentDescription = null,
