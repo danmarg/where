@@ -37,8 +37,15 @@ platform :android do
       "#{today}.1"
     end
 
-    android_set_version_name(gradle_file: gradle_file, version_name: new_version_name)
-    increment_version_code(gradle_file_path: gradle_file)
+    current_code = content.match(/versionCode\s*=\s*(\d+)/)[1].to_i
+    new_version_code = current_code + 1
+
+    UI.message("Updating version name to #{new_version_name} and version code to #{new_version_code}")
+
+    content.gsub!(/(versionName\s*=\s*)"[^"]+"/, "\\1\"#{new_version_name}\"")
+    content.gsub!(/(versionCode\s*=\s*)\d+/, "\\1#{new_version_code}")
+
+    File.write(gradle_file, content)
 
     gradle(
       project_dir: "../",
