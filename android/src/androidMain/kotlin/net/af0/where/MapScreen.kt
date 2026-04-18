@@ -16,13 +16,13 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import com.google.accompanist.permissions.*
 import com.google.android.gms.maps.CameraUpdateFactory
 import com.google.android.gms.maps.model.CameraPosition
 import com.google.android.gms.maps.model.LatLng
 import com.google.maps.android.compose.*
-import androidx.compose.ui.platform.LocalContext
 import dev.icerock.moko.resources.compose.stringResource
 import net.af0.where.e2ee.ConnectionStatus
 import net.af0.where.e2ee.FriendEntry
@@ -265,7 +265,10 @@ fun MapScreen(
                     modifier = Modifier.size(16.dp),
                 )
                 Spacer(Modifier.width(4.dp))
-                Text(if (isSharing) stringResource(MR.strings.sharing) else stringResource(MR.strings.paused), style = MaterialTheme.typography.labelMedium)
+                Text(
+                    if (isSharing) stringResource(MR.strings.sharing) else stringResource(MR.strings.paused),
+                    style = MaterialTheme.typography.labelMedium,
+                )
             }
 
             // Your Name chip + Connection status

@@ -232,10 +232,11 @@ class LocationViewModel(
 
     fun processQrUrl(url: String): Boolean {
         Log.d(TAG, "processQrUrl: url=$url")
-        val qr = QrPayload.fromUrl(url) ?: run {
-            Log.e(TAG, "processQrUrl: failed to parse URL")
-            return false
-        }
+        val qr =
+            QrPayload.fromUrl(url) ?: run {
+                Log.e(TAG, "processQrUrl: failed to parse URL")
+                return false
+            }
         Log.d(TAG, "processQrUrl: parsed qr, suggestedName=${qr.suggestedName}")
         locationSource.onPendingQrForNaming(qr)
         triggerRapidPoll()

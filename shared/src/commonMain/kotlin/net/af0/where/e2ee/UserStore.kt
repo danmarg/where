@@ -4,7 +4,6 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
-
 import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
@@ -16,19 +15,22 @@ private val json = Json { ignoreUnknownKeys = true }
  * Uses the same E2eeStorage as E2eeStore but manages its own keys.
  */
 class UserStore(private val storage: E2eeStorage) {
-    private val _isSharingLocation = MutableStateFlow(
-        storage.getString(KEY_IS_SHARING)?.toBoolean() ?: true
-    )
+    private val _isSharingLocation =
+        MutableStateFlow(
+            storage.getString(KEY_IS_SHARING)?.toBoolean() ?: true,
+        )
     val isSharingLocation: StateFlow<Boolean> = _isSharingLocation.asStateFlow()
 
-    private val _displayName = MutableStateFlow(
-        storage.getString(KEY_DISPLAY_NAME) ?: ""
-    )
+    private val _displayName =
+        MutableStateFlow(
+            storage.getString(KEY_DISPLAY_NAME) ?: "",
+        )
     val displayName: StateFlow<String> = _displayName.asStateFlow()
 
-    private val _pausedFriendIds = MutableStateFlow(
-        loadPausedFriends()
-    )
+    private val _pausedFriendIds =
+        MutableStateFlow(
+            loadPausedFriends(),
+        )
     val pausedFriendIds: StateFlow<Set<String>> = _pausedFriendIds.asStateFlow()
 
     private fun loadPausedFriends(): Set<String> {
@@ -87,7 +89,11 @@ class UserStore(private val storage: E2eeStorage) {
         return Triple(lat, lng, zoom)
     }
 
-    fun setLastMapCamera(lat: Double, lng: Double, zoom: Float) {
+    fun setLastMapCamera(
+        lat: Double,
+        lng: Double,
+        zoom: Float,
+    ) {
         _lastMapCamera.value = Triple(lat, lng, zoom)
         storage.putString(KEY_LAST_LAT, lat.toString())
         storage.putString(KEY_LAST_LNG, lng.toString())

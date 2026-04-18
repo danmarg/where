@@ -24,7 +24,6 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -34,10 +33,8 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.scale
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
-import dev.icerock.moko.resources.StringResource
 import dev.icerock.moko.resources.compose.stringResource
 import net.af0.where.e2ee.FriendEntry
 import net.af0.where.shared.MR
@@ -163,14 +160,25 @@ fun FriendsSheet(
                             }
 
                             IconButton(onClick = { renameFriend = friend }) {
-                                Icon(Icons.Default.Edit, contentDescription = stringResource(MR.strings.rename), modifier = Modifier.size(20.dp))
+                                Icon(
+                                    Icons.Default.Edit,
+                                    contentDescription = stringResource(MR.strings.rename),
+                                    modifier = Modifier.size(20.dp),
+                                )
                             }
 
                             val isPaused = friend.id in pausedFriendIds
                             IconButton(onClick = { onTogglePause(friend.id) }) {
                                 Icon(
                                     if (isPaused) Icons.Default.PlayArrow else Icons.Default.Pause,
-                                    contentDescription = if (isPaused) stringResource(MR.strings.resume) else stringResource(MR.strings.pause),
+                                    contentDescription =
+                                        if (isPaused) {
+                                            stringResource(
+                                                MR.strings.resume,
+                                            )
+                                        } else {
+                                            stringResource(MR.strings.pause)
+                                        },
                                 )
                             }
 

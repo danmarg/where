@@ -136,9 +136,10 @@ class E2eeStoreTest {
             val qr = aliceStore.createInvite("Alice")
 
             // Alice tries to scan her own QR — must be rejected.
-            val ex = assertFailsWith<IllegalArgumentException> {
-                aliceStore.processScannedQr(qr)
-            }
+            val ex =
+                assertFailsWith<IllegalArgumentException> {
+                    aliceStore.processScannedQr(qr)
+                }
             assertTrue(ex.message?.contains("yourself") == true)
 
             // Invite must still be present (no side-effects from the rejected scan).

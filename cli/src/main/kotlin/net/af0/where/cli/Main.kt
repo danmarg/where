@@ -11,7 +11,6 @@ import kotlinx.serialization.json.Json
 import net.af0.where.e2ee.*
 import net.af0.where.initializeLibsodium
 import java.io.File
-import java.util.Base64
 import kotlin.system.exitProcess
 
 class FileE2eeStorage(private val file: File) : E2eeStorage {
