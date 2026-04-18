@@ -1,10 +1,11 @@
 package net.af0.where
 
 import android.app.Application
-import android.content.Context
 import android.content.SharedPreferences
 import android.text.TextUtils
 import androidx.test.core.app.ApplicationProvider
+import dev.icerock.moko.resources.desc.Raw
+import dev.icerock.moko.resources.desc.StringDesc
 import io.mockk.every
 import io.mockk.mockk
 import io.mockk.mockkStatic
@@ -19,8 +20,6 @@ import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
-import dev.icerock.moko.resources.desc.StringDesc
-import dev.icerock.moko.resources.desc.Raw
 import net.af0.where.e2ee.ConnectionStatus
 import net.af0.where.e2ee.E2eeStorage
 import net.af0.where.e2ee.E2eeStore
@@ -32,7 +31,6 @@ import net.af0.where.e2ee.LocationClient
 import net.af0.where.e2ee.PROTOCOL_VERSION
 import net.af0.where.e2ee.QrPayload
 import net.af0.where.e2ee.SessionState
-import net.af0.where.e2ee.UserStore
 import net.af0.where.model.UserLocation
 import org.junit.After
 import org.junit.Before
@@ -41,7 +39,6 @@ import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
 import kotlin.test.assertEquals
-import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
@@ -248,13 +245,14 @@ class LocationViewModelTest {
             val store = E2eeStore(FakeE2eeStorage())
             val client = LocationClient("http://localhost", store)
             // Disable automatic polling loop to prevent hangs
-            viewModel = LocationViewModel(
-                app,
-                e2eeStoreParam = store,
-                locationClientParam = client,
-                startPolling = false,
-                locationSource = fakeLocationSource
-            )
+            viewModel =
+                LocationViewModel(
+                    app,
+                    e2eeStoreParam = store,
+                    locationClientParam = client,
+                    startPolling = false,
+                    locationSource = fakeLocationSource,
+                )
             val vm = viewModel!!
 
             // 1. Create invite
@@ -295,21 +293,23 @@ class LocationViewModelTest {
     fun testCancelQrScan_BobSide() =
         runTest {
             val source = TestFakeLocationSource()
-            viewModel = LocationViewModel(
-                app,
-                e2eeStoreParam = E2eeStore(FakeE2eeStorage()),
-                startPolling = false,
-                locationSource = source
-            )
+            viewModel =
+                LocationViewModel(
+                    app,
+                    e2eeStoreParam = E2eeStore(FakeE2eeStorage()),
+                    startPolling = false,
+                    locationSource = source,
+                )
             val vm = viewModel!!
 
-            val qr = QrPayload(
-                protocolVersion = PROTOCOL_VERSION,
-                ekPub = byteArrayOf(1, 2, 3),
-                suggestedName = "Alice",
-                fingerprint = "fp",
-                discoverySecret = ByteArray(32)
-            )
+            val qr =
+                QrPayload(
+                    protocolVersion = PROTOCOL_VERSION,
+                    ekPub = byteArrayOf(1, 2, 3),
+                    suggestedName = "Alice",
+                    fingerprint = "fp",
+                    discoverySecret = ByteArray(32),
+                )
 
             // Bob scans
             source.onPendingQrForNaming(qr)

@@ -1,18 +1,18 @@
 package net.af0.where.e2ee
 
+import dev.icerock.moko.resources.desc.StringDesc
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
-import net.af0.where.shared.MR
-import dev.icerock.moko.resources.desc.StringDesc
 import kotlin.io.encoding.Base64
 import kotlin.io.encoding.ExperimentalEncodingApi
 
 @OptIn(ExperimentalEncodingApi::class)
-private val qrJson = Json {
-    ignoreUnknownKeys = true
-    encodeDefaults = true
-}
+private val qrJson =
+    Json {
+        ignoreUnknownKeys = true
+        encodeDefaults = true
+    }
 
 /**
  * Raw X25519 keypair. Both fields are 32-byte little-endian representations
@@ -159,7 +159,6 @@ fun String.hexToByteArray(): ByteArray {
     return ByteArray(length / 2) { i -> substring(i * 2, i * 2 + 2).toInt(16).toByte() }
 }
 
-
 @Serializable
 enum class LocationPrecision {
     FINE,
@@ -239,11 +238,12 @@ data class QrPayload(
         @OptIn(ExperimentalEncodingApi::class)
         fun fromUrl(url: String): QrPayload? {
             // Support both https://where.af0.net/invite#$encoded AND where://invite?q=$encoded
-            val fragment = if (url.startsWith("where://")) {
-                url.substringAfter("q=", "").substringBefore("&")
-            } else {
-                url.substringAfter("#", "")
-            }
+            val fragment =
+                if (url.startsWith("where://")) {
+                    url.substringAfter("q=", "").substringBefore("&")
+                } else {
+                    url.substringAfter("#", "")
+                }
             if (fragment.isEmpty()) return null
             return try {
                 // Base64.UrlSafe.withPadding(Base64.PaddingOption.PRESENT_OPTIONAL) handles both padded and unpadded.
@@ -292,6 +292,7 @@ sealed class InviteState {
 
 sealed class ConnectionStatus {
     object Ok : ConnectionStatus()
+
     data class Error(val message: StringDesc) : ConnectionStatus()
 }
 

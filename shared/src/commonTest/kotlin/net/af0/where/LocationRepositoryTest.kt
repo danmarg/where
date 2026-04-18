@@ -45,34 +45,36 @@ class LocationRepositoryTest {
      * (not null and not a torn/corrupted value).
      */
     @Test
-    fun testConcurrentLocationUpdates_FinalValueIsValid() = runTest {
-        val locationCount = 100
-        val submittedLocations = mutableSetOf<Pair<Double, Double>>()
+    fun testConcurrentLocationUpdates_FinalValueIsValid() =
+        runTest {
+            val locationCount = 100
+            val submittedLocations = mutableSetOf<Pair<Double, Double>>()
 
-        // Run on Dispatchers.Default to ensure actual multi-threaded execution on JVM/Native
-        withContext(Dispatchers.Default) {
-            val jobs = List(locationCount) { i ->
-                val lat = (i * 0.001).toDouble()
-                val lng = (i * 0.002).toDouble()
-                val location = Pair(lat, lng)
-                launch {
-                    mutex.withLock {
-                        submittedLocations.add(location)
+            // Run on Dispatchers.Default to ensure actual multi-threaded execution on JVM/Native
+            withContext(Dispatchers.Default) {
+                val jobs =
+                    List(locationCount) { i ->
+                        val lat = (i * 0.001).toDouble()
+                        val lng = (i * 0.002).toDouble()
+                        val location = Pair(lat, lng)
+                        launch {
+                            mutex.withLock {
+                                submittedLocations.add(location)
+                            }
+                            LocationRepository.onLocation(lat, lng)
+                        }
                     }
-                    LocationRepository.onLocation(lat, lng)
-                }
+                jobs.joinAll()
             }
-            jobs.joinAll()
-        }
 
-        // Verify final state
-        val finalLocation = LocationRepository.lastLocation.value
-        assertNotNull(finalLocation, "Final location should not be null after concurrent updates")
-        assertTrue(
-            finalLocation in submittedLocations,
-            "Final location $finalLocation should be one of the submitted locations",
-        )
-    }
+            // Verify final state
+            val finalLocation = LocationRepository.lastLocation.value
+            assertNotNull(finalLocation, "Final location should not be null after concurrent updates")
+            assertTrue(
+                finalLocation in submittedLocations,
+                "Final location $finalLocation should be one of the submitted locations",
+            )
+        }
 
     /**
      * Test that StateFlow never observes a torn read.
@@ -82,56 +84,59 @@ class LocationRepositoryTest {
      * or one of the submitted locations (never a corrupted intermediate state).
      */
     @Test
-    fun testConcurrentLocationUpdates_NoTornReads() = runTest {
-        val locationCount = 100
-        val submittedLocations = mutableSetOf<Pair<Double, Double>>()
-        val observedLocations = mutableSetOf<Pair<Double, Double>?>()
+    fun testConcurrentLocationUpdates_NoTornReads() =
+        runTest {
+            val locationCount = 100
+            val submittedLocations = mutableSetOf<Pair<Double, Double>>()
+            val observedLocations = mutableSetOf<Pair<Double, Double>?>()
 
-        withContext(Dispatchers.Default) {
-            // Continuously sample the StateFlow while updates are in flight
-            val sampler = launch {
-                while (true) {
-                    val current = LocationRepository.lastLocation.value
-                    mutex.withLock {
-                        observedLocations.add(current)
+            withContext(Dispatchers.Default) {
+                // Continuously sample the StateFlow while updates are in flight
+                val sampler =
+                    launch {
+                        while (true) {
+                            val current = LocationRepository.lastLocation.value
+                            mutex.withLock {
+                                observedLocations.add(current)
+                            }
+                            // Yield to give writers a chance
+                            delay(1)
+                        }
                     }
-                    // Yield to give writers a chance
-                    delay(1)
+
+                // Submit 100 location updates concurrently
+                val writers =
+                    List(locationCount) { i ->
+                        val lat = (i * 0.001).toDouble()
+                        val lng = (i * 0.002).toDouble()
+                        val location = Pair(lat, lng)
+                        launch {
+                            mutex.withLock {
+                                submittedLocations.add(location)
+                            }
+                            LocationRepository.onLocation(lat, lng)
+                        }
+                    }
+
+                writers.joinAll()
+                sampler.cancel()
+            }
+
+            // Verify all observed values are valid
+            for (observed in observedLocations) {
+                if (observed != null) {
+                    assertTrue(
+                        observed in submittedLocations,
+                        "Observed location $observed should be one of the submitted locations, not a torn read",
+                    )
                 }
             }
 
-            // Submit 100 location updates concurrently
-            val writers = List(locationCount) { i ->
-                val lat = (i * 0.001).toDouble()
-                val lng = (i * 0.002).toDouble()
-                val location = Pair(lat, lng)
-                launch {
-                    mutex.withLock {
-                        submittedLocations.add(location)
-                    }
-                    LocationRepository.onLocation(lat, lng)
-                }
-            }
-
-            writers.joinAll()
-            sampler.cancel()
+            // Verify we observed at least some updates
+            val nonNullObservations = observedLocations.filterNotNull()
+            assertTrue(
+                nonNullObservations.isNotEmpty(),
+                "Should have observed at least some non-null location updates",
+            )
         }
-
-        // Verify all observed values are valid
-        for (observed in observedLocations) {
-            if (observed != null) {
-                assertTrue(
-                    observed in submittedLocations,
-                    "Observed location $observed should be one of the submitted locations, not a torn read",
-                )
-            }
-        }
-
-        // Verify we observed at least some updates
-        val nonNullObservations = observedLocations.filterNotNull()
-        assertTrue(
-            nonNullObservations.isNotEmpty(),
-            "Should have observed at least some non-null location updates",
-        )
-    }
 }

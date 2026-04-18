@@ -4,7 +4,6 @@ import android.content.Context
 import android.content.SharedPreferences
 import net.af0.where.e2ee.E2eeStorage
 import net.af0.where.e2ee.E2eeStore
-
 import net.af0.where.e2ee.UserStore
 
 /** In-memory E2eeStorage for unit tests (Android Keystore is unavailable in Robolectric). */

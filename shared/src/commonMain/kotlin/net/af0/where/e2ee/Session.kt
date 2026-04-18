@@ -105,7 +105,9 @@ object Session {
                         try {
                             decoded = decryptHeader(hk, message.envelope)
                             break
-                        } catch (_: Exception) { /* try next */ }
+                        } catch (_: Exception) {
+                            // try next
+                        }
                     }
                 }
             }

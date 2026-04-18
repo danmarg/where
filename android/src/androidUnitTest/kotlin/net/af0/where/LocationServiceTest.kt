@@ -1,8 +1,11 @@
 package net.af0.where
 
+import android.Manifest
 import android.app.Application
 import android.content.Intent
 import androidx.test.core.app.ApplicationProvider
+import dev.icerock.moko.resources.desc.Raw
+import dev.icerock.moko.resources.desc.StringDesc
 import io.mockk.every
 import io.mockk.mockk
 import kotlinx.coroutines.Dispatchers
@@ -12,11 +15,9 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.advanceUntilIdle
+import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
-import kotlinx.coroutines.test.resetMain
-import dev.icerock.moko.resources.desc.StringDesc
-import dev.icerock.moko.resources.desc.Raw
 import net.af0.where.e2ee.ConnectionStatus
 import net.af0.where.e2ee.FriendEntry
 import net.af0.where.e2ee.KeyExchangeInitPayload
@@ -27,7 +28,6 @@ import org.junit.After
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
-import android.Manifest
 import org.robolectric.Robolectric
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.Shadows.shadowOf
@@ -241,7 +241,7 @@ class LocationServiceTest {
 
             val controller = Robolectric.buildService(LocationService::class.java)
             val service = controller.get()
-            
+
             val mockClient = io.mockk.mockk<LocationClient>(relaxed = true)
             service.locationClientOverride = mockClient
             io.mockk.coEvery { mockClient.pollPendingInvite() } returns null
@@ -284,7 +284,7 @@ class LocationServiceTest {
 
             val controller = Robolectric.buildService(LocationService::class.java)
             val service = controller.get()
-            
+
             val mockClient = io.mockk.mockk<LocationClient>(relaxed = true)
             service.locationClientOverride = mockClient
             io.mockk.coEvery { mockClient.pollPendingInvite() } returns null
@@ -349,9 +349,10 @@ class LocationServiceTest {
             fakeLocationSource.onLocation(1.0, 2.0)
             controller.create()
 
-            val intent = Intent(context, LocationService::class.java).apply {
-                action = LocationService.ACTION_FORCE_PUBLISH
-            }
+            val intent =
+                Intent(context, LocationService::class.java).apply {
+                    action = LocationService.ACTION_FORCE_PUBLISH
+                }
             controller.withIntent(intent).startCommand(0, 0)
             advanceUntilIdle()
 

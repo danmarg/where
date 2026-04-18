@@ -28,14 +28,12 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
-import net.af0.where.shared.MR
-import dev.icerock.moko.resources.compose.stringResource
 import androidx.core.content.ContextCompat
 import com.journeyapps.barcodescanner.ScanContract
 import com.journeyapps.barcodescanner.ScanOptions
-import kotlinx.coroutines.flow.StateFlow
+import dev.icerock.moko.resources.compose.stringResource
 import net.af0.where.e2ee.InviteState
-import net.af0.where.model.UserLocation
+import net.af0.where.shared.MR
 
 class MainActivity : ComponentActivity() {
     private val viewModel: LocationViewModel by viewModels { LocationViewModel.Factory }
