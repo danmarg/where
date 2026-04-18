@@ -295,9 +295,9 @@ final class LocationSyncService: ObservableObject {
             let updates = try await locationClient.poll(isForeground: isInForeground())
             logger.debug("Got \(updates.count) location updates")
             for update in updates {
-                try? await e2eeStore.updateLastLocation(id: update.userId, lat: update.lat, lng: update.lng, ts: Int64(Date().timeIntervalSince1970))
+                try? await e2eeStore.updateLastLocation(id: update.userId, lat: update.lat, lng: update.lng, ts: update.timestamp)
                 friendLocations[update.userId] = (lat: update.lat, lng: update.lng, ts: update.timestamp)
-                friendLastPing[update.userId] = Date()
+                friendLastPing[update.userId] = Date(timeIntervalSince1970: TimeInterval(update.timestamp))
                 onFriendLocationReceived(friendId: update.userId)
             }
 
