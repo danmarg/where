@@ -107,17 +107,23 @@ open class LocationClient(
             val messages = mailboxClient.poll(baseUrl, currentTokenToPoll)
             if (messages.isEmpty()) break
 
-            val result = store.processBatch(friendId, currentTokenToPoll, messages) ?: break
+            try {
+                val result = store.processBatch(friendId, currentTokenToPoll, messages) ?: break
 
-            for (out in result.outgoing) {
-                mailboxClient.post(baseUrl, out.token, out.payload)
+                for (out in result.outgoing) {
+                    mailboxClient.post(baseUrl, out.token, out.payload)
+                }
+
+                resultLocations.addAll(
+                    result.decryptedLocations.map { loc ->
+                        UserLocation(userId = friendId, lat = loc.lat, lng = loc.lng, timestamp = loc.ts)
+                    },
+                )
+            } catch (e: Exception) {
+                println("DEBUG: pollFriend processBatch failed for $friendId: ${e.message}")
+                e.printStackTrace()
+                throw e
             }
-
-            resultLocations.addAll(
-                result.decryptedLocations.map { loc ->
-                    UserLocation(userId = friendId, lat = loc.lat, lng = loc.lng, timestamp = loc.ts)
-                },
-            )
 
             // Did the recvToken change during processing? If so, follow it immediately.
             val updatedFriend = store.getFriend(friendId) ?: break
@@ -158,7 +164,6 @@ open class LocationClient(
         var successCount = 0
         var failCount = 0
         var lastError: Exception? = null
-
         val activeFriends = store.listFriends().filter { it.id !in pausedFriendIds && !it.isStale }
 
         for (friend in activeFriends) {

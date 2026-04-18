@@ -112,8 +112,9 @@ object KeyExchange {
 
         // Verify key confirmation before proceeding.
         if (!verifyKeyConfirmation(sk, aliceEkPub, msg.ekPub, msg.keyConfirmation)) {
+            val actualFp = qrFingerprint(aliceEkPub)
             sk.zeroize()
-            throw AuthenticationException("KeyExchangeInit key_confirmation failed — aborting key exchange")
+            throw AuthenticationException("KeyExchangeInit key_confirmation failed (expectedAliceFp=$actualFp) — aborting key exchange")
         }
 
         val aliceFp = fingerprint(aliceEkPub)
@@ -122,8 +123,12 @@ object KeyExchange {
         // VERIFY TOKEN (#168): Alice MUST verify that Bob computed the same initial routing token.
         val expectedToken = deriveRoutingToken(sk, aliceFp, bobFp)
         if (!expectedToken.contentEquals(msg.token)) {
+            val expectedHex = expectedToken.toHex()
+            val providedHex = msg.token.toHex()
             sk.zeroize()
-            throw AuthenticationException("KeyExchangeInit token mismatch — possible tampering or protocol error")
+            throw AuthenticationException(
+                "KeyExchangeInit token mismatch (expected=$expectedHex, provided=$providedHex) — possible tampering or protocol error",
+            )
         }
 
         val session =

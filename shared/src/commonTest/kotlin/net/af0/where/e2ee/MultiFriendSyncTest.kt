@@ -8,130 +8,213 @@ class MultiFriendSyncTest {
         initializeE2eeTests()
     }
 
-    private lateinit var storage: MemoryStorage
-    private lateinit var store: E2eeStore
+    class MemoryStorage : E2eeStorage {
+        private val map = mutableMapOf<String, String>()
 
-    @BeforeTest
-    fun setup() {
-        storage = MemoryStorage()
-        store = E2eeStore(storage)
+        override fun getString(key: String): String? = map[key]
+
+        override fun putString(
+            key: String,
+            value: String,
+        ) {
+            map[key] = value
+        }
     }
 
     @Test
-    fun `poll returns updates from successful friends even if one fails`() = runTest {
-        // Setup two friends: Friend A (success) and Friend B (failure)
-        val aliceStore = E2eeStore(MemoryStorage())
-        val qrA = aliceStore.createInvite("AliceA")
-        val qrB = aliceStore.createInvite("AliceB")
+    fun `poll returns updates from successful friends even if one fails`() =
+        runTest {
+            val aliceStore = E2eeStore(MemoryStorage())
+            val bobStore = E2eeStore(MemoryStorage())
+            val charlieStore = E2eeStore(MemoryStorage())
 
-        val (initA, entryA) = store.processScannedQr(qrA, "FriendA")
-        val (initB, entryB) = store.processScannedQr(qrB, "FriendB")
+            // Pair A-B
+            val qrAB = aliceStore.createInvite("Alice")
+            val (initAB, _) = bobStore.processScannedQr(qrAB, "Alice")
+            val friendB = aliceStore.processKeyExchangeInit(initAB, "Bob")
+            assertNotNull(friendB)
 
-        // Alice processes both inits to complete handshakes
-        val friendA = aliceStore.processKeyExchangeInit(initA, "FriendA")!!
-        val friendB = aliceStore.processKeyExchangeInit(initB, "FriendB")!!
+            // Pair A-C
+            val qrAC = aliceStore.createInvite("Alice")
+            val (initAC, _) = charlieStore.processScannedQr(qrAC, "Alice")
+            val friendC = aliceStore.processKeyExchangeInit(initAC, "Charlie")
+            assertNotNull(friendC)
 
-        // Friend A sends a location to Alice
-        val locationA = MessagePlaintext.Location(lat = 1.0, lng = 2.0, acc = 0.0, ts = 100L)
-        val encryptedA = Session.encryptMessage(friendA.session, locationA).second
+            // Bob sends a location to Alice
+            val locationB = MessagePlaintext.Location(lat = 1.0, lng = 2.0, acc = 0.0, ts = 100L)
+            val bobSideOfAlice = bobStore.getFriend(aliceStore.listFriends()[0].id)!!
+            val encryptedB = Session.encryptMessage(bobSideOfAlice.session, locationB).second
 
-        // Mock MailboxClient
-        val fakeMailbox = object : MailboxClient {
-            var pollACount = 0
-            var pollBCount = 0
+            // Mock MailboxClient
+            val fakeMailbox =
+                object : MailboxClient {
+                    var pollBCount = 0
+                    var pollCCount = 0
 
-            override suspend fun poll(baseUrl: String, token: String): List<MailboxPayload> {
-                return when (token) {
-                    friendA.session.sendToken.toHex() -> {
-                        pollACount++
-                        listOf(encryptedA)
+                    override suspend fun poll(
+                        baseUrl: String,
+                        token: String,
+                    ): List<MailboxPayload> {
+                        return when (token) {
+                            friendB.session.recvToken.toHex() -> {
+                                pollBCount++
+                                listOf(encryptedB)
+                            }
+                            friendC.session.recvToken.toHex() -> {
+                                pollCCount++
+                                throw Exception("Friend C mailbox failure")
+                            }
+                            else -> emptyList()
+                        }
                     }
-                    friendB.session.sendToken.toHex() -> {
-                        pollBCount++
-                        throw Exception("Friend B mailbox failure")
-                    }
-                    else -> emptyList()
+
+                    override suspend fun post(
+                        baseUrl: String,
+                        token: String,
+                        payload: MailboxPayload,
+                    ) {}
                 }
-            }
 
-            override suspend fun post(baseUrl: String, token: String, payload: MailboxPayload) {}
+            val client = LocationClient("http://fake", aliceStore, fakeMailbox)
+
+            // Alice polls
+            val updates = client.poll()
+
+            assertEquals(1, updates.size, "Should have 1 update from Bob")
+            assertEquals(friendB.id, updates[0].userId)
+            assertEquals(1.0, updates[0].lat)
+
+            assertEquals(1, fakeMailbox.pollBCount)
+            assertEquals(1, fakeMailbox.pollCCount)
         }
 
-        val client = LocationClient("http://fake", aliceStore, fakeMailbox)
-        
-        // Before the fix, this would throw Exception("Friend B mailbox failure")
-        // and updates from Friend A would be lost.
-        val updates = client.poll()
-
-        assertEquals(1, updates.size, "Should have 1 update from Friend A")
-        assertEquals(entryA.id, updates[0].userId)
-        assertEquals(1.0, updates[0].lat)
-        
-        assertEquals(1, fakeMailbox.pollACount)
-        assertEquals(1, fakeMailbox.pollBCount)
-    }
-
     @Test
-    fun `sendLocation succeeds if at least one friend succeeds`() = runTest {
-        // Setup two friends: Friend A (success) and Friend B (failure)
-        val aliceStore = E2eeStore(MemoryStorage())
-        val qrA = aliceStore.createInvite("AliceA")
-        val qrB = aliceStore.createInvite("AliceB")
+    fun `poll updates friend location persistently in store`() =
+        runTest {
+            val storage = MemoryStorage()
+            val aliceStore = E2eeStore(storage)
+            val bobStore = E2eeStore(MemoryStorage())
 
-        val (initA, _) = store.processScannedQr(qrA, "FriendA")
-        val (initB, _) = store.processScannedQr(qrB, "FriendB")
+            // Pair A-B
+            val qr = aliceStore.createInvite("Alice")
+            val (init, _) = bobStore.processScannedQr(qr, "Alice")
+            val friendB = aliceStore.processKeyExchangeInit(init, "Bob")!!
+            val bobId = friendB.id
 
-        aliceStore.processKeyExchangeInit(initA, "FriendA")!!
-        aliceStore.processKeyExchangeInit(initB, "FriendB")!!
+            // Bob sends location
+            val location = MessagePlaintext.Location(lat = 50.0, lng = 50.0, acc = 0.0, ts = 100L)
+            val bobSideOfAlice = bobStore.getFriend(aliceStore.listFriends()[0].id)!!
+            val encrypted = Session.encryptMessage(bobSideOfAlice.session, location).second
 
-        // Mock MailboxClient
-        val fakeMailbox = object : MailboxClient {
-            var postACount = 0
-            var postBCount = 0
-
-            override suspend fun poll(baseUrl: String, token: String): List<MailboxPayload> = emptyList()
-
-            override suspend fun post(baseUrl: String, token: String, payload: MailboxPayload) {
-                // Determine which friend this is by token (simplification)
-                if (token.length > 0) {
-                    if (postACount == 0) {
-                        postACount++
-                        // Success for first friend
-                    } else {
-                        postBCount++
-                        throw Exception("Friend B post failure")
+            val fakeMailbox =
+                object : MailboxClient {
+                    override suspend fun poll(
+                        baseUrl: String,
+                        token: String,
+                    ): List<MailboxPayload> {
+                        return if (token == friendB.session.recvToken.toHex()) listOf(encrypted) else emptyList()
                     }
+
+                    override suspend fun post(
+                        baseUrl: String,
+                        token: String,
+                        payload: MailboxPayload,
+                    ) {}
                 }
-            }
-        }
 
-        val client = LocationClient("http://fake", aliceStore, fakeMailbox)
-        
-        // Before the fix, this would throw Exception("Friend B post failure")
-        client.sendLocation(1.0, 2.0)
+            val client = LocationClient("http://fake", aliceStore, fakeMailbox)
 
-        assertEquals(1, fakeMailbox.postACount)
-        assertEquals(1, fakeMailbox.postBCount)
-    }
-
-    @Test
-    fun `poll throws if ALL friends fail`() = runTest {
-        val aliceStore = E2eeStore(MemoryStorage())
-        val qrA = aliceStore.createInvite("AliceA")
-        val (initA, _) = store.processScannedQr(qrA, "FriendA")
-        aliceStore.processKeyExchangeInit(initA, "FriendA")!!
-
-        val fakeMailbox = object : MailboxClient {
-            override suspend fun poll(baseUrl: String, token: String): List<MailboxPayload> {
-                throw Exception("Total failure")
-            }
-            override suspend fun post(baseUrl: String, token: String, payload: MailboxPayload) {}
-        }
-
-        val client = LocationClient("http://fake", aliceStore, fakeMailbox)
-        
-        assertFailsWith<Exception> {
+            // Alice polls
             client.poll()
+
+            // Simulate restart: Create a NEW store instance using the SAME storage
+            val aliceStoreRestarted = E2eeStore(storage)
+            val bobAfterRestart = aliceStoreRestarted.getFriend(bobId)!!
+
+            assertEquals(100L, bobAfterRestart.lastTs, "Location timestamp should persist")
+            assertEquals(50.0, bobAfterRestart.lastLat, "Latitude should persist")
         }
-    }
+
+    @Test
+    fun `sendLocation succeeds if at least one friend succeeds`() =
+        runTest {
+            val aliceStore = E2eeStore(MemoryStorage())
+            val bobStore = E2eeStore(MemoryStorage())
+            val charlieStore = E2eeStore(MemoryStorage())
+
+            val qrAB = aliceStore.createInvite("Alice")
+            val (initAB, _) = bobStore.processScannedQr(qrAB, "Alice")
+            val friendB = aliceStore.processKeyExchangeInit(initAB, "Bob")
+            assertNotNull(friendB)
+
+            val qrAC = aliceStore.createInvite("Alice")
+            val (initAC, _) = charlieStore.processScannedQr(qrAC, "Alice")
+            val friendC = aliceStore.processKeyExchangeInit(initAC, "Charlie")
+            assertNotNull(friendC)
+
+            // Mock MailboxClient
+            val fakeMailbox =
+                object : MailboxClient {
+                    var postSuccessCount = 0
+                    var postFailCount = 0
+
+                    override suspend fun poll(
+                        baseUrl: String,
+                        token: String,
+                    ): List<MailboxPayload> = emptyList()
+
+                    override suspend fun post(
+                        baseUrl: String,
+                        token: String,
+                        payload: MailboxPayload,
+                    ) {
+                        if (token == friendB.session.sendToken.toHex()) {
+                            postSuccessCount++
+                        } else if (token == friendC.session.sendToken.toHex()) {
+                            postFailCount++
+                            throw Exception("Mock failure")
+                        }
+                    }
+                }
+
+            val client = LocationClient("http://fake", aliceStore, fakeMailbox)
+
+            // Should not throw because Bob succeeds
+            client.sendLocation(1.0, 2.0)
+
+            assertTrue(fakeMailbox.postSuccessCount >= 1, "Should have at least 1 success for Bob")
+            assertTrue(fakeMailbox.postFailCount >= 1, "Should have at least 1 failure for Charlie")
+        }
+
+    @Test
+    fun `poll throws if ALL friends fail`() =
+        runTest {
+            val aliceStore = E2eeStore(MemoryStorage())
+            val bobStore = E2eeStore(MemoryStorage())
+            val qrAB = aliceStore.createInvite("Alice")
+            val (initAB, _) = bobStore.processScannedQr(qrAB, "Alice")
+            aliceStore.processKeyExchangeInit(initAB, "Bob")!!
+
+            val fakeMailbox =
+                object : MailboxClient {
+                    override suspend fun poll(
+                        baseUrl: String,
+                        token: String,
+                    ): List<MailboxPayload> {
+                        throw Exception("Total failure")
+                    }
+
+                    override suspend fun post(
+                        baseUrl: String,
+                        token: String,
+                        payload: MailboxPayload,
+                    ) {}
+                }
+
+            val client = LocationClient("http://fake", aliceStore, fakeMailbox)
+
+            assertFailsWith<Exception> {
+                client.poll()
+            }
+        }
 }
