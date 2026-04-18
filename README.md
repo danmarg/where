@@ -1,4 +1,4 @@
-### 👉Join the [Testers group](https://groups.google.com/g/where-app-testers) to help me publish on the Play Store!👈 
+### 👉Join the [Testers group](https://groups.google.com/g/where-app-testers) to get [early access](https://play.google.com/store/apps/details?id=net.af0.where) (and help me publish on the Play Store)!👈 
 
 # Where
 
