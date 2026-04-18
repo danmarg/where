@@ -190,7 +190,7 @@ open class LocationClient(
         friendId: String,
         lat: Double,
         lng: Double,
-    ) {
+    ) = pollMutex.withLock {
         val ts = currentTimeSeconds()
         val payload = MessagePlaintext.Location(lat = lat, lng = lng, acc = 0.0, ts = ts)
         sendMessageToFriendInternal(friendId, payload)
