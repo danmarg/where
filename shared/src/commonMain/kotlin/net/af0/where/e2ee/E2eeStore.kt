@@ -557,12 +557,17 @@ class E2eeStore(
             // Persistence: we update the store with the latest successfully ratcheted state.
             val hadActivity = decryptedLocations.isNotEmpty() || (anySuccess && currentSession != entry.session)
 
+            val lastLocation = decryptedLocations.filterIsInstance<LocationPlaintext>().lastOrNull()
+
             friends[friendId] =
                 entry.copy(
                     session = currentSession,
                     // Bob becomes confirmed once he receives any valid message from Alice
                     isConfirmed = entry.isConfirmed || anySuccess,
                     lastRecvTs = if (hadActivity) currentTimeSeconds() else entry.lastRecvTs,
+                    lastLat = lastLocation?.lat ?: entry.lastLat,
+                    lastLng = lastLocation?.lng ?: entry.lastLng,
+                    lastTs = lastLocation?.ts ?: entry.lastTs,
                 )
 
             // The recvToken must only change if we had a successful decryption (§7.2).

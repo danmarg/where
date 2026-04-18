@@ -23,6 +23,8 @@ dependencies {
     implementation(libs.jedis)
     implementation(libs.logback.classic)
     testImplementation(libs.ktor.server.test.host)
+    testImplementation(libs.ktor.client.content.negotiation)
+    testImplementation(libs.ktor.serialization.kotlinx.json)
     testImplementation(libs.kotlinx.coroutines.test)
     testImplementation(libs.libsodium.kmp)
     testImplementation(kotlin("test"))

@@ -279,6 +279,268 @@ class E2eeBidirectionalEndToEndTest {
         }
     }
 
+    @Test
+    fun `three party hub and spoke - all four directions work`() {
+        initializeLibsodium()
+
+        val port = 18081
+        val baseUrl = "http://localhost:$port"
+        val server = embeddedServer(Netty, port = port) { module(ServerState()) }
+        server.start(wait = false)
+        try {
+            runBlocking { runThreePartyTest(baseUrl) }
+        } finally {
+            server.stop(gracePeriodMillis = 0, timeoutMillis = 0)
+        }
+    }
+
+    private suspend fun runThreePartyTest(baseUrl: String) {
+        coroutineScope {
+            val aStorage = MemoryE2eeStorage()
+            val bStorage = MemoryE2eeStorage()
+            val cStorage = MemoryE2eeStorage()
+            val aStore = E2eeStore(aStorage)
+            val bStore = E2eeStore(bStorage)
+            val cStore = E2eeStore(cStorage)
+            val aClient = LocationClient(baseUrl, aStore)
+            val bClient = LocationClient(baseUrl, bStore)
+            val cClient = LocationClient(baseUrl, cStore)
+
+            println("\n══ THREE-PARTY TEST ══")
+
+            // Pairing: A (QR creator) ↔ B (scanner)
+            val qrAB = aStore.createInvite("Hub-A")
+            val (initAB, _) = bStore.processScannedQr(qrAB, "B")
+            KtorMailboxClient.post(baseUrl, qrAB.discoveryToken().toHex(), initAB)
+            val aEntryForB = aStore.processKeyExchangeInit(
+                KtorMailboxClient.poll(baseUrl, qrAB.discoveryToken().toHex())
+                    .filterIsInstance<KeyExchangeInitPayload>().first(),
+                "B",
+            )!!
+            val friendIdAB = aEntryForB.id
+
+            // Pairing: A (QR creator) ↔ C (scanner)
+            val qrAC = aStore.createInvite("Hub-A")
+            val (initAC, _) = cStore.processScannedQr(qrAC, "C")
+            KtorMailboxClient.post(baseUrl, qrAC.discoveryToken().toHex(), initAC)
+            val aEntryForC = aStore.processKeyExchangeInit(
+                KtorMailboxClient.poll(baseUrl, qrAC.discoveryToken().toHex())
+                    .filterIsInstance<KeyExchangeInitPayload>().first(),
+                "C",
+            )!!
+            val friendIdAC = aEntryForC.id
+
+            suspend fun stabilize() {
+                var quiet = 0
+                while (quiet < 3) {
+                    val aLen = aClient.poll().size
+                    val bLen = bClient.poll().size
+                    val cLen = cClient.poll().size
+                    val pending =
+                        aStore.listFriends().any { it.outbox != null } ||
+                            bStore.listFriends().any { it.outbox != null } ||
+                            cStore.listFriends().any { it.outbox != null }
+                    if (aLen == 0 && bLen == 0 && cLen == 0 && !pending) quiet++ else quiet = 0
+                    delay(50)
+                }
+            }
+
+            // Initial flush: A has isSendTokenPending=true for both B and C after handshake.
+            // sendLocation posts to prevSendToken for each friend, triggering their DH ratchets.
+            println("THREE-PARTY: Initial flush (A→B and A→C)")
+            aClient.sendLocation(0.0, 0.0)
+            stabilize()
+            println("THREE-PARTY: Tokens stabilized after initial flush")
+
+            // ── A → B and A → C ──────────────────────────────────────
+            println("THREE-PARTY: Testing A → B and A → C")
+            val aLat = 37.7749; val aLng = -122.4194
+            aClient.sendLocation(aLat, aLng)
+            delay(400)
+
+            val bPoll = bClient.poll()
+            val aLocFromB = bPoll.firstOrNull { it.userId == friendIdAB }
+            assertNotNull(aLocFromB, "B should receive A's location (A→B direction)")
+            assertEquals(aLat, aLocFromB.lat, 0.0001)
+            println("✓ A→B: B received A's location")
+
+            val cPoll = cClient.poll()
+            val aLocFromC = cPoll.firstOrNull { it.userId == friendIdAC }
+            assertNotNull(aLocFromC, "C should receive A's location (A→C direction)")
+            assertEquals(aLat, aLocFromC.lat, 0.0001)
+            println("✓ A→C: C received A's location")
+
+            // ── B → A and C → A ──────────────────────────────────────
+            println("THREE-PARTY: Testing B → A and C → A")
+            val bLat = 51.5074; val bLng = -0.1278
+            val cLat = 35.6762; val cLng = 139.6503
+            bClient.sendLocation(bLat, bLng)
+            cClient.sendLocation(cLat, cLng)
+            delay(600)
+
+            var aUpdates = aClient.poll()
+            if (aUpdates.size < 2) {
+                delay(300)
+                aUpdates = aUpdates + aClient.poll()
+            }
+
+            val bLocFromA = aUpdates.firstOrNull { it.userId == friendIdAB }
+            assertNotNull(bLocFromA, "A should receive B's location (B→A direction)")
+            assertEquals(bLat, bLocFromA.lat, 0.0001)
+            println("✓ B→A: A received B's location")
+
+            val cLocFromA = aUpdates.firstOrNull { it.userId == friendIdAC }
+            assertNotNull(cLocFromA, "A should receive C's location (C→A direction)")
+            assertEquals(cLat, cLocFromA.lat, 0.0001)
+            println("✓ C→A: A received C's location")
+
+            stabilize()
+
+            // ── Token integrity ───────────────────────────────────────
+            val finalAB = aStore.getFriend(friendIdAB)!!.session
+            val finalBA = bStore.getFriend(friendIdAB)!!.session
+            val finalAC = aStore.getFriend(friendIdAC)!!.session
+            val finalCA = cStore.getFriend(friendIdAC)!!.session
+
+            val aActiveSendB = if (finalAB.isSendTokenPending) finalAB.prevSendToken else finalAB.sendToken
+            val bActiveSend = if (finalBA.isSendTokenPending) finalBA.prevSendToken else finalBA.sendToken
+            val aActiveSendC = if (finalAC.isSendTokenPending) finalAC.prevSendToken else finalAC.sendToken
+            val cActiveSend = if (finalCA.isSendTokenPending) finalCA.prevSendToken else finalCA.sendToken
+
+            assertContentEquals(aActiveSendB, finalBA.recvToken, "A active send (B-pair) = B recv (final)")
+            assertContentEquals(bActiveSend, finalAB.recvToken, "B active send = A recv B-pair (final)")
+            assertContentEquals(aActiveSendC, finalCA.recvToken, "A active send (C-pair) = C recv (final)")
+            assertContentEquals(cActiveSend, finalAC.recvToken, "C active send = A recv C-pair (final)")
+
+            println("✓ THREE-PARTY: Token integrity verified for both pairs")
+        }
+    }
+
+    @Test
+    fun `concurrent sendLocation and poll do not desync session tokens`() {
+        initializeLibsodium()
+
+        val port = 18082
+        val baseUrl = "http://localhost:$port"
+        val server = embeddedServer(Netty, port = port) { module(ServerState()) }
+        server.start(wait = false)
+        try {
+            runBlocking { runConcurrentSendPollTest(baseUrl) }
+        } finally {
+            server.stop(gracePeriodMillis = 0, timeoutMillis = 0)
+        }
+    }
+
+    private suspend fun runConcurrentSendPollTest(baseUrl: String) {
+        coroutineScope {
+            val aStorage = MemoryE2eeStorage()
+            val bStorage = MemoryE2eeStorage()
+            val aStore = E2eeStore(aStorage)
+            val bStore = E2eeStore(bStorage)
+            val aClient = LocationClient(baseUrl, aStore)
+            val bClient = LocationClient(baseUrl, bStore)
+
+            println("\n══ CONCURRENT SEND+POLL TEST ══")
+
+            val qr = aStore.createInvite("A")
+            val (init, _) = bStore.processScannedQr(qr, "B")
+            KtorMailboxClient.post(baseUrl, qr.discoveryToken().toHex(), init)
+            val aEntry = aStore.processKeyExchangeInit(
+                KtorMailboxClient.poll(baseUrl, qr.discoveryToken().toHex())
+                    .filterIsInstance<KeyExchangeInitPayload>().first(),
+                "B",
+            )!!
+            val friendId = aEntry.id
+
+            // Initial flush
+            aClient.sendLocation(0.0, 0.0)
+            delay(300)
+            bClient.poll()
+            delay(200)
+            aClient.poll()
+
+            // Concurrent stress: sendLocation (no pollMutex) races against poll (holds pollMutex).
+            // This exercises the interleaving between processOutboxes and sendMessageToFriendInternal
+            // for the same friend, which can corrupt isSendTokenPending / sendSeq if not properly
+            // serialized. See LocationClient.sendLocation vs poll/processOutboxes.
+            val random = Random(System.currentTimeMillis())
+            println("CONCURRENT TEST: Running interleaved sends and polls…")
+            withContext(Dispatchers.IO) {
+                val aSend = launch {
+                    repeat(15) {
+                        runCatching {
+                            aClient.sendLocation(
+                                random.nextDouble(-90.0, 90.0),
+                                random.nextDouble(-180.0, 180.0),
+                            )
+                        }
+                        delay(random.nextLong(10, 80))
+                    }
+                }
+                val aPoll = launch {
+                    repeat(30) {
+                        runCatching { aClient.poll() }
+                        delay(random.nextLong(15, 60))
+                    }
+                }
+                val bSend = launch {
+                    repeat(15) {
+                        runCatching {
+                            bClient.sendLocation(
+                                random.nextDouble(-90.0, 90.0),
+                                random.nextDouble(-180.0, 180.0),
+                            )
+                        }
+                        delay(random.nextLong(10, 80))
+                    }
+                }
+                val bPoll = launch {
+                    repeat(30) {
+                        runCatching { bClient.poll() }
+                        delay(random.nextLong(15, 60))
+                    }
+                }
+                aSend.join(); aPoll.join(); bSend.join(); bPoll.join()
+            }
+
+            // Drain all pending messages
+            var quiet = 0
+            while (quiet < 5) {
+                val aLen = aClient.poll().size
+                val bLen = bClient.poll().size
+                val pending =
+                    aStore.listFriends().any { it.outbox != null } ||
+                        bStore.listFriends().any { it.outbox != null }
+                if (aLen == 0 && bLen == 0 && !pending) quiet++ else quiet = 0
+                delay(100)
+            }
+
+            // Token integrity
+            val finalA = aStore.getFriend(friendId)!!.session
+            val finalB = bStore.getFriend(friendId)!!.session
+            val aActiveSend = if (finalA.isSendTokenPending) finalA.prevSendToken else finalA.sendToken
+            val bActiveSend = if (finalB.isSendTokenPending) finalB.prevSendToken else finalB.sendToken
+            assertContentEquals(aActiveSend, finalB.recvToken, "A active send = B recv (after concurrent stress)")
+            assertContentEquals(bActiveSend, finalA.recvToken, "B active send = A recv (after concurrent stress)")
+
+            // Final ping: confirm the channel is still functional end-to-end
+            val pingLat = 12.3456
+            aClient.sendLocation(pingLat, 0.0)
+            delay(500)
+            var bFinal = bClient.poll()
+            if (bFinal.none { it.userId == friendId }) {
+                delay(300)
+                bFinal = bFinal + bClient.poll()
+            }
+            assertNotNull(
+                bFinal.firstOrNull { it.userId == friendId && Math.abs(it.lat - pingLat) < 0.001 },
+                "A→B channel must still work after concurrent stress (token desync would break this)",
+            )
+
+            println("✓ CONCURRENT TEST: Token integrity and channel function verified")
+        }
+    }
+
     private class MemoryE2eeStorage : E2eeStorage {
         private val data = mutableMapOf<String, String>()
 
