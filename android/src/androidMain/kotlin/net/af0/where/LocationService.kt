@@ -9,18 +9,18 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.IBinder
 import android.util.Log
-import androidx.core.content.ContextCompat
 import androidx.annotation.VisibleForTesting
+import androidx.core.content.ContextCompat
 import com.google.android.gms.location.LocationCallback
 import com.google.android.gms.location.LocationRequest
 import com.google.android.gms.location.LocationResult
 import com.google.android.gms.location.LocationServices
 import com.google.android.gms.location.Priority
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
-import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
@@ -274,7 +274,11 @@ class LocationService : Service() {
         try {
             val result = locationClient.pollPendingInvite() ?: return
             val initPayload = result.payload
-            Log.d(TAG, "pollPendingInvite: received KeyExchangeInit from ${initPayload.suggestedName} (multipleScans=${result.multipleScansDetected})")
+            Log.d(
+                TAG,
+                "pollPendingInvite: received KeyExchangeInit from ${initPayload.suggestedName} " +
+                    "(multipleScans=${result.multipleScansDetected})",
+            )
             withContext(Dispatchers.Main) {
                 locationSource.onPendingInit(initPayload, result.multipleScansDetected)
                 updateStatus(null)
