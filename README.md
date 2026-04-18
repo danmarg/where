@@ -1,3 +1,5 @@
+### 👉Join the [Testers group](https://groups.google.com/g/where-app-testers) to help me publish on the Play Store!👈 
+
 # Where
 
 A cross-platform, end-to-end encrypted real-time location sharing app for iOS and Android, built with Kotlin Multiplatform.
