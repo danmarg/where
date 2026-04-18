@@ -18,6 +18,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import com.google.accompanist.permissions.*
 import com.google.android.gms.maps.CameraUpdateFactory
 import com.google.android.gms.maps.model.CameraPosition
@@ -116,6 +117,7 @@ fun MapScreen(
     }
 
     var showFriends by remember { mutableStateOf(false) }
+    var selectedUserId by remember { mutableStateOf<String?>(null) }
     var zoomToUserId by remember { mutableStateOf<String?>(null) }
     var showErrorAlert by remember { mutableStateOf(false) }
     val context = LocalContext.current
@@ -173,27 +175,35 @@ fun MapScreen(
             modifier = Modifier.fillMaxSize(),
             cameraPositionState = cameraPositionState,
             contentPadding = PaddingValues(bottom = 96.dp + navBarBottom),
+            onMapClick = { selectedUserId = null },
         ) {
             ownLocation?.let { own ->
+                val isSelected = selectedUserId == "__own__"
                 key("__own__") {
                     MarkerComposable(
                         state = MarkerState(position = LatLng(own.lat, own.lng)),
                         anchor = Offset(0.5f, 1f),
+                        onClick = {
+                            selectedUserId = if (selectedUserId == "__own__") null else "__own__"
+                            true
+                        }
                     ) {
                         Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                            Surface(
-                                shape = MaterialTheme.shapes.small,
-                                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.9f),
-                                contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
-                                shadowElevation = 2.dp,
-                            ) {
-                                Text(
-                                    text = stringResource(MR.strings.you),
-                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
-                                    style = MaterialTheme.typography.labelSmall,
-                                    maxLines = 1,
-                                    overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
-                                )
+                            if (isSelected) {
+                                Surface(
+                                    shape = MaterialTheme.shapes.small,
+                                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.9f),
+                                    contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    shadowElevation = 2.dp,
+                                ) {
+                                    Text(
+                                        text = stringResource(MR.strings.you),
+                                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                                        style = MaterialTheme.typography.labelSmall,
+                                        maxLines = 1,
+                                        overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                                    )
+                                }
                             }
                             Icon(
                                 imageVector = Icons.Default.Place,
@@ -207,25 +217,41 @@ fun MapScreen(
             }
             users.forEach { user ->
                 val name = friends.find { it.id == user.userId }?.name ?: user.userId.take(8)
-                key(user.userId, name) {
+                val isSelected = selectedUserId == user.userId
+                key(user.userId) {
                     MarkerComposable(
                         state = MarkerState(position = LatLng(user.lat, user.lng)),
                         anchor = Offset(0.5f, 1f),
+                        onClick = {
+                            selectedUserId = if (selectedUserId == user.userId) null else user.userId
+                            true
+                        }
                     ) {
                         Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                            Surface(
-                                shape = MaterialTheme.shapes.small,
-                                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.9f),
-                                contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
-                                shadowElevation = 2.dp,
-                            ) {
-                                Text(
-                                    text = name,
-                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
-                                    style = MaterialTheme.typography.labelSmall,
-                                    maxLines = 1,
-                                    overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
-                                )
+                            if (isSelected) {
+                                Surface(
+                                    shape = MaterialTheme.shapes.small,
+                                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.9f),
+                                    contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    shadowElevation = 2.dp,
+                                ) {
+                                    Column(
+                                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                                        horizontalAlignment = Alignment.CenterHorizontally
+                                    ) {
+                                        Text(
+                                            text = name,
+                                            style = MaterialTheme.typography.labelSmall,
+                                            maxLines = 1,
+                                            overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                                        )
+                                        Text(
+                                            text = timeAgoStringFromMs(friendLastPing[user.userId]),
+                                            style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp),
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
+                                        )
+                                    }
+                                }
                             }
                             Icon(
                                 imageVector = Icons.Default.Place,

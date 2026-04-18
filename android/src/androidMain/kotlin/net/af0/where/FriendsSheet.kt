@@ -39,18 +39,6 @@ import dev.icerock.moko.resources.compose.stringResource
 import net.af0.where.e2ee.FriendEntry
 import net.af0.where.shared.MR
 
-@Composable
-fun timeAgoString(lastPingMs: Long?): String {
-    if (lastPingMs == null) return stringResource(MR.strings.never)
-    val seconds = (System.currentTimeMillis() - lastPingMs) / 1000
-    return when {
-        seconds < 60 -> stringResource(MR.strings.just_now)
-        seconds < 3600 -> stringResource(MR.strings.m_ago, seconds / 60)
-        seconds < 86400 -> stringResource(MR.strings.h_ago, seconds / 3600)
-        else -> stringResource(MR.strings.d_ago, seconds / 86400)
-    }
-}
-
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun FriendsSheet(
@@ -146,7 +134,7 @@ fun FriendsSheet(
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 )
                                 Text(
-                                    timeAgoString(friendLastPing[friend.id]),
+                                    timeAgoStringFromMs(friendLastPing[friend.id]),
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 )

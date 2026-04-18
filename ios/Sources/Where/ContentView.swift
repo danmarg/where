@@ -22,6 +22,7 @@ struct ContentView: View {
             WhereMapView(
                 users: syncService.visibleUsers,
                 friends: syncService.friends,
+                friendLastPing: syncService.friendLastPing,
                 ownLocation: locationManager.location.map {
                     CLLocationCoordinate2D(latitude: $0.coordinate.latitude, longitude: $0.coordinate.longitude)
                 },
