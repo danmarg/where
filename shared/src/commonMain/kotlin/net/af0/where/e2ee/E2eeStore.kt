@@ -311,11 +311,10 @@ class E2eeStore(
                 pendingInvite = null
                 save()
                 entry
-            } catch (e: IllegalArgumentException) {
-                throw e // key_confirmation failure — surface to caller
+            } catch (e: AuthenticationException) {
+                throw e // key_confirmation or token mismatch failure — surface to caller
             } catch (e: Exception) {
-                throw e // XXX
-                // null // transient parse/format error — treat as "not ready yet"
+                throw e // surface other unexpected exceptions
             }
         }
 
@@ -557,7 +556,7 @@ class E2eeStore(
             // Persistence: we update the store with the latest successfully ratcheted state.
             val hadActivity = decryptedLocations.isNotEmpty() || (anySuccess && currentSession != entry.session)
 
-            val lastLocation = decryptedLocations.filterIsInstance<LocationPlaintext>().lastOrNull()
+            val lastLocation = decryptedLocations.lastOrNull()
 
             friends[friendId] =
                 entry.copy(
