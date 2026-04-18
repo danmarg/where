@@ -312,22 +312,24 @@ class E2eeBidirectionalEndToEndTest {
             val qrAB = aStore.createInvite("Hub-A")
             val (initAB, _) = bStore.processScannedQr(qrAB, "B")
             KtorMailboxClient.post(baseUrl, qrAB.discoveryToken().toHex(), initAB)
-            val aEntryForB = aStore.processKeyExchangeInit(
-                KtorMailboxClient.poll(baseUrl, qrAB.discoveryToken().toHex())
-                    .filterIsInstance<KeyExchangeInitPayload>().first(),
-                "B",
-            )!!
+            val aEntryForB =
+                aStore.processKeyExchangeInit(
+                    KtorMailboxClient.poll(baseUrl, qrAB.discoveryToken().toHex())
+                        .filterIsInstance<KeyExchangeInitPayload>().first(),
+                    "B",
+                )!!
             val friendIdAB = aEntryForB.id
 
             // Pairing: A (QR creator) ↔ C (scanner)
             val qrAC = aStore.createInvite("Hub-A")
             val (initAC, _) = cStore.processScannedQr(qrAC, "C")
             KtorMailboxClient.post(baseUrl, qrAC.discoveryToken().toHex(), initAC)
-            val aEntryForC = aStore.processKeyExchangeInit(
-                KtorMailboxClient.poll(baseUrl, qrAC.discoveryToken().toHex())
-                    .filterIsInstance<KeyExchangeInitPayload>().first(),
-                "C",
-            )!!
+            val aEntryForC =
+                aStore.processKeyExchangeInit(
+                    KtorMailboxClient.poll(baseUrl, qrAC.discoveryToken().toHex())
+                        .filterIsInstance<KeyExchangeInitPayload>().first(),
+                    "C",
+                )!!
             val friendIdAC = aEntryForC.id
 
             suspend fun stabilize() {
@@ -354,7 +356,8 @@ class E2eeBidirectionalEndToEndTest {
 
             // ── A → B and A → C ──────────────────────────────────────
             println("THREE-PARTY: Testing A → B and A → C")
-            val aLat = 37.7749; val aLng = -122.4194
+            val aLat = 37.7749
+            val aLng = -122.4194
             aClient.sendLocation(aLat, aLng)
             delay(400)
 
@@ -372,8 +375,10 @@ class E2eeBidirectionalEndToEndTest {
 
             // ── B → A and C → A ──────────────────────────────────────
             println("THREE-PARTY: Testing B → A and C → A")
-            val bLat = 51.5074; val bLng = -0.1278
-            val cLat = 35.6762; val cLng = 139.6503
+            val bLat = 51.5074
+            val bLng = -0.1278
+            val cLat = 35.6762
+            val cLng = 139.6503
             bClient.sendLocation(bLat, bLng)
             cClient.sendLocation(cLat, cLng)
             delay(600)
@@ -445,11 +450,12 @@ class E2eeBidirectionalEndToEndTest {
             val qr = aStore.createInvite("A")
             val (init, _) = bStore.processScannedQr(qr, "B")
             KtorMailboxClient.post(baseUrl, qr.discoveryToken().toHex(), init)
-            val aEntry = aStore.processKeyExchangeInit(
-                KtorMailboxClient.poll(baseUrl, qr.discoveryToken().toHex())
-                    .filterIsInstance<KeyExchangeInitPayload>().first(),
-                "B",
-            )!!
+            val aEntry =
+                aStore.processKeyExchangeInit(
+                    KtorMailboxClient.poll(baseUrl, qr.discoveryToken().toHex())
+                        .filterIsInstance<KeyExchangeInitPayload>().first(),
+                    "B",
+                )!!
             val friendId = aEntry.id
 
             // Initial flush
@@ -466,41 +472,48 @@ class E2eeBidirectionalEndToEndTest {
             val random = Random(System.currentTimeMillis())
             println("CONCURRENT TEST: Running interleaved sends and polls…")
             withContext(Dispatchers.IO) {
-                val aSend = launch {
-                    repeat(15) {
-                        runCatching {
-                            aClient.sendLocation(
-                                random.nextDouble(-90.0, 90.0),
-                                random.nextDouble(-180.0, 180.0),
-                            )
+                val aSend =
+                    launch {
+                        repeat(15) {
+                            runCatching {
+                                aClient.sendLocation(
+                                    random.nextDouble(-90.0, 90.0),
+                                    random.nextDouble(-180.0, 180.0),
+                                )
+                            }
+                            delay(random.nextLong(10, 80))
                         }
-                        delay(random.nextLong(10, 80))
                     }
-                }
-                val aPoll = launch {
-                    repeat(30) {
-                        runCatching { aClient.poll() }
-                        delay(random.nextLong(15, 60))
-                    }
-                }
-                val bSend = launch {
-                    repeat(15) {
-                        runCatching {
-                            bClient.sendLocation(
-                                random.nextDouble(-90.0, 90.0),
-                                random.nextDouble(-180.0, 180.0),
-                            )
+                val aPoll =
+                    launch {
+                        repeat(30) {
+                            runCatching { aClient.poll() }
+                            delay(random.nextLong(15, 60))
                         }
-                        delay(random.nextLong(10, 80))
                     }
-                }
-                val bPoll = launch {
-                    repeat(30) {
-                        runCatching { bClient.poll() }
-                        delay(random.nextLong(15, 60))
+                val bSend =
+                    launch {
+                        repeat(15) {
+                            runCatching {
+                                bClient.sendLocation(
+                                    random.nextDouble(-90.0, 90.0),
+                                    random.nextDouble(-180.0, 180.0),
+                                )
+                            }
+                            delay(random.nextLong(10, 80))
+                        }
                     }
-                }
-                aSend.join(); aPoll.join(); bSend.join(); bPoll.join()
+                val bPoll =
+                    launch {
+                        repeat(30) {
+                            runCatching { bClient.poll() }
+                            delay(random.nextLong(15, 60))
+                        }
+                    }
+                aSend.join()
+                aPoll.join()
+                bSend.join()
+                bPoll.join()
             }
 
             // Drain all pending messages
