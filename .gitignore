@@ -18,3 +18,5 @@ DerivedData/
 .gradle_home/
 holes.sb
 .kotlin/
+android/fastlane/report.xml
+ios/Local.xcconfig
