@@ -158,7 +158,7 @@ open class LocationClient(
         lat: Double,
         lng: Double,
         pausedFriendIds: Set<String> = emptySet(),
-    ) {
+    ) = pollMutex.withLock {
         val ts = currentTimeSeconds()
         val payload = MessagePlaintext.Location(lat = lat, lng = lng, acc = 0.0, ts = ts)
         var successCount = 0
@@ -199,7 +199,7 @@ open class LocationClient(
     /**
      * Send a keepalive message to a friend.
      */
-    internal suspend fun sendKeepalive(friendId: String) {
+    suspend fun sendKeepalive(friendId: String) {
         sendMessageToFriendInternal(friendId, MessagePlaintext.Keepalive())
     }
 
