@@ -30,8 +30,8 @@ private val json =
         ignoreUnknownKeys = true
     }
 
-/** TTL for mailbox messages: 60 minutes. */
-private const val MAILBOX_TTL_MS = 60 * 60 * 1000L
+/** TTL for mailbox messages: 7 days, matching the session staleness threshold. */
+private const val MAILBOX_TTL_MS = 7 * 24 * 60 * 60 * 1000L
 
 /** Maximum messages retained per token. Prevents unbounded memory growth from floods. */
 private const val MAX_QUEUE_DEPTH = 1000
