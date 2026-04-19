@@ -277,7 +277,15 @@ final class LocationSyncService: ObservableObject {
     }
 
     func pollAll(updateUi: Bool = true) async {
-        if isPollInFlight { return }
+        if isPollInFlight {
+            // If a poll has been "in-flight" for longer than Ktor's max timeout + a generous
+            // margin, the OS suspended us mid-coroutine (Kotlin withTimeout doesn't advance
+            // while the process is suspended). Reset and proceed — the stale coroutine will
+            // eventually get an empty mailbox when it resumes, so no data is lost.
+            if Date().timeIntervalSince(lastPollTime) < 90.0 { return }
+            logger.warning("pollAll: resetting stuck isPollInFlight (in-flight for \(Int(Date().timeIntervalSince(self.lastPollTime)))s)")
+            isPollInFlight = false
+        }
         isPollInFlight = true
         lastPollTime = Date()
         logger.debug("Polling for location updates (updateUi=\(updateUi))")
