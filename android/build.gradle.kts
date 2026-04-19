@@ -32,6 +32,7 @@ kotlin {
             implementation(libs.kotlinx.coroutines.test)
             implementation(libs.libsodium.kmp.jvm)
             implementation(libs.moko.resources)
+            implementation(libs.compose.ui.test.junit4)
             implementation("app.cash.turbine:turbine:1.1.0")
         }
     }
@@ -119,4 +120,6 @@ dependencies {
     implementation(libs.zxing.core)
     implementation(libs.zxing.android.embedded)
     implementation(libs.moko.resources.compose)
+
+    debugImplementation(libs.compose.ui.test.manifest)
 }

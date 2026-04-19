@@ -78,6 +78,7 @@ class MainActivity : ComponentActivity() {
                 val connectionStatus by viewModel.connectionStatus.collectAsState()
 
                 var showSimulatorScanner by remember { mutableStateOf(false) }
+                var selectedUserId by remember { mutableStateOf<String?>(null) }
 
                 MapScreen(
                     ownLocation = ownLocation,
@@ -111,6 +112,8 @@ class MainActivity : ComponentActivity() {
                     friendLastPing = friendLastPing,
                     onRenameFriend = { id, name -> viewModel.renameFriend(id, name) },
                     onRemoveFriend = { viewModel.removeFriend(it) },
+                    selectedUserId = selectedUserId,
+                    onSelectedUserIdChange = { selectedUserId = it },
                     onLocationPermissionGranted = ::startLocationService,
                 )
 
