@@ -179,11 +179,11 @@ fun MapScreen(
         ) {
             ownLocation?.let { own ->
                 val isSelected = selectedUserId == "__own__"
-                val markerState = rememberMarkerState(position = LatLng(own.lat, own.lng))
+                val markerState = rememberMarkerState(key = "__own__", position = LatLng(own.lat, own.lng))
                 LaunchedEffect(own.lat, own.lng) {
                     markerState.position = LatLng(own.lat, own.lng)
                 }
-                key("__own__") {
+                key("__own__", isSelected) {
                     MarkerComposable(
                         state = markerState,
                         anchor = Offset(0.5f, 1f),
@@ -220,11 +220,11 @@ fun MapScreen(
             users.forEach { user ->
                 val name = friends.find { it.id == user.userId }?.name ?: user.userId.take(8)
                 val isSelected = selectedUserId == user.userId
-                val markerState = rememberMarkerState(position = LatLng(user.lat, user.lng))
+                val markerState = rememberMarkerState(key = user.userId, position = LatLng(user.lat, user.lng))
                 LaunchedEffect(user.lat, user.lng) {
                     markerState.position = LatLng(user.lat, user.lng)
                 }
-                key(user.userId) {
+                key(user.userId, isSelected) {
                     MarkerComposable(
                         state = markerState,
                         anchor = Offset(0.5f, 1f),
