@@ -51,6 +51,8 @@ fun MapScreen(
     friendLastPing: Map<String, Long>,
     onRenameFriend: (String, String) -> Unit,
     onRemoveFriend: (String) -> Unit,
+    selectedUserId: String?,
+    onSelectedUserIdChange: (String?) -> Unit,
     onLocationPermissionGranted: () -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
@@ -120,7 +122,6 @@ fun MapScreen(
     }
 
     var showFriends by remember { mutableStateOf(false) }
-    var selectedUserId by remember { mutableStateOf<String?>(null) }
     var zoomToUserId by remember { mutableStateOf<String?>(null) }
     var showErrorAlert by remember { mutableStateOf(false) }
     val context = LocalContext.current
@@ -178,7 +179,7 @@ fun MapScreen(
             modifier = Modifier.fillMaxSize(),
             cameraPositionState = cameraPositionState,
             contentPadding = PaddingValues(bottom = 96.dp + navBarBottom),
-            onMapClick = { selectedUserId = null },
+            onMapClick = { onSelectedUserIdChange(null) },
         ) {
             ownLocation?.let { own ->
                 val isSelected = selectedUserId == "__own__"
@@ -192,7 +193,7 @@ fun MapScreen(
                         anchor = Offset(0.5f, 1f),
                         onClick = {
                             scope.launch {
-                                selectedUserId = if (selectedUserId == "__own__") null else "__own__"
+                                onSelectedUserIdChange(if (selectedUserId == "__own__") null else "__own__")
                             }
                             true
                         }
@@ -236,7 +237,7 @@ fun MapScreen(
                         anchor = Offset(0.5f, 1f),
                         onClick = {
                             scope.launch {
-                                selectedUserId = if (selectedUserId == user.userId) null else user.userId
+                                onSelectedUserIdChange(if (selectedUserId == user.userId) null else user.userId)
                             }
                             true
                         }
@@ -382,7 +383,10 @@ fun MapScreen(
             onRename = onRenameFriend,
             onRemove = onRemoveFriend,
             onDismiss = { showFriends = false },
-            onZoomTo = { zoomToUserId = it },
+            onZoomTo = { 
+                zoomToUserId = it 
+                onSelectedUserIdChange(it)
+            },
         )
     }
 
