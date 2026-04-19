@@ -183,7 +183,7 @@ fun MapScreen(
                 LaunchedEffect(own.lat, own.lng) {
                     markerState.position = LatLng(own.lat, own.lng)
                 }
-                key("__own__", isSelected) {
+                key("__own__") {
                     MarkerComposable(
                         state = markerState,
                         anchor = Offset(0.5f, 1f),
@@ -224,7 +224,7 @@ fun MapScreen(
                 LaunchedEffect(user.lat, user.lng) {
                     markerState.position = LatLng(user.lat, user.lng)
                 }
-                key(user.userId, isSelected) {
+                key(user.userId) {
                     MarkerComposable(
                         state = markerState,
                         anchor = Offset(0.5f, 1f),
