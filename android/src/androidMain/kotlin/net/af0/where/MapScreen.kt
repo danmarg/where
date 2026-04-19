@@ -25,6 +25,8 @@ import com.google.android.gms.maps.model.CameraPosition
 import com.google.android.gms.maps.model.LatLng
 import com.google.maps.android.compose.*
 import dev.icerock.moko.resources.compose.stringResource
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import net.af0.where.e2ee.ConnectionStatus
 import net.af0.where.e2ee.FriendEntry
 import net.af0.where.model.UserLocation
@@ -52,6 +54,7 @@ fun MapScreen(
     onLocationPermissionGranted: () -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
+    val scope = rememberCoroutineScope()
     val locationPermissions =
         rememberMultiplePermissionsState(
             listOf(
@@ -183,12 +186,14 @@ fun MapScreen(
                 LaunchedEffect(own.lat, own.lng) {
                     markerState.position = LatLng(own.lat, own.lng)
                 }
-                key("__own__") {
+                key("__own__", isSelected) {
                     MarkerComposable(
                         state = markerState,
                         anchor = Offset(0.5f, 1f),
                         onClick = {
-                            selectedUserId = if (selectedUserId == "__own__") null else "__own__"
+                            scope.launch {
+                                selectedUserId = if (selectedUserId == "__own__") null else "__own__"
+                            }
                             true
                         }
                     ) {
@@ -219,17 +224,20 @@ fun MapScreen(
             }
             users.forEach { user ->
                 val name = friends.find { it.id == user.userId }?.name ?: user.userId.take(8)
+                val timeAgo = timeAgoStringFromMs(friendLastPing[user.userId])
                 val isSelected = selectedUserId == user.userId
                 val markerState = rememberMarkerState(key = user.userId, position = LatLng(user.lat, user.lng))
                 LaunchedEffect(user.lat, user.lng) {
                     markerState.position = LatLng(user.lat, user.lng)
                 }
-                key(user.userId) {
+                key(user.userId, isSelected) {
                     MarkerComposable(
                         state = markerState,
                         anchor = Offset(0.5f, 1f),
                         onClick = {
-                            selectedUserId = if (selectedUserId == user.userId) null else user.userId
+                            scope.launch {
+                                selectedUserId = if (selectedUserId == user.userId) null else user.userId
+                            }
                             true
                         }
                     ) {
@@ -252,7 +260,7 @@ fun MapScreen(
                                         )
                                         if (isSelected) {
                                             Text(
-                                                text = timeAgoStringFromMs(friendLastPing[user.userId]),
+                                                text = timeAgo,
                                                 style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp),
                                                 color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
                                             )
