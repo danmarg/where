@@ -283,6 +283,10 @@ final class LocationSyncService: ObservableObject {
             // while the process is suspended). Reset and proceed — the stale coroutine will
             // eventually get an empty mailbox when it resumes, so no data is lost.
             if Date().timeIntervalSince(lastPollTime) < 90.0 { return }
+            // Safe to clear the local in-flight flag here: this only allows a new Swift-side
+            // poll attempt to be scheduled. Actual poll/send session mutations are still
+            // serialized in shared Kotlin by LocationClient.pollMutex, so the resumed old poll
+            // and the new poll cannot concurrently mutate ratchet state.
             logger.warning("pollAll: resetting stuck isPollInFlight (in-flight for \(Int(Date().timeIntervalSince(self.lastPollTime)))s)")
             isPollInFlight = false
         }
