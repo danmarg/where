@@ -64,6 +64,7 @@ class MainActivity : ComponentActivity() {
         setContent {
             MaterialTheme {
                 val ownLocation by viewModel.ownLocation.collectAsState()
+                val ownHeading by viewModel.ownHeading.collectAsState()
                 val users by viewModel.visibleUsers.collectAsState()
                 val friends by viewModel.friends.collectAsState()
                 val displayName by viewModel.displayName.collectAsState()
@@ -82,6 +83,7 @@ class MainActivity : ComponentActivity() {
 
                 MapScreen(
                     ownLocation = ownLocation,
+                    ownHeading = ownHeading,
                     users = users,
                     friends = friends,
                     displayName = displayName,

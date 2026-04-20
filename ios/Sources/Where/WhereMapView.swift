@@ -7,6 +7,7 @@ struct WhereMapView: UIViewRepresentable {
     let friends: [Shared.FriendEntry]
     let friendLastPing: [String: Date]
     var ownLocation: CLLocationCoordinate2D? = nil
+    var ownHeading: Double? = nil
     var zoomTarget: CLLocationCoordinate2D? = nil
     var onZoomConsumed: () -> Void = {}
     var onSelectFriend: (String) -> Void = { _ in }
@@ -56,8 +57,24 @@ func updateUIView(_ mapView: MKMapView, context: Context) {
         if let own = ownLocation {
             if let existingOwn = existingById[Self.ownAnnotationId] {
                 existingOwn.coordinate = own
+                existingOwn.heading = ownHeading
+                // Manually trigger view update for heading since it's not @objc dynamic
+                if let view = mapView.view(for: existingOwn) {
+                    if let heading = ownHeading {
+                        let arrowImage = UIImage(systemName: "location.north.fill")?
+                            .withTintColor(.systemBlue, renderingMode: .alwaysOriginal)
+                        view.image = arrowImage
+                        view.transform = CGAffineTransform(rotationAngle: CGFloat(heading * .pi / 180.0))
+                    } else {
+                        let circleImage = UIImage(systemName: "circle.fill")?
+                            .withTintColor(.systemBlue, renderingMode: .alwaysOriginal)
+                            .withConfiguration(UIImage.SymbolConfiguration(pointSize: 12))
+                        view.image = circleImage
+                        view.transform = .identity
+                    }
+                }
             } else {
-                mapView.addAnnotation(UserAnnotation(ownCoordinate: own))
+                mapView.addAnnotation(UserAnnotation(ownCoordinate: own, heading: ownHeading))
             }
         }
 
@@ -129,18 +146,39 @@ func updateUIView(_ mapView: MKMapView, context: Context) {
 
         func mapView(_ mapView: MKMapView, viewFor annotation: MKAnnotation) -> MKAnnotationView? {
             guard let userAnnotation = annotation as? UserAnnotation else { return nil }
-            let id = "pin"
+            let id = userAnnotation.isOwn ? "me" : "pin"
+            
+            if userAnnotation.isOwn {
+                let view = mapView.dequeueReusableAnnotationView(withIdentifier: id) ?? MKAnnotationView(annotation: annotation, reuseIdentifier: id)
+                view.annotation = annotation
+                view.canShowCallout = true
+                
+                if let heading = userAnnotation.heading {
+                    // Use a directional arrow for the "me" marker when heading is available
+                    let arrowImage = UIImage(systemName: "location.north.fill")?
+                        .withTintColor(.systemBlue, renderingMode: .alwaysOriginal)
+                    view.image = arrowImage
+                    view.transform = CGAffineTransform(rotationAngle: CGFloat(heading * .pi / 180.0))
+                } else {
+                    // Use a blue dot when heading is not available
+                    let circleImage = UIImage(systemName: "circle.fill")?
+                        .withTintColor(.systemBlue, renderingMode: .alwaysOriginal)
+                        .withConfiguration(UIImage.SymbolConfiguration(pointSize: 12))
+                    view.image = circleImage
+                    view.transform = .identity
+                }
+                return view
+            }
+
             let view = mapView.dequeueReusableAnnotationView(withIdentifier: id) as? MKMarkerAnnotationView
                 ?? MKMarkerAnnotationView(annotation: annotation, reuseIdentifier: id)
             view.annotation = annotation
-            view.markerTintColor = userAnnotation.isOwn ? .systemBlue : .systemRed
-            view.glyphText = userAnnotation.isOwn ? MR.strings().me.localized() : nil
+            view.markerTintColor = .systemRed
+            view.glyphText = nil
             view.canShowCallout = true
 
-            if !userAnnotation.isOwn {
-                let detailButton = UIButton(type: .detailDisclosure)
-                view.rightCalloutAccessoryView = detailButton
-            }
+            let detailButton = UIButton(type: .detailDisclosure)
+            view.rightCalloutAccessoryView = detailButton
 
             return view
         }
@@ -155,6 +193,7 @@ func updateUIView(_ mapView: MKMapView, context: Context) {
 final class UserAnnotation: NSObject, MKAnnotation {
     let userId: String
     @objc dynamic var coordinate: CLLocationCoordinate2D
+    var heading: Double?
     var title: String?
     var subtitle: String?
     let isOwn: Bool
@@ -162,14 +201,16 @@ final class UserAnnotation: NSObject, MKAnnotation {
     init(userId: String, coordinate: CLLocationCoordinate2D, friendName: String, lastPing: Date?) {
         self.userId = userId
         self.coordinate = coordinate
+        self.heading = nil
         self.title = friendName
         self.subtitle = timeAgoString(lastPing)
         self.isOwn = false
     }
 
-    init(ownCoordinate: CLLocationCoordinate2D) {
+    init(ownCoordinate: CLLocationCoordinate2D, heading: Double? = nil) {
         self.userId = "__own__"
         self.coordinate = ownCoordinate
+        self.heading = heading
         self.title = MR.strings().you.localized()
         self.subtitle = nil
         self.isOwn = true

@@ -106,6 +106,10 @@ class LocationViewModel(
             }
         }.stateIn(viewModelScope, SharingStarted.Eagerly, null)
 
+    val ownHeading: StateFlow<Double?> =
+        locationSource.lastLocation.map { it?.third }
+            .stateIn(viewModelScope, SharingStarted.Eagerly, null)
+
     val visibleUsers: StateFlow<List<UserLocation>> =
         friendLocations
             .map { it.values.toList() }

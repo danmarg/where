@@ -84,13 +84,13 @@ class LocationService : Service() {
             object : LocationCallback() {
                 override fun onLocationResult(result: LocationResult) {
                     val loc = result.lastLocation ?: return
-                    locationSource.onLocation(loc.latitude, loc.longitude)
+                    locationSource.onLocation(loc.latitude, loc.longitude, if (loc.hasBearing()) loc.bearing.toDouble() else null)
                 }
             }
 
         try {
             fusedClient.lastLocation.addOnSuccessListener { loc ->
-                if (loc != null) locationSource.onLocation(loc.latitude, loc.longitude)
+                if (loc != null) locationSource.onLocation(loc.latitude, loc.longitude, if (loc.hasBearing()) loc.bearing.toDouble() else null)
             }
         } catch (_: SecurityException) {
         }
@@ -352,7 +352,7 @@ class LocationService : Service() {
                 .addOnSuccessListener { loc ->
                     if (loc != null) {
                         Log.d(TAG, "Forced location fix successful: ${loc.latitude}, ${loc.longitude}")
-                        locationSource.onLocation(loc.latitude, loc.longitude)
+                        locationSource.onLocation(loc.latitude, loc.longitude, if (loc.hasBearing()) loc.bearing.toDouble() else null)
                     }
                 }
                 .addOnFailureListener { e ->

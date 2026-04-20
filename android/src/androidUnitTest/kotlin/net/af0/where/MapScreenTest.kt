@@ -31,6 +31,7 @@ class MapScreenTest {
         composeTestRule.setContent {
             MapScreen(
                 ownLocation = ownLocation,
+                ownHeading = null,
                 users = users,
                 friends = emptyList(),
                 displayName = "Me",
