@@ -219,14 +219,42 @@ fun MapScreen(
                                 }
                             }
                             if (ownHeading != null) {
-                                Icon(
-                                    imageVector = Icons.Default.Navigation,
-                                    contentDescription = null,
-                                    tint = Color.Blue,
-                                    modifier = Modifier
-                                        .size(32.dp)
-                                        .rotate(ownHeading.toFloat()),
-                                )
+                                Box(
+                                    modifier = Modifier.size(48.dp),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    androidx.compose.foundation.Canvas(
+                                        modifier = Modifier
+                                            .fillMaxSize()
+                                            .rotate(ownHeading.toFloat())
+                                    ) {
+                                        val beamPath = androidx.compose.ui.graphics.Path().apply {
+                                            moveTo(size.width / 2, size.height / 2)
+                                            // Create a cone shape
+                                            lineTo(size.width / 2 - 14.dp.toPx(), 0f)
+                                            lineTo(size.width / 2 + 14.dp.toPx(), 0f)
+                                            close()
+                                        }
+                                        drawPath(
+                                            path = beamPath,
+                                            brush = androidx.compose.ui.graphics.Brush.verticalGradient(
+                                                colors = listOf(
+                                                    Color.Blue.copy(alpha = 0.4f),
+                                                    Color.Blue.copy(alpha = 0f)
+                                                ),
+                                                startY = 0f,
+                                                endY = size.height / 2
+                                            )
+                                        )
+                                    }
+                                    Box(
+                                        modifier = Modifier
+                                            .size(14.dp)
+                                            .background(Color.White, CircleShape)
+                                            .padding(2.dp)
+                                            .background(Color.Blue, CircleShape)
+                                    )
+                                }
                             } else {
                                 Box(
                                     modifier = Modifier

@@ -61,10 +61,46 @@ func updateUIView(_ mapView: MKMapView, context: Context) {
                 // Manually trigger view update for heading since it's not @objc dynamic
                 if let view = mapView.view(for: existingOwn) {
                     if let heading = ownHeading {
-                        let arrowImage = UIImage(systemName: "location.north.fill")?
-                            .withTintColor(.systemBlue, renderingMode: .alwaysOriginal)
-                        view.image = arrowImage
-                        view.transform = CGAffineTransform(rotationAngle: CGFloat(heading * .pi / 180.0))
+                        let size: CGFloat = 48
+                        let renderer = UIGraphicsImageRenderer(size: CGSize(width: size, height: size))
+                        view.image = renderer.image { ctx in
+                            let context = ctx.cgContext
+                            let center = CGPoint(x: size / 2, y: size / 2)
+                            
+                            // Cone/Beam
+                            context.saveGState()
+                            context.translateBy(x: center.x, y: center.y)
+                            context.rotate(by: CGFloat(heading * .pi / 180.0))
+                            context.translateBy(x: -center.x, y: -center.y)
+                            
+                            let path = UIBezierPath()
+                            path.move(to: center)
+                            path.addLine(to: CGPoint(x: center.x - 14, y: 0))
+                            path.addLine(to: CGPoint(x: center.x + 14, y: 0))
+                            path.close()
+                            
+                            let colors = [UIColor.systemBlue.withAlphaComponent(0.4).cgColor, UIColor.systemBlue.withAlphaComponent(0).cgColor] as CFArray
+                            let colorSpace = CGColorSpaceCreateDeviceRGB()
+                            let gradient = CGGradient(colorsSpace: colorSpace, colors: colors, locations: [0, 1])!
+                            
+                            context.addPath(path.cgPath)
+                            context.clip()
+                            context.drawLinearGradient(gradient, start: center, end: CGPoint(x: center.x, y: 0), options: [])
+                            
+                            context.restoreGState()
+                            
+                            // Dot
+                            let dotSize: CGFloat = 14
+                            let dotRect = CGRect(x: center.x - dotSize / 2, y: center.y - dotSize / 2, width: dotSize, height: dotSize)
+                            context.setFillColor(UIColor.white.cgColor)
+                            context.fillEllipse(in: dotRect)
+                            
+                            let innerDotSize: CGFloat = 10
+                            let innerDotRect = CGRect(x: center.x - innerDotSize / 2, y: center.y - innerDotSize / 2, width: innerDotSize, height: innerDotSize)
+                            context.setFillColor(UIColor.systemBlue.cgColor)
+                            context.fillEllipse(in: innerDotRect)
+                        }
+                        view.transform = .identity
                     } else {
                         let circleImage = UIImage(systemName: "circle.fill")?
                             .withTintColor(.systemBlue, renderingMode: .alwaysOriginal)
@@ -154,11 +190,46 @@ func updateUIView(_ mapView: MKMapView, context: Context) {
                 view.canShowCallout = true
                 
                 if let heading = userAnnotation.heading {
-                    // Use a directional arrow for the "me" marker when heading is available
-                    let arrowImage = UIImage(systemName: "location.north.fill")?
-                        .withTintColor(.systemBlue, renderingMode: .alwaysOriginal)
-                    view.image = arrowImage
-                    view.transform = CGAffineTransform(rotationAngle: CGFloat(heading * .pi / 180.0))
+                    let size: CGFloat = 48
+                    let renderer = UIGraphicsImageRenderer(size: CGSize(width: size, height: size))
+                    view.image = renderer.image { ctx in
+                        let context = ctx.cgContext
+                        let center = CGPoint(x: size / 2, y: size / 2)
+                        
+                        // Cone/Beam
+                        context.saveGState()
+                        context.translateBy(x: center.x, y: center.y)
+                        context.rotate(by: CGFloat(heading * .pi / 180.0))
+                        context.translateBy(x: -center.x, y: -center.y)
+                        
+                        let path = UIBezierPath()
+                        path.move(to: center)
+                        path.addLine(to: CGPoint(x: center.x - 14, y: 0))
+                        path.addLine(to: CGPoint(x: center.x + 14, y: 0))
+                        path.close()
+                        
+                        let colors = [UIColor.systemBlue.withAlphaComponent(0.4).cgColor, UIColor.systemBlue.withAlphaComponent(0).cgColor] as CFArray
+                        let colorSpace = CGColorSpaceCreateDeviceRGB()
+                        let gradient = CGGradient(colorsSpace: colorSpace, colors: colors, locations: [0, 1])!
+                        
+                        context.addPath(path.cgPath)
+                        context.clip()
+                        context.drawLinearGradient(gradient, start: center, end: CGPoint(x: center.x, y: 0), options: [])
+                        
+                        context.restoreGState()
+                        
+                        // Dot
+                        let dotSize: CGFloat = 14
+                        let dotRect = CGRect(x: center.x - dotSize / 2, y: center.y - dotSize / 2, width: dotSize, height: dotSize)
+                        context.setFillColor(UIColor.white.cgColor)
+                        context.fillEllipse(in: dotRect)
+                        
+                        let innerDotSize: CGFloat = 10
+                        let innerDotRect = CGRect(x: center.x - innerDotSize / 2, y: center.y - innerDotSize / 2, width: innerDotSize, height: innerDotSize)
+                        context.setFillColor(UIColor.systemBlue.cgColor)
+                        context.fillEllipse(in: innerDotRect)
+                    }
+                    view.transform = .identity
                 } else {
                     // Use a blue dot when heading is not available
                     let circleImage = UIImage(systemName: "circle.fill")?
