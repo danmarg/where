@@ -176,6 +176,18 @@ fun MapScreen(
         zoomToUserId = null
     }
 
+    val mapStyleJson = """
+        [
+          {
+            "featureType": "poi",
+            "elementType": "labels",
+            "stylers": [
+              { "visibility": "off" }
+            ]
+          }
+        ]
+    """.trimIndent()
+
     Box(modifier.fillMaxSize()) {
         val navBarBottom = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
         GoogleMap(
@@ -183,93 +195,16 @@ fun MapScreen(
             cameraPositionState = cameraPositionState,
             contentPadding = PaddingValues(bottom = 96.dp + navBarBottom),
             onMapClick = { onSelectedUserIdChange(null) },
+            properties = MapProperties(
+                isMyLocationEnabled = locationPermissions.allPermissionsGranted,
+                mapStyleOptions = com.google.android.gms.maps.model.MapStyleOptions(mapStyleJson),
+            ),
+            uiSettings = MapUiSettings(
+                myLocationButtonEnabled = false,
+                zoomControlsEnabled = false,
+                compassEnabled = false,
+            ),
         ) {
-            ownLocation?.let { own ->
-                val isSelected = selectedUserId == "__own__"
-                key("__own__", isSelected) {
-                    val markerState = rememberMarkerState(key = "__own__", position = LatLng(own.lat, own.lng))
-                    LaunchedEffect(own.lat, own.lng) {
-                        markerState.position = LatLng(own.lat, own.lng)
-                    }
-                    MarkerComposable(
-                        state = markerState,
-                        anchor = Offset(0.5f, 0.5f),
-                        onClick = {
-                            scope.launch {
-                                onSelectedUserIdChange(if (selectedUserId == "__own__") null else "__own__")
-                            }
-                            true
-                        }
-                    ) {
-                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                            if (isSelected) {
-                                Surface(
-                                    shape = MaterialTheme.shapes.small,
-                                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.9f),
-                                    contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    shadowElevation = 2.dp,
-                                ) {
-                                    Text(
-                                        text = stringResource(MR.strings.you),
-                                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
-                                        style = MaterialTheme.typography.labelSmall,
-                                        maxLines = 1,
-                                        overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
-                                    )
-                                }
-                            }
-                            if (ownHeading != null) {
-                                Box(
-                                    modifier = Modifier.size(48.dp),
-                                    contentAlignment = Alignment.Center
-                                ) {
-                                    androidx.compose.foundation.Canvas(
-                                        modifier = Modifier
-                                            .fillMaxSize()
-                                            .rotate(ownHeading.toFloat())
-                                    ) {
-                                        val beamPath = androidx.compose.ui.graphics.Path().apply {
-                                            moveTo(size.width / 2, size.height / 2)
-                                            // Create a cone shape
-                                            lineTo(size.width / 2 - 14.dp.toPx(), 0f)
-                                            lineTo(size.width / 2 + 14.dp.toPx(), 0f)
-                                            close()
-                                        }
-                                        drawPath(
-                                            path = beamPath,
-                                            brush = androidx.compose.ui.graphics.Brush.verticalGradient(
-                                                colors = listOf(
-                                                    Color.Blue.copy(alpha = 0.4f),
-                                                    Color.Blue.copy(alpha = 0f)
-                                                ),
-                                                startY = 0f,
-                                                endY = size.height / 2
-                                            )
-                                        )
-                                    }
-                                    Box(
-                                        modifier = Modifier
-                                            .size(14.dp)
-                                            .background(Color.White, CircleShape)
-                                            .padding(2.dp)
-                                            .background(Color.Blue, CircleShape)
-                                    )
-                                }
-                            } else {
-                                Box(
-                                    modifier = Modifier
-                                        .size(16.dp)
-                                        .background(Color.Blue, CircleShape)
-                                        .padding(2.dp)
-                                        .background(Color.White, CircleShape)
-                                        .padding(2.dp)
-                                        .background(Color.Blue, CircleShape)
-                                )
-                            }
-                        }
-                    }
-                }
-            }
             users.forEach { user ->
                 val name = friends.find { it.id == user.userId }?.name ?: user.userId.take(8)
                 val timeAgo = timeAgoStringFromMs(friendLastPing[user.userId])

@@ -16,7 +16,7 @@ struct WhereMapView: UIViewRepresentable {
 func makeUIView(context: Context) -> MKMapView {
     let mapView = MKMapView()
     mapView.delegate = context.coordinator
-    mapView.showsUserLocation = false
+    mapView.showsUserLocation = true
 
     let defaults = UserDefaults.standard
     let lat = defaults.double(forKey: "map_last_lat")
@@ -42,77 +42,15 @@ func makeUIView(context: Context) -> MKMapView {
 }
 
 func updateUIView(_ mapView: MKMapView, context: Context) {
-    // ... (existing implementation)
         let existing = mapView.annotations.compactMap { $0 as? UserAnnotation }
         let existingById = Dictionary(uniqueKeysWithValues: existing.map { ($0.userId, $0) })
         let newFriendById = Dictionary(uniqueKeysWithValues: users.map { ($0.userId, $0) })
 
-        // Remove stale annotations (own if location gone; friends if no longer present)
+        // Remove stale friend annotations
         let toRemove = existing.filter { ann in
-            ann.isOwn ? ownLocation == nil : newFriendById[ann.userId] == nil
+            !ann.isOwn && newFriendById[ann.userId] == nil
         }
         mapView.removeAnnotations(toRemove)
-
-        // Update or add own pin
-        if let own = ownLocation {
-            if let existingOwn = existingById[Self.ownAnnotationId] {
-                existingOwn.coordinate = own
-                existingOwn.heading = ownHeading
-                // Manually trigger view update for heading since it's not @objc dynamic
-                if let view = mapView.view(for: existingOwn) {
-                    if let heading = ownHeading {
-                        let size: CGFloat = 48
-                        let renderer = UIGraphicsImageRenderer(size: CGSize(width: size, height: size))
-                        view.image = renderer.image { ctx in
-                            let context = ctx.cgContext
-                            let center = CGPoint(x: size / 2, y: size / 2)
-                            
-                            // Cone/Beam
-                            context.saveGState()
-                            context.translateBy(x: center.x, y: center.y)
-                            context.rotate(by: CGFloat(heading * .pi / 180.0))
-                            context.translateBy(x: -center.x, y: -center.y)
-                            
-                            let path = UIBezierPath()
-                            path.move(to: center)
-                            path.addLine(to: CGPoint(x: center.x - 14, y: 0))
-                            path.addLine(to: CGPoint(x: center.x + 14, y: 0))
-                            path.close()
-                            
-                            let colors = [UIColor.systemBlue.withAlphaComponent(0.4).cgColor, UIColor.systemBlue.withAlphaComponent(0).cgColor] as CFArray
-                            let colorSpace = CGColorSpaceCreateDeviceRGB()
-                            let gradient = CGGradient(colorsSpace: colorSpace, colors: colors, locations: [0, 1])!
-                            
-                            context.addPath(path.cgPath)
-                            context.clip()
-                            context.drawLinearGradient(gradient, start: center, end: CGPoint(x: center.x, y: 0), options: [])
-                            
-                            context.restoreGState()
-                            
-                            // Dot
-                            let dotSize: CGFloat = 14
-                            let dotRect = CGRect(x: center.x - dotSize / 2, y: center.y - dotSize / 2, width: dotSize, height: dotSize)
-                            context.setFillColor(UIColor.white.cgColor)
-                            context.fillEllipse(in: dotRect)
-                            
-                            let innerDotSize: CGFloat = 10
-                            let innerDotRect = CGRect(x: center.x - innerDotSize / 2, y: center.y - innerDotSize / 2, width: innerDotSize, height: innerDotSize)
-                            context.setFillColor(UIColor.systemBlue.cgColor)
-                            context.fillEllipse(in: innerDotRect)
-                        }
-                        view.transform = .identity
-                    } else {
-                        let circleImage = UIImage(systemName: "circle.fill")?
-                            .withTintColor(.systemBlue, renderingMode: .alwaysOriginal)
-                            .withConfiguration(UIImage.SymbolConfiguration(pointSize: 12))
-                        view.image = circleImage
-                        view.transform = .identity
-                    }
-                }
-            } else {
-                mapView.addAnnotation(UserAnnotation(ownCoordinate: own, heading: ownHeading))
-            }
-        }
 
         // Group friends by location to handle overlaps
         var locationGroups: [String: [Shared.UserLocation]] = [:]
@@ -181,66 +119,12 @@ func updateUIView(_ mapView: MKMapView, context: Context) {
         }
 
         func mapView(_ mapView: MKMapView, viewFor annotation: MKAnnotation) -> MKAnnotationView? {
-            guard let userAnnotation = annotation as? UserAnnotation else { return nil }
-            let id = userAnnotation.isOwn ? "me" : "pin"
-            
-            if userAnnotation.isOwn {
-                let view = mapView.dequeueReusableAnnotationView(withIdentifier: id) ?? MKAnnotationView(annotation: annotation, reuseIdentifier: id)
-                view.annotation = annotation
-                view.canShowCallout = true
-                
-                if let heading = userAnnotation.heading {
-                    let size: CGFloat = 48
-                    let renderer = UIGraphicsImageRenderer(size: CGSize(width: size, height: size))
-                    view.image = renderer.image { ctx in
-                        let context = ctx.cgContext
-                        let center = CGPoint(x: size / 2, y: size / 2)
-                        
-                        // Cone/Beam
-                        context.saveGState()
-                        context.translateBy(x: center.x, y: center.y)
-                        context.rotate(by: CGFloat(heading * .pi / 180.0))
-                        context.translateBy(x: -center.x, y: -center.y)
-                        
-                        let path = UIBezierPath()
-                        path.move(to: center)
-                        path.addLine(to: CGPoint(x: center.x - 14, y: 0))
-                        path.addLine(to: CGPoint(x: center.x + 14, y: 0))
-                        path.close()
-                        
-                        let colors = [UIColor.systemBlue.withAlphaComponent(0.4).cgColor, UIColor.systemBlue.withAlphaComponent(0).cgColor] as CFArray
-                        let colorSpace = CGColorSpaceCreateDeviceRGB()
-                        let gradient = CGGradient(colorsSpace: colorSpace, colors: colors, locations: [0, 1])!
-                        
-                        context.addPath(path.cgPath)
-                        context.clip()
-                        context.drawLinearGradient(gradient, start: center, end: CGPoint(x: center.x, y: 0), options: [])
-                        
-                        context.restoreGState()
-                        
-                        // Dot
-                        let dotSize: CGFloat = 14
-                        let dotRect = CGRect(x: center.x - dotSize / 2, y: center.y - dotSize / 2, width: dotSize, height: dotSize)
-                        context.setFillColor(UIColor.white.cgColor)
-                        context.fillEllipse(in: dotRect)
-                        
-                        let innerDotSize: CGFloat = 10
-                        let innerDotRect = CGRect(x: center.x - innerDotSize / 2, y: center.y - innerDotSize / 2, width: innerDotSize, height: innerDotSize)
-                        context.setFillColor(UIColor.systemBlue.cgColor)
-                        context.fillEllipse(in: innerDotRect)
-                    }
-                    view.transform = .identity
-                } else {
-                    // Use a blue dot when heading is not available
-                    let circleImage = UIImage(systemName: "circle.fill")?
-                        .withTintColor(.systemBlue, renderingMode: .alwaysOriginal)
-                        .withConfiguration(UIImage.SymbolConfiguration(pointSize: 12))
-                    view.image = circleImage
-                    view.transform = .identity
-                }
-                return view
+            if annotation is MKUserLocation {
+                return nil
             }
-
+            guard let userAnnotation = annotation as? UserAnnotation else { return nil }
+            let id = "pin"
+            
             let view = mapView.dequeueReusableAnnotationView(withIdentifier: id) as? MKMarkerAnnotationView
                 ?? MKMarkerAnnotationView(annotation: annotation, reuseIdentifier: id)
             view.annotation = annotation
