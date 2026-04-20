@@ -52,7 +52,7 @@ targets:
     entitlements:
       path: Sources/Where/Where.entitlements
     settings:
-      PRODUCT_BUNDLE_IDENTIFIER: net.af0.Where
+      PRODUCT_BUNDLE_IDENTIFIER: net.af0.WhereApp
       FRAMEWORK_SEARCH_PATHS: $(inherited) $(SRCROOT)/../shared/build/XCFrameworks/$(CONFIGURATION:lower)
       CODE_SIGN_IDENTITY: Apple Development
       CODE_SIGN_STYLE: Automatic
