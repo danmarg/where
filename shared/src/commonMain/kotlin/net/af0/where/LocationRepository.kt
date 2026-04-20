@@ -18,7 +18,7 @@ import net.af0.where.shared.MR
 
 /** Minimal interface over the shared location state, making it injectable for tests. */
 interface LocationSource {
-    val lastLocation: StateFlow<Pair<Double, Double>?>
+    val lastLocation: StateFlow<Triple<Double, Double, Double?>?>
     val friendLocations: StateFlow<Map<String, UserLocation>>
     val friendLastPing: StateFlow<Map<String, Long>>
     val connectionStatus: StateFlow<ConnectionStatus>
@@ -37,6 +37,7 @@ interface LocationSource {
     fun onLocation(
         lat: Double,
         lng: Double,
+        bearing: Double? = null,
     )
 
     fun onFriendUpdate(
@@ -88,8 +89,8 @@ interface LocationSource {
  * with the LocationViewModel via simple StateFlows.
  */
 object LocationRepository : LocationSource {
-    private val _lastLocation = MutableStateFlow<Pair<Double, Double>?>(null)
-    override val lastLocation: StateFlow<Pair<Double, Double>?> = _lastLocation.asStateFlow()
+    private val _lastLocation = MutableStateFlow<Triple<Double, Double, Double?>?>(null)
+    override val lastLocation: StateFlow<Triple<Double, Double, Double?>?> = _lastLocation.asStateFlow()
 
     private val _friendLocations = MutableStateFlow<Map<String, UserLocation>>(emptyMap())
     override val friendLocations: StateFlow<Map<String, UserLocation>> = _friendLocations.asStateFlow()
@@ -131,8 +132,9 @@ object LocationRepository : LocationSource {
     override fun onLocation(
         lat: Double,
         lng: Double,
+        bearing: Double?,
     ) {
-        _lastLocation.update { Pair(lat, lng) }
+        _lastLocation.update { Triple(lat, lng, bearing) }
     }
 
     override fun onFriendUpdate(

@@ -47,8 +47,8 @@ import kotlin.test.assertTrue
  * TestFakeLocationSource for testing.
  */
 class TestFakeLocationSource : LocationSource {
-    private val _lastLocation = MutableStateFlow<Pair<Double, Double>?>(null)
-    override val lastLocation: StateFlow<Pair<Double, Double>?> = _lastLocation
+    private val _lastLocation = MutableStateFlow<Triple<Double, Double, Double?>?>(null)
+    override val lastLocation: StateFlow<Triple<Double, Double, Double?>?> = _lastLocation
 
     private val _friendLocations = MutableStateFlow<Map<String, UserLocation>>(emptyMap())
     override val friendLocations: StateFlow<Map<String, UserLocation>> = _friendLocations
@@ -96,8 +96,9 @@ class TestFakeLocationSource : LocationSource {
     override fun onLocation(
         lat: Double,
         lng: Double,
+        bearing: Double?,
     ) {
-        _lastLocation.value = lat to lng
+        _lastLocation.value = Triple(lat, lng, bearing)
     }
 
     override fun onFriendUpdate(

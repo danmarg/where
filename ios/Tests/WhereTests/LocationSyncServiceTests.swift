@@ -178,7 +178,7 @@ class LocationSyncServiceTests: XCTestCase {
 
     // MARK: - Timer interval selection
 
-    func testTimerInterval_Foreground_Is60s() async throws {
+    func testTimerInterval_Foreground_Is10s() async throws {
         let mockClient = MockLocationClient()
         service = LocationSyncService(e2eeStore: service.e2eeStore, userStore: service.userStore, locationClient: mockClient, locationProvider: mockLocationProvider)
         service.isInForeground = { true }
@@ -187,8 +187,8 @@ class LocationSyncServiceTests: XCTestCase {
         await service.firePoll()
 
         let interval = await service.targetPollInterval()
-        XCTAssertEqual(interval, 60, accuracy: 0.1,
-                       "Foreground poll interval should be 60s")
+        XCTAssertEqual(interval, 10, accuracy: 0.1,
+                       "Foreground poll interval should be 10s")
     }
 
     func testTimerInterval_Background_Is5min() async throws {

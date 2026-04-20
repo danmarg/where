@@ -28,7 +28,7 @@ class LocationRepositoryTest {
     fun resetRepository() {
         // Reset the repository to a known state before each test
         LocationRepository.reset()
-        LocationRepository.onLocation(0.0, 0.0)
+        LocationRepository.onLocation(0.0, 0.0, null)
     }
 
     @Test
@@ -48,7 +48,7 @@ class LocationRepositoryTest {
     fun testConcurrentLocationUpdates_FinalValueIsValid() =
         runTest {
             val locationCount = 100
-            val submittedLocations = mutableSetOf<Pair<Double, Double>>()
+            val submittedLocations = mutableSetOf<Triple<Double, Double, Double?>>()
 
             // Run on Dispatchers.Default to ensure actual multi-threaded execution on JVM/Native
             withContext(Dispatchers.Default) {
@@ -56,12 +56,12 @@ class LocationRepositoryTest {
                     List(locationCount) { i ->
                         val lat = (i * 0.001).toDouble()
                         val lng = (i * 0.002).toDouble()
-                        val location = Pair(lat, lng)
+                        val location = Triple(lat, lng, null)
                         launch {
                             mutex.withLock {
                                 submittedLocations.add(location)
                             }
-                            LocationRepository.onLocation(lat, lng)
+                            LocationRepository.onLocation(lat, lng, null)
                         }
                     }
                 jobs.joinAll()
@@ -87,8 +87,8 @@ class LocationRepositoryTest {
     fun testConcurrentLocationUpdates_NoTornReads() =
         runTest {
             val locationCount = 100
-            val submittedLocations = mutableSetOf<Pair<Double, Double>>()
-            val observedLocations = mutableSetOf<Pair<Double, Double>?>()
+            val submittedLocations = mutableSetOf<Triple<Double, Double, Double?>>()
+            val observedLocations = mutableSetOf<Triple<Double, Double, Double?>?>()
 
             withContext(Dispatchers.Default) {
                 // Continuously sample the StateFlow while updates are in flight
@@ -109,12 +109,12 @@ class LocationRepositoryTest {
                     List(locationCount) { i ->
                         val lat = (i * 0.001).toDouble()
                         val lng = (i * 0.002).toDouble()
-                        val location = Pair(lat, lng)
+                        val location = Triple(lat, lng, null)
                         launch {
                             mutex.withLock {
                                 submittedLocations.add(location)
                             }
-                            LocationRepository.onLocation(lat, lng)
+                            LocationRepository.onLocation(lat, lng, null)
                         }
                     }
 

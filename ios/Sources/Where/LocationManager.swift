@@ -14,6 +14,7 @@ final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelega
     static let shared = LocationManager()
 
     @Published var location: CLLocation?
+    @Published var heading: Double?
     var lastLocation: CLLocation? { location }
     var locationPublisher: AnyPublisher<CLLocation?, Never> {
         $location.eraseToAnyPublisher()
@@ -43,6 +44,7 @@ final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelega
         m.delegate = self
         m.desiredAccuracy = kCLLocationAccuracyHundredMeters
         m.distanceFilter = 50 // meters — heartbeat timer covers stationary case
+        m.headingFilter = 5 // degrees
     }
 
     func requestPermissionAndStart() {
@@ -66,6 +68,7 @@ final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelega
         manager.pausesLocationUpdatesAutomatically = false
         manager.startUpdatingLocation()
         manager.startMonitoringSignificantLocationChanges()
+        manager.startUpdatingHeading()
     }
 
     nonisolated func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
@@ -82,9 +85,20 @@ final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelega
             self.location = loc
             UserDefaults.standard.set(loc.coordinate.latitude, forKey: Self.lastLatKey)
             UserDefaults.standard.set(loc.coordinate.longitude, forKey: Self.lastLngKey)
-            LocationSyncService.shared.sendLocation(lat: loc.coordinate.latitude, lng: loc.coordinate.longitude)
+            LocationSyncService.shared.sendLocation(lat: loc.coordinate.latitude, lng: loc.coordinate.longitude, heading: self.heading)
             // Ensure we also poll for updates when the OS wakes us for a location fix.
             await LocationSyncService.shared.pollAll(updateUi: false)
+        }
+    }
+
+    nonisolated func locationManager(_ manager: CLLocationManager, didUpdateHeading newHeading: CLHeading) {
+        let trueHeading = newHeading.trueHeading
+        let magneticHeading = newHeading.magneticHeading
+        Task { @MainActor in
+            self.heading = trueHeading >= 0 ? trueHeading : magneticHeading
+            if let loc = self.location {
+                LocationSyncService.shared.sendLocation(lat: loc.coordinate.latitude, lng: loc.coordinate.longitude, heading: self.heading)
+            }
         }
     }
 

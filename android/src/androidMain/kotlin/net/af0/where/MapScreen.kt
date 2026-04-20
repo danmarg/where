@@ -8,12 +8,14 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.LocationOff
 import androidx.compose.material.icons.filled.LocationOn
+import androidx.compose.material.icons.filled.Navigation
 import androidx.compose.material.icons.filled.People
 import androidx.compose.material.icons.filled.Place
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
@@ -36,6 +38,7 @@ import net.af0.where.shared.MR
 @Composable
 fun MapScreen(
     ownLocation: UserLocation?,
+    ownHeading: Double?,
     users: List<UserLocation>,
     friends: List<FriendEntry>,
     displayName: String,
@@ -190,7 +193,7 @@ fun MapScreen(
                     }
                     MarkerComposable(
                         state = markerState,
-                        anchor = Offset(0.5f, 1f),
+                        anchor = Offset(0.5f, 0.5f),
                         onClick = {
                             scope.launch {
                                 onSelectedUserIdChange(if (selectedUserId == "__own__") null else "__own__")
@@ -199,26 +202,42 @@ fun MapScreen(
                         }
                     ) {
                         Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                            Surface(
-                                shape = MaterialTheme.shapes.small,
-                                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.9f),
-                                contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
-                                shadowElevation = 2.dp,
-                            ) {
-                                Text(
-                                    text = stringResource(MR.strings.you),
-                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
-                                    style = MaterialTheme.typography.labelSmall,
-                                    maxLines = 1,
-                                    overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                            if (isSelected) {
+                                Surface(
+                                    shape = MaterialTheme.shapes.small,
+                                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.9f),
+                                    contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    shadowElevation = 2.dp,
+                                ) {
+                                    Text(
+                                        text = stringResource(MR.strings.you),
+                                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                                        style = MaterialTheme.typography.labelSmall,
+                                        maxLines = 1,
+                                        overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                                    )
+                                }
+                            }
+                            if (ownHeading != null) {
+                                Icon(
+                                    imageVector = Icons.Default.Navigation,
+                                    contentDescription = null,
+                                    tint = Color.Blue,
+                                    modifier = Modifier
+                                        .size(32.dp)
+                                        .rotate(ownHeading.toFloat()),
+                                )
+                            } else {
+                                Box(
+                                    modifier = Modifier
+                                        .size(16.dp)
+                                        .background(Color.Blue, CircleShape)
+                                        .padding(2.dp)
+                                        .background(Color.White, CircleShape)
+                                        .padding(2.dp)
+                                        .background(Color.Blue, CircleShape)
                                 )
                             }
-                            Icon(
-                                imageVector = Icons.Default.Place,
-                                contentDescription = null,
-                                tint = Color.Blue,
-                                modifier = Modifier.size(36.dp),
-                            )
                         }
                     }
                 }

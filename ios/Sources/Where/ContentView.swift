@@ -26,6 +26,7 @@ struct ContentView: View {
                 ownLocation: locationManager.location.map {
                     CLLocationCoordinate2D(latitude: $0.coordinate.latitude, longitude: $0.coordinate.longitude)
                 },
+                ownHeading: syncService.ownHeading,
                 zoomTarget: zoomTarget,
                 onZoomConsumed: { zoomTarget = nil },
                 onSelectFriend: { friendId in

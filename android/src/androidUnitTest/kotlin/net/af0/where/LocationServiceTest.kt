@@ -41,8 +41,8 @@ import kotlin.test.assertTrue
  * ServiceFakeLocationSource for testing.
  */
 class ServiceFakeLocationSource : LocationSource {
-    private val _lastLocation = MutableStateFlow<Pair<Double, Double>?>(null)
-    override val lastLocation: StateFlow<Pair<Double, Double>?> = _lastLocation
+    private val _lastLocation = MutableStateFlow<Triple<Double, Double, Double?>?>(null)
+    override val lastLocation: StateFlow<Triple<Double, Double, Double?>?> = _lastLocation
 
     private val _friendLocations = MutableStateFlow<Map<String, UserLocation>>(emptyMap())
     override val friendLocations: StateFlow<Map<String, UserLocation>> = _friendLocations
@@ -94,8 +94,9 @@ class ServiceFakeLocationSource : LocationSource {
     override fun onLocation(
         lat: Double,
         lng: Double,
+        bearing: Double?,
     ) {
-        _lastLocation.value = lat to lng
+        _lastLocation.value = Triple(lat, lng, bearing)
     }
 
     override fun onFriendUpdate(
@@ -346,7 +347,7 @@ class LocationServiceTest {
             val mockClient = io.mockk.mockk<LocationClient>(relaxed = true)
             service.locationClientOverride = mockClient
             fakeLocationSource.setSharingLocation(true)
-            fakeLocationSource.onLocation(1.0, 2.0)
+            fakeLocationSource.onLocation(1.0, 2.0, null)
             controller.create()
 
             val intent =
