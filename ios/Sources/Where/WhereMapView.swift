@@ -122,6 +122,9 @@ func updateUIView(_ mapView: MKMapView, context: Context) {
     final class Coordinator: NSObject, MKMapViewDelegate {
         var hasCentered = false
         var parentView: WhereMapView?
+        private var lastClusterIds: [String] = []
+        private var lastClusterIndex: Int = 0
+        private var isCycling = false
         
         func mapView(_ mapView: MKMapView, regionDidChangeAnimated animated: Bool) {
             let region = mapView.region
@@ -155,13 +158,50 @@ func updateUIView(_ mapView: MKMapView, context: Context) {
                 ?? MKMarkerAnnotationView(annotation: annotation, reuseIdentifier: id)
             view.annotation = annotation
             view.markerTintColor = .systemRed
-            view.glyphText = nil
+            view.glyphText = userAnnotation.title.flatMap { $0.components(separatedBy: " ").first }.map { String($0.prefix(8)) }
+            view.titleVisibility = .hidden
+            view.displayPriority = .required
             view.canShowCallout = true
 
             let detailButton = UIButton(type: .detailDisclosure)
             view.rightCalloutAccessoryView = detailButton
 
             return view
+        }
+
+        func mapView(_ mapView: MKMapView, didSelect view: MKAnnotationView) {
+            guard !isCycling else { return }
+            guard let tapped = view.annotation as? UserAnnotation, !tapped.isOwn else { return }
+
+            let tappedPt = mapView.convert(tapped.coordinate, toPointTo: mapView)
+            let cluster = mapView.annotations
+                .compactMap { $0 as? UserAnnotation }
+                .filter { !$0.isOwn }
+                .filter {
+                    let pt = mapView.convert($0.coordinate, toPointTo: mapView)
+                    let dx = pt.x - tappedPt.x, dy = pt.y - tappedPt.y
+                    return sqrt(dx * dx + dy * dy) < 44
+                }
+                .sorted { $0.userId < $1.userId }
+
+            guard cluster.count > 1 else { lastClusterIds = []; return }
+
+            let clusterIds = cluster.map(\.userId)
+            if clusterIds == lastClusterIds {
+                lastClusterIndex = (lastClusterIndex + 1) % cluster.count
+            } else {
+                // First tap at this cluster — show naturally-selected pin, record state
+                lastClusterIds = clusterIds
+                lastClusterIndex = cluster.firstIndex(where: { $0.userId == tapped.userId }) ?? 0
+                return
+            }
+
+            let target = cluster[lastClusterIndex]
+            guard target.userId != tapped.userId else { return }
+            isCycling = true
+            mapView.deselectAnnotation(tapped, animated: false)
+            mapView.selectAnnotation(target, animated: false)
+            isCycling = false
         }
 
         func mapView(_ mapView: MKMapView, annotationView view: MKAnnotationView, calloutAccessoryControlTapped control: UIControl) {

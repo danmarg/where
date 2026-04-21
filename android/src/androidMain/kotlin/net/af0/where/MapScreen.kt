@@ -250,38 +250,30 @@ fun MapScreen(
                             true
                         }
                     ) {
-                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                                Surface(
-                                    shape = MaterialTheme.shapes.small,
-                                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.9f),
-                                    contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    shadowElevation = 2.dp,
-                                ) {
-                                    Column(
-                                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
-                                        horizontalAlignment = Alignment.CenterHorizontally
-                                    ) {
-                                        Text(
-                                            text = name,
-                                            style = MaterialTheme.typography.labelSmall,
-                                            maxLines = 1,
-                                            overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
-                                        )
-                                        if (isSelected) {
-                                            Text(
-                                                text = timeAgo,
-                                                style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp),
-                                                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
-                                            )
-                                        }
-                                    }
+                        Surface(
+                            shape = MaterialTheme.shapes.small,
+                            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.9f),
+                            contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                            shadowElevation = 2.dp,
+                        ) {
+                            Column(
+                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 3.dp),
+                                horizontalAlignment = Alignment.CenterHorizontally
+                            ) {
+                                Text(
+                                    text = name.split(" ").first(),
+                                    style = MaterialTheme.typography.labelSmall,
+                                    maxLines = 1,
+                                    overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                                )
+                                if (isSelected) {
+                                    Text(
+                                        text = timeAgo,
+                                        style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp),
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
+                                    )
                                 }
-                            Icon(
-                                imageVector = Icons.Default.Place,
-                                contentDescription = null,
-                                tint = Color.Red,
-                                modifier = Modifier.size(36.dp),
-                            )
+                            }
                         }
                     }
                 }
