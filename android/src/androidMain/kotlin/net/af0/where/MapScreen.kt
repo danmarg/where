@@ -141,6 +141,31 @@ fun MapScreen(
 
     val cameraPositionState = rememberCameraPositionState { position = initialPosition }
 
+    val mapLocationSource = remember {
+        object : com.google.android.gms.maps.LocationSource {
+            private var listener: com.google.android.gms.maps.LocationSource.OnLocationChangedListener? = null
+            override fun activate(l: com.google.android.gms.maps.LocationSource.OnLocationChangedListener) { listener = l }
+            override fun deactivate() { listener = null }
+            fun update(loc: UserLocation, heading: Double?) {
+                val androidLoc = android.location.Location("where").apply {
+                    latitude = loc.lat
+                    longitude = loc.lng
+                    time = loc.timestamp * 1000
+                    if (heading != null) {
+                        bearing = heading.toFloat()
+                    }
+                    // Add a default accuracy so the native layer shows the dot clearly
+                    accuracy = 10f
+                }
+                listener?.onLocationChanged(androidLoc)
+            }
+        }
+    }
+
+    LaunchedEffect(ownLocation, ownHeading) {
+        ownLocation?.let { mapLocationSource.update(it, ownHeading) }
+    }
+
     DisposableEffect(Unit) {
         onDispose {
             val pos = cameraPositionState.position
@@ -204,6 +229,7 @@ fun MapScreen(
                 zoomControlsEnabled = false,
                 compassEnabled = false,
             ),
+            locationSource = mapLocationSource,
         ) {
             users.forEach { user ->
                 val name = friends.find { it.id == user.userId }?.name ?: user.userId.take(8)

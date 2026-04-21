@@ -16,7 +16,7 @@ struct WhereMapView: UIViewRepresentable {
 func makeUIView(context: Context) -> MKMapView {
     let mapView = MKMapView()
     mapView.delegate = context.coordinator
-    mapView.showsUserLocation = true
+    mapView.showsUserLocation = false
 
     let defaults = UserDefaults.standard
     let lat = defaults.double(forKey: "map_last_lat")
@@ -46,11 +46,25 @@ func updateUIView(_ mapView: MKMapView, context: Context) {
         let existingById = Dictionary(uniqueKeysWithValues: existing.map { ($0.userId, $0) })
         let newFriendById = Dictionary(uniqueKeysWithValues: users.map { ($0.userId, $0) })
 
-        // Remove stale friend annotations
+        // Remove stale annotations (own if location gone; friends if no longer present)
         let toRemove = existing.filter { ann in
-            !ann.isOwn && newFriendById[ann.userId] == nil
+            ann.isOwn ? ownLocation == nil : newFriendById[ann.userId] == nil
         }
         mapView.removeAnnotations(toRemove)
+
+        // Update or add own pin
+        if let own = ownLocation {
+            if let existingOwn = existingById[Self.ownAnnotationId] {
+                existingOwn.coordinate = own
+                existingOwn.heading = ownHeading
+                // Manually trigger view update for heading
+                if let view = mapView.view(for: existingOwn) as? OwnLocationView {
+                    view.update(heading: ownHeading, mapHeading: mapView.camera.heading)
+                }
+            } else {
+                mapView.addAnnotation(UserAnnotation(ownCoordinate: own, heading: ownHeading))
+            }
+        }
 
         // Group friends by location to handle overlaps
         var locationGroups: [String: [Shared.UserLocation]] = [:]
@@ -116,15 +130,27 @@ func updateUIView(_ mapView: MKMapView, context: Context) {
             defaults.set(region.center.longitude, forKey: "map_last_lng")
             defaults.set(region.span.latitudeDelta, forKey: "map_last_lat_delta")
             defaults.set(region.span.longitudeDelta, forKey: "map_last_lng_delta")
+            // Reapply heading beam when map is rotated so beam stays compass-correct
+            if let ownAnn = mapView.annotations.compactMap({ $0 as? UserAnnotation }).first(where: { $0.isOwn }),
+               let view = mapView.view(for: ownAnn) as? OwnLocationView {
+                view.update(heading: ownAnn.heading, mapHeading: mapView.camera.heading)
+            }
         }
 
         func mapView(_ mapView: MKMapView, viewFor annotation: MKAnnotation) -> MKAnnotationView? {
-            if annotation is MKUserLocation {
-                return nil
-            }
-            guard let userAnnotation = annotation as? UserAnnotation else { return nil }
-            let id = "pin"
+            if annotation is MKUserLocation { return nil }
             
+            guard let userAnnotation = annotation as? UserAnnotation else { return nil }
+            let id = userAnnotation.isOwn ? "me" : "pin"
+            
+            if userAnnotation.isOwn {
+                let view = mapView.dequeueReusableAnnotationView(withIdentifier: id) as? OwnLocationView
+                    ?? OwnLocationView(annotation: annotation, reuseIdentifier: id)
+                view.annotation = annotation
+                view.update(heading: userAnnotation.heading, mapHeading: mapView.camera.heading)
+                return view
+            }
+
             let view = mapView.dequeueReusableAnnotationView(withIdentifier: id) as? MKMarkerAnnotationView
                 ?? MKMarkerAnnotationView(annotation: annotation, reuseIdentifier: id)
             view.annotation = annotation
@@ -169,5 +195,59 @@ final class UserAnnotation: NSObject, MKAnnotation {
         self.title = MR.strings().you.localized()
         self.subtitle = nil
         self.isOwn = true
+    }
+}
+
+final class OwnLocationView: MKAnnotationView {
+    private let beamLayer = CAShapeLayer()
+    private let dotBorderLayer = CAShapeLayer()
+    private let dotLayer = CAShapeLayer()
+
+    override init(annotation: MKAnnotation?, reuseIdentifier: String?) {
+        super.init(annotation: annotation, reuseIdentifier: reuseIdentifier)
+        frame = CGRect(x: 0, y: 0, width: 64, height: 64)
+        centerOffset = .zero
+        setupLayers()
+    }
+
+    required init?(coder: NSCoder) { fatalError() }
+
+    private func setupLayers() {
+        let c = CGPoint(x: 32, y: 32)
+        let path = UIBezierPath()
+        path.move(to: c)
+        path.addLine(to: CGPoint(x: c.x - 24, y: 0))
+        path.addLine(to: CGPoint(x: c.x + 24, y: 0))
+        path.close()
+        beamLayer.path = path.cgPath
+        beamLayer.fillColor = UIColor.systemBlue.withAlphaComponent(0.25).cgColor
+        beamLayer.anchorPoint = CGPoint(x: 0.5, y: 0.5)
+        beamLayer.frame = bounds
+        beamLayer.isHidden = true
+        layer.addSublayer(beamLayer)
+
+        dotBorderLayer.frame = CGRect(x: 24, y: 24, width: 16, height: 16)
+        dotBorderLayer.cornerRadius = 8
+        dotBorderLayer.backgroundColor = UIColor.white.cgColor
+        dotBorderLayer.shadowColor = UIColor.black.cgColor
+        dotBorderLayer.shadowOpacity = 0.3
+        dotBorderLayer.shadowOffset = CGSize(width: 0, height: 1)
+        dotBorderLayer.shadowRadius = 2
+        layer.addSublayer(dotBorderLayer)
+
+        dotLayer.frame = CGRect(x: 26, y: 26, width: 12, height: 12)
+        dotLayer.cornerRadius = 6
+        dotLayer.backgroundColor = UIColor.systemBlue.cgColor
+        layer.addSublayer(dotLayer)
+    }
+
+    func update(heading: Double?, mapHeading: Double) {
+        if let h = heading {
+            beamLayer.isHidden = false
+            let radians = CGFloat((h - mapHeading) * .pi / 180.0)
+            beamLayer.transform = CATransform3DMakeRotation(radians, 0, 0, 1)
+        } else {
+            beamLayer.isHidden = true
+        }
     }
 }
