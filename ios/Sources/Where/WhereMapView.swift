@@ -158,8 +158,8 @@ func updateUIView(_ mapView: MKMapView, context: Context) {
                 ?? MKMarkerAnnotationView(annotation: annotation, reuseIdentifier: id)
             view.annotation = annotation
             view.markerTintColor = .systemRed
-            view.glyphText = userAnnotation.title.flatMap { $0.components(separatedBy: " ").first }.map { String($0.prefix(8)) }
-            view.titleVisibility = .hidden
+            view.glyphText = nil
+            view.titleVisibility = .visible
             view.displayPriority = .required
             view.canShowCallout = true
 
@@ -239,7 +239,7 @@ final class UserAnnotation: NSObject, MKAnnotation {
 }
 
 final class OwnLocationView: MKAnnotationView {
-    private let beamLayer = CAShapeLayer()
+    private let beamLayer = CAGradientLayer()
     private let dotBorderLayer = CAShapeLayer()
     private let dotLayer = CAShapeLayer()
 
@@ -254,16 +254,24 @@ final class OwnLocationView: MKAnnotationView {
 
     private func setupLayers() {
         let c = CGPoint(x: 32, y: 32)
-        let path = UIBezierPath()
-        path.move(to: c)
-        path.addLine(to: CGPoint(x: c.x - 24, y: 0))
-        path.addLine(to: CGPoint(x: c.x + 24, y: 0))
-        path.close()
-        beamLayer.path = path.cgPath
-        beamLayer.fillColor = UIColor.systemBlue.withAlphaComponent(0.25).cgColor
-        beamLayer.anchorPoint = CGPoint(x: 0.5, y: 0.5)
+
+        // Gradient: blue at the dot (center), fading to transparent at the far end (top)
         beamLayer.frame = bounds
+        beamLayer.colors = [UIColor.systemBlue.withAlphaComponent(0.45).cgColor, UIColor.clear.cgColor]
+        beamLayer.startPoint = CGPoint(x: 0.5, y: 0.5)
+        beamLayer.endPoint   = CGPoint(x: 0.5, y: 0.0)
         beamLayer.isHidden = true
+
+        // Narrow cone mask: tip at the dot (center), base fanning out (~35° half-angle)
+        let coneMask = CAShapeLayer()
+        let path = UIBezierPath()
+        path.move(to: c)                                    // tip at dot
+        path.addLine(to: CGPoint(x: c.x - 10, y: 0))       // base left at top
+        path.addLine(to: CGPoint(x: c.x + 10, y: 0))       // base right at top
+        path.close()
+        coneMask.path = path.cgPath
+        beamLayer.mask = coneMask
+
         layer.addSublayer(beamLayer)
 
         dotBorderLayer.frame = CGRect(x: 24, y: 24, width: 16, height: 16)

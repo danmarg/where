@@ -260,6 +260,11 @@ fun MapScreen(
                                 modifier = Modifier.padding(horizontal = 6.dp, vertical = 3.dp),
                                 horizontalAlignment = Alignment.CenterHorizontally
                             ) {
+                                Icon(
+                                    Icons.Default.Place,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(36.dp),
+                                )
                                 Text(
                                     text = name.split(" ").first(),
                                     style = MaterialTheme.typography.labelSmall,
