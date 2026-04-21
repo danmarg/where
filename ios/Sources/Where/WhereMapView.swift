@@ -66,36 +66,21 @@ func updateUIView(_ mapView: MKMapView, context: Context) {
             }
         }
 
-        // Group friends by location to handle overlaps
-        var locationGroups: [String: [Shared.UserLocation]] = [:]
-        for user in users {
-            let key = String(format: "%.6f,%.6f", user.lat, user.lng)
-            locationGroups[key, default: []].append(user)
-        }
-
         // Update existing or add new friend annotations
-        for (_, group) in locationGroups {
-            for (index, user) in group.enumerated() {
-                var coord = CLLocationCoordinate2D(latitude: user.lat, longitude: user.lng)
-                if group.count > 1 {
-                    // Apply a small circular offset if multiple users are at the same spot
-                    let angle = 2.0 * .pi * Double(index) / Double(group.count)
-                    let radius = 0.00005 // Approx 5 meters at the equator
-                    coord.latitude += radius * cos(angle)
-                    coord.longitude += radius * sin(angle)
-                }
-                let friend = friends.first { $0.id == user.userId }
-                let friendName = friend?.name ?? String(user.userId.prefix(8))
-                let lastPing = friendLastPing[user.userId]
-                if let pin = existingById[user.userId] {
-                    pin.coordinate = coord
-                    pin.title = friendName
-                    pin.subtitle = timeAgoString(lastPing)
-                } else {
-                    mapView.addAnnotation(UserAnnotation(userId: user.userId, coordinate: coord, friendName: friendName, lastPing: lastPing))
-                }
+        for user in users {
+            let coord = CLLocationCoordinate2D(latitude: user.lat, longitude: user.lng)
+            let friend = friends.first { $0.id == user.userId }
+            let friendName = friend?.name ?? String(user.userId.prefix(8))
+            let lastPing = friendLastPing[user.userId]
+            if let pin = existingById[user.userId] {
+                pin.trueCoordinate = coord
+                pin.title = friendName
+                pin.subtitle = timeAgoString(lastPing)
+            } else {
+                mapView.addAnnotation(UserAnnotation(userId: user.userId, coordinate: coord, friendName: friendName, lastPing: lastPing))
             }
         }
+        applyScreenOffsets(mapView)
 
         // Zoom to friend if requested, then clear the target so it doesn't re-trigger.
         if let target = zoomTarget {
@@ -110,6 +95,45 @@ func updateUIView(_ mapView: MKMapView, context: Context) {
             let region = MKCoordinateRegion(center: own, latitudinalMeters: 5000, longitudinalMeters: 5000)
             mapView.setRegion(region, animated: true)
             context.coordinator.hasCentered = true
+        }
+    }
+
+    private func applyScreenOffsets(_ mapView: MKMapView) {
+        let threshold: CGFloat = 44
+        let annotations = mapView.annotations.compactMap { $0 as? UserAnnotation }
+
+        struct Pin { var ann: UserAnnotation?; var pt: CGPoint; let fixed: Bool }
+        var pins: [Pin] = []
+        if let own = ownLocation {
+            pins.append(Pin(ann: nil, pt: mapView.convert(own, toPointTo: mapView), fixed: true))
+        }
+        for ann in annotations {
+            pins.append(Pin(ann: ann, pt: mapView.convert(ann.trueCoordinate, toPointTo: mapView), fixed: ann.isOwn))
+        }
+
+        for _ in 0..<5 {
+            for i in pins.indices {
+                guard !pins[i].fixed else { continue }
+                for j in pins.indices where j != i {
+                    let dx = pins[i].pt.x - pins[j].pt.x
+                    let dy = pins[i].pt.y - pins[j].pt.y
+                    var dist = sqrt(dx * dx + dy * dy)
+                    guard dist < threshold else { continue }
+                    if dist < 0.01 { dist = 0.01 }
+                    let push = (threshold - dist) / (pins[j].fixed ? 1 : 2)
+                    pins[i].pt.x += dx / dist * push
+                    pins[i].pt.y += dy / dist * push
+                    if !pins[j].fixed {
+                        pins[j].pt.x -= dx / dist * push
+                        pins[j].pt.y -= dy / dist * push
+                    }
+                }
+            }
+        }
+
+        for pin in pins {
+            guard let ann = pin.ann, !ann.isOwn else { continue }
+            ann.coordinate = mapView.convert(pin.pt, toCoordinateFrom: mapView)
         }
     }
 
@@ -135,6 +159,7 @@ func updateUIView(_ mapView: MKMapView, context: Context) {
                let view = mapView.view(for: ownAnn) as? OwnLocationView {
                 view.update(heading: ownAnn.heading, mapHeading: mapView.camera.heading)
             }
+            parentView?.applyScreenOffsets(mapView)
         }
 
         func mapView(_ mapView: MKMapView, viewFor annotation: MKAnnotation) -> MKAnnotationView? {
@@ -173,7 +198,8 @@ func updateUIView(_ mapView: MKMapView, context: Context) {
 
 final class UserAnnotation: NSObject, MKAnnotation {
     let userId: String
-    @objc dynamic var coordinate: CLLocationCoordinate2D
+    var trueCoordinate: CLLocationCoordinate2D  // server-reported; never modified by spread
+    @objc dynamic var coordinate: CLLocationCoordinate2D  // displayed (may be offset by spread)
     var heading: Double?
     var title: String?
     var subtitle: String?
@@ -181,6 +207,7 @@ final class UserAnnotation: NSObject, MKAnnotation {
 
     init(userId: String, coordinate: CLLocationCoordinate2D, friendName: String, lastPing: Date?) {
         self.userId = userId
+        self.trueCoordinate = coordinate
         self.coordinate = coordinate
         self.heading = nil
         self.title = friendName
@@ -190,6 +217,7 @@ final class UserAnnotation: NSObject, MKAnnotation {
 
     init(ownCoordinate: CLLocationCoordinate2D, heading: Double? = nil) {
         self.userId = "__own__"
+        self.trueCoordinate = ownCoordinate
         self.coordinate = ownCoordinate
         self.heading = heading
         self.title = MR.strings().you.localized()
@@ -199,7 +227,8 @@ final class UserAnnotation: NSObject, MKAnnotation {
 }
 
 final class OwnLocationView: MKAnnotationView {
-    private let beamLayer = CAShapeLayer()
+    private let beamLayer = CAGradientLayer()
+    private let beamMask = CAShapeLayer()
     private let dotBorderLayer = CAShapeLayer()
     private let dotLayer = CAShapeLayer()
 
@@ -213,17 +242,25 @@ final class OwnLocationView: MKAnnotationView {
     required init?(coder: NSCoder) { fatalError() }
 
     private func setupLayers() {
+        // Axial gradient: opaque at dot center, transparent at cone tip.
+        // Mask clips it to a ~35° cone pointing up (before rotation).
+        beamLayer.frame = bounds
+        beamLayer.colors = [UIColor.systemBlue.withAlphaComponent(0).cgColor,
+                            UIColor.systemBlue.withAlphaComponent(0.45).cgColor]
+        beamLayer.startPoint = CGPoint(x: 0.5, y: 0)
+        beamLayer.endPoint = CGPoint(x: 0.5, y: 0.5)
+        beamLayer.isHidden = true
+
         let c = CGPoint(x: 32, y: 32)
         let path = UIBezierPath()
         path.move(to: c)
-        path.addLine(to: CGPoint(x: c.x - 24, y: 0))
-        path.addLine(to: CGPoint(x: c.x + 24, y: 0))
+        // ~17.5° half-angle → 10 px half-width at 32 px distance
+        path.addLine(to: CGPoint(x: c.x - 10, y: 0))
+        path.addLine(to: CGPoint(x: c.x + 10, y: 0))
         path.close()
-        beamLayer.path = path.cgPath
-        beamLayer.fillColor = UIColor.systemBlue.withAlphaComponent(0.25).cgColor
-        beamLayer.anchorPoint = CGPoint(x: 0.5, y: 0.5)
-        beamLayer.frame = bounds
-        beamLayer.isHidden = true
+        beamMask.path = path.cgPath
+        beamLayer.mask = beamMask
+
         layer.addSublayer(beamLayer)
 
         dotBorderLayer.frame = CGRect(x: 24, y: 24, width: 16, height: 16)

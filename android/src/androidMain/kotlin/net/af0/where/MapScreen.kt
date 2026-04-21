@@ -1,5 +1,6 @@
 package net.af0.where
 
+import android.graphics.Point
 import android.os.Build
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -27,12 +28,58 @@ import com.google.android.gms.maps.model.CameraPosition
 import com.google.android.gms.maps.model.LatLng
 import com.google.maps.android.compose.*
 import dev.icerock.moko.resources.compose.stringResource
+import kotlin.math.sqrt
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import net.af0.where.e2ee.ConnectionStatus
 import net.af0.where.e2ee.FriendEntry
 import net.af0.where.model.UserLocation
 import net.af0.where.shared.MR
+
+private fun computeOffsets(
+    users: List<UserLocation>,
+    ownLocation: UserLocation?,
+    projection: com.google.android.gms.maps.Projection,
+    thresholdPx: Float = 44f,
+): Map<String, LatLng> {
+    data class Pin(val userId: String?, var x: Float, var y: Float, val fixed: Boolean)
+
+    val pins = mutableListOf<Pin>()
+    ownLocation?.let {
+        val pt = projection.toScreenLocation(LatLng(it.lat, it.lng))
+        pins += Pin(null, pt.x.toFloat(), pt.y.toFloat(), fixed = true)
+    }
+    for (u in users) {
+        val pt = projection.toScreenLocation(LatLng(u.lat, u.lng))
+        pins += Pin(u.userId, pt.x.toFloat(), pt.y.toFloat(), fixed = false)
+    }
+
+    repeat(5) {
+        for (i in pins.indices) {
+            if (pins[i].fixed) continue
+            for (j in pins.indices) {
+                if (i == j) continue
+                val dx = pins[i].x - pins[j].x
+                val dy = pins[i].y - pins[j].y
+                var dist = sqrt((dx * dx + dy * dy).toDouble()).toFloat()
+                if (dist >= thresholdPx) continue
+                if (dist < 0.01f) dist = 0.01f
+                val push = (thresholdPx - dist) / (if (pins[j].fixed) 1f else 2f)
+                pins[i].x += dx / dist * push
+                pins[i].y += dy / dist * push
+                if (!pins[j].fixed) {
+                    pins[j].x -= dx / dist * push
+                    pins[j].y -= dy / dist * push
+                }
+            }
+        }
+    }
+
+    return pins.filter { it.userId != null }.associate { pin ->
+        val coord = projection.fromScreenLocation(Point(pin.x.toInt(), pin.y.toInt()))
+        pin.userId!! to LatLng(coord.latitude, coord.longitude)
+    }
+}
 
 @OptIn(ExperimentalPermissionsApi::class, ExperimentalMaterial3Api::class)
 @Composable
@@ -141,6 +188,14 @@ fun MapScreen(
 
     val cameraPositionState = rememberCameraPositionState { position = initialPosition }
 
+    val offsetPositions = remember { mutableStateMapOf<String, LatLng>() }
+    LaunchedEffect(users, ownLocation, cameraPositionState.position) {
+        val projection = cameraPositionState.projection ?: return@LaunchedEffect
+        val offsets = computeOffsets(users, ownLocation, projection)
+        offsetPositions.clear()
+        offsetPositions.putAll(offsets)
+    }
+
     val mapLocationSource = remember {
         object : com.google.android.gms.maps.LocationSource {
             private var listener: com.google.android.gms.maps.LocationSource.OnLocationChangedListener? = null
@@ -236,9 +291,10 @@ fun MapScreen(
                 val timeAgo = timeAgoStringFromMs(friendLastPing[user.userId])
                 val isSelected = selectedUserId == user.userId
                 key(user.userId, isSelected) {
-                    val markerState = rememberMarkerState(key = user.userId, position = LatLng(user.lat, user.lng))
-                    LaunchedEffect(user.lat, user.lng) {
-                        markerState.position = LatLng(user.lat, user.lng)
+                    val pos = offsetPositions[user.userId] ?: LatLng(user.lat, user.lng)
+                    val markerState = rememberMarkerState(key = user.userId, position = pos)
+                    LaunchedEffect(pos) {
+                        markerState.position = pos
                     }
                     MarkerComposable(
                         state = markerState,
