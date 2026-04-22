@@ -1,13 +1,16 @@
 package net.af0.where
 
 import android.Manifest
+import android.app.AlarmManager
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
+import android.app.PendingIntent
 import android.app.Service
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.IBinder
+import android.os.SystemClock
 import android.util.Log
 import androidx.annotation.VisibleForTesting
 import androidx.core.content.ContextCompat
@@ -47,6 +50,7 @@ class LocationService : Service() {
     @VisibleForTesting
     internal var locationClientOverride: LocationClient? = null
 
+    private lateinit var alarmManager: AlarmManager
     private lateinit var fusedClient: com.google.android.gms.location.FusedLocationProviderClient
     private lateinit var locationCallback: LocationCallback
     private var isRegistered = false
@@ -71,6 +75,7 @@ class LocationService : Service() {
             return
         }
         startForeground(NOTIFICATION_ID, buildNotification())
+        alarmManager = getSystemService(AlarmManager::class.java)
 
         // Initialise repository sharing state from prefs before starting any collection.
         locationSource.setSharingLocation(UserPrefs.isSharing(this))
@@ -136,6 +141,9 @@ class LocationService : Service() {
         startId: Int,
     ): Int {
         Log.d(TAG, "onStartCommand: isRegistered=$isRegistered")
+        if (intent?.action == ACTION_POLL_ALARM) {
+            locationSource.wakePoll()
+        }
         if (intent?.action == ACTION_FORCE_PUBLISH) {
             val friendId = intent.getStringExtra(EXTRA_FRIEND_ID)
             if (friendId != null) {
@@ -165,6 +173,7 @@ class LocationService : Service() {
             LocationRequest.Builder(Priority.PRIORITY_BALANCED_POWER_ACCURACY, 30_000L)
                 .setMinUpdateIntervalMillis(15_000L)
                 .setMinUpdateDistanceMeters(10f)
+                .setMaxUpdateDelayMillis(60_000L)
                 .build()
 
         try {
@@ -182,6 +191,7 @@ class LocationService : Service() {
         fusedClient.removeLocationUpdates(locationCallback)
         isRegistered = false
         pendingFriendSends.close()
+        cancelDozeAlarm()
         serviceScope.cancel()
         super.onDestroy()
     }
@@ -233,8 +243,23 @@ class LocationService : Service() {
                     }
                 }
             }
-            locationSource.awaitPollWake(pollInterval(rapid, inForeground, isSharing))
+            val interval = pollInterval(rapid, inForeground, isSharing)
+            if (interval >= 5 * 60 * 1000L) scheduleDozeAlarm(interval)
+            locationSource.awaitPollWake(interval)
+            cancelDozeAlarm()
         }
+    }
+
+    private fun scheduleDozeAlarm(delayMs: Long) {
+        val intent = Intent(this, LocationService::class.java).apply { action = ACTION_POLL_ALARM }
+        val pi = PendingIntent.getService(this, 0, intent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+        alarmManager.setAndAllowWhileIdle(AlarmManager.ELAPSED_REALTIME_WAKEUP, SystemClock.elapsedRealtime() + delayMs, pi)
+    }
+
+    private fun cancelDozeAlarm() {
+        val intent = Intent(this, LocationService::class.java).apply { action = ACTION_POLL_ALARM }
+        val pi = PendingIntent.getService(this, 0, intent, PendingIntent.FLAG_NO_CREATE or PendingIntent.FLAG_IMMUTABLE)
+        if (pi != null) alarmManager.cancel(pi)
     }
 
     @VisibleForTesting
@@ -401,6 +426,7 @@ class LocationService : Service() {
     }
 
     companion object {
+        const val ACTION_POLL_ALARM = "net.af0.where.ACTION_POLL_ALARM"
         const val ACTION_FORCE_PUBLISH = "net.af0.where.ACTION_FORCE_PUBLISH"
         const val EXTRA_FRIEND_ID = "friend_id"
 
