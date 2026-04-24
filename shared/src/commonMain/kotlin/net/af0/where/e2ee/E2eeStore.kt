@@ -470,6 +470,7 @@ class E2eeStore(
     data class PollBatchResult(
         val decryptedLocations: List<LocationPlaintext>,
         val outgoing: List<OutgoingMessage>,
+        val anySuccess: Boolean,
     )
 
     /**
@@ -555,7 +556,13 @@ class E2eeStore(
                 }
             }
             val tokenChanged = !currentSession.recvToken.contentEquals(entry.session.recvToken)
-            println("[E2eeStore] processBatch: friend=${friendId.take(8)} token=${recvToken.take(8)} total=${sortedMessagesWithHeaders.size} ok=${anySuccess} locs=${decryptedLocations.size} fails=$failCount tokenChanged=$tokenChanged")
+            println(
+                "[E2eeStore] processBatch: friend=${friendId.take(
+                    8,
+                )} token=${recvToken.take(
+                    8,
+                )} total=${sortedMessagesWithHeaders.size} ok=$anySuccess locs=${decryptedLocations.size} fails=$failCount tokenChanged=$tokenChanged",
+            )
 
             // Persistence: we update the store with the latest successfully ratcheted state.
             val hadActivity = decryptedLocations.isNotEmpty() || (anySuccess && currentSession != entry.session)
@@ -579,7 +586,7 @@ class E2eeStore(
             }
 
             save()
-            PollBatchResult(decryptedLocations, outgoing)
+            PollBatchResult(decryptedLocations, outgoing, anySuccess)
         }
 
     private fun sanitizeName(name: String): String {

@@ -4,6 +4,7 @@ import io.ktor.server.engine.*
 import io.ktor.server.netty.*
 import kotlinx.coroutines.*
 import net.af0.where.e2ee.*
+import net.af0.where.e2ee.PROTOCOL_VERSION
 import kotlin.random.Random
 import kotlin.test.*
 
@@ -704,6 +705,111 @@ class E2eeBidirectionalEndToEndTest {
             assertContentEquals(bActiveSend, finalA.recvToken, "B active send = A recv (after recovery)")
             println("✓ Token invariant holds after full recovery")
             println("══ FINALIZE-TRANSITION KEEPALIVE FAILURE TEST PASSED ══")
+        }
+    }
+
+    @Test
+    fun `poll does not ACK when all messages fail decryption`() {
+        initializeLibsodium()
+
+        val port = 18084
+        val baseUrl = "http://localhost:$port"
+        val server = embeddedServer(Netty, port = port) { module(ServerState()) }
+        server.start(wait = false)
+        try {
+            runBlocking { runNoAckOnAllFailureTest(baseUrl) }
+        } finally {
+            server.stop(gracePeriodMillis = 0, timeoutMillis = 0)
+        }
+    }
+
+    private suspend fun runNoAckOnAllFailureTest(baseUrl: String) {
+        coroutineScope {
+            val aStorage = MemoryE2eeStorage()
+            val bStorage = MemoryE2eeStorage()
+            val aStore = E2eeStore(aStorage)
+            val bStore = E2eeStore(bStorage)
+
+            // Pair and stabilize
+            val qr = aStore.createInvite("A")
+            val (init, _) = bStore.processScannedQr(qr, "B")
+            KtorMailboxClient.post(baseUrl, qr.discoveryToken().toHex(), init)
+            val aEntry =
+                aStore.processKeyExchangeInit(
+                    KtorMailboxClient.poll(baseUrl, qr.discoveryToken().toHex())
+                        .filterIsInstance<KeyExchangeInitPayload>().first(),
+                    "B",
+                )!!
+            val friendId = aEntry.id
+
+            val aClient = LocationClient(baseUrl, aStore)
+            val bClient = LocationClient(baseUrl, bStore)
+            aClient.sendLocation(0.0, 0.0)
+            var quiet = 0
+            while (quiet < 3) {
+                val aLen = aClient.poll().size
+                val bLen = bClient.poll().size
+                val pending =
+                    aStore.listFriends().any { it.outbox != null } ||
+                        bStore.listFriends().any { it.outbox != null }
+                if (aLen == 0 && bLen == 0 && !pending) quiet++ else quiet = 0
+                delay(50)
+            }
+
+            // Post a garbage EncryptedMessagePayload to A's recvToken.
+            // The envelope bytes are random noise — AEAD decryption will fail,
+            // so processBatch returns anySuccess=false.
+            val aRecvToken = aStore.getFriend(friendId)!!.session.recvToken.toHex()
+            val garbageMsg =
+                EncryptedMessagePayload(
+                    v = PROTOCOL_VERSION,
+                    // envelope must be ≥ 77 bytes (12 nonce + 16 tag + 49 plaintext) to pass size check
+                    envelope = ByteArray(80) { (it * 37 + 13).toByte() },
+                    ct = ByteArray(64) { (it * 7 + 5).toByte() },
+                )
+            KtorMailboxClient.post(baseUrl, aRecvToken, garbageMsg)
+
+            // Confirm the message is on the server before A polls
+            assertEquals(1, KtorMailboxClient.poll(baseUrl, aRecvToken).size, "garbage message should be present before poll")
+
+            // Track ACK calls with a counting wrapper
+            var ackCallCount = 0
+            val trackingClient =
+                object : MailboxClient {
+                    override suspend fun post(
+                        baseUrl: String,
+                        token: String,
+                        payload: MailboxPayload,
+                    ) = KtorMailboxClient.post(baseUrl, token, payload)
+
+                    override suspend fun poll(
+                        baseUrl: String,
+                        token: String,
+                    ) = KtorMailboxClient.poll(baseUrl, token)
+
+                    override suspend fun ack(
+                        baseUrl: String,
+                        token: String,
+                        count: Int,
+                    ) {
+                        ackCallCount++
+                        KtorMailboxClient.ack(baseUrl, token, count)
+                    }
+                }
+            val aClientTracking = LocationClient(baseUrl, aStore, trackingClient)
+
+            // A polls — garbage message fails decryption → anySuccess=false → ACK must be suppressed
+            aClientTracking.poll()
+
+            assertEquals(0, ackCallCount, "ACK must NOT be sent when all messages fail decryption")
+
+            // The garbage message must still be on the server (was not ACKed away)
+            assertEquals(
+                1,
+                KtorMailboxClient.poll(baseUrl, aRecvToken).size,
+                "garbage message must remain on server after failed-decryption poll",
+            )
+            println("✓ NO-ACK-ON-FAILURE: ACK correctly suppressed; garbage message preserved on server")
         }
     }
 
