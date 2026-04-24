@@ -247,7 +247,7 @@ fun MapScreen(
                 val name = friends.find { it.id == user.userId }?.name ?: user.userId.take(8)
                 val timeAgo = timeAgoStringFromMs(friendLastPing[user.userId])
                 val isSelected = selectedUserId == user.userId
-                key(user.userId, isSelected) {
+                key(user.userId, isSelected, name) {
                     val markerState = rememberMarkerState(key = user.userId, position = LatLng(user.lat, user.lng))
                     LaunchedEffect(user.lat, user.lng) {
                         markerState.position = LatLng(user.lat, user.lng)

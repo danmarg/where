@@ -114,11 +114,16 @@ open class LocationClient(
                 val result = store.processBatch(friendId, currentTokenToPoll, messages) ?: break
 
                 // ACK after durable save: tell the server to delete the messages we just processed.
-                // Non-fatal: if ACK fails, messages remain and will be re-processed idempotently.
-                try {
-                    mailboxClient.ack(baseUrl, currentTokenToPoll, messages.size)
-                } catch (e: Exception) {
-                    println("[LocationClient] pollFriend: ACK failed for ${friendId.take(8)}: ${e.message}")
+                // Only ACK if at least one message succeeded — if all failed, the batch may contain
+                // a legitimate ratchet message we can't yet decrypt, and deleting it would cause
+                // a permanent token desync. Non-fatal: if ACK fails, messages remain and will be
+                // re-processed idempotently.
+                if (result.anySuccess) {
+                    try {
+                        mailboxClient.ack(baseUrl, currentTokenToPoll, messages.size)
+                    } catch (e: Exception) {
+                        println("[LocationClient] pollFriend: ACK failed for ${friendId.take(8)}: ${e.message}")
+                    }
                 }
 
                 for (out in result.outgoing) {

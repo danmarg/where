@@ -215,8 +215,8 @@ final class UserAnnotation: NSObject, MKAnnotation {
     let userId: String
     @objc dynamic var coordinate: CLLocationCoordinate2D
     var heading: Double?
-    var title: String?
-    var subtitle: String?
+    @objc dynamic var title: String?
+    @objc dynamic var subtitle: String?
     let isOwn: Bool
 
     init(userId: String, coordinate: CLLocationCoordinate2D, friendName: String, lastPing: Date?) {
