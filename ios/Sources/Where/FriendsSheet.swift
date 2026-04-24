@@ -19,6 +19,7 @@ struct FriendsSheet: View {
     @State private var newFriendName: String = ""
     @State private var showPasteField = false
     @State private var pastedUrl = ""
+    @State private var debugExpandedFriendId: String? = nil
 
     var body: some View {
         NavigationStack {
@@ -50,51 +51,59 @@ struct FriendsSheet: View {
                 if !friends.isEmpty {
                     Section(MR.strings().friends.localized() + " (\(friends.count))") {
                         ForEach(friends, id: \.id) { friend in
-                            HStack {
-                                VStack(alignment: .leading, spacing: 2) {
-                                    let pendingText = "(" + MR.strings().pending.localized() + ")"
-                                    let displayName = friend.isConfirmed ? friend.name : "\(friend.name) \(pendingText)"
-                                    Text(displayName)
-                                        .font(.body)
-                                    Text(friend.safetyNumber)
-                                        .font(.caption2)
-                                        .fontDesign(.monospaced)
-                                        .foregroundStyle(.secondary)
-                                    Text(timeAgoString(lastPingTimes[friend.id]))
-                                        .font(.caption)
-                                        .foregroundStyle(.secondary)
-                                    if friend.isStale {
-                                        Text(MR.strings().friend_inactive_warning.localized())
+                            VStack(alignment: .leading, spacing: 0) {
+                                HStack {
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        let pendingText = "(" + MR.strings().pending.localized() + ")"
+                                        let displayName = friend.isConfirmed ? friend.name : "\(friend.name) \(pendingText)"
+                                        Text(displayName)
+                                            .font(.body)
+                                        Text(friend.safetyNumber)
+                                            .font(.caption2)
+                                            .fontDesign(.monospaced)
+                                            .foregroundStyle(.secondary)
+                                        Text(timeAgoString(lastPingTimes[friend.id]))
                                             .font(.caption)
-                                            .foregroundStyle(.red)
+                                            .foregroundStyle(.secondary)
+                                        if friend.isStale {
+                                            Text(MR.strings().friend_inactive_warning.localized())
+                                                .font(.caption)
+                                                .foregroundStyle(.red)
+                                        }
                                     }
-                                }
-                                Spacer()
-                                
-                                Button {
-                                    friendToRename = friend
-                                    newFriendName = friend.name
-                                } label: {
-                                    Image(systemName: "pencil")
-                                        .font(.title3)
-                                        .foregroundStyle(.gray)
-                                }
-                                .buttonStyle(.plain)
+                                    Spacer()
 
-                                let isPaused = pausedFriendIds.contains(friend.id)
-                                Button {
-                                    onTogglePause(friend.id)
-                                } label: {
-                                    Image(systemName: isPaused ? "play.circle" : "pause.circle")
-                                        .font(.title3)
-                                        .foregroundStyle(isPaused ? .blue : .gray)
+                                    Button {
+                                        friendToRename = friend
+                                        newFriendName = friend.name
+                                    } label: {
+                                        Image(systemName: "pencil")
+                                            .font(.title3)
+                                            .foregroundStyle(.gray)
+                                    }
+                                    .buttonStyle(.plain)
+
+                                    let isPaused = pausedFriendIds.contains(friend.id)
+                                    Button {
+                                        onTogglePause(friend.id)
+                                    } label: {
+                                        Image(systemName: isPaused ? "play.circle" : "pause.circle")
+                                            .font(.title3)
+                                            .foregroundStyle(isPaused ? .blue : .gray)
+                                    }
+                                    .buttonStyle(.plain)
                                 }
-                                .buttonStyle(.plain)
+                                if debugExpandedFriendId == friend.id {
+                                    FriendDebugView(friend: friend)
+                                }
                             }
                             .contentShape(Rectangle())
                             .onTapGesture { onZoomTo(friend.id) }
+                            .onLongPressGesture {
+                                debugExpandedFriendId = debugExpandedFriendId == friend.id ? nil : friend.id
+                            }
                             .swipeActions {
-                                Button(MR.strings().remove.localized(), role: .destructive) { 
+                                Button(MR.strings().remove.localized(), role: .destructive) {
                                     friendToRemove = friend
                                 }
                             }
@@ -135,5 +144,25 @@ struct FriendsSheet: View {
                 }
             }
         }
+    }
+}
+
+private struct FriendDebugView: View {
+    let friend: Shared.FriendEntry
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            let recvTs = friend.lastRecvTs
+            let sentTs = friend.lastSentTs
+            let recvToken = toHex(friend.session.recvToken).prefix(8)
+            let sendToken = toHex(friend.session.sendToken).prefix(8)
+            Text("recv: \(timeAgoStringFromSeconds(recvTs))  sent: \(timeAgoStringFromSeconds(sentTs))")
+            Text("recvTok: \(recvToken)  sendTok: \(sendToken)")
+            Text("needsRatchet: \(friend.session.needsRatchet ? "YES" : "no")  sendPending: \(friend.session.isSendTokenPending ? "YES" : "no")")
+        }
+        .font(.caption2)
+        .fontDesign(.monospaced)
+        .foregroundStyle(.secondary)
+        .padding(.vertical, 2)
     }
 }
