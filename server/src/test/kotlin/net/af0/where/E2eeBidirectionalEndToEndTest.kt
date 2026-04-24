@@ -554,6 +554,159 @@ class E2eeBidirectionalEndToEndTest {
         }
     }
 
+    @Test
+    fun `finalizeTokenTransition keepalive failure recovers on next send`() {
+        initializeLibsodium()
+
+        val port = 18083
+        val baseUrl = "http://localhost:$port"
+        val server = embeddedServer(Netty, port = port) { module(ServerState()) }
+        server.start(wait = false)
+        try {
+            runBlocking { runFinalizeTransitionFailureTest(baseUrl) }
+        } finally {
+            server.stop(gracePeriodMillis = 0, timeoutMillis = 0)
+        }
+    }
+
+    private suspend fun runFinalizeTransitionFailureTest(baseUrl: String) {
+        coroutineScope {
+            val aStorage = MemoryE2eeStorage()
+            val bStorage = MemoryE2eeStorage()
+            val aStore = E2eeStore(aStorage)
+            val bStore = E2eeStore(bStorage)
+            val aClient = LocationClient(baseUrl, aStore)
+            val bClient = LocationClient(baseUrl, bStore)
+
+            println("\n══ FINALIZE-TRANSITION KEEPALIVE FAILURE TEST ══")
+
+            // Pair and do initial flush so both sides are stable
+            val qr = aStore.createInvite("A")
+            val (init, _) = bStore.processScannedQr(qr, "B")
+            KtorMailboxClient.post(baseUrl, qr.discoveryToken().toHex(), init)
+            val aEntry =
+                aStore.processKeyExchangeInit(
+                    KtorMailboxClient.poll(baseUrl, qr.discoveryToken().toHex())
+                        .filterIsInstance<KeyExchangeInitPayload>().first(),
+                    "B",
+                )!!
+            val friendId = aEntry.id
+
+            aClient.sendLocation(0.0, 0.0)
+            var quiet = 0
+            while (quiet < 3) {
+                val aLen = aClient.poll().size
+                val bLen = bClient.poll().size
+                val pending =
+                    aStore.listFriends().any { it.outbox != null } ||
+                        bStore.listFriends().any { it.outbox != null }
+                if (aLen == 0 && bLen == 0 && !pending) quiet++ else quiet = 0
+                delay(50)
+            }
+            println("Initial flush complete — both sides stable")
+
+            // B sends a location; A polls to receive it, triggering A's send-token ratchet.
+            bClient.sendLocation(10.0, 20.0)
+            delay(200)
+            aClient.poll()
+            delay(100)
+
+            val aSessionMid = aStore.getFriend(friendId)!!.session
+            println("After B→A send: A needsRatchet=${aSessionMid.needsRatchet} isSendTokenPending=${aSessionMid.isSendTokenPending}")
+
+            // isSendTokenPending=true means A's send side ratcheted. A's next send will go to
+            // prevSendToken (the transition message), then finalizeTokenTransition tries to post
+            // a keepalive to sendToken. We want to fail that keepalive persistently.
+            val tokenToFail = aSessionMid.sendToken.toHex()
+            println("Will permanently fail POSTs to ${tokenToFail.take(8)}... (A's new sendToken)")
+
+            // Failing client: drops all POSTs to A's new sendToken (simulates a persistent
+            // network failure for the finalizeTokenTransition keepalive, and any subsequent
+            // outbox retry for that keepalive).
+            val failingMailboxClient =
+                object : MailboxClient {
+                    override suspend fun post(
+                        baseUrl: String,
+                        token: String,
+                        payload: MailboxPayload,
+                    ) {
+                        if (token == tokenToFail) {
+                            println("  [FailingMailbox] dropping POST to ${token.take(8)}...")
+                            throw RuntimeException("Injected: POST failure for A's new sendToken")
+                        }
+                        KtorMailboxClient.post(baseUrl, token, payload)
+                    }
+
+                    override suspend fun poll(
+                        baseUrl: String,
+                        token: String,
+                    ): List<MailboxPayload> = KtorMailboxClient.poll(baseUrl, token)
+                }
+            val aClientFailing = LocationClient(baseUrl, aStore, failingMailboxClient)
+
+            // A sends a location with the failing client.
+            // - Main POST goes to prevSendToken (NOT tokenToFail) → succeeds → B will see A's location
+            // - finalizeTokenTransition clears isSendTokenPending, then tries keepalive to tokenToFail → FAILS
+            // - Exception is swallowed; the keepalive is left in A's outbox (token=tokenToFail)
+            runCatching { aClientFailing.sendLocation(40.0, 50.0) }
+
+            val aSessionAfterFailure = aStore.getFriend(friendId)!!.session
+            assertFalse(
+                aSessionAfterFailure.isSendTokenPending,
+                "isSendTokenPending must be false — finalizeTokenTransition clears it before attempting the keepalive POST",
+            )
+            println("✓ isSendTokenPending=false after keepalive failure")
+
+            // B polls prevSendToken → receives A's location and follows chain to tokenToFail.
+            delay(200)
+            var bAfterFailure = bClient.poll()
+            if (bAfterFailure.none { it.userId == friendId }) {
+                delay(300)
+                bAfterFailure = bAfterFailure + bClient.poll()
+            }
+            val aLocFromBAfterFailure = bAfterFailure.firstOrNull { it.userId == friendId }
+            assertNotNull(aLocFromBAfterFailure, "B must receive A's location from prevSendToken despite keepalive failure")
+            println("✓ B received A's location from prevSendToken (${aLocFromBAfterFailure.lat}, ${aLocFromBAfterFailure.lng})")
+
+            // Now switch to the normal client. The outbox retry in processOutboxes will post the
+            // swallowed keepalive to tokenToFail. Then the recovery send also goes to tokenToFail.
+            val recoveryLat = 55.123
+            aClient.sendLocation(recoveryLat, 30.0)
+            delay(300)
+
+            var bFinal = bClient.poll()
+            if (bFinal.none { it.userId == friendId && Math.abs(it.lat - recoveryLat) < 0.001 }) {
+                delay(300)
+                bFinal = bFinal + bClient.poll()
+            }
+            assertNotNull(
+                bFinal.firstOrNull { it.userId == friendId && Math.abs(it.lat - recoveryLat) < 0.001 },
+                "B must receive A's recovery location from new sendToken — channel must be functional after keepalive failure",
+            )
+            println("✓ B received recovery location — channel fully recovered")
+
+            // Final token invariant
+            var quietRounds = 0
+            while (quietRounds < 3) {
+                val aLen = aClient.poll().size
+                val bLen = bClient.poll().size
+                val pending =
+                    aStore.listFriends().any { it.outbox != null } ||
+                        bStore.listFriends().any { it.outbox != null }
+                if (aLen == 0 && bLen == 0 && !pending) quietRounds++ else quietRounds = 0
+                delay(50)
+            }
+            val finalA = aStore.getFriend(friendId)!!.session
+            val finalB = bStore.getFriend(friendId)!!.session
+            val aActiveSend = if (finalA.isSendTokenPending) finalA.prevSendToken else finalA.sendToken
+            val bActiveSend = if (finalB.isSendTokenPending) finalB.prevSendToken else finalB.sendToken
+            assertContentEquals(aActiveSend, finalB.recvToken, "A active send = B recv (after recovery)")
+            assertContentEquals(bActiveSend, finalA.recvToken, "B active send = A recv (after recovery)")
+            println("✓ Token invariant holds after full recovery")
+            println("══ FINALIZE-TRANSITION KEEPALIVE FAILURE TEST PASSED ══")
+        }
+    }
+
     private class MemoryE2eeStorage : E2eeStorage {
         private val data = mutableMapOf<String, String>()
 

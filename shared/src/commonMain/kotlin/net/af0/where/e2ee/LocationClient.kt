@@ -44,9 +44,11 @@ open class LocationClient(
                     // RESTART RECOVERY (§5.5): If the session was regenerated on startup,
                     // force a keepalive now to establish a new memory-only DH epoch.
                     if (friend.session.needsRatchet) {
+                        println("[LocationClient] poll: needsRatchet=true for ${friend.id.take(8)}, sending pre-poll keepalive")
                         try {
                             sendKeepalive(friend.id)
-                        } catch (_: Exception) {
+                        } catch (e: Exception) {
+                            println("[LocationClient] poll: pre-poll keepalive failed for ${friend.id.take(8)}: ${e.message}")
                         }
                     }
 
@@ -105,6 +107,7 @@ open class LocationClient(
         var follows = 0
         while (follows < MAX_TOKEN_FOLLOWS_PER_POLL) {
             val messages = mailboxClient.poll(baseUrl, currentTokenToPoll)
+            println("[LocationClient] pollFriend: friend=${friendId.take(8)} token=${currentTokenToPoll.take(8)} msgs=${messages.size}")
             if (messages.isEmpty()) break
 
             try {
@@ -120,7 +123,7 @@ open class LocationClient(
                     },
                 )
             } catch (e: Exception) {
-                println("DEBUG: pollFriend processBatch failed for $friendId: ${e.message}")
+                println("[LocationClient] pollFriend: processBatch failed for ${friendId.take(8)}: ${e.message}")
                 e.printStackTrace()
                 throw e
             }
@@ -129,6 +132,7 @@ open class LocationClient(
             val updatedFriend = store.getFriend(friendId) ?: break
             val newToken = updatedFriend.session.recvToken.toHex()
             if (newToken != currentTokenToPoll) {
+                println("[LocationClient] pollFriend: recvToken rotated for ${friendId.take(8)}: ${currentTokenToPoll.take(8)} -> ${newToken.take(8)}")
                 currentTokenToPoll = newToken
                 follows++
             } else {
@@ -141,6 +145,7 @@ open class LocationClient(
         val friendAfter = store.getFriend(friendId)
         if (friendAfter != null && !friendBefore.session.remoteDhPub.contentEquals(friendAfter.session.remoteDhPub)) {
             if (!friendAfter.sharingEnabled && !friendAfter.isStale) {
+                println("[LocationClient] pollFriend: new remoteDhPub for ${friendId.take(8)}, sending keepalive (sharingEnabled=false)")
                 try {
                     sendKeepalive(friendId)
                 } catch (_: Exception) {
@@ -227,6 +232,7 @@ open class LocationClient(
         val friendAfter = store.getFriend(friendId) ?: return
         val tokenToUse = friendAfter.outbox?.token ?: throw Exception("Outbox missing after store")
 
+        println("[LocationClient] send: friend=${friendId.take(8)} token=${tokenToUse.take(8)} seq=${friendAfter.session.sendSeq} type=${payload::class.simpleName} pending=${friendBefore.session.isSendTokenPending}")
         mailboxClient.post(baseUrl, tokenToUse, message)
         store.clearOutbox(friendId)
 
@@ -254,12 +260,15 @@ open class LocationClient(
 
             // Only send fresh keepalive if we actually rotated tokens and haven't sent it.
             // We send this regardless of sharingEnabled to ensure the peer's recvToken advances (§5.3).
-            if (!finalSession.sendToken.contentEquals(finalSession.prevSendToken)) {
+            val tokensRotated = !finalSession.sendToken.contentEquals(finalSession.prevSendToken)
+            println("[LocationClient] finalizeTokenTransition: friend=${friendId.take(8)} tokensRotated=$tokensRotated newToken=${finalSession.sendToken.toHex().take(8)}")
+            if (tokensRotated) {
                 try {
                     sendKeepalive(friendId)
                 } catch (e: Exception) {
                     // Swallow: if the fresh ratchet transition fails (e.g., transport error during flush),
                     // we'll try again next time we process the outbox.
+                    println("[LocationClient] finalizeTokenTransition: keepalive failed for ${friendId.take(8)}: ${e.message}")
                 }
             }
         }

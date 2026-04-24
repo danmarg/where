@@ -527,6 +527,7 @@ class E2eeStore(
 
             var currentSession = entry.session
             var anySuccess = false
+            var failCount = 0
 
             for ((_, msg) in sortedMessagesWithHeaders) {
                 try {
@@ -550,8 +551,11 @@ class E2eeStore(
                     }
                 } catch (e: Exception) {
                     // Skip individually bad messages to prevent head-of-line blocking
+                    failCount++
                 }
             }
+            val tokenChanged = !currentSession.recvToken.contentEquals(entry.session.recvToken)
+            println("[E2eeStore] processBatch: friend=${friendId.take(8)} token=${recvToken.take(8)} total=${sortedMessagesWithHeaders.size} ok=${anySuccess} locs=${decryptedLocations.size} fails=$failCount tokenChanged=$tokenChanged")
 
             // Persistence: we update the store with the latest successfully ratcheted state.
             val hadActivity = decryptedLocations.isNotEmpty() || (anySuccess && currentSession != entry.session)

@@ -1,6 +1,7 @@
 package net.af0.where
 
-import androidx.compose.foundation.clickable
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -37,9 +38,10 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import dev.icerock.moko.resources.compose.stringResource
 import net.af0.where.e2ee.FriendEntry
+import net.af0.where.e2ee.toHex
 import net.af0.where.shared.MR
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
 fun FriendsSheet(
     friends: List<FriendEntry>,
@@ -60,6 +62,7 @@ fun FriendsSheet(
     var renameFriend by remember { mutableStateOf<FriendEntry?>(null) }
     var showPasteField by remember { mutableStateOf(false) }
     var pastedUrl by remember { mutableStateOf("") }
+    var debugExpandedFriendId by remember { mutableStateOf<String?>(null) }
 
     ModalBottomSheet(onDismissRequest = onDismiss) {
         Column(
@@ -105,77 +108,113 @@ fun FriendsSheet(
                 )
                 LazyColumn(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                     items(friends, key = { it.id }) { friend ->
-                        Row(
-                            modifier =
-                                Modifier
-                                    .fillMaxWidth()
-                                    .clickable {
-                                        onZoomTo(friend.id)
-                                        onDismiss()
-                                    },
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        ) {
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text(
-                                    if (friend.isConfirmed) {
-                                        friend.name
-                                    } else {
-                                        "${friend.name} (" + stringResource(MR.strings.pending) + ")"
-                                    },
-                                    style = MaterialTheme.typography.bodyLarge,
-                                    maxLines = 1,
-                                    overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
-                                )
-                                Text(
-                                    friend.safetyNumber,
-                                    style = MaterialTheme.typography.bodySmall,
-                                    fontFamily = FontFamily.Monospace,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                )
-                                Text(
-                                    timeAgoStringFromMs(friendLastPing[friend.id]),
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                )
-                                if (friend.isStale) {
+                        Column(modifier = Modifier.fillMaxWidth()) {
+                            Row(
+                                modifier =
+                                    Modifier
+                                        .fillMaxWidth()
+                                        .combinedClickable(
+                                            onClick = {
+                                                onZoomTo(friend.id)
+                                                onDismiss()
+                                            },
+                                            onLongClick = {
+                                                debugExpandedFriendId =
+                                                    if (debugExpandedFriendId == friend.id) null else friend.id
+                                            },
+                                        ),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            ) {
+                                Column(modifier = Modifier.weight(1f)) {
                                     Text(
-                                        stringResource(MR.strings.stale_friend_warning),
+                                        if (friend.isConfirmed) {
+                                            friend.name
+                                        } else {
+                                            "${friend.name} (" + stringResource(MR.strings.pending) + ")"
+                                        },
+                                        style = MaterialTheme.typography.bodyLarge,
+                                        maxLines = 1,
+                                        overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                                    )
+                                    Text(
+                                        friend.safetyNumber,
                                         style = MaterialTheme.typography.bodySmall,
-                                        color = MaterialTheme.colorScheme.error,
+                                        fontFamily = FontFamily.Monospace,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                    Text(
+                                        timeAgoStringFromMs(friendLastPing[friend.id]),
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                    if (friend.isStale) {
+                                        Text(
+                                            stringResource(MR.strings.stale_friend_warning),
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.error,
+                                        )
+                                    }
+                                }
+
+                                IconButton(onClick = { renameFriend = friend }) {
+                                    Icon(
+                                        Icons.Default.Edit,
+                                        contentDescription = stringResource(MR.strings.rename),
+                                        modifier = Modifier.size(20.dp),
+                                    )
+                                }
+
+                                val isPaused = friend.id in pausedFriendIds
+                                IconButton(onClick = { onTogglePause(friend.id) }) {
+                                    Icon(
+                                        if (isPaused) Icons.Default.PlayArrow else Icons.Default.Pause,
+                                        contentDescription =
+                                            if (isPaused) {
+                                                stringResource(
+                                                    MR.strings.resume,
+                                                )
+                                            } else {
+                                                stringResource(MR.strings.pause)
+                                            },
+                                    )
+                                }
+
+                                IconButton(onClick = { confirmDeleteFriend = friend }) {
+                                    Icon(
+                                        Icons.Default.Delete,
+                                        contentDescription = stringResource(MR.strings.remove),
+                                        tint = MaterialTheme.colorScheme.error,
                                     )
                                 }
                             }
-
-                            IconButton(onClick = { renameFriend = friend }) {
-                                Icon(
-                                    Icons.Default.Edit,
-                                    contentDescription = stringResource(MR.strings.rename),
-                                    modifier = Modifier.size(20.dp),
-                                )
-                            }
-
-                            val isPaused = friend.id in pausedFriendIds
-                            IconButton(onClick = { onTogglePause(friend.id) }) {
-                                Icon(
-                                    if (isPaused) Icons.Default.PlayArrow else Icons.Default.Pause,
-                                    contentDescription =
-                                        if (isPaused) {
-                                            stringResource(
-                                                MR.strings.resume,
-                                            )
-                                        } else {
-                                            stringResource(MR.strings.pause)
-                                        },
-                                )
-                            }
-
-                            IconButton(onClick = { confirmDeleteFriend = friend }) {
-                                Icon(
-                                    Icons.Default.Delete,
-                                    contentDescription = stringResource(MR.strings.remove),
-                                    tint = MaterialTheme.colorScheme.error,
-                                )
+                            if (debugExpandedFriendId == friend.id) {
+                                val recvToken = friend.session.recvToken.toHex().take(8)
+                                val sendToken = friend.session.sendToken.toHex().take(8)
+                                Column(modifier = Modifier.padding(start = 4.dp, top = 2.dp)) {
+                                    Text(
+                                        "recv: ${timeAgoStringFromSeconds(
+                                            friend.lastRecvTs,
+                                        )}  sent: ${timeAgoStringFromSeconds(friend.lastSentTs)}",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        fontFamily = FontFamily.Monospace,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                    Text(
+                                        "recvTok: $recvToken  sendTok: $sendToken",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        fontFamily = FontFamily.Monospace,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                    val ratchet = if (friend.session.needsRatchet) "YES" else "no"
+                                    val pending = if (friend.session.isSendTokenPending) "YES" else "no"
+                                    Text(
+                                        "needsRatchet: $ratchet  sendPending: $pending",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        fontFamily = FontFamily.Monospace,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                }
                             }
                         }
                     }
