@@ -1,6 +1,7 @@
 package net.af0.where
 
 import io.ktor.client.request.*
+import io.ktor.client.request.delete
 import io.ktor.client.statement.*
 import io.ktor.http.*
 import io.ktor.server.testing.*
@@ -106,7 +107,7 @@ class MailboxTest {
     }
 
     @Test
-    fun `GET inbox is destructive - second GET returns empty`() {
+    fun `GET inbox is non-destructive - second GET returns same messages`() {
         if (!isLocalhost()) return
         testApplication {
             application { module(ServerState()) }
@@ -120,7 +121,71 @@ class MailboxTest {
             assertEquals(1, first.size)
 
             val second = json.decodeFromString<JsonArray>(client.get("/inbox/$token").bodyAsText())
-            assertTrue(second.isEmpty(), "Second GET should return empty array")
+            assertEquals(1, second.size, "Second GET should return same messages")
+        }
+    }
+
+    @Test
+    fun `DELETE inbox removes first n messages`() {
+        if (!isLocalhost()) return
+        testApplication {
+            application { module(ServerState()) }
+            val token = "delete-test-1"
+            repeat(5) { i ->
+                client.post("/inbox/$token") {
+                    contentType(ContentType.Application.Json)
+                    setBody("""{"i":$i}""")
+                }
+            }
+
+            val deleteResponse = client.delete("/inbox/$token?n=3")
+            assertEquals(HttpStatusCode.NoContent, deleteResponse.status)
+
+            val getResponse = client.get("/inbox/$token")
+            val arr = json.decodeFromString<JsonArray>(getResponse.bodyAsText())
+            assertEquals(2, arr.size, "Should have 2 messages remaining")
+            assertEquals("""[{"i":3},{"i":4}]""", getResponse.bodyAsText())
+        }
+    }
+
+    @Test
+    fun `DELETE inbox with n greater than queue size removes all`() {
+        if (!isLocalhost()) return
+        testApplication {
+            application { module(ServerState()) }
+            val token = "delete-test-2"
+            client.post("/inbox/$token") {
+                contentType(ContentType.Application.Json)
+                setBody("""{"msg":"a"}""")
+            }
+            client.post("/inbox/$token") {
+                contentType(ContentType.Application.Json)
+                setBody("""{"msg":"b"}""")
+            }
+
+            val deleteResponse = client.delete("/inbox/$token?n=5")
+            assertEquals(HttpStatusCode.NoContent, deleteResponse.status)
+
+            val getResponse = client.get("/inbox/$token")
+            val arr = json.decodeFromString<JsonArray>(getResponse.bodyAsText())
+            assertTrue(arr.isEmpty(), "Queue should be empty after over-deleting")
+        }
+    }
+
+    @Test
+    fun `DELETE inbox with missing or invalid n returns 400`() {
+        if (!isLocalhost()) return
+        testApplication {
+            application { module(ServerState()) }
+            val token = "delete-test-3"
+            val missingN = client.delete("/inbox/$token")
+            assertEquals(HttpStatusCode.BadRequest, missingN.status)
+
+            val negativeN = client.delete("/inbox/$token?n=-5")
+            assertEquals(HttpStatusCode.BadRequest, negativeN.status)
+
+            val notAnIntN = client.delete("/inbox/$token?n=foo")
+            assertEquals(HttpStatusCode.BadRequest, notAnIntN.status)
         }
     }
 
@@ -242,7 +307,7 @@ class MailboxTest {
         val state = InMemoryMailboxState()
         val token = "evicttoken0000002"
         state.post(token, JsonPrimitive("msg"))
-        state.drain(token) // empties the mailbox queue
+        state.delete(token, 1) // empties the mailbox queue
 
         // Evict — the mailbox queue is empty so the entry should be removed.
         state.evictForTest(rateLimitWindowMs = 0)
@@ -275,7 +340,7 @@ class MailboxTest {
                 contentType(ContentType.Application.Json)
                 setBody("""{"type":"EncryptedLocation","seq":"1","ct":"AA=="}""")
             }
-            client.get("/inbox/$posted") // drain
+            client.delete("/inbox/$posted?n=1")
 
             val unknownResponse = client.get("/inbox/$neverUsed").bodyAsText()
             val emptyResponse = client.get("/inbox/$posted").bodyAsText()

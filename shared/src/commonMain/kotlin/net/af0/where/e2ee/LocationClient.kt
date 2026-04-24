@@ -113,6 +113,14 @@ open class LocationClient(
             try {
                 val result = store.processBatch(friendId, currentTokenToPoll, messages) ?: break
 
+                // ACK after durable save: tell the server to delete the messages we just processed.
+                // Non-fatal: if ACK fails, messages remain and will be re-processed idempotently.
+                try {
+                    mailboxClient.ack(baseUrl, currentTokenToPoll, messages.size)
+                } catch (e: Exception) {
+                    println("[LocationClient] pollFriend: ACK failed for ${friendId.take(8)}: ${e.message}")
+                }
+
                 for (out in result.outgoing) {
                     mailboxClient.post(baseUrl, out.token, out.payload)
                 }
@@ -132,7 +140,11 @@ open class LocationClient(
             val updatedFriend = store.getFriend(friendId) ?: break
             val newToken = updatedFriend.session.recvToken.toHex()
             if (newToken != currentTokenToPoll) {
-                println("[LocationClient] pollFriend: recvToken rotated for ${friendId.take(8)}: ${currentTokenToPoll.take(8)} -> ${newToken.take(8)}")
+                println(
+                    "[LocationClient] pollFriend: recvToken rotated for ${friendId.take(
+                        8,
+                    )}: ${currentTokenToPoll.take(8)} -> ${newToken.take(8)}",
+                )
                 currentTokenToPoll = newToken
                 follows++
             } else {
@@ -232,7 +244,13 @@ open class LocationClient(
         val friendAfter = store.getFriend(friendId) ?: return
         val tokenToUse = friendAfter.outbox?.token ?: throw Exception("Outbox missing after store")
 
-        println("[LocationClient] send: friend=${friendId.take(8)} token=${tokenToUse.take(8)} seq=${friendAfter.session.sendSeq} type=${payload::class.simpleName} pending=${friendBefore.session.isSendTokenPending}")
+        println(
+            "[LocationClient] send: friend=${friendId.take(
+                8,
+            )} token=${tokenToUse.take(
+                8,
+            )} seq=${friendAfter.session.sendSeq} type=${payload::class.simpleName} pending=${friendBefore.session.isSendTokenPending}",
+        )
         mailboxClient.post(baseUrl, tokenToUse, message)
         store.clearOutbox(friendId)
 
@@ -261,7 +279,11 @@ open class LocationClient(
             // Only send fresh keepalive if we actually rotated tokens and haven't sent it.
             // We send this regardless of sharingEnabled to ensure the peer's recvToken advances (§5.3).
             val tokensRotated = !finalSession.sendToken.contentEquals(finalSession.prevSendToken)
-            println("[LocationClient] finalizeTokenTransition: friend=${friendId.take(8)} tokensRotated=$tokensRotated newToken=${finalSession.sendToken.toHex().take(8)}")
+            println(
+                "[LocationClient] finalizeTokenTransition: friend=${friendId.take(
+                    8,
+                )} tokensRotated=$tokensRotated newToken=${finalSession.sendToken.toHex().take(8)}",
+            )
             if (tokensRotated) {
                 try {
                     sendKeepalive(friendId)
