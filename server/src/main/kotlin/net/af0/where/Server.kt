@@ -11,6 +11,7 @@ import io.ktor.server.plugins.contentnegotiation.*
 import io.ktor.server.request.*
 import io.ktor.server.response.*
 import io.ktor.server.routing.*
+import io.ktor.server.routing.delete
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
@@ -73,10 +74,18 @@ interface MailboxStore {
     ): Boolean
 
     /**
-     * Destructively drain all non-expired messages for [token].
+     * Non-destructively read all non-expired messages for [token].
      * Returns null if the request is rejected due to rate limiting.
      */
     fun drain(token: String): List<JsonElement>?
+
+    /**
+     * Remove the first [count] messages from [token]'s queue. Idempotent.
+     */
+    fun delete(
+        token: String,
+        count: Int,
+    ): Int
 
     /** Reclaim stale entries. No-op for implementations where the store handles expiry. */
     fun evict() {}
@@ -179,7 +188,7 @@ class InMemoryMailboxState : MailboxStore {
     }
 
     /**
-     * Drain all non-expired messages for [token] and return them.
+     * Non-destructively peek at the queue contents.
      * Returns null if rate-limited (§7.2: indistinguishable responses for unknown vs empty,
      * but rate-limiting returns 429).
      */
@@ -197,12 +206,29 @@ class InMemoryMailboxState : MailboxStore {
         // By using a shared dummy queue for misses, we execute nearly identical code paths.
         val queue = mailboxes[token] ?: dummyQueue
 
-        val result = mutableListOf<JsonElement>()
-        // Drain the entire queue; re-add nothing — this is a destructive read.
-        generateSequence { queue.poll() }.forEach { entry ->
-            if (entry.expiresAt > now) result.add(entry.payload)
+        // Non-destructively peek at the queue.
+        return queue.asSequence()
+            .filter { it.expiresAt > now }
+            .map { it.payload }
+            .take(50)
+            .toList()
+    }
+
+    override fun delete(
+        token: String,
+        count: Int,
+    ): Int {
+        if (count < 0) return 0
+        val queue = mailboxes[token] ?: return 0
+        var removedCount = 0
+        for (i in 0 until count) {
+            if (queue.poll() != null) {
+                removedCount++
+            } else {
+                break
+            }
         }
-        return result
+        return removedCount
     }
 }
 
@@ -249,7 +275,7 @@ class RedisMailboxState(redisUrl: String) : MailboxStore {
         """.trimIndent()
 
     /**
-     * Atomically: check rate limit for GET, then drain.
+     * Atomically: check rate limit for GET, then return up to 50 messages non-destructively.
      */
     private val drainScript =
         """
@@ -258,10 +284,26 @@ class RedisMailboxState(redisUrl: String) : MailboxStore {
         local count = redis.call('INCR', KEYS[1])
         if count == 1 then redis.call('EXPIRE', KEYS[1], rlTtlSec) end
         if count > maxGets then return nil end
+        return redis.call('LRANGE', KEYS[2], 0, 49)
+        """.trimIndent()
 
-        local msgs = redis.call('LRANGE', KEYS[2], 0, 49)
-        if #msgs > 0 then redis.call('LTRIM', KEYS[2], #msgs, -1) end
-        return msgs
+    /**
+     * Atomically: delete the first N items from a list.
+     * Returns the number of items actually removed.
+     */
+    private val deleteScript =
+        """
+        local n = tonumber(ARGV[1])
+        if n <= 0 then return 0 end
+        local len = redis.call('LLEN', KEYS[1])
+        if len == 0 then return 0 end
+        if n >= len then
+            redis.call('DEL', KEYS[1])
+            return len
+        else
+            redis.call('LTRIM', KEYS[1], n, -1)
+            return n
+        end
         """.trimIndent()
 
     override fun post(
@@ -305,6 +347,19 @@ class RedisMailboxState(redisUrl: String) : MailboxStore {
                 }
             json.parseToJsonElement(str)
         }
+    }
+
+    override fun delete(
+        token: String,
+        count: Int,
+    ): Int {
+        val result =
+            jedis.eval(
+                deleteScript,
+                listOf("inbox:$token"),
+                listOf(count.toString()),
+            )
+        return (result as Long).toInt()
     }
 
     // evict() is intentionally left as the interface no-op: Redis TTL handles expiry.
@@ -426,6 +481,23 @@ fun Application.module(state: ServerState = ServerState()) {
             }
 
             call.respondText(responseString, ContentType.Application.Json)
+        }
+
+        delete("/inbox/{token}") {
+            val token =
+                call.parameters["token"] ?: run {
+                    call.respond(HttpStatusCode.BadRequest, "token required")
+                    return@delete
+                }
+
+            val n = call.request.queryParameters["n"]?.toIntOrNull()
+            if (n == null || n < 0) {
+                call.respond(HttpStatusCode.BadRequest, "n query parameter must be a non-negative integer")
+                return@delete
+            }
+
+            state.mailbox.delete(token, n)
+            call.respond(HttpStatusCode.NoContent)
         }
     }
 }

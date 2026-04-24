@@ -7,12 +7,15 @@ import io.ktor.client.network.sockets.SocketTimeoutException
 import io.ktor.client.plugins.HttpRequestTimeoutException
 import io.ktor.client.plugins.HttpTimeout
 import io.ktor.client.plugins.contentnegotiation.ContentNegotiation
+import io.ktor.client.request.delete
 import io.ktor.client.request.get
+import io.ktor.client.request.parameter
 import io.ktor.client.request.post
 import io.ktor.client.request.setBody
 import io.ktor.http.ContentType
 import io.ktor.http.HttpStatusCode
 import io.ktor.http.contentType
+import io.ktor.http.isSuccess
 import io.ktor.serialization.kotlinx.json.json
 import kotlinx.coroutines.CancellationException
 import kotlinx.io.IOException
@@ -32,6 +35,16 @@ interface MailboxClient {
         baseUrl: String,
         token: String,
     ): List<MailboxPayload>
+
+    /**
+     * Confirm receipt of [count] messages from [token], allowing the server to delete them.
+     * Called after session state has been durably saved. Failures are non-fatal.
+     */
+    suspend fun ack(
+        baseUrl: String,
+        token: String,
+        count: Int,
+    ) {}
 }
 
 object KtorMailboxClient : MailboxClient {
@@ -95,6 +108,25 @@ object KtorMailboxClient : MailboxClient {
                 throw ServerException(response.status.value, "Failed to poll mailbox")
             }
             return response.body()
+        } catch (e: Exception) {
+            throw mapException(e)
+        }
+    }
+
+    override suspend fun ack(
+        baseUrl: String,
+        token: String,
+        count: Int,
+    ) {
+        if (count <= 0) return
+        try {
+            val response =
+                client.delete("$baseUrl/inbox/$token") {
+                    parameter("n", count)
+                }
+            if (!response.status.isSuccess()) {
+                throw ServerException(response.status.value, "ACK failed for token $token")
+            }
         } catch (e: Exception) {
             throw mapException(e)
         }

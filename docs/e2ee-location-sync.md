@@ -322,6 +322,23 @@ If Alice ratchets her DH key from `dh_1` to `dh_2`, Bob may receive `Msg(dh_2, s
 
 This ensures that gaps are filled deterministically even when the metadata needed for gap calculation is hidden behind the AEAD boundary.
 
+### 5.4.1 Receive-Side Crash Safety
+
+The GET → process → DELETE sequence is the receive-side analogue of the send-side transactional outbox:
+
+1. `GET /inbox/{token}` returns messages; the server retains them.
+2. The client decrypts, updates session state, and **durably saves** the new `recvToken` and ratchet state to local storage.
+3. The client calls `DELETE /inbox/{token}?n=<count>` to release the messages from the server.
+
+If the client crashes between steps 1 and 2, it re-fetches the same messages on next startup (server still holds them) and re-processes them from the same prior session state — idempotent and correct. If it crashes between steps 2 and 3, the session is already saved with the new `recvToken`; the leftover messages on the server are never fetched again and expire after TTL.
+
+**What this does NOT fix:** If the server loses a message before the client ever GETs it (e.g., server-side storage corruption), the token-transition message is gone and the session will permanently desync. This is a server reliability problem, not a client atomicity problem. It is qualitatively different from the crash-recovery case: it produces an obvious total communication failure rather than a silent one-sided desync, because the sender will also fail to post subsequent messages during the outage.
+
+**Genuine data loss cases** that still require manual re-pairing:
+- Client-side storage corruption (flash failure, encrypted storage key loss)
+- User-initiated app data deletion or device wipe
+- Session JSON schema migration bug
+
 ### 5.4 Routing Token Rotation and Reliability
 
 Routing tokens are derived from the current root key. Whenever the DH ratchet advances and a new root key is derived, new routing tokens are computed.
@@ -449,8 +466,11 @@ The server's role is strictly limited to acting as a stateless message router fo
 1. **Routing Token (T):** A random-looking 16-byte token derived pairwise by clients (§4.2).
 2. **Mailbox API:**
    - `POST /inbox/{token}`: Clients push an encrypted payload into the mailbox.
-   - `GET /inbox/{token}`: Clients poll for and drain all available payloads in the mailbox.
+   - `GET /inbox/{token}`: Clients poll for pending payloads. **Non-destructive:** messages are retained until explicitly deleted.
+   - `DELETE /inbox/{token}?n=<count>`: Clients confirm receipt by deleting the first `count` messages from the queue. Called after session state is durably saved to local storage.
 3. **Server Obliviousness:** The server does not know the sender or recipient identity—only the opaque routing token.
+
+**Receive atomicity (§5.4.1):** The three-step GET → save → DELETE sequence ensures that a client crash between receiving messages and persisting session state does not cause permanent token desync. On restart, the unACK'd messages are still available for re-processing from the same session state.
 
 ### 7.2 Invariant: Indistinguishable Responses
 
@@ -700,12 +720,18 @@ The server maintains a persistent map of **mailboxes** indexed by 16-byte routin
 1. **POST /inbox/{token}:**
    - Push the payload into the corresponding queue.
    - Apply a TTL of 7 days. This aligns with the client re-pair timeout: if Bob has not polled within 7 days, the session will be abandoned on both sides regardless.
+   - The server MUST durably persist the payload before returning `204 No Content`. Clients treat any non-2xx response as delivery failure and retain the outbox for retry.
 
 2. **GET /inbox/{token}:**
-   - Drain and return all messages in the queue.
+   - Return up to 50 messages from the front of the queue. **Does not delete them.**
    - **Constant-Time Invariant:** The server MUST return an identical response (HTTP 200 OK with `[]`) for non-existent tokens. To prevent timing side-channels, the lookup logic must ensure that the time taken to respond for a "hit" (active token) versus a "miss" (empty/unknown token) is indistinguishable to an attacker.
 
-The server exposes only the mailbox API (`POST /inbox/{token}` and `GET /inbox/{token}`).
+3. **DELETE /inbox/{token}?n={count}:**
+   - Remove the first `count` messages from the queue. Called by the client after session state has been durably saved to local storage (§5.4.1).
+   - Idempotent: if `count` exceeds the current queue length, the server removes all available messages without error.
+   - No Constant-Time Invariant required: clients only call DELETE after a successful GET, so the server can respond immediately without artificial delay.
+
+The server exposes the mailbox API: `POST /inbox/{token}`, `GET /inbox/{token}`, and `DELETE /inbox/{token}`.
 
 ### 10.3 What Stays the Same
 
