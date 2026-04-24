@@ -8,14 +8,12 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.LocationOff
 import androidx.compose.material.icons.filled.LocationOn
-import androidx.compose.material.icons.filled.Navigation
 import androidx.compose.material.icons.filled.People
 import androidx.compose.material.icons.filled.Place
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
@@ -27,7 +25,6 @@ import com.google.android.gms.maps.model.CameraPosition
 import com.google.android.gms.maps.model.LatLng
 import com.google.maps.android.compose.*
 import dev.icerock.moko.resources.compose.stringResource
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import net.af0.where.e2ee.ConnectionStatus
 import net.af0.where.e2ee.FriendEntry
@@ -141,26 +138,38 @@ fun MapScreen(
 
     val cameraPositionState = rememberCameraPositionState { position = initialPosition }
 
-    val mapLocationSource = remember {
-        object : com.google.android.gms.maps.LocationSource {
-            private var listener: com.google.android.gms.maps.LocationSource.OnLocationChangedListener? = null
-            override fun activate(l: com.google.android.gms.maps.LocationSource.OnLocationChangedListener) { listener = l }
-            override fun deactivate() { listener = null }
-            fun update(loc: UserLocation, heading: Double?) {
-                val androidLoc = android.location.Location("where").apply {
-                    latitude = loc.lat
-                    longitude = loc.lng
-                    time = loc.timestamp * 1000
-                    if (heading != null) {
-                        bearing = heading.toFloat()
-                    }
-                    // Add a default accuracy so the native layer shows the dot clearly
-                    accuracy = 10f
+    val mapLocationSource =
+        remember {
+            object : com.google.android.gms.maps.LocationSource {
+                private var listener: com.google.android.gms.maps.LocationSource.OnLocationChangedListener? = null
+
+                override fun activate(l: com.google.android.gms.maps.LocationSource.OnLocationChangedListener) {
+                    listener = l
                 }
-                listener?.onLocationChanged(androidLoc)
+
+                override fun deactivate() {
+                    listener = null
+                }
+
+                fun update(
+                    loc: UserLocation,
+                    heading: Double?,
+                ) {
+                    val androidLoc =
+                        android.location.Location("where").apply {
+                            latitude = loc.lat
+                            longitude = loc.lng
+                            time = loc.timestamp * 1000
+                            if (heading != null) {
+                                bearing = heading.toFloat()
+                            }
+                            // Add a default accuracy so the native layer shows the dot clearly
+                            accuracy = 10f
+                        }
+                    listener?.onLocationChanged(androidLoc)
+                }
             }
         }
-    }
 
     LaunchedEffect(ownLocation, ownHeading) {
         ownLocation?.let { mapLocationSource.update(it, ownHeading) }
@@ -201,7 +210,8 @@ fun MapScreen(
         zoomToUserId = null
     }
 
-    val mapStyleJson = """
+    val mapStyleJson =
+        """
         [
           {
             "featureType": "poi",
@@ -211,7 +221,7 @@ fun MapScreen(
             ]
           }
         ]
-    """.trimIndent()
+        """.trimIndent()
 
     Box(modifier.fillMaxSize()) {
         val navBarBottom = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
@@ -220,15 +230,17 @@ fun MapScreen(
             cameraPositionState = cameraPositionState,
             contentPadding = PaddingValues(bottom = 96.dp + navBarBottom),
             onMapClick = { onSelectedUserIdChange(null) },
-            properties = MapProperties(
-                isMyLocationEnabled = locationPermissions.allPermissionsGranted,
-                mapStyleOptions = com.google.android.gms.maps.model.MapStyleOptions(mapStyleJson),
-            ),
-            uiSettings = MapUiSettings(
-                myLocationButtonEnabled = false,
-                zoomControlsEnabled = false,
-                compassEnabled = false,
-            ),
+            properties =
+                MapProperties(
+                    isMyLocationEnabled = locationPermissions.allPermissionsGranted,
+                    mapStyleOptions = com.google.android.gms.maps.model.MapStyleOptions(mapStyleJson),
+                ),
+            uiSettings =
+                MapUiSettings(
+                    myLocationButtonEnabled = false,
+                    zoomControlsEnabled = false,
+                    compassEnabled = false,
+                ),
             locationSource = mapLocationSource,
         ) {
             users.forEach { user ->
@@ -248,7 +260,7 @@ fun MapScreen(
                                 onSelectedUserIdChange(if (selectedUserId == user.userId) null else user.userId)
                             }
                             true
-                        }
+                        },
                     ) {
                         Column(
                             horizontalAlignment = Alignment.CenterHorizontally,
@@ -393,8 +405,8 @@ fun MapScreen(
             onRename = onRenameFriend,
             onRemove = onRemoveFriend,
             onDismiss = { showFriends = false },
-            onZoomTo = { 
-                zoomToUserId = it 
+            onZoomTo = {
+                zoomToUserId = it
                 onSelectedUserIdChange(it)
             },
         )

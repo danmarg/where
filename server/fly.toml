@@ -16,6 +16,5 @@ primary_region = 'fra'
   processes = ['app']
 
 [[vm]]
-  memory = '512mb'
   cpus = 1
-  memory_mb = 512
+  memory_mb = 256

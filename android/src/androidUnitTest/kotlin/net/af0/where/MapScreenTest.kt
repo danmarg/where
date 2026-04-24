@@ -3,7 +3,6 @@ package net.af0.where
 import androidx.activity.ComponentActivity
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import net.af0.where.e2ee.ConnectionStatus
@@ -25,9 +24,9 @@ class MapScreenTest {
         // This is a minimal set of props for MapScreen
         val users = listOf(UserLocation("friend1", 1.0, 1.0, 1000L))
         val ownLocation = UserLocation("me", 0.0, 0.0, 1000L)
-        
+
         val selectedUserIdState = mutableStateOf<String?>(null)
-        
+
         composeTestRule.setContent {
             MapScreen(
                 ownLocation = ownLocation,
@@ -48,7 +47,7 @@ class MapScreenTest {
                 onRenameFriend = { _, _ -> },
                 onRemoveFriend = {},
                 selectedUserId = selectedUserIdState.value,
-                onSelectedUserIdChange = { selectedUserIdState.value = it }
+                onSelectedUserIdChange = { selectedUserIdState.value = it },
             )
         }
 
@@ -61,7 +60,7 @@ class MapScreenTest {
         }
         composeTestRule.waitForIdle()
         assert(selectedUserIdState.value == "friend1")
-        
+
         // 3. Simulate deselecting
         composeTestRule.runOnUiThread {
             selectedUserIdState.value = null

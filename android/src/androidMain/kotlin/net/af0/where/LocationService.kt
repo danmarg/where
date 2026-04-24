@@ -95,7 +95,13 @@ class LocationService : Service() {
 
         try {
             fusedClient.lastLocation.addOnSuccessListener { loc ->
-                if (loc != null) locationSource.onLocation(loc.latitude, loc.longitude, if (loc.hasBearing()) loc.bearing.toDouble() else null)
+                if (loc != null) {
+                    locationSource.onLocation(
+                        loc.latitude,
+                        loc.longitude,
+                        if (loc.hasBearing()) loc.bearing.toDouble() else null,
+                    )
+                }
             }
         } catch (_: SecurityException) {
         }
@@ -232,9 +238,10 @@ class LocationService : Service() {
                     // keepalive message to all active friends to keep the session alive
                     // and let them know we're still there.
                     try {
-                        val activeFriends = e2eeStore.listFriends().filter {
-                            it.id !in locationSource.pausedFriendIds.value && !it.isStale
-                        }
+                        val activeFriends =
+                            e2eeStore.listFriends().filter {
+                                it.id !in locationSource.pausedFriendIds.value && !it.isStale
+                            }
                         for (friend in activeFriends) {
                             locationClient.sendKeepalive(friend.id)
                         }
