@@ -17,7 +17,7 @@ protocol LocationClientProtocol: AnyObject, Sendable {
     func sendLocation(lat: Double, lng: Double, pausedFriendIds: Set<String>) async throws
     func sendLocationToFriend(friendId: String, lat: Double, lng: Double) async throws
     func poll(isForeground: Bool) async throws -> [Shared.UserLocation]
-    func pollPendingInvite() async throws -> Shared.PendingInviteResult?
+    func pollPendingInvites() async throws -> [Shared.PendingInviteResult]
     func postKeyExchangeInit(qr: Shared.QrPayload, initPayload: Shared.KeyExchangeInitPayload) async throws
 }
 
@@ -39,6 +39,7 @@ final class LocationSyncService: ObservableObject {
     @Published var friendLastPing: [String: Date] = [:]
     @Published var connectionStatus: Shared.ConnectionStatus = Shared.ConnectionStatus.Ok()
     @Published var friends: [Shared.FriendEntry] = []
+    @Published var pendingInvites: [Shared.PendingInvite] = []
     @Published var inviteState: Shared.InviteState = Shared.InviteState.None()
     @Published var isSharingLocation: Bool {
         didSet {
@@ -62,6 +63,7 @@ final class LocationSyncService: ObservableObject {
     @Published var ownHeading: Double? = nil
     @Published var pendingQrForNaming: Shared.QrPayload? = nil
     @Published var pendingInitPayload: Shared.KeyExchangeInitPayload? = nil
+    @Published var pendingInitDiscoveryToken: String? = nil
     @Published var multipleScansDetected: Bool = false
     @Published var isExchanging: Bool = false
     private var inviteTask: Task<Void, Never>? = nil
@@ -137,6 +139,7 @@ final class LocationSyncService: ObservableObject {
         Task { @MainActor in
             do {
                 self.friends = try await store.listFriends()
+                self.pendingInvites = try await store.listPendingInvites()
                 var initialLocations: [String: (lat: Double, lng: Double, ts: Int64)] = [:]
                 var initialLastPing: [String: Date] = [:]
                 for friend in self.friends {
@@ -194,6 +197,7 @@ final class LocationSyncService: ObservableObject {
         do {
             let qr = try await e2eeStore.createInvite(suggestedName: displayName)
             inviteState = Shared.InviteState.Pending(qr: qr)
+            pendingInvites = try await e2eeStore.listPendingInvites()
             triggerRapidPoll()
         } catch {
             logger.error("Failed to create invite: \(error.localizedDescription)")
@@ -318,11 +322,12 @@ final class LocationSyncService: ObservableObject {
             }
 
             friends = try await e2eeStore.listFriends()
+            pendingInvites = try await e2eeStore.listPendingInvites()
             // Always update visibleUsers to ensure map is fresh when returning to foreground.
             updateVisibleUsers()
 
             if updateUi {
-                try await pollPendingInvite()
+                try await pollPendingInvites()
             }
 
             // Heartbeat: if we're awake enough to poll, also send location if one is due.
@@ -351,10 +356,12 @@ final class LocationSyncService: ObservableObject {
         }
     }
 
-    private func pollPendingInvite() async throws {
+    private func pollPendingInvites() async throws {
         if pendingInitPayload != nil { return }
-        if let result = try await locationClient.pollPendingInvite() {
+        let results = try await locationClient.pollPendingInvites()
+        if let result = results.first {
             pendingInitPayload = result.payload
+            pendingInitDiscoveryToken = result.discoveryTokenHex
             multipleScansDetected = result.multipleScansDetected
             inviteState = Shared.InviteState.None()
             triggerRapidPoll()
@@ -444,12 +451,14 @@ final class LocationSyncService: ObservableObject {
 
     func confirmPendingInit(payload: Shared.KeyExchangeInitPayload, name: String) async {
         isExchanging = true
+        let discoveryToken = pendingInitDiscoveryToken ?? ""
         pendingInitPayload = nil
+        pendingInitDiscoveryToken = nil
         multipleScansDetected = false
 
         defer { isExchanging = false }
         do {
-            let result = try await e2eeStore.processKeyExchangeInit(payload: payload, bobName: name)
+            let result = try await e2eeStore.processKeyExchangeInit(payload: payload, bobName: name, discoveryTokenHex: discoveryToken)
 
             if let entry = result ?? nil {
                 awaitingFirstUpdateIds.insert(entry.id)
@@ -479,6 +488,7 @@ final class LocationSyncService: ObservableObject {
         guard pendingInitPayload != nil || hasInviteState else { return }
         await clearInvite()
         pendingInitPayload = nil
+        pendingInitDiscoveryToken = nil
         multipleScansDetected = false
     }
 
@@ -502,6 +512,15 @@ final class LocationSyncService: ObservableObject {
             updateVisibleUsers()
         } catch {
             logger.error("Failed to remove friend: \(error.localizedDescription)")
+        }
+    }
+
+    func removePendingInvite(discoveryTokenHex: String) async {
+        do {
+            try await e2eeStore.deletePendingInvite(discoveryTokenHex: discoveryTokenHex)
+            pendingInvites = try await e2eeStore.listPendingInvites()
+        } catch {
+            logger.error("Failed to remove pending invite: \(error.localizedDescription)")
         }
     }
 

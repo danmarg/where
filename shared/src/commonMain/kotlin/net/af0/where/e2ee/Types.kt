@@ -301,6 +301,8 @@ data class PendingInviteResult(
     val payload: KeyExchangeInitPayload,
     /** True if multiple people (or multiple scans) were detected in the discovery mailbox. */
     val multipleScansDetected: Boolean,
+    /** The discovery token used to receive this payload. */
+    val discoveryTokenHex: String,
 )
 
 /**

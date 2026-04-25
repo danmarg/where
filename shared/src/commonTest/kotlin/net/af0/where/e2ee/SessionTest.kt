@@ -480,7 +480,7 @@ class SessionTest {
             // 1. Establish session
             val qr = aliceStore.createInvite("Alice")
             val (initPayload, bobEntry) = bobStore.processScannedQr(qr)
-            aliceStore.processKeyExchangeInit(initPayload, "Bob")
+            aliceStore.processKeyExchangeInit(initPayload, "Bob", qr.discoveryToken().toHex())
             val aliceToBobId = aliceStore.listFriends().first().id
             val bobToAliceId = bobEntry.id
 

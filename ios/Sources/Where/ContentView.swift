@@ -144,6 +144,7 @@ struct ContentView: View {
             FriendsSheet(
                 displayName: $syncService.displayName,
                 friends: syncService.friends,
+                pendingInvites: syncService.pendingInvites,
                 pausedFriendIds: syncService.pausedFriendIds,
                 lastPingTimes: syncService.friendLastPing,
                 onTogglePause: { syncService.togglePauseFriend(id: $0) },
@@ -161,6 +162,7 @@ struct ContentView: View {
                     syncService.processQrUrl(url)
                 },
                 onRemove: { id in Task { await syncService.removeFriend(id: id) } },
+                onRemovePendingInvite: { token in Task { await syncService.removePendingInvite(discoveryTokenHex: token) } },
                 onZoomTo: { friendId in
                     if let loc = syncService.friendLocations[friendId] {
                         zoomTarget = CLLocationCoordinate2D(latitude: loc.lat, longitude: loc.lng)

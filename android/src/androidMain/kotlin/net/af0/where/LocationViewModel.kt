@@ -25,6 +25,7 @@ import net.af0.where.e2ee.ConnectionStatus
 import net.af0.where.e2ee.E2eeStore
 import net.af0.where.e2ee.FriendEntry
 import net.af0.where.e2ee.InviteState
+import net.af0.where.e2ee.PendingInvite
 import net.af0.where.e2ee.KeyExchangeInitPayload
 import net.af0.where.e2ee.LocationClient
 import net.af0.where.e2ee.QrPayload
@@ -67,6 +68,8 @@ class LocationViewModel(
     val displayName: StateFlow<String> = userStore.displayName
 
     val friends: StateFlow<List<FriendEntry>> = locationSource.friends
+
+    val pendingInvites: StateFlow<List<PendingInvite>> = locationSource.pendingInvites
 
     val pausedFriendIds: StateFlow<Set<String>> = userStore.pausedFriendIds
 
@@ -117,6 +120,9 @@ class LocationViewModel(
 
     init {
         Log.d(TAG, "LocationViewModel init: server=${BuildConfig.SERVER_HTTP_URL}")
+        viewModelScope.launch {
+            locationSource.onPendingInvitesUpdated(e2eeStore.listPendingInvites())
+        }
         // Sync sharing state and foreground state to manage the background service.
         viewModelScope.launch {
             combine(isSharingLocation, locationSource.isAppInForeground) { sharing, inForeground ->
@@ -212,6 +218,7 @@ class LocationViewModel(
                 try {
                     val qr = e2eeStore.createInvite(displayName.value)
                     _inviteState.value = InviteState.Pending(qr)
+                    locationSource.onPendingInvitesUpdated(e2eeStore.listPendingInvites())
                     triggerRapidPoll()
                 } finally {
                     if (inviteJob?.isCancelled == false) {
@@ -319,13 +326,14 @@ class LocationViewModel(
 
     fun confirmPendingInit(name: String) {
         val payload = pendingInitPayload.value ?: return
-        Log.d(TAG, "confirmPendingInit: name=$name")
+        val discoveryTokenHex = (locationSource as? LocationRepository)?.pendingInitDiscoveryToken?.value ?: ""
+        Log.d(TAG, "confirmPendingInit: name=$name token=$discoveryTokenHex")
         locationSource.onPendingInit(null)
         _inviteState.value = InviteState.None
         _isExchanging.value = true
         viewModelScope.launch {
             try {
-                val entry = e2eeStore.processKeyExchangeInit(payload, name)
+                val entry = e2eeStore.processKeyExchangeInit(payload, name, discoveryTokenHex)
                 if (entry != null) {
                     Log.d(TAG, "confirmPendingInit: processKeyExchangeInit succeeded, friendId=${entry.id}")
                     withContext(Dispatchers.Main.immediate) {
@@ -356,6 +364,17 @@ class LocationViewModel(
             } catch (e: Exception) {
                 Log.e(TAG, "confirmPendingInit: processKeyExchangeInit failed", e)
                 _isExchanging.value = false
+            }
+        }
+    }
+
+    fun removePendingInvite(discoveryTokenHex: String) {
+        check(Looper.myLooper() == Looper.getMainLooper()) { "removePendingInvite must be called on the main thread" }
+        viewModelScope.launch {
+            e2eeStore.deletePendingInvite(discoveryTokenHex)
+            val updatedInvites = e2eeStore.listPendingInvites()
+            withContext(Dispatchers.Main.immediate) {
+                locationSource.onPendingInvitesUpdated(updatedInvites)
             }
         }
     }

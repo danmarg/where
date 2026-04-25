@@ -333,8 +333,9 @@ class LocationService : Service() {
                     // Persistence: use the timestamp from the update payload.
                     e2eeStore.updateLastLocation(update.userId, update.lat, update.lng, update.timestamp)
                 }
-                pollPendingInvite()
+                pollPendingInvites()
                 locationSource.onFriendsUpdated(e2eeStore.listFriends())
+                locationSource.onPendingInvitesUpdated(e2eeStore.listPendingInvites())
                 updateStatus(null)
             }
         } catch (e: CancellationException) {
@@ -345,18 +346,26 @@ class LocationService : Service() {
         }
     }
 
-    private suspend fun pollPendingInvite() {
+    private suspend fun pollPendingInvites() {
         if (locationSource.pendingInitPayload.value != null) return
         try {
-            val result = locationClient.pollPendingInvite() ?: return
+            val results = locationClient.pollPendingInvites()
+            if (results.isEmpty()) return
+            // For now, we just pick the first one that has a result.
+            // In a future UI we might show a list of people who have accepted.
+            val result = results.first()
             val initPayload = result.payload
             Log.d(
                 TAG,
-                "pollPendingInvite: received KeyExchangeInit from ${initPayload.suggestedName} " +
+                "pollPendingInvites: received KeyExchangeInit from ${initPayload.suggestedName} " +
                     "(multipleScans=${result.multipleScansDetected})",
             )
             withContext(Dispatchers.Main) {
+                // Attach the discovery token so Alice knows which invite to complete
                 locationSource.onPendingInit(initPayload, result.multipleScansDetected)
+                // We need to pass the discovery token to the viewmodel so it can pass it back to processKeyExchangeInit
+                // For now, we'll use a hack and store it in the repository.
+                LocationRepository.onPendingInitWithToken(initPayload, result.multipleScansDetected, result.discoveryTokenHex)
                 updateStatus(null)
             }
         } catch (e: CancellationException) {

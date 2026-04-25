@@ -16,6 +16,9 @@
     <string name="invite">Invite</string>
     <string name="scan">Scan</string>
     <string name="pending">Pending</string>
+    <string name="pending_invites">Pending Invites</string>
+    <string name="cancel_invite_title">Cancel Invite</string>
+    <string name="cancel_invite_message">Cancel this invite? Your friend will no longer be able to use the link or QR code.</string>
     <string name="never">never</string>
     <string name="just_now">just now</string>
     <string name="m_ago">%d m ago</string>
@@ -34,6 +37,7 @@
     <string name="friend_name_label">Friend\'s Name</string>
     <string name="invite_a_friend">Invite a Friend</string>
     <string name="invite_message">Single-use code — tap Share Link for a single-use link instead.</string>
+    <string name="invite_sent_expiry">Invite sent. Your friend has 48 hours to accept.</string>
     <string name="your_name">Your Name</string>
     <string name="share_link">Share Link</string>
     <string name="join_me_on_where">Join me on Where</string>

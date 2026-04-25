@@ -44,7 +44,7 @@ class E2eeStoreTest {
             val (initPayload, bobEntry) = bobStore.processScannedQr(qr)
 
             // Alice processes Bob's init payload (received from discovery inbox)
-            val aliceEntry = aliceStore.processKeyExchangeInit(initPayload, "Bob")
+            val aliceEntry = aliceStore.processKeyExchangeInit(initPayload, "Bob", qr.discoveryToken().toHex())
 
             assertNotNull(aliceEntry)
 
@@ -79,7 +79,7 @@ class E2eeStoreTest {
         runBlocking {
             val qr = aliceStore.createInvite("Alice")
             val (initPayload, _) = bobStore.processScannedQr(qr)
-            aliceStore.processKeyExchangeInit(initPayload, "Bob")
+            aliceStore.processKeyExchangeInit(initPayload, "Bob", qr.discoveryToken().toHex())
 
             val aliceEntryBefore = aliceStore.listFriends().first()
 
@@ -101,7 +101,7 @@ class E2eeStoreTest {
         runBlocking {
             val qr = aliceStore.createInvite("Alice")
             val (initPayload, _) = bobStore.processScannedQr(qr)
-            val aliceEntry = aliceStore.processKeyExchangeInit(initPayload, "Bob")!!
+            val aliceEntry = aliceStore.processKeyExchangeInit(initPayload, "Bob", qr.discoveryToken().toHex())!!
 
             aliceStore.deleteFriend(aliceEntry.id)
             assertTrue(aliceStore.listFriends().isEmpty())
@@ -124,7 +124,7 @@ class E2eeStoreTest {
 
             // Processing an init against a reloaded store must succeed
             val (initPayload, _) = bobStore.processScannedQr(qr)
-            val result = reloadedAliceStore.processKeyExchangeInit(initPayload, "Bob")
+            val result = reloadedAliceStore.processKeyExchangeInit(initPayload, "Bob", qr.discoveryToken().toHex())
             assertNotNull(result)
             assertEquals("Bob", result.name)
         }
@@ -168,7 +168,7 @@ class E2eeStoreTest {
             val (initPayload, _) = aliceStore.processScannedQr(qr)
             // freshStore has no pending invite
             val freshStore = E2eeStore(MemoryStorage())
-            assertNull(freshStore.processKeyExchangeInit(initPayload, "Bob"))
+            assertNull(freshStore.processKeyExchangeInit(initPayload, "Bob", qr.discoveryToken().toHex()))
         }
 
     // -----------------------------------------------------------------------
@@ -180,7 +180,7 @@ class E2eeStoreTest {
         runBlocking {
             val qr = aliceStore.createInvite("Alice")
             val (initPayload, bobEntry) = bobStore.processScannedQr(qr)
-            val aliceEntry = aliceStore.processKeyExchangeInit(initPayload, "Bob")!!
+            val aliceEntry = aliceStore.processKeyExchangeInit(initPayload, "Bob", qr.discoveryToken().toHex())!!
 
             assertFalse(bobEntry.isInitiator, "Bob scanned QR — must NOT be initiator")
             assertTrue(aliceEntry.isInitiator, "Alice created QR — must be initiator")
@@ -191,7 +191,7 @@ class E2eeStoreTest {
         runBlocking {
             val qr = aliceStore.createInvite("Alice")
             val (initPayload, bobEntry) = bobStore.processScannedQr(qr)
-            val aliceEntry = aliceStore.processKeyExchangeInit(initPayload, "Bob")!!
+            val aliceEntry = aliceStore.processKeyExchangeInit(initPayload, "Bob", qr.discoveryToken().toHex())!!
 
             // Not stale initially
             assertFalse(aliceStore.getFriend(aliceEntry.id)!!.isStale)
@@ -207,7 +207,7 @@ class E2eeStoreTest {
         runBlocking {
             val qr = aliceStore.createInvite("Alice")
             val (initPayload, bobEntry) = bobStore.processScannedQr(qr)
-            val aliceEntry = aliceStore.processKeyExchangeInit(initPayload, "Bob")!!
+            val aliceEntry = aliceStore.processKeyExchangeInit(initPayload, "Bob", qr.discoveryToken().toHex())!!
 
             val loc1 = MessagePlaintext.Location(1.0, 1.0, 1.0, 1000L)
             val (aliceSess1, msg1) = Session.encryptMessage(aliceEntry.session, loc1)

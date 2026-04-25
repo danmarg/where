@@ -12,6 +12,7 @@ import kotlinx.coroutines.flow.update
 import net.af0.where.e2ee.ConnectionStatus
 import net.af0.where.e2ee.FriendEntry
 import net.af0.where.e2ee.KeyExchangeInitPayload
+import net.af0.where.e2ee.PendingInvite
 import net.af0.where.e2ee.QrPayload
 import net.af0.where.model.UserLocation
 import net.af0.where.shared.MR
@@ -24,10 +25,12 @@ interface LocationSource {
     val connectionStatus: StateFlow<ConnectionStatus>
     val isAppInForeground: StateFlow<Boolean>
     val pendingInitPayload: StateFlow<KeyExchangeInitPayload?>
+    val pendingInitDiscoveryToken: StateFlow<String?>
     val multipleScansDetected: StateFlow<Boolean>
     val isSharingLocation: StateFlow<Boolean>
     val pausedFriendIds: StateFlow<Set<String>>
     val friends: StateFlow<List<FriendEntry>>
+    val pendingInvites: StateFlow<List<PendingInvite>>
     val lastRapidPollTrigger: StateFlow<Long>
     val pendingQrForNaming: StateFlow<QrPayload?>
 
@@ -58,6 +61,12 @@ interface LocationSource {
         multipleScans: Boolean = false,
     )
 
+    fun onPendingInitWithToken(
+        payload: KeyExchangeInitPayload?,
+        multipleScans: Boolean = false,
+        discoveryTokenHex: String? = null,
+    )
+
     fun setSharingLocation(sharing: Boolean)
 
     fun setPausedFriends(friendIds: Set<String>)
@@ -68,6 +77,8 @@ interface LocationSource {
     )
 
     fun onFriendsUpdated(friends: List<FriendEntry>)
+
+    fun onPendingInvitesUpdated(invites: List<PendingInvite>)
 
     fun onPendingQrForNaming(qr: QrPayload?)
 
@@ -107,6 +118,9 @@ object LocationRepository : LocationSource {
     internal val _pendingInitPayload = MutableStateFlow<KeyExchangeInitPayload?>(null)
     override val pendingInitPayload: StateFlow<KeyExchangeInitPayload?> = _pendingInitPayload.asStateFlow()
 
+    private val _pendingInitDiscoveryToken = MutableStateFlow<String?>(null)
+    override val pendingInitDiscoveryToken: StateFlow<String?> = _pendingInitDiscoveryToken.asStateFlow()
+
     private val _multipleScansDetected = MutableStateFlow(false)
     override val multipleScansDetected: StateFlow<Boolean> = _multipleScansDetected.asStateFlow()
 
@@ -118,6 +132,9 @@ object LocationRepository : LocationSource {
 
     private val _friends = MutableStateFlow<List<FriendEntry>>(emptyList())
     override val friends: StateFlow<List<FriendEntry>> = _friends.asStateFlow()
+
+    private val _pendingInvites = MutableStateFlow<List<PendingInvite>>(emptyList())
+    override val pendingInvites: StateFlow<List<PendingInvite>> = _pendingInvites.asStateFlow()
 
     private val awaitingFirstUpdateIds = mutableSetOf<String>()
 
@@ -192,6 +209,16 @@ object LocationRepository : LocationSource {
         _multipleScansDetected.value = multipleScans
     }
 
+    override fun onPendingInitWithToken(
+        payload: KeyExchangeInitPayload?,
+        multipleScans: Boolean,
+        discoveryTokenHex: String?,
+    ) {
+        _pendingInitPayload.value = payload
+        _multipleScansDetected.value = multipleScans
+        _pendingInitDiscoveryToken.value = discoveryTokenHex
+    }
+
     /** Called by ViewModel to notify Bob scanned a QR and is naming the friend. */
     override fun onPendingQrForNaming(qr: QrPayload?) {
         _pendingQrForNaming.value = qr
@@ -220,6 +247,10 @@ object LocationRepository : LocationSource {
 
     override fun onFriendsUpdated(friends: List<FriendEntry>) {
         _friends.value = friends
+    }
+
+    override fun onPendingInvitesUpdated(invites: List<PendingInvite>) {
+        _pendingInvites.value = invites
     }
 
     override fun triggerRapidPoll() {
@@ -266,6 +297,7 @@ object LocationRepository : LocationSource {
         _isSharingLocation.value = false
         _pausedFriendIds.value = emptySet()
         _friends.value = emptyList()
+        _pendingInvites.value = emptyList()
         _lastRapidPollTrigger.value = 0L
         while (pollWakeSignal.tryReceive().isSuccess) { /* drain */ }
     }

@@ -38,6 +38,8 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import dev.icerock.moko.resources.compose.stringResource
 import net.af0.where.e2ee.FriendEntry
+import net.af0.where.e2ee.PendingInvite
+import net.af0.where.e2ee.discoveryToken
 import net.af0.where.e2ee.toHex
 import net.af0.where.shared.MR
 
@@ -45,6 +47,7 @@ import net.af0.where.shared.MR
 @Composable
 fun FriendsSheet(
     friends: List<FriendEntry>,
+    pendingInvites: List<PendingInvite> = emptyList(),
     displayName: String,
     onDisplayNameChange: (String) -> Unit,
     pausedFriendIds: Set<String>,
@@ -55,10 +58,12 @@ fun FriendsSheet(
     onPasteUrl: (String) -> Unit,
     onRename: (String, String) -> Unit,
     onRemove: (String) -> Unit,
+    onRemovePendingInvite: (String) -> Unit = {},
     onDismiss: () -> Unit,
     onZoomTo: (String) -> Unit = {},
 ) {
     var confirmDeleteFriend by remember { mutableStateOf<FriendEntry?>(null) }
+    var confirmDeleteInvite by remember { mutableStateOf<PendingInvite?>(null) }
     var renameFriend by remember { mutableStateOf<FriendEntry?>(null) }
     var showPasteField by remember { mutableStateOf(false) }
     var pastedUrl by remember { mutableStateOf("") }
@@ -101,12 +106,17 @@ fun FriendsSheet(
                 }
             }
 
-            if (friends.isNotEmpty()) {
-                Text(
-                    stringResource(MR.strings.friends) + " (${friends.size})",
-                    style = MaterialTheme.typography.labelMedium,
-                )
+            if (friends.isNotEmpty() || pendingInvites.isNotEmpty()) {
                 LazyColumn(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    if (friends.isNotEmpty()) {
+                        item {
+                            Text(
+                                stringResource(MR.strings.friends) + " (${friends.size})",
+                                style = MaterialTheme.typography.labelMedium,
+                                modifier = Modifier.padding(bottom = 4.dp),
+                            )
+                        }
+                    }
                     items(friends, key = { it.id }) { friend ->
                         Column(modifier = Modifier.fillMaxWidth()) {
                             Row(
@@ -218,6 +228,45 @@ fun FriendsSheet(
                             }
                         }
                     }
+
+                    if (pendingInvites.isNotEmpty()) {
+                        item {
+                            Text(
+                                stringResource(MR.strings.pending_invites) + " (${pendingInvites.size})",
+                                style = MaterialTheme.typography.labelMedium,
+                                modifier = Modifier.padding(top = 16.dp, bottom = 4.dp),
+                            )
+                        }
+                        items(pendingInvites, key = { it.qrPayload.discoveryToken().toHex() }) { invite ->
+                            Row(
+                                modifier =
+                                    Modifier
+                                        .fillMaxWidth()
+                                        .padding(vertical = 4.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            ) {
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        stringResource(MR.strings.invite),
+                                        style = MaterialTheme.typography.bodyLarge,
+                                    )
+                                    Text(
+                                        timeAgoStringFromSeconds(invite.createdAt),
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                }
+                                IconButton(onClick = { confirmDeleteInvite = invite }) {
+                                    Icon(
+                                        Icons.Default.Delete,
+                                        contentDescription = stringResource(MR.strings.remove),
+                                        tint = MaterialTheme.colorScheme.error,
+                                    )
+                                }
+                            }
+                        }
+                    }
                 }
             } else {
                 Text(
@@ -227,6 +276,29 @@ fun FriendsSheet(
                 )
             }
         }
+    }
+
+    confirmDeleteInvite?.let { invite ->
+        AlertDialog(
+            onDismissRequest = { confirmDeleteInvite = null },
+            title = { Text(stringResource(MR.strings.cancel_invite_title)) },
+            text = { Text(stringResource(MR.strings.cancel_invite_message)) },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        onRemovePendingInvite(invite.qrPayload.discoveryToken().toHex())
+                        confirmDeleteInvite = null
+                    },
+                ) {
+                    Text(stringResource(MR.strings.remove), color = MaterialTheme.colorScheme.error)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { confirmDeleteInvite = null }) {
+                    Text(stringResource(MR.strings.cancel))
+                }
+            },
+        )
     }
 
     confirmDeleteFriend?.let { friend ->

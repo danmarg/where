@@ -4,6 +4,7 @@ import SwiftUI
 struct FriendsSheet: View {
     @Binding var displayName: String
     let friends: [Shared.FriendEntry]
+    let pendingInvites: [Shared.PendingInvite]
     let pausedFriendIds: Set<String>
     let lastPingTimes: [String: Date]
     let onTogglePause: (String) -> Void
@@ -12,9 +13,11 @@ struct FriendsSheet: View {
     let onRename: (String, String) -> Void
     let onPasteUrl: (String) -> Void
     let onRemove: (String) -> Void
+    let onRemovePendingInvite: (String) -> Void
     let onZoomTo: (String) -> Void
 
     @State private var friendToRemove: Shared.FriendEntry? = nil
+    @State private var inviteToRemove: Shared.PendingInvite? = nil
     @State private var friendToRename: Shared.FriendEntry? = nil
     @State private var newFriendName: String = ""
     @State private var showPasteField = false
@@ -48,63 +51,87 @@ struct FriendsSheet: View {
                     }
                 }
 
-                if !friends.isEmpty {
-                    Section(MR.strings().friends.localized() + " (\(friends.count))") {
-                        ForEach(friends, id: \.id) { friend in
-                            VStack(alignment: .leading, spacing: 0) {
+                if !friends.isEmpty || !pendingInvites.isEmpty {
+                    if !friends.isEmpty {
+                        Section(MR.strings().friends.localized() + " (\(friends.count))") {
+                            ForEach(friends, id: \.id) { friend in
+                                VStack(alignment: .leading, spacing: 0) {
+                                    HStack {
+                                        VStack(alignment: .leading, spacing: 2) {
+                                            let pendingText = "(" + MR.strings().pending.localized() + ")"
+                                            let displayName = friend.isConfirmed ? friend.name : "\(friend.name) \(pendingText)"
+                                            Text(displayName)
+                                                .font(.body)
+                                            Text(friend.safetyNumber)
+                                                .font(.caption2)
+                                                .fontDesign(.monospaced)
+                                                .foregroundStyle(.secondary)
+                                            Text(timeAgoString(lastPingTimes[friend.id]))
+                                                .font(.caption)
+                                                .foregroundStyle(.secondary)
+                                            if friend.isStale {
+                                                Text(MR.strings().friend_inactive_warning.localized())
+                                                    .font(.caption)
+                                                    .foregroundStyle(.red)
+                                            }
+                                        }
+                                        Spacer()
+
+                                        Button {
+                                            friendToRename = friend
+                                            newFriendName = friend.name
+                                        } label: {
+                                            Image(systemName: "pencil")
+                                                .font(.title3)
+                                                .foregroundStyle(.gray)
+                                        }
+                                        .buttonStyle(.plain)
+
+                                        let isPaused = pausedFriendIds.contains(friend.id)
+                                        Button {
+                                            onTogglePause(friend.id)
+                                        } label: {
+                                            Image(systemName: isPaused ? "play.circle" : "pause.circle")
+                                                .font(.title3)
+                                                .foregroundStyle(isPaused ? .blue : .gray)
+                                        }
+                                        .buttonStyle(.plain)
+                                    }
+                                    if debugExpandedFriendId == friend.id {
+                                        FriendDebugView(friend: friend)
+                                    }
+                                }
+                                .contentShape(Rectangle())
+                                .onTapGesture { onZoomTo(friend.id) }
+                                .onLongPressGesture {
+                                    debugExpandedFriendId = debugExpandedFriendId == friend.id ? nil : friend.id
+                                }
+                                .swipeActions {
+                                    Button(MR.strings().remove.localized(), role: .destructive) {
+                                        friendToRemove = friend
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    if !pendingInvites.isEmpty {
+                        Section(MR.strings().pending_invites.localized() + " (\(pendingInvites.count))") {
+                            ForEach(pendingInvites, id: { $0.qrPayload.discoveryToken().toHex() }) { invite in
                                 HStack {
                                     VStack(alignment: .leading, spacing: 2) {
-                                        let pendingText = "(" + MR.strings().pending.localized() + ")"
-                                        let displayName = friend.isConfirmed ? friend.name : "\(friend.name) \(pendingText)"
-                                        Text(displayName)
+                                        Text(MR.strings().invite.localized())
                                             .font(.body)
-                                        Text(friend.safetyNumber)
-                                            .font(.caption2)
-                                            .fontDesign(.monospaced)
-                                            .foregroundStyle(.secondary)
-                                        Text(timeAgoString(lastPingTimes[friend.id]))
+                                        Text(timeAgoStringFromSeconds(invite.createdAt))
                                             .font(.caption)
                                             .foregroundStyle(.secondary)
-                                        if friend.isStale {
-                                            Text(MR.strings().friend_inactive_warning.localized())
-                                                .font(.caption)
-                                                .foregroundStyle(.red)
-                                        }
                                     }
                                     Spacer()
-
-                                    Button {
-                                        friendToRename = friend
-                                        newFriendName = friend.name
-                                    } label: {
-                                        Image(systemName: "pencil")
-                                            .font(.title3)
-                                            .foregroundStyle(.gray)
-                                    }
-                                    .buttonStyle(.plain)
-
-                                    let isPaused = pausedFriendIds.contains(friend.id)
-                                    Button {
-                                        onTogglePause(friend.id)
-                                    } label: {
-                                        Image(systemName: isPaused ? "play.circle" : "pause.circle")
-                                            .font(.title3)
-                                            .foregroundStyle(isPaused ? .blue : .gray)
-                                    }
-                                    .buttonStyle(.plain)
                                 }
-                                if debugExpandedFriendId == friend.id {
-                                    FriendDebugView(friend: friend)
-                                }
-                            }
-                            .contentShape(Rectangle())
-                            .onTapGesture { onZoomTo(friend.id) }
-                            .onLongPressGesture {
-                                debugExpandedFriendId = debugExpandedFriendId == friend.id ? nil : friend.id
-                            }
-                            .swipeActions {
-                                Button(MR.strings().remove.localized(), role: .destructive) {
-                                    friendToRemove = friend
+                                .swipeActions {
+                                    Button(MR.strings().remove.localized(), role: .destructive) {
+                                        inviteToRemove = invite
+                                    }
                                 }
                             }
                         }
@@ -131,6 +158,19 @@ struct FriendsSheet: View {
                 }
             } message: {
                 Text(MR.strings().permanently_delete_key_warning.localized())
+            }
+            .confirmationDialog(
+                MR.strings().cancel_invite_title.localized(),
+                isPresented: Binding(get: { inviteToRemove != nil }, set: { if !$0 { inviteToRemove = nil } }),
+                titleVisibility: .visible
+            ) {
+                Button(MR.strings().remove.localized(), role: .destructive) {
+                    if let invite = inviteToRemove {
+                        onRemovePendingInvite(invite.qrPayload.discoveryToken().toHex())
+                    }
+                }
+            } message: {
+                Text(MR.strings().cancel_invite_message.localized())
             }
             .alert(MR.strings().rename_friend_title.localized(), isPresented: Binding(get: { friendToRename != nil }, set: { if !$0 { friendToRename = nil } })) {
                 TextField(MR.strings().friend_name_label.localized(), text: $newFriendName)

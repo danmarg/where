@@ -20,6 +20,8 @@ import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
+import net.af0.where.e2ee.toHex
+import net.af0.where.e2ee.discoveryToken
 import net.af0.where.e2ee.ConnectionStatus
 import net.af0.where.e2ee.E2eeStorage
 import net.af0.where.e2ee.E2eeStore
@@ -65,6 +67,9 @@ class TestFakeLocationSource : LocationSource {
     private val _pendingInitPayload = MutableStateFlow<KeyExchangeInitPayload?>(null)
     override val pendingInitPayload: StateFlow<KeyExchangeInitPayload?> = _pendingInitPayload.asStateFlow()
 
+    private val _pendingInitDiscoveryToken = MutableStateFlow<String?>(null)
+    override val pendingInitDiscoveryToken: StateFlow<String?> = _pendingInitDiscoveryToken.asStateFlow()
+
     private val _multipleScansDetected = MutableStateFlow(false)
     override val multipleScansDetected: StateFlow<Boolean> = _multipleScansDetected.asStateFlow()
 
@@ -76,6 +81,9 @@ class TestFakeLocationSource : LocationSource {
 
     private val _friends = MutableStateFlow<List<FriendEntry>>(emptyList())
     override val friends: StateFlow<List<FriendEntry>> = _friends.asStateFlow()
+
+    private val _pendingInvites = MutableStateFlow<List<net.af0.where.e2ee.PendingInvite>>(emptyList())
+    override val pendingInvites: StateFlow<List<net.af0.where.e2ee.PendingInvite>> = _pendingInvites.asStateFlow()
 
     private val _lastRapidPollTrigger = MutableStateFlow(0L)
     override val lastRapidPollTrigger: StateFlow<Long> = _lastRapidPollTrigger.asStateFlow()
@@ -134,6 +142,15 @@ class TestFakeLocationSource : LocationSource {
         _multipleScansDetected.value = multipleScans
     }
 
+    override fun onPendingInitWithToken(
+        payload: KeyExchangeInitPayload?,
+        multipleScans: Boolean,
+        discoveryTokenHex: String?,
+    ) {
+        _pendingInitPayload.value = payload
+        _multipleScansDetected.value = multipleScans
+    }
+
     override fun setSharingLocation(sharing: Boolean) {
         _isSharingLocation.value = sharing
     }
@@ -144,6 +161,10 @@ class TestFakeLocationSource : LocationSource {
 
     override fun onFriendsUpdated(friendsList: List<FriendEntry>) {
         _friends.value = friendsList
+    }
+
+    override fun onPendingInvitesUpdated(invites: List<net.af0.where.e2ee.PendingInvite>) {
+        _pendingInvites.value = invites
     }
 
     override fun onPendingQrForNaming(qr: QrPayload?) {
@@ -243,7 +264,7 @@ class LocationViewModelTest {
     fun testInviteLifecycle_AliceSide() =
         runTest {
             val fakeLocationSource = TestFakeLocationSource()
-            val store = E2eeStore(FakeE2eeStorage())
+            val store = io.mockk.spyk(E2eeStore(FakeE2eeStorage()))
             val client = LocationClient("http://localhost", store)
             // Disable automatic polling loop to prevent hangs
             viewModel =
@@ -274,12 +295,14 @@ class LocationViewModelTest {
                 )
 
             // Bob's response arriving at the repository
-            fakeLocationSource.onPendingInit(initPayload)
+            fakeLocationSource.onPendingInitWithToken(initPayload, false, qr.discoveryToken().toHex())
             advanceUntilIdle()
 
             // After peer joins, inviteState transitions to None to dismiss QR sheet
             assertTrue(vm.inviteState.value is InviteState.None)
             assertEquals("Bob", vm.pendingInitPayload.value?.suggestedName)
+
+            io.mockk.coEvery { store.processKeyExchangeInit(any(), any(), any()) } returns mockk(relaxed = true)
 
             // 3. Alice cancels naming Bob
             vm.cancelPendingInit()
@@ -357,7 +380,7 @@ class LocationViewModelTest {
             vm.confirmPendingInit("Bob (Friend)")
             advanceUntilIdle()
 
-            io.mockk.coVerify { store.processKeyExchangeInit(initPayload, "Bob (Friend)") }
+            io.mockk.coVerify { store.processKeyExchangeInit(initPayload, "Bob (Friend)", any()) }
             assertNull(vm.pendingInitPayload.value)
         }
 

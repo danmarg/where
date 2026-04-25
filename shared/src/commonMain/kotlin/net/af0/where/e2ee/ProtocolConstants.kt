@@ -20,5 +20,9 @@ internal const val MAX_KEY_AGE_MS = 604_800_000L // 7 days in milliseconds
 internal const val MAX_SEEN_DH_PUBS = 10
 const val PROTOCOL_VERSION = 1
 const val SUPPORTED_MAX_VERSION = 1
+
+/** Pending invites expire after 48 hours (§222). */
+const val PENDING_INVITE_EXPIRY_SECONDS = 48 * 3600L
+
 internal const val AAD_PREFIX = "Where-v1-Message"
 internal const val PADDING_SIZE = 512
