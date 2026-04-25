@@ -194,7 +194,11 @@ class LocationService : Service() {
 
     override fun onDestroy() {
         Log.d(TAG, "onDestroy")
-        fusedClient.removeLocationUpdates(locationCallback)
+        try {
+            fusedClient.removeLocationUpdates(locationCallback)
+        } catch (_: SecurityException) {
+            Log.w(TAG, "No location permission; skipping removeLocationUpdates in onDestroy.")
+        }
         isRegistered = false
         pendingFriendSends.close()
         cancelDozeAlarm()
