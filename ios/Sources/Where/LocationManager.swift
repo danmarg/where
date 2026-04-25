@@ -7,6 +7,7 @@ protocol LocationProviding: AnyObject {
     var locationPublisher: AnyPublisher<CLLocation?, Never> { get }
     var lastLocation: CLLocation? { get }
     func requestPermissionAndStart()
+    func sharingStateChanged()
 }
 
 @MainActor
@@ -57,6 +58,10 @@ final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelega
         default:
             break
         }
+    }
+
+    func sharingStateChanged() {
+        updateRegistration()
     }
 
     func updateRegistration() {
