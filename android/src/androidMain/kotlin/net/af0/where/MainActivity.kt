@@ -32,6 +32,8 @@ import androidx.core.content.ContextCompat
 import com.journeyapps.barcodescanner.ScanContract
 import com.journeyapps.barcodescanner.ScanOptions
 import dev.icerock.moko.resources.compose.stringResource
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.core.app.ActivityCompat
 import net.af0.where.e2ee.InviteState
 import net.af0.where.shared.MR
 
@@ -42,6 +44,23 @@ class MainActivity : ComponentActivity() {
         registerForActivityResult(ScanContract()) { result ->
             result.contents?.let { viewModel.processQrUrl(it) }
         }
+
+    private val requestCameraPermissionLauncher =
+        registerForActivityResult(ActivityResultContracts.RequestPermission()) { isGranted ->
+            if (isGranted) {
+                launchScanner()
+            }
+        }
+
+    private fun launchScanner() {
+        scanLauncher.launch(
+            ScanOptions().apply {
+                setDesiredBarcodeFormats(ScanOptions.QR_CODE)
+                setBeepEnabled(false)
+                setOrientationLocked(false)
+            },
+        )
+    }
 
     fun startLocationService() {
         val hasPermission =
@@ -79,6 +98,7 @@ class MainActivity : ComponentActivity() {
                 val connectionStatus by viewModel.connectionStatus.collectAsState()
 
                 var showSimulatorScanner by remember { mutableStateOf(false) }
+                var showCameraRationale by remember { mutableStateOf(false) }
                 var selectedUserId by remember { mutableStateOf<String?>(null) }
 
                 MapScreen(
@@ -101,13 +121,18 @@ class MainActivity : ComponentActivity() {
                         ) {
                             showSimulatorScanner = true
                         } else {
-                            scanLauncher.launch(
-                                ScanOptions().apply {
-                                    setDesiredBarcodeFormats(ScanOptions.QR_CODE)
-                                    setBeepEnabled(false)
-                                    setOrientationLocked(false)
-                                },
-                            )
+                            val permission = Manifest.permission.CAMERA
+                            when {
+                                ContextCompat.checkSelfPermission(this, permission) == PackageManager.PERMISSION_GRANTED -> {
+                                    launchScanner()
+                                }
+                                ActivityCompat.shouldShowRequestPermissionRationale(this, permission) -> {
+                                    showCameraRationale = true
+                                }
+                                else -> {
+                                    requestCameraPermissionLauncher.launch(permission)
+                                }
+                            }
                         }
                     },
                     onPasteUrl = { viewModel.processQrUrl(it) },
@@ -118,6 +143,25 @@ class MainActivity : ComponentActivity() {
                     onSelectedUserIdChange = { selectedUserId = it },
                     onLocationPermissionGranted = ::startLocationService,
                 )
+
+                if (showCameraRationale) {
+                    AlertDialog(
+                        onDismissRequest = { showCameraRationale = false },
+                        title = { Text(stringResource(MR.strings.scan)) },
+                        text = { Text(stringResource(MR.strings.camera_permission_rationale)) },
+                        confirmButton = {
+                            TextButton(onClick = {
+                                showCameraRationale = false
+                                requestCameraPermissionLauncher.launch(Manifest.permission.CAMERA)
+                            }) { Text(stringResource(MR.strings.ok)) }
+                        },
+                        dismissButton = {
+                            TextButton(onClick = { showCameraRationale = false }) {
+                                Text(stringResource(MR.strings.cancel))
+                            }
+                        },
+                    )
+                }
 
                 if (isExchanging) {
                     Box(

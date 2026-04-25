@@ -52,6 +52,7 @@
     <string name="camera_unavailable_emulator">Camera is unavailable in the emulator. Enter an invite URL manually.</string>
     <string name="invite_url">Invite URL</string>
     <string name="simulate_scan">Simulate Scan</string>
+    <string name="camera_permission_rationale">Where needs camera access to scan friend invite QR codes.</string>
     <string name="me">Me</string>
     <string name="location_sharing_paused">Location sharing is paused</string>
     <string name="sharing_your_location">Sharing your location</string>
