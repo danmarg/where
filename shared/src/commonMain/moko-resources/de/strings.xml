@@ -55,9 +55,11 @@
     <string name="camera_permission_rationale">Where benötigt Kamerazugriff, um QR-Codes von Freundeseinladungen zu scannen.</string>
     <string name="me">Ich</string>
     <string name="location_sharing_paused">Standortfreigabe pausiert</string>
+    <string name="location_sharing_paused_no_permission">Pausiert · Berechtigung fehlt</string>
     <string name="sharing_your_location">Standort wird geteilt</string>
     <string name="location_permission_missing">Standortberechtigung fehlt</string>
     <string name="where_location">Where-Standort</string>
+    <string name="approximate">Ungefähr</string>
     <string name="invalid_qr_code">Ungültiger QR-Code</string>
     <string name="pairing_failed">Kopplung fehlgeschlagen: ungültige Antwort</string>
     <string name="error_no_connection">Keine Verbindung: Server konnte nicht erreicht werden.</string>

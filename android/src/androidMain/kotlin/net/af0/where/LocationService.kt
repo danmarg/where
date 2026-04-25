@@ -72,13 +72,16 @@ class LocationService : Service() {
         Log.d(TAG, "onCreate")
         createNotificationChannel()
 
-        // Always call startForeground immediately to avoid ForegroundServiceDidNotStartInTimeException
-        startForeground(NOTIFICATION_ID, buildNotification())
+        // Initialise repository sharing state from prefs before starting any collection.
+        val sharing = UserPrefs.isSharing(this)
+        locationSource.setSharingLocation(sharing)
+
+        // Always call startForeground immediately to avoid ForegroundServiceDidNotStartInTimeException.
+        // We pass sharing explicitly here because the LocationSource state flow might not have
+        // propagated the update yet.
+        startForeground(NOTIFICATION_ID, buildNotification(sharing))
 
         alarmManager = getSystemService(AlarmManager::class.java)
-
-        // Initialise repository sharing state from prefs before starting any collection.
-        locationSource.setSharingLocation(UserPrefs.isSharing(this))
 
         val app = application as WhereApplication
         e2eeStore = e2eeStoreOverride ?: app.e2eeStore
@@ -201,7 +204,7 @@ class LocationService : Service() {
         Log.d(TAG, "onDestroy")
         try {
             fusedClient.removeLocationUpdates(locationCallback)
-        } catch (e: SecurityException) {
+        } catch (e: Exception) {
             Log.e(TAG, "Failed to remove location updates in onDestroy", e)
         }
         isRegistered = false
@@ -426,10 +429,12 @@ class LocationService : Service() {
         getSystemService(NotificationManager::class.java).createNotificationChannel(channel)
     }
 
-    private fun buildNotification(): Notification {
-        val sharing = LocationRepository.isSharingLocation.value
+    private fun buildNotification(sharingOverride: Boolean? = null): Notification {
+        val sharing = sharingOverride ?: LocationRepository.isSharingLocation.value
+        val hasPermission = hasLocationPermission()
         val text = when {
-            !hasLocationPermission() -> stringResource(MR.strings.location_permission_missing)
+            sharing && !hasPermission -> stringResource(MR.strings.location_permission_missing)
+            !sharing && !hasPermission -> stringResource(MR.strings.location_sharing_paused_no_permission)
             sharing -> stringResource(MR.strings.sharing_your_location)
             else -> stringResource(MR.strings.location_sharing_paused)
         }

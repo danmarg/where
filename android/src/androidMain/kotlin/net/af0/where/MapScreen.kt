@@ -377,11 +377,20 @@ fun MapScreen(
                                 ),
                     )
                     Column {
-                        Text(
-                            text = stringResource(MR.strings.you),
-                            color = Color.White,
-                            style = MaterialTheme.typography.labelSmall,
-                        )
+                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                            Text(
+                                text = stringResource(MR.strings.you),
+                                color = Color.White,
+                                style = MaterialTheme.typography.labelSmall,
+                            )
+                            if (locationPermissions.anyPermissionGranted && !locationPermissions.fineLocationGranted) {
+                                Text(
+                                    text = "(" + stringResource(MR.strings.approximate) + ")",
+                                    color = Color.White.copy(alpha = 0.6f),
+                                    style = MaterialTheme.typography.labelSmall.copy(fontSize = 8.sp),
+                                )
+                            }
+                        }
                         if (connectionStatus is ConnectionStatus.Error) {
                             Text(
                                 text = connectionStatus.message.toString(context),
