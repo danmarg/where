@@ -387,7 +387,9 @@ fun MapScreen(
                                 Text(
                                     text = "(" + stringResource(MR.strings.approximate) + ")",
                                     color = Color.White.copy(alpha = 0.6f),
-                                    style = MaterialTheme.typography.labelSmall.copy(fontSize = 8.sp),
+                                    style = MaterialTheme.typography.labelSmall.copy(
+                                        fontSize = MaterialTheme.typography.labelSmall.fontSize * 0.8f
+                                    ),
                                 )
                             }
                         }
