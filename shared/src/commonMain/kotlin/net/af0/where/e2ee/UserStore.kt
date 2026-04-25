@@ -100,6 +100,17 @@ class UserStore(private val storage: E2eeStorage) {
         storage.putString(KEY_LAST_ZOOM, zoom.toString())
     }
 
+    private val _cameraRequested =
+        MutableStateFlow(
+            storage.getString(KEY_CAMERA_REQUESTED)?.toBoolean() ?: false,
+        )
+    val cameraRequested: StateFlow<Boolean> = _cameraRequested.asStateFlow()
+
+    fun setCameraRequested(requested: Boolean) {
+        _cameraRequested.value = requested
+        storage.putString(KEY_CAMERA_REQUESTED, requested.toString())
+    }
+
     companion object {
         private const val KEY_IS_SHARING = "is_sharing"
         private const val KEY_DISPLAY_NAME = "display_name"
@@ -107,5 +118,6 @@ class UserStore(private val storage: E2eeStorage) {
         private const val KEY_LAST_LAT = "last_lat"
         private const val KEY_LAST_LNG = "last_lng"
         private const val KEY_LAST_ZOOM = "last_zoom"
+        private const val KEY_CAMERA_REQUESTED = "camera_requested"
     }
 }

@@ -288,6 +288,15 @@ struct ContentView: View {
 
     private func handleSharingButtonTap() {
         if !syncService.isSharingLocation {
+            switch locationManager.authorizationStatus {
+            case .denied, .restricted:
+                if let url = URL(string: UIApplication.openSettingsURLString) {
+                    UIApplication.shared.open(url)
+                }
+                return // don't set isSharingLocation = true
+            default:
+                break
+            }
             syncService.isSharingLocation = true
             locationManager.requestPermissionAndStart()
             return
