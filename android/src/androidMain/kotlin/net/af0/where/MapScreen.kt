@@ -32,11 +32,11 @@ import net.af0.where.model.UserLocation
 import net.af0.where.shared.MR
 
 @OptIn(ExperimentalPermissionsApi::class)
-private val MultiplePermissionsState.anyPermissionGranted: Boolean
+private val MultiplePermissionsState.anyPermissionGranted_where: Boolean
     get() = permissions.any { it.status.isGranted }
 
 @OptIn(ExperimentalPermissionsApi::class)
-private val MultiplePermissionsState.fineLocationGranted: Boolean
+private val MultiplePermissionsState.fineLocationGranted_where: Boolean
     get() = permissions.find { it.permission == android.Manifest.permission.ACCESS_FINE_LOCATION }?.status?.isGranted == true
 
 @OptIn(ExperimentalPermissionsApi::class, ExperimentalMaterial3Api::class)
@@ -83,13 +83,13 @@ fun MapScreen(
     var showBackgroundRationale by remember { mutableStateOf(false) }
 
     LaunchedEffect(Unit) {
-        if (!locationPermissions.anyPermissionGranted) {
+        if (!locationPermissions.anyPermissionGranted_where) {
             locationPermissions.launchMultiplePermissionRequest()
         }
     }
 
-    LaunchedEffect(locationPermissions.anyPermissionGranted) {
-        if (locationPermissions.anyPermissionGranted) {
+    LaunchedEffect(locationPermissions.anyPermissionGranted_where) {
+        if (locationPermissions.anyPermissionGranted_where) {
             onLocationPermissionGranted()
             // Show disclosure before requesting background location (required by Play Store).
             if (backgroundLocationPermission != null && !backgroundLocationPermission.status.isGranted) {
@@ -117,7 +117,7 @@ fun MapScreen(
         )
     }
 
-    if (!locationPermissions.anyPermissionGranted) {
+    if (!locationPermissions.anyPermissionGranted_where) {
         Box(modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
             Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 Text(stringResource(MR.strings.location_permission_required))
@@ -240,7 +240,7 @@ fun MapScreen(
             onMapClick = { onSelectedUserIdChange(null) },
             properties =
                 MapProperties(
-                    isMyLocationEnabled = locationPermissions.fineLocationGranted,
+                    isMyLocationEnabled = locationPermissions.fineLocationGranted_where,
                     mapStyleOptions = com.google.android.gms.maps.model.MapStyleOptions(mapStyleJson),
                 ),
             uiSettings =
@@ -383,7 +383,7 @@ fun MapScreen(
                                 color = Color.White,
                                 style = MaterialTheme.typography.labelSmall,
                             )
-                            if (locationPermissions.anyPermissionGranted && !locationPermissions.fineLocationGranted) {
+                            if (locationPermissions.anyPermissionGranted_where && !locationPermissions.fineLocationGranted_where) {
                                 Text(
                                     text = "(" + stringResource(MR.strings.approximate) + ")",
                                     color = Color.White.copy(alpha = 0.6f),
