@@ -207,8 +207,8 @@ class LocationService : Service() {
         Log.d(TAG, "onDestroy")
         try {
             fusedClient.removeLocationUpdates(locationCallback)
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to remove location updates in onDestroy", e)
+        } catch (e: SecurityException) {
+            Log.w(TAG, "SecurityException removing location updates in onDestroy", e)
         }
         isRegistered = false
         pendingFriendSends.close()
