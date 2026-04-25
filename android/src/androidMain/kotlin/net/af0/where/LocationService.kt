@@ -62,19 +62,19 @@ class LocationService : Service() {
     private lateinit var e2eeStore: E2eeStore
     private lateinit var locationClient: LocationClient
 
+    private fun hasLocationPermission(): Boolean {
+        return ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED ||
+            ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED
+    }
+
     override fun onCreate() {
         super.onCreate()
         Log.d(TAG, "onCreate")
         createNotificationChannel()
-        val hasLocationPermission =
-            ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED ||
-                ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED
-        if (!hasLocationPermission) {
-            Log.w(TAG, "Location permission not granted; stopping service.")
-            stopSelf()
-            return
-        }
+
+        // Always call startForeground immediately to avoid ForegroundServiceDidNotStartInTimeException
         startForeground(NOTIFICATION_ID, buildNotification())
+
         alarmManager = getSystemService(AlarmManager::class.java)
 
         // Initialise repository sharing state from prefs before starting any collection.
@@ -94,13 +94,15 @@ class LocationService : Service() {
             }
 
         try {
-            fusedClient.lastLocation.addOnSuccessListener { loc ->
-                if (loc != null) {
-                    locationSource.onLocation(
-                        loc.latitude,
-                        loc.longitude,
-                        if (loc.hasBearing()) loc.bearing.toDouble() else null,
-                    )
+            if (hasLocationPermission()) {
+                fusedClient.lastLocation.addOnSuccessListener { loc ->
+                    if (loc != null) {
+                        locationSource.onLocation(
+                            loc.latitude,
+                            loc.longitude,
+                            if (loc.hasBearing()) loc.bearing.toDouble() else null,
+                        )
+                    }
                 }
             }
         } catch (_: SecurityException) {
@@ -147,6 +149,7 @@ class LocationService : Service() {
         startId: Int,
     ): Int {
         Log.d(TAG, "onStartCommand: isRegistered=$isRegistered")
+        ensureLocationRegistration()
         if (intent?.action == ACTION_POLL_ALARM) {
             locationSource.wakePoll()
         }
@@ -423,7 +426,11 @@ class LocationService : Service() {
 
     private fun buildNotification(): Notification {
         val sharing = LocationRepository.isSharingLocation.value
-        val text = if (sharing) stringResource(MR.strings.sharing_your_location) else stringResource(MR.strings.location_sharing_paused)
+        val text = when {
+            !hasLocationPermission() -> stringResource(MR.strings.location_permission_missing)
+            sharing -> stringResource(MR.strings.sharing_your_location)
+            else -> stringResource(MR.strings.location_sharing_paused)
+        }
         return Notification.Builder(this, CHANNEL_ID)
             .setContentTitle(stringResource(MR.strings.app_name))
             .setContentText(text)
