@@ -21,7 +21,7 @@ protocol LocationClientProtocol: AnyObject, Sendable {
     func postKeyExchangeInit(qr: Shared.QrPayload, initPayload: Shared.KeyExchangeInitPayload) async throws
 }
 
-extension Shared.LocationClient: LocationClientProtocol {}
+extension Shared.LocationClient: @unchecked Sendable, LocationClientProtocol {}
 
 @inline(__always)
 private func debugLog(_ msg: () -> String) {
@@ -323,7 +323,7 @@ final class LocationSyncService: ObservableObject {
             updateVisibleUsers()
 
             if updateUi {
-                try await pollPendingInvite()
+                _ = try await pollPendingInvite()
             }
 
             // Heartbeat: if we're awake enough to poll, also send location if one is due.
@@ -352,14 +352,17 @@ final class LocationSyncService: ObservableObject {
         }
     }
 
-    private func pollPendingInvite() async throws {
-        if pendingInitPayload != nil { return }
+    @discardableResult
+    private func pollPendingInvite() async throws -> Shared.PendingInviteResult? {
+        if pendingInitPayload != nil { return nil }
         if let result = try await locationClient.pollPendingInvite() {
             pendingInitPayload = result.payload
             multipleScansDetected = result.multipleScansDetected
             inviteState = Shared.InviteState.None()
             triggerRapidPoll()
+            return result
         }
+        return nil
     }
 
     func clearInvite() async {
@@ -374,7 +377,7 @@ final class LocationSyncService: ObservableObject {
 
     @discardableResult
     func processQrUrl(_ url: String) -> Bool {
-        guard let qr = Shared.QrPayload.companion.fromUrl(url: url) else {
+        guard let qr = Shared.QrPayload.Companion.shared.fromUrl(url: url) else {
             updateStatus(NSError(domain: "Where", code: 400, userInfo: [NSLocalizedDescriptionKey: MR.strings().invalid_qr_code.localized()]))
             return false
         }

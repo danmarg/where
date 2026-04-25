@@ -95,10 +95,16 @@ jobs:
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY=""
 
+      - name: Zip iOS Test Results
+        if: always()
+        run: |
+          cd ios
+          zip -r TestResults.xcresult.zip TestResults.xcresult
+
       - name: Upload iOS Test Results
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: ios-test-results
-          path: ios/TestResults.xcresult
+          path: ios/TestResults.xcresult.zip
           retention-days: 7

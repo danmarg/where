@@ -83,9 +83,14 @@ jobs:
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY=""
 
+      - name: Zip iOS app
+        run: |
+          cd ios/build/Build/Products/Debug-iphonesimulator
+          zip -r Where.app.zip Where.app
+
       - name: Upload iOS debug app
         uses: actions/upload-artifact@v4
         with:
           name: ios-debug-app
-          path: ios/build/Build/Products/Debug-iphonesimulator/Where.app
+          path: ios/build/Build/Products/Debug-iphonesimulator/Where.app.zip
           retention-days: 14
