@@ -144,11 +144,11 @@ class LocationServicePermissionTest {
         // Verify fusedClient WAS used for updates because Coarse permission is sufficient
         verify(exactly = 1) { mockFused.requestLocationUpdates(any<com.google.android.gms.location.LocationRequest>(), any<com.google.android.gms.location.LocationCallback>(), any<android.os.Looper>()) }
         
-        // Notification should NOT say "missing" because Coarse is enough
+        // Notification should show "sharing" because Coarse is enough
         val notificationManager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         val shadowNotificationManager: ShadowNotificationManager = shadowOf(notificationManager)
         val notification = shadowNotificationManager.allNotifications.firstOrNull()
         val shadowNotification = shadowOf(notification)
-        assertFalse(shadowNotification.contentText == StringDesc.Resource(MR.strings.location_permission_missing).toString(context))
+        assertEquals(StringDesc.Resource(MR.strings.sharing_your_location).toString(context), shadowNotification.contentText)
     }
 }

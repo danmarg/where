@@ -1,6 +1,7 @@
 package net.af0.where
 
 import androidx.activity.ComponentActivity
+import androidx.annotation.VisibleForTesting
 
 /**
  * A stub activity used solely for Robolectric unit tests (e.g., MapScreenTest).
@@ -9,4 +10,5 @@ import androidx.activity.ComponentActivity
  * cannot always resolve activities declared in test-only manifests when running 
  * against the 'release' build variant.
  */
+@VisibleForTesting
 class TestActivity : ComponentActivity()

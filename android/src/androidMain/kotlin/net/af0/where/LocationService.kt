@@ -171,7 +171,6 @@ class LocationService : Service() {
             }
         }
 
-        ensureLocationRegistration()
         return START_STICKY
     }
 
@@ -186,6 +185,13 @@ class LocationService : Service() {
                 }
                 isRegistered = false
             }
+            // Note: We don't call stopSelf() here even if permissions are missing.
+            // This is intentional:
+            // 1. To avoid ForegroundServiceDidNotStartInTimeException on startup.
+            // 2. To allow the service to continue polling for friend updates in the background
+            //    even if we cannot share our own location.
+            // 3. To provide a persistent notification warning the user that their location 
+            //    sharing intent is failing due to missing permissions.
             return
         }
 
