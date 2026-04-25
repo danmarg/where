@@ -64,7 +64,9 @@ jobs:
         run: touch ios/Local.xcconfig
 
       - name: Generate Xcode project
-        run: cd ios && xcodegen
+        run: |
+          touch ios/Local.xcconfig
+          cd ios && xcodegen
 
       - name: Build KMP shared framework
         run: ./gradlew :shared:assembleSharedDebugXCFramework

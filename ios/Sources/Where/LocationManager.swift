@@ -7,6 +7,7 @@ protocol LocationProviding: AnyObject {
     var locationPublisher: AnyPublisher<CLLocation?, Never> { get }
     var lastLocation: CLLocation? { get }
     func requestPermissionAndStart()
+    func sharingStateChanged()
 }
 
 @MainActor
@@ -53,10 +54,33 @@ final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelega
         case .notDetermined:
             manager.requestWhenInUseAuthorization()
         case .authorizedWhenInUse, .authorizedAlways:
-            startUpdating()
+            updateRegistration()
         default:
             break
         }
+    }
+
+    func sharingStateChanged() {
+        updateRegistration()
+    }
+
+    func updateRegistration() {
+        guard let manager = manager else { return }
+        let status = manager.authorizationStatus
+        let isSharing = LocationSyncService.shared.isSharingLocation
+
+        if (status == .authorizedWhenInUse || status == .authorizedAlways) && isSharing {
+            startUpdating()
+        } else {
+            stopUpdating()
+        }
+    }
+
+    func stopUpdating() {
+        guard let manager = manager else { return }
+        manager.stopUpdatingLocation()
+        manager.stopMonitoringSignificantLocationChanges()
+        manager.stopUpdatingHeading()
     }
 
     func requestAlwaysPermission() {
@@ -111,9 +135,7 @@ final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelega
         Task { @MainActor in
             self.authorizationStatus = status
             self.manager?.allowsBackgroundLocationUpdates = (status == .authorizedAlways)
-            if status == .authorizedWhenInUse || status == .authorizedAlways {
-                self.startUpdating()
-            }
+            self.updateRegistration()
         }
     }
 }

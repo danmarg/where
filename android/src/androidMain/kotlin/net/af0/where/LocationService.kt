@@ -53,7 +53,9 @@ class LocationService : Service() {
     private lateinit var alarmManager: AlarmManager
     private lateinit var fusedClient: com.google.android.gms.location.FusedLocationProviderClient
     private lateinit var locationCallback: LocationCallback
-    private var isRegistered = false
+
+    @VisibleForTesting
+    internal var isRegistered = false
 
     private val pendingFriendSends = Channel<String>(Channel.UNLIMITED)
 
@@ -113,6 +115,7 @@ class LocationService : Service() {
         serviceScope.launch {
             locationSource.isSharingLocation.collect {
                 updateNotification()
+                ensureLocationRegistration()
             }
         }
 
@@ -176,22 +179,24 @@ class LocationService : Service() {
 
     private fun ensureLocationRegistration() {
         val hasPermission = hasLocationPermission()
-        if (!hasPermission) {
+        val isSharing = locationSource.isSharingLocation.value
+
+        if (!hasPermission || !isSharing) {
             if (isRegistered) {
-                Log.i(TAG, "Location permission lost; resetting registration state.")
+                Log.i(TAG, "Location registration no longer needed (permission=$hasPermission, sharing=$isSharing); resetting registration state.")
                 try {
                     fusedClient.removeLocationUpdates(locationCallback)
                 } catch (_: SecurityException) {
                 }
                 isRegistered = false
             }
-            // Note: We don't call stopSelf() here even if permissions are missing.
+            // Note: We don't call stopSelf() here even if permissions are missing or sharing is paused.
             // This is intentional:
             // 1. To avoid ForegroundServiceDidNotStartInTimeException on startup.
             // 2. To allow the service to continue polling for friend updates in the background
             //    even if we cannot share our own location.
             // 3. To provide a persistent notification warning the user that their location 
-            //    sharing intent is failing due to missing permissions.
+            //    sharing intent is failing due to missing permissions or is paused.
             return
         }
 
