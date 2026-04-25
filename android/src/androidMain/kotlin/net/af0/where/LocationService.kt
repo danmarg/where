@@ -53,7 +53,9 @@ class LocationService : Service() {
     private lateinit var alarmManager: AlarmManager
     private lateinit var fusedClient: com.google.android.gms.location.FusedLocationProviderClient
     private lateinit var locationCallback: LocationCallback
-    private var isRegistered = false
+
+    @VisibleForTesting
+    internal var isRegistered = false
 
     private val pendingFriendSends = Channel<String>(Channel.UNLIMITED)
 
