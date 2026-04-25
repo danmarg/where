@@ -42,6 +42,12 @@
             </intent-filter>
         </activity>
 
+        <!-- 
+            TestActivity is used by Robolectric tests (specifically MapScreenTest).
+            It must be declared in the main manifest to be resolvable by Robolectric 
+            when running unit tests against the 'release' build variant.
+            It is not exported and contains no logic.
+        -->
         <activity android:name=".TestActivity" android:exported="false" />
 
         <service
