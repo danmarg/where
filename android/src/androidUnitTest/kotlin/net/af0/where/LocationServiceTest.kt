@@ -141,8 +141,8 @@ class ServiceFakeLocationSource : LocationSource {
         _pausedFriendIds.value = friendIds
     }
 
-    override fun onFriendsUpdated(friendsList: List<FriendEntry>) {
-        _friends.value = friendsList
+    override fun onFriendsUpdated(friends: List<FriendEntry>) {
+        _friends.value = friends
     }
 
     override fun onPendingQrForNaming(qr: QrPayload?) {
@@ -343,7 +343,11 @@ class LocationServiceTest {
     @Test
     fun testActionForcePublish() =
         runTest {
-            val controller = Robolectric.buildService(LocationService::class.java)
+            val intent =
+                Intent(context, LocationService::class.java).apply {
+                    action = LocationService.ACTION_FORCE_PUBLISH
+                }
+            val controller = Robolectric.buildService(LocationService::class.java, intent)
             val service = controller.get()
 
             val mockClient = io.mockk.mockk<LocationClient>(relaxed = true)
@@ -352,11 +356,7 @@ class LocationServiceTest {
             fakeLocationSource.onLocation(1.0, 2.0, null)
             controller.create()
 
-            val intent =
-                Intent(context, LocationService::class.java).apply {
-                    action = LocationService.ACTION_FORCE_PUBLISH
-                }
-            controller.withIntent(intent).startCommand(0, 0)
+            controller.startCommand(0, 0)
             advanceUntilIdle()
 
             io.mockk.coVerify { mockClient.sendLocation(any(), any(), any()) }
