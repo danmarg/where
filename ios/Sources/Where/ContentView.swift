@@ -297,6 +297,9 @@ struct ContentView: View {
         case .notDetermined:
             locationManager.requestPermissionAndStart()
         case .authorizedWhenInUse:
+            // If already sharing but only foreground, offer to upgrade to 'Always'.
+            // Note: We don't toggle isSharingLocation off here; if they 'Skip' the rationale,
+            // we continue sharing in foreground mode.
             showLocationRationale = true
         case .denied, .restricted:
             if let url = URL(string: UIApplication.openSettingsURLString) {
