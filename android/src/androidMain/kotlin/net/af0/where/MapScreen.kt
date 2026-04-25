@@ -243,12 +243,17 @@ fun MapScreen(
                 ),
             locationSource = mapLocationSource,
         ) {
-            users.forEach { user ->
-                val name = friends.find { it.id == user.userId }?.name ?: user.userId.take(8)
+            val friendData = users.map { user ->
+                val friend = friends.find { it.id == user.userId }
+                val name = friend?.name ?: user.userId.take(8)
+                Triple(user, friend, name)
+            }
+
+            friendData.forEach { (user, friend, name) ->
                 val timeAgo = timeAgoStringFromMs(friendLastPing[user.userId])
                 val isSelected = selectedUserId == user.userId
                 key(user.userId, isSelected, name) {
-                    val markerState = rememberMarkerState(key = user.userId, position = LatLng(user.lat, user.lng))
+                    val markerState = rememberMarkerState(key = "${user.userId}_$name", position = LatLng(user.lat, user.lng))
                     LaunchedEffect(user.lat, user.lng) {
                         markerState.position = LatLng(user.lat, user.lng)
                     }
@@ -276,7 +281,7 @@ fun MapScreen(
                                     horizontalAlignment = Alignment.CenterHorizontally,
                                 ) {
                                     Text(
-                                        text = name.split(" ").first(),
+                                        text = name,
                                         style = MaterialTheme.typography.labelSmall,
                                         maxLines = 1,
                                         overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
