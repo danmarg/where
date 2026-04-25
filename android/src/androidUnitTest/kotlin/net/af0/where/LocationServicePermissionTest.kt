@@ -20,6 +20,9 @@ import org.robolectric.RobolectricTestRunner
 import org.robolectric.Shadows.shadowOf
 import org.robolectric.annotation.Config
 import org.robolectric.shadows.ShadowNotificationManager
+import dev.icerock.moko.resources.desc.StringDesc
+import dev.icerock.moko.resources.desc.Resource
+import net.af0.where.shared.MR
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
@@ -82,7 +85,10 @@ class LocationServicePermissionTest {
 
         assertNotNull(notification)
         val shadowNotification = shadowOf(notification)
-        assertEquals("Location permission missing", shadowNotification.contentText)
+        assertEquals(StringDesc.Resource(MR.strings.location_permission_missing).toString(context), shadowNotification.contentText)
+
+        // Verify fusedClient was NOT used for updates due to lack of permission
+        verify(exactly = 0) { mockFused.requestLocationUpdates(any<com.google.android.gms.location.LocationRequest>(), any<com.google.android.gms.location.LocationCallback>(), any<android.os.Looper>()) }
     }
 
     @Test
@@ -110,7 +116,7 @@ class LocationServicePermissionTest {
 
         assertNotNull(notification)
         val shadowNotification = shadowOf(notification)
-        assertEquals("Paused · Permission missing", shadowNotification.contentText)
+        assertEquals(StringDesc.Resource(MR.strings.location_sharing_paused_no_permission).toString(context), shadowNotification.contentText)
     }
 
     @Test
@@ -143,6 +149,6 @@ class LocationServicePermissionTest {
         val shadowNotificationManager: ShadowNotificationManager = shadowOf(notificationManager)
         val notification = shadowNotificationManager.allNotifications.firstOrNull()
         val shadowNotification = shadowOf(notification)
-        assertFalse(shadowNotification.contentText == "Location permission missing")
+        assertFalse(shadowNotification.contentText == StringDesc.Resource(MR.strings.location_permission_missing).toString(context))
     }
 }
