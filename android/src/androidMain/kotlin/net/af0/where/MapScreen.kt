@@ -1,3 +1,4 @@
+@file:OptIn(ExperimentalPermissionsApi::class)
 package net.af0.where
 
 import android.os.Build
@@ -31,11 +32,9 @@ import net.af0.where.e2ee.FriendEntry
 import net.af0.where.model.UserLocation
 import net.af0.where.shared.MR
 
-@OptIn(ExperimentalPermissionsApi::class)
 private val MultiplePermissionsState.hasAnyLocationPermission: Boolean
     get() = permissions.any { it.status.isGranted }
 
-@OptIn(ExperimentalPermissionsApi::class)
 private val MultiplePermissionsState.hasFineLocationPermission: Boolean
     get() = permissions.find { it.permission == android.Manifest.permission.ACCESS_FINE_LOCATION }?.status?.isGranted == true
 

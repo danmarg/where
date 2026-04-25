@@ -7,6 +7,7 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
@@ -28,12 +29,11 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import com.journeyapps.barcodescanner.ScanContract
 import com.journeyapps.barcodescanner.ScanOptions
 import dev.icerock.moko.resources.compose.stringResource
-import androidx.activity.result.contract.ActivityResultContracts
-import androidx.core.app.ActivityCompat
 import net.af0.where.e2ee.InviteState
 import net.af0.where.shared.MR
 
