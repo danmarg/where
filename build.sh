@@ -213,12 +213,9 @@ if ! $SKIP_IOS; then
     echo "✓ KMP shared framework built"
     echo ""
 
-    # Ensure XCFramework is built
-    if [[ "$BUILD_FLAVOR" == "debug" ]]; then
-      ./gradlew :shared:assembleSharedDebugXCFramework
-    else
-      ./gradlew :shared:assembleSharedReleaseXCFramework
-    fi
+    # Build both Debug and Release XCFrameworks so Xcode finds the right one
+    # regardless of which configuration is active when opening in the IDE.
+    ./gradlew :shared:assembleSharedDebugXCFramework :shared:assembleSharedReleaseXCFramework
 
     # Build the iOS app with xcodebuild.
     if [[ "$IOS_TARGET" == "simulator" ]]; then
