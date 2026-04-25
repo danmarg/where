@@ -177,6 +177,10 @@ class LocationService : Service() {
 
     private fun ensureLocationRegistration() {
         if (isRegistered) return
+        if (!hasLocationPermission()) {
+            Log.w(TAG, "No location permission; skipping GPS updates registration.")
+            return
+        }
 
         val request =
             LocationRequest.Builder(Priority.PRIORITY_BALANCED_POWER_ACCURACY, 30_000L)
@@ -188,10 +192,8 @@ class LocationService : Service() {
         try {
             fusedClient.requestLocationUpdates(request, locationCallback, mainLooper)
             isRegistered = true
-        } catch (_: SecurityException) {
-            // If we don't have permission, we just won't update our own location,
-            // but we can still poll for friend updates.
-            Log.w(TAG, "No location permission; skipping GPS updates.")
+        } catch (e: SecurityException) {
+            Log.w(TAG, "SecurityException while requesting location updates: ${e.message}")
         }
     }
 
