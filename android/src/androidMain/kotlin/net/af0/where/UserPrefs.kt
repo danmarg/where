@@ -44,4 +44,14 @@ object UserPrefs {
         lng: Double,
         zoom: Float,
     ) = store(context).setLastMapCamera(lat, lng, zoom)
+
+    fun hasRequestedCamera(context: Context): Boolean =
+        context.getSharedPreferences("where_prefs", Context.MODE_PRIVATE)
+            .getBoolean("camera_requested", false)
+
+    fun setCameraRequested(context: Context) =
+        context.getSharedPreferences("where_prefs", Context.MODE_PRIVATE)
+            .edit()
+            .putBoolean("camera_requested", true)
+            .apply()
 }

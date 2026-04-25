@@ -53,6 +53,8 @@
     <string name="invite_url">Einladungs-URL</string>
     <string name="simulate_scan">Scan simulieren</string>
     <string name="camera_permission_rationale">Where benötigt Kamerazugriff, um QR-Codes von Freundeseinladungen zu scannen.</string>
+    <string name="camera_permission_settings_rationale">Der Kamerazugriff wurde dauerhaft verweigert. Bitte aktivieren Sie ihn in den Einstellungen, um QR-Codes zu scannen.</string>
+    <string name="open_settings">Einstellungen öffnen</string>
     <string name="me">Ich</string>
     <string name="location_sharing_paused">Standortfreigabe pausiert</string>
     <string name="location_sharing_paused_no_permission">Pausiert · Berechtigung fehlt</string>
