@@ -73,13 +73,10 @@ class LocationService : Service() {
         createNotificationChannel()
 
         // Initialise repository sharing state from prefs before starting any collection.
-        val sharing = UserPrefs.isSharing(this)
-        locationSource.setSharingLocation(sharing)
+        locationSource.setSharingLocation(UserPrefs.isSharing(this))
 
         // Always call startForeground immediately to avoid ForegroundServiceDidNotStartInTimeException.
-        // We pass sharing explicitly here because the LocationSource state flow might not have
-        // propagated the update yet.
-        startForeground(NOTIFICATION_ID, buildNotification(sharing))
+        startForeground(NOTIFICATION_ID, buildNotification())
 
         alarmManager = getSystemService(AlarmManager::class.java)
 
@@ -435,8 +432,8 @@ class LocationService : Service() {
         getSystemService(NotificationManager::class.java).createNotificationChannel(channel)
     }
 
-    private fun buildNotification(sharingOverride: Boolean? = null): Notification {
-        val sharing = sharingOverride ?: LocationRepository.isSharingLocation.value
+    private fun buildNotification(): Notification {
+        val sharing = UserPrefs.isSharing(this)
         val hasPermission = hasLocationPermission()
         val text = when {
             sharing && !hasPermission -> stringResource(MR.strings.location_permission_missing)
