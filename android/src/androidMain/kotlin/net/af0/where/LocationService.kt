@@ -179,11 +179,16 @@ class LocationService : Service() {
     }
 
     private fun ensureLocationRegistration() {
-        if (isRegistered) return
-        if (!hasLocationPermission()) {
-            Log.w(TAG, "No location permission; skipping GPS updates registration.")
+        val hasPermission = hasLocationPermission()
+        if (!hasPermission) {
+            if (isRegistered) {
+                Log.i(TAG, "Location permission lost; resetting registration state.")
+                isRegistered = false
+            }
             return
         }
+
+        if (isRegistered) return
 
         val request =
             LocationRequest.Builder(Priority.PRIORITY_BALANCED_POWER_ACCURACY, 30_000L)
@@ -195,6 +200,7 @@ class LocationService : Service() {
         try {
             fusedClient.requestLocationUpdates(request, locationCallback, mainLooper)
             isRegistered = true
+            Log.i(TAG, "Location updates registered successfully.")
         } catch (e: SecurityException) {
             Log.w(TAG, "SecurityException while requesting location updates: ${e.message}")
         }
