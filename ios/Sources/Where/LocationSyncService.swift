@@ -43,6 +43,7 @@ final class LocationSyncService: ObservableObject {
     @Published var isSharingLocation: Bool {
         didSet {
             userStore.setSharing(sharing: isSharingLocation)
+            locationProvider.sharingStateChanged()
         }
     }
     @Published var displayName: String {
