@@ -21,7 +21,7 @@ protocol LocationClientProtocol: AnyObject, Sendable {
     func postKeyExchangeInit(qr: Shared.QrPayload, initPayload: Shared.KeyExchangeInitPayload) async throws
 }
 
-extension Shared.LocationClient: LocationClientProtocol {}
+extension Shared.LocationClient: @unchecked Sendable, LocationClientProtocol {}
 
 @inline(__always)
 private func debugLog(_ msg: () -> String) {
@@ -37,9 +37,9 @@ final class LocationSyncService: ObservableObject {
 
     @Published var friendLocations: [String: (lat: Double, lng: Double, ts: Int64)] = [:]
     @Published var friendLastPing: [String: Date] = [:]
-    @Published var connectionStatus: Shared.ConnectionStatus = Shared.ConnectionStatusOk.shared
+    @Published var connectionStatus: Shared.ConnectionStatus = Shared.ConnectionStatus.Ok()
     @Published var friends: [Shared.FriendEntry] = []
-    @Published var inviteState: Shared.InviteState = Shared.InviteStateNone.shared
+    @Published var inviteState: Shared.InviteState = Shared.InviteState.None()
     @Published var isSharingLocation: Bool {
         didSet {
             userStore.setSharing(sharing: isSharingLocation)
@@ -67,7 +67,7 @@ final class LocationSyncService: ObservableObject {
     @Published var isExchanging: Bool = false
     private var inviteTask: Task<Void, Never>? = nil
     @Published var visibleUsers: [Shared.UserLocation] = []
-    var isInviteActive: Bool { inviteState is Shared.InviteStatePending }
+    var isInviteActive: Bool { inviteState is Shared.InviteState.Pending }
     var skipUpdateVisibleUsers: Bool = false
 
     var lastRapidPollTrigger: Date = Date(timeIntervalSince1970: 0)  // internal for testing
@@ -194,7 +194,7 @@ final class LocationSyncService: ObservableObject {
         }
         do {
             let qr = try await e2eeStore.createInvite(suggestedName: displayName)
-            inviteState = Shared.InviteStatePending(qr: qr)
+            inviteState = Shared.InviteState.Pending(qr: qr)
             triggerRapidPoll()
         } catch {
             logger.error("Failed to create invite: \(error.localizedDescription)")
@@ -358,7 +358,7 @@ final class LocationSyncService: ObservableObject {
         if let result = try await locationClient.pollPendingInvite() {
             pendingInitPayload = result.payload
             multipleScansDetected = result.multipleScansDetected
-            inviteState = Shared.InviteStateNone.shared
+            inviteState = Shared.InviteState.None()
             triggerRapidPoll()
             return result
         }
@@ -372,7 +372,7 @@ final class LocationSyncService: ObservableObject {
             logger.error("Failed to clear invite: \(error.localizedDescription)")
         }
         resetRapidPoll()
-        inviteState = Shared.InviteStateNone.shared
+        inviteState = Shared.InviteState.None()
     }
 
     @discardableResult
@@ -479,7 +479,7 @@ final class LocationSyncService: ObservableObject {
     }
 
     func cancelPendingInit() async {
-        let hasInviteState = !(inviteState is Shared.InviteStateNone)
+        let hasInviteState = !(inviteState is Shared.InviteState.None)
         guard pendingInitPayload != nil || hasInviteState else { return }
         await clearInvite()
         pendingInitPayload = nil
@@ -565,9 +565,9 @@ final class LocationSyncService: ObservableObject {
 
     private func updateStatus(_ error: Error?) {
         if let error = error {
-            connectionStatus = Shared.ConnectionStatusError(message: RawStringDesc(error.localizedDescription))
+            connectionStatus = Shared.ConnectionStatus.Error(message: RawStringDesc(error.localizedDescription))
         } else {
-            connectionStatus = Shared.ConnectionStatusOk.shared
+            connectionStatus = Shared.ConnectionStatus.Ok()
         }
     }
 
