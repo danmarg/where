@@ -55,6 +55,7 @@
     <string name="me">Me</string>
     <string name="location_sharing_paused">Location sharing is paused</string>
     <string name="sharing_your_location">Sharing your location</string>
+    <string name="location_permission_missing">Location permission missing</string>
     <string name="where_location">Where Location</string>
     <string name="invalid_qr_code">Invalid QR code</string>
     <string name="pairing_failed">Pairing failed: invalid response</string>

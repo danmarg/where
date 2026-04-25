@@ -31,6 +31,10 @@ import net.af0.where.e2ee.FriendEntry
 import net.af0.where.model.UserLocation
 import net.af0.where.shared.MR
 
+@OptIn(ExperimentalPermissionsApi::class)
+private val MultiplePermissionsState.anyPermissionGranted: Boolean
+    get() = permissions.any { it.status.isGranted }
+
 @OptIn(ExperimentalPermissionsApi::class, ExperimentalMaterial3Api::class)
 @Composable
 fun MapScreen(
@@ -75,13 +79,13 @@ fun MapScreen(
     var showBackgroundRationale by remember { mutableStateOf(false) }
 
     LaunchedEffect(Unit) {
-        if (!locationPermissions.allPermissionsGranted) {
+        if (!locationPermissions.anyPermissionGranted) {
             locationPermissions.launchMultiplePermissionRequest()
         }
     }
 
-    LaunchedEffect(locationPermissions.allPermissionsGranted) {
-        if (locationPermissions.allPermissionsGranted) {
+    LaunchedEffect(locationPermissions.anyPermissionGranted) {
+        if (locationPermissions.anyPermissionGranted) {
             onLocationPermissionGranted()
             // Show disclosure before requesting background location (required by Play Store).
             if (backgroundLocationPermission != null && !backgroundLocationPermission.status.isGranted) {
@@ -109,7 +113,7 @@ fun MapScreen(
         )
     }
 
-    if (!locationPermissions.allPermissionsGranted) {
+    if (!locationPermissions.anyPermissionGranted) {
         Box(modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
             Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 Text(stringResource(MR.strings.location_permission_required))
@@ -232,7 +236,7 @@ fun MapScreen(
             onMapClick = { onSelectedUserIdChange(null) },
             properties =
                 MapProperties(
-                    isMyLocationEnabled = locationPermissions.allPermissionsGranted,
+                    isMyLocationEnabled = locationPermissions.anyPermissionGranted,
                     mapStyleOptions = com.google.android.gms.maps.model.MapStyleOptions(mapStyleJson),
                 ),
             uiSettings =
