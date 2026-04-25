@@ -12,6 +12,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Setup Xcode
+        run: sudo xcode-select --switch /Applications/Xcode.app/Contents/Developer
+
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -75,6 +78,9 @@ jobs:
       - name: Install XcodeGen
         run: brew install xcodegen
 
+      - name: Create Local.xcconfig
+        run: touch ios/Local.xcconfig
+
       - name: Generate Xcode Project
         run: cd ios && xcodegen
 
@@ -85,8 +91,9 @@ jobs:
             -scheme Where \
             -destination 'platform=iOS Simulator,name=iPhone 16,OS=latest' \
             -resultBundlePath TestResults.xcresult \
-            CODE_SIGN_IDENTITY="" \
-            CODE_SIGNING_REQUIRED=NO
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY=""
 
       - name: Upload iOS Test Results
         if: always()

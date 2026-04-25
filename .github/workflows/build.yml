@@ -60,6 +60,9 @@ jobs:
       - name: Install XcodeGen
         run: brew install xcodegen
 
+      - name: Create Local.xcconfig
+        run: touch ios/Local.xcconfig
+
       - name: Generate Xcode project
         run: cd ios && xcodegen
 
@@ -74,8 +77,9 @@ jobs:
             -configuration Debug \
             -sdk iphonesimulator \
             -derivedDataPath build \
-            CODE_SIGN_IDENTITY="" \
-            CODE_SIGNING_REQUIRED=NO
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY=""
 
       - name: Upload iOS debug app
         uses: actions/upload-artifact@v4
