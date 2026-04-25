@@ -132,6 +132,8 @@ class MainActivity : ComponentActivity() {
                                     showCameraRationale = true
                                 }
                                 hasAskedBefore -> {
+                                    // If we've asked before, but shouldShowRequestPermissionRationale is false,
+                                    // it means the user has permanently denied the permission.
                                     showCameraSettingsRationale = true
                                 }
                                 else -> {
