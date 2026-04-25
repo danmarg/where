@@ -14,8 +14,37 @@ struct ContentView: View {
     @State private var scannedUrl: String? = nil
     @State private var zoomTarget: CLLocationCoordinate2D? = nil
     @State private var showErrorAlert = false
+    @State private var showLocationRationale = false
 
     @State private var newFriendName: String = ""
+
+    private var sharingStatusText: String {
+        if !syncService.isSharingLocation {
+            return MR.strings().paused.localized()
+        }
+        switch locationManager.authorizationStatus {
+        case .notDetermined:
+            return MR.strings().sharing.localized()
+        case .denied, .restricted:
+            return MR.strings().location_permission_missing.localized()
+        case .authorizedWhenInUse, .authorizedAlways:
+            return MR.strings().sharing.localized()
+        @unknown default:
+            return MR.strings().sharing.localized()
+        }
+    }
+
+    private var sharingStatusColor: Color {
+        if !syncService.isSharingLocation {
+            return Color.gray.opacity(0.85)
+        }
+        switch locationManager.authorizationStatus {
+        case .denied, .restricted:
+            return Color.red.opacity(0.85)
+        default:
+            return Color.blue.opacity(0.85)
+        }
+    }
 
     var body: some View {
         ZStack {
@@ -40,16 +69,16 @@ struct ContentView: View {
 
                 HStack(spacing: 12) {
                     Button {
-                        syncService.isSharingLocation.toggle()
+                        handleSharingButtonTap()
                     } label: {
                         Label(
-                            syncService.isSharingLocation ? MR.strings().sharing.localized() : MR.strings().paused.localized(),
-                            systemImage: syncService.isSharingLocation ? "location.fill" : "location.slash.fill"
+                            sharingStatusText,
+                            systemImage: syncService.isSharingLocation && locationManager.authorizationStatus != .denied ? "location.fill" : "location.slash.fill"
                         )
                         .font(.caption)
                         .padding(.horizontal, 14)
                         .padding(.vertical, 8)
-                        .background(syncService.isSharingLocation ? Color.blue.opacity(0.85) : Color.gray.opacity(0.85))
+                        .background(sharingStatusColor)
                         .foregroundStyle(.white)
                         .clipShape(Capsule())
                     }
@@ -230,6 +259,14 @@ struct ContentView: View {
         .onOpenURL { url in
             syncService.processQrUrl(url.absoluteString)
         }
+        .alert(MR.strings().background_location_title.localized(), isPresented: $showLocationRationale) {
+            Button(MR.strings().allow.localized()) {
+                locationManager.requestAlwaysPermission()
+            }
+            Button(MR.strings().skip.localized(), role: .cancel) { }
+        } message: {
+            Text(MR.strings().background_location_message.localized())
+        }
         .alert(MR.strings().connection_error.localized(), isPresented: $showErrorAlert) {
             Button(MR.strings().ok.localized(), role: .cancel) { }
         } message: {
@@ -246,6 +283,41 @@ struct ContentView: View {
             syncService.sendLocationOnBackground()
         } else if phase == .active {
             syncService.startPolling()
+        }
+    }
+
+    private func handleSharingButtonTap() {
+        if !syncService.isSharingLocation {
+            switch locationManager.authorizationStatus {
+            case .denied, .restricted:
+                if let url = URL(string: UIApplication.openSettingsURLString) {
+                    UIApplication.shared.open(url)
+                }
+                return // don't set isSharingLocation = true
+            default:
+                break
+            }
+            syncService.isSharingLocation = true
+            locationManager.requestPermissionAndStart()
+            return
+        }
+
+        switch locationManager.authorizationStatus {
+        case .notDetermined:
+            locationManager.requestPermissionAndStart()
+        case .authorizedWhenInUse:
+            // If already sharing but only foreground, offer to upgrade to 'Always'.
+            // Note: We don't toggle isSharingLocation off here; if they 'Skip' the rationale,
+            // we continue sharing in foreground mode.
+            showLocationRationale = true
+        case .denied, .restricted:
+            if let url = URL(string: UIApplication.openSettingsURLString) {
+                UIApplication.shared.open(url)
+            }
+        case .authorizedAlways:
+            syncService.isSharingLocation = false
+        @unknown default:
+            syncService.isSharingLocation = false
         }
     }
 }

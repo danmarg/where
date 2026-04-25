@@ -7,6 +7,7 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
@@ -28,6 +29,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import com.journeyapps.barcodescanner.ScanContract
 import com.journeyapps.barcodescanner.ScanOptions
@@ -42,6 +44,23 @@ class MainActivity : ComponentActivity() {
         registerForActivityResult(ScanContract()) { result ->
             result.contents?.let { viewModel.processQrUrl(it) }
         }
+
+    private val requestCameraPermissionLauncher =
+        registerForActivityResult(ActivityResultContracts.RequestPermission()) { isGranted ->
+            if (isGranted) {
+                launchScanner()
+            }
+        }
+
+    private fun launchScanner() {
+        scanLauncher.launch(
+            ScanOptions().apply {
+                setDesiredBarcodeFormats(ScanOptions.QR_CODE)
+                setBeepEnabled(false)
+                setOrientationLocked(false)
+            },
+        )
+    }
 
     fun startLocationService() {
         val hasPermission =
@@ -79,6 +98,8 @@ class MainActivity : ComponentActivity() {
                 val connectionStatus by viewModel.connectionStatus.collectAsState()
 
                 var showSimulatorScanner by remember { mutableStateOf(false) }
+                var showCameraRationale by remember { mutableStateOf(false) }
+                var showCameraSettingsRationale by remember { mutableStateOf(false) }
                 var selectedUserId by remember { mutableStateOf<String?>(null) }
 
                 MapScreen(
@@ -101,13 +122,25 @@ class MainActivity : ComponentActivity() {
                         ) {
                             showSimulatorScanner = true
                         } else {
-                            scanLauncher.launch(
-                                ScanOptions().apply {
-                                    setDesiredBarcodeFormats(ScanOptions.QR_CODE)
-                                    setBeepEnabled(false)
-                                    setOrientationLocked(false)
-                                },
-                            )
+                            val permission = Manifest.permission.CAMERA
+                            val hasAskedBefore = UserPrefs.hasRequestedCamera(this)
+                            when {
+                                ContextCompat.checkSelfPermission(this, permission) == PackageManager.PERMISSION_GRANTED -> {
+                                    launchScanner()
+                                }
+                                ActivityCompat.shouldShowRequestPermissionRationale(this, permission) -> {
+                                    showCameraRationale = true
+                                }
+                                hasAskedBefore -> {
+                                    // If we've asked before, but shouldShowRequestPermissionRationale is false,
+                                    // it means the user has permanently denied the permission.
+                                    showCameraSettingsRationale = true
+                                }
+                                else -> {
+                                    UserPrefs.setCameraRequested(this)
+                                    requestCameraPermissionLauncher.launch(permission)
+                                }
+                            }
                         }
                     },
                     onPasteUrl = { viewModel.processQrUrl(it) },
@@ -118,6 +151,47 @@ class MainActivity : ComponentActivity() {
                     onSelectedUserIdChange = { selectedUserId = it },
                     onLocationPermissionGranted = ::startLocationService,
                 )
+
+                if (showCameraRationale) {
+                    AlertDialog(
+                        onDismissRequest = { showCameraRationale = false },
+                        title = { Text(stringResource(MR.strings.scan)) },
+                        text = { Text(stringResource(MR.strings.camera_permission_rationale)) },
+                        confirmButton = {
+                            TextButton(onClick = {
+                                showCameraRationale = false
+                                requestCameraPermissionLauncher.launch(Manifest.permission.CAMERA)
+                            }) { Text(stringResource(MR.strings.ok)) }
+                        },
+                        dismissButton = {
+                            TextButton(onClick = { showCameraRationale = false }) {
+                                Text(stringResource(MR.strings.cancel))
+                            }
+                        },
+                    )
+                }
+
+                if (showCameraSettingsRationale) {
+                    AlertDialog(
+                        onDismissRequest = { showCameraSettingsRationale = false },
+                        title = { Text(stringResource(MR.strings.scan)) },
+                        text = { Text(stringResource(MR.strings.camera_permission_settings_rationale)) },
+                        confirmButton = {
+                            TextButton(onClick = {
+                                showCameraSettingsRationale = false
+                                val intent = Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+                                    data = android.net.Uri.fromParts("package", packageName, null)
+                                }
+                                startActivity(intent)
+                            }) { Text(stringResource(MR.strings.open_settings)) }
+                        },
+                        dismissButton = {
+                            TextButton(onClick = { showCameraSettingsRationale = false }) {
+                                Text(stringResource(MR.strings.cancel))
+                            }
+                        },
+                    )
+                }
 
                 if (isExchanging) {
                     Box(

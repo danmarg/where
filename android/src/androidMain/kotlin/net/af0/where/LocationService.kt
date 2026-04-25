@@ -62,23 +62,23 @@ class LocationService : Service() {
     private lateinit var e2eeStore: E2eeStore
     private lateinit var locationClient: LocationClient
 
+    private fun hasLocationPermission(): Boolean {
+        return ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED ||
+            ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED
+    }
+
     override fun onCreate() {
         super.onCreate()
         Log.d(TAG, "onCreate")
         createNotificationChannel()
-        val hasLocationPermission =
-            ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED ||
-                ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED
-        if (!hasLocationPermission) {
-            Log.w(TAG, "Location permission not granted; stopping service.")
-            stopSelf()
-            return
-        }
-        startForeground(NOTIFICATION_ID, buildNotification())
-        alarmManager = getSystemService(AlarmManager::class.java)
 
         // Initialise repository sharing state from prefs before starting any collection.
         locationSource.setSharingLocation(UserPrefs.isSharing(this))
+
+        // Always call startForeground immediately to avoid ForegroundServiceDidNotStartInTimeException.
+        startForeground(NOTIFICATION_ID, buildNotification())
+
+        alarmManager = getSystemService(AlarmManager::class.java)
 
         val app = application as WhereApplication
         e2eeStore = e2eeStoreOverride ?: app.e2eeStore
@@ -94,13 +94,15 @@ class LocationService : Service() {
             }
 
         try {
-            fusedClient.lastLocation.addOnSuccessListener { loc ->
-                if (loc != null) {
-                    locationSource.onLocation(
-                        loc.latitude,
-                        loc.longitude,
-                        if (loc.hasBearing()) loc.bearing.toDouble() else null,
-                    )
+            if (hasLocationPermission()) {
+                fusedClient.lastLocation.addOnSuccessListener { loc ->
+                    if (loc != null) {
+                        locationSource.onLocation(
+                            loc.latitude,
+                            loc.longitude,
+                            if (loc.hasBearing()) loc.bearing.toDouble() else null,
+                        )
+                    }
                 }
             }
         } catch (_: SecurityException) {
@@ -147,6 +149,7 @@ class LocationService : Service() {
         startId: Int,
     ): Int {
         Log.d(TAG, "onStartCommand: isRegistered=$isRegistered")
+        ensureLocationRegistration()
         if (intent?.action == ACTION_POLL_ALARM) {
             locationSource.wakePoll()
         }
@@ -168,11 +171,30 @@ class LocationService : Service() {
             }
         }
 
-        ensureLocationRegistration()
         return START_STICKY
     }
 
     private fun ensureLocationRegistration() {
+        val hasPermission = hasLocationPermission()
+        if (!hasPermission) {
+            if (isRegistered) {
+                Log.i(TAG, "Location permission lost; resetting registration state.")
+                try {
+                    fusedClient.removeLocationUpdates(locationCallback)
+                } catch (_: SecurityException) {
+                }
+                isRegistered = false
+            }
+            // Note: We don't call stopSelf() here even if permissions are missing.
+            // This is intentional:
+            // 1. To avoid ForegroundServiceDidNotStartInTimeException on startup.
+            // 2. To allow the service to continue polling for friend updates in the background
+            //    even if we cannot share our own location.
+            // 3. To provide a persistent notification warning the user that their location 
+            //    sharing intent is failing due to missing permissions.
+            return
+        }
+
         if (isRegistered) return
 
         val request =
@@ -185,16 +207,19 @@ class LocationService : Service() {
         try {
             fusedClient.requestLocationUpdates(request, locationCallback, mainLooper)
             isRegistered = true
-        } catch (_: SecurityException) {
-            // If we don't have permission, we just won't update our own location,
-            // but we can still poll for friend updates.
-            Log.w(TAG, "No location permission; skipping GPS updates.")
+            Log.i(TAG, "Location updates registered successfully.")
+        } catch (e: SecurityException) {
+            Log.w(TAG, "SecurityException while requesting location updates: ${e.message}")
         }
     }
 
     override fun onDestroy() {
         Log.d(TAG, "onDestroy")
-        fusedClient.removeLocationUpdates(locationCallback)
+        try {
+            fusedClient.removeLocationUpdates(locationCallback)
+        } catch (e: SecurityException) {
+            Log.w(TAG, "SecurityException removing location updates in onDestroy", e)
+        }
         isRegistered = false
         pendingFriendSends.close()
         cancelDozeAlarm()
@@ -418,8 +443,16 @@ class LocationService : Service() {
     }
 
     private fun buildNotification(): Notification {
-        val sharing = LocationRepository.isSharingLocation.value
-        val text = if (sharing) stringResource(MR.strings.sharing_your_location) else stringResource(MR.strings.location_sharing_paused)
+        // Use the live repository state for the notification.
+        // Note: onCreate ensures this is initialised from UserPrefs before the first call.
+        val sharing = locationSource.isSharingLocation.value
+        val hasPermission = hasLocationPermission()
+        val text = when {
+            sharing && !hasPermission -> stringResource(MR.strings.location_permission_missing)
+            !sharing && !hasPermission -> stringResource(MR.strings.location_sharing_paused_no_permission)
+            sharing -> stringResource(MR.strings.sharing_your_location)
+            else -> stringResource(MR.strings.location_sharing_paused)
+        }
         return Notification.Builder(this, CHANNEL_ID)
             .setContentTitle(stringResource(MR.strings.app_name))
             .setContentText(text)
