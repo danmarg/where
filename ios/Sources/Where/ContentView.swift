@@ -88,13 +88,13 @@ struct ContentView: View {
                     VStack(alignment: .leading, spacing: 2) {
                         HStack(spacing: 6) {
                             Circle()
-                                .fill(syncService.connectionStatus is Shared.ConnectionStatus.Ok ? Color.green : Color.orange)
+                                .fill(syncService.connectionStatus is Shared.ConnectionStatusOk ? Color.green : Color.orange)
                                 .frame(width: 8, height: 8)
                             Text(MR.strings().you.localized())
                                 .font(.caption)
                                 .foregroundStyle(.white)
                         }
-                        if let error = syncService.connectionStatus as? Shared.ConnectionStatus.Error {
+                        if let error = syncService.connectionStatus as? Shared.ConnectionStatusError {
                             Text(error.message.localized())
                                 .font(.system(size: 8))
                                 .foregroundStyle(.orange)
@@ -107,7 +107,7 @@ struct ContentView: View {
                     .clipShape(Capsule())
                     .contentShape(Capsule())
                     .onTapGesture {
-                        if syncService.connectionStatus is Shared.ConnectionStatus.Error {
+                        if syncService.connectionStatus is Shared.ConnectionStatusError {
                             showErrorAlert = true
                         } else if let loc = locationManager.location {
                             zoomTarget = CLLocationCoordinate2D(latitude: loc.coordinate.latitude, longitude: loc.coordinate.longitude)
@@ -185,7 +185,7 @@ struct ContentView: View {
             .ignoresSafeArea()
         }
         .sheet(isPresented: Binding(
-            get: { syncService.inviteState is Shared.InviteState.Pending },
+            get: { syncService.inviteState is Shared.InviteStatePending },
             set: { if !$0 {
                 // If we're dismissing because a peer joined (pendingInitPayload is set),
                 // do NOT clear the store yet, as we need the ephemeral keys to derive the session.
@@ -194,7 +194,7 @@ struct ContentView: View {
                 }
             } }
         )) {
-            if let pending = syncService.inviteState as? Shared.InviteState.Pending {
+            if let pending = syncService.inviteState as? Shared.InviteStatePending {
                 InviteSheet(
                     qrPayload: pending.qr,
                     displayName: $syncService.displayName,
@@ -270,7 +270,7 @@ struct ContentView: View {
         .alert(MR.strings().connection_error.localized(), isPresented: $showErrorAlert) {
             Button(MR.strings().ok.localized(), role: .cancel) { }
         } message: {
-            if let error = syncService.connectionStatus as? Shared.ConnectionStatus.Error {
+            if let error = syncService.connectionStatus as? Shared.ConnectionStatusError {
                 Text(error.message.localized())
             }
         }
@@ -324,6 +324,6 @@ struct ContentView: View {
 
 extension ConnectionStatus {
     var isOk: Bool {
-        return self is Shared.ConnectionStatus.Ok
+        return self is Shared.ConnectionStatusOk
     }
 }
