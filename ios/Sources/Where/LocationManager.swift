@@ -51,14 +51,18 @@ final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelega
         guard let manager = manager else { return }
         switch manager.authorizationStatus {
         case .notDetermined:
-            manager.requestAlwaysAuthorization()
-        case .authorizedWhenInUse:
-            manager.requestAlwaysAuthorization()
-            startUpdating()
-        case .authorizedAlways:
+            manager.requestWhenInUseAuthorization()
+        case .authorizedWhenInUse, .authorizedAlways:
             startUpdating()
         default:
             break
+        }
+    }
+
+    func requestAlwaysPermission() {
+        guard let manager = manager else { return }
+        if manager.authorizationStatus == .authorizedWhenInUse {
+            manager.requestAlwaysAuthorization()
         }
     }
 
