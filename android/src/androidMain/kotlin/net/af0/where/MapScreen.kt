@@ -35,6 +35,10 @@ import net.af0.where.shared.MR
 private val MultiplePermissionsState.anyPermissionGranted: Boolean
     get() = permissions.any { it.status.isGranted }
 
+@OptIn(ExperimentalPermissionsApi::class)
+private val MultiplePermissionsState.fineLocationGranted: Boolean
+    get() = permissions.find { it.permission == android.Manifest.permission.ACCESS_FINE_LOCATION }?.status?.isGranted == true
+
 @OptIn(ExperimentalPermissionsApi::class, ExperimentalMaterial3Api::class)
 @Composable
 fun MapScreen(
@@ -236,7 +240,7 @@ fun MapScreen(
             onMapClick = { onSelectedUserIdChange(null) },
             properties =
                 MapProperties(
-                    isMyLocationEnabled = locationPermissions.anyPermissionGranted,
+                    isMyLocationEnabled = locationPermissions.fineLocationGranted,
                     mapStyleOptions = com.google.android.gms.maps.model.MapStyleOptions(mapStyleJson),
                 ),
             uiSettings =
