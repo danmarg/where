@@ -180,6 +180,10 @@ class LocationService : Service() {
         if (!hasPermission) {
             if (isRegistered) {
                 Log.i(TAG, "Location permission lost; resetting registration state.")
+                try {
+                    fusedClient.removeLocationUpdates(locationCallback)
+                } catch (_: SecurityException) {
+                }
                 isRegistered = false
             }
             return
@@ -433,7 +437,9 @@ class LocationService : Service() {
     }
 
     private fun buildNotification(): Notification {
-        val sharing = UserPrefs.isSharing(this)
+        // Use the live repository state for the notification.
+        // Note: onCreate ensures this is initialised from UserPrefs before the first call.
+        val sharing = locationSource.isSharingLocation.value
         val hasPermission = hasLocationPermission()
         val text = when {
             sharing && !hasPermission -> stringResource(MR.strings.location_permission_missing)
