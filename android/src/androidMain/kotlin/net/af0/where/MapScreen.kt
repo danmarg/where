@@ -260,10 +260,7 @@ fun MapScreen(
                 val timeAgo = timeAgoStringFromMs(friendLastPing[user.userId])
                 val isSelected = selectedUserId == user.userId
                 key(user.userId, isSelected, name) {
-                    val markerState = rememberMarkerState(key = "${user.userId}_$name", position = LatLng(user.lat, user.lng))
-                    LaunchedEffect(user.lat, user.lng) {
-                        markerState.position = LatLng(user.lat, user.lng)
-                    }
+                    val markerState = rememberUpdatedMarkerState(position = LatLng(user.lat, user.lng))
                     MarkerComposable(
                         state = markerState,
                         anchor = Offset(0.5f, 1f),

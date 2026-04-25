@@ -142,8 +142,8 @@ class TestFakeLocationSource : LocationSource {
         _pausedFriendIds.value = friendIds
     }
 
-    override fun onFriendsUpdated(friendsList: List<FriendEntry>) {
-        _friends.value = friendsList
+    override fun onFriendsUpdated(friends: List<FriendEntry>) {
+        _friends.value = friends
     }
 
     override fun onPendingQrForNaming(qr: QrPayload?) {
