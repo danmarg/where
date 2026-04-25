@@ -23,6 +23,14 @@ targets:
     configFiles:
       Debug: Local.xcconfig
       Release: Local.xcconfig
+    preBuildScripts:
+      - name: Build KMP Shared XCFramework
+        script: |
+          cd "$SRCROOT/.."
+          if [ -f .envrc ]; then
+            source .envrc
+          fi
+          ./gradlew :shared:assembleShared${CONFIGURATION}XCFramework
     dependencies:
       - framework: ../shared/build/XCFrameworks/$(CONFIGURATION:lower)/Shared.xcframework
         embed: true
