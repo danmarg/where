@@ -37,9 +37,9 @@ final class LocationSyncService: ObservableObject {
 
     @Published var friendLocations: [String: (lat: Double, lng: Double, ts: Int64)] = [:]
     @Published var friendLastPing: [String: Date] = [:]
-    @Published var connectionStatus: Shared.ConnectionStatus = Shared.ConnectionStatus.Ok()
+    @Published var connectionStatus: Shared.ConnectionStatus = Shared.ConnectionStatusOk.shared
     @Published var friends: [Shared.FriendEntry] = []
-    @Published var inviteState: Shared.InviteState = Shared.InviteState.None()
+    @Published var inviteState: Shared.InviteState = Shared.InviteStateNone.shared
     @Published var isSharingLocation: Bool {
         didSet {
             userStore.setSharing(sharing: isSharingLocation)
@@ -67,7 +67,7 @@ final class LocationSyncService: ObservableObject {
     @Published var isExchanging: Bool = false
     private var inviteTask: Task<Void, Never>? = nil
     @Published var visibleUsers: [Shared.UserLocation] = []
-    var isInviteActive: Bool { inviteState is Shared.InviteState.Pending }
+    var isInviteActive: Bool { inviteState is Shared.InviteStatePending }
     var skipUpdateVisibleUsers: Bool = false
 
     var lastRapidPollTrigger: Date = Date(timeIntervalSince1970: 0)  // internal for testing
@@ -194,7 +194,7 @@ final class LocationSyncService: ObservableObject {
         }
         do {
             let qr = try await e2eeStore.createInvite(suggestedName: displayName)
-            inviteState = Shared.InviteState.Pending(qr: qr)
+            inviteState = Shared.InviteStatePending(qr: qr)
             triggerRapidPoll()
         } catch {
             logger.error("Failed to create invite: \(error.localizedDescription)")
@@ -323,7 +323,7 @@ final class LocationSyncService: ObservableObject {
             updateVisibleUsers()
 
             if updateUi {
-                try await pollPendingInvite()
+                _ = try await pollPendingInvite()
             }
 
             // Heartbeat: if we're awake enough to poll, also send location if one is due.
@@ -352,14 +352,17 @@ final class LocationSyncService: ObservableObject {
         }
     }
 
-    private func pollPendingInvite() async throws {
-        if pendingInitPayload != nil { return }
+    @discardableResult
+    private func pollPendingInvite() async throws -> Shared.PendingInviteResult? {
+        if pendingInitPayload != nil { return nil }
         if let result = try await locationClient.pollPendingInvite() {
             pendingInitPayload = result.payload
             multipleScansDetected = result.multipleScansDetected
-            inviteState = Shared.InviteState.None()
+            inviteState = Shared.InviteStateNone.shared
             triggerRapidPoll()
+            return result
         }
+        return nil
     }
 
     func clearInvite() async {
@@ -369,12 +372,12 @@ final class LocationSyncService: ObservableObject {
             logger.error("Failed to clear invite: \(error.localizedDescription)")
         }
         resetRapidPoll()
-        inviteState = Shared.InviteState.None()
+        inviteState = Shared.InviteStateNone.shared
     }
 
     @discardableResult
     func processQrUrl(_ url: String) -> Bool {
-        guard let qr = Shared.QrPayload.companion.fromUrl(url: url) else {
+        guard let qr = Shared.QrPayload.Companion.shared.fromUrl(url: url) else {
             updateStatus(NSError(domain: "Where", code: 400, userInfo: [NSLocalizedDescriptionKey: MR.strings().invalid_qr_code.localized()]))
             return false
         }
@@ -476,7 +479,7 @@ final class LocationSyncService: ObservableObject {
     }
 
     func cancelPendingInit() async {
-        let hasInviteState = !(inviteState is Shared.InviteState.None)
+        let hasInviteState = !(inviteState is Shared.InviteStateNone)
         guard pendingInitPayload != nil || hasInviteState else { return }
         await clearInvite()
         pendingInitPayload = nil
@@ -562,9 +565,9 @@ final class LocationSyncService: ObservableObject {
 
     private func updateStatus(_ error: Error?) {
         if let error = error {
-            connectionStatus = Shared.ConnectionStatus.Error(message: RawStringDesc(error.localizedDescription))
+            connectionStatus = Shared.ConnectionStatusError(message: RawStringDesc(error.localizedDescription))
         } else {
-            connectionStatus = Shared.ConnectionStatus.Ok()
+            connectionStatus = Shared.ConnectionStatusOk.shared
         }
     }
 
