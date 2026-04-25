@@ -53,6 +53,8 @@
     <string name="invite_url">Invite URL</string>
     <string name="simulate_scan">Simulate Scan</string>
     <string name="camera_permission_rationale">Where needs camera access to scan friend invite QR codes.</string>
+    <string name="camera_permission_settings_rationale">Camera permission was permanently denied. Please enable it in Settings to scan QR codes.</string>
+    <string name="open_settings">Open Settings</string>
     <string name="me">Me</string>
     <string name="location_sharing_paused">Location sharing is paused</string>
     <string name="location_sharing_paused_no_permission">Paused · Permission missing</string>

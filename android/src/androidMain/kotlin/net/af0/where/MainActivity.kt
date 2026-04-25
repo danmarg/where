@@ -99,6 +99,7 @@ class MainActivity : ComponentActivity() {
 
                 var showSimulatorScanner by remember { mutableStateOf(false) }
                 var showCameraRationale by remember { mutableStateOf(false) }
+                var showCameraSettingsRationale by remember { mutableStateOf(false) }
                 var selectedUserId by remember { mutableStateOf<String?>(null) }
 
                 MapScreen(
@@ -122,6 +123,7 @@ class MainActivity : ComponentActivity() {
                             showSimulatorScanner = true
                         } else {
                             val permission = Manifest.permission.CAMERA
+                            val hasAskedBefore = UserPrefs.hasRequestedCamera(this)
                             when {
                                 ContextCompat.checkSelfPermission(this, permission) == PackageManager.PERMISSION_GRANTED -> {
                                     launchScanner()
@@ -129,7 +131,11 @@ class MainActivity : ComponentActivity() {
                                 ActivityCompat.shouldShowRequestPermissionRationale(this, permission) -> {
                                     showCameraRationale = true
                                 }
+                                hasAskedBefore -> {
+                                    showCameraSettingsRationale = true
+                                }
                                 else -> {
+                                    UserPrefs.setCameraRequested(this)
                                     requestCameraPermissionLauncher.launch(permission)
                                 }
                             }
@@ -157,6 +163,28 @@ class MainActivity : ComponentActivity() {
                         },
                         dismissButton = {
                             TextButton(onClick = { showCameraRationale = false }) {
+                                Text(stringResource(MR.strings.cancel))
+                            }
+                        },
+                    )
+                }
+
+                if (showCameraSettingsRationale) {
+                    AlertDialog(
+                        onDismissRequest = { showCameraSettingsRationale = false },
+                        title = { Text(stringResource(MR.strings.scan)) },
+                        text = { Text(stringResource(MR.strings.camera_permission_settings_rationale)) },
+                        confirmButton = {
+                            TextButton(onClick = {
+                                showCameraSettingsRationale = false
+                                val intent = Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+                                    data = android.net.Uri.fromParts("package", packageName, null)
+                                }
+                                startActivity(intent)
+                            }) { Text(stringResource(MR.strings.open_settings)) }
+                        },
+                        dismissButton = {
+                            TextButton(onClick = { showCameraSettingsRationale = false }) {
                                 Text(stringResource(MR.strings.cancel))
                             }
                         },
