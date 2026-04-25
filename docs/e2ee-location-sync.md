@@ -768,7 +768,45 @@ With this design:
 
 ---
 
-## 12. Open Questions and Future Work
+## 12. Comparison with Signal Protocol (libsignal)
+
+While this protocol shares the core **Double Ratchet** design with Signal, it makes several deliberate architectural departures to optimize for anonymous location broadcasting and decentralized identity.
+
+### 12.1 Identity and Handshake (No X3DH)
+
+- **Signal:** Uses **X3DH** (Extended Triple Diffie-Hellman) which relies on long-term **Identity Keys (IK)** and a central server to host Signed Prekeys and One-time Prekeys. This enables asynchronous session establishment (Alice can message Bob even if he is offline).
+- **Where:** Uses an **ephemeral-only handshake**. There are no long-term identity keys. "Identity" is scoped to a single friendship session ("Session as Identity"). This eliminates the need for a central PKI or prekey server and ensures that no stable device identifier is ever exposed to the server. Key exchange is synchronous and out-of-band (QR code or secure link).
+
+### 12.2 Cryptographic Primitives (ChaChaPoly vs AES-GCM)
+
+- **Signal:** Modern libsignal implementations primarily use **AES-256-GCM** for message encryption. AES-GCM is hardware-accelerated on most modern desktop and mobile CPUs (AES-NI).
+- **Where:** Uses **ChaCha20-Poly1305 (IETF)** for all AEAD operations (both payload and header envelope). ChaCha20 is generally faster and more secure in software-only implementations (preventing timing attacks) and is often preferred for mobile battery efficiency in the absence of specialized AES hardware.
+
+### 12.3 Metadata Protection and Routing
+
+- **Signal:** Historically identified users by stable identifiers (phone numbers, now UUIDs). "Sealed Sender" was added later as an extension to hide the sender from the server.
+- **Where:** Metadata protection is integrated into the base protocol.
+    - **Header Encryption:** Every message uses an **Encrypted Envelope** that hides the DH public key, sequence number, and previous chain length (`pn`) from the server.
+    - **Dynamic Routing:** Instead of stable user IDs, Where uses **Pairwise Routing Tokens** derived from the session root key. These tokens rotate automatically with the DH ratchet, making it impossible for the server to correlate messages across epochs without session state.
+
+### 12.4 Group Messaging (Sender Keys vs Per-Friend)
+
+- **Signal:** Uses **Sender Keys** for efficient group messaging. Alice encrypts her message once and the server fans it out. This is O(1) bandwidth for the sender but shares a symmetric chain among all group members.
+- **Where:** Uses **Per-Friend Symmetric Sessions**. Alice encrypts a separate ciphertext for each friend (O(N) bandwidth). For small groups (tens of friends), this provides superior blast-radius isolation: a compromise of one friend's device only exposes Alice's location to that friend, with no impact on the security of her sessions with others.
+
+### 12.5 Post-Quantum Resistance
+
+- **Signal:** Recently introduced **PQXDH** and **SPQR**, incorporating Kyber into the initial handshake and ratchet to provide post-quantum confidentiality.
+- **Where:** Currently **not quantum-resistant**. The protocol relies entirely on X25519 (ECDH). Quantum resistance is recognized as a future requirement but is not part of the v1 implementation (see §13).
+
+### 12.6 Safety Numbers
+
+- **Signal:** Safety Numbers are derived from long-term Identity Keys and are stable across the lifetime of the user's account.
+- **Where:** Safety Numbers are **session-scoped**. They are derived from the ephemeral keys used at bootstrap. A device reset or a session re-pairing results in a new Safety Number, reflecting the transient nature of identity in the protocol.
+
+---
+
+## 13. Open Questions and Future Work
 
 1. **Cross-Device Signing.** The protocol currently scopes identity to a single primary device. A future extension would allow the old device to sign the new pairing's Safety Number, allowing contacts to auto-migrate trust without re-adding the friend.
 
