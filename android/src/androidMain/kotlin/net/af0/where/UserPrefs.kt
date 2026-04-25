@@ -44,4 +44,8 @@ object UserPrefs {
         lng: Double,
         zoom: Float,
     ) = store(context).setLastMapCamera(lat, lng, zoom)
+
+    fun hasRequestedCamera(context: Context): Boolean = store(context).cameraRequested.value
+
+    fun setCameraRequested(context: Context) = store(context).setCameraRequested(true)
 }

@@ -1,3 +1,4 @@
+@file:OptIn(ExperimentalPermissionsApi::class)
 package net.af0.where
 
 import android.os.Build
@@ -30,6 +31,12 @@ import net.af0.where.e2ee.ConnectionStatus
 import net.af0.where.e2ee.FriendEntry
 import net.af0.where.model.UserLocation
 import net.af0.where.shared.MR
+
+private val MultiplePermissionsState.hasAnyLocationPermission: Boolean
+    get() = permissions.any { it.status.isGranted }
+
+private val MultiplePermissionsState.hasFineLocationPermission: Boolean
+    get() = permissions.find { it.permission == android.Manifest.permission.ACCESS_FINE_LOCATION }?.status?.isGranted == true
 
 @OptIn(ExperimentalPermissionsApi::class, ExperimentalMaterial3Api::class)
 @Composable
@@ -75,13 +82,13 @@ fun MapScreen(
     var showBackgroundRationale by remember { mutableStateOf(false) }
 
     LaunchedEffect(Unit) {
-        if (!locationPermissions.allPermissionsGranted) {
+        if (!locationPermissions.hasAnyLocationPermission) {
             locationPermissions.launchMultiplePermissionRequest()
         }
     }
 
-    LaunchedEffect(locationPermissions.allPermissionsGranted) {
-        if (locationPermissions.allPermissionsGranted) {
+    LaunchedEffect(locationPermissions.hasAnyLocationPermission) {
+        if (locationPermissions.hasAnyLocationPermission) {
             onLocationPermissionGranted()
             // Show disclosure before requesting background location (required by Play Store).
             if (backgroundLocationPermission != null && !backgroundLocationPermission.status.isGranted) {
@@ -109,7 +116,7 @@ fun MapScreen(
         )
     }
 
-    if (!locationPermissions.allPermissionsGranted) {
+    if (!locationPermissions.hasAnyLocationPermission) {
         Box(modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
             Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 Text(stringResource(MR.strings.location_permission_required))
@@ -232,7 +239,7 @@ fun MapScreen(
             onMapClick = { onSelectedUserIdChange(null) },
             properties =
                 MapProperties(
-                    isMyLocationEnabled = locationPermissions.allPermissionsGranted,
+                    isMyLocationEnabled = locationPermissions.hasFineLocationPermission,
                     mapStyleOptions = com.google.android.gms.maps.model.MapStyleOptions(mapStyleJson),
                 ),
             uiSettings =
@@ -369,11 +376,22 @@ fun MapScreen(
                                 ),
                     )
                     Column {
-                        Text(
-                            text = stringResource(MR.strings.you),
-                            color = Color.White,
-                            style = MaterialTheme.typography.labelSmall,
-                        )
+                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                            Text(
+                                text = stringResource(MR.strings.you),
+                                color = Color.White,
+                                style = MaterialTheme.typography.labelSmall,
+                            )
+                            if (locationPermissions.hasAnyLocationPermission && !locationPermissions.hasFineLocationPermission) {
+                                Text(
+                                    text = "(" + stringResource(MR.strings.approximate) + ")",
+                                    color = Color.White.copy(alpha = 0.6f),
+                                    style = MaterialTheme.typography.labelSmall.copy(
+                                        fontSize = MaterialTheme.typography.labelSmall.fontSize * 0.8f
+                                    ),
+                                )
+                            }
+                        }
                         if (connectionStatus is ConnectionStatus.Error) {
                             Text(
                                 text = connectionStatus.message.toString(context),
