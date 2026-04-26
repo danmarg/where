@@ -2,11 +2,10 @@ package net.af0.where
 
 import android.Manifest
 import android.app.Application
-import android.content.SharedPreferences
 import android.content.Intent
+import android.content.SharedPreferences
 import android.text.TextUtils
 import androidx.test.core.app.ApplicationProvider
-import org.robolectric.Shadows.shadowOf
 import dev.icerock.moko.resources.desc.Raw
 import dev.icerock.moko.resources.desc.StringDesc
 import io.mockk.every
@@ -40,6 +39,7 @@ import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
+import org.robolectric.Shadows.shadowOf
 import org.robolectric.annotation.Config
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
@@ -306,7 +306,6 @@ class LocationViewModelTest {
             assertTrue(store.listPendingInvites().isEmpty(), "Store should be cleared when Alice cancels")
         }
 
-
     @Test
     fun testCancelQrScan_BobSide() =
         runTest {
@@ -399,11 +398,11 @@ class LocationViewModelTest {
             vm.createInvite()
             advanceUntilIdle()
             val qr1 = store.listPendingInvites().first().qrPayload
-            
+
             vm.createInvite()
             advanceUntilIdle()
             val qr2 = store.listPendingInvites().last().qrPayload
-            
+
             assertEquals(2, store.listPendingInvites().size)
 
             // 2. Simulate Bob responding to the FIRST invite
@@ -417,7 +416,7 @@ class LocationViewModelTest {
                 )
             source.onPendingInit(initPayload, aliceEkPub = qr1.ekPub)
             advanceUntilIdle()
-            
+
             assertEquals(initPayload, vm.pendingInitPayload.value)
 
             // 3. Alice cancels naming Bob

@@ -228,7 +228,6 @@ class E2eeStore(
             payload
         }
 
-
     /** Alice: Discard all pending invites (e.g. user resets the app state). */
     suspend fun clearAllInvites() {
         stateLock.withLock {
@@ -367,7 +366,9 @@ class E2eeStore(
             toRemove.forEach { friends.remove(it) }
 
             if (pendingInvites.size != initialSize || friends.size != unconfirmedBefore) {
-                println("[E2eeStore] Cleaned up ${initialSize - pendingInvites.size} invites and ${unconfirmedBefore - friends.size} unconfirmed friends")
+                println(
+                    "[E2eeStore] Cleaned up ${initialSize - pendingInvites.size} invites and ${unconfirmedBefore - friends.size} unconfirmed friends",
+                )
                 save()
             }
         }

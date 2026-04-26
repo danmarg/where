@@ -147,7 +147,7 @@ fun FriendsSheet(
                 )
                 LazyColumn(
                     modifier = Modifier.fillMaxWidth().weight(1f, fill = false),
-                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                    verticalArrangement = Arrangement.spacedBy(4.dp),
                 ) {
                     items(friends, key = { it.id }) { friend ->
                         Column(modifier = Modifier.fillMaxWidth()) {

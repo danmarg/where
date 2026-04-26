@@ -91,7 +91,6 @@ class LocationViewModel(
     val pendingInitPayload: StateFlow<KeyExchangeInitPayload?> = locationSource.pendingInitPayload
     val allPendingInvites: StateFlow<List<PendingInviteView>> = locationSource.allPendingInvites
 
-
     val multipleScansDetected: StateFlow<Boolean> = locationSource.multipleScansDetected
 
     private val _isExchanging = MutableStateFlow(false)
@@ -362,6 +361,7 @@ class LocationViewModel(
             }
         }
     }
+
     fun cancelPendingInit() {
         if (pendingInitPayload.value == null && _inviteState.value == InviteState.None) return
         val aliceEkPub = locationSource.pendingInitAliceEkPub.value

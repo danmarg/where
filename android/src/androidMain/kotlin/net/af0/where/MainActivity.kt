@@ -182,9 +182,10 @@ class MainActivity : ComponentActivity() {
                         confirmButton = {
                             TextButton(onClick = {
                                 showCameraSettingsRationale = false
-                                val intent = Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
-                                    data = android.net.Uri.fromParts("package", packageName, null)
-                                }
+                                val intent =
+                                    Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+                                        data = android.net.Uri.fromParts("package", packageName, null)
+                                    }
                                 startActivity(intent)
                             }) { Text(stringResource(MR.strings.open_settings)) }
                         },

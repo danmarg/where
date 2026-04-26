@@ -1,4 +1,5 @@
 @file:OptIn(ExperimentalPermissionsApi::class)
+
 package net.af0.where
 
 import android.os.Build
@@ -252,11 +253,12 @@ fun MapScreen(
                 ),
             locationSource = mapLocationSource,
         ) {
-            val friendData = users.map { user ->
-                val friend = friends.find { it.id == user.userId }
-                val name = friend?.name ?: user.userId.take(8)
-                Triple(user, friend, name)
-            }
+            val friendData =
+                users.map { user ->
+                    val friend = friends.find { it.id == user.userId }
+                    val name = friend?.name ?: user.userId.take(8)
+                    Triple(user, friend, name)
+                }
 
             friendData.forEach { (user, friend, name) ->
                 val timeAgo = timeAgoStringFromMs(friendLastPing[user.userId])
@@ -385,9 +387,10 @@ fun MapScreen(
                                 Text(
                                     text = "(" + stringResource(MR.strings.approximate) + ")",
                                     color = Color.White.copy(alpha = 0.6f),
-                                    style = MaterialTheme.typography.labelSmall.copy(
-                                        fontSize = MaterialTheme.typography.labelSmall.fontSize * 0.8f
-                                    ),
+                                    style =
+                                        MaterialTheme.typography.labelSmall.copy(
+                                            fontSize = MaterialTheme.typography.labelSmall.fontSize * 0.8f,
+                                        ),
                                 )
                             }
                         }

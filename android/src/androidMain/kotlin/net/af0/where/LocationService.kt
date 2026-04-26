@@ -183,7 +183,10 @@ class LocationService : Service() {
 
         if (!hasPermission || !isSharing) {
             if (isRegistered) {
-                Log.i(TAG, "Location registration no longer needed (permission=$hasPermission, sharing=$isSharing); resetting registration state.")
+                Log.i(
+                    TAG,
+                    "Location registration no longer needed (permission=$hasPermission, sharing=$isSharing); resetting registration state.",
+                )
                 try {
                     fusedClient.removeLocationUpdates(locationCallback)
                 } catch (_: SecurityException) {
@@ -195,7 +198,7 @@ class LocationService : Service() {
             // 1. To avoid ForegroundServiceDidNotStartInTimeException on startup.
             // 2. To allow the service to continue polling for friend updates in the background
             //    even if we cannot share our own location.
-            // 3. To provide a persistent notification warning the user that their location 
+            // 3. To provide a persistent notification warning the user that their location
             //    sharing intent is failing due to missing permissions or is paused.
             return
         }
@@ -463,12 +466,13 @@ class LocationService : Service() {
         // Note: onCreate ensures this is initialised from UserPrefs before the first call.
         val sharing = locationSource.isSharingLocation.value
         val hasPermission = hasLocationPermission()
-        val text = when {
-            sharing && !hasPermission -> stringResource(MR.strings.location_permission_missing)
-            !sharing && !hasPermission -> stringResource(MR.strings.location_sharing_paused_no_permission)
-            sharing -> stringResource(MR.strings.sharing_your_location)
-            else -> stringResource(MR.strings.location_sharing_paused)
-        }
+        val text =
+            when {
+                sharing && !hasPermission -> stringResource(MR.strings.location_permission_missing)
+                !sharing && !hasPermission -> stringResource(MR.strings.location_sharing_paused_no_permission)
+                sharing -> stringResource(MR.strings.sharing_your_location)
+                else -> stringResource(MR.strings.location_sharing_paused)
+            }
         return Notification.Builder(this, CHANNEL_ID)
             .setContentTitle(stringResource(MR.strings.app_name))
             .setContentText(text)

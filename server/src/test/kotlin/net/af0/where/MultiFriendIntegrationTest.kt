@@ -162,7 +162,7 @@ class MultiFriendIntegrationTest {
             // 1. Alice creates two invites
             val qrBob = aliceStore.createInvite("Alice")
             val qrCharlie = aliceStore.createInvite("Alice")
-            
+
             assertEquals(2, aliceStore.listPendingInvites().size)
 
             // 2. Bob joins via first invite

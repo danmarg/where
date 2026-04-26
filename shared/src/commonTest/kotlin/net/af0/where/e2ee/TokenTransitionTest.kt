@@ -336,7 +336,10 @@ class TokenTransitionTest {
             aliceClient.poll(pausedFriendIds = setOf(aliceToBobId))
 
             val aliceAfterPoll = aliceStore.getFriend(aliceToBobId)!!
-            assertFalse(aliceAfterPoll.session.isSendTokenPending, "isSendTokenPending must be cleared by pollFriend's keepalive before sendLocation")
+            assertFalse(
+                aliceAfterPoll.session.isSendTokenPending,
+                "isSendTokenPending must be cleared by pollFriend's keepalive before sendLocation",
+            )
 
             // Alice's first location send after resuming.
             aliceClient.sendLocation(37.0, -122.0)
