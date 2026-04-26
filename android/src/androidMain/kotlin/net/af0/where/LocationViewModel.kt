@@ -27,7 +27,7 @@ import net.af0.where.e2ee.FriendEntry
 import net.af0.where.e2ee.InviteState
 import net.af0.where.e2ee.KeyExchangeInitPayload
 import net.af0.where.e2ee.LocationClient
-import net.af0.where.e2ee.PendingInvite
+import net.af0.where.e2ee.PendingInviteView
 import net.af0.where.e2ee.QrPayload
 import net.af0.where.e2ee.UserStore
 import net.af0.where.e2ee.toHex
@@ -89,7 +89,7 @@ class LocationViewModel(
 
     val pendingQrForNaming: StateFlow<QrPayload?> = locationSource.pendingQrForNaming
     val pendingInitPayload: StateFlow<KeyExchangeInitPayload?> = locationSource.pendingInitPayload
-    val allPendingInvites: StateFlow<List<PendingInvite>> = locationSource.allPendingInvites
+    val allPendingInvites: StateFlow<List<PendingInviteView>> = locationSource.allPendingInvites
 
 
     val multipleScansDetected: StateFlow<Boolean> = locationSource.multipleScansDetected
@@ -375,8 +375,8 @@ class LocationViewModel(
                 }
             }
             locationSource.onPendingInvitesUpdated(e2eeStore.listPendingInvites())
+            locationSource.onPendingInit(null)
         }
-        locationSource.onPendingInit(null)
     }
 
     fun cancelPendingInvite(ekPub: ByteArray) {

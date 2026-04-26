@@ -45,7 +45,7 @@ import net.af0.where.shared.MR
 @Composable
 fun FriendsSheet(
     friends: List<FriendEntry>,
-    pendingInvites: List<net.af0.where.e2ee.PendingInvite>,
+    pendingInvites: List<net.af0.where.e2ee.PendingInviteView>,
     displayName: String,
     onDisplayNameChange: (String) -> Unit,
     pausedFriendIds: Set<String>,
@@ -145,8 +145,11 @@ fun FriendsSheet(
                     stringResource(MR.strings.friends) + " (${friends.size})",
                     style = MaterialTheme.typography.labelMedium,
                 )
-                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    friends.forEach { friend ->
+                LazyColumn(
+                    modifier = Modifier.fillMaxWidth().weight(1f, fill = false),
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    items(friends, key = { it.id }) { friend ->
                         Column(modifier = Modifier.fillMaxWidth()) {
                             Row(
                                 modifier =

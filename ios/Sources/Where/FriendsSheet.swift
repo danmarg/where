@@ -52,7 +52,7 @@ struct FriendsSheet: View {
 
                 if !pendingInvites.isEmpty {
                     Section(MR.strings().pending_invites.localized() + " (\(pendingInvites.count))") {
-                        ForEach(pendingInvites, id: \.qrPayload.ekPub) { invite in
+                        ForEach(pendingInvites, id: \.qrPayload.ekPub.toHex()) { invite in
                             HStack {
                                 VStack(alignment: .leading, spacing: 2) {
                                     Text(invite.qrPayload.suggestedName)

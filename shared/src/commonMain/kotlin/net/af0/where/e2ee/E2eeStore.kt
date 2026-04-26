@@ -118,11 +118,23 @@ private fun Map<Int, ByteArray>.contentEquals(other: Map<Int, ByteArray>): Boole
  * StrongBox-backed EncryptedSharedPreferences on Android).
  */
 @Serializable
-data class PendingInvite(
+internal data class PendingInvite(
     val qrPayload: QrPayload,
-    @Serializable(with = ByteArrayBase64Serializer::class) internal val aliceEkPriv: ByteArray,
+    @Serializable(with = ByteArrayBase64Serializer::class) val aliceEkPriv: ByteArray,
     val createdAt: Long = currentTimeSeconds(),
 )
+
+/**
+ * A public view of a pending invite, suitable for UI display.
+ * Does not contain private key material.
+ */
+@Serializable
+data class PendingInviteView(
+    val qrPayload: QrPayload,
+    val createdAt: Long,
+)
+
+internal fun PendingInvite.toView() = PendingInviteView(qrPayload, createdAt)
 
 class E2eeStore(
     private val storage: E2eeStorage,
@@ -166,14 +178,7 @@ class E2eeStore(
                     entry.id to entry
                 }.toMutableMap()
 
-            // Migration: if the old single pendingInvite exists, add it to the list.
-            val migratedInvites = serialized.pendingInvites.toMutableList()
-            serialized.pendingInvite?.let { legacy ->
-                if (migratedInvites.none { it.qrPayload.ekPub.contentEquals(legacy.qrPayload.ekPub) }) {
-                    migratedInvites.add(legacy)
-                }
-            }
-            pendingInvites = migratedInvites
+            pendingInvites = serialized.pendingInvites.toMutableList()
         } catch (e: Exception) {
             println("[E2eeStore] Error loading state: ${e.message}")
             e.printStackTrace()
@@ -209,26 +214,20 @@ class E2eeStore(
     }
 
     /**
-     * The QR payload currently being displayed.
-     * For backward compatibility, this only returns a value if there is exactly one
-     * active invite. If there are multiple, use [listPendingInvites].
-     */
-    suspend fun pendingQrPayload(): QrPayload? =
-        stateLock.withLock {
-            if (pendingInvites.size == 1) pendingInvites.first().qrPayload else null
-        }
-
-    /**
      * Alice: Create a new invite QR payload and store the ephemeral private key.
      * Appends to the list of active invites.
      */
     suspend fun createInvite(suggestedName: String): QrPayload =
         stateLock.withLock {
+            if (pendingInvites.size >= MAX_PENDING_INVITES) {
+                throw IllegalStateException("Too many pending invites. Please cancel some before creating a new one.")
+            }
             val (payload, ekPriv) = KeyExchange.aliceCreateQrPayload(suggestedName)
             pendingInvites.add(PendingInvite(payload, ekPriv))
             save()
             payload
         }
+
 
     /** Alice: Discard all pending invites (e.g. user resets the app state). */
     suspend fun clearAllInvites() {
@@ -348,7 +347,7 @@ class E2eeStore(
         }
 
     /** Returns all active pending invites. */
-    suspend fun listPendingInvites(): List<PendingInvite> = stateLock.withLock { pendingInvites.toList() }
+    suspend fun listPendingInvites(): List<PendingInviteView> = stateLock.withLock { pendingInvites.map { it.toView() } }
 
     /**
      * Cleans up expired invites (both link invites and unconfirmed scanned friends).
@@ -652,6 +651,7 @@ class E2eeStore(
 
     companion object {
         private const val STORAGE_KEY = "e2ee_store"
+        const val MAX_PENDING_INVITES = 10
     }
 }
 
@@ -678,6 +678,5 @@ internal data class SerializedFriendEntry(
 @Serializable
 internal data class SerializedStore(
     val friends: List<SerializedFriendEntry>,
-    val pendingInvite: PendingInvite? = null, // TODO: Remove after migration period (§222)
     val pendingInvites: List<PendingInvite> = emptyList(),
 )

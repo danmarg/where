@@ -18,7 +18,6 @@ protocol LocationClientProtocol: AnyObject, Sendable {
     func sendLocationToFriend(friendId: String, lat: Double, lng: Double) async throws
     func poll(isForeground: Bool, pausedFriendIds: Set<String>) async throws -> [Shared.UserLocation]
     func pollPendingInvites() async throws -> [Shared.PendingInviteResult]
-    func pollPendingInvite() async throws -> Shared.PendingInviteResult?
     func postKeyExchangeInit(qr: Shared.QrPayload, initPayload: Shared.KeyExchangeInitPayload) async throws
 }
 
@@ -40,7 +39,7 @@ final class LocationSyncService: ObservableObject {
     @Published var friendLastPing: [String: Date] = [:]
     @Published var connectionStatus: Shared.ConnectionStatus = Shared.ConnectionStatus.Ok()
     @Published var friends: [Shared.FriendEntry] = []
-    @Published var pendingInvites: [Shared.PendingInvite] = []
+    @Published var pendingInvites: [Shared.PendingInviteView] = []
     @Published var inviteState: Shared.InviteState = Shared.InviteState.None()
     @Published var isSharingLocation: Bool {
         didSet {
@@ -253,6 +252,7 @@ final class LocationSyncService: ObservableObject {
         }
     }
 
+    @MainActor
     func targetPollInterval() -> TimeInterval {
         if isRapidPolling() {
             return Self.rapidPollInterval
@@ -263,9 +263,11 @@ final class LocationSyncService: ObservableObject {
         return isSharingLocation ? Self.normalPollInterval : Self.maintenancePollInterval
     }
 
+    @MainActor
     func isRapidPolling() -> Bool {
         if !awaitingFirstUpdateIds.isEmpty { return true }
-        if !pendingInvites.isEmpty { return true }
+        // Read directly from store to ensure rapid polling triggers even before first UI update
+        if let invites = try? e2eeStore.listPendingInvites(), !invites.isEmpty { return true }
         return Date().timeIntervalSince(lastRapidPollTrigger) < 60.0
     }
 
@@ -375,17 +377,10 @@ final class LocationSyncService: ObservableObject {
         return results
     }
 
-    @discardableResult
-    private func pollPendingInvite() async throws -> Shared.PendingInviteResult? {
-        return try await pollPendingInvites().first
-    }
-
     func clearInvite(ekPub: Data? = nil) async {
         do {
             if let ekPub = ekPub {
                 try await e2eeStore.clearInvite(ekPub: ekPub.toKotlinByteArray())
-            } else if let last = try await e2eeStore.listPendingInvites().last() {
-                try await e2eeStore.clearInvite(ekPub: last.qrPayload.ekPub)
             }
             pendingInvites = try await e2eeStore.listPendingInvites()
         } catch {

@@ -90,24 +90,26 @@ open class LocationClient(
      * Note: We randomize the order and parallelize requests to mitigate timing oracle attacks
      * and traffic analysis (Issue #222 security hardening).
      */
-    suspend fun pollPendingInvites(): List<PendingInviteResult> = coroutineScope {
-        val pending = store.listPendingInvites().shuffled()
-        pending.map { invite ->
-            async {
-                try {
-                    val discoveryHex = invite.qrPayload.discoveryToken().toHex()
-                    val messages = mailboxClient.poll(baseUrl, discoveryHex)
-                    val inits = messages.filterIsInstance<KeyExchangeInitPayload>()
-                    val last = inits.lastOrNull()
-                    if (last != null) {
-                        PendingInviteResult(last, inits.size > 1, invite.qrPayload.ekPub)
-                    } else null
-                } catch (e: Exception) {
-                    println("[LocationClient] pollPendingInvite failed for token=${invite.qrPayload.discoveryToken().toHex().take(8)}: ${e.message}")
-                    null
+    suspend fun pollPendingInvites(): List<PendingInviteResult> = pollMutex.withLock {
+        coroutineScope {
+            val pending = store.listPendingInvites().shuffled()
+            pending.map { invite ->
+                async {
+                    try {
+                        val discoveryHex = invite.qrPayload.discoveryToken().toHex()
+                        val messages = mailboxClient.poll(baseUrl, discoveryHex)
+                        val inits = messages.filterIsInstance<KeyExchangeInitPayload>()
+                        val last = inits.lastOrNull()
+                        if (last != null) {
+                            PendingInviteResult(last, inits.size > 1, invite.qrPayload.ekPub)
+                        } else null
+                    } catch (e: Exception) {
+                        println("[LocationClient] pollPendingInvite failed for token=${invite.qrPayload.discoveryToken().toHex().take(8)}: ${e.message}")
+                        null
+                    }
                 }
-            }
-        }.awaitAll().filterNotNull()
+            }.awaitAll().filterNotNull()
+        }
     }
 
     /** Deprecated: use pollPendingInvites instead. Returns the first result found. */

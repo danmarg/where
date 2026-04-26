@@ -45,7 +45,7 @@ fun MapScreen(
     ownHeading: Double?,
     users: List<UserLocation>,
     friends: List<FriendEntry>,
-    pendingInvites: List<net.af0.where.e2ee.PendingInvite>,
+    pendingInvites: List<net.af0.where.e2ee.PendingInviteView>,
     displayName: String,
     onDisplayNameChange: (String) -> Unit,
     pausedFriendIds: Set<String>,
@@ -65,7 +65,6 @@ fun MapScreen(
     onLocationPermissionGranted: () -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
-
     val scope = rememberCoroutineScope()
     val locationPermissions =
         rememberMultiplePermissionsState(

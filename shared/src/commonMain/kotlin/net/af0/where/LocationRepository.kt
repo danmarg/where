@@ -13,7 +13,7 @@ import net.af0.where.e2ee.ConnectionStatus
 import net.af0.where.e2ee.FriendEntry
 import net.af0.where.e2ee.KeyExchangeInitPayload
 import net.af0.where.e2ee.QrPayload
-import net.af0.where.e2ee.PendingInvite
+import net.af0.where.e2ee.PendingInviteView
 import net.af0.where.model.UserLocation
 import net.af0.where.shared.MR
 
@@ -30,7 +30,7 @@ interface LocationSource {
     val isSharingLocation: StateFlow<Boolean>
     val pausedFriendIds: StateFlow<Set<String>>
     val friends: StateFlow<List<FriendEntry>>
-    val allPendingInvites: StateFlow<List<PendingInvite>>
+    val allPendingInvites: StateFlow<List<PendingInviteView>>
     val lastRapidPollTrigger: StateFlow<Long>
     val pendingQrForNaming: StateFlow<QrPayload?>
 
@@ -62,7 +62,7 @@ interface LocationSource {
         aliceEkPub: ByteArray? = null,
     )
 
-    fun onPendingInvitesUpdated(invites: List<PendingInvite>)
+    fun onPendingInvitesUpdated(invites: List<PendingInviteView>)
 
     fun setSharingLocation(sharing: Boolean)
 
@@ -128,8 +128,8 @@ object LocationRepository : LocationSource {
     private val _friends = MutableStateFlow<List<FriendEntry>>(emptyList())
     override val friends: StateFlow<List<FriendEntry>> = _friends.asStateFlow()
 
-    private val _allPendingInvites = MutableStateFlow<List<PendingInvite>>(emptyList())
-    override val allPendingInvites: StateFlow<List<PendingInvite>> = _allPendingInvites.asStateFlow()
+    private val _allPendingInvites = MutableStateFlow<List<PendingInviteView>>(emptyList())
+    override val allPendingInvites: StateFlow<List<PendingInviteView>> = _allPendingInvites.asStateFlow()
 
     private val awaitingFirstUpdateIds = mutableSetOf<String>()
 
@@ -206,7 +206,7 @@ object LocationRepository : LocationSource {
         _pendingInitAliceEkPub.value = aliceEkPub
     }
 
-    override fun onPendingInvitesUpdated(invites: List<PendingInvite>) {
+    override fun onPendingInvitesUpdated(invites: List<PendingInviteView>) {
         _allPendingInvites.value = invites
     }
 

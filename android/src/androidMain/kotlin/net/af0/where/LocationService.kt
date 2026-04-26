@@ -372,6 +372,7 @@ class LocationService : Service() {
                 )
                 withContext(Dispatchers.Main) {
                     locationSource.onPendingInit(initPayload, result.multipleScansDetected, result.aliceEkPub)
+                    updateStatus(null)
                 }
             }
         } catch (e: CancellationException) {

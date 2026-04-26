@@ -304,7 +304,7 @@ class LocationViewModelTest {
             assertNull(vm.pendingInitPayload.value)
             assertTrue(vm.inviteState.value is InviteState.None)
             assertTrue(store.listPendingInvites().isEmpty(), "Store should be cleared when Alice cancels")
-            }
+        }
 
 
     @Test

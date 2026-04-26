@@ -100,12 +100,12 @@ class LocationSyncServiceTests: XCTestCase {
         func sendLocationToFriend(friendId: String, lat: Double, lng: Double) async throws {
             sendLocationCallback?()
         }
-        func poll(isForeground: Bool) async throws -> [Shared.UserLocation] {
+        func poll(isForeground: Bool, pausedFriendIds: Set<String>) async throws -> [Shared.UserLocation] {
             _pollCallCount += 1
             return pollResult
         }
-        func pollPendingInvite() async throws -> Shared.PendingInviteResult? {
-            return nil
+        func pollPendingInvites() async throws -> [Shared.PendingInviteResult] {
+            return []
         }
         func postKeyExchangeInit(qr: Shared.QrPayload, initPayload: Shared.KeyExchangeInitPayload) async throws {
             // No-op
