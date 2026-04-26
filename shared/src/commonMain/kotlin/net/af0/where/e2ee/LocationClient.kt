@@ -42,7 +42,8 @@ open class LocationClient(
             // Periodic cleanup of expired invites
             try {
                 store.cleanupExpiredInvites()
-            } catch (_: Exception) {
+            } catch (e: Exception) {
+                println("[LocationClient] cleanup expired invites failed: ${e.message}")
             }
 
             val allUpdates = mutableListOf<UserLocation>()
