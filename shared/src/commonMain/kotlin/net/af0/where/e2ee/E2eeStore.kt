@@ -283,6 +283,7 @@ class E2eeStore(
                     ekPub = initMsg.ekPub,
                     keyConfirmation = initMsg.keyConfirmation,
                     suggestedName = initMsg.suggestedName,
+                    aliceEkPub = qr.ekPub,
                 )
             payload to entry
         }
@@ -306,9 +307,8 @@ class E2eeStore(
         stateLock.withLock {
             val pending =
                 pendingInvites.find {
-                    it.qrPayload.ekPub.contentEquals(payload.ekPub)
-                } ?: pendingInvites.lastOrNull() // Fallback for tests with empty ekPub in payload
-                ?: return@withLock null
+                    it.qrPayload.ekPub.contentEquals(payload.aliceEkPub)
+                } ?: return@withLock null
 
             val tokenBytes = payload.token.hexToByteArray()
             val msg =
