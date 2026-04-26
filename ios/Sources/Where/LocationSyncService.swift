@@ -155,19 +155,11 @@ final class LocationSyncService: ObservableObject {
             } catch {
                 logger.error("Failed to load initial friends: \(error.localizedDescription)")
             }
+            // Start polling AFTER friends/invites are loaded to ensure targetPollInterval is correct.
+            self.startPolling()
         }
 
         // Subscribe to updates on friendLocations, isSharingLocation, and user location
-        // to keep visibleUsers in sync.
-        Publishers.CombineLatest3($friendLocations, $isSharingLocation, self.locationProvider.locationPublisher)
-            .sink { [weak self] _, _, _ in
-                self?.updateVisibleUsers()
-            }
-            .store(in: &visibleUsersCancellables)
-
-        Task {
-            startPolling()
-        }
     }
 
     func setDisplayName(name: String) {

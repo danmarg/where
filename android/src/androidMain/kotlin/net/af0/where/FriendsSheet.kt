@@ -103,13 +103,19 @@ fun FriendsSheet(
                 }
             }
 
-            if (pendingInvites.isNotEmpty()) {
-                Text(
-                    stringResource(MR.strings.pending_invites) + " (${pendingInvites.size})",
-                    style = MaterialTheme.typography.labelMedium,
-                )
-                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    pendingInvites.forEach { invite ->
+            LazyColumn(
+                modifier = Modifier.fillMaxWidth().weight(1f, fill = false),
+                verticalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                if (pendingInvites.isNotEmpty()) {
+                    item {
+                        Text(
+                            stringResource(MR.strings.pending_invites) + " (${pendingInvites.size})",
+                            style = MaterialTheme.typography.labelMedium,
+                            modifier = Modifier.padding(bottom = 4.dp),
+                        )
+                    }
+                    items(pendingInvites, key = { "pending_${it.qrPayload.fingerprint}" }) { invite ->
                         Row(
                             modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
                             verticalAlignment = Alignment.CenterVertically,
@@ -138,17 +144,15 @@ fun FriendsSheet(
                         }
                     }
                 }
-            }
 
-            if (friends.isNotEmpty()) {
-                Text(
-                    stringResource(MR.strings.friends) + " (${friends.size})",
-                    style = MaterialTheme.typography.labelMedium,
-                )
-                LazyColumn(
-                    modifier = Modifier.fillMaxWidth().weight(1f, fill = false),
-                    verticalArrangement = Arrangement.spacedBy(4.dp),
-                ) {
+                if (friends.isNotEmpty()) {
+                    item {
+                        Text(
+                            stringResource(MR.strings.friends) + " (${friends.size})",
+                            style = MaterialTheme.typography.labelMedium,
+                            modifier = Modifier.padding(top = 12.dp, bottom = 4.dp),
+                        )
+                    }
                     items(friends, key = { it.id }) { friend ->
                         Column(modifier = Modifier.fillMaxWidth()) {
                             Row(
@@ -260,13 +264,15 @@ fun FriendsSheet(
                             }
                         }
                     }
+                } else if (pendingInvites.isEmpty()) {
+                    item {
+                        Text(
+                            stringResource(MR.strings.no_friends_yet),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
                 }
-            } else {
-                Text(
-                    stringResource(MR.strings.no_friends_yet),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
             }
         }
     }
