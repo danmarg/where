@@ -16,7 +16,7 @@ private class RawStringDesc: NSObject, Shared.ResourcesStringDesc {
 protocol LocationClientProtocol: AnyObject, Sendable {
     func sendLocation(lat: Double, lng: Double, pausedFriendIds: Set<String>) async throws
     func sendLocationToFriend(friendId: String, lat: Double, lng: Double) async throws
-    func poll(isForeground: Bool) async throws -> [Shared.UserLocation]
+    func poll(isForeground: Bool, pausedFriendIds: Set<String>) async throws -> [Shared.UserLocation]
     func pollPendingInvite() async throws -> Shared.PendingInviteResult?
     func postKeyExchangeInit(qr: Shared.QrPayload, initPayload: Shared.KeyExchangeInitPayload) async throws
 }
@@ -309,7 +309,7 @@ final class LocationSyncService: ObservableObject {
             }
         }
         do {
-            let updates = try await locationClient.poll(isForeground: isInForeground())
+            let updates = try await locationClient.poll(isForeground: isInForeground(), pausedFriendIds: pausedFriendIds)
             logger.debug("Got \(updates.count) location updates")
             for update in updates {
                 try? await e2eeStore.updateLastLocation(id: update.userId, lat: update.lat, lng: update.lng, ts: update.timestamp)

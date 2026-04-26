@@ -27,9 +27,13 @@ open class LocationClient(
      * Poll calls are serialized to prevent concurrent ratchet state mutations.
      *
      * @param isForeground Whether the app is currently in the foreground.
+     * @param pausedFriendIds Set of friend IDs for whom location sharing is currently paused.
      * @return List of new [UserLocation] updates received since the last poll.
      */
-    suspend fun poll(isForeground: Boolean = true): List<UserLocation> =
+    suspend fun poll(
+        isForeground: Boolean = true,
+        pausedFriendIds: Set<String> = emptySet(),
+    ): List<UserLocation> =
         pollMutex.withLock {
             processOutboxes()
             val allUpdates = mutableListOf<UserLocation>()
@@ -52,7 +56,7 @@ open class LocationClient(
                         }
                     }
 
-                    val friendUpdates = pollFriend(friend.id)
+                    val friendUpdates = pollFriend(friend.id, friend.id in pausedFriendIds)
                     allUpdates.addAll(friendUpdates)
                     successCount++
                 } catch (e: Exception) {
@@ -96,8 +100,12 @@ open class LocationClient(
 
     /**
      * Poll a specific friend's mailbox.
+     * @param isPaused Whether location sharing is currently paused for this friend.
      */
-    internal suspend fun pollFriend(friendId: String): List<UserLocation> {
+    internal suspend fun pollFriend(
+        friendId: String,
+        isPaused: Boolean = false,
+    ): List<UserLocation> {
         val resultLocations = mutableListOf<UserLocation>()
         val friendBefore = store.getFriend(friendId) ?: return emptyList()
         var currentTokenToPoll = friendBefore.session.recvToken.toHex()
@@ -158,11 +166,17 @@ open class LocationClient(
         }
 
         // Automated keepalive (§5.3): send a keepalive message if we received a new DH key
-        // but are currently not sharing location, and the session is not stale.
+        // but have not yet replied with our own new DH public key. This advances the peer's
+        // recvToken.
+        //
+        // Crucially, we only do this immediately if we are NOT actively sharing location
+        // (sharingEnabled=false or isPaused=true). If we ARE sharing, we wait for the next
+        // location update to carry the ratchet, preventing a keepalive feedback loop
+        // during active sessions.
         val friendAfter = store.getFriend(friendId)
         if (friendAfter != null && !friendBefore.session.remoteDhPub.contentEquals(friendAfter.session.remoteDhPub)) {
-            if (!friendAfter.sharingEnabled && !friendAfter.isStale) {
-                println("[LocationClient] pollFriend: new remoteDhPub for ${friendId.take(8)}, sending keepalive (sharingEnabled=false)")
+            if (!friendAfter.isStale && (!friendAfter.sharingEnabled || isPaused)) {
+                println("[LocationClient] pollFriend: new remoteDhPub for ${friendId.take(8)}, sending keepalive (sharingEnabled=${friendAfter.sharingEnabled}, isPaused=$isPaused)")
                 try {
                     sendKeepalive(friendId)
                 } catch (_: Exception) {

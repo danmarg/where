@@ -25,6 +25,35 @@ class FakeMailboxClient : MailboxClient {
     }
 }
 
+/**
+ * A self-routing mailbox: post() drops the payload into the same inbox that poll() reads,
+ * so both sides of a session can share one instance and messages are delivered automatically.
+ */
+class RelayMailboxClient : MailboxClient {
+    val inbox = mutableMapOf<String, MutableList<MailboxPayload>>()
+    val history = mutableListOf<Pair<String, MailboxPayload>>()
+
+    override suspend fun post(
+        baseUrl: String,
+        token: String,
+        payload: MailboxPayload,
+    ) {
+        inbox.getOrPut(token) { mutableListOf() }.add(payload)
+        history.add(token to payload)
+    }
+
+    override suspend fun poll(
+        baseUrl: String,
+        token: String,
+    ): List<MailboxPayload> = inbox.remove(token) ?: emptyList()
+
+    override suspend fun ack(
+        baseUrl: String,
+        token: String,
+        count: Int,
+    ) {}
+}
+
 class TokenTransitionTest {
     init {
         initializeE2eeTests()
@@ -123,6 +152,50 @@ class TokenTransitionTest {
             assertEquals(2, fakeMailbox.pollCount)
         }
 
+    // Verify that pollFriend sends an immediate keepalive whenever it detects a new remote DH
+    // key, regardless of the sharingEnabled flag. This covers the global-pause scenario where
+    // sharingEnabled remains true (its default) but the user has paused Android sharing —
+    // previously only the sharingEnabled=false branch fired the keepalive, which was dead code.
+    @Test
+    fun testTransitionKeepaliveWhenSharingEnabled() =
+        runTest {
+            val aliceStore = E2eeStore(MemoryStorage())
+            val bobStore = E2eeStore(MemoryStorage())
+            val fakeMailbox = FakeMailboxClient()
+            val aliceClient = LocationClient("http://fake", aliceStore, fakeMailbox)
+
+            // 1. Establish session
+            val qr = aliceStore.createInvite("Alice")
+            val (initPayload, bobEntry) = bobStore.processScannedQr(qr)
+            aliceStore.processKeyExchangeInit(initPayload, "Bob")
+
+            val aliceToBobId = aliceStore.listFriends().first().id
+            val bobToAliceId = bobEntry.id
+
+            // sharingEnabled stays true (default) — this is the production state when sharing
+            // is globally paused on Android via pausedFriendIds, not via sharingEnabled.
+
+            // 2. Trigger a real DH ratchet: Alice sends first, Bob ratchets and replies with DH=B1.
+            val (aState, aMsg) = Session.encryptMessage(aliceStore.getFriend(aliceToBobId)!!.session, MessagePlaintext.Keepalive())
+            aliceStore.updateSession(aliceToBobId, aState)
+            bobStore.processBatch(bobToAliceId, bobStore.getFriend(bobToAliceId)!!.session.recvToken.toHex(), listOf(aMsg))
+
+            val (bState, bMsg) = Session.encryptMessage(bobStore.getFriend(bobToAliceId)!!.session, MessagePlaintext.Keepalive())
+            bobStore.updateSession(bobToAliceId, bState)
+
+            val aliceRecvToken = aliceStore.getFriend(aliceToBobId)!!.session.recvToken.toHex()
+            fakeMailbox.polls[aliceRecvToken] = mutableListOf(bMsg)
+
+            // 3. Alice polls. She sees Bob's new DH key and must immediately send a keepalive
+            // because she is paused (simulated by passing pausedFriendIds).
+            aliceClient.poll(pausedFriendIds = setOf(aliceToBobId))
+
+            val aliceFinal = aliceStore.getFriend(aliceToBobId)!!
+            assertFalse(aliceFinal.session.isSendTokenPending, "isSendTokenPending should be cleared after finishing transitions")
+            assertTrue(fakeMailbox.posts.isNotEmpty(), "Alice should have posted at least one keepalive during token transition")
+            assertTrue(aliceFinal.session.sendSeq > 0, "Alice should have advanced sendSeq")
+        }
+
     @Test
     fun testTransitionKeepaliveWhenSharingDisabled() =
         runTest {
@@ -139,40 +212,142 @@ class TokenTransitionTest {
             val aliceToBobId = aliceStore.listFriends().first().id
             val bobToAliceId = bobEntry.id
 
-            // 2. Alice disables sharing
+            // 2. Alice explicitly disables per-friend sharing
             aliceStore.updateFriend(aliceToBobId) { it.copy(sharingEnabled = false) }
 
-            // 3. Bob sends a message to Alice (triggers DH ratchet on Alice's side)
-            // To trigger a REAL DH ratchet, Alice must first send a message to Bob,
-            // then Bob sends a message back with his NEW DH key.
-
-            // Alice -> Bob (DH=A0)
+            // 3. Trigger a real DH ratchet: Alice sends first, Bob ratchets and replies with DH=B1.
             val (aState, aMsg) = Session.encryptMessage(aliceStore.getFriend(aliceToBobId)!!.session, MessagePlaintext.Keepalive())
             aliceStore.updateSession(aliceToBobId, aState)
             bobStore.processBatch(bobToAliceId, bobStore.getFriend(bobToAliceId)!!.session.recvToken.toHex(), listOf(aMsg))
 
-            // Bob -> Alice (DH=B1). This will trigger isNewDhEpoch and commitRatchetSend at Alice.
             val (bState, bMsg) = Session.encryptMessage(bobStore.getFriend(bobToAliceId)!!.session, MessagePlaintext.Keepalive())
             bobStore.updateSession(bobToAliceId, bState)
 
             val aliceRecvToken = aliceStore.getFriend(aliceToBobId)!!.session.recvToken.toHex()
             fakeMailbox.polls[aliceRecvToken] = mutableListOf(bMsg)
 
-            // 4. Alice polls. She should see the new DH, ratchet, and trigger an automated keepalive.
-            // The keepalive itself triggers finalizeTokenTransition.
-            // Alice's pollFriend detects Bob's new DH key in the batch,
-            // which triggers Alice to rotate her own keys and set isSendTokenPending = true.
-            // It then immediately calls sendKeepalive() which should clear the flag.
+            // 4. Alice polls. Keepalive must fire even with sharingEnabled=false.
             aliceClient.pollFriend(aliceToBobId)
 
-            // Assert: Alice should have posted at least one keepalive to advance Bob's recvToken
             val aliceFinal = aliceStore.getFriend(aliceToBobId)!!
             assertFalse(aliceFinal.session.isSendTokenPending, "isSendTokenPending should be cleared after finishing transitions")
+            assertTrue(fakeMailbox.posts.isNotEmpty(), "Alice should have posted at least one keepalive during token transition")
+            assertTrue(aliceFinal.session.sendSeq > 0, "Alice should have advanced sendSeq")
+        }
 
-            // Check that something was posted to Bob
-            println("[DEBUG] FakeMailbox posts: ${fakeMailbox.posts.size}")
-            assertTrue(fakeMailbox.posts.isNotEmpty(), "Alice should have posted at least one message during transition")
-            // We expect Alice to rotate because bob advanced his epoch.
-            assertTrue(aliceFinal.session.sendSeq > 0, "Alice should have sent a keepalive (sendSeq > 0)")
+    // Simulate N complete DH-ratchet exchange rounds using a self-routing relay mailbox.
+    // Models a long pause where one side keeps sending and the other service was dead.
+    // Key property: after draining the relay, both sides can still exchange messages correctly —
+    // i.e., no permanent token desync regardless of how many epochs accumulated.
+    //
+    // Note: we don't assert sendToken==recvToken equality at every intermediate step because the
+    // Double Ratchet intentionally keeps the SENDER one epoch ahead of the peer's recvToken until
+    // the peer processes the next message. The meaningful invariant is that messages sent by Alice
+    // are always decryptable by Bob once the relay is fully drained.
+    @Test
+    fun testMultiRoundRatchetStability() =
+        runTest {
+            val aliceStore = E2eeStore(MemoryStorage())
+            val bobStore = E2eeStore(MemoryStorage())
+            val relay = RelayMailboxClient()
+            val aliceClient = LocationClient("http://fake", aliceStore, relay)
+            val bobClient = LocationClient("http://fake", bobStore, relay)
+
+            val qr = aliceStore.createInvite("Alice")
+            val (initPayload, bobEntry) = bobStore.processScannedQr(qr)
+            aliceStore.processKeyExchangeInit(initPayload, "Bob")
+            val aliceToBobId = aliceStore.listFriends().first().id
+
+            // Prime the ratchet chain: Alice sends her first keepalive (which carries DH_A1 from
+            // aliceProcessInit), then both sides drain keepalives until the relay is empty.
+            aliceClient.sendKeepalive(aliceToBobId)
+            repeat(4) {
+                bobClient.poll()
+                aliceClient.poll(pausedFriendIds = setOf(aliceToBobId))
+            }
+
+            // N additional exchange rounds — each simulates one maintenance-poll cycle during a pause.
+            // After each round we verify the chain is still healthy by sending a location end-to-end.
+            repeat(5) { round ->
+                // Alice sends a keepalive (models Android's 30-min maintenance poll keepalive).
+                aliceClient.sendKeepalive(aliceToBobId)
+
+                // Drain: both sides exchange resulting keepalives until the relay is empty.
+                repeat(4) {
+                    bobClient.poll()
+                    aliceClient.poll(pausedFriendIds = setOf(aliceToBobId))
+                }
+
+                // End-to-end health check: Alice sends a location and Bob can decrypt it after
+                // one more round of polls (the location may land on a token Bob fetches next).
+                aliceClient.sendLocation(round.toDouble(), 0.0)
+                val allUpdates = mutableListOf<net.af0.where.model.UserLocation>()
+                repeat(4) {
+                    allUpdates.addAll(bobClient.poll())
+                    aliceClient.poll(pausedFriendIds = setOf(aliceToBobId))
+                }
+                assertTrue(
+                    allUpdates.any { it.lat == round.toDouble() },
+                    "Round $round: Bob should receive Alice's location",
+                )
+            }
+
+            // Final state: neither side should be stuck with a pending token transition.
+            val alice = aliceStore.getFriend(aliceToBobId)!!
+            assertFalse(alice.session.isSendTokenPending, "Alice isSendTokenPending should be clear after all rounds")
+        }
+
+    // After pollFriend triggers a DH ratchet (and our fix immediately sends the keepalive),
+    // a subsequent sendLocation must arrive on the correct token so the peer can decrypt it.
+    // Models the "resume after pause" path: service restarts, first poll fires keepalive,
+    // then the user's first location send goes through without a full extra poll cycle.
+    @Test
+    fun testSendLocationAfterPollFriendDhRatchet() =
+        runTest {
+            val aliceStore = E2eeStore(MemoryStorage())
+            val bobStore = E2eeStore(MemoryStorage())
+            val relay = RelayMailboxClient()
+            val aliceClient = LocationClient("http://fake", aliceStore, relay)
+            val bobClient = LocationClient("http://fake", bobStore, relay)
+
+            val qr = aliceStore.createInvite("Alice")
+            val (initPayload, bobEntry) = bobStore.processScannedQr(qr)
+            aliceStore.processKeyExchangeInit(initPayload, "Bob")
+            val aliceToBobId = aliceStore.listFriends().first().id
+            val bobToAliceId = bobEntry.id
+
+            // Prime: Alice sends her bootstrap keepalive (carries DH_A1), Bob processes it and
+            // ratchets, generating DH_B2. After this initial exchange both sides have live sessions.
+            aliceClient.sendKeepalive(aliceToBobId)
+            repeat(4) {
+                bobClient.poll()
+                aliceClient.poll()
+            }
+
+            // Simulate: Bob (iOS) continues sending heartbeat keepalives during Android's pause.
+            // Each send advances Bob's symmetric chain; Bob's DH key only rotates after he receives
+            // something from Alice, so he keeps using DH_B2 for now.
+            bobClient.sendKeepalive(bobToAliceId)
+
+            // Android service restarts and calls poll() immediately.
+            // pollFriend must detect that Bob's remoteDhPub changed (or the keepalive carries
+            // a recognised new DH key), and our fix sends the ratchet-completion keepalive inside
+            // the same poll() call so isSendTokenPending is cleared before sendLocation runs.
+            aliceClient.poll(pausedFriendIds = setOf(aliceToBobId))
+
+            val aliceAfterPoll = aliceStore.getFriend(aliceToBobId)!!
+            assertFalse(aliceAfterPoll.session.isSendTokenPending, "isSendTokenPending must be cleared by pollFriend's keepalive before sendLocation")
+
+            // Alice's first location send after resuming.
+            aliceClient.sendLocation(37.0, -122.0)
+
+            // Bob drains: he processes any ratchet keepalives from Alice and then finds the location.
+            val allUpdates = mutableListOf<net.af0.where.model.UserLocation>()
+            repeat(4) {
+                allUpdates.addAll(bobClient.poll())
+                aliceClient.poll()
+            }
+            assertTrue(allUpdates.isNotEmpty(), "Bob should receive Alice's location")
+            assertEquals(37.0, allUpdates.first().lat, "Bob should see the correct latitude")
         }
 }

@@ -309,7 +309,7 @@ class LocationService : Service() {
             rapid -> 2_000L
             inForeground -> 10_000L
             isSharingLocation -> 5 * 60 * 1000L // heartbeat + friend poll
-            else -> 30 * 60 * 1000L // maintenance-only (Ratchet Acks)
+            else -> 30 * 60 * 1000L // maintenance-only (Ratchet keepalives and Acks). Required for DH sync during global pause.
         }
 
     @VisibleForTesting
@@ -328,7 +328,11 @@ class LocationService : Service() {
     internal suspend fun doPoll() {
         try {
             Log.d(TAG, "Polling for location updates")
-            val updates = locationClient.poll(isForeground = locationSource.isAppInForeground.value)
+            val updates =
+                locationClient.poll(
+                    isForeground = locationSource.isAppInForeground.value,
+                    pausedFriendIds = locationSource.pausedFriendIds.value,
+                )
             Log.d(TAG, "Got ${updates.size} location updates")
             withContext(Dispatchers.Main) {
                 val now = System.currentTimeMillis()
