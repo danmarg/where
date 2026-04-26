@@ -1,47 +1,49 @@
 #!/bin/bash
 
-# Fail on error
-set -e
+# Exit on error, print commands for debugging
+set -ex
 
-# The script runs from the directory it's in (ios/ci_scripts)
-# Navigate to the project root
+# Navigate to project root
 cd ../..
 echo "Working directory: $(pwd)"
 
-# 1. Create a dummy Local.xcconfig if it doesn't exist
+# 1. Create dummy Local.xcconfig
 if [ ! -f ios/Local.xcconfig ]; then
   echo "Creating dummy ios/Local.xcconfig"
   echo "// Created by ci_post_clone.sh" > ios/Local.xcconfig
 fi
 
-# 2. Setup Java 17
-echo "Setting up Java 17..."
+# 2. Install and Setup Java 17
+echo "Installing OpenJDK 17 via Homebrew..."
+# brew install is usually fast if already cached, but we need to ensure it's there
+brew install openjdk@17
 
-# Check if we are on ARM or Intel to find the correct Homebrew path
+# Detect Homebrew prefix based on architecture
 if [[ $(uname -m) == 'arm64' ]]; then
-    BREW_PREFIX="/opt/homebrew"
+    BREW_OPENJDK_PATH="/opt/homebrew/opt/openjdk@17"
 else
-    BREW_PREFIX="/usr/local"
+    BREW_OPENJDK_PATH="/usr/local/opt/openjdk@17"
 fi
 
-# Install openjdk@17 if not already present in Brew
-if [ ! -d "$BREW_PREFIX/opt/openjdk@17" ]; then
-    echo "openjdk@17 not found. Installing via Homebrew..."
-    brew install --quiet openjdk@17
-fi
+# Set JAVA_HOME to the internal JDK structure
+export JAVA_HOME="$BREW_OPENJDK_PATH/libexec/openjdk.jdk/Contents/Home"
+export PATH="$JAVA_HOME/bin:$PATH"
 
-# Configure environment to use the Brew-installed OpenJDK
-export JAVA_HOME="$BREW_PREFIX/opt/openjdk@17/libexec/openjdk.jdk/Contents/Home"
-export PATH="$BREW_PREFIX/opt/openjdk@17/bin:$PATH"
+echo "JAVA_HOME is set to: $JAVA_HOME"
 
-echo "Using JAVA_HOME=$JAVA_HOME"
-
-# Verify Java is actually working
-if ! java -version; then
-    echo "Error: Java is still not functional. Path check:"
-    ls -R "$BREW_PREFIX/opt/openjdk@17" || echo "Directory not found"
+# Check if the binary exists and is executable
+if [ -x "$JAVA_HOME/bin/java" ]; then
+    echo "Java binary found at $JAVA_HOME/bin/java"
+    "$JAVA_HOME/bin/java" -version
+else
+    echo "Error: Java binary NOT found at $JAVA_HOME/bin/java"
+    find "$BREW_OPENJDK_PATH" -name java
     exit 1
 fi
 
+# 3. Build Shared XCFramework
 echo "Building Shared XCFramework..."
-./gradlew :shared:assembleSharedDebugXCFramework :shared:assembleSharedReleaseXCFramework --no-daemon
+# Pass JAVA_HOME explicitly to Gradle to ensure it doesn't use the system stub
+./gradlew :shared:assembleSharedDebugXCFramework :shared:assembleSharedReleaseXCFramework \
+    --no-daemon \
+    -Dorg.gradle.java.home="$JAVA_HOME"
