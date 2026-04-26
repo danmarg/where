@@ -1,5 +1,8 @@
 package net.af0.where.e2ee
 
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import net.af0.where.model.UserLocation
@@ -82,24 +85,28 @@ open class LocationClient(
     /**
      * Poll the discovery mailboxes for all pending invites.
      * returns a list of results for each invite where a message was found.
+     *
+     * Note: We randomize the order and parallelize requests to mitigate timing oracle attacks
+     * and traffic analysis (Issue #222 security hardening).
      */
-    suspend fun pollPendingInvites(): List<PendingInviteResult> {
-        val pending = store.listPendingInvites()
-        val results = mutableListOf<PendingInviteResult>()
-        for (invite in pending) {
-            try {
-                val discoveryHex = invite.qrPayload.discoveryToken().toHex()
-                val messages = mailboxClient.poll(baseUrl, discoveryHex)
-                val inits = messages.filterIsInstance<KeyExchangeInitPayload>()
-                val last = inits.lastOrNull()
-                if (last != null) {
-                    results.add(PendingInviteResult(last, inits.size > 1, invite.qrPayload.ekPub))
+    suspend fun pollPendingInvites(): List<PendingInviteResult> = coroutineScope {
+        val pending = store.listPendingInvites().shuffled()
+        pending.map { invite ->
+            async {
+                try {
+                    val discoveryHex = invite.qrPayload.discoveryToken().toHex()
+                    val messages = mailboxClient.poll(baseUrl, discoveryHex)
+                    val inits = messages.filterIsInstance<KeyExchangeInitPayload>()
+                    val last = inits.lastOrNull()
+                    if (last != null) {
+                        PendingInviteResult(last, inits.size > 1, invite.qrPayload.ekPub)
+                    } else null
+                } catch (e: Exception) {
+                    println("[LocationClient] pollPendingInvite failed for token=${invite.qrPayload.discoveryToken().toHex().take(8)}: ${e.message}")
+                    null
                 }
-            } catch (e: Exception) {
-                println("[LocationClient] pollPendingInvite failed for token=${invite.qrPayload.discoveryToken().toHex().take(8)}: ${e.message}")
             }
-        }
-        return results
+        }.awaitAll().filterNotNull()
     }
 
     /** Deprecated: use pollPendingInvites instead. Returns the first result found. */
