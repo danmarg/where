@@ -678,6 +678,6 @@ internal data class SerializedFriendEntry(
 @Serializable
 internal data class SerializedStore(
     val friends: List<SerializedFriendEntry>,
-    val pendingInvite: PendingInvite? = null,
+    val pendingInvite: PendingInvite? = null, // TODO: Remove after migration period (§222)
     val pendingInvites: List<PendingInvite> = emptyList(),
 )

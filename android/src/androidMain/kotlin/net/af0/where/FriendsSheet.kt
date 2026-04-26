@@ -108,8 +108,8 @@ fun FriendsSheet(
                     stringResource(MR.strings.pending_invites) + " (${pendingInvites.size})",
                     style = MaterialTheme.typography.labelMedium,
                 )
-                LazyColumn(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    items(pendingInvites, key = { it.qrPayload.ekPub.toHex() }) { invite ->
+                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    pendingInvites.forEach { invite ->
                         Row(
                             modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
                             verticalAlignment = Alignment.CenterVertically,
@@ -145,8 +145,8 @@ fun FriendsSheet(
                     stringResource(MR.strings.friends) + " (${friends.size})",
                     style = MaterialTheme.typography.labelMedium,
                 )
-                LazyColumn(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    items(friends, key = { it.id }) { friend ->
+                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    friends.forEach { friend ->
                         Column(modifier = Modifier.fillMaxWidth()) {
                             Row(
                                 modifier =
