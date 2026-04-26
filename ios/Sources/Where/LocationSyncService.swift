@@ -309,7 +309,7 @@ final class LocationSyncService: ObservableObject {
             }
         }
         do {
-            let updates = try await locationClient.poll(isForeground: isInForeground())
+            let updates = try await locationClient.poll(isForeground: isInForeground(), pausedFriendIds: pausedFriendIds)
             logger.debug("Got \(updates.count) location updates")
             for update in updates {
                 try? await e2eeStore.updateLastLocation(id: update.userId, lat: update.lat, lng: update.lng, ts: update.timestamp)

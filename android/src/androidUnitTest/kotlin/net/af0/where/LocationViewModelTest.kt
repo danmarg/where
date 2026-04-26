@@ -1,9 +1,12 @@
 package net.af0.where
 
+import android.Manifest
 import android.app.Application
 import android.content.SharedPreferences
+import android.content.Intent
 import android.text.TextUtils
 import androidx.test.core.app.ApplicationProvider
+import org.robolectric.Shadows.shadowOf
 import dev.icerock.moko.resources.desc.Raw
 import dev.icerock.moko.resources.desc.StringDesc
 import io.mockk.every
@@ -479,6 +482,50 @@ class LocationViewModelTest {
 
             assertNull(vm.pendingQrForNaming.value)
             io.mockk.coVerify(exactly = 0) { store.processScannedQr(any(), any()) }
+        }
+
+    // Regression test for the pause-desync bug: when sharing is toggled off and the app
+    // goes to the background, the LocationService must NOT be stopped. Stopping it killed
+    // the maintenance poll loop that sends DH-ratchet keepalives, causing token drift.
+    @Test
+    fun testServiceNotStoppedWhenSharingPaused() =
+        runTest {
+            shadowOf(app).grantPermissions(Manifest.permission.ACCESS_FINE_LOCATION)
+
+            val inMemory = FakeE2eeStorage()
+            val userStore = net.af0.where.e2ee.UserStore(inMemory)
+            userStore.setSharing(true)
+
+            val source = TestFakeLocationSource()
+            source.setAppForeground(false) // app is in background
+
+            viewModel =
+                LocationViewModel(
+                    app,
+                    e2eeStoreParam = E2eeStore(inMemory),
+                    userStoreParam = userStore,
+                    startPolling = false,
+                    locationSource = source,
+                )
+            advanceUntilIdle()
+
+            // Drain any startForegroundService calls from the initial "sharing=true" state.
+            while (shadowOf(app).peekNextStartedService() != null) {
+                shadowOf(app).nextStartedService
+            }
+
+            // Pause sharing — app remains in background.
+            viewModel!!.toggleSharing()
+            advanceUntilIdle()
+
+            // No further service interactions should have occurred: no start and no stop.
+            val nextStarted: Intent? = shadowOf(app).peekNextStartedService()
+            assertNull(nextStarted, "No startForegroundService should be issued while paused + backgrounded")
+
+            // Also verify the intent queue of stopped services is empty. Robolectric records
+            // stopService() calls via ShadowContextImpl; none should appear here.
+            val stopped: Intent? = shadowOf(app).nextStoppedService
+            assertNull(stopped, "stopService must not be called when sharing is merely paused")
         }
 
     @Test
