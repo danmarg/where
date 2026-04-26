@@ -4,9 +4,11 @@ import SwiftUI
 struct FriendsSheet: View {
     @Binding var displayName: String
     let friends: [Shared.FriendEntry]
+    let pendingInvites: [Shared.PendingInviteView]
     let pausedFriendIds: Set<String>
     let lastPingTimes: [String: Date]
     let onTogglePause: (String) -> Void
+    let onCancelInvite: (Shared.PendingInviteView) -> Void
     let onCreateInvite: () -> Void
     let onScanQr: () -> Void
     let onRename: (String, String) -> Void
@@ -45,6 +47,33 @@ struct FriendsSheet: View {
                         }
 
 
+                    }
+                }
+
+                if !pendingInvites.isEmpty {
+                    Section(MR.strings().pending_invites.localized() + " (\(pendingInvites.count))") {
+                        ForEach(pendingInvites, id: \.qrPayload.fingerprint) { invite in
+                            HStack {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(invite.qrPayload.suggestedName)
+                                        .font(.body)
+                                    let inviteSentLabel = MR.strings().invite_sent.localized()
+                                    let timeAgo = timeAgoStringFromSeconds(invite.createdAt)
+                                    Text("\(inviteSentLabel): \(timeAgo)")
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
+                                Spacer()
+                                Button {
+                                    onCancelInvite(invite)
+                                } label: {
+                                    Image(systemName: "trash")
+                                        .font(.title3)
+                                        .foregroundStyle(.red)
+                                }
+                                .buttonStyle(.plain)
+                            }
+                        }
                     }
                 }
 

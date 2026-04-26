@@ -144,9 +144,13 @@ struct ContentView: View {
             FriendsSheet(
                 displayName: $syncService.displayName,
                 friends: syncService.friends,
+                pendingInvites: syncService.pendingInvites,
                 pausedFriendIds: syncService.pausedFriendIds,
                 lastPingTimes: syncService.friendLastPing,
                 onTogglePause: { syncService.togglePauseFriend(id: $0) },
+                onCancelInvite: { invite in
+                    Task { await syncService.clearInvite(ekPub: toSwiftData(invite.qrPayload.ekPub)) }
+                },
                 onCreateInvite: {
                     showFriends = false
                     Task { await syncService.createInvite() }

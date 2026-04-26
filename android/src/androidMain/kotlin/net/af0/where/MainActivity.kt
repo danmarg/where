@@ -86,6 +86,7 @@ class MainActivity : ComponentActivity() {
                 val ownHeading by viewModel.ownHeading.collectAsState()
                 val users by viewModel.visibleUsers.collectAsState()
                 val friends by viewModel.friends.collectAsState()
+                val pendingInvites by viewModel.allPendingInvites.collectAsState()
                 val displayName by viewModel.displayName.collectAsState()
                 val pausedFriendIds by viewModel.pausedFriendIds.collectAsState()
                 val friendLastPing by viewModel.friendLastPing.collectAsState()
@@ -107,10 +108,12 @@ class MainActivity : ComponentActivity() {
                     ownHeading = ownHeading,
                     users = users,
                     friends = friends,
+                    pendingInvites = pendingInvites,
                     displayName = displayName,
                     onDisplayNameChange = { viewModel.setDisplayName(it) },
                     pausedFriendIds = pausedFriendIds,
                     onTogglePause = { viewModel.togglePauseFriend(it) },
+                    onCancelInvite = { viewModel.cancelPendingInvite(it) },
                     isSharing = isSharing,
                     onToggleSharing = { viewModel.toggleSharing() },
                     connectionStatus = connectionStatus,
@@ -179,9 +182,10 @@ class MainActivity : ComponentActivity() {
                         confirmButton = {
                             TextButton(onClick = {
                                 showCameraSettingsRationale = false
-                                val intent = Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
-                                    data = android.net.Uri.fromParts("package", packageName, null)
-                                }
+                                val intent =
+                                    Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+                                        data = android.net.Uri.fromParts("package", packageName, null)
+                                    }
                                 startActivity(intent)
                             }) { Text(stringResource(MR.strings.open_settings)) }
                         },

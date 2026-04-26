@@ -1,5 +1,8 @@
 package net.af0.where.e2ee
 
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import net.af0.where.model.UserLocation
@@ -22,7 +25,7 @@ open class LocationClient(
     private val pollMutex = Mutex()
 
     /**
-     * Poll all friends and the pending invite (if any).
+     * Poll all friends and all pending invites.
      *
      * Poll calls are serialized to prevent concurrent ratchet state mutations.
      *
@@ -36,6 +39,13 @@ open class LocationClient(
     ): List<UserLocation> =
         pollMutex.withLock {
             processOutboxes()
+            // Periodic cleanup of expired invites
+            try {
+                store.cleanupExpiredInvites()
+            } catch (e: Exception) {
+                println("[LocationClient] cleanup expired invites failed: ${e.message}")
+            }
+
             val allUpdates = mutableListOf<UserLocation>()
             var successCount = 0
             var failCount = 0
@@ -74,17 +84,44 @@ open class LocationClient(
         }
 
     /**
-     * Poll the discovery mailbox for a pending invite.
-     * returns the most recent KeyExchangeInitPayload found, plus a flag if multiple were detected.
+     * Poll the discovery mailboxes for all pending invites.
+     * returns a list of results for each invite where a message was found.
+     *
+     * Note: We randomize the order and parallelize requests to mitigate timing oracle attacks
+     * and traffic analysis (Issue #222 security hardening).
      */
+    suspend fun pollPendingInvites(): List<PendingInviteResult> =
+        pollMutex.withLock {
+            coroutineScope {
+                val pending = store.listPendingInvites().shuffled()
+                pending.map { invite ->
+                    async {
+                        try {
+                            val discoveryHex = invite.qrPayload.discoveryToken().toHex()
+                            val messages = mailboxClient.poll(baseUrl, discoveryHex)
+                            val inits = messages.filterIsInstance<KeyExchangeInitPayload>()
+                            val last = inits.lastOrNull()
+                            if (last != null) {
+                                PendingInviteResult(last, inits.size > 1, invite.qrPayload.ekPub)
+                            } else {
+                                null
+                            }
+                        } catch (e: Exception) {
+                            println(
+                                "[LocationClient] pollPendingInvite failed for token=${invite.qrPayload.discoveryToken().toHex().take(
+                                    8,
+                                )}: ${e.message}",
+                            )
+                            null
+                        }
+                    }
+                }.awaitAll().filterNotNull()
+            }
+        }
+
+    /** Deprecated: use pollPendingInvites instead. Returns the first result found. */
     suspend fun pollPendingInvite(): PendingInviteResult? {
-        val qr = store.pendingQrPayload() ?: return null
-        val discoveryHex = qr.discoveryToken().toHex()
-        val messages = mailboxClient.poll(baseUrl, discoveryHex)
-        val inits = messages.filterIsInstance<KeyExchangeInitPayload>()
-        val last = inits.lastOrNull() ?: return null
-        // Use lastOrNull() to pick the most recent scan/retry in the FIFO queue (#176).
-        return PendingInviteResult(last, inits.size > 1)
+        return pollPendingInvites().firstOrNull()
     }
 
     /**
@@ -176,7 +213,11 @@ open class LocationClient(
         val friendAfter = store.getFriend(friendId)
         if (friendAfter != null && !friendBefore.session.remoteDhPub.contentEquals(friendAfter.session.remoteDhPub)) {
             if (!friendAfter.isStale && (!friendAfter.sharingEnabled || isPaused)) {
-                println("[LocationClient] pollFriend: new remoteDhPub for ${friendId.take(8)}, sending keepalive (sharingEnabled=${friendAfter.sharingEnabled}, isPaused=$isPaused)")
+                println(
+                    "[LocationClient] pollFriend: new remoteDhPub for ${friendId.take(
+                        8,
+                    )}, sending keepalive (sharingEnabled=${friendAfter.sharingEnabled}, isPaused=$isPaused)",
+                )
                 try {
                     sendKeepalive(friendId)
                 } catch (_: Exception) {

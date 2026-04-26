@@ -53,36 +53,49 @@ class LocationServiceSharingPauseTest {
     }
 
     @Test
-    fun testRegistrationRemovedWhenSharingPaused() = runTest {
-        io.mockk.every { UserPrefs.isSharing(any()) } returns true
-        fakeLocationSource.setSharingLocation(true)
+    fun testRegistrationRemovedWhenSharingPaused() =
+        runTest {
+            io.mockk.every { UserPrefs.isSharing(any()) } returns true
+            fakeLocationSource.setSharingLocation(true)
 
-        val controller = Robolectric.buildService(LocationService::class.java)
-        val service = controller.get()
-        service.fusedClientOverride = mockFused
-        service.locationClientOverride = mockk(relaxed = true)
-        service.e2eeStoreOverride = mockk(relaxed = true)
+            val controller = Robolectric.buildService(LocationService::class.java)
+            val service = controller.get()
+            service.fusedClientOverride = mockFused
+            service.locationClientOverride = mockk(relaxed = true)
+            service.e2eeStoreOverride = mockk(relaxed = true)
 
-        controller.create()
-        advanceUntilIdle()
+            controller.create()
+            advanceUntilIdle()
 
-        assertTrue(service.isRegistered, "Should be registered when sharing is on")
-        verify(exactly = 1) { mockFused.requestLocationUpdates(any<com.google.android.gms.location.LocationRequest>(), any<com.google.android.gms.location.LocationCallback>(), any<android.os.Looper>()) }
+            assertTrue(service.isRegistered, "Should be registered when sharing is on")
+            verify(exactly = 1) {
+                mockFused.requestLocationUpdates(
+                    any<com.google.android.gms.location.LocationRequest>(),
+                    any<com.google.android.gms.location.LocationCallback>(),
+                    any<android.os.Looper>(),
+                )
+            }
 
-        // Pause sharing
-        fakeLocationSource.setSharingLocation(false)
-        advanceUntilIdle()
+            // Pause sharing
+            fakeLocationSource.setSharingLocation(false)
+            advanceUntilIdle()
 
-        assertFalse(service.isRegistered, "Should be unregistered when sharing is paused")
-        verify(exactly = 1) { mockFused.removeLocationUpdates(any<com.google.android.gms.location.LocationCallback>()) }
+            assertFalse(service.isRegistered, "Should be unregistered when sharing is paused")
+            verify(exactly = 1) { mockFused.removeLocationUpdates(any<com.google.android.gms.location.LocationCallback>()) }
 
-        // Resume sharing
-        fakeLocationSource.setSharingLocation(true)
-        advanceUntilIdle()
+            // Resume sharing
+            fakeLocationSource.setSharingLocation(true)
+            advanceUntilIdle()
 
-        assertTrue(service.isRegistered, "Should be registered again when sharing is resumed")
-        verify(exactly = 2) { mockFused.requestLocationUpdates(any<com.google.android.gms.location.LocationRequest>(), any<com.google.android.gms.location.LocationCallback>(), any<android.os.Looper>()) }
+            assertTrue(service.isRegistered, "Should be registered again when sharing is resumed")
+            verify(exactly = 2) {
+                mockFused.requestLocationUpdates(
+                    any<com.google.android.gms.location.LocationRequest>(),
+                    any<com.google.android.gms.location.LocationCallback>(),
+                    any<android.os.Looper>(),
+                )
+            }
 
-        controller.destroy()
-    }
+            controller.destroy()
+        }
 }

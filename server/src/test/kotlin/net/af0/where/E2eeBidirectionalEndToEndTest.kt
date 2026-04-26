@@ -94,7 +94,7 @@ class E2eeBidirectionalEndToEndTest {
             val initMsg = discoveryMessages.filterIsInstance<KeyExchangeInitPayload>().firstOrNull()
             assertNotNull(initMsg, "Alice should find Bob's KeyExchangeInit on the discovery token")
 
-            val aliceEntry = aliceStore.processKeyExchangeInit(initMsg, initMsg.suggestedName)
+            val aliceEntry = aliceStore.processKeyExchangeInit(initMsg, initMsg.suggestedName, qr.ekPub)
             assertNotNull(aliceEntry, "Alice should process KeyExchangeInit successfully")
             val aliceFriendId = aliceEntry.id
             println("✓ Alice processed KeyExchangeInit, friendId=${aliceFriendId.take(8)}")
@@ -318,6 +318,7 @@ class E2eeBidirectionalEndToEndTest {
                     KtorMailboxClient.poll(baseUrl, qrAB.discoveryToken().toHex())
                         .filterIsInstance<KeyExchangeInitPayload>().first(),
                     "B",
+                    qrAB.ekPub,
                 )!!
             val friendIdAB = aEntryForB.id
 
@@ -330,6 +331,7 @@ class E2eeBidirectionalEndToEndTest {
                     KtorMailboxClient.poll(baseUrl, qrAC.discoveryToken().toHex())
                         .filterIsInstance<KeyExchangeInitPayload>().first(),
                     "C",
+                    qrAC.ekPub,
                 )!!
             val friendIdAC = aEntryForC.id
 
@@ -456,6 +458,7 @@ class E2eeBidirectionalEndToEndTest {
                     KtorMailboxClient.poll(baseUrl, qr.discoveryToken().toHex())
                         .filterIsInstance<KeyExchangeInitPayload>().first(),
                     "B",
+                    qr.ekPub,
                 )!!
             val friendId = aEntry.id
 
@@ -590,6 +593,7 @@ class E2eeBidirectionalEndToEndTest {
                     KtorMailboxClient.poll(baseUrl, qr.discoveryToken().toHex())
                         .filterIsInstance<KeyExchangeInitPayload>().first(),
                     "B",
+                    qr.ekPub,
                 )!!
             val friendId = aEntry.id
 
@@ -739,6 +743,7 @@ class E2eeBidirectionalEndToEndTest {
                     KtorMailboxClient.poll(baseUrl, qr.discoveryToken().toHex())
                         .filterIsInstance<KeyExchangeInitPayload>().first(),
                     "B",
+                    qr.ekPub,
                 )!!
             val friendId = aEntry.id
 

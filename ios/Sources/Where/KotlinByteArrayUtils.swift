@@ -19,6 +19,10 @@ func toHex(_ kba: Shared.KotlinByteArray) -> String {
 }
 
 extension Data {
+    func toKotlinByteArray() -> Shared.KotlinByteArray {
+        kotlinByteArray(from: self)
+    }
+
     /// Securely zeros out the buffer using memset_s to prevent compiler elision.
     /// This is critical for sensitive data like cryptographic keys.
     mutating func zeroize() {
@@ -26,6 +30,16 @@ extension Data {
             guard let base = ptr.baseAddress else { return }
             memset_s(base, ptr.count, 0, ptr.count)
         }
+    }
+}
+
+extension Shared.KotlinByteArray {
+    func toData() -> Data {
+        toSwiftData(self)
+    }
+
+    func toHex() -> String {
+        Where.toHex(self)
     }
 }
 

@@ -1,4 +1,5 @@
 @file:OptIn(ExperimentalPermissionsApi::class)
+
 package net.af0.where
 
 import android.os.Build
@@ -45,17 +46,19 @@ fun MapScreen(
     ownHeading: Double?,
     users: List<UserLocation>,
     friends: List<FriendEntry>,
+    pendingInvites: List<net.af0.where.e2ee.PendingInviteView>,
     displayName: String,
     onDisplayNameChange: (String) -> Unit,
     pausedFriendIds: Set<String>,
+    friendLastPing: Map<String, Long>,
     onTogglePause: (String) -> Unit,
+    onCancelInvite: (ByteArray) -> Unit,
     isSharing: Boolean,
     onToggleSharing: () -> Unit,
     connectionStatus: ConnectionStatus,
     onCreateInvite: () -> Unit,
     onScanQr: () -> Unit,
     onPasteUrl: (String) -> Unit,
-    friendLastPing: Map<String, Long>,
     onRenameFriend: (String, String) -> Unit,
     onRemoveFriend: (String) -> Unit,
     selectedUserId: String?,
@@ -250,11 +253,12 @@ fun MapScreen(
                 ),
             locationSource = mapLocationSource,
         ) {
-            val friendData = users.map { user ->
-                val friend = friends.find { it.id == user.userId }
-                val name = friend?.name ?: user.userId.take(8)
-                Triple(user, friend, name)
-            }
+            val friendData =
+                users.map { user ->
+                    val friend = friends.find { it.id == user.userId }
+                    val name = friend?.name ?: user.userId.take(8)
+                    Triple(user, friend, name)
+                }
 
             friendData.forEach { (user, friend, name) ->
                 val timeAgo = timeAgoStringFromMs(friendLastPing[user.userId])
@@ -383,9 +387,10 @@ fun MapScreen(
                                 Text(
                                     text = "(" + stringResource(MR.strings.approximate) + ")",
                                     color = Color.White.copy(alpha = 0.6f),
-                                    style = MaterialTheme.typography.labelSmall.copy(
-                                        fontSize = MaterialTheme.typography.labelSmall.fontSize * 0.8f
-                                    ),
+                                    style =
+                                        MaterialTheme.typography.labelSmall.copy(
+                                            fontSize = MaterialTheme.typography.labelSmall.fontSize * 0.8f,
+                                        ),
                                 )
                             }
                         }
@@ -414,11 +419,13 @@ fun MapScreen(
     if (showFriends) {
         FriendsSheet(
             friends = friends,
+            pendingInvites = pendingInvites,
             displayName = displayName,
             onDisplayNameChange = onDisplayNameChange,
             pausedFriendIds = pausedFriendIds,
             friendLastPing = friendLastPing,
             onTogglePause = onTogglePause,
+            onCancelInvite = onCancelInvite,
             onCreateInvite = onCreateInvite,
             onScanQr = onScanQr,
             onPasteUrl = onPasteUrl,

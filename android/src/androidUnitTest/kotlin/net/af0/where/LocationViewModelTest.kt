@@ -2,11 +2,10 @@ package net.af0.where
 
 import android.Manifest
 import android.app.Application
-import android.content.SharedPreferences
 import android.content.Intent
+import android.content.SharedPreferences
 import android.text.TextUtils
 import androidx.test.core.app.ApplicationProvider
-import org.robolectric.Shadows.shadowOf
 import dev.icerock.moko.resources.desc.Raw
 import dev.icerock.moko.resources.desc.StringDesc
 import io.mockk.every
@@ -40,7 +39,9 @@ import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
+import org.robolectric.Shadows.shadowOf
 import org.robolectric.annotation.Config
+import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
@@ -68,6 +69,9 @@ class TestFakeLocationSource : LocationSource {
     private val _pendingInitPayload = MutableStateFlow<KeyExchangeInitPayload?>(null)
     override val pendingInitPayload: StateFlow<KeyExchangeInitPayload?> = _pendingInitPayload.asStateFlow()
 
+    private val _pendingInitAliceEkPub = MutableStateFlow<ByteArray?>(null)
+    override val pendingInitAliceEkPub: StateFlow<ByteArray?> = _pendingInitAliceEkPub.asStateFlow()
+
     private val _multipleScansDetected = MutableStateFlow(false)
     override val multipleScansDetected: StateFlow<Boolean> = _multipleScansDetected.asStateFlow()
 
@@ -79,6 +83,9 @@ class TestFakeLocationSource : LocationSource {
 
     private val _friends = MutableStateFlow<List<FriendEntry>>(emptyList())
     override val friends: StateFlow<List<FriendEntry>> = _friends.asStateFlow()
+
+    private val _allPendingInvites = MutableStateFlow<List<net.af0.where.e2ee.PendingInvite>>(emptyList())
+    override val allPendingInvites: StateFlow<List<net.af0.where.e2ee.PendingInvite>> = _allPendingInvites.asStateFlow()
 
     private val _lastRapidPollTrigger = MutableStateFlow(0L)
     override val lastRapidPollTrigger: StateFlow<Long> = _lastRapidPollTrigger.asStateFlow()
@@ -132,9 +139,15 @@ class TestFakeLocationSource : LocationSource {
     override fun onPendingInit(
         payload: KeyExchangeInitPayload?,
         multipleScans: Boolean,
+        aliceEkPub: ByteArray?,
     ) {
         _pendingInitPayload.value = payload
         _multipleScansDetected.value = multipleScans
+        _pendingInitAliceEkPub.value = aliceEkPub
+    }
+
+    override fun onPendingInvitesUpdated(invites: List<net.af0.where.e2ee.PendingInvite>) {
+        _allPendingInvites.value = invites
     }
 
     override fun setSharingLocation(sharing: Boolean) {
@@ -277,20 +290,20 @@ class LocationViewModelTest {
                 )
 
             // Bob's response arriving at the repository
-            fakeLocationSource.onPendingInit(initPayload)
+            fakeLocationSource.onPendingInit(initPayload, aliceEkPub = qr.ekPub)
             advanceUntilIdle()
 
             // After peer joins, inviteState transitions to None to dismiss QR sheet
             assertTrue(vm.inviteState.value is InviteState.None)
             assertEquals("Bob", vm.pendingInitPayload.value?.suggestedName)
 
-            // 3. Alice cancels naming Bob
+            // Alice cancels naming Bob
             vm.cancelPendingInit()
             advanceUntilIdle()
 
             assertNull(vm.pendingInitPayload.value)
             assertTrue(vm.inviteState.value is InviteState.None)
-            assertNull(store.pendingQrPayload(), "Store should be cleared when Alice cancels")
+            assertTrue(store.listPendingInvites().isEmpty(), "Store should be cleared when Alice cancels")
         }
 
     @Test
@@ -351,7 +364,7 @@ class LocationViewModelTest {
                 )
 
             // 1. Peer joins Alice's mailbox
-            source.onPendingInit(initPayload)
+            source.onPendingInit(initPayload, aliceEkPub = byteArrayOf(0))
             advanceUntilIdle()
 
             assertEquals(initPayload, vm.pendingInitPayload.value)
@@ -360,7 +373,60 @@ class LocationViewModelTest {
             vm.confirmPendingInit("Bob (Friend)")
             advanceUntilIdle()
 
-            io.mockk.coVerify { store.processKeyExchangeInit(initPayload, "Bob (Friend)") }
+            io.mockk.coVerify { store.processKeyExchangeInit(initPayload, "Bob (Friend)", any()) }
+            assertNull(vm.pendingInitPayload.value)
+        }
+
+    @Test
+    fun testCancelPendingInit_SurgicalRemoval() =
+        runTest {
+            val storage = FakeE2eeStorage()
+            val store = E2eeStore(storage)
+            val client = mockk<LocationClient>(relaxed = true)
+            val source = TestFakeLocationSource()
+            viewModel =
+                LocationViewModel(
+                    app,
+                    e2eeStoreParam = store,
+                    locationClientParam = client,
+                    startPolling = false,
+                    locationSource = source,
+                )
+            val vm = viewModel!!
+
+            // 1. Create two invites
+            vm.createInvite()
+            advanceUntilIdle()
+            val qr1 = store.listPendingInvites().first().qrPayload
+
+            vm.createInvite()
+            advanceUntilIdle()
+            val qr2 = store.listPendingInvites().last().qrPayload
+
+            assertEquals(2, store.listPendingInvites().size)
+
+            // 2. Simulate Bob responding to the FIRST invite
+            val initPayload =
+                KeyExchangeInitPayload(
+                    v = PROTOCOL_VERSION,
+                    token = "token",
+                    ekPub = byteArrayOf(1, 2, 3),
+                    keyConfirmation = byteArrayOf(4, 5, 6),
+                    suggestedName = "Bob",
+                )
+            source.onPendingInit(initPayload, aliceEkPub = qr1.ekPub)
+            advanceUntilIdle()
+
+            assertEquals(initPayload, vm.pendingInitPayload.value)
+
+            // 3. Alice cancels naming Bob
+            vm.cancelPendingInit()
+            advanceUntilIdle()
+
+            // 4. Verify ONLY the first invite was removed
+            val remaining = store.listPendingInvites()
+            assertEquals(1, remaining.size, "Only one invite should remain")
+            assertContentEquals(qr2.ekPub, remaining[0].qrPayload.ekPub, "The second invite should be the one remaining")
             assertNull(vm.pendingInitPayload.value)
         }
 
@@ -390,7 +456,7 @@ class LocationViewModelTest {
                 )
 
             // 1. Peer joins Alice's mailbox
-            source.onPendingInit(initPayload)
+            source.onPendingInit(initPayload, aliceEkPub = byteArrayOf(0))
             advanceUntilIdle()
 
             assertEquals(initPayload, vm.pendingInitPayload.value)
@@ -399,7 +465,7 @@ class LocationViewModelTest {
             vm.cancelPendingInit()
             advanceUntilIdle()
 
-            io.mockk.coVerify { store.clearInvite() }
+            io.mockk.coVerify { store.clearInvite(any<ByteArray>()) }
             assertNull(vm.pendingInitPayload.value)
         }
 

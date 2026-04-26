@@ -99,12 +99,12 @@ class MultiFriendIntegrationTest {
             // --- PAIR ALICE AND BOB ---
             val qrAB = aliceStore.createInvite("Alice")
             val (initAB, _) = bobStore.processScannedQr(qrAB, "Alice")
-            aliceStore.processKeyExchangeInit(initAB, "Bob")
+            aliceStore.processKeyExchangeInit(initAB, "Bob", qrAB.ekPub)
 
             // --- PAIR ALICE AND CHARLIE ---
             val qrAC = aliceStore.createInvite("Alice")
             val (initAC, _) = charlieStore.processScannedQr(qrAC, "Alice")
-            aliceStore.processKeyExchangeInit(initAC, "Charlie")
+            aliceStore.processKeyExchangeInit(initAC, "Charlie", qrAC.ekPub)
 
             val friends = aliceStore.listFriends()
             assertEquals(2, friends.size)
@@ -141,6 +141,59 @@ class MultiFriendIntegrationTest {
         }
 
     @Test
+    fun `Alice can poll and accept multiple pending invites`() =
+        testApplication {
+            application { module(ServerState()) }
+
+            val testClient =
+                createClient {
+                    install(ContentNegotiation) {
+                        json(json)
+                    }
+                }
+            val mailboxClient = KtorTestMailboxClient(testClient)
+
+            val aliceStore = E2eeStore(MemoryStorage())
+            val aliceClient = LocationClient("", aliceStore, mailboxClient)
+
+            val bobStore = E2eeStore(MemoryStorage())
+            val charlieStore = E2eeStore(MemoryStorage())
+
+            // 1. Alice creates two invites
+            val qrBob = aliceStore.createInvite("Alice")
+            val qrCharlie = aliceStore.createInvite("Alice")
+
+            assertEquals(2, aliceStore.listPendingInvites().size)
+
+            // 2. Bob joins via first invite
+            val (initBob, _) = bobStore.processScannedQr(qrBob, "Alice")
+            mailboxClient.post("", qrBob.discoveryToken().toHex(), initBob)
+
+            // 3. Charlie joins via second invite
+            val (initCharlie, _) = charlieStore.processScannedQr(qrCharlie, "Alice")
+            mailboxClient.post("", qrCharlie.discoveryToken().toHex(), initCharlie)
+
+            // 4. Alice polls for pending invites
+            val results = aliceClient.pollPendingInvites()
+            assertEquals(2, results.size, "Alice should find both pending invites")
+
+            // 5. Alice accepts Bob
+            val bobResult = results.find { it.aliceEkPub.contentEquals(qrBob.ekPub) }
+            assertNotNull(bobResult)
+            val bobEntry = aliceStore.processKeyExchangeInit(bobResult.payload, "Bob", qrBob.ekPub)
+            assertNotNull(bobEntry)
+
+            // 6. Alice accepts Charlie
+            val charlieResult = results.find { it.aliceEkPub.contentEquals(qrCharlie.ekPub) }
+            assertNotNull(charlieResult)
+            val charlieEntry = aliceStore.processKeyExchangeInit(charlieResult.payload, "Charlie", qrCharlie.ekPub)
+            assertNotNull(charlieEntry)
+
+            assertEquals(2, aliceStore.listFriends().size)
+            assertTrue(aliceStore.listPendingInvites().isEmpty())
+        }
+
+    @Test
     fun `poll updates friend location persistently in store`() =
         testApplication {
             application { module(ServerState()) }
@@ -163,7 +216,7 @@ class MultiFriendIntegrationTest {
             // Pair A-B
             val qr = aliceStore.createInvite("Alice")
             val (init, _) = bobStore.processScannedQr(qr, "Alice")
-            aliceStore.processKeyExchangeInit(init, "Bob")
+            aliceStore.processKeyExchangeInit(init, "Bob", qr.ekPub)
             val bobId = aliceStore.listFriends()[0].id
 
             // Bob sends location
@@ -208,11 +261,11 @@ class MultiFriendIntegrationTest {
             // Pair A-B and A-C
             val qrAB = aliceStore.createInvite("Alice")
             val (initAB, _) = bobStore.processScannedQr(qrAB, "Alice")
-            aliceStore.processKeyExchangeInit(initAB, "Bob")
+            aliceStore.processKeyExchangeInit(initAB, "Bob", qrAB.ekPub)
 
             val qrAC = aliceStore.createInvite("Alice")
             val (initAC, _) = charlieStore.processScannedQr(qrAC, "Alice")
-            aliceStore.processKeyExchangeInit(initAC, "Charlie")
+            aliceStore.processKeyExchangeInit(initAC, "Charlie", qrAC.ekPub)
 
             val bobId = aliceStore.listFriends().find { it.name == "Bob" }!!.id
             val charlieId = aliceStore.listFriends().find { it.name == "Charlie" }!!.id

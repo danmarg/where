@@ -12,6 +12,7 @@ import kotlinx.coroutines.flow.update
 import net.af0.where.e2ee.ConnectionStatus
 import net.af0.where.e2ee.FriendEntry
 import net.af0.where.e2ee.KeyExchangeInitPayload
+import net.af0.where.e2ee.PendingInviteView
 import net.af0.where.e2ee.QrPayload
 import net.af0.where.model.UserLocation
 import net.af0.where.shared.MR
@@ -24,10 +25,12 @@ interface LocationSource {
     val connectionStatus: StateFlow<ConnectionStatus>
     val isAppInForeground: StateFlow<Boolean>
     val pendingInitPayload: StateFlow<KeyExchangeInitPayload?>
+    val pendingInitAliceEkPub: StateFlow<ByteArray?>
     val multipleScansDetected: StateFlow<Boolean>
     val isSharingLocation: StateFlow<Boolean>
     val pausedFriendIds: StateFlow<Set<String>>
     val friends: StateFlow<List<FriendEntry>>
+    val allPendingInvites: StateFlow<List<PendingInviteView>>
     val lastRapidPollTrigger: StateFlow<Long>
     val pendingQrForNaming: StateFlow<QrPayload?>
 
@@ -56,7 +59,10 @@ interface LocationSource {
     fun onPendingInit(
         payload: KeyExchangeInitPayload?,
         multipleScans: Boolean = false,
+        aliceEkPub: ByteArray? = null,
     )
+
+    fun onPendingInvitesUpdated(invites: List<PendingInviteView>)
 
     fun setSharingLocation(sharing: Boolean)
 
@@ -107,6 +113,9 @@ object LocationRepository : LocationSource {
     internal val _pendingInitPayload = MutableStateFlow<KeyExchangeInitPayload?>(null)
     override val pendingInitPayload: StateFlow<KeyExchangeInitPayload?> = _pendingInitPayload.asStateFlow()
 
+    private val _pendingInitAliceEkPub = MutableStateFlow<ByteArray?>(null)
+    override val pendingInitAliceEkPub: StateFlow<ByteArray?> = _pendingInitAliceEkPub.asStateFlow()
+
     private val _multipleScansDetected = MutableStateFlow(false)
     override val multipleScansDetected: StateFlow<Boolean> = _multipleScansDetected.asStateFlow()
 
@@ -118,6 +127,9 @@ object LocationRepository : LocationSource {
 
     private val _friends = MutableStateFlow<List<FriendEntry>>(emptyList())
     override val friends: StateFlow<List<FriendEntry>> = _friends.asStateFlow()
+
+    private val _allPendingInvites = MutableStateFlow<List<PendingInviteView>>(emptyList())
+    override val allPendingInvites: StateFlow<List<PendingInviteView>> = _allPendingInvites.asStateFlow()
 
     private val awaitingFirstUpdateIds = mutableSetOf<String>()
 
@@ -187,9 +199,15 @@ object LocationRepository : LocationSource {
     override fun onPendingInit(
         payload: KeyExchangeInitPayload?,
         multipleScans: Boolean,
+        aliceEkPub: ByteArray?,
     ) {
         _pendingInitPayload.value = payload
         _multipleScansDetected.value = multipleScans
+        _pendingInitAliceEkPub.value = aliceEkPub
+    }
+
+    override fun onPendingInvitesUpdated(invites: List<PendingInviteView>) {
+        _allPendingInvites.value = invites
     }
 
     /** Called by ViewModel to notify Bob scanned a QR and is naming the friend. */
@@ -262,10 +280,12 @@ object LocationRepository : LocationSource {
         _connectionStatus.value = ConnectionStatus.Ok
         _isAppInForeground.value = false
         _pendingInitPayload.value = null
+        _pendingInitAliceEkPub.value = null
         _multipleScansDetected.value = false
         _isSharingLocation.value = false
         _pausedFriendIds.value = emptySet()
         _friends.value = emptyList()
+        _allPendingInvites.value = emptyList()
         _lastRapidPollTrigger.value = 0L
         while (pollWakeSignal.tryReceive().isSuccess) { /* drain */ }
     }

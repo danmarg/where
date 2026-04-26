@@ -44,7 +44,7 @@ class E2eeStoreTest {
             val (initPayload, bobEntry) = bobStore.processScannedQr(qr)
 
             // Alice processes Bob's init payload (received from discovery inbox)
-            val aliceEntry = aliceStore.processKeyExchangeInit(initPayload, "Bob")
+            val aliceEntry = aliceStore.processKeyExchangeInit(initPayload, "Bob", qr.ekPub)
 
             assertNotNull(aliceEntry)
 
@@ -59,19 +59,19 @@ class E2eeStoreTest {
     @Test
     fun testPendingInviteAccessibleBeforeExchange() =
         runBlocking {
-            assertNull(aliceStore.pendingQrPayload())
+            assertTrue(aliceStore.listPendingInvites().isEmpty())
             val qr = aliceStore.createInvite("Alice")
-            assertNotNull(aliceStore.pendingQrPayload())
-            assertContentEquals(qr.ekPub, aliceStore.pendingQrPayload()!!.ekPub)
+            assertEquals(1, aliceStore.listPendingInvites().size)
+            assertContentEquals(qr.ekPub, aliceStore.listPendingInvites().first().qrPayload.ekPub)
         }
 
     @Test
     fun testClearInvite() =
         runBlocking {
-            aliceStore.createInvite("Alice")
-            assertNotNull(aliceStore.pendingQrPayload())
-            aliceStore.clearInvite()
-            assertNull(aliceStore.pendingQrPayload())
+            val qr = aliceStore.createInvite("Alice")
+            assertEquals(1, aliceStore.listPendingInvites().size)
+            aliceStore.clearInvite(qr.ekPub)
+            assertTrue(aliceStore.listPendingInvites().isEmpty())
         }
 
     @Test
@@ -79,7 +79,7 @@ class E2eeStoreTest {
         runBlocking {
             val qr = aliceStore.createInvite("Alice")
             val (initPayload, _) = bobStore.processScannedQr(qr)
-            aliceStore.processKeyExchangeInit(initPayload, "Bob")
+            aliceStore.processKeyExchangeInit(initPayload, "Bob", qr.ekPub)
 
             val aliceEntryBefore = aliceStore.listFriends().first()
 
@@ -101,7 +101,7 @@ class E2eeStoreTest {
         runBlocking {
             val qr = aliceStore.createInvite("Alice")
             val (initPayload, _) = bobStore.processScannedQr(qr)
-            val aliceEntry = aliceStore.processKeyExchangeInit(initPayload, "Bob")!!
+            val aliceEntry = aliceStore.processKeyExchangeInit(initPayload, "Bob", qr.ekPub)!!
 
             aliceStore.deleteFriend(aliceEntry.id)
             assertTrue(aliceStore.listFriends().isEmpty())
@@ -119,12 +119,12 @@ class E2eeStoreTest {
 
             // Reloading should have the pending invite persisted
             val reloadedAliceStore = E2eeStore(aliceStorage)
-            assertNotNull(reloadedAliceStore.pendingQrPayload())
-            assertContentEquals(qr.ekPub, reloadedAliceStore.pendingQrPayload()!!.ekPub)
+            assertEquals(1, reloadedAliceStore.listPendingInvites().size)
+            assertContentEquals(qr.ekPub, reloadedAliceStore.listPendingInvites().first().qrPayload.ekPub)
 
             // Processing an init against a reloaded store must succeed
             val (initPayload, _) = bobStore.processScannedQr(qr)
-            val result = reloadedAliceStore.processKeyExchangeInit(initPayload, "Bob")
+            val result = reloadedAliceStore.processKeyExchangeInit(initPayload, "Bob", qr.ekPub)
             assertNotNull(result)
             assertEquals("Bob", result.name)
         }
@@ -143,7 +143,7 @@ class E2eeStoreTest {
             assertTrue(ex.message?.contains("yourself") == true)
 
             // Invite must still be present (no side-effects from the rejected scan).
-            assertNotNull(aliceStore.pendingQrPayload())
+            assertEquals(1, aliceStore.listPendingInvites().size)
             Unit
         }
 
@@ -168,7 +168,7 @@ class E2eeStoreTest {
             val (initPayload, _) = aliceStore.processScannedQr(qr)
             // freshStore has no pending invite
             val freshStore = E2eeStore(MemoryStorage())
-            assertNull(freshStore.processKeyExchangeInit(initPayload, "Bob"))
+            assertNull(freshStore.processKeyExchangeInit(initPayload, "Bob", qr.ekPub))
         }
 
     // -----------------------------------------------------------------------
@@ -180,7 +180,7 @@ class E2eeStoreTest {
         runBlocking {
             val qr = aliceStore.createInvite("Alice")
             val (initPayload, bobEntry) = bobStore.processScannedQr(qr)
-            val aliceEntry = aliceStore.processKeyExchangeInit(initPayload, "Bob")!!
+            val aliceEntry = aliceStore.processKeyExchangeInit(initPayload, "Bob", qr.ekPub)!!
 
             assertFalse(bobEntry.isInitiator, "Bob scanned QR — must NOT be initiator")
             assertTrue(aliceEntry.isInitiator, "Alice created QR — must be initiator")
@@ -191,7 +191,7 @@ class E2eeStoreTest {
         runBlocking {
             val qr = aliceStore.createInvite("Alice")
             val (initPayload, bobEntry) = bobStore.processScannedQr(qr)
-            val aliceEntry = aliceStore.processKeyExchangeInit(initPayload, "Bob")!!
+            val aliceEntry = aliceStore.processKeyExchangeInit(initPayload, "Bob", qr.ekPub)!!
 
             // Not stale initially
             assertFalse(aliceStore.getFriend(aliceEntry.id)!!.isStale)
@@ -207,7 +207,7 @@ class E2eeStoreTest {
         runBlocking {
             val qr = aliceStore.createInvite("Alice")
             val (initPayload, bobEntry) = bobStore.processScannedQr(qr)
-            val aliceEntry = aliceStore.processKeyExchangeInit(initPayload, "Bob")!!
+            val aliceEntry = aliceStore.processKeyExchangeInit(initPayload, "Bob", qr.ekPub)!!
 
             val loc1 = MessagePlaintext.Location(1.0, 1.0, 1.0, 1000L)
             val (aliceSess1, msg1) = Session.encryptMessage(aliceEntry.session, loc1)
@@ -245,5 +245,79 @@ class E2eeStoreTest {
 
             val bobFriend3 = bobStore.getFriend(bobFriend1.id)!!
             assertEquals(aliceSess3.sendToken.toHex(), bobFriend3.session.recvToken.toHex())
+        }
+
+    @Test
+    fun testClearSpecificInvite() =
+        runBlocking {
+            val qr1 = aliceStore.createInvite("Alice 1")
+            val qr2 = aliceStore.createInvite("Alice 2")
+            assertEquals(2, aliceStore.listPendingInvites().size)
+
+            // Clear the first one specifically
+            aliceStore.clearInvite(qr1.ekPub)
+            val remaining = aliceStore.listPendingInvites()
+            assertEquals(1, remaining.size)
+            assertEquals("Alice 2", remaining[0].qrPayload.suggestedName)
+
+            // Clear the second one surgically
+            aliceStore.clearInvite(qr2.ekPub)
+            assertTrue(aliceStore.listPendingInvites().isEmpty())
+        }
+
+    @Test
+    fun testMultiplePendingInvites() =
+        runBlocking {
+            val qr1 = aliceStore.createInvite("Alice 1")
+            val qr2 = aliceStore.createInvite("Alice 2")
+
+            val invites = aliceStore.listPendingInvites()
+            assertEquals(2, invites.size)
+            assertEquals("Alice 1", invites[0].qrPayload.suggestedName)
+            assertEquals("Alice 2", invites[1].qrPayload.suggestedName)
+
+            // Bob accepts the first invite
+            val (initPayload1, _) = bobStore.processScannedQr(qr1)
+            val result1 = aliceStore.processKeyExchangeInit(initPayload1, "Bob 1", qr1.ekPub)
+            assertNotNull(result1)
+
+            // Should still have 1 pending invite
+            assertEquals(1, aliceStore.listPendingInvites().size)
+            assertEquals("Alice 2", aliceStore.listPendingInvites()[0].qrPayload.suggestedName)
+
+            // Bob accepts the second invite
+            val (initPayload2, _) = bobStore.processScannedQr(qr2)
+            val result2 = aliceStore.processKeyExchangeInit(initPayload2, "Bob 2", qr2.ekPub)
+            assertNotNull(result2)
+
+            // No pending invites left
+            assertTrue(aliceStore.listPendingInvites().isEmpty())
+        }
+
+    @Test
+    fun testMaxInvitesCap() =
+        runBlocking {
+            repeat(E2eeStore.MAX_PENDING_INVITES) {
+                aliceStore.createInvite("Alice $it")
+            }
+            assertEquals(E2eeStore.MAX_PENDING_INVITES, aliceStore.listPendingInvites().size)
+
+            assertFailsWith<IllegalStateException> {
+                aliceStore.createInvite("Alice too many")
+            }
+        }
+
+    @Test
+    fun testInviteExpiryCleanup() =
+        runBlocking {
+            val qr = aliceStore.createInvite("Alice")
+
+            // Not expired yet
+            aliceStore.cleanupExpiredInvites(expirySeconds = 3600)
+            assertEquals(1, aliceStore.listPendingInvites().size)
+
+            // Force expiry (now - createdAt >= 0)
+            aliceStore.cleanupExpiredInvites(expirySeconds = 0)
+            assertTrue(aliceStore.listPendingInvites().isEmpty())
         }
 }

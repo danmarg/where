@@ -1,6 +1,5 @@
 package net.af0.where
 
-import androidx.activity.ComponentActivity
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
@@ -33,10 +32,12 @@ class MapScreenTest {
                 ownHeading = null,
                 users = users,
                 friends = emptyList(),
+                pendingInvites = emptyList(),
                 displayName = "Me",
                 onDisplayNameChange = {},
                 pausedFriendIds = emptySet(),
                 onTogglePause = {},
+                onCancelInvite = {},
                 isSharing = true,
                 onToggleSharing = {},
                 connectionStatus = ConnectionStatus.Ok,

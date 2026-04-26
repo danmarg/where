@@ -31,13 +31,13 @@ class MultiFriendSyncTest {
             // Pair A-B
             val qrAB = aliceStore.createInvite("Alice")
             val (initAB, _) = bobStore.processScannedQr(qrAB, "Alice")
-            val friendB = aliceStore.processKeyExchangeInit(initAB, "Bob")
+            val friendB = aliceStore.processKeyExchangeInit(initAB, "Bob", qrAB.ekPub)
             assertNotNull(friendB)
 
             // Pair A-C
             val qrAC = aliceStore.createInvite("Alice")
             val (initAC, _) = charlieStore.processScannedQr(qrAC, "Alice")
-            val friendC = aliceStore.processKeyExchangeInit(initAC, "Charlie")
+            val friendC = aliceStore.processKeyExchangeInit(initAC, "Charlie", qrAC.ekPub)
             assertNotNull(friendC)
 
             // Bob sends a location to Alice
@@ -98,7 +98,7 @@ class MultiFriendSyncTest {
             // Pair A-B
             val qr = aliceStore.createInvite("Alice")
             val (init, _) = bobStore.processScannedQr(qr, "Alice")
-            val friendB = aliceStore.processKeyExchangeInit(init, "Bob")!!
+            val friendB = aliceStore.processKeyExchangeInit(init, "Bob", qr.ekPub)!!
             val bobId = friendB.id
 
             // Bob sends location
@@ -144,12 +144,12 @@ class MultiFriendSyncTest {
 
             val qrAB = aliceStore.createInvite("Alice")
             val (initAB, _) = bobStore.processScannedQr(qrAB, "Alice")
-            val friendB = aliceStore.processKeyExchangeInit(initAB, "Bob")
+            val friendB = aliceStore.processKeyExchangeInit(initAB, "Bob", qrAB.ekPub)
             assertNotNull(friendB)
 
             val qrAC = aliceStore.createInvite("Alice")
             val (initAC, _) = charlieStore.processScannedQr(qrAC, "Alice")
-            val friendC = aliceStore.processKeyExchangeInit(initAC, "Charlie")
+            val friendC = aliceStore.processKeyExchangeInit(initAC, "Charlie", qrAC.ekPub)
             assertNotNull(friendC)
 
             // Mock MailboxClient
@@ -193,7 +193,7 @@ class MultiFriendSyncTest {
             val bobStore = E2eeStore(MemoryStorage())
             val qrAB = aliceStore.createInvite("Alice")
             val (initAB, _) = bobStore.processScannedQr(qrAB, "Alice")
-            aliceStore.processKeyExchangeInit(initAB, "Bob")!!
+            aliceStore.processKeyExchangeInit(initAB, "Bob", qrAB.ekPub)!!
 
             val fakeMailbox =
                 object : MailboxClient {

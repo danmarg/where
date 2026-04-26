@@ -17,7 +17,7 @@ protocol LocationClientProtocol: AnyObject, Sendable {
     func sendLocation(lat: Double, lng: Double, pausedFriendIds: Set<String>) async throws
     func sendLocationToFriend(friendId: String, lat: Double, lng: Double) async throws
     func poll(isForeground: Bool, pausedFriendIds: Set<String>) async throws -> [Shared.UserLocation]
-    func pollPendingInvite() async throws -> Shared.PendingInviteResult?
+    func pollPendingInvites() async throws -> [Shared.PendingInviteResult]
     func postKeyExchangeInit(qr: Shared.QrPayload, initPayload: Shared.KeyExchangeInitPayload) async throws
 }
 
@@ -39,6 +39,7 @@ final class LocationSyncService: ObservableObject {
     @Published var friendLastPing: [String: Date] = [:]
     @Published var connectionStatus: Shared.ConnectionStatus = Shared.ConnectionStatus.Ok()
     @Published var friends: [Shared.FriendEntry] = []
+    @Published var pendingInvites: [Shared.PendingInviteView] = []
     @Published var inviteState: Shared.InviteState = Shared.InviteState.None()
     @Published var isSharingLocation: Bool {
         didSet {
@@ -63,6 +64,7 @@ final class LocationSyncService: ObservableObject {
     @Published var ownHeading: Double? = nil
     @Published var pendingQrForNaming: Shared.QrPayload? = nil
     @Published var pendingInitPayload: Shared.KeyExchangeInitPayload? = nil
+    @Published var pendingInitAliceEkPub: Data? = nil
     @Published var multipleScansDetected: Bool = false
     @Published var isExchanging: Bool = false
     private var inviteTask: Task<Void, Never>? = nil
@@ -138,6 +140,7 @@ final class LocationSyncService: ObservableObject {
         Task { @MainActor in
             do {
                 self.friends = try await store.listFriends()
+                self.pendingInvites = try await store.listPendingInvites()
                 var initialLocations: [String: (lat: Double, lng: Double, ts: Int64)] = [:]
                 var initialLastPing: [String: Date] = [:]
                 for friend in self.friends {
@@ -152,23 +155,11 @@ final class LocationSyncService: ObservableObject {
             } catch {
                 logger.error("Failed to load initial friends: \(error.localizedDescription)")
             }
+            // Start polling AFTER friends/invites are loaded to ensure targetPollInterval is correct.
+            self.startPolling()
         }
 
         // Subscribe to updates on friendLocations, isSharingLocation, and user location
-        // to keep visibleUsers in sync.
-        Publishers.CombineLatest3($friendLocations, $isSharingLocation, self.locationProvider.locationPublisher)
-            .sink { [weak self] _, _, _ in
-                self?.updateVisibleUsers()
-            }
-            .store(in: &visibleUsersCancellables)
-
-        Task {
-            // Clear any stale invite from a previous session before first poll.
-            if (try? await store.pendingQrPayload()) ?? nil != nil {
-                try? await store.clearInvite()
-            }
-            startPolling()
-        }
     }
 
     func setDisplayName(name: String) {
@@ -254,6 +245,7 @@ final class LocationSyncService: ObservableObject {
         }
     }
 
+    @MainActor
     func targetPollInterval() -> TimeInterval {
         if isRapidPolling() {
             return Self.rapidPollInterval
@@ -264,8 +256,10 @@ final class LocationSyncService: ObservableObject {
         return isSharingLocation ? Self.normalPollInterval : Self.maintenancePollInterval
     }
 
+    @MainActor
     func isRapidPolling() -> Bool {
         if !awaitingFirstUpdateIds.isEmpty { return true }
+        if !pendingInvites.isEmpty { return true }
         return Date().timeIntervalSince(lastRapidPollTrigger) < 60.0
     }
 
@@ -312,18 +306,23 @@ final class LocationSyncService: ObservableObject {
             let updates = try await locationClient.poll(isForeground: isInForeground(), pausedFriendIds: pausedFriendIds)
             logger.debug("Got \(updates.count) location updates")
             for update in updates {
-                try? await e2eeStore.updateLastLocation(id: update.userId, lat: update.lat, lng: update.lng, ts: update.timestamp)
+                do {
+                    try await e2eeStore.updateLastLocation(id: update.userId, lat: update.lat, lng: update.lng, ts: update.timestamp)
+                } catch {
+                    logger.error("Failed to update last location for \(update.userId): \(error.localizedDescription)")
+                }
                 friendLocations[update.userId] = (lat: update.lat, lng: update.lng, ts: update.timestamp)
                 friendLastPing[update.userId] = Date(timeIntervalSince1970: TimeInterval(update.timestamp))
                 onFriendLocationReceived(friendId: update.userId)
             }
 
             friends = try await e2eeStore.listFriends()
+            pendingInvites = try await e2eeStore.listPendingInvites()
             // Always update visibleUsers to ensure map is fresh when returning to foreground.
             updateVisibleUsers()
 
             if updateUi {
-                _ = try await pollPendingInvite()
+                _ = try await pollPendingInvites()
             }
 
             // Heartbeat: if we're awake enough to poll, also send location if one is due.
@@ -353,26 +352,42 @@ final class LocationSyncService: ObservableObject {
     }
 
     @discardableResult
-    private func pollPendingInvite() async throws -> Shared.PendingInviteResult? {
-        if pendingInitPayload != nil { return nil }
-        if let result = try await locationClient.pollPendingInvite() {
-            pendingInitPayload = result.payload
-            multipleScansDetected = result.multipleScansDetected
-            inviteState = Shared.InviteState.None()
-            triggerRapidPoll()
-            return result
+    private func pollPendingInvites() async throws -> [Shared.PendingInviteResult] {
+        let results = try await locationClient.pollPendingInvites()
+        if results.isEmpty { return [] }
+        
+        // If we already have a naming dialog up, don't overwrite it.
+        if pendingInitPayload == nil {
+            if let result = results.first {
+                pendingInitPayload = result.payload
+                pendingInitAliceEkPub = toSwiftData(result.aliceEkPub)
+                multipleScansDetected = result.multipleScansDetected
+                inviteState = Shared.InviteState.None()
+                triggerRapidPoll()
+            }
         }
-        return nil
+        return results
     }
 
-    func clearInvite() async {
+    func clearInvite(ekPub: Data? = nil) async {
         do {
-            try await e2eeStore.clearInvite()
+            let ekPubToClear = ekPub ?? pendingInitAliceEkPub
+            if let ekPubToClear = ekPubToClear {
+                try await e2eeStore.clearInvite(ekPub: kotlinByteArray(from: ekPubToClear))
+            } else if inviteState is Shared.InviteState.Pending {
+                // If we are currently showing a QR but no one has scanned it yet,
+                // clear that specific one.
+                if let qr = (inviteState as? Shared.InviteState.Pending)?.qr {
+                    try await e2eeStore.clearInvite(ekPub: qr.ekPub)
+                }
+            }
+            pendingInvites = try await e2eeStore.listPendingInvites()
         } catch {
             logger.error("Failed to clear invite: \(error.localizedDescription)")
         }
         resetRapidPoll()
         inviteState = Shared.InviteState.None()
+        pendingInitAliceEkPub = nil
     }
 
     @discardableResult
@@ -423,7 +438,11 @@ final class LocationSyncService: ObservableObject {
                 if let last = locationProvider.lastLocation {
                     // Proactively send our first location update to Alice to trigger confirmation on her side.
                     // We use sendLocationToFriend here to bypass the !isConfirmed check in sendLocation().
-                    try? await locationClient.sendLocationToFriend(friendId: bobEntry.id, lat: last.coordinate.latitude, lng: last.coordinate.longitude)
+                    do {
+                        try await locationClient.sendLocationToFriend(friendId: bobEntry.id, lat: last.coordinate.latitude, lng: last.coordinate.longitude)
+                    } catch {
+                        logger.error("Failed to send proactive location update to \(bobEntry.id): \(error.localizedDescription)")
+                    }
                     self.lastSentTime = Date()
                 } else {
                     logger.debug("confirmQrScan: lastLocation is nil, setting pendingForcedSendAfterPairing")
@@ -447,13 +466,15 @@ final class LocationSyncService: ObservableObject {
     }
 
     func confirmPendingInit(payload: Shared.KeyExchangeInitPayload, name: String) async {
+        guard let aliceEkPub = pendingInitAliceEkPub else { return }
         isExchanging = true
         pendingInitPayload = nil
+        pendingInitAliceEkPub = nil
         multipleScansDetected = false
 
         defer { isExchanging = false }
         do {
-            let result = try await e2eeStore.processKeyExchangeInit(payload: payload, bobName: name)
+            let result = try await e2eeStore.processKeyExchangeInit(payload: payload, bobName: name, aliceEkPub: kotlinByteArray(from: aliceEkPub))
 
             if let entry = result ?? nil {
                 awaitingFirstUpdateIds.insert(entry.id)
@@ -462,7 +483,11 @@ final class LocationSyncService: ObservableObject {
 
                 if let last = locationProvider.lastLocation {
                     // Proactively send our first location update to Bob to trigger confirmation on his side.
-                    try? await locationClient.sendLocationToFriend(friendId: entry.id, lat: last.coordinate.latitude, lng: last.coordinate.longitude)
+                    do {
+                        try await locationClient.sendLocationToFriend(friendId: entry.id, lat: last.coordinate.latitude, lng: last.coordinate.longitude)
+                    } catch {
+                        logger.error("Failed to send reactive location update to \(entry.id): \(error.localizedDescription)")
+                    }
                     self.lastSentTime = Date()
                 } else {
                     self.pendingForcedSendAfterPairing = true
@@ -481,7 +506,7 @@ final class LocationSyncService: ObservableObject {
     func cancelPendingInit() async {
         let hasInviteState = !(inviteState is Shared.InviteState.None)
         guard pendingInitPayload != nil || hasInviteState else { return }
-        await clearInvite()
+        await clearInvite(ekPub: pendingInitAliceEkPub)
         pendingInitPayload = nil
         multipleScansDetected = false
     }
