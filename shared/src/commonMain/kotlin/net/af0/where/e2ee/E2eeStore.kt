@@ -588,12 +588,16 @@ class E2eeStore(
 
             for ((_, msg) in sortedMessagesWithHeaders) {
                 try {
-                    // Sequential mutation of currentSession provides the replay guarantee:
-                    // if multiple messages with the same new DH key arrive in one batch,
-                    // the first one processed updates currentSession.recvSeq = seq.
-                    // Subequent replays in the same for-loop will be rejected by decryptMessage
-                    // because they are checked against the updated recvSeq.
+                    val prevRemoteDh = currentSession.remoteDhPub
                     val (newSession, pt) = Session.decryptMessage(currentSession, msg)
+
+                    if (!newSession.remoteDhPub.contentEquals(prevRemoteDh)) {
+                        println(
+                            "[E2eeStore] processBatch: friend=${friendId.take(8)} ratcheted DH " +
+                                "(${prevRemoteDh.toHex().take(8)} -> ${newSession.remoteDhPub.toHex().take(8)})",
+                        )
+                    }
+
                     currentSession = newSession
                     anySuccess = true
                     if (pt is MessagePlaintext.Location) {
@@ -612,12 +616,16 @@ class E2eeStore(
                 }
             }
             val tokenChanged = !currentSession.recvToken.contentEquals(entry.session.recvToken)
+            if (tokenChanged) {
+                println(
+                    "[E2eeStore] processBatch: friend=${friendId.take(8)} recvToken rotated " +
+                        "(${entry.session.recvToken.toHex().take(8)} -> ${currentSession.recvToken.toHex().take(8)})",
+                )
+            }
             println(
-                "[E2eeStore] processBatch: friend=${friendId.take(
-                    8,
-                )} token=${recvToken.take(
-                    8,
-                )} total=${sortedMessagesWithHeaders.size} ok=$anySuccess locs=${decryptedLocations.size} fails=$failCount tokenChanged=$tokenChanged",
+                "[E2eeStore] processBatch: friend=${friendId.take(8)} token=${recvToken.take(8)} " +
+                    "total=${sortedMessagesWithHeaders.size} ok=$anySuccess locs=${decryptedLocations.size} " +
+                    "fails=$failCount" + (if (tokenChanged) " rotated=true" else ""),
             )
 
             // Persistence: we update the store with the latest successfully ratcheted state.

@@ -290,6 +290,7 @@ open class LocationClient(
         // but sendSeq > 0 (meaning the first message of the new epoch was already sent).
         val friendBefore = store.getFriend(friendId) ?: return
         if (friendBefore.outbox == null && friendBefore.session.isSendTokenPending && friendBefore.session.sendSeq > 0) {
+            println("[LocationClient] send: detected stale transition flag for ${friendId.take(8)}, finalizing now")
             finalizeTokenTransition(friendId)
         }
 
@@ -302,14 +303,14 @@ open class LocationClient(
 
         // Use the outbox's token to ensure we post to the correct endpoint
         val friendAfter = store.getFriend(friendId) ?: return
-        val tokenToUse = friendAfter.outbox?.token ?: throw Exception("Outbox missing after store")
+        val outbox = friendAfter.outbox ?: throw Exception("Outbox missing after store")
+        val tokenToUse = outbox.token
+        val isPending = friendAfter.session.isSendTokenPending
 
         println(
-            "[LocationClient] send: friend=${friendId.take(
-                8,
-            )} token=${tokenToUse.take(
-                8,
-            )} seq=${friendAfter.session.sendSeq} type=${payload::class.simpleName} pending=${friendBefore.session.isSendTokenPending}",
+            "[LocationClient] send: friend=${friendId.take(8)} token=${tokenToUse.take(8)} " +
+                "seq=${friendAfter.session.sendSeq} type=${payload::class.simpleName} " +
+                "pending=$isPending" + (if (isPending) " (using prevSendToken)" else ""),
         )
         mailboxClient.post(baseUrl, tokenToUse, message)
         store.clearOutbox(friendId)
@@ -333,18 +334,18 @@ open class LocationClient(
         // Tightened idempotency check: only act if transition is still marked pending in store.
         val updatedFriend = store.getFriend(friendId) ?: return
         if (updatedFriend.session.isSendTokenPending) {
+            println("[LocationClient] finalizeTokenTransition: clearing pending flag for ${friendId.take(8)}")
             val finalSession = updatedFriend.session.copy(isSendTokenPending = false)
             store.updateSession(friendId, finalSession)
 
             // Only send fresh keepalive if we actually rotated tokens and haven't sent it.
             // We send this regardless of sharingEnabled to ensure the peer's recvToken advances (§5.3).
             val tokensRotated = !finalSession.sendToken.contentEquals(finalSession.prevSendToken)
-            println(
-                "[LocationClient] finalizeTokenTransition: friend=${friendId.take(
-                    8,
-                )} tokensRotated=$tokensRotated newToken=${finalSession.sendToken.toHex().take(8)}",
-            )
             if (tokensRotated) {
+                println(
+                    "[LocationClient] finalizeTokenTransition: triggering fresh keepalive for ${friendId.take(8)} " +
+                        "on new token ${finalSession.sendToken.toHex().take(8)}",
+                )
                 try {
                     sendKeepalive(friendId)
                 } catch (e: Exception) {
@@ -369,11 +370,13 @@ open class LocationClient(
                 // We detect this by checking if isSendTokenPending is true and sendSeq > 0
                 // (meaning the first message of the new epoch was already sent).
                 if (friend.session.isSendTokenPending && friend.session.sendSeq > 0) {
+                    println("[LocationClient] recovery: detected stale transition flag for ${friend.id.take(8)}, finalizing now")
                     finalizeTokenTransition(friend.id)
                 }
                 continue
             }
             try {
+                println("[LocationClient] recovery: retrying outbox for ${friend.id.take(8)} token=${outbox.token.take(8)}")
                 mailboxClient.post(baseUrl, outbox.token, outbox.payload)
                 store.clearOutbox(friend.id)
                 // TRANSACTIONAL RECOVERY (§5.4): After recovering a lost post,
@@ -383,6 +386,7 @@ open class LocationClient(
                 // Permanent failures (mailbox expired/deleted) should clear the outbox (§5.4).
                 val statusCode = (e as? ServerException)?.statusCode
                 if (statusCode == 404 || statusCode == 410) {
+                    println("[LocationClient] recovery: clearing expired outbox for ${friend.id.take(8)} (status=$statusCode)")
                     store.clearOutbox(friend.id)
                 }
                 // Otherwise: Network failure or other server error: leave in outbox for next poll
