@@ -12,9 +12,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Setup Xcode
-        run: sudo xcode-select --switch /Applications/Xcode.app/Contents/Developer
-
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -91,6 +88,8 @@ jobs:
             -scheme Where \
             -destination 'platform=iOS Simulator,name=iPhone 16,OS=latest' \
             -resultBundlePath TestResults.xcresult \
+            ONLY_ACTIVE_ARCH=YES \
+            ARCHS=arm64 \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY=""
