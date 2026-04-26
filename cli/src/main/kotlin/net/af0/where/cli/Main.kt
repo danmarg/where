@@ -235,21 +235,16 @@ suspend fun poll(
     host: String,
 ) {
     // Poll for pending invites if Alice
-    store.pendingQrPayload()?.let { qr ->
-        val discoveryHex = qr.discoveryToken().toHex()
-        println("Alice polling mailbox with token: $discoveryHex")
-        val messages = KtorMailboxClient.poll(host, discoveryHex)
-        println("Alice got ${messages.size} messages from mailbox")
-        messages.filterIsInstance<KeyExchangeInitPayload>().firstOrNull()?.let { init ->
-            println("Received KeyExchangeInit from ${init.suggestedName}")
-            try {
-                val entry = store.processKeyExchangeInit(init, init.suggestedName, qr.ekPub)
-                val friend = store.getFriend(entry?.id ?: "")
-                val sendToken = friend?.session?.sendToken?.toHex() ?: "?"
-                println("Established session with ${entry?.name}, sendToken=$sendToken")
-            } catch (e: Exception) {
-                println("Failed to process KeyExchangeInit: ${e.message}")
-            }
+    val pendingResults = locationClient.pollPendingInvites()
+    for (result in pendingResults) {
+        println("Received KeyExchangeInit from ${result.payload.suggestedName}")
+        try {
+            val entry = store.processKeyExchangeInit(result.payload, result.payload.suggestedName, result.aliceEkPub)
+            val friend = store.getFriend(entry?.id ?: "")
+            val sendToken = friend?.session?.sendToken?.toHex() ?: "?"
+            println("Established session with ${entry?.name}, sendToken=$sendToken")
+        } catch (e: Exception) {
+            println("Failed to process KeyExchangeInit: ${e.message}")
         }
     }
 

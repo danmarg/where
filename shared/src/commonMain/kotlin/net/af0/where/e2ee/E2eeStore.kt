@@ -120,7 +120,7 @@ private fun Map<Int, ByteArray>.contentEquals(other: Map<Int, ByteArray>): Boole
 @Serializable
 data class PendingInvite(
     val qrPayload: QrPayload,
-    @Serializable(with = ByteArrayBase64Serializer::class) val aliceEkPriv: ByteArray,
+    @Serializable(with = ByteArrayBase64Serializer::class) internal val aliceEkPriv: ByteArray,
     val createdAt: Long = currentTimeSeconds(),
 )
 
@@ -208,8 +208,15 @@ class E2eeStore(
         storage.putString(STORAGE_KEY, json.encodeToString(serialized))
     }
 
-    /** The QR payload currently being displayed, or null if no invite is active. */
-    suspend fun pendingQrPayload(): QrPayload? = stateLock.withLock { pendingInvites.lastOrNull()?.qrPayload }
+    /**
+     * The QR payload currently being displayed.
+     * For backward compatibility, this only returns a value if there is exactly one
+     * active invite. If there are multiple, use [listPendingInvites].
+     */
+    suspend fun pendingQrPayload(): QrPayload? =
+        stateLock.withLock {
+            if (pendingInvites.size == 1) pendingInvites.first().qrPayload else null
+        }
 
     /**
      * Alice: Create a new invite QR payload and store the ephemeral private key.
