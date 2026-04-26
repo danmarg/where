@@ -149,10 +149,7 @@ struct ContentView: View {
                 lastPingTimes: syncService.friendLastPing,
                 onTogglePause: { syncService.togglePauseFriend(id: $0) },
                 onCancelInvite: { invite in
-                    Task {
-                        try? await syncService.e2eeStore.clearInvite(ekPub: invite.qrPayload.ekPub)
-                        syncService.pendingInvites = try await syncService.e2eeStore.listPendingInvites()
-                    }
+                    Task { await syncService.clearInvite(ekPub: invite.qrPayload.ekPub.toData()) }
                 },
                 onCreateInvite: {
                     showFriends = false

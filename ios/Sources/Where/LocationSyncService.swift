@@ -312,7 +312,11 @@ final class LocationSyncService: ObservableObject {
             let updates = try await locationClient.poll(isForeground: isInForeground(), pausedFriendIds: pausedFriendIds)
             logger.debug("Got \(updates.count) location updates")
             for update in updates {
-                try? await e2eeStore.updateLastLocation(id: update.userId, lat: update.lat, lng: update.lng, ts: update.timestamp)
+                do {
+                    try await e2eeStore.updateLastLocation(id: update.userId, lat: update.lat, lng: update.lng, ts: update.timestamp)
+                } catch {
+                    logger.error("Failed to update last location for \(update.userId): \(error.localizedDescription)")
+                }
                 friendLocations[update.userId] = (lat: update.lat, lng: update.lng, ts: update.timestamp)
                 friendLastPing[update.userId] = Date(timeIntervalSince1970: TimeInterval(update.timestamp))
                 onFriendLocationReceived(friendId: update.userId)
@@ -440,7 +444,11 @@ final class LocationSyncService: ObservableObject {
                 if let last = locationProvider.lastLocation {
                     // Proactively send our first location update to Alice to trigger confirmation on her side.
                     // We use sendLocationToFriend here to bypass the !isConfirmed check in sendLocation().
-                    try? await locationClient.sendLocationToFriend(friendId: bobEntry.id, lat: last.coordinate.latitude, lng: last.coordinate.longitude)
+                    do {
+                        try await locationClient.sendLocationToFriend(friendId: bobEntry.id, lat: last.coordinate.latitude, lng: last.coordinate.longitude)
+                    } catch {
+                        logger.error("Failed to send proactive location update to \(bobEntry.id): \(error.localizedDescription)")
+                    }
                     self.lastSentTime = Date()
                 } else {
                     logger.debug("confirmQrScan: lastLocation is nil, setting pendingForcedSendAfterPairing")
@@ -481,7 +489,11 @@ final class LocationSyncService: ObservableObject {
 
                 if let last = locationProvider.lastLocation {
                     // Proactively send our first location update to Bob to trigger confirmation on his side.
-                    try? await locationClient.sendLocationToFriend(friendId: entry.id, lat: last.coordinate.latitude, lng: last.coordinate.longitude)
+                    do {
+                        try await locationClient.sendLocationToFriend(friendId: entry.id, lat: last.coordinate.latitude, lng: last.coordinate.longitude)
+                    } catch {
+                        logger.error("Failed to send reactive location update to \(entry.id): \(error.localizedDescription)")
+                    }
                     self.lastSentTime = Date()
                 } else {
                     self.pendingForcedSendAfterPairing = true
