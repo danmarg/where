@@ -14,31 +14,34 @@ if [ ! -f ios/Local.xcconfig ]; then
   echo "// Created by ci_post_clone.sh" > ios/Local.xcconfig
 fi
 
-# 2. Install Java 17 via Homebrew
-# Xcode Cloud comes with Homebrew pre-installed.
-if ! command -v java >/dev/null 2>&1; then
-    echo "Java not found. Installing openjdk@17 via Homebrew..."
-    # Using --quiet to reduce log noise
-    brew install --quiet openjdk@17
-    
-    # Add openjdk to the PATH
-    export PATH="/usr/local/opt/openjdk@17/bin:$PATH"
-    
-    # Set JAVA_HOME
-    export JAVA_HOME="/usr/local/opt/openjdk@17/libexec/openjdk.jdk/Contents/Home"
-    echo "Installed Java and set JAVA_HOME to $JAVA_HOME"
+# 2. Setup Java 17
+echo "Setting up Java 17..."
+
+# Check if we are on ARM or Intel to find the correct Homebrew path
+if [[ $(uname -m) == 'arm64' ]]; then
+    BREW_PREFIX="/opt/homebrew"
 else
-    echo "Java is already installed."
-    if [ -n "$(command -v /usr/libexec/java_home)" ]; then
-        # Try to find Java 17, fallback to any available java
-        export JAVA_HOME=$(/usr/libexec/java_home -v 17 2>/dev/null || /usr/libexec/java_home)
-        echo "Using JAVA_HOME=$JAVA_HOME"
-    fi
+    BREW_PREFIX="/usr/local"
 fi
 
-# Verify Java version
-java -version
+# Install openjdk@17 if not already present in Brew
+if [ ! -d "$BREW_PREFIX/opt/openjdk@17" ]; then
+    echo "openjdk@17 not found. Installing via Homebrew..."
+    brew install --quiet openjdk@17
+fi
+
+# Configure environment to use the Brew-installed OpenJDK
+export JAVA_HOME="$BREW_PREFIX/opt/openjdk@17/libexec/openjdk.jdk/Contents/Home"
+export PATH="$BREW_PREFIX/opt/openjdk@17/bin:$PATH"
+
+echo "Using JAVA_HOME=$JAVA_HOME"
+
+# Verify Java is actually working
+if ! java -version; then
+    echo "Error: Java is still not functional. Path check:"
+    ls -R "$BREW_PREFIX/opt/openjdk@17" || echo "Directory not found"
+    exit 1
+fi
 
 echo "Building Shared XCFramework..."
-# We use --no-daemon for CI to avoid keeping background processes alive
 ./gradlew :shared:assembleSharedDebugXCFramework :shared:assembleSharedReleaseXCFramework --no-daemon
