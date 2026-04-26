@@ -80,6 +80,9 @@ class TestFakeLocationSource : LocationSource {
     private val _friends = MutableStateFlow<List<FriendEntry>>(emptyList())
     override val friends: StateFlow<List<FriendEntry>> = _friends.asStateFlow()
 
+    private val _allPendingInvites = MutableStateFlow<List<net.af0.where.e2ee.PendingInvite>>(emptyList())
+    override val allPendingInvites: StateFlow<List<net.af0.where.e2ee.PendingInvite>> = _allPendingInvites.asStateFlow()
+
     private val _lastRapidPollTrigger = MutableStateFlow(0L)
     override val lastRapidPollTrigger: StateFlow<Long> = _lastRapidPollTrigger.asStateFlow()
 
@@ -135,6 +138,10 @@ class TestFakeLocationSource : LocationSource {
     ) {
         _pendingInitPayload.value = payload
         _multipleScansDetected.value = multipleScans
+    }
+
+    override fun onPendingInvitesUpdated(invites: List<net.af0.where.e2ee.PendingInvite>) {
+        _allPendingInvites.value = invites
     }
 
     override fun setSharingLocation(sharing: Boolean) {
@@ -284,14 +291,15 @@ class LocationViewModelTest {
             assertTrue(vm.inviteState.value is InviteState.None)
             assertEquals("Bob", vm.pendingInitPayload.value?.suggestedName)
 
-            // 3. Alice cancels naming Bob
+            // Alice cancels naming Bob
             vm.cancelPendingInit()
             advanceUntilIdle()
 
             assertNull(vm.pendingInitPayload.value)
             assertTrue(vm.inviteState.value is InviteState.None)
-            assertNull(store.pendingQrPayload(), "Store should be cleared when Alice cancels")
-        }
+            assertTrue(store.listPendingInvites().isEmpty(), "Store should be cleared when Alice cancels")
+            }
+
 
     @Test
     fun testCancelQrScan_BobSide() =
@@ -399,7 +407,7 @@ class LocationViewModelTest {
             vm.cancelPendingInit()
             advanceUntilIdle()
 
-            io.mockk.coVerify { store.clearInvite() }
+            io.mockk.coVerify { store.clearInvites() }
             assertNull(vm.pendingInitPayload.value)
         }
 

@@ -144,9 +144,16 @@ struct ContentView: View {
             FriendsSheet(
                 displayName: $syncService.displayName,
                 friends: syncService.friends,
+                pendingInvites: syncService.pendingInvites,
                 pausedFriendIds: syncService.pausedFriendIds,
                 lastPingTimes: syncService.friendLastPing,
                 onTogglePause: { syncService.togglePauseFriend(id: $0) },
+                onCancelInvite: { invite in
+                    Task {
+                        try? await syncService.e2eeStore.clearInvite(ekPub: invite.qrPayload.ekPub)
+                        syncService.pendingInvites = try await syncService.e2eeStore.listPendingInvites()
+                    }
+                },
                 onCreateInvite: {
                     showFriends = false
                     Task { await syncService.createInvite() }

@@ -17,6 +17,7 @@ protocol LocationClientProtocol: AnyObject, Sendable {
     func sendLocation(lat: Double, lng: Double, pausedFriendIds: Set<String>) async throws
     func sendLocationToFriend(friendId: String, lat: Double, lng: Double) async throws
     func poll(isForeground: Bool, pausedFriendIds: Set<String>) async throws -> [Shared.UserLocation]
+    func pollPendingInvites() async throws -> [Shared.PendingInviteResult]
     func pollPendingInvite() async throws -> Shared.PendingInviteResult?
     func postKeyExchangeInit(qr: Shared.QrPayload, initPayload: Shared.KeyExchangeInitPayload) async throws
 }
@@ -39,6 +40,7 @@ final class LocationSyncService: ObservableObject {
     @Published var friendLastPing: [String: Date] = [:]
     @Published var connectionStatus: Shared.ConnectionStatus = Shared.ConnectionStatus.Ok()
     @Published var friends: [Shared.FriendEntry] = []
+    @Published var pendingInvites: [Shared.PendingInvite] = []
     @Published var inviteState: Shared.InviteState = Shared.InviteState.None()
     @Published var isSharingLocation: Bool {
         didSet {
@@ -163,10 +165,6 @@ final class LocationSyncService: ObservableObject {
             .store(in: &visibleUsersCancellables)
 
         Task {
-            // Clear any stale invite from a previous session before first poll.
-            if (try? await store.pendingQrPayload()) ?? nil != nil {
-                try? await store.clearInvite()
-            }
             startPolling()
         }
     }
@@ -266,6 +264,7 @@ final class LocationSyncService: ObservableObject {
 
     func isRapidPolling() -> Bool {
         if !awaitingFirstUpdateIds.isEmpty { return true }
+        if !pendingInvites.isEmpty { return true }
         return Date().timeIntervalSince(lastRapidPollTrigger) < 60.0
     }
 
@@ -319,11 +318,12 @@ final class LocationSyncService: ObservableObject {
             }
 
             friends = try await e2eeStore.listFriends()
+            pendingInvites = try await e2eeStore.listPendingInvites()
             // Always update visibleUsers to ensure map is fresh when returning to foreground.
             updateVisibleUsers()
 
             if updateUi {
-                _ = try await pollPendingInvite()
+                _ = try await pollPendingInvites()
             }
 
             // Heartbeat: if we're awake enough to poll, also send location if one is due.
@@ -353,16 +353,25 @@ final class LocationSyncService: ObservableObject {
     }
 
     @discardableResult
-    private func pollPendingInvite() async throws -> Shared.PendingInviteResult? {
-        if pendingInitPayload != nil { return nil }
-        if let result = try await locationClient.pollPendingInvite() {
-            pendingInitPayload = result.payload
-            multipleScansDetected = result.multipleScansDetected
-            inviteState = Shared.InviteState.None()
-            triggerRapidPoll()
-            return result
+    private func pollPendingInvites() async throws -> [Shared.PendingInviteResult] {
+        let results = try await locationClient.pollPendingInvites()
+        if results.isEmpty { return [] }
+        
+        // If we already have a naming dialog up, don't overwrite it.
+        if pendingInitPayload == nil {
+            if let result = results.first {
+                pendingInitPayload = result.payload
+                multipleScansDetected = result.multipleScansDetected
+                inviteState = Shared.InviteState.None()
+                triggerRapidPoll()
+            }
         }
-        return nil
+        return results
+    }
+
+    @discardableResult
+    private func pollPendingInvite() async throws -> Shared.PendingInviteResult? {
+        return try await pollPendingInvites().first
     }
 
     func clearInvite() async {

@@ -22,7 +22,7 @@ open class LocationClient(
     private val pollMutex = Mutex()
 
     /**
-     * Poll all friends and the pending invite (if any).
+     * Poll all friends and all pending invites.
      *
      * Poll calls are serialized to prevent concurrent ratchet state mutations.
      *
@@ -36,6 +36,12 @@ open class LocationClient(
     ): List<UserLocation> =
         pollMutex.withLock {
             processOutboxes()
+            // Periodic cleanup of expired invites
+            try {
+                store.cleanupExpiredInvites()
+            } catch (_: Exception) {
+            }
+
             val allUpdates = mutableListOf<UserLocation>()
             var successCount = 0
             var failCount = 0
@@ -74,17 +80,31 @@ open class LocationClient(
         }
 
     /**
-     * Poll the discovery mailbox for a pending invite.
-     * returns the most recent KeyExchangeInitPayload found, plus a flag if multiple were detected.
+     * Poll the discovery mailboxes for all pending invites.
+     * returns a list of results for each invite where a message was found.
      */
+    suspend fun pollPendingInvites(): List<PendingInviteResult> {
+        val pending = store.listPendingInvites()
+        val results = mutableListOf<PendingInviteResult>()
+        for (invite in pending) {
+            try {
+                val discoveryHex = invite.qrPayload.discoveryToken().toHex()
+                val messages = mailboxClient.poll(baseUrl, discoveryHex)
+                val inits = messages.filterIsInstance<KeyExchangeInitPayload>()
+                val last = inits.lastOrNull()
+                if (last != null) {
+                    results.add(PendingInviteResult(last, inits.size > 1))
+                }
+            } catch (e: Exception) {
+                println("[LocationClient] pollPendingInvite failed for token=${invite.qrPayload.discoveryToken().toHex().take(8)}: ${e.message}")
+            }
+        }
+        return results
+    }
+
+    /** Deprecated: use pollPendingInvites instead. Returns the first result found. */
     suspend fun pollPendingInvite(): PendingInviteResult? {
-        val qr = store.pendingQrPayload() ?: return null
-        val discoveryHex = qr.discoveryToken().toHex()
-        val messages = mailboxClient.poll(baseUrl, discoveryHex)
-        val inits = messages.filterIsInstance<KeyExchangeInitPayload>()
-        val last = inits.lastOrNull() ?: return null
-        // Use lastOrNull() to pick the most recent scan/retry in the FIFO queue (#176).
-        return PendingInviteResult(last, inits.size > 1)
+        return pollPendingInvites().firstOrNull()
     }
 
     /**

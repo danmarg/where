@@ -450,13 +450,7 @@ class E2eeBidirectionalEndToEndTest {
 
             val qr = aStore.createInvite("A")
             val (init, _) = bStore.processScannedQr(qr, "B")
-            KtorMailboxClient.post(baseUrl, qr.discoveryToken().toHex(), init)
-            val aEntry =
-                aStore.processKeyExchangeInit(
-                    KtorMailboxClient.poll(baseUrl, qr.discoveryToken().toHex())
-                        .filterIsInstance<KeyExchangeInitPayload>().first(),
-                    "B",
-                )!!
+            val aEntry = aStore.processKeyExchangeInit(init, "B")!!
             val friendId = aEntry.id
 
             // Initial flush
@@ -584,13 +578,7 @@ class E2eeBidirectionalEndToEndTest {
             // Pair and do initial flush so both sides are stable
             val qr = aStore.createInvite("A")
             val (init, _) = bStore.processScannedQr(qr, "B")
-            KtorMailboxClient.post(baseUrl, qr.discoveryToken().toHex(), init)
-            val aEntry =
-                aStore.processKeyExchangeInit(
-                    KtorMailboxClient.poll(baseUrl, qr.discoveryToken().toHex())
-                        .filterIsInstance<KeyExchangeInitPayload>().first(),
-                    "B",
-                )!!
+            val aEntry = aStore.processKeyExchangeInit(init, "B")!!
             val friendId = aEntry.id
 
             aClient.sendLocation(0.0, 0.0)
@@ -733,13 +721,7 @@ class E2eeBidirectionalEndToEndTest {
             // Pair and stabilize
             val qr = aStore.createInvite("A")
             val (init, _) = bStore.processScannedQr(qr, "B")
-            KtorMailboxClient.post(baseUrl, qr.discoveryToken().toHex(), init)
-            val aEntry =
-                aStore.processKeyExchangeInit(
-                    KtorMailboxClient.poll(baseUrl, qr.discoveryToken().toHex())
-                        .filterIsInstance<KeyExchangeInitPayload>().first(),
-                    "B",
-                )!!
+            val aEntry = aStore.processKeyExchangeInit(init, "B")!!
             val friendId = aEntry.id
 
             val aClient = LocationClient(baseUrl, aStore)

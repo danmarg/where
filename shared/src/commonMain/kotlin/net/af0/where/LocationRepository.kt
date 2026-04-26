@@ -13,6 +13,7 @@ import net.af0.where.e2ee.ConnectionStatus
 import net.af0.where.e2ee.FriendEntry
 import net.af0.where.e2ee.KeyExchangeInitPayload
 import net.af0.where.e2ee.QrPayload
+import net.af0.where.e2ee.PendingInvite
 import net.af0.where.model.UserLocation
 import net.af0.where.shared.MR
 
@@ -28,6 +29,7 @@ interface LocationSource {
     val isSharingLocation: StateFlow<Boolean>
     val pausedFriendIds: StateFlow<Set<String>>
     val friends: StateFlow<List<FriendEntry>>
+    val allPendingInvites: StateFlow<List<PendingInvite>>
     val lastRapidPollTrigger: StateFlow<Long>
     val pendingQrForNaming: StateFlow<QrPayload?>
 
@@ -57,6 +59,8 @@ interface LocationSource {
         payload: KeyExchangeInitPayload?,
         multipleScans: Boolean = false,
     )
+
+    fun onPendingInvitesUpdated(invites: List<PendingInvite>)
 
     fun setSharingLocation(sharing: Boolean)
 
@@ -118,6 +122,9 @@ object LocationRepository : LocationSource {
 
     private val _friends = MutableStateFlow<List<FriendEntry>>(emptyList())
     override val friends: StateFlow<List<FriendEntry>> = _friends.asStateFlow()
+
+    private val _allPendingInvites = MutableStateFlow<List<PendingInvite>>(emptyList())
+    override val allPendingInvites: StateFlow<List<PendingInvite>> = _allPendingInvites.asStateFlow()
 
     private val awaitingFirstUpdateIds = mutableSetOf<String>()
 
@@ -190,6 +197,10 @@ object LocationRepository : LocationSource {
     ) {
         _pendingInitPayload.value = payload
         _multipleScansDetected.value = multipleScans
+    }
+
+    override fun onPendingInvitesUpdated(invites: List<PendingInvite>) {
+        _allPendingInvites.value = invites
     }
 
     /** Called by ViewModel to notify Bob scanned a QR and is naming the friend. */
@@ -266,6 +277,7 @@ object LocationRepository : LocationSource {
         _isSharingLocation.value = false
         _pausedFriendIds.value = emptySet()
         _friends.value = emptyList()
+        _allPendingInvites.value = emptyList()
         _lastRapidPollTrigger.value = 0L
         while (pollWakeSignal.tryReceive().isSuccess) { /* drain */ }
     }

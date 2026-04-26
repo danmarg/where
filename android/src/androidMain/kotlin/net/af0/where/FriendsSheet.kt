@@ -45,12 +45,14 @@ import net.af0.where.shared.MR
 @Composable
 fun FriendsSheet(
     friends: List<FriendEntry>,
+    pendingInvites: List<net.af0.where.e2ee.PendingInvite>,
     displayName: String,
     onDisplayNameChange: (String) -> Unit,
     pausedFriendIds: Set<String>,
     friendLastPing: Map<String, Long>,
     onTogglePause: (String) -> Unit,
     onCreateInvite: () -> Unit,
+    onCancelInvite: (ByteArray) -> Unit,
     onScanQr: () -> Unit,
     onPasteUrl: (String) -> Unit,
     onRename: (String, String) -> Unit,
@@ -98,6 +100,43 @@ fun FriendsSheet(
                 ) {
                     Icon(Icons.Default.QrCodeScanner, contentDescription = null, modifier = Modifier.size(16.dp))
                     Text(" " + stringResource(MR.strings.scan))
+                }
+            }
+
+            if (pendingInvites.isNotEmpty()) {
+                Text(
+                    stringResource(MR.strings.pending_invites) + " (${pendingInvites.size})",
+                    style = MaterialTheme.typography.labelMedium,
+                )
+                LazyColumn(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    items(pendingInvites, key = { it.qrPayload.ekPub.toHex() }) { invite ->
+                        Row(
+                            modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    invite.qrPayload.suggestedName,
+                                    style = MaterialTheme.typography.bodyLarge,
+                                    maxLines = 1,
+                                    overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                                )
+                                Text(
+                                    stringResource(MR.strings.invite_sent) + ": " + timeAgoStringFromSeconds(invite.createdAt),
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                            IconButton(onClick = { onCancelInvite(invite.qrPayload.ekPub) }) {
+                                Icon(
+                                    Icons.Default.Delete,
+                                    contentDescription = stringResource(MR.strings.cancel),
+                                    tint = MaterialTheme.colorScheme.error,
+                                )
+                            }
+                        }
+                    }
                 }
             }
 

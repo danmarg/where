@@ -72,6 +72,9 @@ class ServiceFakeLocationSource : LocationSource {
     private val _friends = MutableStateFlow<List<FriendEntry>>(emptyList())
     override val friends: StateFlow<List<FriendEntry>> = _friends.asStateFlow()
 
+    private val _allPendingInvites = MutableStateFlow<List<net.af0.where.e2ee.PendingInvite>>(emptyList())
+    override val allPendingInvites: StateFlow<List<net.af0.where.e2ee.PendingInvite>> = _allPendingInvites.asStateFlow()
+
     private val _lastRapidPollTrigger = MutableStateFlow(0L)
     override val lastRapidPollTrigger: StateFlow<Long> = _lastRapidPollTrigger.asStateFlow()
 
@@ -131,6 +134,10 @@ class ServiceFakeLocationSource : LocationSource {
     ) {
         _pendingInitPayload.value = payload
         _multipleScansDetected.value = multipleScans
+    }
+
+    override fun onPendingInvitesUpdated(invites: List<net.af0.where.e2ee.PendingInvite>) {
+        _allPendingInvites.value = invites
     }
 
     override fun setSharingLocation(sharing: Boolean) {
@@ -257,7 +264,7 @@ class LocationServiceTest {
 
             val mockClient = io.mockk.mockk<LocationClient>(relaxed = true)
             service.locationClientOverride = mockClient
-            io.mockk.coEvery { mockClient.pollPendingInvite() } returns null
+            io.mockk.coEvery { mockClient.pollPendingInvites() } returns emptyList()
             val mockStore = io.mockk.mockk<net.af0.where.e2ee.E2eeStore>(relaxed = true)
             service.e2eeStoreOverride = mockStore
             controller.create()
@@ -268,7 +275,7 @@ class LocationServiceTest {
                 val mockFriend = io.mockk.mockk<net.af0.where.e2ee.FriendEntry>(relaxed = true)
                 io.mockk.every { mockFriend.id } returns newFriendId
                 io.mockk.coEvery { mockStore.listFriends() } returns listOf(mockFriend)
-                io.mockk.coEvery { mockStore.pendingQrPayload() } returns null
+                io.mockk.coEvery { mockStore.listPendingInvites() } returns emptyList()
                 fakeLocationSource.markAwaitingFirstUpdate(newFriendId)
                 fakeLocationSource.triggerRapidPoll()
                 assertTrue(service.isRapidPolling())
@@ -300,7 +307,7 @@ class LocationServiceTest {
 
             val mockClient = io.mockk.mockk<LocationClient>(relaxed = true)
             service.locationClientOverride = mockClient
-            io.mockk.coEvery { mockClient.pollPendingInvite() } returns null
+            io.mockk.coEvery { mockClient.pollPendingInvites() } returns emptyList()
             val mockStore = io.mockk.mockk<net.af0.where.e2ee.E2eeStore>(relaxed = true)
             service.e2eeStoreOverride = mockStore
             controller.create()
@@ -314,7 +321,7 @@ class LocationServiceTest {
                 io.mockk.every { mockFriend1.id } returns friendId1
                 io.mockk.every { mockFriend2.id } returns friendId2
                 io.mockk.coEvery { mockStore.listFriends() } returns listOf(mockFriend1, mockFriend2)
-                io.mockk.coEvery { mockStore.pendingQrPayload() } returns null
+                io.mockk.coEvery { mockStore.listPendingInvites() } returns emptyList()
                 fakeLocationSource.markAwaitingFirstUpdate(friendId1)
                 fakeLocationSource.markAwaitingFirstUpdate(friendId2)
 

@@ -16,6 +16,8 @@
     <string name="invite">Invite</string>
     <string name="scan">Scan</string>
     <string name="pending">Pending</string>
+    <string name="pending_invites">Pending Invites</string>
+    <string name="invite_sent">Invite sent</string>
     <string name="never">never</string>
     <string name="just_now">just now</string>
     <string name="m_ago">%d m ago</string>

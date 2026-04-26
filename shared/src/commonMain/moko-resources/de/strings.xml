@@ -16,6 +16,8 @@
     <string name="invite">Einladen</string>
     <string name="scan">Scannen</string>
     <string name="pending">Ausstehend</string>
+    <string name="pending_invites">Ausstehende Einladungen</string>
+    <string name="invite_sent">Einladung gesendet</string>
     <string name="never">nie</string>
     <string name="just_now">gerade eben</string>
     <string name="m_ago">vor %d Min.</string>

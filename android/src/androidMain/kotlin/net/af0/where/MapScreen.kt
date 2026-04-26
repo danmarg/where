@@ -45,17 +45,19 @@ fun MapScreen(
     ownHeading: Double?,
     users: List<UserLocation>,
     friends: List<FriendEntry>,
+    pendingInvites: List<net.af0.where.e2ee.PendingInvite>,
     displayName: String,
     onDisplayNameChange: (String) -> Unit,
     pausedFriendIds: Set<String>,
+    friendLastPing: Map<String, Long>,
     onTogglePause: (String) -> Unit,
+    onCancelInvite: (ByteArray) -> Unit,
     isSharing: Boolean,
     onToggleSharing: () -> Unit,
     connectionStatus: ConnectionStatus,
     onCreateInvite: () -> Unit,
     onScanQr: () -> Unit,
     onPasteUrl: (String) -> Unit,
-    friendLastPing: Map<String, Long>,
     onRenameFriend: (String, String) -> Unit,
     onRemoveFriend: (String) -> Unit,
     selectedUserId: String?,
@@ -63,6 +65,7 @@ fun MapScreen(
     onLocationPermissionGranted: () -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
+
     val scope = rememberCoroutineScope()
     val locationPermissions =
         rememberMultiplePermissionsState(
@@ -414,11 +417,13 @@ fun MapScreen(
     if (showFriends) {
         FriendsSheet(
             friends = friends,
+            pendingInvites = pendingInvites,
             displayName = displayName,
             onDisplayNameChange = onDisplayNameChange,
             pausedFriendIds = pausedFriendIds,
             friendLastPing = friendLastPing,
             onTogglePause = onTogglePause,
+            onCancelInvite = onCancelInvite,
             onCreateInvite = onCreateInvite,
             onScanQr = onScanQr,
             onPasteUrl = onPasteUrl,

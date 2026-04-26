@@ -246,4 +246,47 @@ class E2eeStoreTest {
             val bobFriend3 = bobStore.getFriend(bobFriend1.id)!!
             assertEquals(aliceSess3.sendToken.toHex(), bobFriend3.session.recvToken.toHex())
         }
+
+    @Test
+    fun testMultiplePendingInvites() =
+        runBlocking {
+            val qr1 = aliceStore.createInvite("Alice 1")
+            val qr2 = aliceStore.createInvite("Alice 2")
+
+            val invites = aliceStore.listPendingInvites()
+            assertEquals(2, invites.size)
+            assertEquals("Alice 1", invites[0].qrPayload.suggestedName)
+            assertEquals("Alice 2", invites[1].qrPayload.suggestedName)
+
+            // Bob accepts the first invite
+            val (initPayload1, _) = bobStore.processScannedQr(qr1)
+            val result1 = aliceStore.processKeyExchangeInit(initPayload1, "Bob 1")
+            assertNotNull(result1)
+
+            // Should still have 1 pending invite
+            assertEquals(1, aliceStore.listPendingInvites().size)
+            assertEquals("Alice 2", aliceStore.listPendingInvites()[0].qrPayload.suggestedName)
+
+            // Bob accepts the second invite
+            val (initPayload2, _) = bobStore.processScannedQr(qr2)
+            val result2 = aliceStore.processKeyExchangeInit(initPayload2, "Bob 2")
+            assertNotNull(result2)
+
+            // No pending invites left
+            assertTrue(aliceStore.listPendingInvites().isEmpty())
+        }
+
+    @Test
+    fun testInviteExpiryCleanup() =
+        runBlocking {
+            val qr = aliceStore.createInvite("Alice")
+
+            // Not expired yet
+            aliceStore.cleanupExpiredInvites(expirySeconds = 3600)
+            assertEquals(1, aliceStore.listPendingInvites().size)
+
+            // Force expiry
+            aliceStore.cleanupExpiredInvites(expirySeconds = -1)
+            assertTrue(aliceStore.listPendingInvites().isEmpty())
+        }
 }

@@ -27,6 +27,7 @@ import net.af0.where.e2ee.FriendEntry
 import net.af0.where.e2ee.InviteState
 import net.af0.where.e2ee.KeyExchangeInitPayload
 import net.af0.where.e2ee.LocationClient
+import net.af0.where.e2ee.PendingInvite
 import net.af0.where.e2ee.QrPayload
 import net.af0.where.e2ee.UserStore
 import net.af0.where.e2ee.toHex
@@ -87,8 +88,9 @@ class LocationViewModel(
     private var inviteJob: Job? = null
 
     val pendingQrForNaming: StateFlow<QrPayload?> = locationSource.pendingQrForNaming
-
     val pendingInitPayload: StateFlow<KeyExchangeInitPayload?> = locationSource.pendingInitPayload
+    val allPendingInvites: StateFlow<List<PendingInvite>> = locationSource.allPendingInvites
+
 
     val multipleScansDetected: StateFlow<Boolean> = locationSource.multipleScansDetected
 
@@ -218,6 +220,7 @@ class LocationViewModel(
                 try {
                     val qr = e2eeStore.createInvite(displayName.value)
                     _inviteState.value = InviteState.Pending(qr)
+                    locationSource.onPendingInvitesUpdated(e2eeStore.listPendingInvites())
                     triggerRapidPoll()
                 } finally {
                     if (inviteJob?.isCancelled == false) {
@@ -225,19 +228,6 @@ class LocationViewModel(
                     }
                 }
             }
-    }
-
-    fun clearInvite() {
-        val current = _inviteState.value
-        // If a peer already joined (pendingInitPayload is not null), do NOT clear the
-        // persistent invite state yet, as we still need it to derive the session.
-        if (current is InviteState.Pending && locationSource.pendingInitPayload.value == null) {
-            viewModelScope.launch {
-                e2eeStore.clearInvite()
-            }
-        }
-        locationSource.resetRapidPoll()
-        _inviteState.value = InviteState.None
     }
 
     fun processQrUrl(url: String): Boolean {
@@ -271,7 +261,7 @@ class LocationViewModel(
         viewModelScope.launch {
             try {
                 if (currentInvite != InviteState.None) {
-                    e2eeStore.clearInvite()
+                    e2eeStore.clearInvites()
                     _inviteState.value = InviteState.None
                 }
                 val (initPayload, bobEntry) = e2eeStore.processScannedQr(qrWithName, displayName.value)
@@ -284,6 +274,7 @@ class LocationViewModel(
                 )
                 withContext(Dispatchers.Main.immediate) {
                     locationSource.onFriendsUpdated(e2eeStore.listFriends())
+                    locationSource.onPendingInvitesUpdated(e2eeStore.listPendingInvites())
                 }
                 try {
                     try {
@@ -336,6 +327,7 @@ class LocationViewModel(
                     Log.d(TAG, "confirmPendingInit: processKeyExchangeInit succeeded, friendId=${entry.id}")
                     withContext(Dispatchers.Main.immediate) {
                         locationSource.onFriendsUpdated(e2eeStore.listFriends())
+                        locationSource.onPendingInvitesUpdated(e2eeStore.listPendingInvites())
                     }
                     locationSource.markAwaitingFirstUpdate(entry.id)
                     locationSource.triggerRapidPoll()
@@ -365,13 +357,32 @@ class LocationViewModel(
             }
         }
     }
-
     fun cancelPendingInit() {
         if (pendingInitPayload.value == null && _inviteState.value == InviteState.None) return
         viewModelScope.launch {
-            e2eeStore.clearInvite()
+            e2eeStore.clearInvites()
+            locationSource.onPendingInvitesUpdated(e2eeStore.listPendingInvites())
         }
         locationSource.onPendingInit(null)
+    }
+
+    fun cancelPendingInvite(ekPub: ByteArray) {
+        viewModelScope.launch {
+            e2eeStore.clearInvite(ekPub)
+            locationSource.onPendingInvitesUpdated(e2eeStore.listPendingInvites())
+        }
+    }
+
+    fun clearInvite() {
+        val current = _inviteState.value
+        // If a peer already joined (pendingInitPayload is not null), do NOT clear the
+        // persistent invite state yet, as we still need it to derive the session.
+        if (current is InviteState.Pending && locationSource.pendingInitPayload.value == null) {
+            viewModelScope.launch {
+                e2eeStore.clearInvites()
+                locationSource.onPendingInvitesUpdated(e2eeStore.listPendingInvites())
+            }
+        }
         locationSource.resetRapidPoll()
         _inviteState.value = InviteState.None
     }
