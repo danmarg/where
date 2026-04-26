@@ -77,14 +77,11 @@ data class KeyExchangeInitPayload(
     @SerialName("key_confirmation")
     @Serializable(with = ByteArrayBase64Serializer::class) val keyConfirmation: ByteArray,
     @SerialName("suggested_name") val suggestedName: String = "",
-    @SerialName("alice_ek_pub")
-    @Serializable(with = ByteArrayBase64Serializer::class) val aliceEkPub: ByteArray = byteArrayOf(),
 ) : MailboxPayload() {
     override fun equals(other: Any?): Boolean {
         if (other !is KeyExchangeInitPayload) return false
         return token == other.token && ekPub.contentEquals(other.ekPub) &&
-            keyConfirmation.contentEquals(other.keyConfirmation) && suggestedName == other.suggestedName &&
-            aliceEkPub.contentEquals(other.aliceEkPub)
+            keyConfirmation.contentEquals(other.keyConfirmation) && suggestedName == other.suggestedName
     }
 
     override fun hashCode(): Int = token.hashCode()

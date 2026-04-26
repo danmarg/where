@@ -243,7 +243,7 @@ suspend fun poll(
         messages.filterIsInstance<KeyExchangeInitPayload>().firstOrNull()?.let { init ->
             println("Received KeyExchangeInit from ${init.suggestedName}")
             try {
-                val entry = store.processKeyExchangeInit(init, init.suggestedName)
+                val entry = store.processKeyExchangeInit(init, init.suggestedName, qr.ekPub)
                 val friend = store.getFriend(entry?.id ?: "")
                 val sendToken = friend?.session?.sendToken?.toHex() ?: "?"
                 println("Established session with ${entry?.name}, sendToken=$sendToken")

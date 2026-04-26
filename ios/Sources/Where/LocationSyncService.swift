@@ -65,6 +65,7 @@ final class LocationSyncService: ObservableObject {
     @Published var ownHeading: Double? = nil
     @Published var pendingQrForNaming: Shared.QrPayload? = nil
     @Published var pendingInitPayload: Shared.KeyExchangeInitPayload? = nil
+    @Published var pendingInitAliceEkPub: Data? = nil
     @Published var multipleScansDetected: Bool = false
     @Published var isExchanging: Bool = false
     private var inviteTask: Task<Void, Never>? = nil
@@ -361,6 +362,7 @@ final class LocationSyncService: ObservableObject {
         if pendingInitPayload == nil {
             if let result = results.first {
                 pendingInitPayload = result.payload
+                pendingInitAliceEkPub = result.aliceEkPub.toData()
                 multipleScansDetected = result.multipleScansDetected
                 inviteState = Shared.InviteState.None()
                 triggerRapidPoll()
@@ -374,14 +376,20 @@ final class LocationSyncService: ObservableObject {
         return try await pollPendingInvites().first
     }
 
-    func clearInvite() async {
+    func clearInvite(ekPub: Data? = nil) async {
         do {
-            try await e2eeStore.clearInvite()
+            if let ekPub = ekPub {
+                try await e2eeStore.clearInvite(ekPub: ekPub.toKotlinByteArray())
+            } else {
+                try await e2eeStore.clearInvite()
+            }
+            pendingInvites = try await e2eeStore.listPendingInvites()
         } catch {
             logger.error("Failed to clear invite: \(error.localizedDescription)")
         }
         resetRapidPoll()
         inviteState = Shared.InviteState.None()
+        pendingInitAliceEkPub = nil
     }
 
     @discardableResult
@@ -456,13 +464,15 @@ final class LocationSyncService: ObservableObject {
     }
 
     func confirmPendingInit(payload: Shared.KeyExchangeInitPayload, name: String) async {
+        guard let aliceEkPub = pendingInitAliceEkPub else { return }
         isExchanging = true
         pendingInitPayload = nil
+        pendingInitAliceEkPub = nil
         multipleScansDetected = false
 
         defer { isExchanging = false }
         do {
-            let result = try await e2eeStore.processKeyExchangeInit(payload: payload, bobName: name)
+            let result = try await e2eeStore.processKeyExchangeInit(payload: payload, bobName: name, aliceEkPub: aliceEkPub.toKotlinByteArray())
 
             if let entry = result ?? nil {
                 awaitingFirstUpdateIds.insert(entry.id)
@@ -490,7 +500,7 @@ final class LocationSyncService: ObservableObject {
     func cancelPendingInit() async {
         let hasInviteState = !(inviteState is Shared.InviteState.None)
         guard pendingInitPayload != nil || hasInviteState else { return }
-        await clearInvite()
+        await clearInvite(ekPub: pendingInitAliceEkPub)
         pendingInitPayload = nil
         multipleScansDetected = false
     }

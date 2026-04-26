@@ -94,7 +94,7 @@ class E2eeBidirectionalEndToEndTest {
             val initMsg = discoveryMessages.filterIsInstance<KeyExchangeInitPayload>().firstOrNull()
             assertNotNull(initMsg, "Alice should find Bob's KeyExchangeInit on the discovery token")
 
-            val aliceEntry = aliceStore.processKeyExchangeInit(initMsg, initMsg.suggestedName)
+            val aliceEntry = aliceStore.processKeyExchangeInit(initMsg, initMsg.suggestedName, qr.ekPub)
             assertNotNull(aliceEntry, "Alice should process KeyExchangeInit successfully")
             val aliceFriendId = aliceEntry.id
             println("✓ Alice processed KeyExchangeInit, friendId=${aliceFriendId.take(8)}")
@@ -318,6 +318,7 @@ class E2eeBidirectionalEndToEndTest {
                     KtorMailboxClient.poll(baseUrl, qrAB.discoveryToken().toHex())
                         .filterIsInstance<KeyExchangeInitPayload>().first(),
                     "B",
+                    qrAB.ekPub,
                 )!!
             val friendIdAB = aEntryForB.id
 
@@ -330,6 +331,7 @@ class E2eeBidirectionalEndToEndTest {
                     KtorMailboxClient.poll(baseUrl, qrAC.discoveryToken().toHex())
                         .filterIsInstance<KeyExchangeInitPayload>().first(),
                     "C",
+                    qrAC.ekPub,
                 )!!
             val friendIdAC = aEntryForC.id
 
@@ -450,7 +452,7 @@ class E2eeBidirectionalEndToEndTest {
 
             val qr = aStore.createInvite("A")
             val (init, _) = bStore.processScannedQr(qr, "B")
-            val aEntry = aStore.processKeyExchangeInit(init, "B")!!
+            val aEntry = aStore.processKeyExchangeInit(init, "B", qr.ekPub)!!
             val friendId = aEntry.id
 
             // Initial flush
@@ -578,7 +580,7 @@ class E2eeBidirectionalEndToEndTest {
             // Pair and do initial flush so both sides are stable
             val qr = aStore.createInvite("A")
             val (init, _) = bStore.processScannedQr(qr, "B")
-            val aEntry = aStore.processKeyExchangeInit(init, "B")!!
+            val aEntry = aStore.processKeyExchangeInit(init, "B", qr.ekPub)!!
             val friendId = aEntry.id
 
             aClient.sendLocation(0.0, 0.0)
@@ -721,7 +723,7 @@ class E2eeBidirectionalEndToEndTest {
             // Pair and stabilize
             val qr = aStore.createInvite("A")
             val (init, _) = bStore.processScannedQr(qr, "B")
-            val aEntry = aStore.processKeyExchangeInit(init, "B")!!
+            val aEntry = aStore.processKeyExchangeInit(init, "B", qr.ekPub)!!
             val friendId = aEntry.id
 
             val aClient = LocationClient(baseUrl, aStore)

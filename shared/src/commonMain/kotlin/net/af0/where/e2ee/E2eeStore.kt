@@ -239,11 +239,13 @@ class E2eeStore(
         }
     }
 
-    /** Alice: Discard the legacy single invite (for backward compatibility during transition). */
+    /** Alice: Discard the most recent pending invite (used when dismisses the naming dialog). */
     suspend fun clearInvite() {
         stateLock.withLock {
-            pendingInvites.clear()
-            save()
+            if (pendingInvites.isNotEmpty()) {
+                pendingInvites.removeAt(pendingInvites.size - 1)
+                save()
+            }
         }
     }
 
@@ -283,7 +285,6 @@ class E2eeStore(
                     ekPub = initMsg.ekPub,
                     keyConfirmation = initMsg.keyConfirmation,
                     suggestedName = initMsg.suggestedName,
-                    aliceEkPub = qr.ekPub,
                 )
             payload to entry
         }
@@ -303,11 +304,12 @@ class E2eeStore(
     suspend fun processKeyExchangeInit(
         payload: KeyExchangeInitPayload,
         bobName: String,
+        aliceEkPub: ByteArray,
     ): FriendEntry? =
         stateLock.withLock {
             val pending =
                 pendingInvites.find {
-                    it.qrPayload.ekPub.contentEquals(payload.aliceEkPub)
+                    it.qrPayload.ekPub.contentEquals(aliceEkPub)
                 } ?: return@withLock null
 
             val tokenBytes = payload.token.hexToByteArray()

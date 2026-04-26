@@ -316,13 +316,14 @@ class LocationViewModel(
 
     fun confirmPendingInit(name: String) {
         val payload = pendingInitPayload.value ?: return
+        val aliceEkPub = locationSource.pendingInitAliceEkPub.value ?: return
         Log.d(TAG, "confirmPendingInit: name=$name")
         locationSource.onPendingInit(null)
         _inviteState.value = InviteState.None
         _isExchanging.value = true
         viewModelScope.launch {
             try {
-                val entry = e2eeStore.processKeyExchangeInit(payload, name)
+                val entry = e2eeStore.processKeyExchangeInit(payload, name, aliceEkPub)
                 if (entry != null) {
                     Log.d(TAG, "confirmPendingInit: processKeyExchangeInit succeeded, friendId=${entry.id}")
                     withContext(Dispatchers.Main.immediate) {
@@ -359,8 +360,13 @@ class LocationViewModel(
     }
     fun cancelPendingInit() {
         if (pendingInitPayload.value == null && _inviteState.value == InviteState.None) return
+        val aliceEkPub = locationSource.pendingInitAliceEkPub.value
         viewModelScope.launch {
-            e2eeStore.clearInvites()
+            if (aliceEkPub != null) {
+                e2eeStore.clearInvite(aliceEkPub)
+            } else {
+                e2eeStore.clearInvite()
+            }
             locationSource.onPendingInvitesUpdated(e2eeStore.listPendingInvites())
         }
         locationSource.onPendingInit(null)

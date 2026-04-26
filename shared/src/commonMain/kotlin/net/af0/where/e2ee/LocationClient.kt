@@ -93,7 +93,7 @@ open class LocationClient(
                 val inits = messages.filterIsInstance<KeyExchangeInitPayload>()
                 val last = inits.lastOrNull()
                 if (last != null) {
-                    results.add(PendingInviteResult(last, inits.size > 1))
+                    results.add(PendingInviteResult(last, inits.size > 1, invite.qrPayload.ekPub))
                 }
             } catch (e: Exception) {
                 println("[LocationClient] pollPendingInvite failed for token=${invite.qrPayload.discoveryToken().toHex().take(8)}: ${e.message}")

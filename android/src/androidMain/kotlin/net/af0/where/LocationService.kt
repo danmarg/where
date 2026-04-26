@@ -371,7 +371,7 @@ class LocationService : Service() {
                         "(multipleScans=${result.multipleScansDetected})",
                 )
                 withContext(Dispatchers.Main) {
-                    locationSource.onPendingInit(initPayload, result.multipleScansDetected)
+                    locationSource.onPendingInit(initPayload, result.multipleScansDetected, result.aliceEkPub)
                 }
             }
         } catch (e: CancellationException) {

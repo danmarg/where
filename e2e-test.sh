@@ -141,13 +141,53 @@ else
   echo "  Carol sends location..."
   ./cli/build/install/cli/bin/cli send 48.8566 2.3522 --state e2e_carol.json --force > /dev/null 2>&1 || true
 
-  echo "  Alice polls and should receive Carol's location separately from Bob's..."
+  # Alice polls and should receive Carol's location separately from Bob's...
   ./cli/build/install/cli/bin/cli poll --state e2e_alice.json --once > /dev/null 2>&1 || true
   echo "✓ Multi-friend session completed (basic check)"
+  fi
 
-  # Clean up Carol's state for logs
-  rm -f e2e_carol.json
-fi
+  echo "=== E2E Test: Multiple Simultaneous Pending Invites ==="
+  rm -f e2e_multi_alice.json e2e_multi_bob.json e2e_multi_charlie.json
+  # Alice creates two invites before anyone joins
+
+  ALICE_OUT1=$(./cli/build/install/cli/bin/cli invite Alice --state e2e_multi_alice.json --no-wait)
+  ALICE_OUT2=$(./cli/build/install/cli/bin/cli invite Alice --state e2e_multi_alice.json --no-wait)
+  URL1=$(echo "$ALICE_OUT1" | grep "Invite URL:" | awk '{print $3}')
+  URL2=$(echo "$ALICE_OUT2" | grep "Invite URL:" | awk '{print $3}')
+
+  # Both Bob and Charlie join
+  ./cli/build/install/cli/bin/cli join "$URL1" Bob --state e2e_multi_bob.json > /dev/null
+  ./cli/build/install/cli/bin/cli join "$URL2" Charlie --state e2e_multi_charlie.json > /dev/null
+
+  # Alice polls once - she should see one of them (the first one that pollPendingInvites returns)
+  ALICE_POLL_MULTI=$(./cli/build/install/cli/bin/cli poll --state e2e_multi_alice.json --once)
+  if echo "$ALICE_POLL_MULTI" | grep -q "Received KeyExchangeInit from"; then
+  echo "✓ Alice received first pending invite"
+  else
+  echo "❌ Error: Alice did not receive any pending invite"
+  exit 1
+  fi
+
+  # Alice polls again - she should see the other one (since the first one is now a friend)
+  ALICE_POLL_MULTI2=$(./cli/build/install/cli/bin/cli poll --state e2e_multi_alice.json --once)
+  if echo "$ALICE_POLL_MULTI2" | grep -q "Received KeyExchangeInit from"; then
+  echo "✓ Alice received second pending invite"
+  else
+  echo "❌ Error: Alice did not receive second pending invite"
+  exit 1
+  fi
+
+  # Verify Alice has two friends
+  FRIENDS_COUNT=$(./cli/build/install/cli/bin/cli list --state e2e_multi_alice.json | grep " (" | grep -c ":")
+  if [ "$FRIENDS_COUNT" -eq 2 ]; then
+  echo "✓ Alice successfully paired with both friends from simultaneous invites"
+  else
+  echo "❌ Error: Alice has $FRIENDS_COUNT friends, expected 2"
+  exit 1
+  fi
+
+  rm -f e2e_multi_alice.json e2e_multi_bob.json e2e_multi_charlie.json e2e_carol.json
+
 
 echo ""
 echo "✅ E2E Test Passed:"

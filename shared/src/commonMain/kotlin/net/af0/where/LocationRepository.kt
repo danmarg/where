@@ -25,6 +25,7 @@ interface LocationSource {
     val connectionStatus: StateFlow<ConnectionStatus>
     val isAppInForeground: StateFlow<Boolean>
     val pendingInitPayload: StateFlow<KeyExchangeInitPayload?>
+    val pendingInitAliceEkPub: StateFlow<ByteArray?>
     val multipleScansDetected: StateFlow<Boolean>
     val isSharingLocation: StateFlow<Boolean>
     val pausedFriendIds: StateFlow<Set<String>>
@@ -58,6 +59,7 @@ interface LocationSource {
     fun onPendingInit(
         payload: KeyExchangeInitPayload?,
         multipleScans: Boolean = false,
+        aliceEkPub: ByteArray? = null,
     )
 
     fun onPendingInvitesUpdated(invites: List<PendingInvite>)
@@ -110,6 +112,9 @@ object LocationRepository : LocationSource {
 
     internal val _pendingInitPayload = MutableStateFlow<KeyExchangeInitPayload?>(null)
     override val pendingInitPayload: StateFlow<KeyExchangeInitPayload?> = _pendingInitPayload.asStateFlow()
+
+    private val _pendingInitAliceEkPub = MutableStateFlow<ByteArray?>(null)
+    override val pendingInitAliceEkPub: StateFlow<ByteArray?> = _pendingInitAliceEkPub.asStateFlow()
 
     private val _multipleScansDetected = MutableStateFlow(false)
     override val multipleScansDetected: StateFlow<Boolean> = _multipleScansDetected.asStateFlow()
@@ -194,9 +199,11 @@ object LocationRepository : LocationSource {
     override fun onPendingInit(
         payload: KeyExchangeInitPayload?,
         multipleScans: Boolean,
+        aliceEkPub: ByteArray?,
     ) {
         _pendingInitPayload.value = payload
         _multipleScansDetected.value = multipleScans
+        _pendingInitAliceEkPub.value = aliceEkPub
     }
 
     override fun onPendingInvitesUpdated(invites: List<PendingInvite>) {
@@ -273,6 +280,7 @@ object LocationRepository : LocationSource {
         _connectionStatus.value = ConnectionStatus.Ok
         _isAppInForeground.value = false
         _pendingInitPayload.value = null
+        _pendingInitAliceEkPub.value = null
         _multipleScansDetected.value = false
         _isSharingLocation.value = false
         _pausedFriendIds.value = emptySet()

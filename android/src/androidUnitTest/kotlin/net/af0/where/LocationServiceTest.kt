@@ -60,6 +60,9 @@ class ServiceFakeLocationSource : LocationSource {
     private val _pendingInitPayload = MutableStateFlow<KeyExchangeInitPayload?>(null)
     override val pendingInitPayload: StateFlow<KeyExchangeInitPayload?> = _pendingInitPayload.asStateFlow()
 
+    private val _pendingInitAliceEkPub = MutableStateFlow<ByteArray?>(null)
+    override val pendingInitAliceEkPub: StateFlow<ByteArray?> = _pendingInitAliceEkPub.asStateFlow()
+
     private val _multipleScansDetected = MutableStateFlow(false)
     override val multipleScansDetected: StateFlow<Boolean> = _multipleScansDetected.asStateFlow()
 
@@ -131,9 +134,11 @@ class ServiceFakeLocationSource : LocationSource {
     override fun onPendingInit(
         payload: KeyExchangeInitPayload?,
         multipleScans: Boolean,
+        aliceEkPub: ByteArray?,
     ) {
         _pendingInitPayload.value = payload
         _multipleScansDetected.value = multipleScans
+        _pendingInitAliceEkPub.value = aliceEkPub
     }
 
     override fun onPendingInvitesUpdated(invites: List<net.af0.where.e2ee.PendingInvite>) {

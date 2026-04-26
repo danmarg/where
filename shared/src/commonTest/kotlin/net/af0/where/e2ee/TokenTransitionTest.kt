@@ -70,7 +70,7 @@ class TokenTransitionTest {
             // 1. Establish session
             val qr = aliceStore.createInvite("Alice")
             val (initPayload, bobEntry) = bobStore.processScannedQr(qr)
-            aliceStore.processKeyExchangeInit(initPayload, "Bob")
+            aliceStore.processKeyExchangeInit(initPayload, "Bob", qr.ekPub)
 
             val aliceFriendId = aliceStore.listFriends().first().id
             val bobFriendId = bobEntry.id
@@ -122,7 +122,7 @@ class TokenTransitionTest {
             // Setup a friend
             val qr = aliceStore.createInvite("Alice")
             val (initPayload, bobEntry) = bobStore.processScannedQr(qr)
-            aliceStore.processKeyExchangeInit(initPayload, "Bob")
+            aliceStore.processKeyExchangeInit(initPayload, "Bob", qr.ekPub)
             val bobFriendId = bobEntry.id
             val aliceFriendId = aliceStore.listFriends().first().id
 
@@ -167,7 +167,7 @@ class TokenTransitionTest {
             // 1. Establish session
             val qr = aliceStore.createInvite("Alice")
             val (initPayload, bobEntry) = bobStore.processScannedQr(qr)
-            aliceStore.processKeyExchangeInit(initPayload, "Bob")
+            aliceStore.processKeyExchangeInit(initPayload, "Bob", qr.ekPub)
 
             val aliceToBobId = aliceStore.listFriends().first().id
             val bobToAliceId = bobEntry.id
@@ -207,7 +207,7 @@ class TokenTransitionTest {
             // 1. Establish session
             val qr = aliceStore.createInvite("Alice")
             val (initPayload, bobEntry) = bobStore.processScannedQr(qr)
-            aliceStore.processKeyExchangeInit(initPayload, "Bob")
+            aliceStore.processKeyExchangeInit(initPayload, "Bob", qr.ekPub)
 
             val aliceToBobId = aliceStore.listFriends().first().id
             val bobToAliceId = bobEntry.id
@@ -255,7 +255,7 @@ class TokenTransitionTest {
 
             val qr = aliceStore.createInvite("Alice")
             val (initPayload, bobEntry) = bobStore.processScannedQr(qr)
-            aliceStore.processKeyExchangeInit(initPayload, "Bob")
+            aliceStore.processKeyExchangeInit(initPayload, "Bob", qr.ekPub)
             val aliceToBobId = aliceStore.listFriends().first().id
 
             // Prime the ratchet chain: Alice sends her first keepalive (which carries DH_A1 from
@@ -312,7 +312,7 @@ class TokenTransitionTest {
 
             val qr = aliceStore.createInvite("Alice")
             val (initPayload, bobEntry) = bobStore.processScannedQr(qr)
-            aliceStore.processKeyExchangeInit(initPayload, "Bob")
+            aliceStore.processKeyExchangeInit(initPayload, "Bob", qr.ekPub)
             val aliceToBobId = aliceStore.listFriends().first().id
             val bobToAliceId = bobEntry.id
 
