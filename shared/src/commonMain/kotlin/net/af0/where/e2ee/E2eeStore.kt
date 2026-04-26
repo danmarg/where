@@ -223,8 +223,8 @@ class E2eeStore(
             payload
         }
 
-    /** Alice: Discard all pending invites (e.g. user dismissed the QR screen). */
-    suspend fun clearInvites() {
+    /** Alice: Discard all pending invites (e.g. user resets the app state). */
+    suspend fun clearAllInvites() {
         stateLock.withLock {
             pendingInvites.clear()
             save()
@@ -236,16 +236,6 @@ class E2eeStore(
         stateLock.withLock {
             pendingInvites.removeAll { it.qrPayload.ekPub.contentEquals(ekPub) }
             save()
-        }
-    }
-
-    /** Alice: Discard the most recent pending invite (used when dismisses the naming dialog). */
-    suspend fun clearInvite() {
-        stateLock.withLock {
-            if (pendingInvites.isNotEmpty()) {
-                pendingInvites.removeAt(pendingInvites.size - 1)
-                save()
-            }
         }
     }
 

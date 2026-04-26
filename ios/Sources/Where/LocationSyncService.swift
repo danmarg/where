@@ -380,8 +380,8 @@ final class LocationSyncService: ObservableObject {
         do {
             if let ekPub = ekPub {
                 try await e2eeStore.clearInvite(ekPub: ekPub.toKotlinByteArray())
-            } else {
-                try await e2eeStore.clearInvite()
+            } else if let last = try await e2eeStore.listPendingInvites().last() {
+                try await e2eeStore.clearInvite(ekPub: last.qrPayload.ekPub)
             }
             pendingInvites = try await e2eeStore.listPendingInvites()
         } catch {

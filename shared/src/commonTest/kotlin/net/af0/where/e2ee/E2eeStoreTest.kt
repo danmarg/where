@@ -68,9 +68,9 @@ class E2eeStoreTest {
     @Test
     fun testClearInvite() =
         runBlocking {
-            aliceStore.createInvite("Alice")
+            val qr = aliceStore.createInvite("Alice")
             assertNotNull(aliceStore.pendingQrPayload())
-            aliceStore.clearInvite()
+            aliceStore.clearInvite(qr.ekPub)
             assertNull(aliceStore.pendingQrPayload())
         }
 
@@ -260,8 +260,8 @@ class E2eeStoreTest {
             assertEquals(1, remaining.size)
             assertEquals("Alice 2", remaining[0].qrPayload.suggestedName)
 
-            // Clear the second one (using no-args fallback for the last one)
-            aliceStore.clearInvite()
+            // Clear the second one surgically
+            aliceStore.clearInvite(qr2.ekPub)
             assertTrue(aliceStore.listPendingInvites().isEmpty())
         }
 

@@ -261,7 +261,11 @@ class LocationViewModel(
         viewModelScope.launch {
             try {
                 if (currentInvite != InviteState.None) {
-                    e2eeStore.clearInvites()
+                    // Bob: clear his own outgoing invite state if he's currently showing one,
+                    // but keep other persistent invites.
+                    if (currentInvite is InviteState.Pending) {
+                        e2eeStore.clearInvite(currentInvite.qr.ekPub)
+                    }
                     _inviteState.value = InviteState.None
                 }
                 val (initPayload, bobEntry) = e2eeStore.processScannedQr(qrWithName, displayName.value)
@@ -365,7 +369,10 @@ class LocationViewModel(
             if (aliceEkPub != null) {
                 e2eeStore.clearInvite(aliceEkPub)
             } else {
-                e2eeStore.clearInvite()
+                val last = e2eeStore.listPendingInvites().lastOrNull()
+                if (last != null) {
+                    e2eeStore.clearInvite(last.qrPayload.ekPub)
+                }
             }
             locationSource.onPendingInvitesUpdated(e2eeStore.listPendingInvites())
         }
@@ -381,11 +388,11 @@ class LocationViewModel(
 
     fun clearInvite() {
         val current = _inviteState.value
-        // If a peer already joined (pendingInitPayload is not null), do NOT clear the
-        // persistent invite state yet, as we still need it to derive the session.
+        // If the user dismisses the "Share Invite" sheet, we clear that specific invite
+        // from the store to match previous behavior (though it's now multi-invite).
         if (current is InviteState.Pending && locationSource.pendingInitPayload.value == null) {
             viewModelScope.launch {
-                e2eeStore.clearInvites()
+                e2eeStore.clearInvite(current.qr.ekPub)
                 locationSource.onPendingInvitesUpdated(e2eeStore.listPendingInvites())
             }
         }
