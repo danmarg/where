@@ -236,6 +236,17 @@ class LocationServiceTest {
     }
 
     @Test
+    fun testPollInterval_Maintains30minDuringPause() {
+        val service = Robolectric.buildService(LocationService::class.java).get()
+        // When sharing is paused (isSharingLocation = false), we must use the 30-min interval.
+        assertEquals(
+            30 * 60 * 1000L,
+            service.pollInterval(rapid = false, inForeground = false, isSharingLocation = false),
+            "Maintenance interval must be 30 minutes when sharing is paused",
+        )
+    }
+
+    @Test
     fun testRapidPollResetAfterFirstLocationUpdate() =
         runTest {
             var currentTime = 1_000_000_000L

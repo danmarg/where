@@ -144,6 +144,12 @@ class LocationViewModel(
             locationSource.setInitialFriendLocations(initialLocations, initialLastPing)
         }
 
+        viewModelScope.launch {
+            pausedFriendIds.collect { ids ->
+                locationSource.setPausedFriends(ids)
+            }
+        }
+
         // When a friend response (init payload) arrives from the service, flip the invite
         // state to None so the UI shows the naming dialog (dismissing the QR sheet).
         viewModelScope.launch {
