@@ -158,11 +158,14 @@ open class LocationClient(
         }
 
         // Automated keepalive (§5.3): send a keepalive message if we received a new DH key
-        // but are currently not sharing location, and the session is not stale.
+        // but have not yet replied with our own new DH public key. This advances the peer's
+        // recvToken regardless of whether we are actively sharing location, which is essential
+        // when sharing is globally paused — the peer must know our new sendToken or they poll
+        // the wrong mailbox indefinitely.
         val friendAfter = store.getFriend(friendId)
         if (friendAfter != null && !friendBefore.session.remoteDhPub.contentEquals(friendAfter.session.remoteDhPub)) {
-            if (!friendAfter.sharingEnabled && !friendAfter.isStale) {
-                println("[LocationClient] pollFriend: new remoteDhPub for ${friendId.take(8)}, sending keepalive (sharingEnabled=false)")
+            if (!friendAfter.isStale) {
+                println("[LocationClient] pollFriend: new remoteDhPub for ${friendId.take(8)}, sending keepalive")
                 try {
                     sendKeepalive(friendId)
                 } catch (_: Exception) {

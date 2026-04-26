@@ -392,9 +392,11 @@ class LocationViewModel(
                 PackageManager.PERMISSION_GRANTED
         if ((sharing && hasLocationPermission) || inForeground) {
             getApplication<Application>().startForegroundService(intent)
-        } else if (!sharing) {
-            getApplication<Application>().stopService(intent)
         }
+        // Intentionally no stopService() here: when sharing is paused the service must remain
+        // alive for maintenance polls (ratchet keepalives, token ACKs) so the Double Ratchet
+        // token state stays in sync with peers. The service manages its own reduced polling
+        // interval (30 min) and GPS deregistration when sharing is off. See LocationService.
     }
 
     companion object {
