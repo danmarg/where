@@ -78,7 +78,7 @@ open class LocationClient(
         val pending = store.listPendingInvites()
         val results = mutableListOf<PendingInviteResult>()
         for (invite in pending) {
-            val discoveryHex = invite.qrPayload.discoveryToken().toHex()
+            val discoveryHex = invite.discoveryTokenHex
             try {
                 val messages = mailboxClient.poll(baseUrl, discoveryHex)
                 val inits = messages.filterIsInstance<KeyExchangeInitPayload>()
@@ -99,7 +99,7 @@ open class LocationClient(
         val pending = store.listPendingInvites()
         for (invite in pending) {
             if (now - invite.createdAt > PENDING_INVITE_EXPIRY_SECONDS) {
-                val token = invite.qrPayload.discoveryToken().toHex()
+                val token = invite.discoveryTokenHex
                 println("[LocationClient] cleanupExpiredInvites: invite expired, deleting: $token")
                 store.deletePendingInvite(token)
             }
@@ -108,7 +108,7 @@ open class LocationClient(
         // Also cleanup unconfirmed friends (Bob side) that haven't received anything for 48h.
         val friends = store.listFriends()
         for (friend in friends) {
-            if (!friend.isConfirmed && (now - friend.lastRecvTs) > PENDING_INVITE_EXPIRY_SECONDS) {
+            if (!friend.isConfirmed && (now - friend.createdAt) > PENDING_INVITE_EXPIRY_SECONDS) {
                 println("[LocationClient] cleanupExpiredInvites: unconfirmed friend expired, deleting: ${friend.id.take(8)}")
                 store.deleteFriend(friend.id)
             }

@@ -62,9 +62,7 @@ final class LocationSyncService: ObservableObject {
 
     @Published var ownHeading: Double? = nil
     @Published var pendingQrForNaming: Shared.QrPayload? = nil
-    @Published var pendingInitPayload: Shared.KeyExchangeInitPayload? = nil
-    @Published var pendingInitDiscoveryToken: String? = nil
-    @Published var multipleScansDetected: Bool = false
+    @Published var incomingHandshakes: [Shared.IncomingHandshake] = []
     @Published var isExchanging: Bool = false
     private var inviteTask: Task<Void, Never>? = nil
     @Published var visibleUsers: [Shared.UserLocation] = []
@@ -357,12 +355,16 @@ final class LocationSyncService: ObservableObject {
     }
 
     private func pollPendingInvites() async throws {
-        if pendingInitPayload != nil { return }
         let results = try await locationClient.pollPendingInvites()
-        if let result = results.first {
-            pendingInitPayload = result.payload
-            pendingInitDiscoveryToken = result.discoveryTokenHex
-            multipleScansDetected = result.multipleScansDetected
+        if !results.isEmpty {
+            let handshakes = results.map { result in
+                Shared.IncomingHandshake(
+                    payload: result.payload,
+                    multipleScansDetected: result.multipleScansDetected,
+                    discoveryTokenHex: result.discoveryTokenHex
+                )
+            }
+            incomingHandshakes = handshakes
             inviteState = Shared.InviteState.None()
             triggerRapidPoll()
         }
@@ -449,16 +451,13 @@ final class LocationSyncService: ObservableObject {
         }
     }
 
-    func confirmPendingInit(payload: Shared.KeyExchangeInitPayload, name: String) async {
+    func confirmPendingInit(handshake: Shared.IncomingHandshake, name: String) async {
         isExchanging = true
-        let discoveryToken = pendingInitDiscoveryToken ?? ""
-        pendingInitPayload = nil
-        pendingInitDiscoveryToken = nil
-        multipleScansDetected = false
+        incomingHandshakes.removeAll { $0.discoveryTokenHex == handshake.discoveryTokenHex }
 
         defer { isExchanging = false }
         do {
-            let result = try await e2eeStore.processKeyExchangeInit(payload: payload, bobName: name, discoveryTokenHex: discoveryToken)
+            let result = try await e2eeStore.processKeyExchangeInit(payload: handshake.payload, bobName: name, discoveryTokenHex: handshake.discoveryTokenHex)
 
             if let entry = result ?? nil {
                 awaitingFirstUpdateIds.insert(entry.id)
@@ -483,13 +482,13 @@ final class LocationSyncService: ObservableObject {
         }
     }
 
-    func cancelPendingInit() async {
-        let hasInviteState = !(inviteState is Shared.InviteState.None)
-        guard pendingInitPayload != nil || hasInviteState else { return }
-        await clearInvite()
-        pendingInitPayload = nil
-        pendingInitDiscoveryToken = nil
-        multipleScansDetected = false
+    func cancelPendingInit(handshake: Shared.IncomingHandshake) async {
+        do {
+            try await e2eeStore.deletePendingInvite(discoveryTokenHex: handshake.discoveryTokenHex)
+            incomingHandshakes.removeAll { $0.discoveryTokenHex == handshake.discoveryTokenHex }
+        } catch {
+            logger.error("Failed to cancel pending init: \(error.localizedDescription)")
+        }
     }
 
     func renameFriend(id: String, newName: String) async {

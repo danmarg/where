@@ -189,9 +189,9 @@ struct ContentView: View {
         .sheet(isPresented: Binding(
             get: { syncService.inviteState is Shared.InviteState.Pending },
             set: { if !$0 {
-                // If we're dismissing because a peer joined (pendingInitPayload is set),
+                // If we're dismissing because a peer joined (incomingHandshakes is not empty),
                 // do NOT clear the store yet, as we need the ephemeral keys to derive the session.
-                if syncService.pendingInitPayload == nil {
+                if syncService.incomingHandshakes.isEmpty {
                     Task { await syncService.clearInvite() }
                 }
             } }
@@ -205,11 +205,12 @@ struct ContentView: View {
             }
         }
         .alert(MR.strings().name_this_contact.localized(), isPresented: Binding(
-            get: { (syncService.pendingQrForNaming != nil || syncService.pendingInitPayload != nil) && !syncService.isInviteActive },
+            get: { (syncService.pendingQrForNaming != nil || !syncService.incomingHandshakes.isEmpty) && !syncService.isInviteActive },
             set: { if !$0 {
                 syncService.pendingQrForNaming = nil
-                syncService.pendingInitPayload = nil
-                Task { await syncService.cancelPendingInit() }
+                if let handshake = syncService.incomingHandshakes.first {
+                    Task { await syncService.cancelPendingInit(handshake: handshake) }
+                }
                 newFriendName = ""
             } }
         )) {
@@ -221,29 +222,32 @@ struct ContentView: View {
                     newFriendName = ""
                     Task { await syncService.confirmQrScan(qr: qr, friendName: name) }
                 }
-            } else if let payload = syncService.pendingInitPayload {
+            } else if let handshake = syncService.incomingHandshakes.first {
                 Button(MR.strings().save.localized()) {
                     let name = newFriendName.isEmpty ? MR.strings().friend_.localized() : newFriendName
                     Task {
-                        await syncService.confirmPendingInit(payload: payload, name: name)
+                        await syncService.confirmPendingInit(handshake: handshake, name: name)
                         newFriendName = ""
-                        syncService.pendingInitPayload = nil
                     }
                 }
             }
             Button(MR.strings().cancel.localized(), role: .cancel) {
-                syncService.pendingQrForNaming = nil
-                syncService.pendingInitPayload = nil
-                Task { await syncService.cancelPendingInit() }
+                if let qr = syncService.pendingQrForNaming {
+                    syncService.pendingQrForNaming = nil
+                } else if let handshake = syncService.incomingHandshakes.first {
+                    Task { await syncService.cancelPendingInit(handshake: handshake) }
+                }
                 newFriendName = ""
             }
         } message: {
             if syncService.pendingQrForNaming != nil {
                 Text(MR.strings().enter_name_for_friend.localized())
-            } else if syncService.multipleScansDetected {
-                Text(MR.strings().multiple_scans_detected_warning.localized())
-            } else {
-                Text(MR.strings().new_friend_scanned_qr.localized())
+            } else if let handshake = syncService.incomingHandshakes.first {
+                if handshake.multipleScansDetected {
+                    Text(MR.strings().multiple_scans_detected_warning.localized())
+                } else {
+                    Text(MR.strings().new_friend_scanned_qr.localized())
+                }
             }
         }
         .onAppear {
@@ -255,8 +259,12 @@ struct ContentView: View {
         .onReceive(syncService.$pendingQrForNaming) { qr in
             if let qr = qr { newFriendName = qr.suggestedName } else { newFriendName = "" }
         }
-        .onReceive(syncService.$pendingInitPayload) { payload in
-            if let payload = payload { newFriendName = payload.suggestedName } else { newFriendName = "" }
+        .onChange(of: syncService.incomingHandshakes) { oldValue, newValue in
+            if let handshake = newValue.first {
+                newFriendName = handshake.payload.suggestedName
+            } else if syncService.pendingQrForNaming == nil {
+                newFriendName = ""
+            }
         }
         .onOpenURL { url in
             syncService.processQrUrl(url.absoluteString)

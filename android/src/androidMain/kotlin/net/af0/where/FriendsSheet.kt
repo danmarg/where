@@ -38,7 +38,7 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import dev.icerock.moko.resources.compose.stringResource
 import net.af0.where.e2ee.FriendEntry
-import net.af0.where.e2ee.PendingInvite
+import net.af0.where.e2ee.PendingInviteSummary
 import net.af0.where.e2ee.discoveryToken
 import net.af0.where.e2ee.toHex
 import net.af0.where.shared.MR
@@ -47,7 +47,7 @@ import net.af0.where.shared.MR
 @Composable
 fun FriendsSheet(
     friends: List<FriendEntry>,
-    pendingInvites: List<PendingInvite> = emptyList(),
+    pendingInvites: List<PendingInviteSummary> = emptyList(),
     displayName: String,
     onDisplayNameChange: (String) -> Unit,
     pausedFriendIds: Set<String>,
@@ -58,12 +58,12 @@ fun FriendsSheet(
     onPasteUrl: (String) -> Unit,
     onRename: (String, String) -> Unit,
     onRemove: (String) -> Unit,
-    onRemovePendingInvite: (String) -> Unit = {},
+    onRemovePendingInviteSummary: (String) -> Unit = {},
     onDismiss: () -> Unit,
     onZoomTo: (String) -> Unit = {},
 ) {
     var confirmDeleteFriend by remember { mutableStateOf<FriendEntry?>(null) }
-    var confirmDeleteInvite by remember { mutableStateOf<PendingInvite?>(null) }
+    var confirmDeleteInvite by remember { mutableStateOf<PendingInviteSummary?>(null) }
     var renameFriend by remember { mutableStateOf<FriendEntry?>(null) }
     var showPasteField by remember { mutableStateOf(false) }
     var pastedUrl by remember { mutableStateOf("") }
@@ -237,7 +237,7 @@ fun FriendsSheet(
                                 modifier = Modifier.padding(top = 16.dp, bottom = 4.dp),
                             )
                         }
-                        items(pendingInvites, key = { it.qrPayload.discoveryToken().toHex() }) { invite ->
+                        items(pendingInvites, key = { it.discoveryTokenHex }) { invite ->
                             Row(
                                 modifier =
                                     Modifier
@@ -286,7 +286,7 @@ fun FriendsSheet(
             confirmButton = {
                 TextButton(
                     onClick = {
-                        onRemovePendingInvite(invite.qrPayload.discoveryToken().toHex())
+                        onRemovePendingInviteSummary(invite.discoveryTokenHex)
                         confirmDeleteInvite = null
                     },
                 ) {

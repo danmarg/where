@@ -56,14 +56,8 @@ class ServiceFakeLocationSource : LocationSource {
     private val _isAppInForeground = MutableStateFlow(false)
     override val isAppInForeground: StateFlow<Boolean> = _isAppInForeground.asStateFlow()
 
-    private val _pendingInitPayload = MutableStateFlow<KeyExchangeInitPayload?>(null)
-    override val pendingInitPayload: StateFlow<KeyExchangeInitPayload?> = _pendingInitPayload.asStateFlow()
-
-    private val _pendingInitDiscoveryToken = MutableStateFlow<String?>(null)
-    override val pendingInitDiscoveryToken: StateFlow<String?> = _pendingInitDiscoveryToken.asStateFlow()
-
-    private val _multipleScansDetected = MutableStateFlow(false)
-    override val multipleScansDetected: StateFlow<Boolean> = _multipleScansDetected.asStateFlow()
+    private val _incomingHandshakes = MutableStateFlow<List<net.af0.where.e2ee.IncomingHandshake>>(emptyList())
+    override val incomingHandshakes: StateFlow<List<net.af0.where.e2ee.IncomingHandshake>> = _incomingHandshakes.asStateFlow()
 
     private val _isSharingLocation = MutableStateFlow(false)
     override val isSharingLocation: StateFlow<Boolean> = _isSharingLocation.asStateFlow()
@@ -74,8 +68,8 @@ class ServiceFakeLocationSource : LocationSource {
     private val _friends = MutableStateFlow<List<FriendEntry>>(emptyList())
     override val friends: StateFlow<List<FriendEntry>> = _friends.asStateFlow()
 
-    private val _pendingInvites = MutableStateFlow<List<net.af0.where.e2ee.PendingInvite>>(emptyList())
-    override val pendingInvites: StateFlow<List<net.af0.where.e2ee.PendingInvite>> = _pendingInvites.asStateFlow()
+    private val _pendingInvites = MutableStateFlow<List<net.af0.where.e2ee.PendingInviteSummary>>(emptyList())
+    override val pendingInvites: StateFlow<List<net.af0.where.e2ee.PendingInviteSummary>> = _pendingInvites.asStateFlow()
 
     private val _lastRapidPollTrigger = MutableStateFlow(0L)
     override val lastRapidPollTrigger: StateFlow<Long> = _lastRapidPollTrigger.asStateFlow()
@@ -130,21 +124,8 @@ class ServiceFakeLocationSource : LocationSource {
         _isAppInForeground.value = foreground
     }
 
-    override fun onPendingInit(
-        payload: KeyExchangeInitPayload?,
-        multipleScans: Boolean,
-    ) {
-        _pendingInitPayload.value = payload
-        _multipleScansDetected.value = multipleScans
-    }
-
-    override fun onPendingInitWithToken(
-        payload: KeyExchangeInitPayload?,
-        multipleScans: Boolean,
-        discoveryTokenHex: String?,
-    ) {
-        _pendingInitPayload.value = payload
-        _multipleScansDetected.value = multipleScans
+    override fun onIncomingHandshakesUpdated(handshakes: List<net.af0.where.e2ee.IncomingHandshake>) {
+        _incomingHandshakes.value = handshakes
     }
 
     override fun setSharingLocation(sharing: Boolean) {
@@ -159,7 +140,7 @@ class ServiceFakeLocationSource : LocationSource {
         _friends.value = friendsList
     }
 
-    override fun onPendingInvitesUpdated(invites: List<net.af0.where.e2ee.PendingInvite>) {
+    override fun onPendingInvitesUpdated(invites: List<net.af0.where.e2ee.PendingInviteSummary>) {
         _pendingInvites.value = invites
     }
 
@@ -218,7 +199,7 @@ class LocationServiceTest {
         LocationService.clock = { System.currentTimeMillis() }
         LocationService.locationSource = fakeLocationSource
 
-        // Mock KtorMailboxClient to prevent network calls during pollPendingInvite
+        // Mock KtorMailboxClient to prevent network calls during pollPendingInvites
         io.mockk.mockkObject(net.af0.where.e2ee.KtorMailboxClient)
         io.mockk.coEvery { net.af0.where.e2ee.KtorMailboxClient.poll(any(), any()) } returns emptyList()
     }

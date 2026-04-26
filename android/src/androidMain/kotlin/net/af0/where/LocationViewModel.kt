@@ -25,7 +25,7 @@ import net.af0.where.e2ee.ConnectionStatus
 import net.af0.where.e2ee.E2eeStore
 import net.af0.where.e2ee.FriendEntry
 import net.af0.where.e2ee.InviteState
-import net.af0.where.e2ee.PendingInvite
+import net.af0.where.e2ee.PendingInviteSummary
 import net.af0.where.e2ee.KeyExchangeInitPayload
 import net.af0.where.e2ee.LocationClient
 import net.af0.where.e2ee.QrPayload
@@ -69,7 +69,7 @@ class LocationViewModel(
 
     val friends: StateFlow<List<FriendEntry>> = locationSource.friends
 
-    val pendingInvites: StateFlow<List<PendingInvite>> = locationSource.pendingInvites
+    val pendingInvites: StateFlow<List<PendingInviteSummary>> = locationSource.pendingInvites
 
     val pausedFriendIds: StateFlow<Set<String>> = userStore.pausedFriendIds
 
@@ -91,9 +91,7 @@ class LocationViewModel(
 
     val pendingQrForNaming: StateFlow<QrPayload?> = locationSource.pendingQrForNaming
 
-    val pendingInitPayload: StateFlow<KeyExchangeInitPayload?> = locationSource.pendingInitPayload
-
-    val multipleScansDetected: StateFlow<Boolean> = locationSource.multipleScansDetected
+    val incomingHandshakes: StateFlow<List<net.af0.where.e2ee.IncomingHandshake>> = locationSource.incomingHandshakes
 
     private val _isExchanging = MutableStateFlow(false)
     val isExchanging: StateFlow<Boolean> = _isExchanging
@@ -153,8 +151,8 @@ class LocationViewModel(
         // When a friend response (init payload) arrives from the service, flip the invite
         // state to None so the UI shows the naming dialog (dismissing the QR sheet).
         viewModelScope.launch {
-            pendingInitPayload.collect { payload ->
-                if (payload != null) {
+            incomingHandshakes.collect { handshakes ->
+                if (handshakes.isNotEmpty()) {
                     inviteJob?.cancel()
                     _inviteState.value = InviteState.None
                 }
@@ -211,7 +209,7 @@ class LocationViewModel(
 
     fun createInvite() {
         inviteJob?.cancel()
-        if (locationSource.pendingInitPayload.value != null) return
+        if (incomingHandshakes.value.isNotEmpty()) return
 
         inviteJob =
             viewModelScope.launch {
@@ -230,9 +228,9 @@ class LocationViewModel(
 
     fun clearInvite() {
         val current = _inviteState.value
-        // If a peer already joined (pendingInitPayload is not null), do NOT clear the
+        // If a peer already joined (incomingHandshakes is not empty), do NOT clear the
         // persistent invite state yet, as we still need it to derive the session.
-        if (current is InviteState.Pending && locationSource.pendingInitPayload.value == null) {
+        if (current is InviteState.Pending && locationSource.incomingHandshakes.value.isEmpty()) {
             viewModelScope.launch {
                 e2eeStore.clearInvite()
             }
@@ -324,16 +322,18 @@ class LocationViewModel(
         }
     }
 
-    fun confirmPendingInit(name: String) {
-        val payload = pendingInitPayload.value ?: return
-        val discoveryTokenHex = (locationSource as? LocationRepository)?.pendingInitDiscoveryToken?.value ?: ""
-        Log.d(TAG, "confirmPendingInit: name=$name token=$discoveryTokenHex")
-        locationSource.onPendingInit(null)
+    fun confirmPendingInit(
+        handshake: net.af0.where.e2ee.IncomingHandshake,
+        name: String,
+    ) {
+        Log.d(TAG, "confirmPendingInit: name=$name token=${handshake.discoveryTokenHex}")
+        val current = locationSource.incomingHandshakes.value
+        locationSource.onIncomingHandshakesUpdated(current.filter { it.discoveryTokenHex != handshake.discoveryTokenHex })
         _inviteState.value = InviteState.None
         _isExchanging.value = true
         viewModelScope.launch {
             try {
-                val entry = e2eeStore.processKeyExchangeInit(payload, name, discoveryTokenHex)
+                val entry = e2eeStore.processKeyExchangeInit(handshake.payload, name, handshake.discoveryTokenHex)
                 if (entry != null) {
                     Log.d(TAG, "confirmPendingInit: processKeyExchangeInit succeeded, friendId=${entry.id}")
                     withContext(Dispatchers.Main.immediate) {
@@ -368,8 +368,8 @@ class LocationViewModel(
         }
     }
 
-    fun removePendingInvite(discoveryTokenHex: String) {
-        check(Looper.myLooper() == Looper.getMainLooper()) { "removePendingInvite must be called on the main thread" }
+    fun removePendingInviteSummary(discoveryTokenHex: String) {
+        check(Looper.myLooper() == Looper.getMainLooper()) { "removePendingInviteSummary must be called on the main thread" }
         viewModelScope.launch {
             e2eeStore.deletePendingInvite(discoveryTokenHex)
             val updatedInvites = e2eeStore.listPendingInvites()
@@ -379,14 +379,12 @@ class LocationViewModel(
         }
     }
 
-    fun cancelPendingInit() {
-        if (pendingInitPayload.value == null && _inviteState.value == InviteState.None) return
+    fun cancelPendingInit(handshake: net.af0.where.e2ee.IncomingHandshake) {
         viewModelScope.launch {
-            e2eeStore.clearInvite()
+            e2eeStore.deletePendingInvite(handshake.discoveryTokenHex)
+            val current = locationSource.incomingHandshakes.value
+            locationSource.onIncomingHandshakesUpdated(current.filter { it.discoveryTokenHex != handshake.discoveryTokenHex })
         }
-        locationSource.onPendingInit(null)
-        locationSource.resetRapidPoll()
-        _inviteState.value = InviteState.None
     }
 
     private fun updateStatus(e: Throwable?) {

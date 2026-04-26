@@ -92,8 +92,7 @@ class MainActivity : ComponentActivity() {
                 val isSharing by viewModel.isSharingLocation.collectAsState()
                 val inviteState by viewModel.inviteState.collectAsState()
                 val pendingQrForNaming by viewModel.pendingQrForNaming.collectAsState()
-                val pendingInitPayload by viewModel.pendingInitPayload.collectAsState()
-                val multipleScansDetected by viewModel.multipleScansDetected.collectAsState()
+                val incomingHandshakes by viewModel.incomingHandshakes.collectAsState()
                 val isExchanging by viewModel.isExchanging.collectAsState()
                 val connectionStatus by viewModel.connectionStatus.collectAsState()
 
@@ -271,15 +270,16 @@ class MainActivity : ComponentActivity() {
                     )
                 }
 
-                pendingInitPayload?.let { payload ->
+                incomingHandshakes.firstOrNull()?.let { handshake ->
+                    val payload = handshake.payload
                     var name by remember(payload) { mutableStateOf(payload.suggestedName) }
                     AlertDialog(
-                        onDismissRequest = { viewModel.cancelPendingInit() },
+                        onDismissRequest = { viewModel.cancelPendingInit(handshake) },
                         title = { Text(stringResource(MR.strings.name_this_contact)) },
                         text = {
                             Column {
                                 Text(stringResource(MR.strings.new_friend_scanned_qr))
-                                if (multipleScansDetected) {
+                                if (handshake.multipleScansDetected) {
                                     Spacer(Modifier.height(8.dp))
                                     Text(
                                         stringResource(MR.strings.multiple_scans_detected_warning),
@@ -298,12 +298,12 @@ class MainActivity : ComponentActivity() {
                         },
                         confirmButton = {
                             val friendDefault = stringResource(MR.strings.friend)
-                            TextButton(onClick = { viewModel.confirmPendingInit(name.ifEmpty { friendDefault }) }) {
+                            TextButton(onClick = { viewModel.confirmPendingInit(handshake, name.ifEmpty { friendDefault }) }) {
                                 Text(stringResource(MR.strings.save))
                             }
                         },
                         dismissButton = {
-                            TextButton(onClick = { viewModel.cancelPendingInit() }) {
+                            TextButton(onClick = { viewModel.cancelPendingInit(handshake) }) {
                                 Text(stringResource(MR.strings.cancel))
                             }
                         },

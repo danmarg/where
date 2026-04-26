@@ -317,7 +317,7 @@ class LocationService : Service() {
         val hasPendingQr = e2eeStore.pendingQrPayload() != null
         // Also check if Bob is on the naming screen.
         val isNaming = locationSource.pendingQrForNaming.value != null
-        return hasPendingQr || locationSource.pendingInitPayload.value != null || recentlyTriggered || isNaming
+        return hasPendingQr || locationSource.incomingHandshakes.value.isNotEmpty() || recentlyTriggered || isNaming
     }
 
     internal suspend fun doPoll() {
@@ -347,25 +347,21 @@ class LocationService : Service() {
     }
 
     private suspend fun pollPendingInvites() {
-        if (locationSource.pendingInitPayload.value != null) return
         try {
             val results = locationClient.pollPendingInvites()
             if (results.isEmpty()) return
-            // For now, we just pick the first one that has a result.
-            // In a future UI we might show a list of people who have accepted.
-            val result = results.first()
-            val initPayload = result.payload
-            Log.d(
-                TAG,
-                "pollPendingInvites: received KeyExchangeInit from ${initPayload.suggestedName} " +
-                    "(multipleScans=${result.multipleScansDetected})",
-            )
+
+            val handshakes = results.map { result ->
+                net.af0.where.e2ee.IncomingHandshake(
+                    payload = result.payload,
+                    multipleScansDetected = result.multipleScansDetected,
+                    discoveryTokenHex = result.discoveryTokenHex
+                )
+            }
+
+            Log.d(TAG, "pollPendingInvites: received ${handshakes.size} handshakes")
             withContext(Dispatchers.Main) {
-                // Attach the discovery token so Alice knows which invite to complete
-                locationSource.onPendingInit(initPayload, result.multipleScansDetected)
-                // We need to pass the discovery token to the viewmodel so it can pass it back to processKeyExchangeInit
-                // For now, we'll use a hack and store it in the repository.
-                LocationRepository.onPendingInitWithToken(initPayload, result.multipleScansDetected, result.discoveryTokenHex)
+                locationSource.onIncomingHandshakesUpdated(handshakes)
                 updateStatus(null)
             }
         } catch (e: CancellationException) {

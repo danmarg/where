@@ -296,6 +296,18 @@ sealed class ConnectionStatus {
     data class Error(val message: StringDesc) : ConnectionStatus()
 }
 
+/**
+ * Alice: An incoming handshake (Bob's KeyExchangeInit) that hasn't been confirmed yet.
+ */
+@Serializable
+data class IncomingHandshake(
+    val payload: KeyExchangeInitPayload,
+    /** True if multiple people (or multiple scans) were detected in the discovery mailbox. */
+    val multipleScansDetected: Boolean,
+    /** The discovery token used to receive this payload. */
+    val discoveryTokenHex: String,
+)
+
 /** Result of Alice polling for a pending invite scan (#176). */
 data class PendingInviteResult(
     val payload: KeyExchangeInitPayload,

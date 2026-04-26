@@ -20,8 +20,6 @@ import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
-import net.af0.where.e2ee.toHex
-import net.af0.where.e2ee.discoveryToken
 import net.af0.where.e2ee.ConnectionStatus
 import net.af0.where.e2ee.E2eeStorage
 import net.af0.where.e2ee.E2eeStore
@@ -44,6 +42,8 @@ import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import net.af0.where.e2ee.toHex
+import net.af0.where.e2ee.discoveryToken
 
 /**
  * TestFakeLocationSource for testing.
@@ -64,14 +64,8 @@ class TestFakeLocationSource : LocationSource {
     private val _isAppInForeground = MutableStateFlow(false)
     override val isAppInForeground: StateFlow<Boolean> = _isAppInForeground.asStateFlow()
 
-    private val _pendingInitPayload = MutableStateFlow<KeyExchangeInitPayload?>(null)
-    override val pendingInitPayload: StateFlow<KeyExchangeInitPayload?> = _pendingInitPayload.asStateFlow()
-
-    private val _pendingInitDiscoveryToken = MutableStateFlow<String?>(null)
-    override val pendingInitDiscoveryToken: StateFlow<String?> = _pendingInitDiscoveryToken.asStateFlow()
-
-    private val _multipleScansDetected = MutableStateFlow(false)
-    override val multipleScansDetected: StateFlow<Boolean> = _multipleScansDetected.asStateFlow()
+    private val _incomingHandshakes = MutableStateFlow<List<net.af0.where.e2ee.IncomingHandshake>>(emptyList())
+    override val incomingHandshakes: StateFlow<List<net.af0.where.e2ee.IncomingHandshake>> = _incomingHandshakes.asStateFlow()
 
     private val _isSharingLocation = MutableStateFlow(false)
     override val isSharingLocation: StateFlow<Boolean> = _isSharingLocation.asStateFlow()
@@ -82,8 +76,8 @@ class TestFakeLocationSource : LocationSource {
     private val _friends = MutableStateFlow<List<FriendEntry>>(emptyList())
     override val friends: StateFlow<List<FriendEntry>> = _friends.asStateFlow()
 
-    private val _pendingInvites = MutableStateFlow<List<net.af0.where.e2ee.PendingInvite>>(emptyList())
-    override val pendingInvites: StateFlow<List<net.af0.where.e2ee.PendingInvite>> = _pendingInvites.asStateFlow()
+    private val _pendingInvites = MutableStateFlow<List<net.af0.where.e2ee.PendingInviteSummary>>(emptyList())
+    override val pendingInvites: StateFlow<List<net.af0.where.e2ee.PendingInviteSummary>> = _pendingInvites.asStateFlow()
 
     private val _lastRapidPollTrigger = MutableStateFlow(0L)
     override val lastRapidPollTrigger: StateFlow<Long> = _lastRapidPollTrigger.asStateFlow()
@@ -134,21 +128,8 @@ class TestFakeLocationSource : LocationSource {
         _isAppInForeground.value = foreground
     }
 
-    override fun onPendingInit(
-        payload: KeyExchangeInitPayload?,
-        multipleScans: Boolean,
-    ) {
-        _pendingInitPayload.value = payload
-        _multipleScansDetected.value = multipleScans
-    }
-
-    override fun onPendingInitWithToken(
-        payload: KeyExchangeInitPayload?,
-        multipleScans: Boolean,
-        discoveryTokenHex: String?,
-    ) {
-        _pendingInitPayload.value = payload
-        _multipleScansDetected.value = multipleScans
+    override fun onIncomingHandshakesUpdated(handshakes: List<net.af0.where.e2ee.IncomingHandshake>) {
+        _incomingHandshakes.value = handshakes
     }
 
     override fun setSharingLocation(sharing: Boolean) {
@@ -163,7 +144,7 @@ class TestFakeLocationSource : LocationSource {
         _friends.value = friendsList
     }
 
-    override fun onPendingInvitesUpdated(invites: List<net.af0.where.e2ee.PendingInvite>) {
+    override fun onPendingInvitesUpdated(invites: List<net.af0.where.e2ee.PendingInviteSummary>) {
         _pendingInvites.value = invites
     }
 
@@ -295,20 +276,20 @@ class LocationViewModelTest {
                 )
 
             // Bob's response arriving at the repository
-            fakeLocationSource.onPendingInitWithToken(initPayload, false, qr.discoveryToken().toHex())
+            fakeLocationSource.onIncomingHandshakesUpdated(listOf(net.af0.where.e2ee.IncomingHandshake(initPayload, false, qr.discoveryToken().toHex())))
             advanceUntilIdle()
 
             // After peer joins, inviteState transitions to None to dismiss QR sheet
             assertTrue(vm.inviteState.value is InviteState.None)
-            assertEquals("Bob", vm.pendingInitPayload.value?.suggestedName)
+            assertEquals("Bob", vm.incomingHandshakes.value.firstOrNull()?.payload?.suggestedName)
 
             io.mockk.coEvery { store.processKeyExchangeInit(any(), any(), any()) } returns mockk(relaxed = true)
 
             // 3. Alice cancels naming Bob
-            vm.cancelPendingInit()
+            vm.cancelPendingInit(vm.incomingHandshakes.value.first())
             advanceUntilIdle()
 
-            assertNull(vm.pendingInitPayload.value)
+            assertNull(vm.incomingHandshakes.value.firstOrNull()?.payload)
             assertTrue(vm.inviteState.value is InviteState.None)
             assertNull(store.pendingQrPayload(), "Store should be cleared when Alice cancels")
         }
@@ -371,17 +352,17 @@ class LocationViewModelTest {
                 )
 
             // 1. Peer joins Alice's mailbox
-            source.onPendingInit(initPayload)
+            source.onIncomingHandshakesUpdated(listOf(net.af0.where.e2ee.IncomingHandshake(initPayload, false, "token")))
             advanceUntilIdle()
 
-            assertEquals(initPayload, vm.pendingInitPayload.value)
+            assertEquals(initPayload, vm.incomingHandshakes.value.firstOrNull()?.payload)
 
             // 2. Alice confirms Bob's name
-            vm.confirmPendingInit("Bob (Friend)")
+            vm.confirmPendingInit(vm.incomingHandshakes.value.first(), "Bob (Friend)")
             advanceUntilIdle()
 
             io.mockk.coVerify { store.processKeyExchangeInit(initPayload, "Bob (Friend)", any()) }
-            assertNull(vm.pendingInitPayload.value)
+            assertNull(vm.incomingHandshakes.value.firstOrNull()?.payload)
         }
 
     @Test
@@ -410,17 +391,17 @@ class LocationViewModelTest {
                 )
 
             // 1. Peer joins Alice's mailbox
-            source.onPendingInit(initPayload)
+            source.onIncomingHandshakesUpdated(listOf(net.af0.where.e2ee.IncomingHandshake(initPayload, false, "token")))
             advanceUntilIdle()
 
-            assertEquals(initPayload, vm.pendingInitPayload.value)
+            assertEquals(initPayload, vm.incomingHandshakes.value.firstOrNull()?.payload)
 
             // 2. Alice cancels
-            vm.cancelPendingInit()
+            vm.cancelPendingInit(vm.incomingHandshakes.value.first())
             advanceUntilIdle()
 
-            io.mockk.coVerify { store.clearInvite() }
-            assertNull(vm.pendingInitPayload.value)
+            io.mockk.coVerify { store.deletePendingInvite(any()) }
+            assertNull(vm.incomingHandshakes.value.firstOrNull()?.payload)
         }
 
     @Test

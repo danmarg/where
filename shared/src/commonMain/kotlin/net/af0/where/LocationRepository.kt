@@ -24,13 +24,11 @@ interface LocationSource {
     val friendLastPing: StateFlow<Map<String, Long>>
     val connectionStatus: StateFlow<ConnectionStatus>
     val isAppInForeground: StateFlow<Boolean>
-    val pendingInitPayload: StateFlow<KeyExchangeInitPayload?>
-    val pendingInitDiscoveryToken: StateFlow<String?>
-    val multipleScansDetected: StateFlow<Boolean>
+    val incomingHandshakes: StateFlow<List<net.af0.where.e2ee.IncomingHandshake>>
     val isSharingLocation: StateFlow<Boolean>
     val pausedFriendIds: StateFlow<Set<String>>
     val friends: StateFlow<List<FriendEntry>>
-    val pendingInvites: StateFlow<List<PendingInvite>>
+    val pendingInvites: StateFlow<List<net.af0.where.e2ee.PendingInviteSummary>>
     val lastRapidPollTrigger: StateFlow<Long>
     val pendingQrForNaming: StateFlow<QrPayload?>
 
@@ -56,16 +54,7 @@ interface LocationSource {
 
     fun setAppForeground(foreground: Boolean)
 
-    fun onPendingInit(
-        payload: KeyExchangeInitPayload?,
-        multipleScans: Boolean = false,
-    )
-
-    fun onPendingInitWithToken(
-        payload: KeyExchangeInitPayload?,
-        multipleScans: Boolean = false,
-        discoveryTokenHex: String? = null,
-    )
+    fun onIncomingHandshakesUpdated(handshakes: List<net.af0.where.e2ee.IncomingHandshake>)
 
     fun setSharingLocation(sharing: Boolean)
 
@@ -78,7 +67,7 @@ interface LocationSource {
 
     fun onFriendsUpdated(friends: List<FriendEntry>)
 
-    fun onPendingInvitesUpdated(invites: List<PendingInvite>)
+    fun onPendingInvitesUpdated(invites: List<net.af0.where.e2ee.PendingInviteSummary>)
 
     fun onPendingQrForNaming(qr: QrPayload?)
 
@@ -115,14 +104,8 @@ object LocationRepository : LocationSource {
     private val _isAppInForeground = MutableStateFlow(false)
     override val isAppInForeground: StateFlow<Boolean> = _isAppInForeground.asStateFlow()
 
-    internal val _pendingInitPayload = MutableStateFlow<KeyExchangeInitPayload?>(null)
-    override val pendingInitPayload: StateFlow<KeyExchangeInitPayload?> = _pendingInitPayload.asStateFlow()
-
-    private val _pendingInitDiscoveryToken = MutableStateFlow<String?>(null)
-    override val pendingInitDiscoveryToken: StateFlow<String?> = _pendingInitDiscoveryToken.asStateFlow()
-
-    private val _multipleScansDetected = MutableStateFlow(false)
-    override val multipleScansDetected: StateFlow<Boolean> = _multipleScansDetected.asStateFlow()
+    private val _incomingHandshakes = MutableStateFlow<List<net.af0.where.e2ee.IncomingHandshake>>(emptyList())
+    override val incomingHandshakes: StateFlow<List<net.af0.where.e2ee.IncomingHandshake>> = _incomingHandshakes.asStateFlow()
 
     private val _isSharingLocation = MutableStateFlow(false)
     override val isSharingLocation: StateFlow<Boolean> = _isSharingLocation.asStateFlow()
@@ -133,8 +116,8 @@ object LocationRepository : LocationSource {
     private val _friends = MutableStateFlow<List<FriendEntry>>(emptyList())
     override val friends: StateFlow<List<FriendEntry>> = _friends.asStateFlow()
 
-    private val _pendingInvites = MutableStateFlow<List<PendingInvite>>(emptyList())
-    override val pendingInvites: StateFlow<List<PendingInvite>> = _pendingInvites.asStateFlow()
+    private val _pendingInvites = MutableStateFlow<List<net.af0.where.e2ee.PendingInviteSummary>>(emptyList())
+    override val pendingInvites: StateFlow<List<net.af0.where.e2ee.PendingInviteSummary>> = _pendingInvites.asStateFlow()
 
     private val awaitingFirstUpdateIds = mutableSetOf<String>()
 
@@ -201,22 +184,8 @@ object LocationRepository : LocationSource {
         _isAppInForeground.value = foreground
     }
 
-    override fun onPendingInit(
-        payload: KeyExchangeInitPayload?,
-        multipleScans: Boolean,
-    ) {
-        _pendingInitPayload.value = payload
-        _multipleScansDetected.value = multipleScans
-    }
-
-    override fun onPendingInitWithToken(
-        payload: KeyExchangeInitPayload?,
-        multipleScans: Boolean,
-        discoveryTokenHex: String?,
-    ) {
-        _pendingInitPayload.value = payload
-        _multipleScansDetected.value = multipleScans
-        _pendingInitDiscoveryToken.value = discoveryTokenHex
+    override fun onIncomingHandshakesUpdated(handshakes: List<net.af0.where.e2ee.IncomingHandshake>) {
+        _incomingHandshakes.value = handshakes
     }
 
     /** Called by ViewModel to notify Bob scanned a QR and is naming the friend. */
@@ -249,7 +218,7 @@ object LocationRepository : LocationSource {
         _friends.value = friends
     }
 
-    override fun onPendingInvitesUpdated(invites: List<PendingInvite>) {
+    override fun onPendingInvitesUpdated(invites: List<net.af0.where.e2ee.PendingInviteSummary>) {
         _pendingInvites.value = invites
     }
 
@@ -292,8 +261,7 @@ object LocationRepository : LocationSource {
         _friendLastPing.value = emptyMap()
         _connectionStatus.value = ConnectionStatus.Ok
         _isAppInForeground.value = false
-        _pendingInitPayload.value = null
-        _multipleScansDetected.value = false
+        _incomingHandshakes.value = emptyList()
         _isSharingLocation.value = false
         _pausedFriendIds.value = emptySet()
         _friends.value = emptyList()

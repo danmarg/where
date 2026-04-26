@@ -44,6 +44,7 @@ data class FriendEntry(
     val lastLng: Double? = null,
     val lastTs: Long? = null,
     val lastRecvTs: Long = currentTimeSeconds(),
+    val createdAt: Long = currentTimeSeconds(),
     /**
      * True if the key exchange handshake is fully confirmed (both sides derived SK).
      * Alice is confirmed as soon as she processes KeyExchangeInit; Bob is confirmed
@@ -118,10 +119,18 @@ private fun Map<Int, ByteArray>.contentEquals(other: Map<Int, ByteArray>): Boole
  * StrongBox-backed EncryptedSharedPreferences on Android).
  */
 @Serializable
-data class PendingInvite(
+internal data class PendingInvite(
     val qrPayload: QrPayload,
     @Serializable(with = ByteArrayBase64Serializer::class) val aliceEkPriv: ByteArray,
     val createdAt: Long = currentTimeSeconds(),
+)
+
+/** Public summary of a pending invite for UI display. */
+@Serializable
+data class PendingInviteSummary(
+    val discoveryTokenHex: String,
+    val createdAt: Long,
+    val suggestedName: String,
 )
 
 class E2eeStore(
@@ -129,6 +138,7 @@ class E2eeStore(
 ) {
     private var friends = mutableMapOf<String, FriendEntry>()
     private var pendingInvites = mutableMapOf<String, PendingInvite>()
+    private var activeInviteToken: String? = null
 
     // Mutex to serialize all access to friends and pendingInvites.
     // This prevents TOCTOU races where a key rotation and outgoing message
@@ -158,6 +168,7 @@ class E2eeStore(
                             lastLng = s.lastLng,
                             lastTs = s.lastTs,
                             lastRecvTs = if (s.lastRecvTs == 0L) currentTimeSeconds() else s.lastRecvTs,
+                            createdAt = if (s.createdAt == 0L) currentTimeSeconds() else s.createdAt,
                             isConfirmed = s.isConfirmed,
                             lastSentTs = s.lastSentTs,
                             sharingEnabled = s.sharingEnabled,
@@ -169,6 +180,7 @@ class E2eeStore(
                 (serialized.pendingInvites + listOfNotNull(serialized.pendingInvite)).associateBy {
                     it.qrPayload.discoveryToken().toHex()
                 }.toMutableMap()
+            activeInviteToken = serialized.activeInviteToken ?: pendingInvites.keys.lastOrNull()
         } catch (e: Exception) {
             println("[E2eeStore] Error loading state: ${e.message}")
             e.printStackTrace()
@@ -192,6 +204,7 @@ class E2eeStore(
                             lastLng = f.lastLng,
                             lastTs = f.lastTs,
                             lastRecvTs = f.lastRecvTs,
+                            createdAt = f.createdAt,
                             isConfirmed = f.isConfirmed,
                             lastSentTs = f.lastSentTs,
                             sharingEnabled = f.sharingEnabled,
@@ -199,18 +212,28 @@ class E2eeStore(
                         )
                     },
                 pendingInvites = pendingInvites.values.toList(),
+                activeInviteToken = activeInviteToken,
             )
         storage.putString(STORAGE_KEY, json.encodeToString(serialized))
     }
 
     /** The QR payload currently being displayed, or null if no invite is active. */
-    suspend fun pendingQrPayload(): QrPayload? = stateLock.withLock { pendingInvites.values.lastOrNull()?.qrPayload }
+    suspend fun pendingQrPayload(): QrPayload? = stateLock.withLock { pendingInvites[activeInviteToken]?.qrPayload }
 
-    /** Alice: List all pending invites. */
-    suspend fun listPendingInvites(): List<PendingInvite> = stateLock.withLock { pendingInvites.values.toList() }
+    /** Alice: List all pending invites as summaries. */
+    suspend fun listPendingInvites(): List<PendingInviteSummary> =
+        stateLock.withLock {
+            pendingInvites.values.map {
+                PendingInviteSummary(
+                    discoveryTokenHex = it.qrPayload.discoveryToken().toHex(),
+                    createdAt = it.createdAt,
+                    suggestedName = it.qrPayload.suggestedName,
+                )
+            }
+        }
 
     /** Alice: Get a specific pending invite by its discovery token. */
-    suspend fun getPendingInvite(discoveryTokenHex: String): PendingInvite? = stateLock.withLock { pendingInvites[discoveryTokenHex] }
+    internal suspend fun getPendingInvite(discoveryTokenHex: String): PendingInvite? = stateLock.withLock { pendingInvites[discoveryTokenHex] }
 
     /**
      * Alice: Create a new invite QR payload and store the ephemeral private key.
@@ -219,7 +242,9 @@ class E2eeStore(
         stateLock.withLock {
             val (payload, ekPriv) = KeyExchange.aliceCreateQrPayload(suggestedName)
             val pending = PendingInvite(payload, ekPriv)
-            pendingInvites[payload.discoveryToken().toHex()] = pending
+            val token = payload.discoveryToken().toHex()
+            pendingInvites[token] = pending
+            activeInviteToken = token
             save()
             payload
         }
@@ -228,6 +253,9 @@ class E2eeStore(
     suspend fun deletePendingInvite(discoveryTokenHex: String) {
         stateLock.withLock {
             pendingInvites.remove(discoveryTokenHex)
+            if (activeInviteToken == discoveryTokenHex) {
+                activeInviteToken = null
+            }
             save()
         }
     }
@@ -235,8 +263,9 @@ class E2eeStore(
     /** Alice: Discard the current pending invite (e.g. user dismissed the QR screen). */
     suspend fun clearInvite() {
         stateLock.withLock {
-            pendingInvites.values.lastOrNull()?.let {
-                pendingInvites.remove(it.qrPayload.discoveryToken().toHex())
+            activeInviteToken?.let { token ->
+                pendingInvites.remove(token)
+                activeInviteToken = null
                 save()
             }
         }
@@ -635,6 +664,7 @@ internal data class SerializedFriendEntry(
     val lastLng: Double? = null,
     val lastTs: Long? = null,
     val lastRecvTs: Long = 0L,
+    val createdAt: Long = 0L,
     val isConfirmed: Boolean = false,
     val lastSentTs: Long = 0L,
     val sharingEnabled: Boolean = true,
@@ -646,4 +676,5 @@ internal data class SerializedStore(
     val friends: List<SerializedFriendEntry>,
     val pendingInvite: PendingInvite? = null,
     val pendingInvites: List<PendingInvite> = emptyList(),
+    val activeInviteToken: String? = null,
 )
