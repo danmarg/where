@@ -371,8 +371,15 @@ final class LocationSyncService: ObservableObject {
 
     func clearInvite(ekPub: Data? = nil) async {
         do {
-            if let ekPub = ekPub {
-                try await e2eeStore.clearInvite(ekPub: kotlinByteArray(from: ekPub))
+            let ekPubToClear = ekPub ?? pendingInitAliceEkPub
+            if let ekPubToClear = ekPubToClear {
+                try await e2eeStore.clearInvite(ekPub: kotlinByteArray(from: ekPubToClear))
+            } else if inviteState is Shared.InviteState.Pending {
+                // If we are currently showing a QR but no one has scanned it yet,
+                // clear that specific one.
+                if let qr = (inviteState as? Shared.InviteState.Pending)?.qr {
+                    try await e2eeStore.clearInvite(ekPub: qr.ekPub)
+                }
             }
             pendingInvites = try await e2eeStore.listPendingInvites()
         } catch {
