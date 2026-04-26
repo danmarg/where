@@ -140,6 +140,7 @@ final class LocationSyncService: ObservableObject {
         Task { @MainActor in
             do {
                 self.friends = try await store.listFriends()
+                self.pendingInvites = try await store.listPendingInvites()
                 var initialLocations: [String: (lat: Double, lng: Double, ts: Int64)] = [:]
                 var initialLastPing: [String: Date] = [:]
                 for friend in self.friends {
@@ -266,8 +267,7 @@ final class LocationSyncService: ObservableObject {
     @MainActor
     func isRapidPolling() -> Bool {
         if !awaitingFirstUpdateIds.isEmpty { return true }
-        // Read directly from store to ensure rapid polling triggers even before first UI update
-        if let invites = try? e2eeStore.listPendingInvites(), !invites.isEmpty { return true }
+        if !pendingInvites.isEmpty { return true }
         return Date().timeIntervalSince(lastRapidPollTrigger) < 60.0
     }
 
@@ -368,7 +368,7 @@ final class LocationSyncService: ObservableObject {
         if pendingInitPayload == nil {
             if let result = results.first {
                 pendingInitPayload = result.payload
-                pendingInitAliceEkPub = result.aliceEkPub.toData()
+                pendingInitAliceEkPub = toSwiftData(result.aliceEkPub)
                 multipleScansDetected = result.multipleScansDetected
                 inviteState = Shared.InviteState.None()
                 triggerRapidPoll()
@@ -380,7 +380,7 @@ final class LocationSyncService: ObservableObject {
     func clearInvite(ekPub: Data? = nil) async {
         do {
             if let ekPub = ekPub {
-                try await e2eeStore.clearInvite(ekPub: ekPub.toKotlinByteArray())
+                try await e2eeStore.clearInvite(ekPub: kotlinByteArray(from: ekPub))
             }
             pendingInvites = try await e2eeStore.listPendingInvites()
         } catch {
@@ -475,7 +475,7 @@ final class LocationSyncService: ObservableObject {
 
         defer { isExchanging = false }
         do {
-            let result = try await e2eeStore.processKeyExchangeInit(payload: payload, bobName: name, aliceEkPub: aliceEkPub.toKotlinByteArray())
+            let result = try await e2eeStore.processKeyExchangeInit(payload: payload, bobName: name, aliceEkPub: kotlinByteArray(from: aliceEkPub))
 
             if let entry = result ?? nil {
                 awaitingFirstUpdateIds.insert(entry.id)

@@ -4,11 +4,11 @@ import SwiftUI
 struct FriendsSheet: View {
     @Binding var displayName: String
     let friends: [Shared.FriendEntry]
-    let pendingInvites: [Shared.PendingInvite]
+    let pendingInvites: [Shared.PendingInviteView]
     let pausedFriendIds: Set<String>
     let lastPingTimes: [String: Date]
     let onTogglePause: (String) -> Void
-    let onCancelInvite: (Shared.PendingInvite) -> Void
+    let onCancelInvite: (Shared.PendingInviteView) -> Void
     let onCreateInvite: () -> Void
     let onScanQr: () -> Void
     let onRename: (String, String) -> Void
@@ -52,12 +52,14 @@ struct FriendsSheet: View {
 
                 if !pendingInvites.isEmpty {
                     Section(MR.strings().pending_invites.localized() + " (\(pendingInvites.count))") {
-                        ForEach(pendingInvites, id: \.qrPayload.ekPub.toHex()) { invite in
+                        ForEach(pendingInvites, id: \.qrPayload.fingerprint) { invite in
                             HStack {
                                 VStack(alignment: .leading, spacing: 2) {
                                     Text(invite.qrPayload.suggestedName)
                                         .font(.body)
-                                    Text(MR.strings().invite_sent.localized() + ": " + timeAgoStringFromSeconds(invite.createdAt))
+                                    let inviteSentLabel = MR.strings().invite_sent.localized()
+                                    let timeAgo = timeAgoStringFromSeconds(invite.createdAt)
+                                    Text("\(inviteSentLabel): \(timeAgo)")
                                         .font(.caption)
                                         .foregroundStyle(.secondary)
                                 }
