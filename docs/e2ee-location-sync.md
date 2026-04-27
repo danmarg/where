@@ -322,23 +322,6 @@ If Alice ratchets her DH key from `dh_1` to `dh_2`, Bob may receive `Msg(dh_2, s
 
 This ensures that gaps are filled deterministically even when the metadata needed for gap calculation is hidden behind the AEAD boundary.
 
-### 5.4.1 Receive-Side Crash Safety
-
-The GET → process → DELETE sequence is the receive-side analogue of the send-side transactional outbox:
-
-1. `GET /inbox/{token}` returns messages; the server retains them.
-2. The client decrypts, updates session state, and **durably saves** the new `recvToken` and ratchet state to local storage.
-3. The client calls `DELETE /inbox/{token}?n=<count>` to release the messages from the server.
-
-If the client crashes between steps 1 and 2, it re-fetches the same messages on next startup (server still holds them) and re-processes them from the same prior session state — idempotent and correct. If it crashes between steps 2 and 3, the session is already saved with the new `recvToken`; the leftover messages on the server are never fetched again and expire after TTL.
-
-**What this does NOT fix:** If the server loses a message before the client ever GETs it (e.g., server-side storage corruption), the token-transition message is gone and the session will permanently desync. This is a server reliability problem, not a client atomicity problem. It is qualitatively different from the crash-recovery case: it produces an obvious total communication failure rather than a silent one-sided desync, because the sender will also fail to post subsequent messages during the outage.
-
-**Genuine data loss cases** that still require manual re-pairing:
-- Client-side storage corruption (flash failure, encrypted storage key loss)
-- User-initiated app data deletion or device wipe
-- Session JSON schema migration bug
-
 ### 5.4 Routing Token Rotation and Reliability
 
 Routing tokens are derived from the current root key. Whenever the DH ratchet advances and a new root key is derived, new routing tokens are computed.
@@ -357,9 +340,23 @@ In an anonymous mailbox model, a client polling token `T_old` will never see a m
 **Receiver Policy:**
 A receiver switches their **receive token** immediately upon receiving a message with a new `dh_pub`. Messages are retrieved in arrival order from the server. If an old-epoch message arrives at the server *after* a new-epoch message has been retrieved and processed, the receiver has already switched tokens and the old message will be missed. This is an acceptable tradeoff for protocol simplicity.
 
-### 5.5 Message Key Deletion Policy
+#### 5.4.1 Receive-Side Crash Safety
 
-Forward secrecy is only as strong as the message key deletion discipline:
+The GET → process → DELETE sequence is the receive-side analogue of the send-side transactional outbox:
+
+1. `GET /inbox/{token}` returns messages; the server retains them.
+2. The client decrypts, updates session state, and **durably saves** the new `recvToken` and ratchet state to local storage.
+3. The client calls `DELETE /inbox/{token}?n=<count>` to release the messages from the server.
+
+If the client crashes between steps 1 and 2, it re-fetches the same messages on next startup (server still holds them) and re-processes them from the same prior session state — idempotent and correct. If it crashes between steps 2 and 3, the session is already saved with the new `recvToken`; the leftover messages on the server are never fetched again and expire after TTL.
+
+**What this does NOT fix:** If the server loses a message before the client ever GETs it (e.g., server-side storage corruption), the token-transition message is gone and the session will permanently desync. This is a server reliability problem, not a client atomicity problem. It is qualitatively different from the crash-recovery case: it produces an obvious total communication failure rather than a silent one-sided desync, because the sender will also fail to post subsequent messages during the outage.
+
+**Genuine data loss cases** that still require manual re-pairing:
+- Client-side storage corruption (flash failure, encrypted storage key loss)
+- User-initiated app data deletion or device wipe
+- Session JSON schema migration bug
+
 ### 5.5 Storage and Memory Hygiene
 
 To maximize forward secrecy, implementations should adhere to the following hygiene rules:
@@ -591,9 +588,6 @@ next_chain_key  = HMAC-SHA-256(key = current_chain_key, data = 0x02)
 message_nonce   = HKDF-SHA-256(ikm = message_key, salt = null, info = "Where-v1-MsgNonce", length = 12)
 ```
 The message key is used for AEAD encryption of the payload, and the nonce is derived from it to ensure uniqueness without needing a separate per-message nonce counter in the wire format.
-
-
-```
 
 The `dh_pub` is included in the AAD to cryptographically bind the message to the current DH epoch.
 
