@@ -305,6 +305,7 @@ class E2eeStoreTest {
             assertFailsWith<IllegalStateException> {
                 aliceStore.createInvite("Alice too many")
             }
+            Unit
         }
 
     @Test
@@ -316,8 +317,8 @@ class E2eeStoreTest {
             aliceStore.cleanupExpiredInvites(expirySeconds = 3600)
             assertEquals(1, aliceStore.listPendingInvites().size)
 
-            // Force expiry (now - createdAt >= 0)
-            aliceStore.cleanupExpiredInvites(expirySeconds = 0)
+            // Force expiry: expirySeconds=-1 makes (now - createdAt > -1) always true
+            aliceStore.cleanupExpiredInvites(expirySeconds = -1)
             assertTrue(aliceStore.listPendingInvites().isEmpty())
         }
 }

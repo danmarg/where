@@ -353,4 +353,63 @@ class TokenTransitionTest {
             assertTrue(allUpdates.isNotEmpty(), "Bob should receive Alice's location")
             assertEquals(37.0, allUpdates.first().lat, "Bob should see the correct latitude")
         }
+
+    @Test
+    fun testMultiEpochCatchupRequiresTwoPollCycles() =
+        runTest {
+            // Verifies that messages accumulating at the current and next recvToken are correctly
+            // split across two poll cycles. Poll cycle 1 follows T0→T1 (one token hop), consuming
+            // messages at both tokens. A subsequent message at T1 requires poll cycle 2.
+            //
+            // Session.encryptMessage performs only a symmetric ratchet — sendToken stays constant
+            // within a DH epoch. All 3 messages use Alice's epoch-1 DH key (DH_A1):
+            //   msg1 at T0 (Alice's prevSendToken) → triggers Bob's ratchet T0→T1
+            //   msg2 at T1 (Alice's sendToken)     → same epoch, no ratchet, Bob stays at T1
+            //   msg3 at T1 (added after cycle 1)   → retrieved in poll cycle 2
+            val aliceStore = E2eeStore(MemoryStorage())
+            val bobStore = E2eeStore(MemoryStorage())
+            val fakeMailbox = FakeMailboxClient()
+            val bobClient = LocationClient("http://fake", bobStore, fakeMailbox)
+
+            val qr = aliceStore.createInvite("Alice")
+            val (initPayload, bobEntry) = bobStore.processScannedQr(qr)
+            aliceStore.processKeyExchangeInit(initPayload, "Bob", qr.ekPub)
+            val aliceFriendId = aliceStore.listFriends().first().id
+            val bobFriendId = bobEntry.id
+
+            // T0 = Bob's initial recvToken (= Alice's prevSendToken, the epoch-0 routing address)
+            val t0 = bobStore.getFriend(bobFriendId)!!.session.recvToken.toHex()
+
+            // Encode 3 messages from Alice's epoch-1 session (DH_A1 key throughout)
+            var aliceSess = aliceStore.getFriend(aliceFriendId)!!.session
+            val (sess1, msg1) = Session.encryptMessage(aliceSess, MessagePlaintext.Location(1.0, 0.0, 0.0, 1L))
+            aliceSess = sess1
+            val (sess2, msg2) = Session.encryptMessage(aliceSess, MessagePlaintext.Location(2.0, 0.0, 0.0, 2L))
+            aliceSess = sess2
+            val (_, msg3) = Session.encryptMessage(aliceSess, MessagePlaintext.Location(3.0, 0.0, 0.0, 3L))
+
+            // T1 = Alice's epoch-1 sendToken (= Bob's recvToken after processing any DH_A1 message)
+            val t1 = sess1.sendToken.toHex()
+            assertNotEquals(t0, t1, "T0 and T1 must be distinct routing tokens")
+
+            // Phase 1 mailbox: msg1 at T0 causes ratchet T0→T1; msg2 at T1 stays in same epoch
+            fakeMailbox.polls[t0] = mutableListOf(msg1)
+            fakeMailbox.polls[t1] = mutableListOf(msg2)
+
+            // Poll cycle 1: follows T0→T1 (1 hop), processes msg1 and msg2 in the same call
+            val locs1 = bobClient.pollFriend(bobFriendId)
+            assertEquals(2, locs1.size, "Cycle 1 should yield 2 locations (T0 + T1)")
+            assertEquals(1.0, locs1[0].lat)
+            assertEquals(2.0, locs1[1].lat)
+            assertEquals(t1, bobStore.getFriend(bobFriendId)!!.session.recvToken.toHex(),
+                "Bob's recvToken should be T1 after cycle 1")
+
+            // A third message arrives at T1 (simulating delayed or subsequent delivery)
+            fakeMailbox.polls[t1] = mutableListOf(msg3)
+
+            // Poll cycle 2: Bob starts at T1, retrieves msg3
+            val locs2 = bobClient.pollFriend(bobFriendId)
+            assertEquals(1, locs2.size, "Cycle 2 should yield the remaining 1 location")
+            assertEquals(3.0, locs2[0].lat)
+        }
 }

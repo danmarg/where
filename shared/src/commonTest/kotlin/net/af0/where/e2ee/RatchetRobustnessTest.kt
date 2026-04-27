@@ -170,4 +170,77 @@ class RatchetRobustnessTest {
             assertEquals(prevToken, mailbox.posts[0].second, "Location should be on PREV token")
             assertEquals(aliceFinal.session.sendToken.toHex(), mailbox.posts[1].second, "Keepalive should be on NEW token")
         }
+
+    @Test
+    fun testNeedsRatchetRestartRecovery() =
+        runTest {
+            // 1. Establish session
+            val storage = MemoryStorage()
+            val aliceStore = E2eeStore(storage)
+            val bobStore = E2eeStore(MemoryStorage())
+
+            val qr = aliceStore.createInvite("Alice")
+            val (initPayload, bobEntry) = bobStore.processScannedQr(qr)
+            aliceStore.processKeyExchangeInit(initPayload, "Bob", qr.ekPub)
+
+            val aliceToBobId = aliceStore.listFriends().first().id
+            val bobToAliceId = bobEntry.id
+
+            // 2. Alice sends a keepalive to prime the ratchet (carries DH_A1)
+            val (aState1, aMsg1) = Session.encryptMessage(aliceStore.getFriend(aliceToBobId)!!.session, MessagePlaintext.Keepalive())
+            aliceStore.updateSession(aliceToBobId, aState1)
+            bobStore.processBatch(bobToAliceId, bobStore.getFriend(bobToAliceId)!!.session.recvToken.toHex(), listOf(aMsg1))
+
+            // 3. Bob sends back (carries DH_B1, advancing Bob's epoch)
+            val (bState1, bMsg1) = Session.encryptMessage(bobStore.getFriend(bobToAliceId)!!.session, MessagePlaintext.Keepalive())
+            bobStore.updateSession(bobToAliceId, bState1)
+
+            // 4. Alice receives Bob's message — this sets needsRatchet=true in Alice's session
+            aliceStore.processBatch(aliceToBobId, aliceStore.getFriend(aliceToBobId)!!.session.recvToken.toHex(), listOf(bMsg1))
+            val aliceBeforeRestart = aliceStore.getFriend(aliceToBobId)!!
+            assertTrue(aliceBeforeRestart.session.needsRatchet, "Alice should have needsRatchet=true after receiving Bob's DH key")
+
+            // 5. Simulate restart: create a brand-new E2eeStore from the same storage.
+            //    The persisted state still has needsRatchet=true.
+            val aliceStoreAfterRestart = E2eeStore(storage)
+            val aliceAfterRestart = aliceStoreAfterRestart.getFriend(aliceToBobId)!!
+            assertTrue(aliceAfterRestart.session.needsRatchet, "needsRatchet must survive serialization/restart")
+
+            // 6. Create a tracking mailbox to verify the pre-poll keepalive fires
+            val trackingMailbox =
+                object : MailboxClient {
+                    val posts = mutableListOf<Triple<String, String, MailboxPayload>>()
+
+                    override suspend fun post(
+                        baseUrl: String,
+                        token: String,
+                        payload: MailboxPayload,
+                    ) {
+                        posts.add(Triple(baseUrl, token, payload))
+                    }
+
+                    override suspend fun poll(
+                        baseUrl: String,
+                        token: String,
+                    ): List<MailboxPayload> = emptyList()
+
+                    override suspend fun ack(
+                        baseUrl: String,
+                        token: String,
+                        count: Int,
+                    ) {}
+                }
+            val aliceClientAfterRestart = LocationClient("http://fake", aliceStoreAfterRestart, trackingMailbox)
+
+            // 7. Call poll() — the pre-poll keepalive should fire because needsRatchet=true
+            aliceClientAfterRestart.poll()
+
+            // 8. Verify: keepalive was posted (pre-poll keepalive fired)
+            assertTrue(trackingMailbox.posts.isNotEmpty(), "Pre-poll keepalive must fire on restart when needsRatchet=true")
+
+            // 9. Verify: needsRatchet is now cleared
+            val aliceFinal = aliceStoreAfterRestart.getFriend(aliceToBobId)!!
+            assertFalse(aliceFinal.session.needsRatchet, "needsRatchet should be cleared after pre-poll keepalive")
+            assertFalse(aliceFinal.session.isSendTokenPending, "isSendTokenPending should be cleared after keepalive")
+        }
 }

@@ -14,6 +14,12 @@ private val qrJson =
         encodeDefaults = true
     }
 
+enum class RatchetPhase {
+    STABLE, // isSendTokenPending=false, needsRatchet=false — normal operating state
+    PENDING_SEND, // isSendTokenPending=true — DH ratchet advanced, awaiting first new-epoch post
+    NEEDS_KEEPALIVE, // needsRatchet=true — received new remoteDhPub, must send keepalive before next poll
+}
+
 /**
  * Raw X25519 keypair. Both fields are 32-byte little-endian representations
  * as defined by RFC 7748.
@@ -149,6 +155,27 @@ data class SessionState(
         h = 31 * h + sendHeaderKey.contentHashCode()
         h = 31 * h + nextHeaderKey.contentHashCode()
         return h
+    }
+}
+
+fun SessionState.phase(): RatchetPhase =
+    when {
+        needsRatchet -> RatchetPhase.NEEDS_KEEPALIVE
+        isSendTokenPending -> RatchetPhase.PENDING_SEND
+        else -> RatchetPhase.STABLE
+    }
+
+fun SessionState.assertInvariants() {
+    check(skippedMessageKeys.size <= MAX_SKIPPED_KEYS) {
+        "skippedMessageKeys overflow: ${skippedMessageKeys.size} > $MAX_SKIPPED_KEYS"
+    }
+    check(seenRemoteDhPubs.size <= MAX_SEEN_DH_PUBS) {
+        "seenRemoteDhPubs overflow: ${seenRemoteDhPubs.size} > $MAX_SEEN_DH_PUBS"
+    }
+    if (isSendTokenPending) {
+        check(!prevSendToken.contentEquals(sendToken) || sendSeq == 0L) {
+            "isSendTokenPending=true but sendToken==prevSendToken and sendSeq>0 — impossible after real DH ratchet"
+        }
     }
 }
 

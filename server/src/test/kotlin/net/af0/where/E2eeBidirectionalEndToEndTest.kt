@@ -818,6 +818,141 @@ class E2eeBidirectionalEndToEndTest {
         }
     }
 
+    @Test
+    fun `finalizeTokenTransition keepalive failure recovers on next poll`() {
+        initializeLibsodium()
+
+        val port = 18085
+        val baseUrl = "http://localhost:$port"
+        val server = embeddedServer(Netty, port = port) { module(ServerState()) }
+        server.start(wait = false)
+        try {
+            runBlocking { runFinalizeTransitionRecoveryViaPollTest(baseUrl) }
+        } finally {
+            server.stop(gracePeriodMillis = 0, timeoutMillis = 0)
+        }
+    }
+
+    private suspend fun runFinalizeTransitionRecoveryViaPollTest(baseUrl: String) {
+        coroutineScope {
+            val aStorage = MemoryE2eeStorage()
+            val bStorage = MemoryE2eeStorage()
+            val aStore = E2eeStore(aStorage)
+            val bStore = E2eeStore(bStorage)
+            val aClient = LocationClient(baseUrl, aStore)
+            val bClient = LocationClient(baseUrl, bStore)
+
+            println("\n══ FINALIZE-TRANSITION KEEPALIVE FAILURE RECOVERY VIA POLL TEST ══")
+
+            // Pair and initial flush (same pattern as runFinalizeTransitionFailureTest)
+            val qr = aStore.createInvite("A")
+            val (init, _) = bStore.processScannedQr(qr, "B")
+            KtorMailboxClient.post(baseUrl, qr.discoveryToken().toHex(), init)
+            val aEntry =
+                aStore.processKeyExchangeInit(
+                    KtorMailboxClient.poll(baseUrl, qr.discoveryToken().toHex())
+                        .filterIsInstance<KeyExchangeInitPayload>().first(),
+                    "B",
+                    qr.ekPub,
+                )!!
+            val friendId = aEntry.id
+
+            aClient.sendLocation(0.0, 0.0)
+            var quiet = 0
+            while (quiet < 3) {
+                val aLen = aClient.poll().size
+                val bLen = bClient.poll().size
+                val pending =
+                    aStore.listFriends().any { it.outbox != null } ||
+                        bStore.listFriends().any { it.outbox != null }
+                if (aLen == 0 && bLen == 0 && !pending) quiet++ else quiet = 0
+                delay(50)
+            }
+            println("Initial flush complete")
+
+            // B sends a location; A polls to receive it, triggering A's send-token ratchet
+            bClient.sendLocation(10.0, 20.0)
+            delay(200)
+            aClient.poll()
+            delay(100)
+
+            val aSessionMid = aStore.getFriend(friendId)!!.session
+            val tokenToFail = aSessionMid.sendToken.toHex()
+            println("Will permanently fail POSTs to ${tokenToFail.take(8)}... (A's new sendToken)")
+
+            // Failing client: drops all POSTs to A's new sendToken
+            val failingMailboxClient =
+                object : MailboxClient {
+                    override suspend fun post(
+                        baseUrl: String,
+                        token: String,
+                        payload: MailboxPayload,
+                    ) {
+                        if (token == tokenToFail) {
+                            throw RuntimeException("Injected: POST failure for A's new sendToken")
+                        }
+                        KtorMailboxClient.post(baseUrl, token, payload)
+                    }
+
+                    override suspend fun poll(
+                        baseUrl: String,
+                        token: String,
+                    ): List<MailboxPayload> = KtorMailboxClient.poll(baseUrl, token)
+
+                    override suspend fun ack(
+                        baseUrl: String,
+                        token: String,
+                        count: Int,
+                    ) = KtorMailboxClient.ack(baseUrl, token, count)
+                }
+            val aClientFailing = LocationClient(baseUrl, aStore, failingMailboxClient)
+
+            // A sends a location — main POST succeeds (to prevSendToken), keepalive fails (to tokenToFail)
+            runCatching { aClientFailing.sendLocation(40.0, 50.0) }
+
+            val aSessionAfterFailure = aStore.getFriend(friendId)!!.session
+            assertFalse(
+                aSessionAfterFailure.isSendTokenPending,
+                "isSendTokenPending must be false after finalizeTokenTransition clears it",
+            )
+            assertNotNull(
+                aStore.getFriend(friendId)!!.outbox,
+                "Failed keepalive must be in outbox",
+            )
+            println("✓ isSendTokenPending=false, failed keepalive in outbox")
+
+            // KEY DIFFERENCE FROM EXISTING TEST: instead of sendLocation, we just poll.
+            // poll() calls processOutboxes() which retries the keepalive from the outbox.
+            // We switch back to the normal client for the recovery poll.
+            delay(200)
+            aClient.poll()
+            delay(100)
+
+            // Outbox must be cleared by processOutboxes
+            assertNull(
+                aStore.getFriend(friendId)!!.outbox,
+                "Outbox must be cleared after poll() drains it via processOutboxes",
+            )
+            println("✓ Outbox cleared by poll() → processOutboxes()")
+
+            // Verify channel is still functional: A sends a location, B receives it
+            val pingLat = 77.7
+            aClient.sendLocation(pingLat, 0.0)
+            delay(400)
+            var bFinal = bClient.poll()
+            if (bFinal.none { it.userId == friendId && Math.abs(it.lat - pingLat) < 0.001 }) {
+                delay(300)
+                bFinal = bFinal + bClient.poll()
+            }
+            assertNotNull(
+                bFinal.firstOrNull { it.userId == friendId && Math.abs(it.lat - pingLat) < 0.001 },
+                "B must receive A's location — channel must be functional after poll-only recovery",
+            )
+            println("✓ Channel functional after poll-only recovery")
+            println("══ FINALIZE-TRANSITION RECOVERY VIA POLL TEST PASSED ══")
+        }
+    }
+
     private class MemoryE2eeStorage : E2eeStorage {
         private val data = mutableMapOf<String, String>()
 
