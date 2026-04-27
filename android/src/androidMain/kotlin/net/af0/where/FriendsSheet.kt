@@ -107,44 +107,6 @@ fun FriendsSheet(
                 modifier = Modifier.fillMaxWidth().weight(1f, fill = false),
                 verticalArrangement = Arrangement.spacedBy(4.dp),
             ) {
-                if (pendingInvites.isNotEmpty()) {
-                    item {
-                        Text(
-                            stringResource(MR.strings.pending_invites) + " (${pendingInvites.size})",
-                            style = MaterialTheme.typography.labelMedium,
-                            modifier = Modifier.padding(bottom = 4.dp),
-                        )
-                    }
-                    items(pendingInvites, key = { "pending_${it.qrPayload.fingerprint}" }) { invite ->
-                        Row(
-                            modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        ) {
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text(
-                                    invite.qrPayload.suggestedName,
-                                    style = MaterialTheme.typography.bodyLarge,
-                                    maxLines = 1,
-                                    overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
-                                )
-                                Text(
-                                    stringResource(MR.strings.invite_sent) + ": " + timeAgoStringFromSeconds(invite.createdAt),
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                )
-                            }
-                            IconButton(onClick = { onCancelInvite(invite.qrPayload.ekPub) }) {
-                                Icon(
-                                    Icons.Default.Delete,
-                                    contentDescription = stringResource(MR.strings.cancel),
-                                    tint = MaterialTheme.colorScheme.error,
-                                )
-                            }
-                        }
-                    }
-                }
-
                 if (friends.isNotEmpty()) {
                     item {
                         Text(

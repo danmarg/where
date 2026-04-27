@@ -33,6 +33,7 @@ interface LocationSource {
     val allPendingInvites: StateFlow<List<PendingInviteView>>
     val lastRapidPollTrigger: StateFlow<Long>
     val pendingQrForNaming: StateFlow<QrPayload?>
+    val isInviteSheetShowing: StateFlow<Boolean>
 
     /** Wait for a poll wake signal (either interval timeout or immediate trigger). */
     suspend fun awaitPollWake(timeoutMillis: Long)
@@ -82,6 +83,8 @@ interface LocationSource {
     fun triggerRapidPoll()
 
     fun resetRapidPoll()
+
+    fun setInviteSheetShowing(showing: Boolean)
 
     fun markAwaitingFirstUpdate(friendId: String)
 
@@ -135,6 +138,9 @@ object LocationRepository : LocationSource {
 
     private val _pendingQrForNaming = MutableStateFlow<QrPayload?>(null)
     override val pendingQrForNaming: StateFlow<QrPayload?> = _pendingQrForNaming.asStateFlow()
+
+    private val _isInviteSheetShowing = MutableStateFlow(false)
+    override val isInviteSheetShowing: StateFlow<Boolean> = _isInviteSheetShowing.asStateFlow()
 
     private val pollWakeSignal = Channel<Unit>(Channel.CONFLATED)
 
@@ -250,6 +256,13 @@ object LocationRepository : LocationSource {
         awaitingFirstUpdateIds.clear()
     }
 
+    override fun setInviteSheetShowing(showing: Boolean) {
+        _isInviteSheetShowing.value = showing
+        if (showing) {
+            triggerRapidPoll()
+        }
+    }
+
     override fun markAwaitingFirstUpdate(friendId: String) {
         awaitingFirstUpdateIds.add(friendId)
     }
@@ -286,6 +299,7 @@ object LocationRepository : LocationSource {
         _pausedFriendIds.value = emptySet()
         _friends.value = emptyList()
         _allPendingInvites.value = emptyList()
+        _isInviteSheetShowing.value = false
         _lastRapidPollTrigger.value = 0L
         while (pollWakeSignal.tryReceive().isSuccess) { /* drain */ }
     }

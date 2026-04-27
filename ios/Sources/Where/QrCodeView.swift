@@ -47,6 +47,7 @@ struct InviteSheet: View {
     let qrPayload: Shared.QrPayload
     @Binding var displayName: String
     let onDismiss: () -> Void
+    let onExported: () -> Void
 
     @State private var showShareSheet = false
     @State private var cachedQrUrl: String = ""
@@ -90,16 +91,23 @@ struct InviteSheet: View {
             cachedQrUrl = newValue.toUrl()
         }
         .sheet(isPresented: $showShareSheet) {
-            ShareSheet(items: [cachedQrUrl])
+            ShareSheet(items: [cachedQrUrl]) { _, success, _, _ in
+                if success {
+                    onExported()
+                }
+            }
         }
     }
 }
 
 private struct ShareSheet: UIViewControllerRepresentable {
     let items: [Any]
+    let completion: UIActivityViewController.CompletionWithItemsHandler?
 
     func makeUIViewController(context: Context) -> UIActivityViewController {
-        UIActivityViewController(activityItems: items, applicationActivities: nil)
+        let controller = UIActivityViewController(activityItems: items, applicationActivities: nil)
+        controller.completionWithItemsHandler = completion
+        return controller
     }
 
     func updateUIViewController(_ uiViewController: UIActivityViewController, context: Context) {}

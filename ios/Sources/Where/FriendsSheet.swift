@@ -50,33 +50,6 @@ struct FriendsSheet: View {
                     }
                 }
 
-                if !pendingInvites.isEmpty {
-                    Section(MR.strings().pending_invites.localized() + " (\(pendingInvites.count))") {
-                        ForEach(pendingInvites, id: \.qrPayload.fingerprint) { invite in
-                            HStack {
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text(invite.qrPayload.suggestedName)
-                                        .font(.body)
-                                    let inviteSentLabel = MR.strings().invite_sent.localized()
-                                    let timeAgo = timeAgoStringFromSeconds(invite.createdAt)
-                                    Text("\(inviteSentLabel): \(timeAgo)")
-                                        .font(.caption)
-                                        .foregroundStyle(.secondary)
-                                }
-                                Spacer()
-                                Button {
-                                    onCancelInvite(invite)
-                                } label: {
-                                    Image(systemName: "trash")
-                                        .font(.title3)
-                                        .foregroundStyle(.red)
-                                }
-                                .buttonStyle(.plain)
-                            }
-                        }
-                    }
-                }
-
                 if !friends.isEmpty {
                     Section(MR.strings().friends.localized() + " (\(friends.count))") {
                         ForEach(friends, id: \.id) { friend in

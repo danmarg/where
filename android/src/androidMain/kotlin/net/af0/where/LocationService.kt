@@ -317,20 +317,26 @@ class LocationService : Service() {
 
     @VisibleForTesting
     internal suspend fun isRapidPolling(): Boolean {
-        // We consider it rapid if an invite is pending, or we're in key exchange.
-        // The ViewModel triggers this via LocationRepository.triggerRapidPoll().
-        // For simplicity, we also rapid-poll if there's a pending init payload.
+        // We consider it rapid if the share sheet is open, or we're in key exchange naming.
         val now = clock()
-        val recentlyTriggered = now - locationSource.lastRapidPollTrigger.value < 5 * 60_000L
-        val hasPendingInvites = e2eeStore.listPendingInvites().isNotEmpty()
+        val recentlyTriggered = now - locationSource.lastRapidPollTrigger.value < 60_000L
+        val isSheetShowing = locationSource.isInviteSheetShowing.value
         // Also check if Bob is on the naming screen.
         val isNaming = locationSource.pendingQrForNaming.value != null
-        return hasPendingInvites || locationSource.pendingInitPayload.value != null || recentlyTriggered || isNaming
+        return isSheetShowing || locationSource.pendingInitPayload.value != null || recentlyTriggered || isNaming
     }
+
+    @VisibleForTesting
+    internal var lastCleanupTime: Long = 0L
 
     internal suspend fun doPoll() {
         try {
             Log.d(TAG, "Polling for location updates")
+            val now = clock()
+            if (now - lastCleanupTime > 3600_000L) {
+                e2eeStore.cleanupExpiredInvites(48 * 3600L)
+                lastCleanupTime = now
+            }
             val updates =
                 locationClient.poll(
                     isForeground = locationSource.isAppInForeground.value,

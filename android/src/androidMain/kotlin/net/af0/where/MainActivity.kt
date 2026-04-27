@@ -40,6 +40,29 @@ import net.af0.where.shared.MR
 class MainActivity : ComponentActivity() {
     private val viewModel: LocationViewModel by viewModels { LocationViewModel.Factory }
 
+    private val shareReceiver = object : android.content.BroadcastReceiver() {
+        override fun onReceive(context: android.content.Context, intent: android.content.Intent) {
+            val ekPub = intent.getByteArrayExtra("ekPub") ?: return
+            viewModel.markInviteExported(ekPub)
+        }
+    }
+
+    override fun onStart() {
+        super.onStart()
+        val filter = android.content.IntentFilter("net.af0.where.ACTION_INVITE_EXPORTED")
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
+            registerReceiver(shareReceiver, filter, android.content.Context.RECEIVER_NOT_EXPORTED)
+        } else {
+            @Suppress("UnspecifiedRegisterReceiverFlag")
+            registerReceiver(shareReceiver, filter)
+        }
+    }
+
+    override fun onStop() {
+        super.onStop()
+        unregisterReceiver(shareReceiver)
+    }
+
     private val scanLauncher =
         registerForActivityResult(ScanContract()) { result ->
             result.contents?.let { viewModel.processQrUrl(it) }
@@ -92,6 +115,10 @@ class MainActivity : ComponentActivity() {
                 val friendLastPing by viewModel.friendLastPing.collectAsState()
                 val isSharing by viewModel.isSharingLocation.collectAsState()
                 val inviteState by viewModel.inviteState.collectAsState()
+                val isInviteActive = inviteState is InviteState.Pending
+                androidx.compose.runtime.LaunchedEffect(isInviteActive) {
+                    viewModel.setInviteSheetShowing(isInviteActive)
+                }
                 val pendingQrForNaming by viewModel.pendingQrForNaming.collectAsState()
                 val pendingInitPayload by viewModel.pendingInitPayload.collectAsState()
                 val multipleScansDetected by viewModel.multipleScansDetected.collectAsState()
@@ -244,7 +271,19 @@ class MainActivity : ComponentActivity() {
                         qrPayload = state.qr,
                         displayName = displayName,
                         onDisplayNameChange = { viewModel.setDisplayName(it) },
-                        onDismiss = { viewModel.clearInvite() },
+                        onDismiss = { viewModel.clearInviteIfNotExported() },
+                        onExportedIntent = { ekPub ->
+                            val intent = Intent("net.af0.where.ACTION_INVITE_EXPORTED").apply {
+                                setPackage(packageName)
+                                putExtra("ekPub", ekPub)
+                            }
+                            android.app.PendingIntent.getBroadcast(
+                                this@MainActivity,
+                                0,
+                                intent,
+                                android.app.PendingIntent.FLAG_UPDATE_CURRENT or android.app.PendingIntent.FLAG_IMMUTABLE
+                            )
+                        },
                     )
                 }
 

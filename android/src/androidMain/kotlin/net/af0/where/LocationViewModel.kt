@@ -386,6 +386,42 @@ class LocationViewModel(
         }
     }
 
+    fun setInviteSheetShowing(showing: Boolean) {
+        locationSource.setInviteSheetShowing(showing)
+    }
+
+    fun markCurrentInviteExported() {
+        val current = _inviteState.value
+        if (current is InviteState.Pending) {
+            markInviteExported(current.qr.ekPub)
+        }
+    }
+
+    fun markInviteExported(ekPub: ByteArray) {
+        viewModelScope.launch {
+            e2eeStore.markInviteExported(ekPub)
+            locationSource.onPendingInvitesUpdated(e2eeStore.listPendingInvites())
+        }
+    }
+
+    fun clearInviteIfNotExported() {
+        locationSource.setInviteSheetShowing(false)
+        val current = _inviteState.value
+        if (current is InviteState.Pending && locationSource.pendingInitPayload.value == null) {
+            viewModelScope.launch {
+                // Refresh list from store to check exportedAt
+                val invites = e2eeStore.listPendingInvites()
+                val match = invites.find { it.qrPayload.ekPub.contentEquals(current.qr.ekPub) }
+                if (match != null && match.exportedAt == null) {
+                    e2eeStore.clearInvite(current.qr.ekPub)
+                    locationSource.onPendingInvitesUpdated(e2eeStore.listPendingInvites())
+                }
+            }
+        }
+        locationSource.resetRapidPoll()
+        _inviteState.value = InviteState.None
+    }
+
     fun clearInvite() {
         val current = _inviteState.value
         // If the user dismisses the "Share Invite" sheet, we clear that specific invite

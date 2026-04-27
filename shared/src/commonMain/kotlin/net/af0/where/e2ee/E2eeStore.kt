@@ -122,6 +122,7 @@ internal data class PendingInvite(
     val qrPayload: QrPayload,
     @Serializable(with = ByteArrayBase64Serializer::class) val aliceEkPriv: ByteArray,
     val createdAt: Long = currentTimeSeconds(),
+    val exportedAt: Long? = null,
 )
 
 /**
@@ -132,9 +133,10 @@ internal data class PendingInvite(
 data class PendingInviteView(
     val qrPayload: QrPayload,
     val createdAt: Long,
+    val exportedAt: Long? = null,
 )
 
-internal fun PendingInvite.toView() = PendingInviteView(qrPayload, createdAt)
+internal fun PendingInvite.toView() = PendingInviteView(qrPayload, createdAt, exportedAt)
 
 class E2eeStore(
     private val storage: E2eeStorage,
@@ -241,6 +243,23 @@ class E2eeStore(
         stateLock.withLock {
             pendingInvites.removeAll { it.qrPayload.ekPub.contentEquals(ekPub) }
             save()
+        }
+    }
+
+    /**
+     * Alice: Mark a specific pending invite as exported (link shared/copied).
+     * This makes it persistent for 48h.
+     */
+    suspend fun markInviteExported(ekPub: ByteArray) {
+        stateLock.withLock {
+            val idx = pendingInvites.indexOfFirst { it.qrPayload.ekPub.contentEquals(ekPub) }
+            if (idx != -1) {
+                val invite = pendingInvites[idx]
+                if (invite.exportedAt == null) {
+                    pendingInvites[idx] = invite.copy(exportedAt = currentTimeSeconds())
+                    save()
+                }
+            }
         }
     }
 
@@ -356,7 +375,10 @@ class E2eeStore(
         stateLock.withLock {
             val now = currentTimeSeconds()
             val initialSize = pendingInvites.size
-            pendingInvites.removeAll { now - it.createdAt > expirySeconds }
+            pendingInvites.removeAll {
+                val baseTime = it.exportedAt ?: it.createdAt
+                now - baseTime > expirySeconds
+            }
 
             val unconfirmedBefore = friends.size
             val toRemove =

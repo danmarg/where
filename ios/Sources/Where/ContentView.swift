@@ -191,18 +191,22 @@ struct ContentView: View {
         .sheet(isPresented: Binding(
             get: { syncService.inviteState is Shared.InviteState.Pending },
             set: { if !$0 {
+                syncService.isInviteSheetShowing = false
                 // If we're dismissing because a peer joined (pendingInitPayload is set),
                 // do NOT clear the store yet, as we need the ephemeral keys to derive the session.
                 if syncService.pendingInitPayload == nil {
-                    Task { await syncService.clearInvite() }
+                    Task { await syncService.clearInviteIfNotExported() }
                 }
+            } else {
+                syncService.isInviteSheetShowing = true
             } }
         )) {
             if let pending = syncService.inviteState as? Shared.InviteState.Pending {
                 InviteSheet(
                     qrPayload: pending.qr,
                     displayName: $syncService.displayName,
-                    onDismiss: { Task { await syncService.clearInvite() } }
+                    onDismiss: { Task { await syncService.clearInviteIfNotExported() } },
+                    onExported: { Task { await syncService.markCurrentInviteExported() } }
                 )
             }
         }

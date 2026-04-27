@@ -33,6 +33,7 @@ fun InviteSheet(
     displayName: String,
     onDisplayNameChange: (String) -> Unit,
     onDismiss: () -> Unit,
+    onExportedIntent: (ByteArray) -> android.app.PendingIntent,
 ) {
     val context = LocalContext.current
     val qrUrl = remember(qrPayload) { QrUtils.payloadToUrl(qrPayload) }
@@ -79,7 +80,8 @@ fun InviteSheet(
                             putExtra(Intent.EXTRA_TEXT, qrUrl)
                             putExtra(Intent.EXTRA_SUBJECT, joinMeSubject)
                         }
-                    context.startActivity(Intent.createChooser(intent, shareInviteTitle))
+                    val receiverIntent = onExportedIntent(qrPayload.ekPub)
+                    context.startActivity(Intent.createChooser(intent, shareInviteTitle, receiverIntent.intentSender))
                 }) {
                     Text(stringResource(MR.strings.share_link))
                 }

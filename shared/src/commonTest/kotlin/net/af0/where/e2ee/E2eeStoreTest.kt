@@ -317,8 +317,32 @@ class E2eeStoreTest {
             aliceStore.cleanupExpiredInvites(expirySeconds = 3600)
             assertEquals(1, aliceStore.listPendingInvites().size)
 
-            // Force expiry: expirySeconds=-1 makes (now - createdAt > -1) always true
-            aliceStore.cleanupExpiredInvites(expirySeconds = -1)
+            // Force expiry: expirySeconds=0 makes (now - createdAt > 0) true
+            // We wait a tiny bit to ensure now > createdAt
+            kotlinx.coroutines.delay(10)
+            aliceStore.cleanupExpiredInvites(expirySeconds = 0)
             assertTrue(aliceStore.listPendingInvites().isEmpty())
+        }
+
+    @Test
+    fun testExportedInvitePersistence() =
+        runBlocking {
+            val qrExported = aliceStore.createInvite("Exported")
+            val qrNormal = aliceStore.createInvite("Normal")
+
+            // Wait 1.1s so that createdAt is definitely in the past relative to now
+            kotlinx.coroutines.delay(1100)
+
+            // Mark one as exported NOW. Its exportedAt will be currentTimeSeconds().
+            aliceStore.markInviteExported(qrExported.ekPub)
+
+            // Run cleanup with expirySeconds=0.
+            // For qrNormal: now - createdAt > 0 -> removed.
+            // For qrExported: now - exportedAt == 0 -> survives.
+            aliceStore.cleanupExpiredInvites(expirySeconds = 0)
+
+            val remaining = aliceStore.listPendingInvites()
+            assertEquals(1, remaining.size, "Only the exported invite should survive")
+            assertEquals("Exported", remaining[0].qrPayload.suggestedName)
         }
 }

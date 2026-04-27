@@ -47,6 +47,13 @@ final class LocationSyncService: ObservableObject {
             locationProvider.sharingStateChanged()
         }
     }
+    @Published var isInviteSheetShowing: Bool = false {
+        didSet {
+            if isInviteSheetShowing {
+                triggerRapidPoll()
+            }
+        }
+    }
     @Published var displayName: String {
         didSet {
             userStore.setDisplayName(name: displayName)
@@ -74,6 +81,7 @@ final class LocationSyncService: ObservableObject {
 
     var lastRapidPollTrigger: Date = Date(timeIntervalSince1970: 0)  // internal for testing
     var lastPollTime: Date = Date(timeIntervalSince1970: 0)  // internal for testing
+    private var lastCleanupTime: Date = Date(timeIntervalSince1970: 0)
     var pollTimer: Timer?  // internal for testing
     private var isPollInFlight = false
     /// Overridable in tests to simulate foreground/background without UIKit.
@@ -139,6 +147,7 @@ final class LocationSyncService: ObservableObject {
 
         Task { @MainActor in
             do {
+                try await store.cleanupExpiredInvites(expirySeconds: 48 * 3600)
                 self.friends = try await store.listFriends()
                 self.pendingInvites = try await store.listPendingInvites()
                 var initialLocations: [String: (lat: Double, lng: Double, ts: Int64)] = [:]
@@ -259,12 +268,39 @@ final class LocationSyncService: ObservableObject {
     @MainActor
     func isRapidPolling() -> Bool {
         if !awaitingFirstUpdateIds.isEmpty { return true }
-        if !pendingInvites.isEmpty { return true }
+        if isInviteSheetShowing { return true }
         return Date().timeIntervalSince(lastRapidPollTrigger) < 60.0
     }
 
     func firePoll() async {
         await pollAll()
+    }
+
+    func markCurrentInviteExported() async {
+        guard let qr = (inviteState as? Shared.InviteState.Pending)?.qr else { return }
+        do {
+            try await e2eeStore.markInviteExported(ekPub: qr.ekPub)
+            pendingInvites = try await e2eeStore.listPendingInvites()
+        } catch {
+            logger.error("Failed to mark invite exported: \(error.localizedDescription)")
+        }
+    }
+
+    func clearInviteIfNotExported() async {
+        guard let pending = inviteState as? Shared.InviteState.Pending else { return }
+        
+        // Refresh pendingInvites to get latest exportedAt state
+        do {
+            let list = try await e2eeStore.listPendingInvites()
+            if let current = list.first(where: { toSwiftData($0.qrPayload.ekPub) == toSwiftData(pending.qr.ekPub) }) {
+                if current.exportedAt == nil {
+                    await clearInvite(ekPub: toSwiftData(pending.qr.ekPub))
+                }
+            }
+        } catch {
+            logger.error("Failed to check if invite was exported: \(error.localizedDescription)")
+        }
+        inviteState = Shared.InviteState.None()
     }
 
     private func onFriendLocationReceived(friendId: String) {
@@ -292,6 +328,16 @@ final class LocationSyncService: ObservableObject {
         isPollInFlight = true
         lastPollTime = Date()
         logger.debug("Polling for location updates (updateUi=\(updateUi))")
+
+        if Date().timeIntervalSince(lastCleanupTime) > 3600 {
+            do {
+                try await e2eeStore.cleanupExpiredInvites(expirySeconds: 48 * 3600)
+                lastCleanupTime = Date()
+            } catch {
+                logger.error("Failed to cleanup expired invites: \(error.localizedDescription)")
+            }
+        }
+
         let identifier = self.beginBackgroundTask("PollAll") {
             // Task expired
         }
