@@ -12,7 +12,7 @@ fun timeAgoStringFromMs(lastPingMs: Long?): String {
 
 @Composable
 fun timeAgoStringFromSeconds(timestampSeconds: Long?): String {
-    if (timestampSeconds == null) return stringResource(MR.strings.never)
+    if (timestampSeconds == null || timestampSeconds == 0L) return stringResource(MR.strings.never)
     val seconds = (System.currentTimeMillis() / 1000) - timestampSeconds
     return when {
         seconds < 60 -> stringResource(MR.strings.just_now)

@@ -462,6 +462,12 @@ class E2eeStore(
         stateLock.withLock {
             val entry = friends[friendId] ?: throw Exception("Friend not found: $friendId")
 
+            // Atomic guard: the caller checks outbox before acquiring this lock, but that
+            // check has a TOCTOU window. Re-checking here under stateLock makes it safe.
+            check(entry.outbox == null) {
+                "Outbox already pending for ${friendId.take(8)} — refusing to overwrite"
+            }
+
             val (newSession, message) = Session.encryptMessage(entry.session, payload)
 
             // NONCE SAFETY ASSERTION (§5.4): The sequence number MUST advance.

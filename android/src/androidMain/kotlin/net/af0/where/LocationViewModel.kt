@@ -366,6 +366,11 @@ class LocationViewModel(
     fun cancelPendingInit() {
         if (pendingInitPayload.value == null && _inviteState.value == InviteState.None) return
         val aliceEkPub = locationSource.pendingInitAliceEkPub.value
+        
+        // Clear UI state immediately so background polls don't re-trigger while we are clearing the store.
+        locationSource.onPendingInit(null)
+        _inviteState.value = InviteState.None
+
         viewModelScope.launch {
             if (aliceEkPub != null) {
                 e2eeStore.clearInvite(aliceEkPub)
@@ -376,7 +381,6 @@ class LocationViewModel(
                 }
             }
             locationSource.onPendingInvitesUpdated(e2eeStore.listPendingInvites())
-            locationSource.onPendingInit(null)
         }
     }
 
@@ -408,6 +412,11 @@ class LocationViewModel(
     fun clearInviteIfNotExported() {
         locationSource.setInviteSheetShowing(false)
         val current = _inviteState.value
+        
+        // Reset UI state immediately
+        locationSource.resetRapidPoll()
+        _inviteState.value = InviteState.None
+        
         if (current is InviteState.Pending && locationSource.pendingInitPayload.value == null) {
             viewModelScope.launch {
                 // Refresh list from store to check exportedAt
@@ -419,12 +428,15 @@ class LocationViewModel(
                 }
             }
         }
-        locationSource.resetRapidPoll()
-        _inviteState.value = InviteState.None
     }
 
     fun clearInvite() {
         val current = _inviteState.value
+        
+        // Reset UI state immediately
+        locationSource.resetRapidPoll()
+        _inviteState.value = InviteState.None
+        
         // If the user dismisses the "Share Invite" sheet, we clear that specific invite
         // from the store to match previous behavior (though it's now multi-invite).
         if (current is InviteState.Pending && locationSource.pendingInitPayload.value == null) {
@@ -433,8 +445,6 @@ class LocationViewModel(
                 locationSource.onPendingInvitesUpdated(e2eeStore.listPendingInvites())
             }
         }
-        locationSource.resetRapidPoll()
-        _inviteState.value = InviteState.None
     }
 
     private fun updateStatus(e: Throwable?) {

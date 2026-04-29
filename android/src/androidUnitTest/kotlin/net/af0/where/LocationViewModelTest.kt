@@ -84,14 +84,17 @@ class TestFakeLocationSource : LocationSource {
     private val _friends = MutableStateFlow<List<FriendEntry>>(emptyList())
     override val friends: StateFlow<List<FriendEntry>> = _friends.asStateFlow()
 
-    private val _allPendingInvites = MutableStateFlow<List<net.af0.where.e2ee.PendingInvite>>(emptyList())
-    override val allPendingInvites: StateFlow<List<net.af0.where.e2ee.PendingInvite>> = _allPendingInvites.asStateFlow()
+    private val _allPendingInvites = MutableStateFlow<List<net.af0.where.e2ee.PendingInviteView>>(emptyList())
+    override val allPendingInvites: StateFlow<List<net.af0.where.e2ee.PendingInviteView>> = _allPendingInvites.asStateFlow()
 
     private val _lastRapidPollTrigger = MutableStateFlow(0L)
     override val lastRapidPollTrigger: StateFlow<Long> = _lastRapidPollTrigger.asStateFlow()
 
     private val _pendingQrForNaming = MutableStateFlow<QrPayload?>(null)
     override val pendingQrForNaming: StateFlow<QrPayload?> = _pendingQrForNaming.asStateFlow()
+
+    private val _isInviteSheetShowing = MutableStateFlow(false)
+    override val isInviteSheetShowing: StateFlow<Boolean> = _isInviteSheetShowing.asStateFlow()
 
     private val pollWakeSignal = Channel<Unit>(Channel.CONFLATED)
 
@@ -146,8 +149,12 @@ class TestFakeLocationSource : LocationSource {
         _pendingInitAliceEkPub.value = aliceEkPub
     }
 
-    override fun onPendingInvitesUpdated(invites: List<net.af0.where.e2ee.PendingInvite>) {
+    override fun onPendingInvitesUpdated(invites: List<net.af0.where.e2ee.PendingInviteView>) {
         _allPendingInvites.value = invites
+    }
+
+    override fun setInviteSheetShowing(showing: Boolean) {
+        _isInviteSheetShowing.value = showing
     }
 
     override fun setSharingLocation(sharing: Boolean) {
@@ -276,7 +283,7 @@ class LocationViewModelTest {
             vm.createInvite()
             advanceUntilIdle()
             assertTrue(vm.inviteState.value is InviteState.Pending)
-            val qr = store.pendingQrPayload()
+            val qr = store.listPendingInvites().first().qrPayload
             assertNotNull(qr)
 
             // 2. Simulate finding an init payload via polling

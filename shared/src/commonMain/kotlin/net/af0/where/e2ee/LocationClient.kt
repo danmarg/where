@@ -266,6 +266,7 @@ open class LocationClient(
         lng: Double,
         pausedFriendIds: Set<String> = emptySet(),
     ) = pollMutex.withLock {
+        processOutboxes()
         val ts = currentTimeSeconds()
         val payload = MessagePlaintext.Location(lat = lat, lng = lng, acc = 0.0, ts = ts)
         var successCount = 0
@@ -324,9 +325,9 @@ open class LocationClient(
             finalizeTokenTransition(friendId)
         }
 
-        // OUTBOX GUARD (H9): If a previous outbox is still pending (processOutboxes
-        // hasn't cleared it), skip rather than overwrite — the pending message may
-        // contain a DH ratchet key that the peer has not yet received.
+        // If a previous outbox is still pending (processOutboxes hasn't cleared it yet),
+        // skip rather than overwrite — the pending message may contain a DH ratchet key
+        // that the peer has not yet received.
         val friendCheck = store.getFriend(friendId) ?: return
         if (friendCheck.outbox != null) {
             println("[LocationClient] send: skipping send for ${friendId.take(8)} — outbox still pending (will retry)")
@@ -339,7 +340,15 @@ open class LocationClient(
         // This ensures that if the app crashes during the post, we don't
         // reuse the same sequence number/nonce on restart, AND we have
         // the message ready to retry.
-        val message = store.encryptAndStore(friendId, payload)
+        // encryptAndStore re-checks outbox == null atomically under stateLock,
+        // closing the TOCTOU window between the early guard above and the store write.
+        val message = try {
+            store.encryptAndStore(friendId, payload)
+        } catch (e: IllegalStateException) {
+            println("[LocationClient] send: outbox race for ${friendId.take(8)}, skipping (will retry)")
+            store.addDiagnosticEvent("OUTBOX BLOCK (race): ${friendId.take(8)}")
+            return
+        }
 
         // Use the outbox's token to ensure we post to the correct endpoint
         val friendAfter = store.getFriend(friendId) ?: return

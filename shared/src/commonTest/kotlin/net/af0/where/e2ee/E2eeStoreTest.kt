@@ -317,9 +317,10 @@ class E2eeStoreTest {
             aliceStore.cleanupExpiredInvites(expirySeconds = 3600)
             assertEquals(1, aliceStore.listPendingInvites().size)
 
-            // Force expiry: expirySeconds=0 makes (now - createdAt > 0) true
-            // We wait a tiny bit to ensure now > createdAt
-            kotlinx.coroutines.delay(10)
+            // Force expiry: expirySeconds=0 makes (now - createdAt > 0) true.
+            // currentTimeSeconds() has 1s resolution, so we must wait >1s to guarantee
+            // now > createdAt.
+            kotlinx.coroutines.delay(1100)
             aliceStore.cleanupExpiredInvites(expirySeconds = 0)
             assertTrue(aliceStore.listPendingInvites().isEmpty())
         }

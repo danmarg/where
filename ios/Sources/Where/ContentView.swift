@@ -66,70 +66,7 @@ struct ContentView: View {
 
             VStack {
                 Spacer()
-
-                HStack(spacing: 12) {
-                    Button {
-                        handleSharingButtonTap()
-                    } label: {
-                        Label(
-                            sharingStatusText,
-                            systemImage: syncService.isSharingLocation && locationManager.authorizationStatus != .denied ? "location.fill" : "location.slash.fill"
-                        )
-                        .font(.caption)
-                        .padding(.horizontal, 14)
-                        .padding(.vertical, 8)
-                        .background(sharingStatusColor)
-                        .foregroundStyle(.white)
-                        .clipShape(Capsule())
-                    }
-
-                    Spacer()
-
-                    VStack(alignment: .leading, spacing: 2) {
-                        HStack(spacing: 6) {
-                            Circle()
-                                .fill(syncService.connectionStatus is Shared.ConnectionStatus.Ok ? Color.green : Color.orange)
-                                .frame(width: 8, height: 8)
-                            Text(MR.strings().you.localized())
-                                .font(.caption)
-                                .foregroundStyle(.white)
-                        }
-                        if let error = syncService.connectionStatus as? Shared.ConnectionStatus.Error {
-                            Text(error.message.localized())
-                                .font(.system(size: 8))
-                                .foregroundStyle(.orange)
-                                .lineLimit(1)
-                        }
-                    }
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 8)
-                    .background(.black.opacity(0.7))
-                    .clipShape(Capsule())
-                    .contentShape(Capsule())
-                    .onTapGesture {
-                        if syncService.connectionStatus is Shared.ConnectionStatus.Error {
-                            showErrorAlert = true
-                        } else if let loc = locationManager.location {
-                            zoomTarget = CLLocationCoordinate2D(latitude: loc.coordinate.latitude, longitude: loc.coordinate.longitude)
-                        }
-                    }
-
-                    Spacer()
-
-                    Button {
-                        showFriends = true
-                    } label: {
-                        Label("\(syncService.friends.count)", systemImage: "person.2.fill")
-                            .font(.caption)
-                            .padding(.horizontal, 14)
-                            .padding(.vertical, 8)
-                            .background(Color.black.opacity(0.7))
-                            .foregroundStyle(.white)
-                            .clipShape(Capsule())
-                    }
-                }
-                .padding(.horizontal, 16)
-                .padding(.bottom, 32)
+                bottomBar
             }
 
             if syncService.isExchanging {
@@ -144,7 +81,6 @@ struct ContentView: View {
             FriendsSheet(
                 displayName: $syncService.displayName,
                 friends: syncService.friends,
-                diagnosticLog: syncService.diagnosticLog,
                 pendingInvites: syncService.pendingInvites,
                 pausedFriendIds: syncService.pausedFriendIds,
                 lastPingTimes: syncService.friendLastPing,
@@ -171,7 +107,8 @@ struct ContentView: View {
                         zoomTarget = CLLocationCoordinate2D(latitude: loc.lat, longitude: loc.lng)
                     }
                     showFriends = false
-                }
+                },
+                diagnosticLog: syncService.diagnosticLog
             )
         }
         .fullScreenCover(isPresented: $showScanner, onDismiss: {
@@ -282,6 +219,85 @@ struct ContentView: View {
             if let error = syncService.connectionStatus as? Shared.ConnectionStatus.Error {
                 Text(error.message.localized())
             }
+        }
+    }
+
+    @ViewBuilder
+    private var bottomBar: some View {
+        HStack(spacing: 12) {
+            sharingButton
+            Spacer()
+            connectionStatusView
+            Spacer()
+            friendsButton
+        }
+        .padding(.horizontal, 16)
+        .padding(.bottom, 32)
+    }
+
+    @ViewBuilder
+    private var sharingButton: some View {
+        Button {
+            handleSharingButtonTap()
+        } label: {
+            Label(
+                sharingStatusText,
+                systemImage: syncService.isSharingLocation && locationManager.authorizationStatus != .denied ? "location.fill" : "location.slash.fill"
+            )
+            .font(.caption)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 8)
+            .background(sharingStatusColor)
+            .foregroundStyle(.white)
+            .clipShape(Capsule())
+        }
+    }
+
+    @ViewBuilder
+    private var connectionStatusView: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            HStack(spacing: 6) {
+                Circle()
+                    .fill(syncService.connectionStatus is Shared.ConnectionStatus.Ok ? Color.green : Color.orange)
+                    .frame(width: 8, height: 8)
+                Text(MR.strings().you.localized())
+                    .font(.caption)
+                    .foregroundStyle(.white)
+            }
+            if let errorStatus = syncService.connectionStatus as? Shared.ConnectionStatus.Error {
+                let errorMessage = errorStatus.message.localized()
+                Text(errorMessage)
+                    .font(.system(size: 8))
+                    .foregroundStyle(.orange)
+                    .lineLimit(1)
+            }
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 8)
+        .background(.black.opacity(0.7))
+        .clipShape(Capsule())
+        .contentShape(Capsule())
+        .onTapGesture {
+            if syncService.connectionStatus is Shared.ConnectionStatus.Error {
+                showErrorAlert = true
+            } else if let loc = locationManager.location {
+                zoomTarget = CLLocationCoordinate2D(latitude: loc.coordinate.latitude, longitude: loc.coordinate.longitude)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var friendsButton: some View {
+        Button {
+            showFriends = true
+        } label: {
+            Label("\(syncService.friends.count)", systemImage: "person.2.fill")
+                .font(.caption)
+                .padding(.horizontal, 14)
+                .padding(.vertical, 8)
+                .background(Color.black.opacity(0.7))
+                .foregroundStyle(.white)
+                .clipShape(Capsule())
         }
     }
 

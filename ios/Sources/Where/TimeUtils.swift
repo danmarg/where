@@ -16,6 +16,7 @@ func timeAgoStringFromMs(_ ms: Int64) -> String {
 }
 
 func timeAgoStringFromSeconds(_ seconds: Int64) -> String {
+    guard seconds != 0 else { return MR.strings().never.localized() }
     let date = Date(timeIntervalSince1970: Double(seconds))
     return timeAgoString(date)
 }

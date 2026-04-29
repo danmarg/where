@@ -45,6 +45,10 @@ class OutboxRecoveryTest {
             assertEquals(friendBefore?.outbox?.token, friendRecovered?.outbox?.token)
             assertEquals(originalSeq, friendRecovered?.session?.sendSeq)
 
+            // Simulate successful post: clear the outbox before sending the next message.
+            // encryptAndStore rejects an overwrite if an outbox is already pending.
+            recoveredStore.clearOutbox(friendId)
+
             // Ensure nonce safety: next encryptAndStore MUST advance seq further
             val nextPlaintext = MessagePlaintext.Location(1.1, 2.1, 3.1, 2000L)
             recoveredStore.encryptAndStore(friendId, nextPlaintext)
