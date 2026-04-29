@@ -15,6 +15,7 @@ struct FriendsSheet: View {
     let onPasteUrl: (String) -> Void
     let onRemove: (String) -> Void
     let onZoomTo: (String) -> Void
+    var diagnosticLog: [String] = []
 
     @State private var friendToRemove: Shared.FriendEntry? = nil
     @State private var friendToRename: Shared.FriendEntry? = nil
@@ -22,6 +23,7 @@ struct FriendsSheet: View {
     @State private var showPasteField = false
     @State private var pastedUrl = ""
     @State private var debugExpandedFriendId: String? = nil
+    @State private var showDiagnosticLog = false
 
     var body: some View {
         NavigationStack {
@@ -118,6 +120,32 @@ struct FriendsSheet: View {
                             .font(.subheadline)
                     }
                 }
+                if !diagnosticLog.isEmpty && debugExpandedFriendId != nil {
+                    let hasError = diagnosticLog.contains { $0.contains("FAIL") || $0.contains("DESYNC") || $0.contains("STORAGE") }
+                    Section {
+                        Button {
+                            showDiagnosticLog.toggle()
+                        } label: {
+                            Label(
+                                showDiagnosticLog ? "Hide Events" : "Events (\(diagnosticLog.count))",
+                                systemImage: showDiagnosticLog ? "chevron.down" : "chevron.right"
+                            )
+                            .font(.caption2)
+                            .fontDesign(.monospaced)
+                            .foregroundStyle(hasError ? .red : .secondary)
+                        }
+                        .buttonStyle(.plain)
+                        if showDiagnosticLog {
+                            ForEach(diagnosticLog, id: \.self) { event in
+                                let isError = event.contains("FAIL") || event.contains("DESYNC") || event.contains("STORAGE")
+                                Text(event)
+                                    .font(.caption2)
+                                    .fontDesign(.monospaced)
+                                    .foregroundStyle(isError ? .red : .secondary)
+                            }
+                        }
+                    }
+                }
             }
             .navigationTitle(MR.strings().friends.localized())
             .navigationBarTitleDisplayMode(.inline)
@@ -158,8 +186,12 @@ private struct FriendDebugView: View {
             let sentTs = friend.lastSentTs
             let recvToken = toHex(friend.session.recvToken).prefix(8)
             let sendToken = toHex(friend.session.sendToken).prefix(8)
-            Text("recv: \(timeAgoStringFromSeconds(recvTs))  sent: \(timeAgoStringFromSeconds(sentTs))")
+            Text("recv: \(timeAgoStringFromSeconds(recvTs))  sent: \(timeAgoStringFromSeconds(sentTs))  poll: \(timeAgoStringFromSeconds(friend.lastPollTs))")
             Text("recvTok: \(recvToken)  sendTok: \(sendToken)")
+            if friend.session.isSendTokenPending {
+                let prevSendToken = toHex(friend.session.prevSendToken).prefix(8)
+                Text("prevSendTok: \(prevSendToken)")
+            }
             Text("needsRatchet: \(friend.session.needsRatchet ? "YES" : "no")  sendPending: \(friend.session.isSendTokenPending ? "YES" : "no")")
         }
         .font(.caption2)

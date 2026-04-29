@@ -46,6 +46,7 @@ fun MapScreen(
     ownHeading: Double?,
     users: List<UserLocation>,
     friends: List<FriendEntry>,
+    diagnosticLog: List<String> = emptyList(),
     pendingInvites: List<net.af0.where.e2ee.PendingInviteView>,
     displayName: String,
     onDisplayNameChange: (String) -> Unit,
@@ -419,6 +420,7 @@ fun MapScreen(
     if (showFriends) {
         FriendsSheet(
             friends = friends,
+            diagnosticLog = diagnosticLog,
             pendingInvites = pendingInvites,
             displayName = displayName,
             onDisplayNameChange = onDisplayNameChange,

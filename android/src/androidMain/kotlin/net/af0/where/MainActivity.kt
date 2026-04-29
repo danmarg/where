@@ -124,6 +124,7 @@ class MainActivity : ComponentActivity() {
                 val multipleScansDetected by viewModel.multipleScansDetected.collectAsState()
                 val isExchanging by viewModel.isExchanging.collectAsState()
                 val connectionStatus by viewModel.connectionStatus.collectAsState()
+                val diagnosticLog by viewModel.diagnosticLog.collectAsState()
 
                 var showSimulatorScanner by remember { mutableStateOf(false) }
                 var showCameraRationale by remember { mutableStateOf(false) }
@@ -135,6 +136,7 @@ class MainActivity : ComponentActivity() {
                     ownHeading = ownHeading,
                     users = users,
                     friends = friends,
+                    diagnosticLog = diagnosticLog,
                     pendingInvites = pendingInvites,
                     displayName = displayName,
                     onDisplayNameChange = { viewModel.setDisplayName(it) },

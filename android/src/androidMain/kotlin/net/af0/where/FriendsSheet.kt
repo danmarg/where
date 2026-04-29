@@ -1,6 +1,7 @@
 package net.af0.where
 
 import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -45,6 +46,7 @@ import net.af0.where.shared.MR
 @Composable
 fun FriendsSheet(
     friends: List<FriendEntry>,
+    diagnosticLog: List<String> = emptyList(),
     pendingInvites: List<net.af0.where.e2ee.PendingInviteView>,
     displayName: String,
     onDisplayNameChange: (String) -> Unit,
@@ -65,6 +67,7 @@ fun FriendsSheet(
     var showPasteField by remember { mutableStateOf(false) }
     var pastedUrl by remember { mutableStateOf("") }
     var debugExpandedFriendId by remember { mutableStateOf<String?>(null) }
+    var showDiagnosticLog by remember { mutableStateOf(false) }
 
     ModalBottomSheet(onDismissRequest = onDismiss) {
         Column(
@@ -214,6 +217,21 @@ fun FriendsSheet(
                                         fontFamily = FontFamily.Monospace,
                                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                                     )
+                                    if (friend.session.isSendTokenPending) {
+                                        val prevSendToken = friend.session.prevSendToken.toHex().take(8)
+                                        Text(
+                                            "prevSendTok: $prevSendToken",
+                                            style = MaterialTheme.typography.labelSmall,
+                                            fontFamily = FontFamily.Monospace,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        )
+                                    }
+                                    Text(
+                                        "poll: ${timeAgoStringFromSeconds(friend.lastPollTs)}",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        fontFamily = FontFamily.Monospace,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
                                     val ratchet = if (friend.session.needsRatchet) "YES" else "no"
                                     val pending = if (friend.session.isSendTokenPending) "YES" else "no"
                                     Text(
@@ -233,6 +251,37 @@ fun FriendsSheet(
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
+                    }
+                }
+                if (diagnosticLog.isNotEmpty() && debugExpandedFriendId != null) {
+                    item {
+                        Text(
+                            if (showDiagnosticLog) "▾ Events" else "▸ Events (${diagnosticLog.size})",
+                            style = MaterialTheme.typography.labelSmall,
+                            fontFamily = FontFamily.Monospace,
+                            color = if (diagnosticLog.any { it.contains("FAIL") || it.contains("DESYNC") || it.contains("STORAGE") })
+                                MaterialTheme.colorScheme.error
+                            else
+                                MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier
+                                .padding(start = 4.dp, top = 8.dp)
+                                .clickable { showDiagnosticLog = !showDiagnosticLog },
+                        )
+                        if (showDiagnosticLog) {
+                            Column(modifier = Modifier.padding(start = 4.dp, top = 2.dp)) {
+                                diagnosticLog.forEach { event ->
+                                    Text(
+                                        event,
+                                        style = MaterialTheme.typography.labelSmall,
+                                        fontFamily = FontFamily.Monospace,
+                                        color = if (event.contains("FAIL") || event.contains("DESYNC") || event.contains("STORAGE"))
+                                            MaterialTheme.colorScheme.error
+                                        else
+                                            MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                }
+                            }
+                        }
                     }
                 }
             }

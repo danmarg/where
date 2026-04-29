@@ -144,6 +144,7 @@ struct ContentView: View {
             FriendsSheet(
                 displayName: $syncService.displayName,
                 friends: syncService.friends,
+                diagnosticLog: syncService.diagnosticLog,
                 pendingInvites: syncService.pendingInvites,
                 pausedFriendIds: syncService.pausedFriendIds,
                 lastPingTimes: syncService.friendLastPing,

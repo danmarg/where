@@ -1,6 +1,10 @@
 package net.af0.where.e2ee
 
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.Serializable
@@ -25,6 +29,7 @@ internal expect fun normalizeName(name: String): String
 interface E2eeStorage {
     fun getString(key: String): String?
 
+    @Throws(Exception::class)
     fun putString(
         key: String,
         value: String,
@@ -51,6 +56,7 @@ data class FriendEntry(
      */
     val isConfirmed: Boolean = false,
     val lastSentTs: Long = 0L,
+    val lastPollTs: Long = 0L,
     /** Whether the local user is currently sharing their location with this friend. */
     val sharingEnabled: Boolean = true,
     /** Optional outbox for transactional recovery (§5.4). */
@@ -149,6 +155,25 @@ class E2eeStore(
     // could concurrently access and update the same session state.
     private val stateLock = Mutex()
 
+    // In-memory diagnostic event log. Capped at MAX_DIAGNOSTIC_EVENTS entries.
+    // Events are prepended (newest first) and pre-formatted with a +Xm Ys offset
+    // from app start so they remain readable without a wall-clock reference.
+    private val appStartSeconds = currentTimeSeconds()
+    private val _diagnosticLog = MutableStateFlow<List<String>>(emptyList())
+    val diagnosticLog: StateFlow<List<String>> = _diagnosticLog.asStateFlow()
+
+    fun addDiagnosticEvent(message: String) {
+        val offset = currentTimeSeconds() - appStartSeconds
+        val min = offset / 60
+        val sec = offset % 60
+        val entry = "+${min}m${sec.toString().padStart(2, '0')}s $message"
+        _diagnosticLog.update { current ->
+            (listOf(entry) + current).take(MAX_DIAGNOSTIC_EVENTS)
+        }
+    }
+
+    fun diagnosticLogSnapshot(): List<String> = _diagnosticLog.value
+
     /**
      * Atomically update a friend's metadata in the store.
      */
@@ -174,6 +199,7 @@ class E2eeStore(
                             lastRecvTs = if (s.lastRecvTs == 0L) currentTimeSeconds() else s.lastRecvTs,
                             isConfirmed = s.isConfirmed,
                             lastSentTs = s.lastSentTs,
+                            lastPollTs = s.lastPollTs,
                             sharingEnabled = s.sharingEnabled,
                             outbox = s.outbox,
                         )
@@ -206,13 +232,19 @@ class E2eeStore(
                             lastRecvTs = f.lastRecvTs,
                             isConfirmed = f.isConfirmed,
                             lastSentTs = f.lastSentTs,
+                            lastPollTs = f.lastPollTs,
                             sharingEnabled = f.sharingEnabled,
                             outbox = f.outbox,
                         )
                     },
                 pendingInvites = pendingInvites,
             )
-        storage.putString(STORAGE_KEY, json.encodeToString(serialized))
+        try {
+            storage.putString(STORAGE_KEY, json.encodeToString(serialized))
+        } catch (e: Exception) {
+            addDiagnosticEvent("STORAGE WRITE FAILED: ${e.message}")
+            throw e
+        }
     }
 
     /**
@@ -495,6 +527,15 @@ class E2eeStore(
         }
     }
 
+    /** Atomically clears the outbox AND updates the session in a single save (H10). */
+    suspend fun clearOutboxAndUpdateSession(id: String, newSession: SessionState) {
+        stateLock.withLock {
+            val entry = friends[id] ?: return@withLock
+            friends[id] = entry.copy(session = newSession, outbox = null)
+            save()
+        }
+    }
+
     suspend fun updateLastLocation(
         id: String,
         lat: Double,
@@ -519,6 +560,17 @@ class E2eeStore(
         }
     }
 
+    suspend fun updateLastPollTs(
+        id: String,
+        ts: Long,
+    ) {
+        stateLock.withLock {
+            val entry = friends[id] ?: return@withLock
+            friends[id] = entry.copy(lastPollTs = ts)
+            save()
+        }
+    }
+
     suspend fun updateFriend(
         id: String,
         transform: (FriendEntry) -> FriendEntry,
@@ -535,20 +587,14 @@ class E2eeStore(
     // -----------------------------------------------------------------------
 
     /**
-     * A message the caller should POST back to the server after processing a batch.
-     */
-    data class OutgoingMessage(val token: String, val payload: MailboxPayload)
-
-    /**
      * Result of [processBatch].
      *
      * @property decryptedLocations Locations decrypted from this batch, in receive order.
-     * @property outgoing Payloads the caller must POST to the server, in order.
      */
     data class PollBatchResult(
         val decryptedLocations: List<LocationPlaintext>,
-        val outgoing: List<OutgoingMessage>,
         val anySuccess: Boolean,
+        val hadSilentDrops: Boolean,
     )
 
     /**
@@ -568,11 +614,11 @@ class E2eeStore(
             val entry = friends[friendId] ?: return@withLock null
 
             val decryptedLocations = mutableListOf<LocationPlaintext>()
-            val outgoing = mutableListOf<OutgoingMessage>()
 
             // With Sealed Envelopes (#186), we must first decrypt headers to sort
+            val encryptedMessages = messages.filterIsInstance<EncryptedMessagePayload>()
             val sortedMessagesWithHeaders =
-                messages.filterIsInstance<EncryptedMessagePayload>().mapNotNull { msg ->
+                encryptedMessages.mapNotNull { msg ->
                     try {
                         val header =
                             try {
@@ -582,9 +628,11 @@ class E2eeStore(
                             }
                         header to msg
                     } catch (_: Exception) {
-                        null // Un-decryptable header, likely not for us
+                        null // Un-decryptable header — could be a ratchet message; do not ACK
                     }
-                }.sortedWith { (h1, _), (h2, _) ->
+                }
+            val hadSilentDrops = sortedMessagesWithHeaders.size < encryptedMessages.size
+            val orderedMessages = sortedMessagesWithHeaders.sortedWith { (h1, _), (h2, _) ->
                     val b1 =
                         when {
                             h1.dhPub.contentEquals(entry.session.remoteDhPub) -> 0
@@ -608,7 +656,7 @@ class E2eeStore(
             var anySuccess = false
             var failCount = 0
 
-            for ((_, msg) in sortedMessagesWithHeaders) {
+            for ((_, msg) in orderedMessages) {
                 try {
                     val prevRemoteDh = currentSession.remoteDhPub
                     val (newSession, pt) = Session.decryptMessage(currentSession, msg)
@@ -637,6 +685,10 @@ class E2eeStore(
                     failCount++
                 }
             }
+            if (!anySuccess && failCount > 0) {
+                addDiagnosticEvent("DECRYPT FAIL: $failCount msgs all failed for ${friendId.take(8)}")
+            }
+
             val tokenChanged = !currentSession.recvToken.contentEquals(entry.session.recvToken)
             if (tokenChanged) {
                 println(
@@ -646,8 +698,9 @@ class E2eeStore(
             }
             println(
                 "[E2eeStore] processBatch: friend=${friendId.take(8)} token=${recvToken.take(8)} " +
-                    "total=${sortedMessagesWithHeaders.size} ok=$anySuccess locs=${decryptedLocations.size} " +
-                    "fails=$failCount" + (if (tokenChanged) " rotated=true" else ""),
+                    "total=${orderedMessages.size} ok=$anySuccess locs=${decryptedLocations.size} " +
+                    "fails=$failCount dropped=${encryptedMessages.size - orderedMessages.size}" +
+                    (if (tokenChanged) " rotated=true" else ""),
             )
 
             // Persistence: we update the store with the latest successfully ratcheted state.
@@ -672,7 +725,7 @@ class E2eeStore(
             }
 
             save()
-            PollBatchResult(decryptedLocations, outgoing, anySuccess)
+            PollBatchResult(decryptedLocations, anySuccess, hadSilentDrops)
         }
 
     private fun sanitizeName(name: String): String {
@@ -702,6 +755,7 @@ internal data class SerializedFriendEntry(
     val lastRecvTs: Long = 0L,
     val isConfirmed: Boolean = false,
     val lastSentTs: Long = 0L,
+    val lastPollTs: Long = 0L,
     val sharingEnabled: Boolean = true,
     val outbox: EncryptedOutboxMessage? = null,
 )

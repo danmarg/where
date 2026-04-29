@@ -24,8 +24,11 @@ final class KeychainE2eeStorage: E2eeStorage {
         return String(data: data, encoding: .utf8)
     }
 
-    func putString(key: String, value: String) {
-        guard let data = value.data(using: .utf8) else { return }
+    func putString(key: String, value: String) throws {
+        guard let data = value.data(using: .utf8) else {
+            throw NSError(domain: "KeychainE2eeStorage", code: -1,
+                          userInfo: [NSLocalizedDescriptionKey: "Failed to encode value as UTF-8"])
+        }
 
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
@@ -38,13 +41,18 @@ final class KeychainE2eeStorage: E2eeStorage {
             kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
         ]
 
-        let status = SecItemUpdate(query as CFDictionary, attributes as CFDictionary)
+        var status = SecItemUpdate(query as CFDictionary, attributes as CFDictionary)
 
         if status == errSecItemNotFound {
             var addQuery = query
             addQuery[kSecValueData as String] = data
             addQuery[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
-            SecItemAdd(addQuery as CFDictionary, nil)
+            status = SecItemAdd(addQuery as CFDictionary, nil)
+        }
+
+        guard status == errSecSuccess else {
+            throw NSError(domain: "KeychainE2eeStorage", code: Int(status),
+                          userInfo: [NSLocalizedDescriptionKey: "Keychain write failed: OSStatus \(status)"])
         }
     }
 }

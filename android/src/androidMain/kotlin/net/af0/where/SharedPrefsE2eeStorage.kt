@@ -20,7 +20,8 @@ class SharedPrefsE2eeStorage(context: Context) : E2eeStorage {
         key: String,
         value: String,
     ) {
-        prefs.edit().putString(key, value).apply()
+        val ok = prefs.edit().putString(key, value).commit()
+        if (!ok) throw Exception("SharedPreferences commit failed for key=$key")
     }
 
     companion object {

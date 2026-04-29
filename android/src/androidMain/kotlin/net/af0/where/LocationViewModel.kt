@@ -97,6 +97,7 @@ class LocationViewModel(
     val isExchanging: StateFlow<Boolean> = _isExchanging
 
     val connectionStatus: StateFlow<ConnectionStatus> = locationSource.connectionStatus
+    val diagnosticLog: StateFlow<List<String>> = e2eeStore.diagnosticLog
 
     val ownLocation: StateFlow<UserLocation?> =
         combine(locationSource.lastLocation, isSharingLocation) { myLoc, sharing ->

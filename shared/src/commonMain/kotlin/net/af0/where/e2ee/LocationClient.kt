@@ -24,6 +24,11 @@ open class LocationClient(
 
     private val pollMutex = Mutex()
 
+    // Tracks consecutive polls where header-parse failures blocked the ACK, per friend.
+    // Resets to 0 on any clean batch. Triggers a force-ACK at MAX_SILENT_DROP_RETRIES
+    // to break a permanent livelock caused by an unrecoverable corrupted message.
+    private val silentDropCounts = mutableMapOf<String, Int>()
+
     /**
      * Poll all friends and all pending invites.
      *
@@ -158,21 +163,33 @@ open class LocationClient(
             try {
                 val result = store.processBatch(friendId, currentTokenToPoll, messages) ?: break
 
+                if (result.hadSilentDrops) {
+                    val count = (silentDropCounts[friendId] ?: 0) + 1
+                    silentDropCounts[friendId] = count
+                    store.addDiagnosticEvent("SILENT DROPS: ${friendId.take(8)} token=${currentTokenToPoll.take(8)} (retry $count/$MAX_SILENT_DROP_RETRIES)")
+                } else {
+                    silentDropCounts.remove(friendId)
+                }
+
                 // ACK after durable save: tell the server to delete the messages we just processed.
-                // Only ACK if at least one message succeeded — if all failed, the batch may contain
-                // a legitimate ratchet message we can't yet decrypt, and deleting it would cause
-                // a permanent token desync. Non-fatal: if ACK fails, messages remain and will be
-                // re-processed idempotently.
-                if (result.anySuccess) {
+                // Only ACK if at least one message succeeded AND no messages were silently dropped
+                // at the header-parsing stage. A dropped message could be a ratchet transition
+                // message; ACK-ing it would cause a permanent token desync.
+                //
+                // Exception: if silent drops have persisted for MAX_SILENT_DROP_RETRIES consecutive
+                // polls, force-ACK to break a permanent livelock caused by an unrecoverable message.
+                val forceAck = (silentDropCounts[friendId] ?: 0) >= MAX_SILENT_DROP_RETRIES
+                if (forceAck) {
+                    println("[LocationClient] pollFriend: force-ACKing after $MAX_SILENT_DROP_RETRIES consecutive silent-drop polls for ${friendId.take(8)} — dropped messages are unrecoverable")
+                    store.addDiagnosticEvent("FORCE ACK: ${friendId.take(8)} — unrecoverable silent drops, re-pair if desynced")
+                    silentDropCounts.remove(friendId)
+                }
+                if (result.anySuccess && (!result.hadSilentDrops || forceAck)) {
                     try {
                         mailboxClient.ack(baseUrl, currentTokenToPoll, messages.size)
                     } catch (e: Exception) {
                         println("[LocationClient] pollFriend: ACK failed for ${friendId.take(8)}: ${e.message}")
                     }
-                }
-
-                for (out in result.outgoing) {
-                    mailboxClient.post(baseUrl, out.token, out.payload)
                 }
 
                 resultLocations.addAll(
@@ -202,6 +219,13 @@ open class LocationClient(
             }
         }
 
+        if (follows >= MAX_TOKEN_FOLLOWS_PER_POLL) {
+            println("[LocationClient] pollFriend: TOKEN FOLLOW CAP HIT for ${friendId.take(8)} — may have missed messages beyond $follows rotations")
+            store.addDiagnosticEvent("TOKEN FOLLOW CAP: ${friendId.take(8)}")
+        }
+
+        store.updateLastPollTs(friendId, currentTimeSeconds())
+
         // Automated keepalive (§5.3): send a keepalive message if we received a new DH key
         // but have not yet replied with our own new DH public key. This advances the peer's
         // recvToken.
@@ -220,7 +244,13 @@ open class LocationClient(
                 )
                 try {
                     sendKeepalive(friendId)
-                } catch (_: Exception) {
+                } catch (e: Exception) {
+                    // Keepalive post failed. If the failure was a network error, the outbox
+                    // was durably written by encryptAndStore and processOutboxes will retry.
+                    // If the failure was before encryptAndStore (e.g., storage write failure),
+                    // needsRatchet=true is still persisted and will re-trigger on next poll.
+                    println("[LocationClient] pollFriend: keepalive failed for ${friendId.take(8)}: ${e.message}")
+                    store.addDiagnosticEvent("KEEPALIVE FAIL: ${friendId.take(8)}: ${e.message?.take(40)}")
                 }
             }
         }
@@ -292,6 +322,16 @@ open class LocationClient(
         if (friendBefore.outbox == null && friendBefore.session.isSendTokenPending && friendBefore.session.sendSeq > 0) {
             println("[LocationClient] send: detected stale transition flag for ${friendId.take(8)}, finalizing now")
             finalizeTokenTransition(friendId)
+        }
+
+        // OUTBOX GUARD (H9): If a previous outbox is still pending (processOutboxes
+        // hasn't cleared it), skip rather than overwrite — the pending message may
+        // contain a DH ratchet key that the peer has not yet received.
+        val friendCheck = store.getFriend(friendId) ?: return
+        if (friendCheck.outbox != null) {
+            println("[LocationClient] send: skipping send for ${friendId.take(8)} — outbox still pending (will retry)")
+            store.addDiagnosticEvent("OUTBOX BLOCK: skipped send for ${friendId.take(8)}, pending outbox")
+            return
         }
 
         // PERSISTENCE HYGIENE (§5.4): We advance the session and persist the
@@ -386,8 +426,25 @@ open class LocationClient(
                 // Permanent failures (mailbox expired/deleted) should clear the outbox (§5.4).
                 val statusCode = (e as? ServerException)?.statusCode
                 if (statusCode == 404 || statusCode == 410) {
-                    println("[LocationClient] recovery: clearing expired outbox for ${friend.id.take(8)} (status=$statusCode)")
-                    store.clearOutbox(friend.id)
+                    // If this was a DH-ratchet transition message (posted to prevSendToken while
+                    // isSendTokenPending=true) and the mailbox has expired, the peer never received
+                    // our new DH public key. Clear isSendTokenPending WITHOUT sending a keepalive
+                    // to the new sendToken — the peer is still polling the old recvToken and cannot
+                    // receive anything on the new one. This prevents the stale-flag recovery from
+                    // calling finalizeTokenTransition on the next poll and making the desync silent.
+                    if (friend.session.isSendTokenPending &&
+                        outbox.token == friend.session.prevSendToken.toHex()
+                    ) {
+                        println(
+                            "[LocationClient] recovery: DESYNC: transition message permanently lost for ${friend.id.take(8)} " +
+                                "(prevSendToken ${outbox.token.take(8)} expired before peer received DH key) — re-pair required",
+                        )
+                        store.addDiagnosticEvent("DESYNC: transition lost for ${friend.id.take(8)}, re-pair required")
+                        store.clearOutboxAndUpdateSession(friend.id, friend.session.copy(isSendTokenPending = false))
+                    } else {
+                        println("[LocationClient] recovery: clearing expired outbox for ${friend.id.take(8)} (status=$statusCode)")
+                        store.clearOutbox(friend.id)
+                    }
                 }
                 // Otherwise: Network failure or other server error: leave in outbox for next poll
             }

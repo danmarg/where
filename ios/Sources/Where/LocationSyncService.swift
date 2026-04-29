@@ -39,6 +39,7 @@ final class LocationSyncService: ObservableObject {
     @Published var friendLastPing: [String: Date] = [:]
     @Published var connectionStatus: Shared.ConnectionStatus = Shared.ConnectionStatus.Ok()
     @Published var friends: [Shared.FriendEntry] = []
+    @Published var diagnosticLog: [String] = []
     @Published var pendingInvites: [Shared.PendingInviteView] = []
     @Published var inviteState: Shared.InviteState = Shared.InviteState.None()
     @Published var isSharingLocation: Bool {
@@ -363,6 +364,7 @@ final class LocationSyncService: ObservableObject {
             }
 
             friends = try await e2eeStore.listFriends()
+            diagnosticLog = e2eeStore.diagnosticLogSnapshot() as? [String] ?? []
             pendingInvites = try await e2eeStore.listPendingInvites()
             // Always update visibleUsers to ensure map is fresh when returning to foreground.
             updateVisibleUsers()
