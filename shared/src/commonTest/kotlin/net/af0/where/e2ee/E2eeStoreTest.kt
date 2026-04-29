@@ -346,4 +346,38 @@ class E2eeStoreTest {
             assertEquals(1, remaining.size, "Only the exported invite should survive")
             assertEquals("Exported", remaining[0].qrPayload.suggestedName)
         }
+
+    @Test
+    fun testLastDecryptFailedFlag() =
+        runBlocking {
+            val qr = aliceStore.createInvite("Alice")
+            val (initPayload, bobEntry) = bobStore.processScannedQr(qr)
+            val aliceEntry = aliceStore.processKeyExchangeInit(initPayload, "Bob", qr.ekPub)!!
+
+            // Initially false
+            assertFalse(bobStore.getFriend(bobEntry.id)!!.lastDecryptFailed)
+
+            // Simulate a decryption failure: Bob receives a message meant for someone else
+            // (or just a random payload that doesn't match his header keys).
+            val unrelatedLoc = MessagePlaintext.Location(9.9, 9.9, 1.0, 9999L)
+            // We need a third person to generate a validly-structured but key-mismatched message
+            val charlieStore = E2eeStore(MemoryStorage())
+            val charlieQr = charlieStore.createInvite("Charlie")
+            val (charlieInit, _) = aliceStore.processScannedQr(charlieQr)
+            val charlieEntry = charlieStore.processKeyExchangeInit(charlieInit, "Alice", charlieQr.ekPub)!!
+            
+            val (sess, msg) = Session.encryptMessage(charlieEntry.session, unrelatedLoc)
+            
+            // Bob tries to process Charlie's message
+            bobStore.processBatch(bobEntry.id, bobEntry.session.recvToken.toHex(), listOf(msg))
+            assertTrue(bobStore.getFriend(bobEntry.id)!!.lastDecryptFailed, "Should be true after decryption failure")
+
+            // Now Alice sends a valid message to Bob
+            val validLoc = MessagePlaintext.Location(1.1, 1.1, 1.0, 1111L)
+            val (aliceSess, validMsg) = Session.encryptMessage(aliceEntry.session, validLoc)
+            aliceStore.updateSession(aliceEntry.id, aliceSess)
+
+            bobStore.processBatch(bobEntry.id, bobEntry.session.recvToken.toHex(), listOf(validMsg))
+            assertFalse(bobStore.getFriend(bobEntry.id)!!.lastDecryptFailed, "Should be reset to false after success")
+        }
 }

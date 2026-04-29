@@ -58,8 +58,8 @@ android {
         applicationId = "net.af0.where"
         minSdk = 26
         targetSdk = 35
-        versionCode = 41
-        versionName = "2026.04.29.3"
+        versionCode = 42
+        versionName = "2026.04.29.4"
         manifestPlaceholders["MAPS_API_KEY"] = localProperties.getProperty("MAPS_API_KEY") ?: System.getenv("MAPS_API_KEY") ?: ""
     }
 

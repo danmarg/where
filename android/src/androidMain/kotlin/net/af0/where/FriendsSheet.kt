@@ -166,6 +166,13 @@ fun FriendsSheet(
                                             color = MaterialTheme.colorScheme.error,
                                         )
                                     }
+                                    if (friend.lastDecryptFailed) {
+                                        Text(
+                                            stringResource(MR.strings.decryption_error_warning),
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.error,
+                                        )
+                                    }
                                 }
 
                                 IconButton(onClick = { renameFriend = friend }) {

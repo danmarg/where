@@ -61,6 +61,8 @@ data class FriendEntry(
     val sharingEnabled: Boolean = true,
     /** Optional outbox for transactional recovery (§5.4). */
     val outbox: EncryptedOutboxMessage? = null,
+    /** Set if the last poll for this friend resulted in decryption failures. */
+    val lastDecryptFailed: Boolean = false,
 ) {
     companion object {
         /** §12: Surface a "no recent location" warning after 7 days of silence. */
@@ -202,6 +204,7 @@ class E2eeStore(
                             lastPollTs = s.lastPollTs,
                             sharingEnabled = s.sharingEnabled,
                             outbox = s.outbox,
+                            lastDecryptFailed = s.lastDecryptFailed,
                         )
                     entry.id to entry
                 }.toMutableMap()
@@ -235,6 +238,7 @@ class E2eeStore(
                             lastPollTs = f.lastPollTs,
                             sharingEnabled = f.sharingEnabled,
                             outbox = f.outbox,
+                            lastDecryptFailed = f.lastDecryptFailed,
                         )
                     },
                 pendingInvites = pendingInvites,
@@ -723,6 +727,7 @@ class E2eeStore(
                     lastLat = lastLocation?.lat ?: entry.lastLat,
                     lastLng = lastLocation?.lng ?: entry.lastLng,
                     lastTs = lastLocation?.ts ?: entry.lastTs,
+                    lastDecryptFailed = if (orderedMessages.isNotEmpty()) (failCount > 0 && !anySuccess) else entry.lastDecryptFailed,
                 )
 
             // The recvToken must only change if we had a successful decryption (§7.2).
@@ -764,6 +769,7 @@ internal data class SerializedFriendEntry(
     val lastPollTs: Long = 0L,
     val sharingEnabled: Boolean = true,
     val outbox: EncryptedOutboxMessage? = null,
+    val lastDecryptFailed: Boolean = false,
 )
 
 @Serializable

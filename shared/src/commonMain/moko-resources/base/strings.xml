@@ -24,6 +24,7 @@
     <string name="h_ago">%d h ago</string>
     <string name="d_ago">%d d ago</string>
     <string name="stale_friend_warning">Friend has not been seen recently — sharing paused for security</string>
+    <string name="decryption_error_warning">Security error — could not decrypt messages from this friend</string>
     <string name="rename">Rename</string>
     <string name="resume">Resume</string>
     <string name="pause">Pause</string>

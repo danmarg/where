@@ -74,6 +74,11 @@ struct FriendsSheet: View {
                                                 .font(.caption)
                                                 .foregroundStyle(.red)
                                         }
+                                        if friend.lastDecryptFailed {
+                                            Text(MR.strings().decryption_error_warning.localized())
+                                                .font(.caption)
+                                                .foregroundStyle(.red)
+                                        }
                                     }
                                     Spacer()
 

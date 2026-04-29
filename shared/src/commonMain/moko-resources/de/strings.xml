@@ -23,7 +23,8 @@
     <string name="m_ago">vor %d Min.</string>
     <string name="h_ago">vor %d Std.</string>
     <string name="d_ago">vor %d Tg.</string>
-    <string name="stale_friend_warning">Freund wurde in letzter Zeit nicht gesehen — Teilen zur Sicherheit pausiert</string>
+    <string name="stale_friend_warning">Freund wurde seit längerer Zeit nicht gesehen – Freigabe zur Sicherheit pausiert</string>
+    <string name="decryption_error_warning">Sicherheitsfehler – Nachrichten konnten nicht entschlüsselt werden</string>
     <string name="rename">Umbenennen</string>
     <string name="resume">Fortsetzen</string>
     <string name="pause">Pause</string>
