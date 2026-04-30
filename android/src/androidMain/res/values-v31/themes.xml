@@ -1,9 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <style name="Theme.Where" parent="android:Theme.DeviceDefault.Light.NoActionBar">
-        <item name="android:statusBarColor">@color/splash_background</item>
-    </style>
-
     <style name="Theme.Where.Splash" parent="Theme.SplashScreen">
         <item name="windowSplashScreenBackground">@color/splash_background</item>
         <item name="windowSplashScreenAnimatedIcon">@mipmap/ic_launcher_foreground</item>
