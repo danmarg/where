@@ -71,6 +71,9 @@ libsodium-kmp = { module = "com.ionspin.kotlin:multiplatform-crypto-libsodium-bi
 libsodium-kmp-jvm = { module = "com.ionspin.kotlin:multiplatform-crypto-libsodium-bindings-jvm", version.ref = "libsodium" }
 security-crypto = { module = "androidx.security:security-crypto", version.ref = "security-crypto" }
 
+# Splash Screen
+androidx-core-splashscreen = { module = "androidx.core:core-splashscreen", version = "1.0.1" }
+
 # Redis
 jedis = { module = "redis.clients:jedis", version.ref = "jedis" }
 

@@ -35,6 +35,7 @@ kotlin {
         androidMain.dependencies {
             implementation(libs.kotlinx.serialization.json)
             implementation(libs.security.crypto)
+            implementation(libs.androidx.core.splashscreen)
         }
         androidUnitTest.dependencies {
             implementation(kotlin("test"))
@@ -58,8 +59,8 @@ android {
         applicationId = "net.af0.where"
         minSdk = 26
         targetSdk = 35
-        versionCode = 42
-        versionName = "2026.04.29.4"
+        versionCode = 46
+        versionName = "2026.04.30.2"
         manifestPlaceholders["MAPS_API_KEY"] = localProperties.getProperty("MAPS_API_KEY") ?: System.getenv("MAPS_API_KEY") ?: ""
     }
 

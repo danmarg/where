@@ -99,6 +99,7 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
+        androidx.core.splashscreen.SplashScreen.installSplashScreen(this)
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         intent?.data?.toString()?.let { viewModel.processQrUrl(it) }
