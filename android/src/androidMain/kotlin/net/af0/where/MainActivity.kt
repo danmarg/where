@@ -34,6 +34,7 @@ import androidx.core.content.ContextCompat
 import com.journeyapps.barcodescanner.ScanContract
 import com.journeyapps.barcodescanner.ScanOptions
 import dev.icerock.moko.resources.compose.stringResource
+import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
 import net.af0.where.e2ee.InviteState
 import net.af0.where.shared.MR
 
@@ -99,7 +100,7 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
-        androidx.core.splashscreen.SplashScreen.installSplashScreen(this)
+        installSplashScreen()
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         intent?.data?.toString()?.let { viewModel.processQrUrl(it) }
