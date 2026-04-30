@@ -56,7 +56,7 @@ targets:
         UIApplicationSceneManifest:
           UIApplicationSupportsMultipleScenes: true
           UISceneConfigurations: {}
-        UILaunchStoryboardName: LaunchScreen
+        UILaunchStoryboardName: BrandLaunch
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait
           - UIInterfaceOrientationLandscapeLeft

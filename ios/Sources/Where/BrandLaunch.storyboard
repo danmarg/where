@@ -17,11 +17,11 @@
                         <rect key="frame" x="0.0" y="0.0" width="393" height="852"/>
                         <autoresizingMask key="autoresizingMask" widthSizable="YES" heightSizable="YES"/>
                         <subviews>
-                            <imageView clipsSubviews="YES" userInteractionEnabled="NO" contentMode="scaleAspectFit" horizontalHuggingPriority="251" verticalHuggingPriority="251" image="Mascot" translatesAutoresizingMaskIntoConstraints="NO" id="MascotIcon">
-                                <rect key="frame" x="106.66666666666669" y="266" width="180" height="180"/>
+                            <imageView clipsSubviews="YES" userInteractionEnabled="NO" contentMode="scaleAspectFit" horizontalHuggingPriority="251" verticalHuggingPriority="251" image="LaunchIcon" translatesAutoresizingMaskIntoConstraints="NO" id="MascotIcon">
+                                <rect key="frame" x="96.666666666666686" y="246" width="200" height="200"/>
                                 <constraints>
-                                    <constraint firstAttribute="width" constant="180" id="w1"/>
-                                    <constraint firstAttribute="height" constant="180" id="h1"/>
+                                    <constraint firstAttribute="width" constant="200" id="w1"/>
+                                    <constraint firstAttribute="height" constant="200" id="h1"/>
                                 </constraints>
                             </imageView>
                             <imageView clipsSubviews="YES" userInteractionEnabled="NO" contentMode="scaleAspectFit" horizontalHuggingPriority="251" verticalHuggingPriority="251" image="Wordmark" translatesAutoresizingMaskIntoConstraints="NO" id="WordmarkText">
@@ -36,7 +36,7 @@
                         <color key="backgroundColor" name="LaunchBackground"/>
                         <constraints>
                             <constraint firstItem="MascotIcon" firstAttribute="centerX" secondItem="Ze5-6b-2t3" secondAttribute="centerX" id="c1"/>
-                            <constraint firstItem="MascotIcon" firstAttribute="centerY" secondItem="Ze5-6b-2t3" secondAttribute="centerY" constant="-70" id="y1"/>
+                            <constraint firstItem="MascotIcon" firstAttribute="centerY" secondItem="Ze5-6b-2t3" secondAttribute="centerY" constant="-80" id="y1"/>
                             <constraint firstItem="WordmarkText" firstAttribute="top" secondItem="MascotIcon" secondAttribute="bottom" constant="16" id="t1"/>
                             <constraint firstItem="WordmarkText" firstAttribute="centerX" secondItem="Ze5-6b-2t3" secondAttribute="centerX" id="c2"/>
                         </constraints>
@@ -48,7 +48,7 @@
         </scene>
     </scenes>
     <resources>
-        <image name="Mascot" width="432" height="432"/>
+        <image name="LaunchIcon" width="432" height="432"/>
         <image name="Wordmark" width="1076" height="186"/>
         <namedColor name="LaunchBackground">
             <color red="0.30196078431372547" green="0.6588235294117647" blue="0.15686274509803921" alpha="1" colorSpace="custom" customColorSpace="sRGB"/>
