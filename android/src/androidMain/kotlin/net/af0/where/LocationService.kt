@@ -9,6 +9,7 @@ import android.app.PendingIntent
 import android.app.Service
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.os.Build
 import android.os.IBinder
 import android.os.SystemClock
 import android.util.Log
@@ -293,7 +294,12 @@ class LocationService : Service() {
     private fun scheduleDozeAlarm(delayMs: Long) {
         val intent = Intent(this, LocationService::class.java).apply { action = ACTION_POLL_ALARM }
         val pi = PendingIntent.getService(this, 0, intent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
-        alarmManager.setAndAllowWhileIdle(AlarmManager.ELAPSED_REALTIME_WAKEUP, SystemClock.elapsedRealtime() + delayMs, pi)
+        val triggerAt = SystemClock.elapsedRealtime() + delayMs
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && alarmManager.canScheduleExactAlarms()) {
+            alarmManager.setExactAndAllowWhileIdle(AlarmManager.ELAPSED_REALTIME_WAKEUP, triggerAt, pi)
+        } else {
+            alarmManager.setAndAllowWhileIdle(AlarmManager.ELAPSED_REALTIME_WAKEUP, triggerAt, pi)
+        }
     }
 
     private fun cancelDozeAlarm() {
