@@ -566,7 +566,7 @@ final class LocationSyncService: ObservableObject {
 
     func cancelPendingInit() async {
         let hasInviteState = !(inviteState is Shared.InviteState.None)
-        guard pendingInitPayload != nil || hasInviteState else { return }
+        guard pendingInitPayload != nil || hasInviteState || pendingInitAliceEkPub != nil else { return }
         
         let ekPubToClear = pendingInitAliceEkPub
         pendingInitPayload = nil
