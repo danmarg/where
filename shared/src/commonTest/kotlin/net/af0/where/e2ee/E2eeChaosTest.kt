@@ -36,28 +36,36 @@ class E2eeChaosTest {
         val bobToAliceId = bobEntry.id
 
         // 2. Start Chaos
-        aliceChaosStorage.failWriteProbability = 0.3
-        bobChaosStorage.failWriteProbability = 0.3
-        aliceChaosMailbox.failPostProbability = 0.3
-        aliceChaosMailbox.failPollProbability = 0.3
-        bobChaosMailbox.failPostProbability = 0.3
-        bobChaosMailbox.failPollProbability = 0.3
+        val chaosProbability = 0.3
+        aliceChaosStorage.failWriteProbability = chaosProbability
+        bobChaosStorage.failWriteProbability = chaosProbability
+        aliceChaosMailbox.failPostProbability = chaosProbability
+        aliceChaosMailbox.failPollProbability = chaosProbability
+        bobChaosMailbox.failPostProbability = chaosProbability
+        bobChaosMailbox.failPollProbability = chaosProbability
 
         aliceChaosMailbox.corruptPayloadProbability = 0.1
         bobChaosMailbox.corruptPayloadProbability = 0.1
+        aliceChaosMailbox.reorderProbability = 0.1
+        bobChaosMailbox.reorderProbability = 0.1
 
         println("Starting Chaos Phase...")
 
         val successfulLocationsReceivedByBob = mutableSetOf<Int>()
         val successfulLocationsReceivedByAlice = mutableSetOf<Int>()
 
-        repeat(200) { i ->
+        repeat(1000) { i ->
+            // Randomized chaos factors per iteration
+            val currentChaos = Random.nextDouble(0.0, 0.5)
+            aliceChaosStorage.failWriteProbability = currentChaos
+            bobChaosStorage.failWriteProbability = currentChaos
+            
             // Randomly restart stores (simulates app kill/memory loss)
-            if (Random.nextDouble() < 0.2) {
+            if (Random.nextDouble() < 0.1) {
                 aliceStore = E2eeStore(aliceChaosStorage)
                 aliceClient = LocationClient("http://fake", aliceStore, aliceChaosMailbox)
             }
-            if (Random.nextDouble() < 0.2) {
+            if (Random.nextDouble() < 0.1) {
                 bobStore = E2eeStore(bobChaosStorage)
                 bobClient = LocationClient("http://fake", bobStore, bobChaosMailbox)
             }

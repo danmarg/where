@@ -24,13 +24,24 @@ class ChaosMailboxClient(private val client: MailboxClient) : MailboxClient {
     var failPollProbability = 0.0
     var corruptNextPayload = false
     var corruptPayloadProbability = 0.0
+    var reorderProbability = 0.0
+    private val outboxBuffer = mutableListOf<MailboxPayload>()
 
     override suspend fun post(baseUrl: String, token: String, payload: MailboxPayload) {
         if (failNextPost || Random.nextDouble() < failPostProbability) {
             failNextPost = false
             throw NetworkException("Simulated network failure on POST")
         }
-        client.post(baseUrl, token, payload)
+        if (Random.nextDouble() < reorderProbability) {
+            outboxBuffer.add(payload)
+        } else {
+            // Send buffer if available to simulate late delivery
+            if (outboxBuffer.isNotEmpty()) {
+                outboxBuffer.forEach { client.post(baseUrl, token, it) }
+                outboxBuffer.clear()
+            }
+            client.post(baseUrl, token, payload)
+        }
     }
 
     override suspend fun poll(baseUrl: String, token: String): List<MailboxPayload> {
@@ -38,7 +49,12 @@ class ChaosMailboxClient(private val client: MailboxClient) : MailboxClient {
             failNextPoll = false
             throw NetworkException("Simulated network failure on POLL")
         }
-        val messages = client.poll(baseUrl, token)
+        val messages = client.poll(baseUrl, token).toMutableList()
+        // Simulate reordering by shuffling retrieved messages
+        if (Random.nextDouble() < reorderProbability) {
+            messages.shuffle()
+        }
+        
         return if (corruptNextPayload || Random.nextDouble() < corruptPayloadProbability) {
             corruptNextPayload = false
             messages.map { msg ->
@@ -54,7 +70,6 @@ class ChaosMailboxClient(private val client: MailboxClient) : MailboxClient {
     }
 
     override suspend fun ack(baseUrl: String, token: String, count: Int) {
-        // ACKs are typically non-fatal in the real client, but we can fail them too
         client.ack(baseUrl, token, count)
     }
 }
