@@ -313,15 +313,15 @@ class E2eeIntegrationTest {
 
         // Correct: decrypt old message (seq 1) with the session state that skipped it (bobState2).
         // This must hit the skipped message keys cache.
-        val (_, decrypted1) = Session.decryptMessage(bobState2, message)
+        val (bobState3, decrypted1) = Session.decryptMessage(bobState2, message)
         assertIs<MessagePlaintext.Location>(decrypted1)
         assertEquals(location.lat, decrypted1.lat, 1e-9)
 
-        // Wrong: decrypt old message (seq 1) with the post-rotation state (bobState2)
+        // Wrong: decrypt old message (seq 1) with the updated state (bobState3)
         // after it has ALREADY been decrypted. Key should be gone from cache.
         val threw =
             try {
-                Session.decryptMessage(bobState2, message)
+                Session.decryptMessage(bobState3, message)
                 false
             } catch (_: Exception) {
                 true
