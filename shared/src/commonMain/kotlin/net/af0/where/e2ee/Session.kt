@@ -51,7 +51,6 @@ object Session {
         val envelope = encryptHeader(state.sendHeaderKey, dhPub, seq, state.pn)
 
         // Memory Hygiene
-        state.sendChainKey.zeroize()
         step.messageKey.zeroize()
         step.messageNonce.zeroize()
         plaintext.zeroize()
@@ -161,8 +160,7 @@ object Session {
 
             // Remove used key from cache
             val newCache = LinkedHashMap(cleanState.skippedMessageKeys)
-            val removed = newCache.remove(cacheKey)
-            removed?.zeroize()
+            newCache.remove(cacheKey)
 
             // If no more skipped keys exist for this epoch, drop the cached epoch header key.
             val epochHex = remoteDhPub.toHex()
@@ -357,14 +355,6 @@ object Session {
                             speculativeState.seenRemoteDhPubs
                         },
                 )
-
-            // Memory Hygiene
-            if (isNewDhEpoch) {
-                cleanState.localDhPriv.zeroize()
-                cleanState.rootKey.zeroize()
-                cleanState.sendChainKey.zeroize()
-                cleanState.recvChainKey.zeroize()
-            }
 
             return newState to decoded
         } catch (e: Exception) {
