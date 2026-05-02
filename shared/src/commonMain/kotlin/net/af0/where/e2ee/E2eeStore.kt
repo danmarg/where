@@ -131,18 +131,16 @@ class E2eeStore(
     // could concurrently access and update the same session state.
     private val stateLock = Mutex()
 
-    // In-memory diagnostic event log. Capped at MAX_DIAGNOSTIC_EVENTS entries.
-    // Events are prepended (newest first) and pre-formatted with a +Xm Ys offset
-    // from app start so they remain readable without a wall-clock reference.
-    private val appStartSeconds = currentTimeSeconds()
+    // Diagnostic event log. Capped at MAX_DIAGNOSTIC_EVENTS entries, persisted across restarts.
+    // Events are prepended (newest first) and stamped with UTC HH:mm:ss so they remain
+    // readable after an app restart.
     private val _diagnosticLog = MutableStateFlow<List<String>>(emptyList())
     val diagnosticLog: StateFlow<List<String>> = _diagnosticLog.asStateFlow()
 
     fun addDiagnosticEvent(message: String) {
-        val offset = currentTimeSeconds() - appStartSeconds
-        val min = offset / 60
-        val sec = offset % 60
-        val entry = "+${min}m${sec.toString().padStart(2, '0')}s $message"
+        val t = currentTimeSeconds()
+        val s = (t % 86400).toInt()
+        val entry = "${(s / 3600).toString().padStart(2, '0')}:${((s % 3600) / 60).toString().padStart(2, '0')}:${(s % 60).toString().padStart(2, '0')} $message"
         _diagnosticLog.update { current ->
             (listOf(entry) + current).take(MAX_DIAGNOSTIC_EVENTS)
         }
@@ -184,6 +182,9 @@ class E2eeStore(
                 }.toMutableMap()
 
             pendingInvites = serialized.pendingInvites.toMutableList()
+            if (serialized.diagnosticLog.isNotEmpty()) {
+                _diagnosticLog.value = serialized.diagnosticLog
+            }
         } catch (e: Exception) {
             println("[E2eeStore] Error loading state: ${e.message}")
             e.printStackTrace()
@@ -222,6 +223,7 @@ class E2eeStore(
                         )
                     },
                 pendingInvites = invitesToSave,
+                diagnosticLog = _diagnosticLog.value,
             )
         try {
             storage.putString(STORAGE_KEY, json.encodeToString(serialized))
@@ -783,4 +785,5 @@ internal data class SerializedFriendEntry(
 internal data class SerializedStore(
     val friends: List<SerializedFriendEntry>,
     val pendingInvites: List<PendingInvite> = emptyList(),
+    val diagnosticLog: List<String> = emptyList(),
 )
