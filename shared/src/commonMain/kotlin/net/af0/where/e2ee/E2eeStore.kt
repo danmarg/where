@@ -63,6 +63,8 @@ data class FriendEntry(
     val outbox: EncryptedOutboxMessage? = null,
     /** Set if the last poll for this friend resulted in decryption failures. */
     val lastDecryptFailed: Boolean = false,
+    /** Tracks consecutive 429 errors for the current outbox. */
+    val outbox429Count: Int = 0,
 ) {
     companion object {
         /** §12: Surface a "no recent location" warning after 7 days of silence. */
@@ -177,8 +179,9 @@ class E2eeStore(
                             sharingEnabled = s.sharingEnabled,
                             outbox = s.outbox,
                             lastDecryptFailed = s.lastDecryptFailed,
+                            outbox429Count = s.outbox429Count,
                         )
-                    entry.id to entry
+                    s.friendId to entry
                 }.toMutableMap()
 
             pendingInvites = serialized.pendingInvites.toMutableList()
@@ -220,6 +223,7 @@ class E2eeStore(
                             sharingEnabled = f.sharingEnabled,
                             outbox = f.outbox,
                             lastDecryptFailed = f.lastDecryptFailed,
+                            outbox429Count = f.outbox429Count,
                         )
                     },
                 pendingInvites = invitesToSave,
@@ -527,22 +531,35 @@ class E2eeStore(
         }
     }
 
-    /** Clears the outbox after successful delivery. */
+    /** Clears the outbox after successful delivery or abandonment. */
     suspend fun clearOutbox(id: String) {
         stateLock.withLock {
             val entry = friends[id] ?: return@withLock
-            if (entry.outbox != null) {
-                val newFriends = friends + (id to entry.copy(outbox = null))
+            if (entry.outbox != null || entry.outbox429Count > 0) {
+                val newFriends = friends + (id to entry.copy(outbox = null, outbox429Count = 0))
                 save(friendsOverride = newFriends)
             }
         }
     }
 
+    /** Increments the consecutive 429 error count for the current outbox. */
+    suspend fun incrementOutbox429Count(id: String): Int =
+        stateLock.withLock {
+            val entry = friends[id] ?: return@withLock 0
+            val newCount = entry.outbox429Count + 1
+            val newFriends = friends + (id to entry.copy(outbox429Count = newCount))
+            save(friendsOverride = newFriends)
+            newCount
+        }
+
     /** Atomically clears the outbox AND updates the session in a single save (H10). */
-    suspend fun clearOutboxAndUpdateSession(id: String, newSession: SessionState) {
+    suspend fun clearOutboxAndUpdateSession(
+        id: String,
+        newSession: SessionState,
+    ) {
         stateLock.withLock {
             val entry = friends[id] ?: return@withLock
-            val newFriends = friends + (id to entry.copy(session = newSession, outbox = null))
+            val newFriends = friends + (id to entry.copy(session = newSession, outbox = null, outbox429Count = 0))
             save(friendsOverride = newFriends)
         }
     }
@@ -642,7 +659,6 @@ class E2eeStore(
                         null // Un-decryptable header — could be a ratchet message; do not ACK
                     }
                 }
-            val hadSilentDrops = sortedMessagesWithHeaders.size < encryptedMessages.size
             val orderedMessages = sortedMessagesWithHeaders.sortedWith { (h1, _), (h2, _) ->
                     val b1 =
                         when {
@@ -714,13 +730,14 @@ class E2eeStore(
                     (if (tokenChanged) " rotated=true" else ""),
             )
 
+            val silentDrops = encryptedMessages.size - orderedMessages.size
+
             // Persistence: we update the store with the latest successfully ratcheted state.
             val hadActivity = decryptedLocations.isNotEmpty() || (anySuccess && currentSession != entry.session)
 
             val lastLocation = decryptedLocations.lastOrNull()
 
             val totalProcessed = orderedMessages.size
-            val silentDrops = encryptedMessages.size - totalProcessed
             val isFailedBatch = (totalProcessed > 0 && !anySuccess && failCount > 0) || (silentDrops > 0 && !anySuccess)
 
             val newFriends =
@@ -745,7 +762,7 @@ class E2eeStore(
             }
 
             save(friendsOverride = newFriends)
-            PollBatchResult(decryptedLocations, anySuccess, hadSilentDrops)
+            PollBatchResult(decryptedLocations, anySuccess, silentDrops > 0)
         }
 
     private fun sanitizeName(name: String): String {
@@ -779,6 +796,7 @@ internal data class SerializedFriendEntry(
     val sharingEnabled: Boolean = true,
     val outbox: EncryptedOutboxMessage? = null,
     val lastDecryptFailed: Boolean = false,
+    val outbox429Count: Int = 0,
 )
 
 @Serializable

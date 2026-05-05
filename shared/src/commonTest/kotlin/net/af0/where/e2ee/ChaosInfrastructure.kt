@@ -25,7 +25,12 @@ class ChaosMailboxClient(private val client: MailboxClient) : MailboxClient {
     var corruptNextPayload = false
     var corruptPayloadProbability = 0.0
     var reorderProbability = 0.0
-    private val outboxBuffer = mutableListOf<MailboxPayload>()
+    // When true: the message IS delivered to the server (relay) but the HTTP response is
+    // "lost" and a NetworkException is thrown to the caller. This simulates the production
+    // failure where a POST reaches the server (message stored) but the client never receives
+    // the 204, treats it as a failure, and retries — depositing duplicate messages.
+    var stealthPost = false
+    private val outboxBuffer = mutableListOf<Pair<String, MailboxPayload>>()
 
     override suspend fun post(baseUrl: String, token: String, payload: MailboxPayload) {
         if (failNextPost || Random.nextDouble() < failPostProbability) {
@@ -33,14 +38,15 @@ class ChaosMailboxClient(private val client: MailboxClient) : MailboxClient {
             throw NetworkException("Simulated network failure on POST")
         }
         if (Random.nextDouble() < reorderProbability) {
-            outboxBuffer.add(payload)
+            outboxBuffer.add(token to payload)
         } else {
-            // Send buffer if available to simulate late delivery
+            // Flush buffer first to simulate late delivery to the correct original token
             if (outboxBuffer.isNotEmpty()) {
-                outboxBuffer.forEach { client.post(baseUrl, token, it) }
+                outboxBuffer.forEach { (t, p) -> client.post(baseUrl, t, p) }
                 outboxBuffer.clear()
             }
-            client.post(baseUrl, token, payload)
+            client.post(baseUrl, token, payload)  // may throw 429 if queue full — propagates as-is
+            if (stealthPost) throw NetworkException("Simulated timeout: POST delivered but response lost")
         }
     }
 

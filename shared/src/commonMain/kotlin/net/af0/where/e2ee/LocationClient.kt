@@ -454,6 +454,22 @@ open class LocationClient(
                         println("[LocationClient] recovery: clearing expired outbox for ${friend.id.take(8)} (status=$statusCode)")
                         store.clearOutbox(friend.id)
                     }
+                } else if (statusCode == 429) {
+                    val count = store.incrementOutbox429Count(friend.id)
+                    println("[LocationClient] recovery: outbox 429 for ${friend.id.take(8)} (retry $count/$MAX_OUTBOX_429_RETRIES)")
+                    
+                    // DEADLOCK RECOVERY: if we get N consecutive 429s on a transition message,
+                    // the prevSendToken mailbox is likely full and the peer has already
+                    // ratcheted away. Abandon the old message and finalize the transition.
+                    if (count >= MAX_OUTBOX_429_RETRIES &&
+                        friend.session.isSendTokenPending &&
+                        outbox.token == friend.session.prevSendToken.toHex()
+                    ) {
+                        println("[LocationClient] recovery: ABANDONING stuck transition outbox for ${friend.id.take(8)} after $count 429s")
+                        store.addDiagnosticEvent("ABANDON OUTBOX: ${friend.id.take(8)} after $count 429s")
+                        store.clearOutbox(friend.id)
+                        finalizeTokenTransition(friend.id)
+                    }
                 }
                 // Otherwise: Network failure or other server error: leave in outbox for next poll
             }

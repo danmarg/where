@@ -26,10 +26,15 @@ class FakeMailboxClient : MailboxClient {
 }
 
 /**
- * A self-routing mailbox: post() drops the payload into the same inbox that poll() reads,
- * so both sides of a session can share one instance and messages are delivered automatically.
+ * A self-routing mailbox that mirrors production server semantics:
+ * - post() enqueues the payload; throws ServerException(429) when maxQueueDepth is reached
+ * - poll() is non-destructive (returns up to maxDrainSize messages without removing them)
+ * - ack() removes the first [count] messages, matching DELETE /inbox/{token}?n=N
  */
-class RelayMailboxClient : MailboxClient {
+class RelayMailboxClient(
+    val maxQueueDepth: Int = Int.MAX_VALUE,
+    private val maxDrainSize: Int = 50,
+) : MailboxClient {
     val inbox = mutableMapOf<String, MutableList<MailboxPayload>>()
     val history = mutableListOf<Pair<String, MailboxPayload>>()
 
@@ -38,20 +43,29 @@ class RelayMailboxClient : MailboxClient {
         token: String,
         payload: MailboxPayload,
     ) {
-        inbox.getOrPut(token) { mutableListOf() }.add(payload)
+        val queue = inbox.getOrPut(token) { mutableListOf() }
+        if (queue.size >= maxQueueDepth) {
+            throw ServerException(429, "queue full for token ${token.take(8)}")
+        }
+        queue.add(payload)
         history.add(token to payload)
     }
 
     override suspend fun poll(
         baseUrl: String,
         token: String,
-    ): List<MailboxPayload> = inbox.remove(token) ?: emptyList()
+    ): List<MailboxPayload> = inbox[token]?.take(maxDrainSize) ?: emptyList()
 
     override suspend fun ack(
         baseUrl: String,
         token: String,
         count: Int,
-    ) {}
+    ) {
+        inbox[token]?.let { msgs ->
+            repeat(count.coerceAtMost(msgs.size)) { msgs.removeFirst() }
+            if (msgs.isEmpty()) inbox.remove(token)
+        }
+    }
 }
 
 class TokenTransitionTest {
