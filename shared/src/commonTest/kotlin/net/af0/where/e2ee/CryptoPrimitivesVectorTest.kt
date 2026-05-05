@@ -244,4 +244,32 @@ class CryptoPrimitivesVectorTest {
 
         assertContentEquals(expectedOkm, hkdfSha256(ikm, salt, info, l))
     }
+
+    @Test
+    fun testBytesToLongPrecedence() {
+        // b0=0x01, b1=0x02, b2=0x03, b3=0x04, b4=0x05, b5=0x06, b6=0x07, b7=0x08
+        val b = hex("0102030405060708")
+        val result = bytesToLong(b)
+        // Correct big-endian: 0x0102030405060708
+        val expected = 0x0102030405060708L
+
+        // If broken (left-to-right evaluation):
+        // r = (0x01 and 0xFF) shl 56 = 0x0100000000000000
+        // r = (r or 0x02) and 0xFF = 0x02
+        // r = (r shl 48) = 0x0002000000000000
+        // r = (r or 0x03) and 0xFF = 0x03
+        // ...
+        // Finally result would be 0x08.
+
+        assertTrue(result == expected, "bytesToLong broken: expected $expected, got $result")
+    }
+
+    @Test
+    fun testHmacLongKey() {
+        // This test should trigger the bug if the key is longer than 64 bytes
+        val key = ByteArray(100) { 0x01.toByte() }
+        val data = "test".encodeToByteArray()
+        // Should not throw
+        hmacSha256(key, data)
+    }
 }

@@ -34,7 +34,7 @@ internal actual fun hmacSha256(
     // Ensure we work on a copy to avoid mutating the caller's buffer when zeroing.
     var k =
         when {
-            key.size > blockSeparator -> sha256(key)
+            key.size > blockSeparator -> sha256(key).copyOf(blockSeparator)
             key.size < blockSeparator -> key.copyOf(blockSeparator)
             else -> key.copyOf()
         }
