@@ -163,10 +163,11 @@ open class LocationClient(
             try {
                 val result = store.processBatch(friendId, currentTokenToPoll, messages) ?: break
 
-                if (result.hadSilentDrops) {
+                val hasFailures = result.hadSilentDrops || (messages.isNotEmpty() && !result.anySuccess)
+                if (hasFailures) {
                     val count = (silentDropCounts[friendId] ?: 0) + 1
                     silentDropCounts[friendId] = count
-                    store.addDiagnosticEvent("SILENT DROPS: ${friendId.take(8)} token=${currentTokenToPoll.take(8)} (retry $count/$MAX_SILENT_DROP_RETRIES)")
+                    store.addDiagnosticEvent("POLL FAILURES: ${friendId.take(8)} token=${currentTokenToPoll.take(8)} (retry $count/$MAX_SILENT_DROP_RETRIES)")
                 } else {
                     silentDropCounts.remove(friendId)
                 }
@@ -176,15 +177,15 @@ open class LocationClient(
                 // at the header-parsing stage. A dropped message could be a ratchet transition
                 // message; ACK-ing it would cause a permanent token desync.
                 //
-                // Exception: if silent drops have persisted for MAX_SILENT_DROP_RETRIES consecutive
+                // Exception: if failures have persisted for MAX_SILENT_DROP_RETRIES consecutive
                 // polls, force-ACK to break a permanent livelock caused by an unrecoverable message.
                 val forceAck = (silentDropCounts[friendId] ?: 0) >= MAX_SILENT_DROP_RETRIES
                 if (forceAck) {
-                    println("[LocationClient] pollFriend: force-ACKing after $MAX_SILENT_DROP_RETRIES consecutive silent-drop polls for ${friendId.take(8)} — dropped messages are unrecoverable")
-                    store.addDiagnosticEvent("FORCE ACK: ${friendId.take(8)} — unrecoverable silent drops, re-pair if desynced")
+                    println("[LocationClient] pollFriend: force-ACKing after $MAX_SILENT_DROP_RETRIES consecutive failures for ${friendId.take(8)} — messages are unrecoverable")
+                    store.addDiagnosticEvent("FORCE ACK: ${friendId.take(8)} — unrecoverable failures, re-pair if desynced")
                     silentDropCounts.remove(friendId)
                 }
-                if (result.anySuccess && (!result.hadSilentDrops || forceAck)) {
+                if ((result.anySuccess && !result.hadSilentDrops) || forceAck) {
                     try {
                         mailboxClient.ack(baseUrl, currentTokenToPoll, messages.size)
                     } catch (e: Exception) {
@@ -432,6 +433,11 @@ open class LocationClient(
                 // we must also trigger the token transition cleanup.
                 finalizeTokenTransition(friend.id)
             } catch (e: Exception) {
+                if (e is ProtocolException && e.message?.contains("gap") == true) {
+                    println("[LocationClient] recovery: permanent cryptodesync for ${friend.id.take(8)}, clearing outbox")
+                    store.clearOutbox(friend.id)
+                    continue
+                }
                 // Permanent failures (mailbox expired/deleted) should clear the outbox (§5.4).
                 val statusCode = (e as? ServerException)?.statusCode
                 if (statusCode == 404 || statusCode == 410) {

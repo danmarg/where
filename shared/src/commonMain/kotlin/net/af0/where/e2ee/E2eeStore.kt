@@ -652,7 +652,19 @@ class E2eeStore(
                             try {
                                 Session.decryptHeader(entry.session.headerKey, msg.envelope)
                             } catch (_: Exception) {
-                                Session.decryptHeader(entry.session.nextHeaderKey, msg.envelope)
+                                try {
+                                    Session.decryptHeader(entry.session.nextHeaderKey, msg.envelope)
+                                } catch (_: Exception) {
+                                    // Last resort: try skipped epoch header keys (#212-followup)
+                                    var found: Session.DecryptedHeader? = null
+                                    for ((_, hk) in entry.session.skippedEpochHeaderKeys) {
+                                        try {
+                                            found = Session.decryptHeader(hk, msg.envelope)
+                                            break
+                                        } catch (_: Exception) {}
+                                    }
+                                    found ?: throw Exception("All header keys failed")
+                                }
                             }
                         header to msg
                     } catch (_: Exception) {
