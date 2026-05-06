@@ -372,7 +372,7 @@ open class LocationClient(
         // TOKEN TRANSITION (§5.4): If we were transitioning DH epochs, we have now
         // successfully flushed the final message of the old epoch. We must now
         // clear the pending flag and trigger the fresh keepalive.
-        finalizeTokenTransition(friendId)
+        finalizeTokenTransition(friendId, clearingToken = tokenToUse)
     }
 
     /**
@@ -380,12 +380,16 @@ open class LocationClient(
      * Clears isSendTokenPending and sends a fresh keepalive if necessary.
      * This is called by both the main send path and the outbox recovery path.
      */
-    private suspend fun finalizeTokenTransition(friendId: String) {
+    private suspend fun finalizeTokenTransition(
+        friendId: String,
+        clearingToken: String? = null,
+    ) {
         // Tightened idempotency check: only act if transition is still marked pending in store.
         val updatedFriend = store.getFriend(friendId) ?: return
-        if (updatedFriend.session.isSendTokenPending) {
+        val session = updatedFriend.session
+        if (session.isSendTokenPending && (clearingToken == null || session.prevSendToken.toHex() == clearingToken)) {
             println("[LocationClient] finalizeTokenTransition: clearing pending flag for ${friendId.take(8)}")
-            val finalSession = updatedFriend.session.copy(isSendTokenPending = false)
+            val finalSession = session.copy(isSendTokenPending = false)
             store.updateSession(friendId, finalSession)
 
             // Only send fresh keepalive if we actually rotated tokens and haven't sent it.
@@ -419,6 +423,8 @@ open class LocationClient(
                 // we must still finalize the transition now.
                 // We detect this by checking if isSendTokenPending is true and sendSeq > 0
                 // (meaning the first message of the new epoch was already sent).
+                // Note: on restart recovery, we don't know the clearingToken, so we act
+                // cautiously. If sendSeq > 0 it's likely we finished the transition.
                 if (friend.session.isSendTokenPending && friend.session.sendSeq > 0) {
                     println("[LocationClient] recovery: detected stale transition flag for ${friend.id.take(8)}, finalizing now")
                     finalizeTokenTransition(friend.id)
@@ -431,7 +437,7 @@ open class LocationClient(
                 store.clearOutbox(friend.id)
                 // TRANSACTIONAL RECOVERY (§5.4): After recovering a lost post,
                 // we must also trigger the token transition cleanup.
-                finalizeTokenTransition(friend.id)
+                finalizeTokenTransition(friend.id, clearingToken = outbox.token)
             } catch (e: Exception) {
                 if (e is ProtocolGapException) {
                     println("[LocationClient] recovery: permanent cryptodesync (gap) for ${friend.id.take(8)}, clearing outbox")
@@ -474,7 +480,7 @@ open class LocationClient(
                         println("[LocationClient] recovery: ABANDONING stuck transition outbox for ${friend.id.take(8)} after $count 429s")
                         store.addDiagnosticEvent("ABANDON OUTBOX: ${friend.id.take(8)} after $count 429s")
                         store.clearOutbox(friend.id)
-                        finalizeTokenTransition(friend.id)
+                        finalizeTokenTransition(friend.id, clearingToken = outbox.token)
                     }
                 }
                 // Otherwise: Network failure or other server error: leave in outbox for next poll

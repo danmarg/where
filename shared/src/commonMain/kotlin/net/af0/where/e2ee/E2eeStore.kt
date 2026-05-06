@@ -674,18 +674,23 @@ class E2eeStore(
             val orderedMessages = sortedMessagesWithHeaders.sortedWith { (h1, _), (h2, _) ->
                     val b1 =
                         when {
-                            h1.dhPub.contentEquals(entry.session.remoteDhPub) -> 0
-                            h1.dhPub.contentEquals(entry.session.lastRemoteDhPub) -> 1
-                            else -> 2
+                            h1.dhPub.contentEquals(entry.session.remoteDhPub) -> 1
+                            h1.dhPub.contentEquals(entry.session.lastRemoteDhPub) -> 0
+                            entry.session.seenRemoteDhPubs.contains(h1.dhPub.toHex()) -> -1
+                            else -> 2 // Unknown NEW epoch
                         }
                     val b2 =
                         when {
-                            h2.dhPub.contentEquals(entry.session.remoteDhPub) -> 0
-                            h2.dhPub.contentEquals(entry.session.lastRemoteDhPub) -> 1
+                            h2.dhPub.contentEquals(entry.session.remoteDhPub) -> 1
+                            h2.dhPub.contentEquals(entry.session.lastRemoteDhPub) -> 0
+                            entry.session.seenRemoteDhPubs.contains(h2.dhPub.toHex()) -> -1
                             else -> 2
                         }
                     if (b1 != b2) {
                         b1.compareTo(b2)
+                    } else if (b1 == 2) {
+                        // For multiple unknown NEW epochs, sort by 'pn' to stay chronological
+                        if (h1.pn != h2.pn) h1.pn.compareTo(h2.pn) else h1.seq.compareTo(h2.seq)
                     } else {
                         h1.seq.compareTo(h2.seq)
                     }
