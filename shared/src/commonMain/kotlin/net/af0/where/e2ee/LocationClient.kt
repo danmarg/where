@@ -384,21 +384,20 @@ open class LocationClient(
         friendId: String,
         clearingToken: String? = null,
     ) {
-        // Tightened idempotency check: only act if transition is still marked pending in store.
-        val updatedFriend = store.getFriend(friendId) ?: return
-        val session = updatedFriend.session
-        if (session.isSendTokenPending && (clearingToken == null || session.prevSendToken.toHex() == clearingToken)) {
+        // Atomic check-and-clear to prevent TOCTOU race rollback (§5.4).
+        if (store.clearSendTokenPending(friendId, clearingToken)) {
             println("[LocationClient] finalizeTokenTransition: clearing pending flag for ${friendId.take(8)}")
-            val finalSession = session.copy(isSendTokenPending = false)
-            store.updateSession(friendId, finalSession)
+
+            val updatedFriend = store.getFriend(friendId) ?: return
+            val session = updatedFriend.session
 
             // Only send fresh keepalive if we actually rotated tokens and haven't sent it.
             // We send this regardless of sharingEnabled to ensure the peer's recvToken advances (§5.3).
-            val tokensRotated = !finalSession.sendToken.contentEquals(finalSession.prevSendToken)
+            val tokensRotated = !session.sendToken.contentEquals(session.prevSendToken)
             if (tokensRotated) {
                 println(
                     "[LocationClient] finalizeTokenTransition: triggering fresh keepalive for ${friendId.take(8)} " +
-                        "on new token ${finalSession.sendToken.toHex().take(8)}",
+                        "on new token ${session.sendToken.toHex().take(8)}",
                 )
                 try {
                     sendKeepalive(friendId)
@@ -406,6 +405,7 @@ open class LocationClient(
                     // Swallow: if the fresh ratchet transition fails (e.g., transport error during flush),
                     // we'll try again next time we process the outbox.
                     println("[LocationClient] finalizeTokenTransition: keepalive failed for ${friendId.take(8)}: ${e.message}")
+                    store.addDiagnosticEvent("KEEPALIVE FAIL: ${friendId.take(8)}: ${e.message?.take(40)}")
                 }
             }
         }
@@ -468,20 +468,7 @@ open class LocationClient(
                     }
                 } else if (statusCode == 429) {
                     val count = store.incrementOutbox429Count(friend.id)
-                    println("[LocationClient] recovery: outbox 429 for ${friend.id.take(8)} (retry $count/$MAX_OUTBOX_429_RETRIES)")
-                    
-                    // DEADLOCK RECOVERY: if we get N consecutive 429s on a transition message,
-                    // the prevSendToken mailbox is likely full and the peer has already
-                    // ratcheted away. Abandon the old message and finalize the transition.
-                    if (count >= MAX_OUTBOX_429_RETRIES &&
-                        friend.session.isSendTokenPending &&
-                        outbox.token == friend.session.prevSendToken.toHex()
-                    ) {
-                        println("[LocationClient] recovery: ABANDONING stuck transition outbox for ${friend.id.take(8)} after $count 429s")
-                        store.addDiagnosticEvent("ABANDON OUTBOX: ${friend.id.take(8)} after $count 429s")
-                        store.clearOutbox(friend.id)
-                        finalizeTokenTransition(friend.id, clearingToken = outbox.token)
-                    }
+                    println("[LocationClient] recovery: outbox 429 for ${friend.id.take(8)} (retry $count)")
                 }
                 // Otherwise: Network failure or other server error: leave in outbox for next poll
             }

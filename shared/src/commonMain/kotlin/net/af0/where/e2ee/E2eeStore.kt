@@ -610,6 +610,30 @@ class E2eeStore(
         }
     }
 
+    /**
+     * Atomically clears the isSendTokenPending flag for a friend.
+     * Returns true if the flag was successfully cleared (it was true), false otherwise.
+     *
+     * @param clearingToken If provided, the flag is only cleared if prevSendToken matches this hex string.
+     */
+    suspend fun clearSendTokenPending(
+        id: String,
+        clearingToken: String? = null,
+    ): Boolean =
+        stateLock.withLock {
+            val entry = friends[id] ?: return@withLock false
+            if (!entry.session.isSendTokenPending) return@withLock false
+
+            if (clearingToken != null && entry.session.prevSendToken.toHex() != clearingToken) {
+                return@withLock false
+            }
+
+            val newSession = entry.session.copy(isSendTokenPending = false)
+            val newFriends = friends + (id to entry.copy(session = newSession))
+            save(friendsOverride = newFriends)
+            true
+        }
+
     // -----------------------------------------------------------------------
     // Batch poll processing
     // -----------------------------------------------------------------------

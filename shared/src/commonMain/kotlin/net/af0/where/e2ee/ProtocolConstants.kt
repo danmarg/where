@@ -19,10 +19,6 @@ internal const val MAX_DIAGNOSTIC_EVENTS = 30
 // force-ACK the batch to break a permanent livelock. The dropped messages are
 // accepted as lost; the session may need re-pairing if they contained DH keys.
 internal const val MAX_SILENT_DROP_RETRIES = 5
-// After this many consecutive 429 (Too Many Requests) failures for a transition
-// message on the prevSendToken, abandon the outbox and finalize the transition.
-// This prevents a permanent deadlock if the old mailbox remains full.
-internal const val MAX_OUTBOX_429_RETRIES = 5
 internal const val MAX_GAP = 100
 internal const val MAX_SKIPPED_KEYS = 100
 internal const val MAX_SKIPPED_EPOCHS = 10
