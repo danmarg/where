@@ -740,56 +740,7 @@ class E2eeStore(
 
             // With Sealed Envelopes (#186), we must first decrypt headers to sort
             val encryptedMessages = messages.filterIsInstance<EncryptedMessagePayload>()
-            val sortedMessagesWithHeaders =
-                encryptedMessages.mapNotNull { msg ->
-                    try {
-                        val header =
-                            try {
-                                Session.decryptHeader(entry.session.headerKey, msg.envelope)
-                            } catch (_: Exception) {
-                                try {
-                                    Session.decryptHeader(entry.session.nextHeaderKey, msg.envelope)
-                                } catch (_: Exception) {
-                                    // Last resort: try skipped epoch header keys (#212-followup)
-                                    var found: Session.DecryptedHeader? = null
-                                    for ((_, hk) in entry.session.skippedEpochHeaderKeys) {
-                                        try {
-                                            found = Session.decryptHeader(hk, msg.envelope)
-                                            break
-                                        } catch (_: Exception) {}
-                                    }
-                                    found ?: throw Exception("All header keys failed")
-                                }
-                            }
-                        header to msg
-                    } catch (_: Exception) {
-                        null // Un-decryptable header — could be a ratchet message; do not ACK
-                    }
-                }
-            val orderedMessages = sortedMessagesWithHeaders.sortedWith { (h1, _), (h2, _) ->
-                    val b1 =
-                        when {
-                            h1.dhPub.contentEquals(entry.session.remoteDhPub) -> 1
-                            h1.dhPub.contentEquals(entry.session.lastRemoteDhPub) -> 0
-                            entry.session.seenRemoteDhPubs.contains(h1.dhPub.toHex()) -> -1
-                            else -> 2 // Unknown NEW epoch
-                        }
-                    val b2 =
-                        when {
-                            h2.dhPub.contentEquals(entry.session.remoteDhPub) -> 1
-                            h2.dhPub.contentEquals(entry.session.lastRemoteDhPub) -> 0
-                            entry.session.seenRemoteDhPubs.contains(h2.dhPub.toHex()) -> -1
-                            else -> 2
-                        }
-                    if (b1 != b2) {
-                        b1.compareTo(b2)
-                    } else if (b1 == 2) {
-                        // For multiple unknown NEW epochs, sort by 'pn' to stay chronological
-                        if (h1.pn != h2.pn) h1.pn.compareTo(h2.pn) else h1.seq.compareTo(h2.seq)
-                    } else {
-                        h1.seq.compareTo(h2.seq)
-                    }
-                }
+            val orderedMessages = BatchProcessor.decryptAndSort(entry.session, encryptedMessages)
 
             var currentSession = entry.session
             var anySuccess = false

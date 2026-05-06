@@ -181,22 +181,18 @@ class LocationRepository(
             when (e) {
                 is net.af0.where.e2ee.ConnectException -> StringDesc.Resource(MR.strings.error_no_connection)
                 is net.af0.where.e2ee.TimeoutException -> StringDesc.Resource(MR.strings.error_timeout)
-                is net.af0.where.e2ee.ServerException -> StringDesc.ResourceFormatted(MR.strings.error_server, e.statusCode)
+                is net.af0.where.e2ee.ServerException -> {
+                    if (e.statusCode == 429) {
+                        StringDesc.Raw("Too many requests (rate limit)")
+                    } else {
+                        StringDesc.ResourceFormatted(MR.strings.error_server, e.statusCode)
+                    }
+                }
                 is net.af0.where.e2ee.AuthenticationException -> StringDesc.Resource(MR.strings.error_auth)
                 is net.af0.where.e2ee.ProtocolException -> StringDesc.Resource(MR.strings.error_protocol)
                 is net.af0.where.e2ee.CryptoException -> StringDesc.Resource(MR.strings.error_crypto)
                 is net.af0.where.e2ee.NetworkException -> StringDesc.Raw("Network error: ${e.message}")
-                else -> {
-                    when {
-                        e.message?.contains("Unable to resolve host", ignoreCase = true) == true ->
-                            StringDesc.Resource(MR.strings.error_no_connection)
-                        e.message?.contains("timeout", ignoreCase = true) == true ->
-                            StringDesc.Resource(MR.strings.error_timeout)
-                        e.message?.contains("ConnectException", ignoreCase = true) == true ->
-                            StringDesc.Resource(MR.strings.error_no_connection)
-                        else -> StringDesc.Resource(MR.strings.error_unexpected)
-                    }
-                }
+                else -> StringDesc.Resource(MR.strings.error_unexpected)
             }
         _connectionStatus.value = ConnectionStatus.Error(msg)
     }
