@@ -13,14 +13,14 @@ internal const val INFO_HEADER_KEY = "Where-v1-HeaderKey"
 // before and after a ratchet both arrive in the same server poll window.
 // SECURITY NOTE: The follow condition requires a successful AEAD authentication,
 // so an adversary without the current chain key cannot force token advancement.
-internal const val MAX_TOKEN_FOLLOWS_PER_POLL = 2
+internal const val MAX_TOKEN_FOLLOWS_PER_POLL = 5
 internal const val MAX_DIAGNOSTIC_EVENTS = 30
 // After this many consecutive polls where header-parse failures blocked the ACK,
 // force-ACK the batch to break a permanent livelock. The dropped messages are
 // accepted as lost; the session may need re-pairing if they contained DH keys.
 internal const val MAX_SILENT_DROP_RETRIES = 5
-internal const val MAX_GAP = 100
-internal const val MAX_SKIPPED_KEYS = 100
+internal const val MAX_GAP = 10000
+internal const val MAX_SKIPPED_KEYS = 10000
 internal const val MAX_SKIPPED_EPOCHS = 10
 internal const val MAX_KEY_AGE_MS = 604_800_000L // 7 days in milliseconds
 internal const val MAX_SEEN_DH_PUBS = 10

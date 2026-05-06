@@ -35,7 +35,7 @@ private val json =
 private const val MAILBOX_TTL_MS = 7 * 24 * 60 * 60 * 1000L
 
 /** Maximum messages retained per token. Prevents unbounded memory growth from floods. */
-private const val MAX_QUEUE_DEPTH = 1000
+private const val MAX_QUEUE_DEPTH = 10000
 
 /** Maximum POST requests per token within the rate-limit window. */
 internal const val RATE_LIMIT_MAX_POSTS = 10
