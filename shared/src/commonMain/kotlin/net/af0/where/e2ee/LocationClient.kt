@@ -417,6 +417,19 @@ open class LocationClient(
      */
     private suspend fun processOutboxes() {
         for (friend in store.listFriends()) {
+            // STALE TRANSITION RECOVERY: If a transition has been pending longer than the server TTL (7 days),
+            // the transition message is gone from prevSendToken. Abandon the pending state and roll back.
+            if (friend.session.isSendTokenPending) {
+                val staleSince = friend.session.sendTokenPendingSinceMs
+                val isStale = staleSince != null && (currentTimeMillis() - staleSince) > PENDING_TRANSITION_TIMEOUT_MS
+                if (isStale) {
+                    println("[LocationClient] pending transition stale for ${friend.id.take(8)}, reverting to prevSendToken")
+                    store.addDiagnosticEvent("STALE ROLLBACK: ${friend.id.take(8)}")
+                    store.abandonPendingTransition(friend.id)
+                    continue // Next processOutboxes call (or poll loop) will pick up the now-normal session
+                }
+            }
+
             val outbox = friend.outbox
             if (outbox == null) {
                 // RECOVERY (§5.4): If we crashed between clearOutbox and finalizeTokenTransition,

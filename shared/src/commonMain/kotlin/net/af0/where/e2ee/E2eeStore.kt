@@ -433,7 +433,9 @@ class E2eeStore(
                         msg = msg,
                         aliceEkPriv = pending.aliceEkPriv,
                         aliceEkPub = pending.qrPayload.ekPub,
-                    )
+                    ).let {
+                        if (it.isSendTokenPending) it.copy(sendTokenPendingSinceMs = currentTimeMillis()) else it
+                    }
                 val entry =
                     FriendEntry(
                         name = sanitizeName(bobName),
@@ -544,12 +546,19 @@ class E2eeStore(
             // Determine which token to use for posting
             val tokenToUse = if (newSession.isSendTokenPending) newSession.prevSendToken else newSession.sendToken
 
+            val updatedSession =
+                if (newSession.isSendTokenPending && !entry.session.isSendTokenPending) {
+                    newSession.copy(sendTokenPendingSinceMs = currentTimeMillis())
+                } else {
+                    newSession
+                }
+
             val newFriends =
                 friends +
                     (
                         friendId to
                             entry.copy(
-                                session = newSession,
+                                session = updatedSession,
                                 outbox = EncryptedOutboxMessage(token = tokenToUse.toHex(), payload = message),
                                 lastSentTs = currentTimeSeconds(),
                             )
@@ -690,10 +699,28 @@ class E2eeStore(
                 return@withLock false
             }
 
-            val newSession = entry.session.copy(isSendTokenPending = false)
+            val newSession = entry.session.copy(isSendTokenPending = false, sendTokenPendingSinceMs = null)
             val newFriends = friends + (id to entry.copy(session = newSession))
             save(friendsOverride = newFriends)
             true
+        }
+
+    /**
+     * Roll back a stale pending transition: move sendToken back to prevSendToken.
+     * Keeps all crypto state (keys, sequence) at the new epoch.
+     */
+    internal suspend fun abandonPendingTransition(friendId: String) =
+        stateLock.withLock {
+            val entry = friends[friendId] ?: return@withLock
+            if (!entry.session.isSendTokenPending) return@withLock
+
+            val rolledBack =
+                entry.session.copy(
+                    sendToken = entry.session.prevSendToken,
+                    isSendTokenPending = false,
+                    sendTokenPendingSinceMs = null,
+                )
+            save(friendsOverride = friends + (friendId to entry.copy(session = rolledBack, outbox = null)))
         }
 
     // -----------------------------------------------------------------------
@@ -843,12 +870,19 @@ class E2eeStore(
             val totalProcessed = orderedMessages.size
             val isFailedBatch = (totalProcessed > 0 && !anySuccess && failCount > 0) || (silentDrops > 0 && !anySuccess)
 
+            val updatedSession =
+                if (currentSession.isSendTokenPending && !entry.session.isSendTokenPending) {
+                    currentSession.copy(sendTokenPendingSinceMs = currentTimeMillis())
+                } else {
+                    currentSession
+                }
+
             val newFriends =
                 friends +
                     (
                         friendId to
                             entry.copy(
-                                session = currentSession,
+                                session = updatedSession,
                                 // Bob becomes confirmed once he receives any valid message from Alice
                                 isConfirmed = entry.isConfirmed || anySuccess,
                                 lastRecvTs = if (hadActivity) currentTimeSeconds() else entry.lastRecvTs,
