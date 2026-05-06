@@ -157,25 +157,25 @@ class SessionTest {
             aSess = newA
         }
 
-        // Bob sends 1 message in Epoch 1 to trigger Alice's DH ratchet.
+        // Alice sends 1 message in Epoch 1 to trigger Alice's DH ratchet.
         val (bSess, bMsg) = Session.encryptMessage(bobSession, loc)
 
-        // Alice receives Bob's message, ratchets DH (now in Epoch 2), and sets pn=60.
+        // Alice receives Bob's message, ratchets DH (now in Epoch 2), and sets pn=6000.
         val (newA, _) = Session.decryptMessage(aSess, bMsg)
         aSess = newA
 
-        // Alice encrypts 60 messages in Epoch 2.
+        // Alice encrypts 10000 messages in Epoch 2.
         var aMsg2: EncryptedMessagePayload? = null
-        repeat(60) {
+        repeat(10000) {
             val (newA2, msg) = Session.encryptMessage(aSess, loc)
             aSess = newA2
             aMsg2 = msg
         }
 
-        // Bob receives only the 60th message of Epoch 2.
-        // This will attempt to skip 60 messages in Epoch 1 (pnGaps = 60)
-        // and 59 messages in Epoch 2 (stepsNeeded = 60).
-        // Total projected cache size = 119 > 100.
+        // Bob receives only the 10000th message of Epoch 2.
+        // This will attempt to skip 6000 messages in Epoch 1 (pnGaps = 6000)
+        // and 9999 messages in Epoch 2 (stepsNeeded = 10000).
+        // Total projected cache size = 15999 > 10000.
         assertFailsWith<ProtocolException> {
             Session.decryptMessage(bSess, aMsg2!!)
         }

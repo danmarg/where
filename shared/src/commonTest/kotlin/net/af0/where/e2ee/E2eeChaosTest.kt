@@ -29,7 +29,7 @@ class E2eeChaosTest {
         var aliceStore = E2eeStore(aliceChaosStorage)
         var bobStore = E2eeStore(bobChaosStorage)
 
-        val relay = RelayMailboxClient()
+        val relay = RelayMailboxClient(rateLimitMaxPosts = 5000, rateLimitMaxPolls = 5000)
         val aliceChaosMailbox = ChaosMailboxClient(relay)
         val bobChaosMailbox = ChaosMailboxClient(relay)
 
@@ -254,7 +254,7 @@ class E2eeChaosTest {
         initializeE2eeTests()
         val aliceStore = E2eeStore(MemoryStorage())
         val bobStore = E2eeStore(MemoryStorage())
-        val relay = RelayMailboxClient()
+        val relay = RelayMailboxClient(rateLimitMaxPosts = 5000, rateLimitMaxPolls = 5000)
         val aliceChaosMailbox = ChaosMailboxClient(relay)
         val bobChaosMailbox = ChaosMailboxClient(relay)
         val aliceClient = LocationClient("http://fake", aliceStore, aliceChaosMailbox)
@@ -330,7 +330,7 @@ class E2eeChaosTest {
     @Test
     fun testMultiFriendChaos() = runTest {
         initializeE2eeTests()
-        val relay = RelayMailboxClient()
+        val relay = RelayMailboxClient(rateLimitMaxPosts = 5000, rateLimitMaxPolls = 5000)
         val clock = ChaosTimeProvider()
         TimeSource.setProvider(clock)
 
@@ -467,7 +467,7 @@ class E2eeChaosTest {
     fun testQueueFillDeadlock() = runTest {
         initializeE2eeTests()
         // Small queue and drain size to make the deadlock trigger in a few iterations.
-        val relay = RelayMailboxClient(maxQueueDepth = 5, maxDrainSize = 3)
+        val relay = RelayMailboxClient(maxQueueDepth = 5, maxDrainSize = 3, rateLimitMaxPosts = 5000, rateLimitMaxPolls = 5000)
         val aliceStore = E2eeStore(MemoryStorage())
         val bobStore = E2eeStore(MemoryStorage())
         val aliceChaosMailbox = ChaosMailboxClient(relay)

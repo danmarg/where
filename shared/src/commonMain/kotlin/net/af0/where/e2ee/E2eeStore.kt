@@ -127,6 +127,7 @@ class E2eeStore(
 ) {
     private var friends = mutableMapOf<String, FriendEntry>()
     private var pendingInvites = mutableListOf<PendingInvite>()
+    private var lastLoadedTs: Long = 0L
 
     // Mutex to serialize all access to friends and pendingInvites.
     // This prevents TOCTOU races where a key rotation and outgoing message
@@ -159,41 +160,65 @@ class E2eeStore(
     }
 
     private fun load() {
-        val jsonStr = storage.getString(STORAGE_KEY) ?: return
-        try {
-            val serialized = json.decodeFromString<SerializedStore>(jsonStr)
-            friends =
-                serialized.friends.associate { s ->
-                    val entry =
-                        FriendEntry(
-                            name = s.name,
-                            session = s.session,
-                            isInitiator = s.isInitiator,
-                            lastLat = s.lastLat,
-                            lastLng = s.lastLng,
-                            lastTs = s.lastTs,
-                            lastRecvTs = if (s.lastRecvTs == 0L) currentTimeSeconds() else s.lastRecvTs,
-                            isConfirmed = s.isConfirmed,
-                            lastSentTs = s.lastSentTs,
-                            lastPollTs = s.lastPollTs,
-                            sharingEnabled = s.sharingEnabled,
-                            outbox = s.outbox,
-                            lastDecryptFailed = s.lastDecryptFailed,
-                            outbox429Count = s.outbox429Count,
-                        )
-                    s.friendId to entry
-                }.toMutableMap()
+        val jsonA = storage.getString(STORAGE_KEY_A)
+        val jsonB = storage.getString(STORAGE_KEY_B)
+        val jsonLegacy = storage.getString(STORAGE_KEY_LEGACY)
 
-            pendingInvites = serialized.pendingInvites.toMutableList()
-            if (serialized.diagnosticLog.isNotEmpty()) {
-                _diagnosticLog.value = serialized.diagnosticLog
-            }
+        val storeA = jsonA?.let { tryDecode(it, "Slot A") }
+        val storeB = jsonB?.let { tryDecode(it, "Slot B") }
+        val storeLegacy = jsonLegacy?.let { tryDecode(it, "Legacy") }
+
+        // Pick the best available store based on timestamp
+        val best = listOfNotNull(storeA, storeB, storeLegacy).maxByOrNull { it.lastSavedTs }
+
+        if (best != null) {
+            applySerializedStore(best)
+            lastLoadedTs = best.lastSavedTs
+            println("[E2eeStore] Loaded state from ${if (best === storeA) "Slot A" else if (best === storeB) "Slot B" else "Legacy"} (ts=${best.lastSavedTs})")
+        } else if (jsonA != null || jsonB != null || jsonLegacy != null) {
+            // Data exists but failed to parse — DO NOT wipe. The user might have a newer
+            // app version or some temporary corruption. Wiping now makes it permanent.
+            addDiagnosticEvent("CRITICAL: Storage exists but failed to parse. Using empty in-memory state to prevent data loss.")
+            println("[E2eeStore] CRITICAL: Existing data found but all parse attempts failed.")
+        }
+    }
+
+    private fun tryDecode(jsonStr: String, label: String): SerializedStore? {
+        if (jsonStr.isEmpty()) return null
+        return try {
+            json.decodeFromString<SerializedStore>(jsonStr)
         } catch (e: Exception) {
-            println("[E2eeStore] Error loading state: ${e.message}")
-            e.printStackTrace()
-            // Error loading state, possibly corrupted; reset
-            friends = mutableMapOf()
-            pendingInvites = mutableListOf()
+            println("[E2eeStore] Failed to decode $label: ${e.message}")
+            null
+        }
+    }
+
+    private fun applySerializedStore(serialized: SerializedStore) {
+        friends =
+            serialized.friends.associate { s ->
+                val entry =
+                    FriendEntry(
+                        name = s.name,
+                        session = s.session,
+                        isInitiator = s.isInitiator,
+                        lastLat = s.lastLat,
+                        lastLng = s.lastLng,
+                        lastTs = s.lastTs,
+                        lastRecvTs = if (s.lastRecvTs == 0L) currentTimeSeconds() else s.lastRecvTs,
+                        isConfirmed = s.isConfirmed,
+                        lastSentTs = s.lastSentTs,
+                        lastPollTs = s.lastPollTs,
+                        sharingEnabled = s.sharingEnabled,
+                        outbox = s.outbox,
+                        lastDecryptFailed = s.lastDecryptFailed,
+                        outbox429Count = s.outbox429Count,
+                    )
+                s.friendId to entry
+            }.toMutableMap()
+
+        pendingInvites = serialized.pendingInvites.toMutableList()
+        if (serialized.diagnosticLog.isNotEmpty()) {
+            _diagnosticLog.value = serialized.diagnosticLog
         }
     }
 
@@ -203,6 +228,11 @@ class E2eeStore(
     ) {
         val friendsToSave = friendsOverride ?: friends
         val invitesToSave = pendingInvitesOverride ?: pendingInvites
+        val now = currentTimeSeconds()
+
+        // Monotonicity check: ensure we don't save a timestamp older than the one we loaded.
+        // This prevents a stale background task from overwriting a newer state.
+        val saveTs = if (now <= lastLoadedTs) lastLoadedTs + 1 else now
 
         val serialized =
             SerializedStore(
@@ -228,9 +258,40 @@ class E2eeStore(
                     },
                 pendingInvites = invitesToSave,
                 diagnosticLog = _diagnosticLog.value,
+                lastSavedTs = saveTs,
             )
+
         try {
-            storage.putString(STORAGE_KEY, json.encodeToString(serialized))
+            val jsonStr = json.encodeToString(serialized)
+
+            // Double Buffering: Determine which slot to overwrite.
+            // We ALWAYS write to the slot that was NOT the one we just successfully loaded,
+            // or we alternate if we are unsure. This ensures a known-good backup exists.
+            val jsonA = storage.getString(STORAGE_KEY_A)
+            val jsonB = storage.getString(STORAGE_KEY_B)
+
+            val targetSlot =
+                when {
+                    jsonA == null -> STORAGE_KEY_A
+                    jsonB == null -> STORAGE_KEY_B
+                    else -> {
+                        // Both exist. Overwrite the OLDER one.
+                        val storeA = jsonA.let { tryDecode(it, "Slot A (save check)") }
+                        val storeB = jsonB.let { tryDecode(it, "Slot B (save check)") }
+                        if (storeA == null) STORAGE_KEY_A
+                        else if (storeB == null) STORAGE_KEY_B
+                        else if (storeA.lastSavedTs <= storeB.lastSavedTs) STORAGE_KEY_A
+                        else STORAGE_KEY_B
+                    }
+                }
+
+            storage.putString(targetSlot, jsonStr)
+
+            // Migration cleanup: once we've successfully saved to a new slot, we can clear legacy
+            if (storage.getString(STORAGE_KEY_LEGACY) != null) {
+                storage.putString(STORAGE_KEY_LEGACY, "") // Clear legacy (cannot DELETE in current interface)
+            }
+
             // Only update in-memory state if write succeeds
             if (friendsOverride != null) {
                 friends = friendsOverride.toMutableMap()
@@ -238,6 +299,7 @@ class E2eeStore(
             if (pendingInvitesOverride != null) {
                 pendingInvites = pendingInvitesOverride.toMutableList()
             }
+            lastLoadedTs = saveTs
         } catch (e: Exception) {
             addDiagnosticEvent("STORAGE WRITE FAILED: ${e.message}")
             throw e
@@ -812,7 +874,9 @@ class E2eeStore(
     }
 
     companion object {
-        private const val STORAGE_KEY = "e2ee_store"
+        private const val STORAGE_KEY_LEGACY = "e2ee_store"
+        private const val STORAGE_KEY_A = "e2ee_store_a"
+        private const val STORAGE_KEY_B = "e2ee_store_b"
         const val MAX_PENDING_INVITES = 10
     }
 }
@@ -845,4 +909,5 @@ internal data class SerializedStore(
     val friends: List<SerializedFriendEntry>,
     val pendingInvites: List<PendingInvite> = emptyList(),
     val diagnosticLog: List<String> = emptyList(),
+    val lastSavedTs: Long = 0L,
 )

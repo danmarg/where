@@ -30,19 +30,33 @@ class FakeMailboxClient : MailboxClient {
  * - post() enqueues the payload; throws ServerException(429) when maxQueueDepth is reached
  * - poll() is non-destructive (returns up to maxDrainSize messages without removing them)
  * - ack() removes the first [count] messages, matching DELETE /inbox/{token}?n=N
+ * - implements sliding-window rate limiting for post() and poll()
  */
 class RelayMailboxClient(
     val maxQueueDepth: Int = Int.MAX_VALUE,
     private val maxDrainSize: Int = 50,
+    private val rateLimitMaxPosts: Int = Int.MAX_VALUE,
+    private val rateLimitMaxPolls: Int = Int.MAX_VALUE,
+    private val windowMs: Long = 60_000L,
 ) : MailboxClient {
     val inbox = mutableMapOf<String, MutableList<MailboxPayload>>()
     val history = mutableListOf<Pair<String, MailboxPayload>>()
+    private val postTimes = mutableMapOf<String, MutableList<Long>>()
+    private val pollTimes = mutableMapOf<String, MutableList<Long>>()
 
     override suspend fun post(
         baseUrl: String,
         token: String,
         payload: MailboxPayload,
     ) {
+        val now = platformCurrentTimeMillis()
+        val times = postTimes.getOrPut(token) { mutableListOf() }
+        times.removeAll { it < now - windowMs }
+        if (times.size >= rateLimitMaxPosts) {
+            throw ServerException(429, "POST rate limit exceeded for token ${token.take(8)}")
+        }
+        times.add(now)
+
         val queue = inbox.getOrPut(token) { mutableListOf() }
         if (queue.size >= maxQueueDepth) {
             throw ServerException(429, "queue full for token ${token.take(8)}")
@@ -54,7 +68,17 @@ class RelayMailboxClient(
     override suspend fun poll(
         baseUrl: String,
         token: String,
-    ): List<MailboxPayload> = inbox[token]?.take(maxDrainSize) ?: emptyList()
+    ): List<MailboxPayload> {
+        val now = platformCurrentTimeMillis()
+        val times = pollTimes.getOrPut(token) { mutableListOf() }
+        times.removeAll { it < now - windowMs }
+        if (times.size >= rateLimitMaxPolls) {
+            throw ServerException(429, "POLL rate limit exceeded for token ${token.take(8)}")
+        }
+        times.add(now)
+
+        return inbox[token]?.take(maxDrainSize) ?: emptyList()
+    }
 
     override suspend fun ack(
         baseUrl: String,
