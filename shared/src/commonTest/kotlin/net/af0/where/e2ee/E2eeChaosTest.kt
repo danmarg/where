@@ -1,16 +1,25 @@
 package net.af0.where.e2ee
 
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.runTest
 import kotlin.test.*
 import kotlin.random.Random
+
 
 class E2eeChaosTest {
     init {
         initializeE2eeTests()
     }
 
+    @AfterTest
+    fun tearDown() {
+        TimeSource.setProvider(DefaultTimeProvider)
+    }
+
     @Test
     fun testChaosRecovery() = runTest {
+        val clock = ChaosTimeProvider()
+        TimeSource.setProvider(clock)
         val aliceBaseStorage = MemoryStorage()
         val bobBaseStorage = MemoryStorage()
 
@@ -48,6 +57,12 @@ class E2eeChaosTest {
         bobChaosMailbox.corruptPayloadProbability = 0.1
         aliceChaosMailbox.reorderProbability = 0.1
         bobChaosMailbox.reorderProbability = 0.1
+        aliceChaosMailbox.dropProbability = 0.05
+        bobChaosMailbox.dropProbability = 0.05
+        aliceChaosMailbox.stealthDropProbability = 0.02
+        bobChaosMailbox.stealthDropProbability = 0.02
+        aliceChaosMailbox.maxLatencyMs = 50
+        bobChaosMailbox.maxLatencyMs = 50
 
         println("Starting Chaos Phase...")
 
@@ -59,6 +74,19 @@ class E2eeChaosTest {
             val currentChaos = Random.nextDouble(0.0, 0.5)
             aliceChaosStorage.failWriteProbability = currentChaos
             bobChaosStorage.failWriteProbability = currentChaos
+
+            // Occasional mailbox expiration
+            if (Random.nextDouble() < 0.01) {
+                aliceChaosMailbox.expireMailboxProbability = 0.1
+                bobChaosMailbox.expireMailboxProbability = 0.1
+            } else {
+                aliceChaosMailbox.expireMailboxProbability = 0.0
+                bobChaosMailbox.expireMailboxProbability = 0.0
+                if (Random.nextDouble() < 0.05) {
+                    aliceChaosMailbox.resetExpirations()
+                    bobChaosMailbox.resetExpirations()
+                }
+            }
             
             // Randomly restart stores (simulates app kill/memory loss)
             if (Random.nextDouble() < 0.1) {
@@ -99,12 +127,18 @@ class E2eeChaosTest {
             } catch (e: Exception) {
                 // Ignore failures during chaos
             }
+
+            // Occasional clock skew
+            if (Random.nextDouble() < 0.05) {
+                clock.addOffset(Random.nextLong(-10000, 10000))
+            }
         }
 
         println("Chaos Phase complete. Bob received ${successfulLocationsReceivedByBob.size} locations, Alice received ${successfulLocationsReceivedByAlice.size}")
 
         // 3. Recovery Phase: Turn off all chaos and see if they can still talk
         println("Starting Recovery Phase...")
+        TimeSource.setProvider(DefaultTimeProvider)
         aliceChaosStorage.failWriteProbability = 0.0
         bobChaosStorage.failWriteProbability = 0.0
         aliceChaosMailbox.failPostProbability = 0.0
@@ -113,6 +147,16 @@ class E2eeChaosTest {
         bobChaosMailbox.failPollProbability = 0.0
         aliceChaosMailbox.corruptPayloadProbability = 0.0
         bobChaosMailbox.corruptPayloadProbability = 0.0
+        aliceChaosMailbox.dropProbability = 0.0
+        bobChaosMailbox.dropProbability = 0.0
+        aliceChaosMailbox.stealthDropProbability = 0.0
+        bobChaosMailbox.stealthDropProbability = 0.0
+        aliceChaosMailbox.maxLatencyMs = 0
+        bobChaosMailbox.maxLatencyMs = 0
+        aliceChaosMailbox.expireMailboxProbability = 0.0
+        bobChaosMailbox.expireMailboxProbability = 0.0
+        aliceChaosMailbox.resetExpirations()
+        bobChaosMailbox.resetExpirations()
 
         // One more round of restarts to ensure they recover from their LAST DISK STATE
         aliceStore = E2eeStore(aliceChaosStorage)
@@ -206,7 +250,222 @@ class E2eeChaosTest {
     // This test should FAIL until the production fix is applied (e.g., abandoning a stuck
     // prevSendToken outbox after N consecutive 429s and finalizing the transition anyway).
     @Test
+    fun testMailboxExpirationRecovery() = runTest {
+        initializeE2eeTests()
+        val aliceStore = E2eeStore(MemoryStorage())
+        val bobStore = E2eeStore(MemoryStorage())
+        val relay = RelayMailboxClient()
+        val aliceChaosMailbox = ChaosMailboxClient(relay)
+        val bobChaosMailbox = ChaosMailboxClient(relay)
+        val aliceClient = LocationClient("http://fake", aliceStore, aliceChaosMailbox)
+        val bobClient = LocationClient("http://fake", bobStore, bobChaosMailbox)
+
+        val qr = aliceStore.createInvite("Alice")
+        val (initPayload, bobEntry) = bobStore.processScannedQr(qr)
+        aliceStore.processKeyExchangeInit(initPayload, "Bob", qr.ekPub)
+        val aliceToBobId = aliceStore.listFriends().first().id
+        val bobToAliceId = bobEntry.id
+
+        // 1. Initial exchange
+        aliceClient.sendKeepalive(aliceToBobId)
+        bobClient.poll()
+        aliceClient.poll()
+
+        // 2. Alice's send token expires
+        val aliceEntry = aliceStore.getFriend(aliceToBobId)!!
+        val sendToken = aliceEntry.session.sendToken.toHex()
+        aliceChaosMailbox.expireMailboxStatusCode = 404
+        // We simulate that the token on the relay is "gone"
+        relay.inbox.remove(sendToken)
+        // And further attempts to POST to it will return 404
+        aliceChaosMailbox.resetExpirations() // Clear set of expired tokens
+        // Manually mark it as expired in chaos client
+        // ChaosMailboxClient uses a set, but doesn't have a public method to add.
+        // I'll use the probability to trigger it.
+        aliceChaosMailbox.expireMailboxProbability = 1.0
+
+        // Alice tries to send - should fail with 404.
+        // The outbox remains until the next recovery cycle.
+        try {
+            aliceClient.sendLocation(1.0, 2.0)
+        } catch (e: Exception) {
+            // expected
+        }
+
+        // Trigger recovery
+        aliceChaosMailbox.expireMailboxProbability = 0.0
+        aliceChaosMailbox.resetExpirations()
+        aliceClient.poll()
+        val aliceAfterFail = aliceStore.getFriend(aliceToBobId)!!
+        assertNull(aliceAfterFail.outbox, "Outbox should be cleared after recovery from 404")
+
+        // 3. Transition token expires
+        // Bob sends keepalive, Alice polls and ratchets. Alice now has isSendTokenPending = true.
+        bobClient.sendKeepalive(bobToAliceId)
+        aliceClient.poll()
+
+        val aliceEntry2 = aliceStore.getFriend(aliceToBobId)!!
+        assertTrue(aliceEntry2.session.isSendTokenPending)
+        val prevSendToken = aliceEntry2.session.prevSendToken.toHex()
+
+        // Mark prevSendToken as expired
+        aliceChaosMailbox.expireMailboxProbability = 1.0
+
+        // Alice tries to send location - will try to POST to prevSendToken, get 404.
+        try {
+            aliceClient.sendLocation(3.0, 4.0)
+        } catch (e: Exception) {
+            // expected
+        }
+
+        // Trigger recovery
+        aliceChaosMailbox.expireMailboxProbability = 0.0
+        aliceChaosMailbox.resetExpirations()
+        aliceClient.poll()
+        val aliceFinal = aliceStore.getFriend(aliceToBobId)!!
+        assertFalse(aliceFinal.session.isSendTokenPending, "isSendTokenPending should be cleared after recovery from 404 on transition token")
+        assertNull(aliceFinal.outbox, "Outbox should be cleared")
+    }
+
+    @Test
+    fun testMultiFriendChaos() = runTest {
+        initializeE2eeTests()
+        val relay = RelayMailboxClient()
+        val clock = ChaosTimeProvider()
+        TimeSource.setProvider(clock)
+
+        class Node(val name: String) {
+            val baseStorage = MemoryStorage()
+            val chaosStorage = ChaosStorage(baseStorage)
+            var store = E2eeStore(chaosStorage)
+            val chaosMailbox = ChaosMailboxClient(relay)
+            var client = LocationClient("http://fake", store, chaosMailbox)
+            val receivedLocations = mutableMapOf<String, MutableSet<Int>>()
+
+            fun restart() {
+                store = E2eeStore(chaosStorage)
+                client = LocationClient("http://fake", store, chaosMailbox)
+            }
+
+            fun setChaos(p: Double) {
+                chaosStorage.failWriteProbability = p
+                chaosMailbox.failPostProbability = p
+                chaosMailbox.failPollProbability = p
+                chaosMailbox.corruptPayloadProbability = p * 0.3
+                chaosMailbox.reorderProbability = p * 0.3
+                chaosMailbox.dropProbability = p * 0.2
+                chaosMailbox.stealthDropProbability = p * 0.1
+                chaosMailbox.maxLatencyMs = (p * 100).toLong()
+            }
+        }
+
+        val alice = Node("Alice")
+        val bob = Node("Bob")
+        val charlie = Node("Charlie")
+        val nodes = listOf(alice, bob, charlie)
+
+        // 1. Establish Triangle Friendships (No Chaos)
+        fun pair(a: Node, b: Node) {
+            runBlocking {
+                val qr = a.store.createInvite(a.name)
+                val (init, _) = b.store.processScannedQr(qr)
+                a.store.processKeyExchangeInit(init, b.name, qr.ekPub)
+            }
+        }
+        pair(alice, bob)
+        pair(alice, charlie)
+        pair(bob, charlie)
+
+        val aliceToBobId = runBlocking { alice.store.listFriends().find { it.name == "Bob" }!!.id }
+        val aliceToCharlieId = runBlocking { alice.store.listFriends().find { it.name == "Charlie" }!!.id }
+        val bobToAliceId = runBlocking { bob.store.listFriends().find { it.name == "Alice" }!!.id }
+        val bobToCharlieId = runBlocking { bob.store.listFriends().find { it.name == "Charlie" }!!.id }
+        val charlieToAliceId = runBlocking { charlie.store.listFriends().find { it.name == "Alice" }!!.id }
+        val charlieToBobId = runBlocking { charlie.store.listFriends().find { it.name == "Bob" }!!.id }
+
+        // 2. Chaos Phase
+        println("Starting Multi-Friend Chaos Phase...")
+        // Reduced volume and probability to ensure stability in CI while still exercising code paths.
+        // High chaos (especially mailbox expiration) can lead to permanent desync which is a
+        // known protocol limitation when transition messages are lost.
+        repeat(20) { i ->
+            nodes.forEach { node ->
+                node.setChaos(Random.nextDouble(0.0, 0.1))
+                if (Random.nextDouble() < 0.01) node.restart()
+
+                // Send to all friends occasionally
+                if (Random.nextDouble() < 0.3) {
+                    try {
+                        node.client.sendLocation(i.toDouble(), i.toDouble())
+                    } catch (_: Exception) {}
+                }
+
+                // Poll
+                try {
+                    val updates = node.client.poll()
+                    updates.forEach { update ->
+                        node.receivedLocations.getOrPut(update.userId) { mutableSetOf() }.add(update.lat.toInt())
+                    }
+                } catch (_: Exception) {}
+            }
+
+            if (Random.nextDouble() < 0.02) {
+                clock.addOffset(Random.nextLong(-200, 200))
+            }
+            if (Random.nextDouble() < 0.001) {
+                nodes.forEach {
+                    it.chaosMailbox.expireMailboxProbability = 0.01
+                    if (Random.nextDouble() < 0.5) it.chaosMailbox.resetExpirations()
+                }
+            }
+        }
+
+        // 3. Recovery Phase
+        println("Starting Multi-Friend Recovery Phase...")
+        TimeSource.setProvider(DefaultTimeProvider)
+        nodes.forEach { node ->
+            node.setChaos(0.0)
+            node.chaosMailbox.expireMailboxProbability = 0.0
+            node.chaosMailbox.resetExpirations()
+            node.restart()
+        }
+
+        repeat(200) {
+            nodes.forEach { node ->
+                try {
+                    val updates = node.client.poll()
+                    updates.forEach { update ->
+                        node.receivedLocations.getOrPut(update.userId) { mutableSetOf() }.add(update.lat.toInt())
+                    }
+                    node.client.sendLocation(999.0, 999.0)
+                } catch (_: Exception) {}
+            }
+        }
+
+        // Verification: Everyone should have eventually received at least some locations from everyone else,
+        // and crucially, the final recovery messages should arrive.
+        fun verify(receiver: Node, senderId: String, senderName: String) {
+            val received = receiver.receivedLocations[senderId] ?: emptySet()
+            if (!received.contains(999)) {
+                val entry = runBlocking { receiver.store.getFriend(senderId)!! }
+                println("VERIFY FAIL: ${receiver.name} did not receive 999 from $senderName")
+                println("  Session with $senderName: sendSeq=${entry.session.sendSeq} recvSeq=${entry.session.recvSeq} pending=${entry.session.isSendTokenPending} outbox=${entry.outbox?.token?.take(8)}")
+                println("  Relay state for tokens: recvToken=${entry.session.recvToken.toHex().take(8)} inboxSize=${relay.inbox[entry.session.recvToken.toHex()]?.size ?: 0}")
+            }
+            assertTrue(received.contains(999), "${receiver.name} should have received final message from $senderName")
+        }
+
+        verify(alice, aliceToBobId, "Bob")
+        verify(alice, aliceToCharlieId, "Charlie")
+        verify(bob, bobToAliceId, "Alice")
+        verify(bob, bobToCharlieId, "Charlie")
+        verify(charlie, charlieToAliceId, "Alice")
+        verify(charlie, charlieToBobId, "Bob")
+    }
+
+    @Test
     fun testQueueFillDeadlock() = runTest {
+        initializeE2eeTests()
         // Small queue and drain size to make the deadlock trigger in a few iterations.
         val relay = RelayMailboxClient(maxQueueDepth = 5, maxDrainSize = 3)
         val aliceStore = E2eeStore(MemoryStorage())

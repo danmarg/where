@@ -28,4 +28,7 @@ class AuthenticationException(message: String, cause: Throwable? = null) : Crypt
 class ProtocolVersionException(message: String) : CryptoException(message)
 
 /** Thrown when a protocol-level validation fails (e.g., seq replay, huge gap). */
-class ProtocolException(message: String) : CryptoException(message)
+open class ProtocolException(message: String) : CryptoException(message)
+
+/** Thrown when a ratchet gap is too large to process (§8.3.1). */
+class ProtocolGapException(message: String) : ProtocolException(message)

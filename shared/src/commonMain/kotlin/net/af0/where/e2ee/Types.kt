@@ -169,6 +169,9 @@ fun SessionState.assertInvariants() {
     check(skippedMessageKeys.size <= MAX_SKIPPED_KEYS) {
         "skippedMessageKeys overflow: ${skippedMessageKeys.size} > $MAX_SKIPPED_KEYS"
     }
+    check(skippedEpochHeaderKeys.size <= MAX_SKIPPED_EPOCHS) {
+        "skippedEpochHeaderKeys overflow: ${skippedEpochHeaderKeys.size} > $MAX_SKIPPED_EPOCHS"
+    }
     check(seenRemoteDhPubs.size <= MAX_SEEN_DH_PUBS) {
         "seenRemoteDhPubs overflow: ${seenRemoteDhPubs.size} > $MAX_SEEN_DH_PUBS"
     }
