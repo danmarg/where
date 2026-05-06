@@ -362,13 +362,13 @@ class MainActivity : ComponentActivity() {
 
     override fun onResume() {
         super.onResume()
-        LocationRepository.setAppForeground(true)
-        LocationRepository.wakePoll()
+        (application as WhereApplication).locationSource.setAppForeground(true)
+        (application as WhereApplication).locationSource.wakePoll()
     }
 
     override fun onPause() {
         super.onPause()
-        LocationRepository.setAppForeground(false)
+        (application as WhereApplication).locationSource.setAppForeground(false)
     }
 
     override fun onNewIntent(intent: Intent) {

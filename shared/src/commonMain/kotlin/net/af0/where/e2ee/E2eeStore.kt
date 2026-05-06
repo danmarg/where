@@ -448,11 +448,20 @@ class E2eeStore(
                 val newFriends = friends + (entry.id to entry)
                 val newInvites = pendingInvites.filter { it != pending }
                 save(friendsOverride = newFriends, pendingInvitesOverride = newInvites)
+
+                // Memory Hygiene: Wipe the invite's private key now that it's been
+                // used to bootstrap the session and Alice has ratcheted to Epoch 1.
+                pending.aliceEkPriv.zeroize()
+
                 entry
             } catch (e: AuthenticationException) {
-                throw e // key_confirmation or token mismatch failure — surface to caller
+                // Even on failure, wipe the key if we are sure it's dead, but here
+                // we might want to retry? Actually, KeyExchangeInit is a one-shot.
+                // If it fails auth, Bob's message is bad. We keep the invite active
+                // for other potential Bobs or retries. So we DON'T zeroize yet.
+                throw e 
             } catch (e: Exception) {
-                throw e // surface other unexpected exceptions
+                throw e
             }
         }
 

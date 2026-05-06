@@ -58,26 +58,42 @@ open class LocationClient(
 
             val friends = store.listFriends()
 
-            for (friend in friends) {
-                try {
-                    // RESTART RECOVERY (§5.5): If the session was regenerated on startup,
-                    // force a keepalive now to establish a new memory-only DH epoch.
-                    if (friend.session.needsRatchet) {
-                        println("[LocationClient] poll: needsRatchet=true for ${friend.id.take(8)}, sending pre-poll keepalive")
-                        try {
-                            sendKeepalive(friend.id)
-                        } catch (e: Exception) {
-                            println("[LocationClient] poll: pre-poll keepalive failed for ${friend.id.take(8)}: ${e.message}")
-                        }
-                    }
+            val pollResults =
+                coroutineScope {
+                    friends.map { friend ->
+                        async {
+                            try {
+                                // RESTART RECOVERY (§5.5): If the session was regenerated on startup,
+                                // force a keepalive now to establish a new memory-only DH epoch.
+                                if (friend.session.needsRatchet) {
+                                    println("[LocationClient] poll: needsRatchet=true for ${friend.id.take(8)}, sending pre-poll keepalive")
+                                    try {
+                                        sendKeepalive(friend.id)
+                                    } catch (e: Exception) {
+                                        println("[LocationClient] poll: pre-poll keepalive failed for ${friend.id.take(8)}: ${e.message}")
+                                    }
+                                }
 
-                    val friendUpdates = pollFriend(friend.id, friend.id in pausedFriendIds)
-                    allUpdates.addAll(friendUpdates)
-                    successCount++
-                } catch (e: Exception) {
-                    lastError = e
-                    failCount++
+                                val friendUpdates = pollFriend(friend.id, friend.id in pausedFriendIds)
+                                Result.success(friendUpdates)
+                            } catch (e: Exception) {
+                                Result.failure(e)
+                            }
+                        }
+                    }.awaitAll()
                 }
+
+            for (result in pollResults) {
+                result.fold(
+                    onSuccess = {
+                        allUpdates.addAll(it)
+                        successCount++
+                    },
+                    onFailure = {
+                        lastError = it as Exception
+                        failCount++
+                    },
+                )
             }
 
             // Only throw if EVERY friend failed. If we got updates or at least one
@@ -123,11 +139,6 @@ open class LocationClient(
                 }.awaitAll().filterNotNull()
             }
         }
-
-    /** Deprecated: use pollPendingInvites instead. Returns the first result found. */
-    suspend fun pollPendingInvite(): PendingInviteResult? {
-        return pollPendingInvites().firstOrNull()
-    }
 
     /**
      * Post a KeyExchangeInit to the discovery mailbox.
@@ -275,14 +286,28 @@ open class LocationClient(
         var lastError: Exception? = null
         val activeFriends = store.listFriends().filter { it.id !in pausedFriendIds && !it.isStale }
 
-        for (friend in activeFriends) {
-            try {
-                sendMessageToFriendInternal(friend.id, payload)
-                successCount++
-            } catch (e: Exception) {
-                lastError = e
-                failCount++
+        val sendResults =
+            coroutineScope {
+                activeFriends.map { friend ->
+                    async {
+                        try {
+                            sendMessageToFriendInternal(friend.id, payload)
+                            Result.success(Unit)
+                        } catch (e: Exception) {
+                            Result.failure(e)
+                        }
+                    }
+                }.awaitAll()
             }
+
+        for (result in sendResults) {
+            result.fold(
+                onSuccess = { successCount++ },
+                onFailure = {
+                    lastError = it as Exception
+                    failCount++
+                },
+            )
         }
 
         // Only throw if EVERY active friend failed. If we succeeded for at least
@@ -416,62 +441,55 @@ open class LocationClient(
      * but not successfully posted due to a crash or network failure.
      */
     private suspend fun processOutboxes() {
-        for (friend in store.listFriends()) {
-            val outbox = friend.outbox
-            if (outbox == null) {
-                // RECOVERY (§5.4): If we crashed between clearOutbox and finalizeTokenTransition,
-                // we must still finalize the transition now.
-                // We detect this by checking if isSendTokenPending is true and sendSeq > 0
-                // (meaning the first message of the new epoch was already sent).
-                // Note: on restart recovery, we don't know the clearingToken, so we act
-                // cautiously. If sendSeq > 0 it's likely we finished the transition.
-                if (friend.session.isSendTokenPending && friend.session.sendSeq > 0) {
-                    println("[LocationClient] recovery: detected stale transition flag for ${friend.id.take(8)}, finalizing now")
-                    finalizeTokenTransition(friend.id)
-                }
-                continue
-            }
-            try {
-                println("[LocationClient] recovery: retrying outbox for ${friend.id.take(8)} token=${outbox.token.take(8)}")
-                mailboxClient.post(baseUrl, outbox.token, outbox.payload)
-                store.clearOutbox(friend.id)
-                // TRANSACTIONAL RECOVERY (§5.4): After recovering a lost post,
-                // we must also trigger the token transition cleanup.
-                finalizeTokenTransition(friend.id, clearingToken = outbox.token)
-            } catch (e: Exception) {
-                if (e is ProtocolGapException) {
-                    println("[LocationClient] recovery: permanent cryptodesync (gap) for ${friend.id.take(8)}, clearing outbox")
-                    store.clearOutbox(friend.id)
-                    continue
-                }
-                // Permanent failures (mailbox expired/deleted) should clear the outbox (§5.4).
-                val statusCode = (e as? ServerException)?.statusCode
-                if (statusCode == 404 || statusCode == 410) {
-                    // If this was a DH-ratchet transition message (posted to prevSendToken while
-                    // isSendTokenPending=true) and the mailbox has expired, the peer never received
-                    // our new DH public key. Clear isSendTokenPending WITHOUT sending a keepalive
-                    // to the new sendToken — the peer is still polling the old recvToken and cannot
-                    // receive anything on the new one. This prevents the stale-flag recovery from
-                    // calling finalizeTokenTransition on the next poll and making the desync silent.
-                    if (friend.session.isSendTokenPending &&
-                        outbox.token == friend.session.prevSendToken.toHex()
-                    ) {
-                        println(
-                            "[LocationClient] recovery: DESYNC: transition message permanently lost for ${friend.id.take(8)} " +
-                                "(prevSendToken ${outbox.token.take(8)} expired before peer received DH key) — re-pair required",
-                        )
-                        store.addDiagnosticEvent("DESYNC: transition lost for ${friend.id.take(8)}, re-pair required")
-                        store.clearOutboxAndUpdateSession(friend.id, friend.session.copy(isSendTokenPending = false))
+        coroutineScope {
+            store.listFriends().map { friend ->
+                async {
+                    val outbox = friend.outbox
+                    if (outbox == null) {
+                        // RECOVERY (§5.4): If we crashed between clearOutbox and finalizeTokenTransition,
+                        // we must still finalize the transition now.
+                        if (friend.session.isSendTokenPending && friend.session.sendSeq > 0) {
+                            println("[LocationClient] recovery: detected stale transition flag for ${friend.id.take(8)}, finalizing now")
+                            finalizeTokenTransition(friend.id)
+                        }
                     } else {
-                        println("[LocationClient] recovery: clearing expired outbox for ${friend.id.take(8)} (status=$statusCode)")
-                        store.clearOutbox(friend.id)
+                        try {
+                            println("[LocationClient] recovery: retrying outbox for ${friend.id.take(8)} token=${outbox.token.take(8)}")
+                            mailboxClient.post(baseUrl, outbox.token, outbox.payload)
+                            store.clearOutbox(friend.id)
+                            // TRANSACTIONAL RECOVERY (§5.4): After recovering a lost post,
+                            // we must also trigger the token transition cleanup.
+                            finalizeTokenTransition(friend.id, clearingToken = outbox.token)
+                        } catch (e: Exception) {
+                            if (e is ProtocolGapException) {
+                                println("[LocationClient] recovery: permanent cryptodesync (gap) for ${friend.id.take(8)}, clearing outbox")
+                                store.clearOutbox(friend.id)
+                            } else {
+                                // Permanent failures (mailbox expired/deleted) should clear the outbox (§5.4).
+                                val statusCode = (e as? ServerException)?.statusCode
+                                if (statusCode == 404 || statusCode == 410) {
+                                    if (friend.session.isSendTokenPending &&
+                                        outbox.token == friend.session.prevSendToken.toHex()
+                                    ) {
+                                        println(
+                                            "[LocationClient] recovery: DESYNC: transition message permanently lost for ${friend.id.take(8)} " +
+                                                "(prevSendToken ${outbox.token.take(8)} expired before peer received DH key) — re-pair required",
+                                        )
+                                        store.addDiagnosticEvent("DESYNC: transition lost for ${friend.id.take(8)}, re-pair required")
+                                        store.clearOutboxAndUpdateSession(friend.id, friend.session.copy(isSendTokenPending = false))
+                                    } else {
+                                        println("[LocationClient] recovery: clearing expired outbox for ${friend.id.take(8)} (status=$statusCode)")
+                                        store.clearOutbox(friend.id)
+                                    }
+                                } else if (statusCode == 429) {
+                                    val count = store.incrementOutbox429Count(friend.id)
+                                    println("[LocationClient] recovery: outbox 429 for ${friend.id.take(8)} (retry $count)")
+                                }
+                            }
+                        }
                     }
-                } else if (statusCode == 429) {
-                    val count = store.incrementOutbox429Count(friend.id)
-                    println("[LocationClient] recovery: outbox 429 for ${friend.id.take(8)} (retry $count)")
                 }
-                // Otherwise: Network failure or other server error: leave in outbox for next poll
-            }
+            }.awaitAll()
         }
     }
 }

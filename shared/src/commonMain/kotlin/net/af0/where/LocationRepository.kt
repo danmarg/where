@@ -15,6 +15,7 @@ import net.af0.where.e2ee.KeyExchangeInitPayload
 import net.af0.where.e2ee.PendingInviteView
 import net.af0.where.e2ee.QrPayload
 import net.af0.where.model.UserLocation
+import net.af0.where.e2ee.UserStore
 import net.af0.where.shared.MR
 
 /** Minimal interface over the shared location state, making it injectable for tests. */
@@ -94,10 +95,14 @@ interface LocationSource {
 }
 
 /**
- * Singleton that bridges the LocationService (which has no ViewModel access)
+ * Repository that bridges the LocationService (which has no ViewModel access)
  * with the LocationViewModel via simple StateFlows.
+ *
+ * @param userStore The source of truth for user preferences (sharing, display name, etc).
  */
-object LocationRepository : LocationSource {
+class LocationRepository(
+    private val userStore: UserStore,
+) : LocationSource {
     private val _lastLocation = MutableStateFlow<Triple<Double, Double, Double?>?>(null)
     override val lastLocation: StateFlow<Triple<Double, Double, Double?>?> = _lastLocation.asStateFlow()
 
@@ -122,11 +127,9 @@ object LocationRepository : LocationSource {
     private val _multipleScansDetected = MutableStateFlow(false)
     override val multipleScansDetected: StateFlow<Boolean> = _multipleScansDetected.asStateFlow()
 
-    private val _isSharingLocation = MutableStateFlow(false)
-    override val isSharingLocation: StateFlow<Boolean> = _isSharingLocation.asStateFlow()
+    override val isSharingLocation: StateFlow<Boolean> = userStore.isSharingLocation
 
-    private val _pausedFriendIds = MutableStateFlow<Set<String>>(emptySet())
-    override val pausedFriendIds: StateFlow<Set<String>> = _pausedFriendIds.asStateFlow()
+    override val pausedFriendIds: StateFlow<Set<String>> = userStore.pausedFriendIds
 
     private val _friends = MutableStateFlow<List<FriendEntry>>(emptyList())
     override val friends: StateFlow<List<FriendEntry>> = _friends.asStateFlow()
@@ -226,11 +229,11 @@ object LocationRepository : LocationSource {
     }
 
     override fun setSharingLocation(sharing: Boolean) {
-        _isSharingLocation.value = sharing
+        userStore.setSharing(sharing)
     }
 
     override fun setPausedFriends(friendIds: Set<String>) {
-        _pausedFriendIds.value = friendIds
+        userStore.setPausedFriends(friendIds)
     }
 
     override fun setInitialFriendLocations(
@@ -295,8 +298,6 @@ object LocationRepository : LocationSource {
         _pendingInitPayload.value = null
         _pendingInitAliceEkPub.value = null
         _multipleScansDetected.value = false
-        _isSharingLocation.value = false
-        _pausedFriendIds.value = emptySet()
         _friends.value = emptyList()
         _allPendingInvites.value = emptyList()
         _isInviteSheetShowing.value = false

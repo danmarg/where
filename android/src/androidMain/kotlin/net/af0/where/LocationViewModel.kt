@@ -42,7 +42,7 @@ class LocationViewModel(
     locationClientParam: LocationClient? = null,
     startPolling: Boolean = true,
     private val clock: () -> Long = { System.currentTimeMillis() },
-    private val locationSource: LocationSource = LocationRepository,
+    locationSourceParam: LocationSource? = null,
 ) : AndroidViewModel(app) {
     // Secondary constructor for reflection-based instantiation in release builds.
     constructor(app: Application) : this(app, null, null, null, true)
@@ -62,6 +62,10 @@ class LocationViewModel(
         locationClientParam
             ?: (app as? WhereApplication)?.locationClient
             ?: LocationClient(BuildConfig.SERVER_HTTP_URL, this.e2eeStore)
+    private val locationSource: LocationSource =
+        locationSourceParam
+            ?: (app as? WhereApplication)?.locationSource
+            ?: LocationRepository(userStore)
 
     val isSharingLocation: StateFlow<Boolean> = userStore.isSharingLocation
 

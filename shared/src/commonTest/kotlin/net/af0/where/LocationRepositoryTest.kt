@@ -14,6 +14,10 @@ import kotlin.test.Test
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 
+import net.af0.where.e2ee.UserStore
+import net.af0.where.e2ee.E2eeStorage
+import net.af0.where.e2ee.MemoryStorage
+
 /**
  * Unit test for LocationRepository thread safety and state management.
  *
@@ -23,18 +27,19 @@ import kotlin.test.assertTrue
 @OptIn(ExperimentalCoroutinesApi::class)
 class LocationRepositoryTest {
     private val mutex = Mutex()
+    private val userStore = UserStore(MemoryStorage())
+    private lateinit var repository: LocationRepository
 
     @BeforeTest
-    fun resetRepository() {
-        // Reset the repository to a known state before each test
-        LocationRepository.reset()
-        LocationRepository.onLocation(0.0, 0.0, null)
+    fun setup() {
+        repository = LocationRepository(userStore)
+        repository.onLocation(0.0, 0.0, null)
     }
 
     @Test
-    fun testDefaultSharingStateIsFalse() {
-        LocationRepository.reset()
-        assertTrue(!LocationRepository.isSharingLocation.value, "Default sharing state should be false")
+    fun testDefaultSharingStateIsTrue() {
+        // UserStore default is sharing=true
+        assertTrue(repository.isSharingLocation.value, "Default sharing state should be true")
     }
 
     /**
@@ -61,14 +66,14 @@ class LocationRepositoryTest {
                             mutex.withLock {
                                 submittedLocations.add(location)
                             }
-                            LocationRepository.onLocation(lat, lng, null)
+                            repository.onLocation(lat, lng, null)
                         }
                     }
                 jobs.joinAll()
             }
 
             // Verify final state
-            val finalLocation = LocationRepository.lastLocation.value
+            val finalLocation = repository.lastLocation.value
             assertNotNull(finalLocation, "Final location should not be null after concurrent updates")
             assertTrue(
                 finalLocation in submittedLocations,
@@ -95,7 +100,7 @@ class LocationRepositoryTest {
                 val sampler =
                     launch {
                         while (true) {
-                            val current = LocationRepository.lastLocation.value
+                            val current = repository.lastLocation.value
                             mutex.withLock {
                                 observedLocations.add(current)
                             }
@@ -114,7 +119,7 @@ class LocationRepositoryTest {
                             mutex.withLock {
                                 submittedLocations.add(location)
                             }
-                            LocationRepository.onLocation(lat, lng, null)
+                            repository.onLocation(lat, lng, null)
                         }
                     }
 

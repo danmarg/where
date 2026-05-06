@@ -63,9 +63,11 @@ class LocationClientTest {
                 }
 
             val client = LocationClient("http://fake", aliceStore, fakeMailbox)
-            val result = client.pollPendingInvite()
+            val results = client.pollPendingInvites()
 
-            assertNotNull(result)
+            assertNotNull(results)
+            assertEquals(1, results.size)
+            val result = results[0]
             assertEquals("Bob2", result.payload.suggestedName, "Should pick the last message (most recent scan)")
             assertTrue(result.multipleScansDetected, "Should detect multiple scans")
         }

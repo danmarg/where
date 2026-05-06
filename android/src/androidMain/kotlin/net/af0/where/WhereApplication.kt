@@ -14,6 +14,7 @@ open class WhereApplication : Application() {
     open val e2eeStore: E2eeStore by lazy { E2eeStore(SharedPrefsE2eeStorage(this)) }
     open val userStore: UserStore by lazy { UserStore(SharedPrefsE2eeStorage(this)) }
     val locationClient: LocationClient by lazy { LocationClient(BuildConfig.SERVER_HTTP_URL, e2eeStore) }
+    open val locationSource: LocationSource by lazy { LocationRepository(userStore) }
 
     override fun onCreate() {
         super.onCreate()

@@ -64,6 +64,7 @@ class LocationService : Service() {
 
     private lateinit var e2eeStore: E2eeStore
     private lateinit var locationClient: LocationClient
+    private lateinit var locationSource: LocationSource
 
     private fun hasLocationPermission(): Boolean {
         return ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED ||
@@ -75,6 +76,9 @@ class LocationService : Service() {
         Log.d(TAG, "onCreate")
         createNotificationChannel()
 
+        val app = application as WhereApplication
+        locationSource = app.locationSource
+
         // Initialise repository sharing state from prefs before starting any collection.
         locationSource.setSharingLocation(UserPrefs.isSharing(this))
 
@@ -83,7 +87,6 @@ class LocationService : Service() {
 
         alarmManager = getSystemService(AlarmManager::class.java)
 
-        val app = application as WhereApplication
         e2eeStore = e2eeStoreOverride ?: app.e2eeStore
         locationClient = locationClientOverride ?: app.locationClient
         fusedClient = fusedClientOverride ?: LocationServices.getFusedLocationProviderClient(this)
@@ -518,9 +521,6 @@ class LocationService : Service() {
          * flow even when the OS throttles streaming updates in sleep mode.
          */
         const val STATIONARY_FORCE_UPDATE_THRESHOLD_MS = 5 * 60 * 1000L
-
-        /** Overridable in tests; defaults to the production singleton. */
-        var locationSource: LocationSource = LocationRepository
 
         /** Overridable in tests. */
         var clock: () -> Long = { System.currentTimeMillis() }

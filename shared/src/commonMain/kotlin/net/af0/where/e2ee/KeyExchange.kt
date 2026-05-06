@@ -182,6 +182,7 @@ object KeyExchange {
         // We MUST NOT wipe recvChainKey here because nextAliceSession is a shallow copy of session!
         session.rootKey.zeroize()
         session.sendChainKey.zeroize()
+        session.localDhPriv.zeroize()
         // session.recvChainKey is shared with nextAliceSession via shallow copy. DO NOT FILL(0).
 
         newLocalDh.priv.zeroize()
