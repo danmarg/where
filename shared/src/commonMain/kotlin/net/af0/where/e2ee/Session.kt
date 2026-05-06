@@ -198,7 +198,7 @@ object Session {
         }
         val stepsNeeded = seq - speculativeState.recvSeq
         if (stepsNeeded > MAX_GAP + 1) {
-            throw ProtocolException("gap too large: stepsNeeded $stepsNeeded")
+            throw ProtocolGapException("gap too large: stepsNeeded $stepsNeeded")
         }
 
         // Derivation loop for chain keys and skipped message keys
@@ -222,7 +222,7 @@ object Session {
 
         val projectedSize = derivationSkippedKeys.size + kotlin.math.max(0, stepsNeeded.toInt() - 1) + pnGaps
         if (projectedSize > MAX_SKIPPED_KEYS) {
-            throw ProtocolException("combined skipped key gap too large: $projectedSize")
+            throw ProtocolGapException("combined skipped key gap too large: $projectedSize")
         }
 
         var chainKey = speculativeState.recvChainKey.copyOf()
@@ -331,6 +331,12 @@ object Session {
                 // have their envelopes decrypted after we've ratcheted forward (#212-followup).
                 val updatedEpochHks = LinkedHashMap(cleanState.skippedEpochHeaderKeys)
                 updatedEpochHks[prevEpochHex] = cleanState.headerKey.copyOf()
+
+                // Enforce max size for epoch header key cache
+                if (updatedEpochHks.size > MAX_SKIPPED_EPOCHS) {
+                    val oldestEpoch = updatedEpochHks.keys.first()
+                    updatedEpochHks.remove(oldestEpoch)?.zeroize()
+                }
                 finalEpochHeaderKeys = updatedEpochHks
             } else {
                 finalSkippedKeys = derivationSkippedKeys

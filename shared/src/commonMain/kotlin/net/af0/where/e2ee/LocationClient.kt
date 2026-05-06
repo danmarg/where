@@ -433,8 +433,8 @@ open class LocationClient(
                 // we must also trigger the token transition cleanup.
                 finalizeTokenTransition(friend.id)
             } catch (e: Exception) {
-                if (e is ProtocolException && e.message?.contains("gap") == true) {
-                    println("[LocationClient] recovery: permanent cryptodesync for ${friend.id.take(8)}, clearing outbox")
+                if (e is ProtocolGapException) {
+                    println("[LocationClient] recovery: permanent cryptodesync (gap) for ${friend.id.take(8)}, clearing outbox")
                     store.clearOutbox(friend.id)
                     continue
                 }

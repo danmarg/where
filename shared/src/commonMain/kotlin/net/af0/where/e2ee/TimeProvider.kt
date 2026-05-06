@@ -7,6 +7,7 @@ fun currentTimeSeconds(): Long = TimeSource.currentTimeSeconds()
 fun currentTimeMillis(): Long = TimeSource.currentTimeMillis()
 
 object TimeSource {
+    @kotlin.jvm.Volatile
     private var provider: TimeProvider = DefaultTimeProvider
 
     fun setProvider(p: TimeProvider) {
