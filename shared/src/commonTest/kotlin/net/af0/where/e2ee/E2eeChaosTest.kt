@@ -351,6 +351,7 @@ class E2eeChaosTest {
                 chaosStorage.failWriteProbability = p
                 chaosMailbox.failPostProbability = p
                 chaosMailbox.failPollProbability = p
+                chaosMailbox.killProbability = p * 0.5 // High kill probability for stress
                 chaosMailbox.corruptPayloadProbability = p * 0.3
                 chaosMailbox.reorderProbability = p * 0.3
                 chaosMailbox.dropProbability = p * 0.2
@@ -397,6 +398,8 @@ class E2eeChaosTest {
                 if (Random.nextDouble() < 0.3) {
                     try {
                         node.client.sendLocation(i.toDouble(), i.toDouble())
+                    } catch (e: ProcessKilledException) {
+                        node.restart()
                     } catch (_: Exception) {}
                 }
 
@@ -406,6 +409,8 @@ class E2eeChaosTest {
                     updates.forEach { update ->
                         node.receivedLocations.getOrPut(update.userId) { mutableSetOf() }.add(update.lat.toInt())
                     }
+                } catch (e: ProcessKilledException) {
+                    node.restart()
                 } catch (_: Exception) {}
             }
 

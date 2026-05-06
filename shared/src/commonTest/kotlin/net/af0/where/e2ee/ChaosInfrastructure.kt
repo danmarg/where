@@ -3,6 +3,8 @@ package net.af0.where.e2ee
 import kotlinx.coroutines.delay
 import kotlin.random.Random
 
+class ProcessKilledException : Exception("Simulated process kill mid-operation")
+
 class ChaosTimeProvider(private var offsetMillis: Long = 0) : TimeProvider {
     fun addOffset(millis: Long) {
         offsetMillis += millis
@@ -40,6 +42,7 @@ class ChaosMailboxClient(private val client: MailboxClient) : MailboxClient {
     var maxLatencyMs = 0L
     var expireMailboxProbability = 0.0
     var expireMailboxStatusCode = 404 // 404 or 410
+    var killProbability = 0.0
 
     // When true: the message IS delivered to the server (relay) but the HTTP response is
     // "lost" and a NetworkException is thrown to the caller. This simulates the production
@@ -51,6 +54,7 @@ class ChaosMailboxClient(private val client: MailboxClient) : MailboxClient {
 
     override suspend fun post(baseUrl: String, token: String, payload: MailboxPayload) {
         applyLatency()
+        checkKill()
         if (expiredTokens.contains(token) || Random.nextDouble() < expireMailboxProbability) {
             expiredTokens.add(token)
             throw ServerException(expireMailboxStatusCode, "Simulated mailbox expiration")
@@ -75,10 +79,12 @@ class ChaosMailboxClient(private val client: MailboxClient) : MailboxClient {
                 if (stealthPost) throw NetworkException("Simulated timeout: POST delivered but response lost")
             }
         }
+        checkKill()
     }
 
     override suspend fun poll(baseUrl: String, token: String): List<MailboxPayload> {
         applyLatency()
+        checkKill()
         if (expiredTokens.contains(token) || Random.nextDouble() < expireMailboxProbability) {
             expiredTokens.add(token)
             throw ServerException(expireMailboxStatusCode, "Simulated mailbox expiration")
@@ -93,7 +99,7 @@ class ChaosMailboxClient(private val client: MailboxClient) : MailboxClient {
             messages.shuffle()
         }
 
-        return if (corruptNextPayload || Random.nextDouble() < corruptPayloadProbability) {
+        val result = if (corruptNextPayload || Random.nextDouble() < corruptPayloadProbability) {
             corruptNextPayload = false
             messages.map { msg ->
                 if (msg is EncryptedMessagePayload) {
@@ -105,19 +111,29 @@ class ChaosMailboxClient(private val client: MailboxClient) : MailboxClient {
         } else {
             messages
         }
+        checkKill()
+        return result
     }
 
     override suspend fun ack(baseUrl: String, token: String, count: Int) {
         applyLatency()
+        checkKill()
         if (expiredTokens.contains(token)) {
             throw ServerException(expireMailboxStatusCode, "Simulated mailbox expiration")
         }
         client.ack(baseUrl, token, count)
+        checkKill()
     }
 
     private suspend fun applyLatency() {
         if (maxLatencyMs > 0) {
             delay(Random.nextLong(maxLatencyMs))
+        }
+    }
+
+    private fun checkKill() {
+        if (Random.nextDouble() < killProbability) {
+            throw ProcessKilledException()
         }
     }
 
