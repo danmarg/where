@@ -253,6 +253,29 @@ class KeyExchangeTest {
     }
 
     @Test
+    fun `initSession derives distinct directional header keys`() {
+        val (qr, aliceEkPriv) = KeyExchange.aliceCreateQrPayload("Alice")
+        val (msg, bobSession) = KeyExchange.bobProcessQr(qr, "Bob")
+
+        // Use a "raw" initSession for Alice to check Epoch 0 values before she ratchets
+        val sk = x25519(aliceEkPriv, msg.ekPub)
+        val aliceFp = fingerprint(qr.ekPub)
+        val bobFp = fingerprint(msg.ekPub)
+        val aliceSession0 = KeyExchange.initSession(sk, true, aliceEkPriv, qr.ekPub, msg.ekPub, aliceFp, bobFp)
+
+        // Within a session, send and receive header keys must be different (Epoch 0)
+        assertFalse(aliceSession0.sendHeaderKey.contentEquals(aliceSession0.headerKey), "Alice send != recv header key")
+        assertFalse(bobSession.sendHeaderKey.contentEquals(bobSession.headerKey), "Bob send != recv header key")
+
+        // Cross-session matching: Alice send matches Bob recv, and vice-versa
+        assertContentEquals(aliceSession0.sendHeaderKey, bobSession.headerKey, "Alice sendHeaderKey == Bob headerKey")
+        assertContentEquals(bobSession.sendHeaderKey, aliceSession0.headerKey, "Bob sendHeaderKey == Alice headerKey")
+
+        // nextHeaderKey should be the same for both
+        assertContentEquals(aliceSession0.nextHeaderKey, bobSession.nextHeaderKey, "Alice and Bob share nextHeaderKey")
+    }
+
+    @Test
     fun `safetyNumber is symmetric`() {
         val ekA = generateX25519KeyPair().pub
         val ekB = generateX25519KeyPair().pub

@@ -213,18 +213,24 @@ object KeyExchange {
                 ikm = sk,
                 salt = null,
                 info = INFO_KEY_EXCHANGE.encodeToByteArray(),
-                length = 160,
+                length = 192,
             )
         val chainKey0 = expanded.copyOfRange(0, 32)
         val chainKey1 = expanded.copyOfRange(32, 64)
         val initialRootKey = expanded.copyOfRange(64, 96)
-        val initialHeaderKey = expanded.copyOfRange(96, 128)
-        val nextHeaderKey = expanded.copyOfRange(128, 160)
+        val headerKey0 = expanded.copyOfRange(96, 128)
+        val headerKey1 = expanded.copyOfRange(128, 160)
+        val nextHeaderKey = expanded.copyOfRange(160, 192)
 
         // Alice sends on chain 0, Bob receives on chain 0.
         // Bob sends on chain 1, Alice receives on chain 1.
         val sendChainKey = if (isAlice) chainKey0 else chainKey1
         val recvChainKey = if (isAlice) chainKey1 else chainKey0
+
+        // Alice sends with headerKey0, Bob receives with headerKey0.
+        // Bob sends with headerKey1, Alice receives with headerKey1.
+        val sendHeaderKey = if (isAlice) headerKey0 else headerKey1
+        val recvHeaderKey = if (isAlice) headerKey1 else headerKey0
 
         // Initial tokens are also derived from SK.
         val sendToken =
@@ -262,8 +268,8 @@ object KeyExchange {
             isAlice = isAlice,
             pn = 0L,
             pr = 0L,
-            headerKey = initialHeaderKey,
-            sendHeaderKey = initialHeaderKey,
+            headerKey = recvHeaderKey,
+            sendHeaderKey = sendHeaderKey,
             nextHeaderKey = nextHeaderKey,
         )
     }
