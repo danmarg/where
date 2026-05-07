@@ -10,6 +10,9 @@ import com.ionspin.kotlin.crypto.util.LibsodiumRandom
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.cinterop.addressOf
 import kotlinx.cinterop.usePinned
+import platform.CoreCrypto.CC_SHA256_DIGEST_LENGTH
+import platform.CoreCrypto.CCHmac
+import platform.CoreCrypto.kCCHmacAlgSHA256
 import platform.posix.memset_s
 
 // ---------------------------------------------------------------------------
@@ -28,33 +31,26 @@ internal actual fun sha512(data: ByteArray): ByteArray {
 // HMAC-SHA-256
 // ---------------------------------------------------------------------------
 
+@OptIn(ExperimentalForeignApi::class)
 internal actual fun hmacSha256(
     key: ByteArray,
     data: ByteArray,
 ): ByteArray {
-    // Platform-specific HMAC implementation using standard SHA-256.
-    // RFC 2104 compliant.
-    val blockSeparator = 64
-    // Ensure we work on a copy to avoid mutating the caller's buffer when zeroing.
-    var k =
-        when {
-            key.size > blockSeparator -> sha256(key).copyOf(blockSeparator)
-            key.size < blockSeparator -> key.copyOf(blockSeparator)
-            else -> key.copyOf()
+    val result = ByteArray(CC_SHA256_DIGEST_LENGTH)
+    key.usePinned { keyPinned ->
+        data.usePinned { dataPinned ->
+            result.usePinned { resultPinned ->
+                CCHmac(
+                    kCCHmacAlgSHA256,
+                    keyPinned.addressOf(0),
+                    key.size.toULong(),
+                    dataPinned.addressOf(0),
+                    data.size.toULong(),
+                    resultPinned.addressOf(0),
+                )
+            }
         }
-
-    val ipad = ByteArray(blockSeparator) { i -> (k[i].toInt() xor 0x36).toByte() }
-    val opad = ByteArray(blockSeparator) { i -> (k[i].toInt() xor 0x5c).toByte() }
-
-    val innerHash = sha256(ipad + data)
-    val result = sha256(opad + innerHash)
-
-    // Security: zero out sensitive material
-    k.zeroize()
-    ipad.zeroize()
-    opad.zeroize()
-    innerHash.zeroize()
-
+    }
     return result
 }
 
