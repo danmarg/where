@@ -26,13 +26,13 @@ class DualPostReplayTest {
         // 1. Alice sends first message (seq 1, epoch 0)
         val (updatedAlice, msg1) = Session.encryptMessage(aliceSession, MessagePlaintext.Location(1.0, 1.0, 1.0, 100))
         aliceSession = updatedAlice
-        val h1 = Session.decryptHeader(aliceSession.headerKey, msg1.envelope)
+        val h1 = Session.decryptHeader(aliceSession.sendHeaderKey, msg1.envelope)
         println("Alice sent msg1: seq=${h1.seq} dh=${h1.dhPub.toHex()}")
 
         // 2. Alice sends second message
         val (finalAlice, msg2) = Session.encryptMessage(aliceSession, MessagePlaintext.Location(2.0, 2.0, 1.0, 200))
         aliceSession = finalAlice
-        val h2 = Session.decryptHeader(aliceSession.headerKey, msg2.envelope)
+        val h2 = Session.decryptHeader(aliceSession.sendHeaderKey, msg2.envelope)
         println("Alice sent msg2: seq=${h2.seq} dh=${h2.dhPub.toHex()}")
 
         // 3. Bob receives msg1

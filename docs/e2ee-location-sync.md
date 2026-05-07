@@ -233,20 +233,20 @@ key_confirmation = HMAC-SHA-256(key  = K_confirm,
                                  data = "Where-v1-Confirm" || EK_A.pub || EK_B.pub)
 ```
 
-Both parties initialize their Double Ratchet state (§8.2) seeded with a root key derived from `SK`. Alice and Bob expand `SK` over 160 bytes to obtain initial chain keys, the starting root key, and the initial header keys:
+Both parties initialize their Double Ratchet state (§8.2) seeded with a root key derived from `SK`. Alice and Bob expand `SK` over 192 bytes to obtain initial chain keys, the starting root key, and the initial header keys:
 
 ```
-(chain_key_0 || chain_key_1 || root_key_0 || header_key_0 || next_header_key) = HKDF-SHA-256(
+(chain_key_0 || chain_key_1 || root_key_0 || header_key_0 || header_key_1 || next_header_key) = HKDF-SHA-256(
     ikm  = SK,
     salt = null,
     info = "Where-v1-KeyExchange",
-    length = 160
+    length = 192
 )
-// Split as: [0:32] = chain_key_0, [32:64] = chain_key_1, [64:96] = root_key_0, [96:128] = header_key_0, [128:160] = next_header_key.
+// Split as: [0:32] = chain_key_0, [32:64] = chain_key_1, [64:96] = root_key_0, [96:128] = header_key_0, [128:160] = header_key_1, [160:192] = next_header_key.
 ```
 
-- **Alice:** Uses `send_chain = chain_key_0`, `recv_chain = chain_key_1`.
-- **Bob:** Uses `send_chain = chain_key_1`, `recv_chain = chain_key_0`.
+- **Alice:** Uses `send_chain = chain_key_0`, `recv_chain = chain_key_1`, `send_header_key = header_key_0`, `recv_header_key = header_key_1`.
+- **Bob:** Uses `send_chain = chain_key_1`, `recv_chain = chain_key_0`, `send_header_key = header_key_1`, `recv_header_key = header_key_0`.
 - **Root Key:** Both start with `root_key = root_key_0`.
 
 Initial routing tokens are also derived from `SK`:
