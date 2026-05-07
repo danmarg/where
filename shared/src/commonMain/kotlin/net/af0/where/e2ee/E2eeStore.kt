@@ -719,7 +719,7 @@ class E2eeStore(
                     sendToken = entry.session.prevSendToken,
                     isSendTokenPending = false,
                     sendTokenPendingSinceMs = null,
-                    needsRatchet = true,
+                    needsRatchet = false,
                 )
             save(friendsOverride = friends + (friendId to entry.copy(session = rolledBack, outbox = null)))
         }
