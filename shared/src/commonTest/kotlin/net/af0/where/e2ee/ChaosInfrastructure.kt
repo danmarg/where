@@ -33,6 +33,7 @@ class ChaosMailboxClient(private val client: MailboxClient) : MailboxClient {
     var failNextPost = false
     var failPostProbability = 0.0
     var failNextPoll = false
+    var failPoll = false
     var failPollProbability = 0.0
     var corruptNextPayload = false
     var corruptPayloadProbability = 0.0
@@ -89,7 +90,7 @@ class ChaosMailboxClient(private val client: MailboxClient) : MailboxClient {
             expiredTokens.add(token)
             throw ServerException(expireMailboxStatusCode, "Simulated mailbox expiration")
         }
-        if (failNextPoll || Random.nextDouble() < failPollProbability) {
+        if (failNextPoll || failPoll || Random.nextDouble() < failPollProbability) {
             failNextPoll = false
             throw NetworkException("Simulated network failure on POLL")
         }

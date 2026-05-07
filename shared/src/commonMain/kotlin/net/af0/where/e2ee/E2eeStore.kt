@@ -281,7 +281,9 @@ class E2eeStore(
                         msg = msg,
                         aliceEkPriv = pending.aliceEkPriv,
                         aliceEkPub = pending.qrPayload.ekPub,
-                    )
+                    ).let {
+                        if (it.isSendTokenPending) it.copy(sendTokenPendingSinceMs = currentTimeMillis()) else it
+                    }
                 val entry =
                     FriendEntry(
                         name = sanitizeName(bobName),
@@ -374,6 +376,57 @@ class E2eeStore(
         }
     }
 
+    /**
+     * Atomically encrypts a message and updates the session state in a single transaction.
+     * Prevents TOCTOU races (§5.4) where concurrent sends could re-use sequence numbers.
+     */
+    suspend fun encryptAndStore(
+        friendId: String,
+        payload: MessagePlaintext,
+    ): EncryptedMessagePayload =
+        stateLock.withLock {
+            val entry = friends[friendId] ?: throw Exception("Friend not found: $friendId")
+
+            // Atomic guard: the caller checks outbox before acquiring this lock, but that
+            // check has a TOCTOU window. Re-checking here under stateLock makes it safe.
+            check(entry.outbox == null) {
+                "Outbox already pending for ${friendId.take(8)} — refusing to overwrite"
+            }
+
+            val (newSession, message) = Session.encryptMessage(entry.session, payload)
+
+            // NONCE SAFETY ASSERTION (§5.4): The sequence number MUST advance.
+            // If we are transitioning tokens, the new root key ensures uniqueness even if
+            // sendSeq resets; if we are not, sendSeq must be strictly greater.
+            val seqAdvanced =
+                newSession.sendSeq > entry.session.sendSeq ||
+                    !newSession.rootKey.contentEquals(entry.session.rootKey)
+            check(seqAdvanced) { "Nonce safety violation: sequence number did not advance" }
+
+            // Determine which token to use for posting
+            val tokenToUse = if (newSession.isSendTokenPending) newSession.prevSendToken else newSession.sendToken
+
+            val updatedSession =
+                if (newSession.isSendTokenPending && !entry.session.isSendTokenPending) {
+                    newSession.copy(sendTokenPendingSinceMs = currentTimeMillis())
+                } else {
+                    newSession
+                }
+
+            val newFriends =
+                friends +
+                    (
+                        friendId to
+                            entry.copy(
+                                session = updatedSession,
+                                outbox = EncryptedOutboxMessage(token = tokenToUse.toHex(), payload = message),
+                                lastSentTs = currentTimeSeconds(),
+                            )
+                    )
+            save(friendsOverride = newFriends)
+            message
+        }
+
     suspend fun updateSession(
         id: String,
         newSession: SessionState,
@@ -449,6 +502,29 @@ class E2eeStore(
         }
     }
 
+    /**
+     * Roll back a stale pending transition: move sendToken back to prevSendToken.
+     * Keeps all crypto state (keys, sequence) at the new epoch.
+     */
+    internal suspend fun abandonPendingTransition(friendId: String) =
+        stateLock.withLock {
+            val entry = friends[friendId] ?: return@withLock
+            if (!entry.session.isSendTokenPending) return@withLock
+
+            val rolledBack =
+                entry.session.copy(
+                    sendToken = entry.session.prevSendToken,
+                    isSendTokenPending = false,
+                    sendTokenPendingSinceMs = null,
+                    needsRatchet = entry.session.needsRatchet,
+                )
+            save(friendsOverride = friends + (friendId to entry.copy(session = rolledBack, outbox = null)))
+        }
+
+    // -----------------------------------------------------------------------
+    // Batch poll processing
+    // -----------------------------------------------------------------------
+
     data class PollBatchResult(
         val decryptedLocations: List<LocationPlaintext>,
         val anySuccess: Boolean,
@@ -501,40 +577,39 @@ class E2eeStore(
             val isFailedBatch = (totalProcessed > 0 && !anySuccess && failCount > 0) || (silentDrops > 0 && !anySuccess)
 
             val lastLocation = decryptedLocations.lastOrNull()
-            val newFriends = friends + (friendId to entry.copy(
-                session = currentSession,
-                lastLat = lastLocation?.lat ?: entry.lastLat,
-                lastLng = lastLocation?.lng ?: entry.lastLng,
-                lastTs = lastLocation?.ts ?: entry.lastTs,
-                lastRecvTs = if (anySuccess) currentTimeSeconds() else entry.lastRecvTs,
-                lastPollTs = currentTimeSeconds(),
-                isConfirmed = entry.isConfirmed || anySuccess,
-                lastDecryptFailed = if (encryptedMessages.isNotEmpty()) isFailedBatch else entry.lastDecryptFailed,
-            ))
+            
+            val updatedSession =
+                if (currentSession.isSendTokenPending && !entry.session.isSendTokenPending) {
+                    currentSession.copy(sendTokenPendingSinceMs = currentTimeMillis())
+                } else {
+                    currentSession
+                }
+
+            val newFriends =
+                friends +
+                    (
+                        friendId to
+                            entry.copy(
+                                session = updatedSession,
+                                // Bob becomes confirmed once he receives any valid message from Alice
+                                isConfirmed = entry.isConfirmed || anySuccess,
+                                lastRecvTs = if (hadActivity) currentTimeSeconds() else entry.lastRecvTs,
+                                lastLat = lastLocation?.lat ?: entry.lastLat,
+                                lastLng = lastLocation?.lng ?: entry.lastLng,
+                                lastTs = lastLocation?.ts ?: entry.lastTs,
+                                lastPollTs = currentTimeSeconds(),
+                                lastDecryptFailed = if (encryptedMessages.isNotEmpty()) isFailedBatch else entry.lastDecryptFailed,
+                            )
+                    )
+
+            // The recvToken must only change if we had a successful decryption (§7.2).
+            check(currentSession.recvToken.contentEquals(entry.session.recvToken) || anySuccess) {
+                "recvToken changed without any successful decryption — invariant violated"
+            }
+
             save(friendsOverride = newFriends)
 
             PollBatchResult(decryptedLocations, anySuccess, silentDrops > 0)
-        }
-
-    suspend fun encryptAndStore(
-        friendId: String,
-        payload: MessagePlaintext,
-    ): EncryptedMessagePayload =
-        stateLock.withLock {
-            val entry = friends[friendId] ?: throw Exception("Friend not found")
-            check(entry.outbox == null) { "Outbox already pending" }
-
-            val (newSession, message) = Session.encryptMessage(entry.session, payload)
-            val tokenToUse = if (newSession.isSendTokenPending) newSession.prevSendToken else newSession.sendToken
-
-            friends[friendId] =
-                entry.copy(
-                    session = newSession,
-                    outbox = EncryptedOutboxMessage(token = tokenToUse.toHex(), payload = message),
-                    lastSentTs = currentTimeSeconds(),
-                )
-            save()
-            message
         }
 
     suspend fun clearOutbox(id: String) {
@@ -600,8 +675,9 @@ class E2eeStore(
             if (!entry.session.isSendTokenPending) return@withLock false
             if (clearingToken != null && entry.session.prevSendToken.toHex() != clearingToken) return@withLock false
             
-            friends[id] = entry.copy(session = entry.session.copy(isSendTokenPending = false))
-            save()
+            val newSession = entry.session.copy(isSendTokenPending = false, sendTokenPendingSinceMs = null)
+            val newFriends = friends + (id to entry.copy(session = newSession))
+            save(friendsOverride = newFriends)
             true
         }
 
