@@ -206,7 +206,12 @@ class RatchetRobustnessTest {
             val aliceAfterRestart = aliceStoreAfterRestart.getFriend(aliceToBobId)!!
             assertTrue(aliceAfterRestart.session.needsRatchet, "needsRatchet must survive serialization/restart")
 
-            // 6. Create a tracking mailbox to verify the pre-poll keepalive fires
+            // 6. Setup client with tracking mailbox
+            // NOTE: We toggle sharingEnabled = false for Alice to ensure the automated
+            // keepalive fires after poll. LocationClient gates automated keepalives
+            // on (!sharingEnabled || isPaused) to prevent loops during active sharing (§5.3).
+            aliceStoreAfterRestart.updateFriend(aliceToBobId) { it.copy(sharingEnabled = false) }
+
             val trackingMailbox =
                 object : MailboxClient {
                     val posts = mutableListOf<Triple<String, String, MailboxPayload>>()
@@ -232,11 +237,12 @@ class RatchetRobustnessTest {
                 }
             val aliceClientAfterRestart = LocationClient("http://fake", aliceStoreAfterRestart, trackingMailbox)
 
-            // 7. Call poll() — the pre-poll keepalive should fire because needsRatchet=true
+            // 7. Call poll() — the automated keepalive should fire POST-poll because needsRatchet=true
+            // (sharingEnabled=true but isPaused=default(false), so it will fire)
             aliceClientAfterRestart.poll()
 
-            // 8. Verify: keepalive was posted (pre-poll keepalive fired)
-            assertTrue(trackingMailbox.posts.isNotEmpty(), "Pre-poll keepalive must fire on restart when needsRatchet=true")
+            // 8. Verify: keepalive was posted (automated keepalive fired)
+            assertTrue(trackingMailbox.posts.isNotEmpty(), "Automated keepalive must fire after poll when needsRatchet=true")
 
             // 9. Verify: needsRatchet is now cleared
             val aliceFinal = aliceStoreAfterRestart.getFriend(aliceToBobId)!!

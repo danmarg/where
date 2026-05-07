@@ -60,17 +60,6 @@ open class LocationClient(
 
             for (friend in friends) {
                 try {
-                    // RESTART RECOVERY (§5.5): If the session was regenerated on startup,
-                    // force a keepalive now to establish a new memory-only DH epoch.
-                    if (friend.session.needsRatchet) {
-                        println("[LocationClient] poll: needsRatchet=true for ${friend.id.take(8)}, sending pre-poll keepalive")
-                        try {
-                            sendKeepalive(friend.id)
-                        } catch (e: Exception) {
-                            println("[LocationClient] poll: pre-poll keepalive failed for ${friend.id.take(8)}: ${e.message}")
-                        }
-                    }
-
                     val friendUpdates = pollFriend(friend.id, friend.id in pausedFriendIds)
                     allUpdates.addAll(friendUpdates)
                     successCount++
@@ -236,22 +225,23 @@ open class LocationClient(
         // location update to carry the ratchet, preventing a keepalive feedback loop
         // during active sessions.
         val friendAfter = store.getFriend(friendId)
-        if (friendAfter != null && !friendBefore.session.remoteDhPub.contentEquals(friendAfter.session.remoteDhPub)) {
-            if (!friendAfter.isStale && (!friendAfter.sharingEnabled || isPaused)) {
-                println(
-                    "[LocationClient] pollFriend: new remoteDhPub for ${friendId.take(
-                        8,
-                    )}, sending keepalive (sharingEnabled=${friendAfter.sharingEnabled}, isPaused=$isPaused)",
-                )
-                try {
-                    sendKeepalive(friendId)
-                } catch (e: Exception) {
-                    // Keepalive post failed. If the failure was a network error, the outbox
-                    // was durably written by encryptAndStore and processOutboxes will retry.
-                    // If the failure was before encryptAndStore (e.g., storage write failure),
-                    // needsRatchet=true is still persisted and will re-trigger on next poll.
-                    println("[LocationClient] pollFriend: keepalive failed for ${friendId.take(8)}: ${e.message}")
-                    store.addDiagnosticEvent("KEEPALIVE FAIL: ${friendId.take(8)}: ${e.message?.take(40)}")
+        if (friendAfter != null) {
+            val remoteDhChanged = !friendBefore.session.remoteDhPub.contentEquals(friendAfter.session.remoteDhPub)
+            if (friendAfter.session.needsRatchet || remoteDhChanged) {
+                if (!friendAfter.isStale && (!friendAfter.sharingEnabled || isPaused)) {
+                    println(
+                        "[LocationClient] pollFriend: needsRatchet/new DH for ${friendId.take(8)}, sending automated keepalive",
+                    )
+                    try {
+                        sendKeepalive(friendId)
+                    } catch (e: Exception) {
+                        // Keepalive post failed. If the failure was a network error, the outbox
+                        // was durably written by encryptAndStore and processOutboxes will retry.
+                        // If the failure was before encryptAndStore (e.g., storage write failure),
+                        // needsRatchet=true is still persisted and will re-trigger on next poll.
+                        println("[LocationClient] pollFriend: keepalive failed for ${friendId.take(8)}: ${e.message}")
+                        store.addDiagnosticEvent("KEEPALIVE FAIL: ${friendId.take(8)}: ${e.message?.take(40)}")
+                    }
                 }
             }
         }

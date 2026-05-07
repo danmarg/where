@@ -22,33 +22,38 @@ object Session {
     ): Pair<SessionState, EncryptedMessagePayload> {
         if (state.sendSeq == Long.MAX_VALUE) throw SessionBrickedException("sequence number overflow")
 
-        val step = kdfCk(state.sendChainKey)
-        val seq = state.sendSeq + 1
-        val dhPub = state.localDhPub
+        var currentState = state
+        if (currentState.needsRatchet && !currentState.isSendTokenPending) {
+            currentState = performDhRatchet(currentState, currentState.remoteDhPub)
+        }
+
+        val step = kdfCk(currentState.sendChainKey)
+        val seq = currentState.sendSeq + 1
+        val dhPub = currentState.localDhPub
 
         // AAD directionality: include sender and recipient fingerprints explicitly.
-        val (sender, recipient) = if (state.isAlice) state.aliceFp to state.bobFp else state.bobFp to state.aliceFp
+        val (sender, recipient) = if (currentState.isAlice) currentState.aliceFp to currentState.bobFp else currentState.bobFp to currentState.aliceFp
         val aad = buildMessageAad(sender, recipient, seq, dhPub)
 
         // PH-3.3 (BELT-AND-SUSPENDERS): Ensure internal 'pn' matches what we put in the header (#212)
         val updatedPayload =
             when (payload) {
-                is MessagePlaintext.Location -> payload.copy(pn = state.pn)
-                is MessagePlaintext.Keepalive -> payload.copy(pn = state.pn)
+                is MessagePlaintext.Location -> payload.copy(pn = currentState.pn)
+                is MessagePlaintext.Keepalive -> payload.copy(pn = currentState.pn)
             }
 
         val plaintext = padToFixedSize(encodeMessage(updatedPayload), PADDING_SIZE)
         val ct = aeadEncrypt(step.messageKey, step.messageNonce, plaintext, aad)
 
         val newState =
-            state.copy(
+            currentState.copy(
                 sendChainKey = step.newChainKey,
                 sendSeq = seq,
                 needsRatchet = false,
             )
 
         // Seal the metadata into an envelope (#186)
-        val envelope = encryptHeader(state.sendHeaderKey, dhPub, seq, state.pn)
+        val envelope = encryptHeader(currentState.sendHeaderKey, dhPub, seq, currentState.pn)
 
         // Memory Hygiene
         step.messageKey.zeroize()
@@ -443,6 +448,7 @@ object Session {
             seenRemoteDhPubs = newSeenKeys,
             prevSendToken = state.sendToken.copyOf(),
             isSendTokenPending = true,
+            needsRatchet = false,
         )
     }
 
