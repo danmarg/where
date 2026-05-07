@@ -65,7 +65,6 @@ internal class DoubleBufferedStorage<T : Any>(
                 }
             }
 
-        println("[DoubleBufferedStorage] saving to $targetSlot (now=$now, lastLoaded=$lastLoadedTs)")
         storage.putString(targetSlot, jsonStr)
         
         // Migration cleanup: once we've successfully saved to a new slot, we can clear legacy
