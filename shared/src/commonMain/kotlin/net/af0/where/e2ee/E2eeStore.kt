@@ -145,9 +145,20 @@ class E2eeStore(
     private var pendingInvites = mutableListOf<PendingInvite>()
     private var lastSavedGlobalTs: Long = 0L
 
-    /** Monotonic clock to ensure absolute ordering of all saves (global and per-friend). */
+    /**
+     * Monotonic clock to ensure absolute ordering of all saves (global and per-friend).
+     */
     private var lastUsedTs: Long = 0L
 
+    /**
+     * LOCK ORDERING POLICY:
+     * To prevent deadlocks, the following hierarchy MUST be strictly followed:
+     * 1. friendLock (via getFriendLock(id))
+     * 2. metadataLock (for global state and the friend index)
+     *
+     * Never attempt to acquire a friendLock while holding metadataLock.
+     * Always acquire friendLock before metadataLock if both are needed.
+     */
     private val metadataLock = Mutex()
     private val friendLocks = mutableMapOf<String, Mutex>()
     private val locksLock = Mutex() // Lock for the friendLocks map itself
@@ -482,25 +493,31 @@ class E2eeStore(
     ) {
         val friendLock = getFriendLock(id)
         friendLock.withLock {
-            val entry = metadataLock.withLock { friends[id] } ?: return@withLock
-            val updated = entry.copy(name = sanitizeName(newName))
             metadataLock.withLock {
+                val entry = friends[id] ?: return@withLock
+                val updated = entry.copy(name = sanitizeName(newName))
                 saveFriendInternalWithTs(id, updated, nextTs())
             }
         }
     }
 
     suspend fun deleteFriend(id: String) {
-        metadataLock.withLock {
-            if (friends.containsKey(id)) {
-                val nextFriendIds = friends.keys.filter { it != id }
-                saveGlobalInternal(nextFriendIds = nextFriendIds)
-                // Remove from memory
-                friends.remove(id)
-                // Optionally clear the friend's storage keys here.
-                storage.putString("${friendKey(id)}_a", "")
-                storage.putString("${friendKey(id)}_b", "")
+        val friendLock = getFriendLock(id)
+        friendLock.withLock {
+            metadataLock.withLock {
+                if (friends.containsKey(id)) {
+                    val nextFriendIds = friends.keys.filter { it != id }
+                    saveGlobalInternal(nextFriendIds = nextFriendIds)
+                    // Remove from memory
+                    friends.remove(id)
+                    // Optionally clear the friend's storage keys here.
+                    storage.putString("${friendKey(id)}_a", "")
+                    storage.putString("${friendKey(id)}_b", "")
+                }
             }
+        }
+        locksLock.withLock {
+            friendLocks.remove(id)
         }
     }
 
@@ -620,11 +637,10 @@ class E2eeStore(
     suspend fun confirmFriend(id: String) {
         val friendLock = getFriendLock(id)
         friendLock.withLock {
-            val entry = metadataLock.withLock { friends[id] } ?: return@withLock
-            if (entry.isConfirmed) return@withLock
-            val updated = entry.copy(isConfirmed = true)
             metadataLock.withLock {
-                saveFriendInternalWithTs(id, updated, nextTs())
+                val entry = friends[id] ?: return@withLock
+                if (entry.isConfirmed) return@withLock
+                saveFriendInternalWithTs(id, entry.copy(isConfirmed = true), nextTs())
             }
         }
     }
@@ -635,10 +651,9 @@ class E2eeStore(
     ) {
         val friendLock = getFriendLock(id)
         friendLock.withLock {
-            val entry = metadataLock.withLock { friends[id] } ?: return@withLock
-            val updated = entry.copy(sharingEnabled = enabled)
             metadataLock.withLock {
-                saveFriendInternalWithTs(id, updated, nextTs())
+                val entry = friends[id] ?: return@withLock
+                saveFriendInternalWithTs(id, entry.copy(sharingEnabled = enabled), nextTs())
             }
         }
     }
@@ -647,19 +662,18 @@ class E2eeStore(
     internal suspend fun abandonPendingTransition(friendId: String) {
         val friendLock = getFriendLock(friendId)
         friendLock.withLock {
-            val entry = metadataLock.withLock { friends[friendId] } ?: return@withLock
-            if (!entry.session.isSendTokenPending) return@withLock
-
-            val rolledBack =
-                entry.session.copy(
-                    sendToken = entry.session.prevSendToken,
-                    isSendTokenPending = false,
-                    sendTokenPendingSinceMs = null,
-                    needsRatchet = entry.session.needsRatchet,
-                )
-            val updated = entry.copy(session = rolledBack, outbox = null)
             metadataLock.withLock {
-                saveFriendInternalWithTs(friendId, updated, nextTs())
+                val entry = friends[friendId] ?: return@withLock
+                if (!entry.session.isSendTokenPending) return@withLock
+
+                val rolledBack =
+                    entry.session.copy(
+                        sendToken = entry.session.prevSendToken,
+                        isSendTokenPending = false,
+                        sendTokenPendingSinceMs = null,
+                        needsRatchet = entry.session.needsRatchet,
+                    )
+                saveFriendInternalWithTs(friendId, entry.copy(session = rolledBack, outbox = null), nextTs())
             }
         }
     }
@@ -673,6 +687,7 @@ class E2eeStore(
         val anySuccess: Boolean,
         val hadSilentDrops: Boolean,
         val anyReplay: Boolean = false,
+        val failCount: Int = 0,
     )
 
     suspend fun processBatch(
@@ -709,7 +724,7 @@ class E2eeStore(
                         )
                     }
                 } catch (e: Exception) {
-                    if (e is ProtocolException && e.message?.contains("replay") == true) {
+                    if (e is ReplayException) {
                         anyReplay = true
                     } else {
                         failCount++
@@ -726,7 +741,8 @@ class E2eeStore(
             val hadActivity = decryptedLocations.isNotEmpty() || (anySuccess && currentSession != entry.session)
 
             val totalProcessed = orderedMessages.size
-            val isFailedBatch = (totalProcessed > 0 && !anySuccess && !anyReplay && failCount > 0) || (silentDrops > 0 && !anySuccess)
+            // A batch is failed if there were ANY real failures, regardless of replays.
+            val isFailedBatch = (totalProcessed > 0 && failCount > 0) || (silentDrops > 0 && !anySuccess)
 
             val lastLocation = decryptedLocations.lastOrNull()
 
@@ -759,17 +775,16 @@ class E2eeStore(
                 saveFriendInternalWithTs(friendId, updatedEntry, nextTs())
             }
 
-            PollBatchResult(decryptedLocations, anySuccess, silentDrops > 0, anyReplay)
+            PollBatchResult(decryptedLocations, anySuccess, silentDrops > 0, anyReplay, failCount)
         }
     }
 
     suspend fun clearOutbox(id: String) {
         val friendLock = getFriendLock(id)
         friendLock.withLock {
-            val entry = metadataLock.withLock { friends[id] } ?: return@withLock
-            val updated = entry.copy(outbox = null, outbox429Count = 0)
             metadataLock.withLock {
-                saveFriendInternalWithTs(id, updated, nextTs())
+                val entry = friends[id] ?: return@withLock
+                saveFriendInternalWithTs(id, entry.copy(outbox = null, outbox429Count = 0), nextTs())
             }
         }
     }
@@ -780,35 +795,39 @@ class E2eeStore(
     ) {
         val friendLock = getFriendLock(id)
         friendLock.withLock {
-            val entry = metadataLock.withLock { friends[id] } ?: return@withLock
-            val updated = entry.copy(session = newSession, outbox = null, outbox429Count = 0)
             metadataLock.withLock {
-                saveFriendInternalWithTs(id, updated, nextTs())
+                val entry = friends[id] ?: return@withLock
+                saveFriendInternalWithTs(id, entry.copy(session = newSession, outbox = null, outbox429Count = 0), nextTs())
             }
         }
     }
 
     suspend fun incrementOutbox429Count(id: String): Int =
         getFriendLock(id).withLock {
-            val entry = metadataLock.withLock { friends[id] } ?: return@withLock 0
-            val newCount = entry.outbox429Count + 1
-            val updated = entry.copy(outbox429Count = newCount)
             metadataLock.withLock {
-                saveFriendInternalWithTs(id, updated, nextTs())
+                val entry = friends[id] ?: return@withLock 0
+                val newCount = entry.outbox429Count + 1
+                saveFriendInternalWithTs(id, entry.copy(outbox429Count = newCount), nextTs())
+                newCount
             }
-            newCount
         }
 
-    suspend fun updateConsecutiveSilentDrops(
-        id: String,
-        count: Int,
-    ) {
-        val friendLock = getFriendLock(id)
-        friendLock.withLock {
-            val entry = metadataLock.withLock { friends[id] } ?: return@withLock
-            val updated = entry.copy(consecutiveSilentDrops = count)
+    suspend fun incrementConsecutiveSilentDrops(id: String): Int =
+        getFriendLock(id).withLock {
             metadataLock.withLock {
-                saveFriendInternalWithTs(id, updated, nextTs())
+                val entry = friends[id] ?: return@withLock 0
+                val nextCount = entry.consecutiveSilentDrops + 1
+                saveFriendInternalWithTs(id, entry.copy(consecutiveSilentDrops = nextCount), nextTs())
+                nextCount
+            }
+        }
+
+    suspend fun resetConsecutiveSilentDrops(id: String) {
+        getFriendLock(id).withLock {
+            metadataLock.withLock {
+                val entry = friends[id] ?: return@withLock
+                if (entry.consecutiveSilentDrops == 0) return@withLock
+                saveFriendInternalWithTs(id, entry.copy(consecutiveSilentDrops = 0), nextTs())
             }
         }
     }
@@ -821,10 +840,9 @@ class E2eeStore(
     ) {
         val friendLock = getFriendLock(id)
         friendLock.withLock {
-            val entry = metadataLock.withLock { friends[id] } ?: return@withLock
-            val updated = entry.copy(lastLat = lat, lastLng = lng, lastTs = ts)
             metadataLock.withLock {
-                saveFriendInternalWithTs(id, updated, nextTs())
+                val entry = friends[id] ?: return@withLock
+                saveFriendInternalWithTs(id, entry.copy(lastLat = lat, lastLng = lng, lastTs = ts), nextTs())
             }
         }
     }
@@ -835,10 +853,9 @@ class E2eeStore(
     ) {
         val friendLock = getFriendLock(id)
         friendLock.withLock {
-            val entry = metadataLock.withLock { friends[id] } ?: return@withLock
-            val updated = entry.copy(lastSentTs = ts)
             metadataLock.withLock {
-                saveFriendInternalWithTs(id, updated, nextTs())
+                val entry = friends[id] ?: return@withLock
+                saveFriendInternalWithTs(id, entry.copy(lastSentTs = ts), nextTs())
             }
         }
     }
@@ -849,10 +866,9 @@ class E2eeStore(
     ) {
         val friendLock = getFriendLock(id)
         friendLock.withLock {
-            val entry = metadataLock.withLock { friends[id] } ?: return@withLock
-            val updated = entry.copy(lastPollTs = ts)
             metadataLock.withLock {
-                saveFriendInternalWithTs(id, updated, nextTs())
+                val entry = friends[id] ?: return@withLock
+                saveFriendInternalWithTs(id, entry.copy(lastPollTs = ts), nextTs())
             }
         }
     }
@@ -863,16 +879,15 @@ class E2eeStore(
     ): Boolean {
         val friendLock = getFriendLock(id)
         return friendLock.withLock {
-            val entry = metadataLock.withLock { friends[id] } ?: return@withLock false
-            if (!entry.session.isSendTokenPending) return@withLock false
-            if (clearingToken != null && entry.session.prevSendToken.toHex() != clearingToken) return@withLock false
-
-            val newSession = entry.session.copy(isSendTokenPending = false, sendTokenPendingSinceMs = null)
-            val updated = entry.copy(session = newSession)
             metadataLock.withLock {
-                saveFriendInternalWithTs(id, updated, nextTs())
+                val entry = friends[id] ?: return@withLock false
+                if (!entry.session.isSendTokenPending) return@withLock false
+                if (clearingToken != null && entry.session.prevSendToken.toHex() != clearingToken) return@withLock false
+
+                val newSession = entry.session.copy(isSendTokenPending = false, sendTokenPendingSinceMs = null)
+                saveFriendInternalWithTs(id, entry.copy(session = newSession), nextTs())
+                true
             }
-            true
         }
     }
 

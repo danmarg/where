@@ -190,7 +190,7 @@ object Session {
         if (isNewDhEpoch) {
             // Unified error message to satisfy existing brittle test assertions (§9.2)
             if (remoteDhPub.contentEquals(cleanState.lastRemoteDhPub) || cleanState.seenRemoteDhPubs.contains(remoteDhPub.toHex())) {
-                throw ProtocolException("replay: dhPub already superseded (out-of-order window closed)")
+                throw ReplayException("replay: dhPub already superseded (out-of-order window closed)")
             }
 
             // Ratchet state forward. Note: headerKey transition happens inside performDhRatchet.
@@ -199,7 +199,7 @@ object Session {
 
         // Replay rejection against speculative seq
         if (seq <= speculativeState.recvSeq) {
-            throw ProtocolException("replay: seq $seq <= recvSeq ${speculativeState.recvSeq}")
+            throw ReplayException("replay: seq $seq <= recvSeq ${speculativeState.recvSeq}")
         }
         val stepsNeeded = seq - speculativeState.recvSeq
         if (stepsNeeded > MAX_GAP + 1) {

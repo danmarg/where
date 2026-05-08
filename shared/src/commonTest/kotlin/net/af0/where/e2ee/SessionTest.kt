@@ -102,8 +102,8 @@ class SessionTest {
         // Second delivery of the same message must be rejected.
         try {
             Session.decryptMessage(bobNew, message)
-            kotlin.test.fail("Expected ProtocolException for replay")
-        } catch (e: ProtocolException) {
+            kotlin.test.fail("Expected ReplayException for replay")
+        } catch (e: ReplayException) {
             assertTrue(e.message?.contains("replay") == true)
         }
     }
@@ -519,8 +519,8 @@ class SessionTest {
 
             try {
                 Session.decryptMessage(aliceSession, recycledPayload)
-                kotlin.test.fail("Expected ProtocolException for recycled/replayed DH public key")
-            } catch (e: ProtocolException) {
+                kotlin.test.fail("Expected ReplayException for recycled/replayed DH public key")
+            } catch (e: ReplayException) {
                 println("[DEBUG] Caught expected exception: ${e.message}")
                 assertTrue(e.message!!.contains("dhPub already superseded"), "Error should indicate superseded/old DH: ${e.message}")
             }
