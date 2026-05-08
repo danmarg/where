@@ -55,6 +55,8 @@ data class FriendEntry(
     val lastDecryptFailed: Boolean = false,
     /** Tracks consecutive 429 errors for the current outbox. */
     val outbox429Count: Int = 0,
+    /** Tracks consecutive polls with header failures to trigger force-ACK (#1). */
+    val consecutiveSilentDrops: Int = 0,
 ) {
     companion object {
         /** §12: Surface a "no recent location" warning after 7 days of silence. */
@@ -118,6 +120,7 @@ internal data class SerializedFriendEntry(
     val outbox: EncryptedOutboxMessage? = null,
     val lastDecryptFailed: Boolean = false,
     val outbox429Count: Int = 0,
+    val consecutiveSilentDrops: Int = 0,
     val lastSavedTs: Long = 0L,
 )
 
@@ -145,7 +148,15 @@ class E2eeStore(
     /** Monotonic clock to ensure absolute ordering of all saves (global and per-friend). */
     private var lastUsedTs: Long = 0L
 
-    private val stateLock = Mutex()
+    private val metadataLock = Mutex()
+    private val friendLocks = mutableMapOf<String, Mutex>()
+    private val locksLock = Mutex() // Lock for the friendLocks map itself
+
+    private suspend fun getFriendLock(id: String): Mutex {
+        locksLock.withLock {
+            return friendLocks.getOrPut(id) { Mutex() }
+        }
+    }
 
     private val json =
         Json {
@@ -260,6 +271,7 @@ class E2eeStore(
             outbox = outbox,
             lastDecryptFailed = lastDecryptFailed,
             outbox429Count = outbox429Count,
+            consecutiveSilentDrops = consecutiveSilentDrops,
         )
 
     private fun FriendEntry.toSerialized(ts: Long) =
@@ -279,6 +291,7 @@ class E2eeStore(
             outbox = outbox,
             lastDecryptFailed = lastDecryptFailed,
             outbox429Count = outbox429Count,
+            consecutiveSilentDrops = consecutiveSilentDrops,
             lastSavedTs = ts,
         )
 
@@ -342,7 +355,7 @@ class E2eeStore(
     fun diagnosticLogSnapshot(): List<String> = _diagnosticLog.value
 
     suspend fun createInvite(suggestedName: String): QrPayload =
-        stateLock.withLock {
+        metadataLock.withLock {
             if (pendingInvites.size >= MAX_PENDING_INVITES) {
                 throw IllegalStateException("Too many pending invites")
             }
@@ -358,7 +371,7 @@ class E2eeStore(
         bobName: String,
         aliceEkPub: ByteArray,
     ): FriendEntry? =
-        stateLock.withLock {
+        metadataLock.withLock {
             val pending =
                 pendingInvites.find {
                     it.qrPayload.ekPub.contentEquals(aliceEkPub)
@@ -396,7 +409,7 @@ class E2eeStore(
                 val nextFriendIds = friends.keys.toList() + entry.id
 
                 // Order matters: save friend first, then global index
-                saveFriendInternal(entry.id, entry)
+                saveFriendInternalWithTs(entry.id, entry, nextTs())
                 saveGlobalInternal(nextFriendIds = nextFriendIds, nextInvites = nextInvites)
 
                 pending.aliceEkPriv.zeroize()
@@ -408,17 +421,17 @@ class E2eeStore(
             }
         }
 
-    suspend fun listPendingInvites(): List<PendingInviteView> = stateLock.withLock { pendingInvites.map { it.toView() } }
+    suspend fun listPendingInvites(): List<PendingInviteView> = metadataLock.withLock { pendingInvites.map { it.toView() } }
 
     suspend fun clearInvite(ekPub: ByteArray) {
-        stateLock.withLock {
+        metadataLock.withLock {
             val nextInvites = pendingInvites.filterNot { it.qrPayload.ekPub.contentEquals(ekPub) }
             saveGlobalInternal(nextInvites = nextInvites)
         }
     }
 
     suspend fun markInviteExported(ekPub: ByteArray) {
-        stateLock.withLock {
+        metadataLock.withLock {
             val idx = pendingInvites.indexOfFirst { it.qrPayload.ekPub.contentEquals(ekPub) }
             if (idx != -1) {
                 val invite = pendingInvites[idx]
@@ -432,7 +445,7 @@ class E2eeStore(
     }
 
     suspend fun cleanupExpiredInvites(expirySeconds: Long = 48 * 3600L) {
-        stateLock.withLock {
+        metadataLock.withLock {
             val now = currentTimeSeconds()
             val nextInvites =
                 pendingInvites.filterNot {
@@ -459,22 +472,26 @@ class E2eeStore(
         }
     }
 
-    suspend fun getFriend(id: String): FriendEntry? = stateLock.withLock { friends[id] }
+    suspend fun getFriend(id: String): FriendEntry? = metadataLock.withLock { friends[id] }
 
-    suspend fun listFriends(): List<FriendEntry> = stateLock.withLock { friends.values.toList() }
+    suspend fun listFriends(): List<FriendEntry> = metadataLock.withLock { friends.values.toList() }
 
     suspend fun renameFriend(
         id: String,
         newName: String,
     ) {
-        stateLock.withLock {
-            val entry = friends[id] ?: return@withLock
-            saveFriendInternal(id, entry.copy(name = sanitizeName(newName)))
+        val friendLock = getFriendLock(id)
+        friendLock.withLock {
+            val entry = metadataLock.withLock { friends[id] } ?: return@withLock
+            val updated = entry.copy(name = sanitizeName(newName))
+            metadataLock.withLock {
+                saveFriendInternalWithTs(id, updated, nextTs())
+            }
         }
     }
 
     suspend fun deleteFriend(id: String) {
-        stateLock.withLock {
+        metadataLock.withLock {
             if (friends.containsKey(id)) {
                 val nextFriendIds = friends.keys.filter { it != id }
                 saveGlobalInternal(nextFriendIds = nextFriendIds)
@@ -494,12 +511,13 @@ class E2eeStore(
     suspend fun encryptAndStore(
         friendId: String,
         payload: MessagePlaintext,
-    ): EncryptedMessagePayload =
-        stateLock.withLock {
-            val entry = friends[friendId] ?: throw Exception("Friend not found: $friendId")
+    ): EncryptedMessagePayload {
+        val friendLock = getFriendLock(friendId)
+        return friendLock.withLock {
+            val entry = metadataLock.withLock { friends[friendId] } ?: throw Exception("Friend not found: $friendId")
 
             // Atomic guard: the caller checks outbox before acquiring this lock, but that
-            // check has a TOCTOU window. Re-checking here under stateLock makes it safe.
+            // check has a TOCTOU window. Re-checking here under stateLock (now friendLock) makes it safe.
             check(entry.outbox == null) {
                 "Outbox already pending for ${friendId.take(8)} — refusing to overwrite"
             }
@@ -507,8 +525,6 @@ class E2eeStore(
             val (newSession, message) = Session.encryptMessage(entry.session, payload)
 
             // NONCE SAFETY ASSERTION (§5.4): The sequence number MUST advance.
-            // If we are transitioning tokens, the new root key ensures uniqueness even if
-            // sendSeq resets; if we are not, sendSeq must be strictly greater.
             val seqAdvanced =
                 newSession.sendSeq > entry.session.sendSeq ||
                     !newSession.rootKey.contentEquals(entry.session.rootKey)
@@ -530,17 +546,25 @@ class E2eeStore(
                     outbox = EncryptedOutboxMessage(token = tokenToUse.toHex(), payload = message),
                     lastSentTs = currentTimeSeconds(),
                 )
-            saveFriendInternal(friendId, updatedEntry)
+            
+            metadataLock.withLock {
+                saveFriendInternalWithTs(friendId, updatedEntry, nextTs())
+            }
             message
         }
+    }
 
     suspend fun updateSession(
         id: String,
         newSession: SessionState,
     ) {
-        stateLock.withLock {
-            val entry = friends[id] ?: return@withLock
-            saveFriendInternal(id, entry.copy(session = newSession))
+        val friendLock = getFriendLock(id)
+        friendLock.withLock {
+            val entry = metadataLock.withLock { friends[id] } ?: return@withLock
+            val updated = entry.copy(session = newSession)
+            metadataLock.withLock {
+                saveFriendInternalWithTs(id, updated, nextTs())
+            }
         }
     }
 
@@ -548,9 +572,13 @@ class E2eeStore(
         id: String,
         transform: (FriendEntry) -> FriendEntry,
     ) {
-        stateLock.withLock {
-            val entry = friends[id] ?: return@withLock
-            saveFriendInternal(id, transform(entry))
+        val friendLock = getFriendLock(id)
+        friendLock.withLock {
+            val entry = metadataLock.withLock { friends[id] } ?: return@withLock
+            val updated = transform(entry)
+            metadataLock.withLock {
+                saveFriendInternalWithTs(id, updated, nextTs())
+            }
         }
     }
 
@@ -558,7 +586,7 @@ class E2eeStore(
         qr: QrPayload,
         bobSuggestedName: String = "",
     ): Pair<KeyExchangeInitPayload, FriendEntry> =
-        stateLock.withLock {
+        metadataLock.withLock {
             if (pendingInvites.any { it.qrPayload.ekPub.contentEquals(qr.ekPub) }) {
                 throw IllegalArgumentException("Cannot pair with yourself")
             }
@@ -575,7 +603,7 @@ class E2eeStore(
                 )
 
             val nextFriendIds = friends.keys.toList() + entry.id
-            saveFriendInternal(entry.id, entry)
+            saveFriendInternalWithTs(entry.id, entry, nextTs())
             saveGlobalInternal(nextFriendIds = nextFriendIds)
 
             val payload =
@@ -590,10 +618,14 @@ class E2eeStore(
         }
 
     suspend fun confirmFriend(id: String) {
-        stateLock.withLock {
-            val entry = friends[id] ?: return@withLock
+        val friendLock = getFriendLock(id)
+        friendLock.withLock {
+            val entry = metadataLock.withLock { friends[id] } ?: return@withLock
             if (entry.isConfirmed) return@withLock
-            saveFriendInternal(id, entry.copy(isConfirmed = true))
+            val updated = entry.copy(isConfirmed = true)
+            metadataLock.withLock {
+                saveFriendInternalWithTs(id, updated, nextTs())
+            }
         }
     }
 
@@ -601,16 +633,21 @@ class E2eeStore(
         id: String,
         enabled: Boolean,
     ) {
-        stateLock.withLock {
-            val entry = friends[id] ?: return@withLock
-            saveFriendInternal(id, entry.copy(sharingEnabled = enabled))
+        val friendLock = getFriendLock(id)
+        friendLock.withLock {
+            val entry = metadataLock.withLock { friends[id] } ?: return@withLock
+            val updated = entry.copy(sharingEnabled = enabled)
+            metadataLock.withLock {
+                saveFriendInternalWithTs(id, updated, nextTs())
+            }
         }
     }
 
     /** Roll back a stale pending transition... */
-    internal suspend fun abandonPendingTransition(friendId: String) =
-        stateLock.withLock {
-            val entry = friends[friendId] ?: return@withLock
+    internal suspend fun abandonPendingTransition(friendId: String) {
+        val friendLock = getFriendLock(friendId)
+        friendLock.withLock {
+            val entry = metadataLock.withLock { friends[friendId] } ?: return@withLock
             if (!entry.session.isSendTokenPending) return@withLock
 
             val rolledBack =
@@ -620,8 +657,12 @@ class E2eeStore(
                     sendTokenPendingSinceMs = null,
                     needsRatchet = entry.session.needsRatchet,
                 )
-            saveFriendInternal(friendId, entry.copy(session = rolledBack, outbox = null))
+            val updated = entry.copy(session = rolledBack, outbox = null)
+            metadataLock.withLock {
+                saveFriendInternalWithTs(friendId, updated, nextTs())
+            }
         }
+    }
 
     // -----------------------------------------------------------------------
     // Batch poll processing
@@ -631,15 +672,17 @@ class E2eeStore(
         val decryptedLocations: List<LocationPlaintext>,
         val anySuccess: Boolean,
         val hadSilentDrops: Boolean,
+        val anyReplay: Boolean = false,
     )
 
     suspend fun processBatch(
         friendId: String,
         recvToken: String,
         messages: List<MailboxPayload>,
-    ): PollBatchResult? =
-        stateLock.withLock {
-            val entry = friends[friendId] ?: return@withLock null
+    ): PollBatchResult? {
+        val friendLock = getFriendLock(friendId)
+        return friendLock.withLock {
+            val entry = metadataLock.withLock { friends[friendId] } ?: return@withLock null
 
             val decryptedLocations = mutableListOf<LocationPlaintext>()
             val encryptedMessages = messages.filterIsInstance<EncryptedMessagePayload>()
@@ -647,6 +690,7 @@ class E2eeStore(
 
             var currentSession = entry.session
             var anySuccess = false
+            var anyReplay = false
             var failCount = 0
 
             for ((_, msg) in orderedMessages) {
@@ -665,18 +709,24 @@ class E2eeStore(
                         )
                     }
                 } catch (e: Exception) {
-                    failCount++
+                    if (e is ProtocolException && e.message?.contains("replay") == true) {
+                        anyReplay = true
+                    } else {
+                        failCount++
+                    }
                 }
             }
             if (!anySuccess && failCount > 0) {
-                addDiagnosticEvent("DECRYPT FAIL: $failCount msgs failed for ${friendId.take(8)}")
+                metadataLock.withLock {
+                    addDiagnosticEvent("DECRYPT FAIL: $failCount msgs failed for ${friendId.take(8)}")
+                }
             }
 
             val silentDrops = encryptedMessages.size - orderedMessages.size
             val hadActivity = decryptedLocations.isNotEmpty() || (anySuccess && currentSession != entry.session)
 
             val totalProcessed = orderedMessages.size
-            val isFailedBatch = (totalProcessed > 0 && !anySuccess && failCount > 0) || (silentDrops > 0 && !anySuccess)
+            val isFailedBatch = (totalProcessed > 0 && !anySuccess && !anyReplay && failCount > 0) || (silentDrops > 0 && !anySuccess)
 
             val lastLocation = decryptedLocations.lastOrNull()
 
@@ -705,15 +755,22 @@ class E2eeStore(
                 "recvToken changed without any successful decryption — invariant violated"
             }
 
-            saveFriendInternal(friendId, updatedEntry)
+            metadataLock.withLock {
+                saveFriendInternalWithTs(friendId, updatedEntry, nextTs())
+            }
 
-            PollBatchResult(decryptedLocations, anySuccess, silentDrops > 0)
+            PollBatchResult(decryptedLocations, anySuccess, silentDrops > 0, anyReplay)
         }
+    }
 
     suspend fun clearOutbox(id: String) {
-        stateLock.withLock {
-            val entry = friends[id] ?: return@withLock
-            saveFriendInternal(id, entry.copy(outbox = null, outbox429Count = 0))
+        val friendLock = getFriendLock(id)
+        friendLock.withLock {
+            val entry = metadataLock.withLock { friends[id] } ?: return@withLock
+            val updated = entry.copy(outbox = null, outbox429Count = 0)
+            metadataLock.withLock {
+                saveFriendInternalWithTs(id, updated, nextTs())
+            }
         }
     }
 
@@ -721,20 +778,40 @@ class E2eeStore(
         id: String,
         newSession: SessionState,
     ) {
-        stateLock.withLock {
-            val entry = friends[id] ?: return@withLock
-            saveFriendInternal(id, entry.copy(session = newSession, outbox = null, outbox429Count = 0))
+        val friendLock = getFriendLock(id)
+        friendLock.withLock {
+            val entry = metadataLock.withLock { friends[id] } ?: return@withLock
+            val updated = entry.copy(session = newSession, outbox = null, outbox429Count = 0)
+            metadataLock.withLock {
+                saveFriendInternalWithTs(id, updated, nextTs())
+            }
         }
     }
 
     suspend fun incrementOutbox429Count(id: String): Int =
-        stateLock.withLock {
-            val entry = friends[id] ?: return@withLock 0
+        getFriendLock(id).withLock {
+            val entry = metadataLock.withLock { friends[id] } ?: return@withLock 0
             val newCount = entry.outbox429Count + 1
             val updated = entry.copy(outbox429Count = newCount)
-            saveFriendInternal(id, updated)
+            metadataLock.withLock {
+                saveFriendInternalWithTs(id, updated, nextTs())
+            }
             newCount
         }
+
+    suspend fun updateConsecutiveSilentDrops(
+        id: String,
+        count: Int,
+    ) {
+        val friendLock = getFriendLock(id)
+        friendLock.withLock {
+            val entry = metadataLock.withLock { friends[id] } ?: return@withLock
+            val updated = entry.copy(consecutiveSilentDrops = count)
+            metadataLock.withLock {
+                saveFriendInternalWithTs(id, updated, nextTs())
+            }
+        }
+    }
 
     suspend fun updateLastLocation(
         id: String,
@@ -742,9 +819,13 @@ class E2eeStore(
         lng: Double,
         ts: Long,
     ) {
-        stateLock.withLock {
-            val entry = friends[id] ?: return@withLock
-            saveFriendInternal(id, entry.copy(lastLat = lat, lastLng = lng, lastTs = ts))
+        val friendLock = getFriendLock(id)
+        friendLock.withLock {
+            val entry = metadataLock.withLock { friends[id] } ?: return@withLock
+            val updated = entry.copy(lastLat = lat, lastLng = lng, lastTs = ts)
+            metadataLock.withLock {
+                saveFriendInternalWithTs(id, updated, nextTs())
+            }
         }
     }
 
@@ -752,9 +833,13 @@ class E2eeStore(
         id: String,
         ts: Long,
     ) {
-        stateLock.withLock {
-            val entry = friends[id] ?: return@withLock
-            saveFriendInternal(id, entry.copy(lastSentTs = ts))
+        val friendLock = getFriendLock(id)
+        friendLock.withLock {
+            val entry = metadataLock.withLock { friends[id] } ?: return@withLock
+            val updated = entry.copy(lastSentTs = ts)
+            metadataLock.withLock {
+                saveFriendInternalWithTs(id, updated, nextTs())
+            }
         }
     }
 
@@ -762,25 +847,34 @@ class E2eeStore(
         id: String,
         ts: Long,
     ) {
-        stateLock.withLock {
-            val entry = friends[id] ?: return@withLock
-            saveFriendInternal(id, entry.copy(lastPollTs = ts))
+        val friendLock = getFriendLock(id)
+        friendLock.withLock {
+            val entry = metadataLock.withLock { friends[id] } ?: return@withLock
+            val updated = entry.copy(lastPollTs = ts)
+            metadataLock.withLock {
+                saveFriendInternalWithTs(id, updated, nextTs())
+            }
         }
     }
 
     suspend fun clearSendTokenPending(
         id: String,
         clearingToken: String? = null,
-    ): Boolean =
-        stateLock.withLock {
-            val entry = friends[id] ?: return@withLock false
+    ): Boolean {
+        val friendLock = getFriendLock(id)
+        return friendLock.withLock {
+            val entry = metadataLock.withLock { friends[id] } ?: return@withLock false
             if (!entry.session.isSendTokenPending) return@withLock false
             if (clearingToken != null && entry.session.prevSendToken.toHex() != clearingToken) return@withLock false
 
             val newSession = entry.session.copy(isSendTokenPending = false, sendTokenPendingSinceMs = null)
-            saveFriendInternal(id, entry.copy(session = newSession))
+            val updated = entry.copy(session = newSession)
+            metadataLock.withLock {
+                saveFriendInternalWithTs(id, updated, nextTs())
+            }
             true
         }
+    }
 
     private fun sanitizeName(name: String): String =
         normalizeName(
