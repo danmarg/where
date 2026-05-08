@@ -21,3 +21,6 @@ holes.sb
 android/fastlane/report.xml
 ios/Local.xcconfig
 cli/where_cli_state.json
+*.swp
+*.txt
+*.log
