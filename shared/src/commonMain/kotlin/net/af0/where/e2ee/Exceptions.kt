@@ -35,3 +35,11 @@ class ReplayException(message: String) : ProtocolException(message)
 
 /** Thrown when a ratchet gap is too large to process (§8.3.1). */
 class ProtocolGapException(message: String) : ProtocolException(message)
+
+/**
+ * Thrown when header decryption and DH ratchet succeed, but the message payload
+ * fails to decrypt (e.g., due to AAD mismatch or corruption). This exception
+ * carries the advanced [SessionState] so the caller can still persist the DH
+ * rotation to prevent permanent desync (§5.5).
+ */
+class DecryptionExceptionWithState(val newState: SessionState, cause: Throwable) : WhereException(cause.message ?: "payload decryption failed", cause)

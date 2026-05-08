@@ -272,28 +272,41 @@ object Session {
                 try {
                     aeadDecrypt(finalStep.messageKey, finalStep.messageNonce, message.ct, aad)
                 } catch (e: Exception) {
-                    // Decryption failure: Wipe all speculative keys and throw (#211)
-                    if (isNewDhEpoch) {
-                        speculativeState.localDhPriv.zeroize()
-                        speculativeState.rootKey.zeroize()
-                        speculativeState.sendChainKey.zeroize()
-                        speculativeState.recvChainKey.zeroize()
-                        speculativeState.headerKey.zeroize()
-                        speculativeState.sendHeaderKey.zeroize()
-                        speculativeState.nextHeaderKey.zeroize()
-                    }
+                    // Decryption failure: We still want to persist the ratcheted state if the header
+                    // authenticated, to prevent permanent DH desync (§5.5).
+                    val failedState =
+                        speculativeState.copy(
+                            rootKey = speculativeState.rootKey.copyOf(),
+                            sendChainKey = speculativeState.sendChainKey.copyOf(),
+                            recvChainKey = chainKey.copyOf(),
+                            headerKey = speculativeState.headerKey.copyOf(),
+                            sendHeaderKey = speculativeState.sendHeaderKey.copyOf(),
+                            nextHeaderKey = speculativeState.nextHeaderKey.copyOf(),
+                            localDhPriv = speculativeState.localDhPriv.copyOf(),
+                            localDhPub = speculativeState.localDhPub.copyOf(),
+                            remoteDhPub = speculativeState.remoteDhPub.copyOf(),
+                            aliceEkPub = speculativeState.aliceEkPub.copyOf(),
+                            bobEkPub = speculativeState.bobEkPub.copyOf(),
+                            recvSeq = seq,
+                            skippedMessageKeys = derivationSkippedKeys,
+                            needsRatchet = cleanState.needsRatchet || isNewDhEpoch,
+                            seenRemoteDhPubs =
+                                if (isNewDhEpoch) {
+                                    (speculativeState.seenRemoteDhPubs + cleanState.remoteDhPub.toHex()).toList().takeLast(MAX_SEEN_DH_PUBS).toSet()
+                                } else {
+                                    speculativeState.seenRemoteDhPubs
+                                },
+                        )
                     // Also wipe any message keys derived during this failed call
                     addedSkippedKeys.forEach { it.zeroize() }
-                    // Also wipe the derived chainKey on failure since we won't commit it
                     chainKey.zeroize()
-                    throw AuthenticationException("decryption failed", e)
+                    throw DecryptionExceptionWithState(failedState, e)
                 } finally {
                     finalStep.messageKey.zeroize()
                     finalStep.messageNonce.zeroize()
                 }
 
             // Success! Commit the state.
-
             val unpadded =
                 try {
                     unpad(plaintext)
@@ -352,9 +365,15 @@ object Session {
                 speculativeState.copy(
                     rootKey = speculativeState.rootKey.copyOf(),
                     sendChainKey = speculativeState.sendChainKey.copyOf(),
-                    headerKey = speculativeState.headerKey.copyOf(),
-                    nextHeaderKey = speculativeState.nextHeaderKey.copyOf(),
                     recvChainKey = chainKey,
+                    headerKey = speculativeState.headerKey.copyOf(),
+                    sendHeaderKey = speculativeState.sendHeaderKey.copyOf(),
+                    nextHeaderKey = speculativeState.nextHeaderKey.copyOf(),
+                    localDhPriv = speculativeState.localDhPriv.copyOf(),
+                    localDhPub = speculativeState.localDhPub.copyOf(),
+                    remoteDhPub = speculativeState.remoteDhPub.copyOf(),
+                    aliceEkPub = speculativeState.aliceEkPub.copyOf(),
+                    bobEkPub = speculativeState.bobEkPub.copyOf(),
                     recvSeq = seq,
                     skippedMessageKeys = finalSkippedKeys,
                     skippedEpochHeaderKeys = finalEpochHeaderKeys,
@@ -426,29 +445,33 @@ object Session {
         stepRecv.newRootKey.zeroize()
 
         // HEADER ENCRYPTION TRANSITION (#186):
-        // When we ratchet, our previous nextHeaderKey becomes the current headerKey
-        // for the epoch we just entered. The nextHeaderKey is derived for the subsequent epoch.
+        // Standard advancement logic:
+        // 1. headerKey matches what we just used to decrypt the first message.
+        // 2. sendHeaderKey is derived from the RECV step.
+        // 3. nextHeaderKey is derived from the SEND step.
         return state.copy(
-            rootKey = stepSend.newRootKey,
-            recvChainKey = stepRecv.newChainKey,
-            sendChainKey = stepSend.newChainKey,
+            rootKey = stepSend.newRootKey.copyOf(),
+            recvChainKey = stepRecv.newChainKey.copyOf(),
+            sendChainKey = stepSend.newChainKey.copyOf(),
             headerKey = state.nextHeaderKey.copyOf(),
-            sendHeaderKey = stepRecv.newHeaderKey,
-            nextHeaderKey = stepSend.newHeaderKey,
+            sendHeaderKey = stepRecv.newHeaderKey.copyOf(),
+            nextHeaderKey = stepSend.newHeaderKey.copyOf(),
             sendToken = newSendToken,
             recvToken = newRecvToken,
             sendSeq = 0L,
             recvSeq = 0L,
             pn = state.sendSeq,
             pr = state.recvSeq,
-            localDhPriv = newLocalDh.priv,
-            localDhPub = newLocalDh.pub,
+            localDhPriv = newLocalDh.priv.copyOf(),
+            localDhPub = newLocalDh.pub.copyOf(),
             remoteDhPub = remoteDhPub.copyOf(),
             lastRemoteDhPub = state.remoteDhPub.copyOf(),
             seenRemoteDhPubs = newSeenKeys,
             prevSendToken = state.sendToken.copyOf(),
             isSendTokenPending = true,
             needsRatchet = false,
+            aliceEkPub = state.aliceEkPub.copyOf(),
+            bobEkPub = state.bobEkPub.copyOf(),
         )
     }
 

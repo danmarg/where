@@ -74,15 +74,20 @@ class DualPostReplayTest {
                 ct = ByteArray(32) { 0xFF.toByte() },
             )
 
-        // Decryption must fail and State must remain UNCHANGED (transactional)
-        assertFailsWith<AuthenticationException> {
-            Session.decryptMessage(initialState, badMsg)
-        }
+        // Decryption must fail and throw DecryptionExceptionWithState carrying the NEW ratcheted state (§5.5)
+        val ex =
+            assertFailsWith<DecryptionExceptionWithState> {
+                Session.decryptMessage(initialState, badMsg)
+            }
+        val newState = ex.newState
 
-        // Verify state is exactly as before
+        // Verify state has ratcheted forward in the exception's payload
+        assertNotEquals(initialState.rootKey.toHex(), newState.rootKey.toHex())
+        assertEquals(attackerEk.pub.toHex(), newState.remoteDhPub.toHex())
+        assertEquals(1L, newState.recvSeq)
+
+        // Verify the input initialState remains UNCHANGED
         assertEquals(initialState.rootKey.toHex(), bobSession.rootKey.toHex())
-        assertEquals(initialState.remoteDhPub.toHex(), bobSession.remoteDhPub.toHex())
-        assertEquals(initialState.recvSeq, bobSession.recvSeq)
         // Also verify the localDhPriv in INITIAL state wasn't zeroed by mistake
         assertFalse(initialState.localDhPriv.all { it == 0.toByte() })
     }

@@ -732,6 +732,11 @@ class E2eeStore(
                     } catch (e: Exception) {
                         if (e is ReplayException) {
                             anyReplay = true
+                        } else if (e is DecryptionExceptionWithState) {
+                            // If header authenticated but payload failed, we MUST commit the 
+                            // ratcheted session state to prevent permanent DH desync (§5.5).
+                            currentSession = e.newState
+                            failCount++
                         } else {
                             failCount++
                         }

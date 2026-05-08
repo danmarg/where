@@ -230,16 +230,21 @@ class SessionTest {
                 ct = ByteArray(100) { 0xFF.toByte() },
             )
 
-        // Decryption MUST fail
-        assertFailsWith<AuthenticationException> {
-            Session.decryptMessage(bobSession, badMsg)
-        }
+        // Decryption MUST fail, but it should carry the NEW ratcheted state (§5.5)
+        val ex =
+            assertFailsWith<DecryptionExceptionWithState> {
+                Session.decryptMessage(bobSession, badMsg)
+            }
+        val newState = ex.newState
 
-        // Verify state remains UNCHANGED
-        assertContentEquals(initialRootKey, bobSession.rootKey, "Root key must not change")
-        assertContentEquals(initialLocalDhPriv, bobSession.localDhPriv, "Local DH priv must not change")
-        assertContentEquals(initialRecvChainKey, bobSession.recvChainKey, "Recv chain key must not change")
-        assertEquals(0L, bobSession.recvSeq, "recvSeq must not change")
+        // Verify state has ratcheted forward
+        assertFalse(newState.rootKey.contentEquals(initialRootKey), "Root key MUST advance")
+        assertFalse(newState.localDhPriv.contentEquals(initialLocalDhPriv), "Local DH priv MUST advance")
+        assertEquals(1L, newState.recvSeq, "recvSeq should be 1 in new epoch")
+        assertContentEquals(newAliceDh.pub, newState.remoteDhPub, "remoteDhPub MUST be updated")
+
+        // Verify the input state remains unchanged (immutability)
+        assertContentEquals(initialRootKey, bobSession.rootKey, "Input root key must not change")
     }
 
     // ---------------------------------------------------------------------------
