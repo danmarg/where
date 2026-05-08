@@ -423,12 +423,9 @@ class E2eeStore(
                 saveFriendInternalWithTs(entry.id, entry, nextTs())
                 saveGlobalInternal(nextFriendIds = nextFriendIds, nextInvites = nextInvites)
 
-                pending.aliceEkPriv.zeroize()
                 entry
-            } catch (e: AuthenticationException) {
-                throw e
-            } catch (e: Exception) {
-                throw e
+            } finally {
+                pending.aliceEkPriv.zeroize()
             }
         }
 
@@ -714,9 +711,9 @@ class E2eeStore(
                 var anyReplay = false
                 var failCount = 0
 
-                for ((_, msg) in orderedMessages) {
+                for ((header, msg) in orderedMessages) {
                     try {
-                        val (newSession, pt) = Session.decryptMessage(currentSession, msg)
+                        val (newSession, pt) = Session.decryptMessage(currentSession, msg, header)
                         currentSession = newSession
                         anySuccess = true
                         if (pt is MessagePlaintext.Location) {

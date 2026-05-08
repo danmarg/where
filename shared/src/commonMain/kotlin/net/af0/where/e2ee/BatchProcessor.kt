@@ -31,6 +31,9 @@ internal object BatchProcessor {
 
             if (b1 != b2) {
                 b1.compareTo(b2)
+            } else if (b1 == 2) {
+                // For multiple unknown NEW epochs, sort by 'pn' to stay chronological (§7.1)
+                if (h1.pn != h2.pn) h1.pn.compareTo(h2.pn) else h1.seq.compareTo(h2.seq)
             } else {
                 // Within the same bucket (DH epoch), sort by sequence number.
                 // This is a defensive protocol invariant (§7.1): even if the server

@@ -89,6 +89,34 @@ data class SessionState(
     @Serializable(with = ByteArrayBase64Serializer::class) val nextHeaderKey: ByteArray = ByteArray(0),
     val sendTokenPendingSinceMs: Long? = null,
 ) {
+    /**
+     * Creates a deep copy of the session state, ensuring all sensitive ByteArray
+     * material is duplicated into fresh buffers. This prevents accidental key
+     * zeroization from affecting multiple copies of the state (§5.5).
+     */
+    fun deepCopy(): SessionState =
+        this.copy(
+            rootKey = rootKey.copyOf(),
+            sendChainKey = sendChainKey.copyOf(),
+            recvChainKey = recvChainKey.copyOf(),
+            sendToken = sendToken.copyOf(),
+            recvToken = recvToken.copyOf(),
+            localDhPriv = localDhPriv.copyOf(),
+            localDhPub = localDhPub.copyOf(),
+            remoteDhPub = remoteDhPub.copyOf(),
+            lastRemoteDhPub = lastRemoteDhPub.copyOf(),
+            aliceEkPub = aliceEkPub.copyOf(),
+            bobEkPub = bobEkPub.copyOf(),
+            aliceFp = aliceFp.copyOf(),
+            bobFp = bobFp.copyOf(),
+            prevSendToken = prevSendToken.copyOf(),
+            skippedMessageKeys = skippedMessageKeys.mapValues { it.value.copyOf() },
+            skippedEpochHeaderKeys = skippedEpochHeaderKeys.mapValues { it.value.copyOf() },
+            headerKey = headerKey.copyOf(),
+            sendHeaderKey = sendHeaderKey.copyOf(),
+            nextHeaderKey = nextHeaderKey.copyOf(),
+        )
+
     override fun equals(other: Any?): Boolean {
         if (other !is SessionState) return false
         return rootKey.contentEquals(other.rootKey) &&

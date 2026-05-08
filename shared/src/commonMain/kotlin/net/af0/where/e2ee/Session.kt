@@ -74,6 +74,7 @@ object Session {
     fun decryptMessage(
         state: SessionState,
         message: EncryptedMessagePayload,
+        preDecryptedHeader: DecryptedHeader? = null,
     ): Pair<SessionState, MessagePlaintext> {
         // 0. Purge stale message keys (#189)
         val now = currentTimeMillis()
@@ -93,30 +94,27 @@ object Session {
         val cleanState = if (modified) state.copy(skippedMessageKeys = cleanSkippedKeys) else state
 
         // 1. Unwrap the envelope to reveal metadata (#186)
-        val header: DecryptedHeader
-        run {
-            var decoded: DecryptedHeader? = null
-            try {
-                decoded = decryptHeader(cleanState.headerKey, message.envelope)
-            } catch (_: Exception) {
-                // If current headerKey fails, Alice might have ratcheted DH. Try nextHeaderKey.
+        val header: DecryptedHeader =
+            preDecryptedHeader ?: run {
+                var decoded: DecryptedHeader? = null
                 try {
-                    decoded = decryptHeader(cleanState.nextHeaderKey, message.envelope)
+                    decoded = decryptHeader(cleanState.headerKey, message.envelope)
                 } catch (_: Exception) {
-                    // Last resort: try cached epoch header keys. These are retained for epochs we have
-                    // already ratcheted past but that still have skipped message keys in the cache.
-                    for ((_, hk) in cleanState.skippedEpochHeaderKeys) {
-                        try {
-                            decoded = decryptHeader(hk, message.envelope)
-                            break
-                        } catch (_: Exception) {
-                            // try next
+                    try {
+                        decoded = decryptHeader(cleanState.nextHeaderKey, message.envelope)
+                    } catch (_: Exception) {
+                        // Last resort: try cached epoch header keys.
+                        for ((_, hk) in cleanState.skippedEpochHeaderKeys) {
+                            try {
+                                decoded = decryptHeader(hk, message.envelope)
+                                break
+                            } catch (_: Exception) {
+                            }
                         }
                     }
                 }
+                decoded ?: throw AuthenticationException("envelope decryption failed — incorrect key or corrupted metadata")
             }
-            header = decoded ?: throw AuthenticationException("envelope decryption failed — incorrect key or corrupted metadata")
-        }
 
         val remoteDhPub = header.dhPub
         val isNewDhEpoch = !remoteDhPub.contentEquals(cleanState.remoteDhPub)
@@ -275,20 +273,10 @@ object Session {
                     // Decryption failure: We still want to persist the ratcheted state if the header
                     // authenticated, to prevent permanent DH desync (§5.5).
                     val failedState =
-                        speculativeState.copy(
-                            rootKey = speculativeState.rootKey.copyOf(),
-                            sendChainKey = speculativeState.sendChainKey.copyOf(),
+                        speculativeState.deepCopy().copy(
                             recvChainKey = chainKey.copyOf(),
-                            headerKey = speculativeState.headerKey.copyOf(),
-                            sendHeaderKey = speculativeState.sendHeaderKey.copyOf(),
-                            nextHeaderKey = speculativeState.nextHeaderKey.copyOf(),
-                            localDhPriv = speculativeState.localDhPriv.copyOf(),
-                            localDhPub = speculativeState.localDhPub.copyOf(),
-                            remoteDhPub = speculativeState.remoteDhPub.copyOf(),
-                            aliceEkPub = speculativeState.aliceEkPub.copyOf(),
-                            bobEkPub = speculativeState.bobEkPub.copyOf(),
                             recvSeq = seq,
-                            skippedMessageKeys = derivationSkippedKeys,
+                            skippedMessageKeys = derivationSkippedKeys.mapValues { it.value.copyOf() },
                             needsRatchet = cleanState.needsRatchet || isNewDhEpoch,
                             seenRemoteDhPubs =
                                 if (isNewDhEpoch) {
@@ -362,18 +350,8 @@ object Session {
             }
 
             val newState =
-                speculativeState.copy(
-                    rootKey = speculativeState.rootKey.copyOf(),
-                    sendChainKey = speculativeState.sendChainKey.copyOf(),
-                    recvChainKey = chainKey,
-                    headerKey = speculativeState.headerKey.copyOf(),
-                    sendHeaderKey = speculativeState.sendHeaderKey.copyOf(),
-                    nextHeaderKey = speculativeState.nextHeaderKey.copyOf(),
-                    localDhPriv = speculativeState.localDhPriv.copyOf(),
-                    localDhPub = speculativeState.localDhPub.copyOf(),
-                    remoteDhPub = speculativeState.remoteDhPub.copyOf(),
-                    aliceEkPub = speculativeState.aliceEkPub.copyOf(),
-                    bobEkPub = speculativeState.bobEkPub.copyOf(),
+                speculativeState.deepCopy().copy(
+                    recvChainKey = chainKey, // Move ownership
                     recvSeq = seq,
                     skippedMessageKeys = finalSkippedKeys,
                     skippedEpochHeaderKeys = finalEpochHeaderKeys,
@@ -449,7 +427,7 @@ object Session {
         // 1. headerKey matches what we just used to decrypt the first message.
         // 2. sendHeaderKey is derived from the RECV step.
         // 3. nextHeaderKey is derived from the SEND step.
-        return state.copy(
+        return state.deepCopy().copy(
             rootKey = stepSend.newRootKey.copyOf(),
             recvChainKey = stepRecv.newChainKey.copyOf(),
             sendChainKey = stepSend.newChainKey.copyOf(),
@@ -470,8 +448,6 @@ object Session {
             prevSendToken = state.sendToken.copyOf(),
             isSendTokenPending = true,
             needsRatchet = false,
-            aliceEkPub = state.aliceEkPub.copyOf(),
-            bobEkPub = state.bobEkPub.copyOf(),
         )
     }
 
@@ -492,7 +468,7 @@ object Session {
         return nonce + ct
     }
 
-    internal data class DecryptedHeader(val dhPub: ByteArray, val seq: Long, val pn: Long)
+    data class DecryptedHeader(val dhPub: ByteArray, val seq: Long, val pn: Long)
 
     internal fun decryptHeader(
         key: ByteArray,
