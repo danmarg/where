@@ -11,39 +11,36 @@ internal class DoubleBufferedStorage<T : Any>(
     private val storage: E2eeStorage,
     private val serializer: KSerializer<T>,
     private val json: Json,
-    private val keyA: String,
-    private val keyB: String,
-    private val keyLegacy: String? = null,
     private val timestampSelector: (T) -> Long,
 ) {
-    private var lastLoadedTs: Long = 0L
+    fun load(
+        keyBase: String,
+        keyLegacy: String? = null,
+    ): T? {
+        val keyA = "${keyBase}_a"
+        val keyB = "${keyBase}_b"
 
-    fun load(): T? {
         val jsonA = storage.getString(keyA)
         val jsonB = storage.getString(keyB)
         val jsonLegacy = keyLegacy?.let { storage.getString(it) }
 
-        val storeA = jsonA?.let { tryDecode(it, "Slot A") }
-        val storeB = jsonB?.let { tryDecode(it, "Slot B") }
-        val storeLegacy = jsonLegacy?.let { tryDecode(it, "Legacy") }
+        val storeA = jsonA?.let { tryDecode(it, "Slot A ($keyBase)") }
+        val storeB = jsonB?.let { tryDecode(it, "Slot B ($keyBase)") }
+        val storeLegacy = jsonLegacy?.let { tryDecode(it, "Legacy ($keyBase)") }
 
-        val best = listOfNotNull(storeA, storeB, storeLegacy).maxByOrNull { timestampSelector(it) }
-        if (best != null) {
-            lastLoadedTs = timestampSelector(best)
-        }
-        return best
+        return listOfNotNull(storeA, storeB, storeLegacy).maxByOrNull { timestampSelector(it) }
     }
 
-    fun save(data: T) {
-        val now = currentTimeSeconds()
-        // Monotonicity check: ensure we don't save a timestamp older than the one we loaded.
-        val saveTs = if (now <= lastLoadedTs) lastLoadedTs + 1 else now
+    fun save(
+        keyBase: String,
+        data: T,
+        keyLegacy: String? = null,
+    ) {
+        val keyA = "${keyBase}_a"
+        val keyB = "${keyBase}_b"
 
         val jsonStr = json.encodeToString(serializer, data)
 
-        // Double Buffering: Determine which slot to overwrite.
-        // We ALWAYS write to the slot that was NOT the one we just successfully loaded,
-        // or we alternate if we are unsure. This ensures a known-good backup exists.
         val jsonA = storage.getString(keyA)
         val jsonB = storage.getString(keyB)
 
@@ -52,12 +49,13 @@ internal class DoubleBufferedStorage<T : Any>(
                 jsonA == null -> keyA
                 jsonB == null -> keyB
                 else -> {
-                    // Both exist. Overwrite the OLDER one.
-                    val storeA = jsonA.let { tryDecode(it, "Slot A (save check)") }
-                    val storeB = jsonB.let { tryDecode(it, "Slot B (save check)") }
-                    if (storeA == null) keyA
-                    else if (storeB == null) keyB
-                    else {
+                    val storeA = jsonA.let { tryDecode(it, "Slot A (save check $keyBase)") }
+                    val storeB = jsonB.let { tryDecode(it, "Slot B (save check $keyBase)") }
+                    if (storeA == null) {
+                        keyA
+                    } else if (storeB == null) {
+                        keyB
+                    } else {
                         val tsA = timestampSelector(storeA)
                         val tsB = timestampSelector(storeB)
                         if (tsA <= tsB) keyA else keyB
@@ -66,16 +64,16 @@ internal class DoubleBufferedStorage<T : Any>(
             }
 
         storage.putString(targetSlot, jsonStr)
-        
-        // Migration cleanup: once we've successfully saved to a new slot, we can clear legacy
+
         if (keyLegacy != null) {
             storage.putString(keyLegacy, "")
         }
-        
-        lastLoadedTs = saveTs
     }
 
-    private fun tryDecode(jsonStr: String, label: String): T? {
+    private fun tryDecode(
+        jsonStr: String,
+        label: String,
+    ): T? {
         if (jsonStr.isEmpty()) return null
         return try {
             json.decodeFromString(serializer, jsonStr)

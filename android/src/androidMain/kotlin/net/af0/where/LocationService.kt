@@ -51,6 +51,9 @@ class LocationService : Service() {
     @VisibleForTesting
     internal var locationClientOverride: LocationClient? = null
 
+    @VisibleForTesting
+    internal var locationSourceOverride: LocationSource? = null
+
     private lateinit var alarmManager: AlarmManager
     private lateinit var fusedClient: com.google.android.gms.location.FusedLocationProviderClient
     private lateinit var locationCallback: LocationCallback
@@ -77,7 +80,7 @@ class LocationService : Service() {
         createNotificationChannel()
 
         val app = application as WhereApplication
-        locationSource = app.locationSource
+        locationSource = locationSourceOverride ?: Companion.locationSource ?: app.locationSource
 
         // Initialise repository sharing state from prefs before starting any collection.
         locationSource.setSharingLocation(UserPrefs.isSharing(this))
@@ -379,9 +382,10 @@ class LocationService : Service() {
             if (results.isEmpty()) return
 
             val pendingInvites = e2eeStore.listPendingInvites()
-            val filteredResults = results.filter { result ->
-                pendingInvites.any { it.qrPayload.ekPub.contentEquals(result.aliceEkPub) }
-            }
+            val filteredResults =
+                results.filter { result ->
+                    pendingInvites.any { it.qrPayload.ekPub.contentEquals(result.aliceEkPub) }
+                }
 
             if (filteredResults.isEmpty()) {
                 Log.d(TAG, "pollPendingInvites: received ${results.size} results, but none match active pending invites. Ignoring.")
@@ -524,6 +528,9 @@ class LocationService : Service() {
 
         /** Overridable in tests. */
         var clock: () -> Long = { System.currentTimeMillis() }
+
+        /** Overridable in tests. */
+        var locationSource: LocationSource? = null
 
         private const val CHANNEL_ID = "where_location"
         private const val NOTIFICATION_ID = 1

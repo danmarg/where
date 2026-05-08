@@ -439,8 +439,11 @@ class TokenTransitionTest {
             assertEquals(2, locs1.size, "Cycle 1 should yield 2 locations (T0 + T1)")
             assertEquals(1.0, locs1[0].lat)
             assertEquals(2.0, locs1[1].lat)
-            assertEquals(t1, bobStore.getFriend(bobFriendId)!!.session.recvToken.toHex(),
-                "Bob's recvToken should be T1 after cycle 1")
+            assertEquals(
+                t1,
+                bobStore.getFriend(bobFriendId)!!.session.recvToken.toHex(),
+                "Bob's recvToken should be T1 after cycle 1",
+            )
 
             // A third message arrives at T1 (simulating delayed or subsequent delivery)
             fakeMailbox.polls[t1] = mutableListOf(msg3)

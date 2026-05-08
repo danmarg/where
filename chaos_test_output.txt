@@ -1,0 +1,193 @@
+Initialized native services in: /Users/dev/.gradle/native
+Initialized jansi services in: /Users/dev/.gradle/native
+The client will now receive all logging from the daemon (pid: 1705). The daemon log file: /Users/dev/.gradle/daemon/8.13/daemon-1705.out.log
+Starting 78th build in daemon [uptime: 5 hrs 10 mins 42.456 secs, performance: 99%, GC rate: 0.00/s, heap usage: 11% of 2.6 GiB]
+Using 8 worker leases.
+Now considering [/Users/dev/where] as hierarchies to watch
+Watching the file system is configured to be enabled if available
+File system watching is active
+Starting Build
+Settings evaluated using settings file '/Users/dev/where/settings.gradle.kts'.
+Projects loaded. Root project using build file '/Users/dev/where/build.gradle.kts'.
+Included projects: [root project 'where', project ':android', project ':cli', project ':server', project ':shared']
+
+> Configure project :
+Evaluating root project 'where' using build file '/Users/dev/where/build.gradle.kts'.
+Resolved plugin [id: 'org.jetbrains.kotlin.multiplatform', version: '2.1.20', apply: false]
+Resolved plugin [id: 'org.jetbrains.kotlin.jvm', version: '2.1.20', apply: false]
+Resolved plugin [id: 'org.jetbrains.kotlin.plugin.serialization', version: '2.1.20', apply: false]
+Resolved plugin [id: 'com.android.application', version: '8.9.0', apply: false]
+Resolved plugin [id: 'com.android.library', version: '8.9.0', apply: false]
+Resolved plugin [id: 'org.jetbrains.kotlin.plugin.compose', version: '2.1.20', apply: false]
+Resolved plugin [id: 'org.jlleitschuh.gradle.ktlint', version: '12.2.0', apply: false]
+
+> Configure project :android
+Evaluating project ':android' using build file '/Users/dev/where/android/build.gradle.kts'.
+Resolved plugin [id: 'com.android.application', version: '8.9.0']
+Resolved plugin [id: 'org.jetbrains.kotlin.multiplatform', version: '2.1.20']
+Resolved plugin [id: 'org.jetbrains.kotlin.plugin.serialization', version: '2.1.20']
+Resolved plugin [id: 'org.jetbrains.kotlin.plugin.compose', version: '2.1.20']
+Using default execution profile
+Build e48f8d0f-8eae-439b-8007-1771fd2059eb is started
+Using Kotlin Gradle Plugin gradle85 variant
+Detected Android Gradle Plugin compose compiler configuration
+Detected Android Gradle Plugin compose compiler configuration
+Detected Android Gradle Plugin compose compiler configuration
+Detected Android Gradle Plugin compose compiler configuration
+Detected Android Gradle Plugin compose compiler configuration
+Detected Android Gradle Plugin compose compiler configuration
+
+> Configure project :cli
+Evaluating project ':cli' using build file '/Users/dev/where/cli/build.gradle.kts'.
+Resolved plugin [id: 'org.jetbrains.kotlin.jvm', version: '2.1.20']
+Resolved plugin [id: 'org.jetbrains.kotlin.plugin.serialization', version: '2.1.20']
+Resolved plugin [id: 'org.gradle.application']
+Using Kotlin Gradle Plugin gradle85 variant
+kotlin scripting plugin: created the scripting discovery configuration: kotlinScriptDef
+kotlin scripting plugin: created the scripting discovery configuration: testKotlinScriptDef
+
+> Configure project :server
+Evaluating project ':server' using build file '/Users/dev/where/server/build.gradle.kts'.
+Resolved plugin [id: 'org.jetbrains.kotlin.jvm', version: '2.1.20']
+Resolved plugin [id: 'org.jetbrains.kotlin.plugin.serialization', version: '2.1.20']
+Resolved plugin [id: 'org.gradle.application']
+Using Kotlin Gradle Plugin gradle85 variant
+kotlin scripting plugin: created the scripting discovery configuration: kotlinScriptDef
+kotlin scripting plugin: created the scripting discovery configuration: testKotlinScriptDef
+
+> Configure project :shared
+Evaluating project ':shared' using build file '/Users/dev/where/shared/build.gradle.kts'.
+Resolved plugin [id: 'org.jetbrains.kotlin.multiplatform', version: '2.1.20']
+Resolved plugin [id: 'com.android.library', version: '8.9.0']
+Resolved plugin [id: 'org.jetbrains.kotlin.plugin.serialization', version: '2.1.20']
+Resolved plugin [id: 'dev.icerock.mobile.multiplatform-resources', version: '0.24.5']
+Using Kotlin Gradle Plugin gradle85 variant
+Using default execution profile
+kotlin scripting plugin: created the scripting discovery configuration: kotlinScriptDef
+kotlin scripting plugin: created the scripting discovery configuration: testKotlinScriptDef
+All projects evaluated.
+Task path ':shared:jvmTest' matched project ':shared'
+Task name matched 'jvmTest'
+Selected primary task 'jvmTest' from project :shared
+Tasks to be executed: [task ':shared:checkKotlinGradlePluginConfigurationErrors', task ':shared:generateMRcommonMain', task ':shared:generateMRjvmAndAndroidMain', task ':shared:generateMRjvmMain', task ':shared:compileKotlinJvm', task ':shared:compileJvmMainJava', task ':shared:generateMRcommonTest', task ':shared:generateMRjvmTest', task ':shared:jvmProcessResources', task ':shared:processJvmMainResources', task ':shared:jvmMainClasses', task ':shared:jvmJar', task ':shared:compileTestKotlinJvm', task ':shared:compileJvmTestJava', task ':shared:jvmTestProcessResources', task ':shared:processJvmTestResources', task ':shared:jvmTestClasses', task ':shared:jvmTest']
+Tasks that were excluded: []
+Resolve mutations for :shared:checkKotlinGradlePluginConfigurationErrors (Thread[#7951,Execution worker,5,main]) started.
+:shared:checkKotlinGradlePluginConfigurationErrors (Thread[#7956,Execution worker Thread 6,5,main]) started.
+
+> Task :shared:checkKotlinGradlePluginConfigurationErrors SKIPPED
+Skipping task ':shared:checkKotlinGradlePluginConfigurationErrors' as task onlyIf 'errorDiagnostics are present' is false.
+Resolve mutations for :shared:generateMRcommonMain (Thread[#7956,Execution worker Thread 6,5,main]) started.
+:shared:generateMRcommonMain (Thread[#7956,Execution worker Thread 6,5,main]) started.
+
+> Task :shared:generateMRcommonMain UP-TO-DATE
+Caching disabled for task ':shared:generateMRcommonMain' because:
+  Build cache is disabled
+Skipping task ':shared:generateMRcommonMain' as it is up-to-date.
+Resolve mutations for :shared:generateMRjvmAndAndroidMain (Thread[#7956,Execution worker Thread 6,5,main]) started.
+:shared:generateMRjvmAndAndroidMain (Thread[#7956,Execution worker Thread 6,5,main]) started.
+
+> Task :shared:generateMRjvmAndAndroidMain UP-TO-DATE
+Caching disabled for task ':shared:generateMRjvmAndAndroidMain' because:
+  Build cache is disabled
+Skipping task ':shared:generateMRjvmAndAndroidMain' as it is up-to-date.
+Resolve mutations for :shared:generateMRjvmMain (Thread[#7956,Execution worker Thread 6,5,main]) started.
+:shared:generateMRjvmMain (Thread[#7953,Execution worker Thread 3,5,main]) started.
+
+> Task :shared:generateMRjvmMain UP-TO-DATE
+Caching disabled for task ':shared:generateMRjvmMain' because:
+  Build cache is disabled
+Skipping task ':shared:generateMRjvmMain' as it is up-to-date.
+Resolve mutations for :shared:compileKotlinJvm (Thread[#7953,Execution worker Thread 3,5,main]) started.
+:shared:compileKotlinJvm (Thread[#7953,Execution worker Thread 3,5,main]) started.
+
+> Task :shared:compileKotlinJvm UP-TO-DATE
+Caching disabled for task ':shared:compileKotlinJvm' because:
+  Build cache is disabled
+Skipping task ':shared:compileKotlinJvm' as it is up-to-date.
+Resolve mutations for :shared:compileJvmMainJava (Thread[#7953,Execution worker Thread 3,5,main]) started.
+:shared:compileJvmMainJava (Thread[#7953,Execution worker Thread 3,5,main]) started.
+
+> Task :shared:compileJvmMainJava NO-SOURCE
+Skipping task ':shared:compileJvmMainJava' as it has no source files and no previous output files.
+Resolve mutations for :shared:generateMRcommonTest (Thread[#7953,Execution worker Thread 3,5,main]) started.
+:shared:generateMRcommonTest (Thread[#7953,Execution worker Thread 3,5,main]) started.
+
+> Task :shared:generateMRcommonTest UP-TO-DATE
+Caching disabled for task ':shared:generateMRcommonTest' because:
+  Build cache is disabled
+Skipping task ':shared:generateMRcommonTest' as it is up-to-date.
+Resolve mutations for :shared:generateMRjvmTest (Thread[#7953,Execution worker Thread 3,5,main]) started.
+:shared:generateMRjvmTest (Thread[#7953,Execution worker Thread 3,5,main]) started.
+
+> Task :shared:generateMRjvmTest UP-TO-DATE
+Caching disabled for task ':shared:generateMRjvmTest' because:
+  Build cache is disabled
+Skipping task ':shared:generateMRjvmTest' as it is up-to-date.
+Resolve mutations for :shared:jvmProcessResources (Thread[#7953,Execution worker Thread 3,5,main]) started.
+:shared:jvmProcessResources (Thread[#7953,Execution worker Thread 3,5,main]) started.
+
+> Task :shared:jvmProcessResources UP-TO-DATE
+Caching disabled for task ':shared:jvmProcessResources' because:
+  Build cache is disabled
+  Not worth caching
+Skipping task ':shared:jvmProcessResources' as it is up-to-date.
+Resolve mutations for :shared:processJvmMainResources (Thread[#7953,Execution worker Thread 3,5,main]) started.
+:shared:processJvmMainResources (Thread[#7953,Execution worker Thread 3,5,main]) started.
+
+> Task :shared:processJvmMainResources SKIPPED
+Skipping task ':shared:processJvmMainResources' as task onlyIf 'Task is enabled' is false.
+Resolve mutations for :shared:jvmMainClasses (Thread[#7953,Execution worker Thread 3,5,main]) started.
+:shared:jvmMainClasses (Thread[#7954,Execution worker Thread 4,5,main]) started.
+
+> Task :shared:jvmMainClasses UP-TO-DATE
+Skipping task ':shared:jvmMainClasses' as it has no actions.
+Resolve mutations for :shared:jvmJar (Thread[#7954,Execution worker Thread 4,5,main]) started.
+:shared:jvmJar (Thread[#7954,Execution worker Thread 4,5,main]) started.
+
+> Task :shared:jvmJar UP-TO-DATE
+Caching disabled for task ':shared:jvmJar' because:
+  Build cache is disabled
+  Not worth caching
+Skipping task ':shared:jvmJar' as it is up-to-date.
+Resolve mutations for :shared:compileTestKotlinJvm (Thread[#7954,Execution worker Thread 4,5,main]) started.
+:shared:compileTestKotlinJvm (Thread[#7954,Execution worker Thread 4,5,main]) started.
+
+> Task :shared:compileTestKotlinJvm UP-TO-DATE
+Caching disabled for task ':shared:compileTestKotlinJvm' because:
+  Build cache is disabled
+Skipping task ':shared:compileTestKotlinJvm' as it is up-to-date.
+Resolve mutations for :shared:compileJvmTestJava (Thread[#7954,Execution worker Thread 4,5,main]) started.
+:shared:compileJvmTestJava (Thread[#7954,Execution worker Thread 4,5,main]) started.
+
+> Task :shared:compileJvmTestJava NO-SOURCE
+Skipping task ':shared:compileJvmTestJava' as it has no source files and no previous output files.
+Resolve mutations for :shared:jvmTestProcessResources (Thread[#7954,Execution worker Thread 4,5,main]) started.
+:shared:jvmTestProcessResources (Thread[#7954,Execution worker Thread 4,5,main]) started.
+
+> Task :shared:jvmTestProcessResources UP-TO-DATE
+Caching disabled for task ':shared:jvmTestProcessResources' because:
+  Build cache is disabled
+  Not worth caching
+Skipping task ':shared:jvmTestProcessResources' as it is up-to-date.
+Resolve mutations for :shared:processJvmTestResources (Thread[#7954,Execution worker Thread 4,5,main]) started.
+:shared:processJvmTestResources (Thread[#7954,Execution worker Thread 4,5,main]) started.
+
+> Task :shared:processJvmTestResources SKIPPED
+Skipping task ':shared:processJvmTestResources' as task onlyIf 'Task is enabled' is false.
+Resolve mutations for :shared:jvmTestClasses (Thread[#7954,Execution worker Thread 4,5,main]) started.
+:shared:jvmTestClasses (Thread[#7954,Execution worker Thread 4,5,main]) started.
+
+> Task :shared:jvmTestClasses UP-TO-DATE
+Skipping task ':shared:jvmTestClasses' as it has no actions.
+Resolve mutations for :shared:jvmTest (Thread[#7954,Execution worker Thread 4,5,main]) started.
+:shared:jvmTest (Thread[#7954,Execution worker Thread 4,5,main]) started.
+
+> Task :shared:jvmTest UP-TO-DATE
+Caching disabled for task ':shared:jvmTest' because:
+  Build cache is disabled
+Skipping task ':shared:jvmTest' as it is up-to-date.
+Build e48f8d0f-8eae-439b-8007-1771fd2059eb is closed
+
+BUILD SUCCESSFUL in 868ms
+11 actionable tasks: 11 up-to-date
+Watched directory hierarchies: [/Users/dev/where]

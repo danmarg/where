@@ -1,7 +1,5 @@
 package net.af0.where
 
-import android.content.Context
-import androidx.test.core.app.ApplicationProvider
 import io.mockk.*
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -42,38 +40,39 @@ class LocationServiceReproductionTest {
     fun teardown() {
         unmockkAll()
         Dispatchers.resetMain()
-        LocationService.locationSource = LocationRepository
+        LocationService.locationSource = null
     }
 
     @Test
-    fun testPollPendingInvites_DoesNotPopUpIfInviteWasClearedWhilePolling() = runTest {
-        val controller = Robolectric.buildService(LocationService::class.java)
-        val service = controller.get()
+    fun testPollPendingInvites_DoesNotPopUpIfInviteWasClearedWhilePolling() =
+        runTest {
+            val controller = Robolectric.buildService(LocationService::class.java)
+            val service = controller.get()
 
-        val mockClient = mockk<LocationClient>(relaxed = true)
-        val mockStore = mockk<E2eeStore>(relaxed = true)
-        service.locationClientOverride = mockClient
-        service.e2eeStoreOverride = mockStore
+            val mockClient = mockk<LocationClient>(relaxed = true)
+            val mockStore = mockk<E2eeStore>(relaxed = true)
+            service.locationClientOverride = mockClient
+            service.e2eeStoreOverride = mockStore
 
-        controller.create()
+            controller.create()
 
-        try {
-            val aliceEkPub = byteArrayOf(1, 2, 3)
-            val initPayload = mockk<KeyExchangeInitPayload>(relaxed = true)
-            val pollResult = PendingInviteResult(initPayload, false, aliceEkPub)
+            try {
+                val aliceEkPub = byteArrayOf(1, 2, 3)
+                val initPayload = mockk<KeyExchangeInitPayload>(relaxed = true)
+                val pollResult = PendingInviteResult(initPayload, false, aliceEkPub)
 
-            // pollPendingInvites returns a result, but the invite was cleared before we process it
-            coEvery { mockClient.pollPendingInvites() } returns listOf(pollResult)
-            coEvery { mockStore.listPendingInvites() } returns emptyList()
-            coEvery { mockStore.listFriends() } returns emptyList()
+                // pollPendingInvites returns a result, but the invite was cleared before we process it
+                coEvery { mockClient.pollPendingInvites() } returns listOf(pollResult)
+                coEvery { mockStore.listPendingInvites() } returns emptyList()
+                coEvery { mockStore.listFriends() } returns emptyList()
 
-            service.doPoll()
-            advanceUntilIdle()
+                service.doPoll()
+                advanceUntilIdle()
 
-            // onPendingInit must NOT be called — the invite was already cleared
-            assertNull(fakeLocationSource.pendingInitPayload.value)
-        } finally {
-            controller.destroy()
+                // onPendingInit must NOT be called — the invite was already cleared
+                assertNull(fakeLocationSource.pendingInitPayload.value)
+            } finally {
+                controller.destroy()
+            }
         }
-    }
 }

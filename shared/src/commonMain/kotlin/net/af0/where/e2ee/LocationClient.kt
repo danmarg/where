@@ -60,17 +60,6 @@ open class LocationClient(
 
             for (friend in friends) {
                 try {
-                    // RESTART RECOVERY (§5.5): If the session was regenerated on startup,
-                    // force a keepalive now to establish a new memory-only DH epoch.
-                    if (friend.session.needsRatchet) {
-                        println("[LocationClient] poll: needsRatchet=true for ${friend.id.take(8)}, sending pre-poll keepalive")
-                        try {
-                            sendKeepalive(friend.id)
-                        } catch (e: Exception) {
-                            println("[LocationClient] poll: pre-poll keepalive failed for ${friend.id.take(8)}: ${e.message}")
-                        }
-                    }
-
                     val friendUpdates = pollFriend(friend.id, friend.id in pausedFriendIds)
                     allUpdates.addAll(friendUpdates)
                     successCount++
@@ -162,7 +151,9 @@ open class LocationClient(
                 if (hasFailures) {
                     val count = (silentDropCounts[friendId] ?: 0) + 1
                     silentDropCounts[friendId] = count
-                    store.addDiagnosticEvent("POLL FAILURES: ${friendId.take(8)} token=${currentTokenToPoll.take(8)} (retry $count/$MAX_SILENT_DROP_RETRIES)")
+                    store.addDiagnosticEvent(
+                        "POLL FAILURES: ${friendId.take(8)} token=${currentTokenToPoll.take(8)} (retry $count/$MAX_SILENT_DROP_RETRIES)",
+                    )
                 } else {
                     silentDropCounts.remove(friendId)
                 }
@@ -176,7 +167,11 @@ open class LocationClient(
                 // polls, force-ACK to break a permanent livelock caused by an unrecoverable message.
                 val forceAck = (silentDropCounts[friendId] ?: 0) >= MAX_SILENT_DROP_RETRIES
                 if (forceAck) {
-                    println("[LocationClient] pollFriend: force-ACKing after $MAX_SILENT_DROP_RETRIES consecutive failures for ${friendId.take(8)} — messages are unrecoverable")
+                    println(
+                        "[LocationClient] pollFriend: force-ACKing after $MAX_SILENT_DROP_RETRIES consecutive failures for ${friendId.take(
+                            8,
+                        )} — messages are unrecoverable",
+                    )
                     store.addDiagnosticEvent("FORCE ACK: ${friendId.take(8)} — unrecoverable failures, re-pair if desynced")
                     silentDropCounts.remove(friendId)
                 }
@@ -216,7 +211,11 @@ open class LocationClient(
         }
 
         if (follows >= MAX_TOKEN_FOLLOWS_PER_POLL) {
-            println("[LocationClient] pollFriend: TOKEN FOLLOW CAP HIT for ${friendId.take(8)} — may have missed messages beyond $follows rotations")
+            println(
+                "[LocationClient] pollFriend: TOKEN FOLLOW CAP HIT for ${friendId.take(
+                    8,
+                )} — may have missed messages beyond $follows rotations",
+            )
             store.addDiagnosticEvent("TOKEN FOLLOW CAP: ${friendId.take(8)}")
         }
 
@@ -339,13 +338,14 @@ open class LocationClient(
         // the message ready to retry.
         // encryptAndStore re-checks outbox == null atomically under stateLock,
         // closing the TOCTOU window between the early guard above and the store write.
-        val message = try {
-            store.encryptAndStore(friendId, payload)
-        } catch (e: IllegalStateException) {
-            println("[LocationClient] send: outbox race for ${friendId.take(8)}, skipping (will retry)")
-            store.addDiagnosticEvent("OUTBOX BLOCK (race): ${friendId.take(8)}")
-            return
-        }
+        val message =
+            try {
+                store.encryptAndStore(friendId, payload)
+            } catch (e: IllegalStateException) {
+                println("[LocationClient] send: outbox race for ${friendId.take(8)}, skipping (will retry)")
+                store.addDiagnosticEvent("OUTBOX BLOCK (race): ${friendId.take(8)}")
+                return
+            }
 
         // Use the outbox's token to ensure we post to the correct endpoint
         val friendAfter = store.getFriend(friendId) ?: return

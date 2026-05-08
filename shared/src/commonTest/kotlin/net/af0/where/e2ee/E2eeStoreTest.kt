@@ -25,13 +25,28 @@ class E2eeStoreTest {
     private lateinit var bobStorage: MemoryStorage
     private lateinit var aliceStore: E2eeStore
     private lateinit var bobStore: E2eeStore
+    private lateinit var timeProvider: MockTimeProvider
 
     @BeforeTest
     fun setup() {
+        timeProvider = MockTimeProvider()
+        TimeSource.setProvider(timeProvider)
         aliceStorage = MemoryStorage()
         bobStorage = MemoryStorage()
         aliceStore = E2eeStore(aliceStorage)
         bobStore = E2eeStore(bobStorage)
+    }
+
+    @AfterTest
+    fun tearDown() {
+        // Reset to default provider to avoid side effects on other tests
+        TimeSource.setProvider(
+            object : TimeProvider {
+                override fun currentTimeSeconds(): Long = DefaultTimeProvider.currentTimeSeconds()
+
+                override fun currentTimeMillis(): Long = DefaultTimeProvider.currentTimeMillis()
+            },
+        )
     }
 
     @Test
@@ -318,9 +333,8 @@ class E2eeStoreTest {
             assertEquals(1, aliceStore.listPendingInvites().size)
 
             // Force expiry: expirySeconds=0 makes (now - createdAt > 0) true.
-            // currentTimeSeconds() has 1s resolution, so we must wait >1s to guarantee
-            // now > createdAt.
-            kotlinx.coroutines.delay(1100)
+            // Advance time to guarantee now > createdAt.
+            timeProvider.advanceSeconds(2)
             aliceStore.cleanupExpiredInvites(expirySeconds = 0)
             assertTrue(aliceStore.listPendingInvites().isEmpty())
         }
@@ -331,8 +345,8 @@ class E2eeStoreTest {
             val qrExported = aliceStore.createInvite("Exported")
             val qrNormal = aliceStore.createInvite("Normal")
 
-            // Wait 1.1s so that createdAt is definitely in the past relative to now
-            kotlinx.coroutines.delay(1100)
+            // Advance time so that createdAt is definitely in the past relative to now
+            timeProvider.advanceSeconds(2)
 
             // Mark one as exported NOW. Its exportedAt will be currentTimeSeconds().
             aliceStore.markInviteExported(qrExported.ekPub)
@@ -365,9 +379,9 @@ class E2eeStoreTest {
             val charlieQr = charlieStore.createInvite("Charlie")
             val (charlieInit, _) = aliceStore.processScannedQr(charlieQr)
             val charlieEntry = charlieStore.processKeyExchangeInit(charlieInit, "Alice", charlieQr.ekPub)!!
-            
+
             val (sess, msg) = Session.encryptMessage(charlieEntry.session, unrelatedLoc)
-            
+
             // Bob tries to process Charlie's message
             bobStore.processBatch(bobEntry.id, bobEntry.session.recvToken.toHex(), listOf(msg))
             assertTrue(bobStore.getFriend(bobEntry.id)!!.lastDecryptFailed, "Should be true after decryption failure")

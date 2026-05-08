@@ -1,0 +1,21 @@
+> Task :shared:checkKotlinGradlePluginConfigurationErrors SKIPPED
+> Task :shared:generateMRcommonMain UP-TO-DATE
+> Task :shared:generateMRjvmAndAndroidMain UP-TO-DATE
+> Task :shared:generateMRjvmMain UP-TO-DATE
+> Task :shared:compileKotlinJvm UP-TO-DATE
+> Task :shared:compileJvmMainJava NO-SOURCE
+> Task :shared:generateMRcommonTest UP-TO-DATE
+> Task :shared:generateMRjvmTest UP-TO-DATE
+> Task :shared:jvmProcessResources UP-TO-DATE
+> Task :shared:processJvmMainResources SKIPPED
+> Task :shared:jvmMainClasses UP-TO-DATE
+> Task :shared:jvmJar UP-TO-DATE
+> Task :shared:compileTestKotlinJvm UP-TO-DATE
+> Task :shared:compileJvmTestJava NO-SOURCE
+> Task :shared:jvmTestProcessResources UP-TO-DATE
+> Task :shared:processJvmTestResources SKIPPED
+> Task :shared:jvmTestClasses UP-TO-DATE
+> Task :shared:jvmTest
+
+BUILD SUCCESSFUL in 3s
+11 actionable tasks: 1 executed, 10 up-to-date

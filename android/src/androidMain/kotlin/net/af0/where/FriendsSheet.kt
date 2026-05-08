@@ -266,13 +266,16 @@ fun FriendsSheet(
                             if (showDiagnosticLog) "▾ Events" else "▸ Events (${diagnosticLog.size})",
                             style = MaterialTheme.typography.labelSmall,
                             fontFamily = FontFamily.Monospace,
-                            color = if (diagnosticLog.any { it.contains("FAIL") || it.contains("DESYNC") || it.contains("STORAGE") })
-                                MaterialTheme.colorScheme.error
-                            else
-                                MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier
-                                .padding(start = 4.dp, top = 8.dp)
-                                .clickable { showDiagnosticLog = !showDiagnosticLog },
+                            color =
+                                if (diagnosticLog.any { it.contains("FAIL") || it.contains("DESYNC") || it.contains("STORAGE") }) {
+                                    MaterialTheme.colorScheme.error
+                                } else {
+                                    MaterialTheme.colorScheme.onSurfaceVariant
+                                },
+                            modifier =
+                                Modifier
+                                    .padding(start = 4.dp, top = 8.dp)
+                                    .clickable { showDiagnosticLog = !showDiagnosticLog },
                         )
                         if (showDiagnosticLog) {
                             Column(modifier = Modifier.padding(start = 4.dp, top = 2.dp)) {
@@ -281,10 +284,12 @@ fun FriendsSheet(
                                         event,
                                         style = MaterialTheme.typography.labelSmall,
                                         fontFamily = FontFamily.Monospace,
-                                        color = if (event.contains("FAIL") || event.contains("DESYNC") || event.contains("STORAGE"))
-                                            MaterialTheme.colorScheme.error
-                                        else
-                                            MaterialTheme.colorScheme.onSurfaceVariant,
+                                        color =
+                                            if (event.contains("FAIL") || event.contains("DESYNC") || event.contains("STORAGE")) {
+                                                MaterialTheme.colorScheme.error
+                                            } else {
+                                                MaterialTheme.colorScheme.onSurfaceVariant
+                                            },
                                     )
                                 }
                             }
