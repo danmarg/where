@@ -38,10 +38,10 @@ private const val MAILBOX_TTL_MS = 7 * 24 * 60 * 60 * 1000L
 private const val MAX_QUEUE_DEPTH = 10000
 
 /** Maximum POST requests per token within the rate-limit window. */
-internal const val RATE_LIMIT_MAX_POSTS = 10
+internal const val RATE_LIMIT_MAX_POSTS = 100
 
 /** Maximum GET (poll) requests per token within the rate-limit window. */
-internal const val RATE_LIMIT_MAX_GETS = 300
+internal const val RATE_LIMIT_MAX_GETS = 1000
 
 /** Rate-limit window duration in milliseconds (1 minute). */
 private const val RATE_LIMIT_WINDOW_MS = 60_000L

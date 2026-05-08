@@ -71,4 +71,108 @@ class LocationClientTest {
             assertEquals("Bob2", result.payload.suggestedName, "Should pick the last message (most recent scan)")
             assertTrue(result.multipleScansDetected, "Should detect multiple scans")
         }
+
+    @Test
+    fun `poll should NOT process pending invites automatically`() =
+        runTest {
+            val aliceStore = E2eeStore(MemoryStorage())
+            val bobStore = E2eeStore(MemoryStorage())
+
+            // Alice creates an invite
+            val qr = aliceStore.createInvite("Alice")
+
+            // Bob scans it and posts his Init
+            val (init, _) = bobStore.processScannedQr(qr, "Alice")
+
+            // Mock MailboxClient that returns the Init when Alice polls the discovery token
+            val discoveryHex = qr.discoveryToken().toHex()
+            val fakeMailbox =
+                object : MailboxClient {
+                    override suspend fun poll(
+                        baseUrl: String,
+                        token: String,
+                    ): List<MailboxPayload> {
+                        return if (token == discoveryHex) {
+                            listOf(
+                                KeyExchangeInitPayload(
+                                    v = init.v,
+                                    token = init.token,
+                                    ekPub = init.ekPub,
+                                    keyConfirmation = init.keyConfirmation,
+                                    suggestedName = init.suggestedName,
+                                ),
+                            )
+                        } else {
+                            emptyList()
+                        }
+                    }
+
+                    override suspend fun post(
+                        baseUrl: String,
+                        token: String,
+                        payload: MailboxPayload,
+                    ) {}
+                }
+
+            val client = LocationClient("http://fake", aliceStore, fakeMailbox)
+
+            // Verify there are no friends yet
+            assertEquals(0, aliceStore.listFriends().size)
+            assertEquals(1, aliceStore.listPendingInvites().size)
+
+            // Alice polls for location updates (she has no friends, so no updates expected)
+            client.poll()
+
+            // BUG: In the faulty implementation, poll() would have processed the invite.
+            assertEquals(0, aliceStore.listFriends().size, "poll() should not have processed the invite and added a friend")
+            assertEquals(1, aliceStore.listPendingInvites().size, "Invite should still be pending")
+        }
+
+    @Test
+    fun `pollPendingInvites should still find pending invites`() =
+        runTest {
+            val aliceStore = E2eeStore(MemoryStorage())
+            val bobStore = E2eeStore(MemoryStorage())
+
+            val qr = aliceStore.createInvite("Alice")
+            val (init, _) = bobStore.processScannedQr(qr, "Alice")
+
+            val discoveryHex = qr.discoveryToken().toHex()
+            val fakeMailbox =
+                object : MailboxClient {
+                    override suspend fun poll(
+                        baseUrl: String,
+                        token: String,
+                    ): List<MailboxPayload> {
+                        return if (token == discoveryHex) {
+                            listOf(
+                                KeyExchangeInitPayload(
+                                    v = init.v,
+                                    token = init.token,
+                                    ekPub = init.ekPub,
+                                    keyConfirmation = init.keyConfirmation,
+                                    suggestedName = init.suggestedName,
+                                ),
+                            )
+                        } else {
+                            emptyList()
+                        }
+                    }
+
+                    override suspend fun post(
+                        baseUrl: String,
+                        token: String,
+                        payload: MailboxPayload,
+                    ) {}
+                }
+
+            val client = LocationClient("http://fake", aliceStore, fakeMailbox)
+
+            val results = client.pollPendingInvites()
+            assertEquals(1, results.size)
+            assertEquals("Alice", results[0].payload.suggestedName)
+
+            // Invite should still be in the store (pollPendingInvites is read-only)
+            assertEquals(1, aliceStore.listPendingInvites().size)
+        }
 }

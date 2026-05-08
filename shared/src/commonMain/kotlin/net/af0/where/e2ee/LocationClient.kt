@@ -101,16 +101,6 @@ open class LocationClient(
                 lastError?.let { throw it }
             }
 
-            // Handle pending invites in parallel too
-            val inviteResults = pollPendingInvitesInternal()
-            for (result in inviteResults) {
-                try {
-                    store.processKeyExchangeInit(result.payload, result.payload.suggestedName, result.aliceEkPub)
-                } catch (e: Exception) {
-                    println("[LocationClient] poll: failed to process KeyExchangeInit: ${e.message}")
-                }
-            }
-
             allUpdates
         }
 
