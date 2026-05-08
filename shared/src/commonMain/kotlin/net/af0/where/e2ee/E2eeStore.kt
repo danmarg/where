@@ -516,6 +516,11 @@ class E2eeStore(
                 }
             }
         }
+        // Prune the lock from the map after releasing both locks.
+        // Between friendLock being released and friendLocks.remove(id), a concurrent 
+        // call to getFriendLock(id) will re-create a new Mutex for the same (now-deleted) 
+        // ID. This is benign: the racer will find friends[id] == null and return, 
+        // and the newly created mutex will be pruned by this block.
         locksLock.withLock {
             friendLocks.remove(id)
         }
@@ -531,43 +536,43 @@ class E2eeStore(
     ): EncryptedMessagePayload {
         val friendLock = getFriendLock(friendId)
         return friendLock.withLock {
-            val entry = metadataLock.withLock { friends[friendId] } ?: throw Exception("Friend not found: $friendId")
+            metadataLock.withLock {
+                val entry = friends[friendId] ?: throw Exception("Friend not found: $friendId")
 
-            // Atomic guard: the caller checks outbox before acquiring this lock, but that
-            // check has a TOCTOU window. Re-checking here under stateLock (now friendLock) makes it safe.
-            check(entry.outbox == null) {
-                "Outbox already pending for ${friendId.take(8)} — refusing to overwrite"
-            }
-
-            val (newSession, message) = Session.encryptMessage(entry.session, payload)
-
-            // NONCE SAFETY ASSERTION (§5.4): The sequence number MUST advance.
-            val seqAdvanced =
-                newSession.sendSeq > entry.session.sendSeq ||
-                    !newSession.rootKey.contentEquals(entry.session.rootKey)
-            check(seqAdvanced) { "Nonce safety violation: sequence number did not advance" }
-
-            // Determine which token to use for posting
-            val tokenToUse = if (newSession.isSendTokenPending) newSession.prevSendToken else newSession.sendToken
-
-            val updatedSession =
-                if (newSession.isSendTokenPending && !entry.session.isSendTokenPending) {
-                    newSession.copy(sendTokenPendingSinceMs = currentTimeMillis())
-                } else {
-                    newSession
+                // Atomic guard: the caller checks outbox before acquiring this lock, but that
+                // check has a TOCTOU window. Re-checking here under friendLock + metadataLock makes it safe.
+                check(entry.outbox == null) {
+                    "Outbox already pending for ${friendId.take(8)} — refusing to overwrite"
                 }
 
-            val updatedEntry =
-                entry.copy(
-                    session = updatedSession,
-                    outbox = EncryptedOutboxMessage(token = tokenToUse.toHex(), payload = message),
-                    lastSentTs = currentTimeSeconds(),
-                )
-            
-            metadataLock.withLock {
+                val (newSession, message) = Session.encryptMessage(entry.session, payload)
+
+                // NONCE SAFETY ASSERTION (§5.4): The sequence number MUST advance.
+                val seqAdvanced =
+                    newSession.sendSeq > entry.session.sendSeq ||
+                        !newSession.rootKey.contentEquals(entry.session.rootKey)
+                check(seqAdvanced) { "Nonce safety violation: sequence number did not advance" }
+
+                // Determine which token to use for posting
+                val tokenToUse = if (newSession.isSendTokenPending) newSession.prevSendToken else newSession.sendToken
+
+                val updatedSession =
+                    if (newSession.isSendTokenPending && !entry.session.isSendTokenPending) {
+                        newSession.copy(sendTokenPendingSinceMs = currentTimeMillis())
+                    } else {
+                        newSession
+                    }
+
+                val updatedEntry =
+                    entry.copy(
+                        session = updatedSession,
+                        outbox = EncryptedOutboxMessage(token = tokenToUse.toHex(), payload = message),
+                        lastSentTs = currentTimeSeconds(),
+                    )
+                
                 saveFriendInternalWithTs(friendId, updatedEntry, nextTs())
+                message
             }
-            message
         }
     }
 
@@ -577,9 +582,9 @@ class E2eeStore(
     ) {
         val friendLock = getFriendLock(id)
         friendLock.withLock {
-            val entry = metadataLock.withLock { friends[id] } ?: return@withLock
-            val updated = entry.copy(session = newSession)
             metadataLock.withLock {
+                val entry = friends[id] ?: return@withLock
+                val updated = entry.copy(session = newSession)
                 saveFriendInternalWithTs(id, updated, nextTs())
             }
         }
@@ -591,9 +596,9 @@ class E2eeStore(
     ) {
         val friendLock = getFriendLock(id)
         friendLock.withLock {
-            val entry = metadataLock.withLock { friends[id] } ?: return@withLock
-            val updated = transform(entry)
             metadataLock.withLock {
+                val entry = friends[id] ?: return@withLock
+                val updated = transform(entry)
                 saveFriendInternalWithTs(id, updated, nextTs())
             }
         }
@@ -697,85 +702,84 @@ class E2eeStore(
     ): PollBatchResult? {
         val friendLock = getFriendLock(friendId)
         return friendLock.withLock {
-            val entry = metadataLock.withLock { friends[friendId] } ?: return@withLock null
+            metadataLock.withLock {
+                val entry = friends[friendId] ?: return@withLock null
 
-            val decryptedLocations = mutableListOf<LocationPlaintext>()
-            val encryptedMessages = messages.filterIsInstance<EncryptedMessagePayload>()
-            val orderedMessages = BatchProcessor.decryptAndSort(entry.session, encryptedMessages)
+                val decryptedLocations = mutableListOf<LocationPlaintext>()
+                val encryptedMessages = messages.filterIsInstance<EncryptedMessagePayload>()
+                val orderedMessages = BatchProcessor.decryptAndSort(entry.session, encryptedMessages)
 
-            var currentSession = entry.session
-            var anySuccess = false
-            var anyReplay = false
-            var failCount = 0
+                var currentSession = entry.session
+                var anySuccess = false
+                var anyReplay = false
+                var failCount = 0
 
-            for ((_, msg) in orderedMessages) {
-                try {
-                    val (newSession, pt) = Session.decryptMessage(currentSession, msg)
-                    currentSession = newSession
-                    anySuccess = true
-                    if (pt is MessagePlaintext.Location) {
-                        decryptedLocations.add(
-                            LocationPlaintext(
-                                lat = pt.lat,
-                                lng = pt.lng,
-                                acc = pt.acc,
-                                ts = pt.ts,
-                            ),
-                        )
-                    }
-                } catch (e: Exception) {
-                    if (e is ReplayException) {
-                        anyReplay = true
-                    } else {
-                        failCount++
+                for ((_, msg) in orderedMessages) {
+                    try {
+                        val (newSession, pt) = Session.decryptMessage(currentSession, msg)
+                        currentSession = newSession
+                        anySuccess = true
+                        if (pt is MessagePlaintext.Location) {
+                            decryptedLocations.add(
+                                LocationPlaintext(
+                                    lat = pt.lat,
+                                    lng = pt.lng,
+                                    acc = pt.acc,
+                                    ts = pt.ts,
+                                ),
+                            )
+                        }
+                    } catch (e: Exception) {
+                        if (e is ReplayException) {
+                            anyReplay = true
+                        } else {
+                            failCount++
+                        }
                     }
                 }
-            }
-            if (!anySuccess && failCount > 0) {
-                metadataLock.withLock {
+                if (!anySuccess && failCount > 0) {
                     addDiagnosticEvent("DECRYPT FAIL: $failCount msgs failed for ${friendId.take(8)}")
                 }
-            }
 
-            val silentDrops = encryptedMessages.size - orderedMessages.size
-            val hadActivity = decryptedLocations.isNotEmpty() || (anySuccess && currentSession != entry.session)
+                val silentDrops = encryptedMessages.size - orderedMessages.size
+                val hadActivity = decryptedLocations.isNotEmpty() || (anySuccess && currentSession != entry.session)
 
-            val totalProcessed = orderedMessages.size
-            // A batch is failed if there were ANY real failures, regardless of replays.
-            val isFailedBatch = (totalProcessed > 0 && failCount > 0) || (silentDrops > 0 && !anySuccess)
+                // A batch is failed if there were ANY real failures AND we didn't have any success.
+                // If anySuccess=true, we avoid marking the batch as failed to prevent false-positive
+                // warning UI for the user on partially successful batches.
+                val isFailedBatch = (failCount > 0 || silentDrops > 0) && !anySuccess
 
-            val lastLocation = decryptedLocations.lastOrNull()
+                val lastLocation = decryptedLocations.lastOrNull()
 
-            val updatedSession =
-                if (currentSession.isSendTokenPending && !entry.session.isSendTokenPending) {
-                    currentSession.copy(sendTokenPendingSinceMs = currentTimeMillis())
-                } else {
-                    currentSession
+                val updatedSession =
+                    if (currentSession.isSendTokenPending && !entry.session.isSendTokenPending) {
+                        currentSession.copy(sendTokenPendingSinceMs = currentTimeMillis())
+                    } else {
+                        currentSession
+                    }
+
+                val updatedEntry =
+                    entry.copy(
+                        session = updatedSession,
+                        // Bob becomes confirmed once he receives any valid message from Alice
+                        isConfirmed = entry.isConfirmed || anySuccess,
+                        lastRecvTs = if (hadActivity) currentTimeSeconds() else entry.lastRecvTs,
+                        lastLat = lastLocation?.lat ?: entry.lastLat,
+                        lastLng = lastLocation?.lng ?: entry.lastLng,
+                        lastTs = lastLocation?.ts ?: entry.lastTs,
+                        lastPollTs = currentTimeSeconds(),
+                        lastDecryptFailed = if (encryptedMessages.isNotEmpty()) isFailedBatch else entry.lastDecryptFailed,
+                    )
+
+                // The recvToken must only change if we had a successful decryption (§7.2).
+                check(currentSession.recvToken.contentEquals(entry.session.recvToken) || anySuccess) {
+                    "recvToken changed without any successful decryption — invariant violated"
                 }
 
-            val updatedEntry =
-                entry.copy(
-                    session = updatedSession,
-                    // Bob becomes confirmed once he receives any valid message from Alice
-                    isConfirmed = entry.isConfirmed || anySuccess,
-                    lastRecvTs = if (hadActivity) currentTimeSeconds() else entry.lastRecvTs,
-                    lastLat = lastLocation?.lat ?: entry.lastLat,
-                    lastLng = lastLocation?.lng ?: entry.lastLng,
-                    lastTs = lastLocation?.ts ?: entry.lastTs,
-                    lastPollTs = currentTimeSeconds(),
-                    lastDecryptFailed = if (encryptedMessages.isNotEmpty()) isFailedBatch else entry.lastDecryptFailed,
-                )
-
-            // The recvToken must only change if we had a successful decryption (§7.2).
-            check(currentSession.recvToken.contentEquals(entry.session.recvToken) || anySuccess) {
-                "recvToken changed without any successful decryption — invariant violated"
-            }
-
-            metadataLock.withLock {
                 saveFriendInternalWithTs(friendId, updatedEntry, nextTs())
-            }
 
-            PollBatchResult(decryptedLocations, anySuccess, silentDrops > 0, anyReplay, failCount)
+                PollBatchResult(decryptedLocations, anySuccess, silentDrops > 0, anyReplay, failCount)
+            }
         }
     }
 

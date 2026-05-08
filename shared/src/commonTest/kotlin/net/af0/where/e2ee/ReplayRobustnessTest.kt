@@ -86,20 +86,17 @@ class ReplayRobustnessTest {
         // Alice already ratcheted to T1.
         aliceClient.sendLocation(2.0, 2.0)
         
-        // Bob polls. He will poll T0 (which still has A1) AND then rotate to T1 (to get A2).
-        // Wait, LocationClient only rotates if poll(currentToken) returns success.
-        // If poll(T0) returns A1 (which Bob already saw), does Bob rotate?
-        
-        // In pollFriend:
-        // val result = store.processBatch(...)
-        // val newToken = updatedFriend.session.recvToken.toHex()
-        // if (newToken != currentTokenToPoll) { rotate }
-        
-        // Since A1 was already processed, processBatch will see it as a failure or skip.
-        // If it's a skip, does the session rotate?
-        
+        // Bob polls. Bob's recvToken is already T1 (from step 3).
+        // pollFriend() starts by polling T1.
+        // 
+        // If the mailbox still has A1 at T0 (due to lost ACK), Bob doesn't care
+        // because he is already polling T1. However, if A1 were NOT a transition
+        // message (same token), step 4 verified that Bob would detect the replay,
+        // ACK it, and move on.
+        //
+        // In this case, Alice has sent A2 to T1. Bob polls T1, decrypts A2,
+        // and succeeds.
         val updates2 = bobClient.poll()
-        // If the code is robust, Bob should eventually find A2 at T1.
         assertTrue(updates2.any { it.lat == 2.0 }, "Bob should receive the new message even after a replay stall")
     }
 }
