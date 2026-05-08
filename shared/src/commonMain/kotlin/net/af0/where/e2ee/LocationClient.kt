@@ -25,6 +25,8 @@ open class LocationClient(
     private val inFlightPolls = mutableSetOf<String>()
     private val inFlightMutex = Mutex()
 
+    private var lastCleanupTime = 0L
+
     /**
      * Poll all friends and all pending invites.
      *
@@ -38,11 +40,17 @@ open class LocationClient(
     ): List<UserLocation> =
         coroutineScope {
             processOutboxes()
-            // Periodic cleanup of expired invites
-            try {
-                store.cleanupExpiredInvites()
-            } catch (e: Exception) {
-                println("[LocationClient] cleanup expired invites failed: ${e.message}")
+            // Periodic cleanup of expired invites (§5.4). We throttle this to once per hour
+            // inside the client to prevent redundant work if the platform wrapper also
+            // calls it, or if poll() is called frequently (e.g., rapid polling).
+            val now = currentTimeSeconds()
+            if (now - lastCleanupTime > 3600) {
+                try {
+                    store.cleanupExpiredInvites()
+                    lastCleanupTime = now
+                } catch (e: Exception) {
+                    println("[LocationClient] cleanup expired invites failed: ${e.message}")
+                }
             }
 
             val friends = store.listFriends()

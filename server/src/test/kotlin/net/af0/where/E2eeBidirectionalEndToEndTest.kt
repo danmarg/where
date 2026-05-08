@@ -442,7 +442,7 @@ class E2eeBidirectionalEndToEndTest {
             delay(10)
             aClient.poll()
 
-            // Concurrent stress: sendLocation (no pollMutex) races against poll (holds pollMutex).
+            // Concurrent stress: sendLocation (no inFlightMutex) races against poll (holds inFlightMutex).
             // This exercises the interleaving between processOutboxes and sendMessageToFriendInternal
             // for the same friend, which can corrupt isSendTokenPending / sendSeq if not properly
             // serialized. See LocationClient.sendLocation vs poll/processOutboxes.

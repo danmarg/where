@@ -24,12 +24,10 @@ There is significant duplication of state between `UserStore` and `LocationRepos
 *   Fields like `isSharingLocation` and `pausedFriendIds` exist in both.
 *   `LocationViewModel` manually syncs them, which is error-prone. If sync logic is missing in a new component, the background service and UI will diverge.
 
-## 3. Performance & Scaling
+## 3. Performance & Scaling [IMPROVED]
 
-### Sequential Network Processing
-`LocationClient` processes friends and outboxes sequentially:
-*   **O(N) Blocking**: `processOutboxes()` and `poll()` iterate through friends one by one. A single 30s network timeout for one friend blocks updates for all others.
-*   **Heartbeat Bottleneck**: The entire poll cycle is gated by the slowest friend's response.
+### Parallel Network Processing
+`LocationClient` now uses `async`/`awaitAll` for polling and sending, ensuring a single slow peer doesn't degrade the experience for others.
 
 ## 4. Robustness
 
