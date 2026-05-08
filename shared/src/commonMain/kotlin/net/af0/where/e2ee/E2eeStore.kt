@@ -336,8 +336,7 @@ class E2eeStore(
             2,
             '0',
         )}:${((s % 3600) / 60).toString().padStart(2, '0')}:${(s % 60).toString().padStart(2, '0')} $message"
-        val nextLog = (listOf(entry) + _diagnosticLog.value).take(MAX_DIAGNOSTIC_EVENTS)
-        saveGlobalInternal(nextLog = nextLog)
+        _diagnosticLog.value = (listOf(entry) + _diagnosticLog.value).take(MAX_DIAGNOSTIC_EVENTS)
     }
 
     fun diagnosticLogSnapshot(): List<String> = _diagnosticLog.value

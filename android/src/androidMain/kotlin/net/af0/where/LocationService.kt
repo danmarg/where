@@ -80,7 +80,7 @@ class LocationService : Service() {
         createNotificationChannel()
 
         val app = application as WhereApplication
-        locationSource = locationSourceOverride ?: Companion.locationSource ?: app.locationSource
+        locationSource = locationSourceOverride ?: app.locationSource
 
         // Initialise repository sharing state from prefs before starting any collection.
         locationSource.setSharingLocation(UserPrefs.isSharing(this))
@@ -528,9 +528,6 @@ class LocationService : Service() {
 
         /** Overridable in tests. */
         var clock: () -> Long = { System.currentTimeMillis() }
-
-        /** Overridable in tests. */
-        var locationSource: LocationSource? = null
 
         private const val CHANNEL_ID = "where_location"
         private const val NOTIFICATION_ID = 1

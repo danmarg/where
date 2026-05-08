@@ -31,7 +31,6 @@ class LocationServiceReproductionTest {
     fun setup() {
         Dispatchers.setMain(testDispatcher)
         fakeLocationSource = ServiceFakeLocationSource()
-        LocationService.locationSource = fakeLocationSource
         io.mockk.mockkObject(net.af0.where.e2ee.KtorMailboxClient)
         io.mockk.coEvery { net.af0.where.e2ee.KtorMailboxClient.poll(any(), any()) } returns emptyList()
     }
@@ -40,7 +39,6 @@ class LocationServiceReproductionTest {
     fun teardown() {
         unmockkAll()
         Dispatchers.resetMain()
-        LocationService.locationSource = null
     }
 
     @Test
@@ -53,6 +51,7 @@ class LocationServiceReproductionTest {
             val mockStore = mockk<E2eeStore>(relaxed = true)
             service.locationClientOverride = mockClient
             service.e2eeStoreOverride = mockStore
+            service.locationSourceOverride = fakeLocationSource
 
             controller.create()
 

@@ -63,9 +63,9 @@ class E2eeBidirectionalEndToEndTest {
             println("  Mode: ${if (isLocalhost()) "Embedded Netty ($baseUrl)" else "Remote ($baseUrl)"}")
             println("════════════════════════════════════════════════════════════\n")
 
-// ============================================================================
-// PHASE 1: Alice creates invite
-// ============================================================================
+            // ============================================================================
+            // PHASE 1: Alice creates invite
+            // ============================================================================
             println("PHASE 1: Alice Creates Invite")
             println("─────────────────────────────────────────────────────────────")
 
@@ -75,9 +75,9 @@ class E2eeBidirectionalEndToEndTest {
             println("✓ Alice created invite: fingerprint=${qr.fingerprint}")
             println()
 
-// ============================================================================
-// PHASE 2: Bob joins — real HTTP posts, mirroring the app code
-// ============================================================================
+            // ============================================================================
+            // PHASE 2: Bob joins — real HTTP posts, mirroring the app code
+            // ============================================================================
             println("PHASE 2: Bob Joins Using Invite")
             println("─────────────────────────────────────────────────────────────")
 
@@ -115,9 +115,9 @@ class E2eeBidirectionalEndToEndTest {
             println("✓ Bidirectional tokens verified")
             println()
 
-// ============================================================================
-// PHASE 3–4: Alice → Bob (via production LocationClient code)
-// ============================================================================
+            // ============================================================================
+            // PHASE 3–4: Alice → Bob (via production LocationClient code)
+            // ============================================================================
             println("PHASE 3: Alice Sends Location (San Francisco)")
             println("─────────────────────────────────────────────────────────────")
 
@@ -136,9 +136,9 @@ class E2eeBidirectionalEndToEndTest {
             println("✓ Bob received Alice's location: lat=${aliceLocFromBob.lat}, lng=${aliceLocFromBob.lng}")
             println()
 
-// ============================================================================
-// PHASE 5–6: Bob → Alice (the direction that was broken for iOS→CLI)
-// ============================================================================
+            // ============================================================================
+            // PHASE 5–6: Bob → Alice (the direction that was broken for iOS→CLI)
+            // ============================================================================
             println("PHASE 5: Bob Sends Location (London)")
             println("─────────────────────────────────────────────────────────────")
 
@@ -156,19 +156,20 @@ class E2eeBidirectionalEndToEndTest {
             assertEquals(bobLocation.second, bobLocFromAlice.lng, 0.0001)
             println("✓ Alice received Bob's location: lat=${bobLocFromAlice.lat}, lng=${bobLocFromAlice.lng}")
             println()
-// ============================================================================
-// PHASE 7: Stress test — interleaved sends from both sides
-// ============================================================================
+
+            // ============================================================================
+            // PHASE 7: Stress test — interleaved sends from both sides
+            // ============================================================================
             println("PHASE 7: Stress Test — Interleaved Sends")
             println("─────────────────────────────────────────────────────────────")
 
             val locations =
                 listOf(
-// New York
+                    // New York
                     Pair(40.7128, -74.0060),
-// Paris
+                    // Paris
                     Pair(48.8566, 2.3522),
-// Tokyo
+                    // Tokyo
                     Pair(35.6762, 139.6503),
                 )
 
@@ -186,9 +187,9 @@ class E2eeBidirectionalEndToEndTest {
             println("✓ Bob and Alice mailboxes fully drained and state stabilized")
             println()
 
-// ============================================================================
-// PHASE 8: Verify state integrity
-// ============================================================================
+            // ============================================================================
+            // PHASE 8: Verify state integrity
+            // ============================================================================
             println("PHASE 8: Verify State Integrity")
             println("─────────────────────────────────────────────────────────────")
 
