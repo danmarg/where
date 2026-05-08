@@ -275,7 +275,7 @@ class LocationViewModelTest {
                     e2eeStoreParam = store,
                     locationClientParam = client,
                     startPolling = false,
-                    locationSource = fakeLocationSource,
+                    locationSourceParam = fakeLocationSource,
                 )
             val vm = viewModel!!
 
@@ -322,7 +322,7 @@ class LocationViewModelTest {
                     app,
                     e2eeStoreParam = E2eeStore(FakeE2eeStorage()),
                     startPolling = false,
-                    locationSource = source,
+                    locationSourceParam = source,
                 )
             val vm = viewModel!!
 
@@ -357,7 +357,7 @@ class LocationViewModelTest {
                     e2eeStoreParam = store,
                     locationClientParam = client,
                     startPolling = false,
-                    locationSource = source,
+                    locationSourceParam = source,
                 )
             val vm = viewModel!!
 
@@ -397,7 +397,7 @@ class LocationViewModelTest {
                     e2eeStoreParam = store,
                     locationClientParam = client,
                     startPolling = false,
-                    locationSource = source,
+                    locationSourceParam = source,
                 )
             val vm = viewModel!!
 
@@ -449,7 +449,7 @@ class LocationViewModelTest {
                     e2eeStoreParam = store,
                     locationClientParam = client,
                     startPolling = false,
-                    locationSource = source,
+                    locationSourceParam = source,
                 )
             val vm = viewModel!!
 
@@ -488,7 +488,7 @@ class LocationViewModelTest {
                     e2eeStoreParam = store,
                     locationClientParam = client,
                     startPolling = false,
-                    locationSource = source,
+                    locationSourceParam = source,
                 )
             val vm = viewModel!!
 
@@ -534,7 +534,7 @@ class LocationViewModelTest {
                     e2eeStoreParam = store,
                     locationClientParam = client,
                     startPolling = false,
-                    locationSource = source,
+                    locationSourceParam = source,
                 )
             val vm = viewModel!!
 
@@ -578,7 +578,7 @@ class LocationViewModelTest {
                     e2eeStoreParam = E2eeStore(inMemory),
                     userStoreParam = userStore,
                     startPolling = false,
-                    locationSource = source,
+                    locationSourceParam = source,
                 )
             advanceUntilIdle()
 
@@ -613,7 +613,7 @@ class LocationViewModelTest {
                     e2eeStoreParam = store,
                     locationClientParam = client,
                     startPolling = false,
-                    locationSource = source,
+                    locationSourceParam = source,
                 )
             val vm = viewModel!!
 

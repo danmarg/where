@@ -5,7 +5,6 @@ package net.af0.where.e2ee
  * Handles the "Sealed Envelope" multi-key trial decryption.
  */
 internal object BatchProcessor {
-
     /**
      * Decrypts headers for all [messages] using the keys available in [session].
      * Sorts successfully decrypted messages in chronological order (DH epoch then sequence).
@@ -29,19 +28,22 @@ internal object BatchProcessor {
         return sortedMessagesWithHeaders.sortedWith { (h1, _), (h2, _) ->
             val b1 = bucketForHeader(session, h1)
             val b2 = bucketForHeader(session, h2)
-            
+
             if (b1 != b2) {
                 b1.compareTo(b2)
-            } else if (b1 == 2) {
-                // For multiple unknown NEW epochs, sort by 'pn' to stay chronological
-                if (h1.pn != h2.pn) h1.pn.compareTo(h2.pn) else h1.seq.compareTo(h2.seq)
             } else {
+                // Within the same bucket (DH epoch), sort by sequence number.
+                // This is a defensive protocol invariant (§7.1): even if the server
+                // delivery is out-of-order, the ratchet requires strictly increasing seq.
                 h1.seq.compareTo(h2.seq)
             }
         }
     }
 
-    private fun tryDecryptHeader(session: SessionState, envelope: ByteArray): Session.DecryptedHeader {
+    private fun tryDecryptHeader(
+        session: SessionState,
+        envelope: ByteArray,
+    ): Session.DecryptedHeader {
         return try {
             Session.decryptHeader(session.headerKey, envelope)
         } catch (_: Exception) {
@@ -54,14 +56,18 @@ internal object BatchProcessor {
                     try {
                         found = Session.decryptHeader(hk, envelope)
                         break
-                    } catch (_: Exception) {}
+                    } catch (_: Exception) {
+                    }
                 }
                 found ?: throw Exception("All header keys failed")
             }
         }
     }
 
-    private fun bucketForHeader(session: SessionState, h: Session.DecryptedHeader): Int {
+    private fun bucketForHeader(
+        session: SessionState,
+        h: Session.DecryptedHeader,
+    ): Int {
         return when {
             h.dhPub.contentEquals(session.remoteDhPub) -> 1
             h.dhPub.contentEquals(session.lastRemoteDhPub) -> 0

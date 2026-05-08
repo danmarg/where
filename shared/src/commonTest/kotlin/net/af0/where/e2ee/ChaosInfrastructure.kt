@@ -11,6 +11,7 @@ class ChaosTimeProvider(private var offsetMillis: Long = 0) : TimeProvider {
     }
 
     override fun currentTimeMillis(): Long = platformCurrentTimeMillis() + offsetMillis
+
     override fun currentTimeSeconds(): Long = (platformCurrentTimeMillis() + offsetMillis) / 1000
 }
 
@@ -20,7 +21,10 @@ class ChaosStorage(private val storage: E2eeStorage) : E2eeStorage {
 
     override fun getString(key: String): String? = storage.getString(key)
 
-    override fun putString(key: String, value: String) {
+    override fun putString(
+        key: String,
+        value: String,
+    ) {
         if (failNextWrite || Random.nextDouble() < failWriteProbability) {
             failNextWrite = false
             throw Exception("Simulated disk write failure")
@@ -53,7 +57,11 @@ class ChaosMailboxClient(private val client: MailboxClient) : MailboxClient {
     private val outboxBuffer = mutableListOf<Pair<String, MailboxPayload>>()
     private val expiredTokens = mutableSetOf<String>()
 
-    override suspend fun post(baseUrl: String, token: String, payload: MailboxPayload) {
+    override suspend fun post(
+        baseUrl: String,
+        token: String,
+        payload: MailboxPayload,
+    ) {
         applyLatency()
         checkKill()
         if (expiredTokens.contains(token) || Random.nextDouble() < expireMailboxProbability) {
@@ -76,14 +84,17 @@ class ChaosMailboxClient(private val client: MailboxClient) : MailboxClient {
                 if (Random.nextDouble() < stealthDropProbability) {
                     return // Simulate success but drop on server
                 }
-                client.post(baseUrl, token, payload)  // may throw 429 if queue full — propagates as-is
+                client.post(baseUrl, token, payload) // may throw 429 if queue full — propagates as-is
                 if (stealthPost) throw NetworkException("Simulated timeout: POST delivered but response lost")
             }
         }
         checkKill()
     }
 
-    override suspend fun poll(baseUrl: String, token: String): List<MailboxPayload> {
+    override suspend fun poll(
+        baseUrl: String,
+        token: String,
+    ): List<MailboxPayload> {
         applyLatency()
         checkKill()
         if (expiredTokens.contains(token) || Random.nextDouble() < expireMailboxProbability) {
@@ -100,23 +111,28 @@ class ChaosMailboxClient(private val client: MailboxClient) : MailboxClient {
             messages.shuffle()
         }
 
-        val result = if (corruptNextPayload || Random.nextDouble() < corruptPayloadProbability) {
-            corruptNextPayload = false
-            messages.map { msg ->
-                if (msg is EncryptedMessagePayload) {
-                    msg.copy(ct = msg.ct.map { (it.toInt() xor 0xFF).toByte() }.toByteArray())
-                } else {
-                    msg
+        val result =
+            if (corruptNextPayload || Random.nextDouble() < corruptPayloadProbability) {
+                corruptNextPayload = false
+                messages.map { msg ->
+                    if (msg is EncryptedMessagePayload) {
+                        msg.copy(ct = msg.ct.map { (it.toInt() xor 0xFF).toByte() }.toByteArray())
+                    } else {
+                        msg
+                    }
                 }
+            } else {
+                messages
             }
-        } else {
-            messages
-        }
         checkKill()
         return result
     }
 
-    override suspend fun ack(baseUrl: String, token: String, count: Int) {
+    override suspend fun ack(
+        baseUrl: String,
+        token: String,
+        count: Int,
+    ) {
         applyLatency()
         checkKill()
         if (expiredTokens.contains(token)) {

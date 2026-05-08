@@ -15,18 +15,22 @@ object TimeSource {
     }
 
     fun currentTimeSeconds(): Long = provider.currentTimeSeconds()
+
     fun currentTimeMillis(): Long = provider.currentTimeMillis()
 }
 
 interface TimeProvider {
     fun currentTimeSeconds(): Long
+
     fun currentTimeMillis(): Long
 }
 
 internal object DefaultTimeProvider : TimeProvider {
     override fun currentTimeSeconds(): Long = platformCurrentTimeSeconds()
+
     override fun currentTimeMillis(): Long = platformCurrentTimeMillis()
 }
 
 internal expect fun platformCurrentTimeSeconds(): Long
+
 internal expect fun platformCurrentTimeMillis(): Long

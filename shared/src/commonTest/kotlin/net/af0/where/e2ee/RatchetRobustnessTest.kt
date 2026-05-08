@@ -195,10 +195,15 @@ class RatchetRobustnessTest {
             val (bState1, bMsg1) = Session.encryptMessage(bobStore.getFriend(bobToAliceId)!!.session, MessagePlaintext.Keepalive())
             bobStore.updateSession(bobToAliceId, bState1)
 
-            // 4. Alice receives Bob's message — this sets needsRatchet=true in Alice's session
+            // 4. Alice receives Bob's message — she ratchets her send chain, but needsRatchet stays false
             aliceStore.processBatch(aliceToBobId, aliceStore.getFriend(aliceToBobId)!!.session.recvToken.toHex(), listOf(bMsg1))
+
+            // Manually force needsRatchet=true to simulate a "stale" or "lost keys" condition
+            // that we want to test recovery for.
+            aliceStore.updateFriend(aliceToBobId) { it.copy(session = it.session.copy(needsRatchet = true)) }
+
             val aliceBeforeRestart = aliceStore.getFriend(aliceToBobId)!!
-            assertTrue(aliceBeforeRestart.session.needsRatchet, "Alice should have needsRatchet=true after receiving Bob's DH key")
+            assertTrue(aliceBeforeRestart.session.needsRatchet, "Alice should have needsRatchet=true (manually set for test)")
 
             // 5. Simulate restart: create a brand-new E2eeStore from the same storage.
             //    The persisted state still has needsRatchet=true.

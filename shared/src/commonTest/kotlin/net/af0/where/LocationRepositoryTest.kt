@@ -9,14 +9,12 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.withContext
+import net.af0.where.e2ee.MemoryStorage
+import net.af0.where.e2ee.UserStore
 import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
-
-import net.af0.where.e2ee.UserStore
-import net.af0.where.e2ee.E2eeStorage
-import net.af0.where.e2ee.MemoryStorage
 
 /**
  * Unit test for LocationRepository thread safety and state management.

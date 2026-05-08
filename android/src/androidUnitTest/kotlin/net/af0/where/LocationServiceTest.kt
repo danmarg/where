@@ -217,7 +217,6 @@ class LocationServiceTest {
         shadowOf(context).grantPermissions(Manifest.permission.ACCESS_FINE_LOCATION)
         fakeLocationSource = ServiceFakeLocationSource()
         LocationService.clock = { System.currentTimeMillis() }
-        LocationService.locationSource = fakeLocationSource
 
         // Mock KtorMailboxClient to prevent network calls during pollPendingInvite
         io.mockk.mockkObject(net.af0.where.e2ee.KtorMailboxClient)
@@ -276,6 +275,7 @@ class LocationServiceTest {
 
             val mockClient = io.mockk.mockk<LocationClient>(relaxed = true)
             service.locationClientOverride = mockClient
+            service.locationSourceOverride = fakeLocationSource
             io.mockk.coEvery { mockClient.pollPendingInvites() } returns emptyList()
             val mockStore = io.mockk.mockk<net.af0.where.e2ee.E2eeStore>(relaxed = true)
             service.e2eeStoreOverride = mockStore
@@ -319,6 +319,7 @@ class LocationServiceTest {
 
             val mockClient = io.mockk.mockk<LocationClient>(relaxed = true)
             service.locationClientOverride = mockClient
+            service.locationSourceOverride = fakeLocationSource
             io.mockk.coEvery { mockClient.pollPendingInvites() } returns emptyList()
             val mockStore = io.mockk.mockk<net.af0.where.e2ee.E2eeStore>(relaxed = true)
             service.e2eeStoreOverride = mockStore
@@ -382,6 +383,7 @@ class LocationServiceTest {
 
             val mockClient = io.mockk.mockk<LocationClient>(relaxed = true)
             service.locationClientOverride = mockClient
+            service.locationSourceOverride = fakeLocationSource
             fakeLocationSource.setSharingLocation(true)
             fakeLocationSource.onLocation(1.0, 2.0, null)
             controller.create()
@@ -403,6 +405,7 @@ class LocationServiceTest {
 
             val mockClient = io.mockk.mockk<LocationClient>(relaxed = true)
             service.locationClientOverride = mockClient
+            service.locationSourceOverride = fakeLocationSource
             val mockFused = io.mockk.mockk<com.google.android.gms.location.FusedLocationProviderClient>(relaxed = true)
             service.fusedClientOverride = mockFused
 

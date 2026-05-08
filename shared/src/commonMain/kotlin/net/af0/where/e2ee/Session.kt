@@ -358,7 +358,7 @@ object Session {
                     recvSeq = seq,
                     skippedMessageKeys = finalSkippedKeys,
                     skippedEpochHeaderKeys = finalEpochHeaderKeys,
-                    needsRatchet = isNewDhEpoch,
+                    needsRatchet = cleanState.needsRatchet || isNewDhEpoch,
                     seenRemoteDhPubs =
                         if (isNewDhEpoch) {
                             (speculativeState.seenRemoteDhPubs + cleanState.remoteDhPub.toHex()).toList().takeLast(MAX_SEEN_DH_PUBS).toSet()

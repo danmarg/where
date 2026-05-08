@@ -31,22 +31,26 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
+import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
 import com.journeyapps.barcodescanner.ScanContract
 import com.journeyapps.barcodescanner.ScanOptions
 import dev.icerock.moko.resources.compose.stringResource
-import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
 import net.af0.where.e2ee.InviteState
 import net.af0.where.shared.MR
 
 class MainActivity : ComponentActivity() {
     private val viewModel: LocationViewModel by viewModels { LocationViewModel.Factory }
 
-    private val shareReceiver = object : android.content.BroadcastReceiver() {
-        override fun onReceive(context: android.content.Context, intent: android.content.Intent) {
-            val ekPub = intent.getByteArrayExtra("ekPub") ?: return
-            viewModel.markInviteExported(ekPub)
+    private val shareReceiver =
+        object : android.content.BroadcastReceiver() {
+            override fun onReceive(
+                context: android.content.Context,
+                intent: android.content.Intent,
+            ) {
+                val ekPub = intent.getByteArrayExtra("ekPub") ?: return
+                viewModel.markInviteExported(ekPub)
+            }
         }
-    }
 
     override fun onStart() {
         super.onStart()
@@ -277,15 +281,16 @@ class MainActivity : ComponentActivity() {
                         onDisplayNameChange = { viewModel.setDisplayName(it) },
                         onDismiss = { viewModel.clearInviteIfNotExported() },
                         onExportedIntent = { ekPub ->
-                            val intent = Intent("net.af0.where.ACTION_INVITE_EXPORTED").apply {
-                                setPackage(packageName)
-                                putExtra("ekPub", ekPub)
-                            }
+                            val intent =
+                                Intent("net.af0.where.ACTION_INVITE_EXPORTED").apply {
+                                    setPackage(packageName)
+                                    putExtra("ekPub", ekPub)
+                                }
                             android.app.PendingIntent.getBroadcast(
                                 this@MainActivity,
                                 0,
                                 intent,
-                                android.app.PendingIntent.FLAG_UPDATE_CURRENT or android.app.PendingIntent.FLAG_IMMUTABLE
+                                android.app.PendingIntent.FLAG_UPDATE_CURRENT or android.app.PendingIntent.FLAG_IMMUTABLE,
                             )
                         },
                     )

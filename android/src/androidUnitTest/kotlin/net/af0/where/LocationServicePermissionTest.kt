@@ -44,7 +44,6 @@ class LocationServicePermissionTest {
 
         fakeLocationSource = ServiceFakeLocationSource()
         LocationService.clock = { System.currentTimeMillis() }
-        LocationService.locationSource = fakeLocationSource
 
         mockFused = mockk(relaxed = true)
 
@@ -69,6 +68,7 @@ class LocationServicePermissionTest {
 
         val mockClient = io.mockk.mockk<net.af0.where.e2ee.LocationClient>(relaxed = true)
         service.locationClientOverride = mockClient
+        service.locationSourceOverride = fakeLocationSource
         val mockStore = io.mockk.mockk<net.af0.where.e2ee.E2eeStore>(relaxed = true)
         service.e2eeStoreOverride = mockStore
         service.fusedClientOverride = mockFused
@@ -106,6 +106,7 @@ class LocationServicePermissionTest {
 
         val mockClient = io.mockk.mockk<net.af0.where.e2ee.LocationClient>(relaxed = true)
         service.locationClientOverride = mockClient
+        service.locationSourceOverride = fakeLocationSource
         val mockStore = io.mockk.mockk<net.af0.where.e2ee.E2eeStore>(relaxed = true)
         service.e2eeStoreOverride = mockStore
         service.fusedClientOverride = mockFused
@@ -139,6 +140,7 @@ class LocationServicePermissionTest {
 
         val mockClient = io.mockk.mockk<net.af0.where.e2ee.LocationClient>(relaxed = true)
         service.locationClientOverride = mockClient
+        service.locationSourceOverride = fakeLocationSource
         val mockStore = io.mockk.mockk<net.af0.where.e2ee.E2eeStore>(relaxed = true)
         service.e2eeStoreOverride = mockStore
         service.fusedClientOverride = mockFused

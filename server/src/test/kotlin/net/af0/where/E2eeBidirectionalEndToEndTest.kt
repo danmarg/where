@@ -9,21 +9,21 @@ import kotlin.random.Random
 import kotlin.test.*
 
 /**
- * End-to-end bidirectional E2EE test that validates the full production code paths:
- * 1. Key exchange with name verification (via real HTTP mailbox)
- * 2. Bidirectional location sharing via LocationClient.sendLocation() + poll()
- * 3. Random timing to catch async/concurrency bugs
- *
- * Uses the same LocationClient / processBatch / sendLocation code as the real apps,
- * so bugs in those paths are caught here before manifesting on device.
- *
- * Can run against localhost (default, starts an embedded Netty server) or a remote
- * server via WHERE_TEST_SERVER_URL env var.
- *
- * Examples:
- *   ./gradlew :server:test --tests E2eeBidirectionalEndToEndTest
- *   WHERE_TEST_SERVER_URL=https://where-api.fly.dev ./gradlew :server:test --tests E2eeBidirectionalEndToEndTest
- */
+* End-to-end bidirectional E2EE test that validates the full production code paths:
+* 1. Key exchange with name verification (via real HTTP mailbox)
+* 2. Bidirectional location sharing via LocationClient.sendLocation() + poll()
+* 3. Random timing to catch async/concurrency bugs
+*
+* Uses the same LocationClient / processBatch / sendLocation code as the real apps,
+* so bugs in those paths are caught here before manifesting on device.
+*
+* Can run against localhost (default, starts an embedded Netty server) or a remote
+* server via WHERE_TEST_SERVER_URL env var.
+*
+* Examples:
+*   ./gradlew :server:test --tests E2eeBidirectionalEndToEndTest
+*   WHERE_TEST_SERVER_URL=https://where-api.fly.dev ./gradlew :server:test --tests E2eeBidirectionalEndToEndTest
+*/
 class E2eeBidirectionalEndToEndTest {
     private fun getServerUrl(): String = System.getenv("WHERE_TEST_SERVER_URL") ?: "http://localhost:18080"
 
@@ -125,16 +125,12 @@ class E2eeBidirectionalEndToEndTest {
             aliceClient.sendLocation(aliceLocation.first, aliceLocation.second)
             println("✓ Alice sent location via LocationClient")
 
-            val delayBeforeBobReceive = random.nextLong(200, 800)
-            println("  Waiting ${delayBeforeBobReceive}ms before Bob polls…")
-            delay(delayBeforeBobReceive)
-
             println("\nPHASE 4: Bob Polls for Alice's Location")
             println("─────────────────────────────────────────────────────────────")
 
-            val bobUpdates = bobClient.poll()
-            val aliceLocFromBob = bobUpdates.firstOrNull { it.userId == aliceFriendId }
-            assertNotNull(aliceLocFromBob, "Bob should receive Alice's location via poll()")
+            val allUpdates1 = drainStability(aliceClient to aliceStore, bobClient to bobStore)
+            val aliceLocFromBob = allUpdates1.firstOrNull { it.userId == aliceFriendId }
+            assertNotNull(aliceLocFromBob, "Bob should receive Alice's location via drainStability")
             assertEquals(aliceLocation.first, aliceLocFromBob.lat, 0.0001)
             assertEquals(aliceLocation.second, aliceLocFromBob.lng, 0.0001)
             println("✓ Bob received Alice's location: lat=${aliceLocFromBob.lat}, lng=${aliceLocFromBob.lng}")
@@ -150,22 +146,12 @@ class E2eeBidirectionalEndToEndTest {
             bobClient.sendLocation(bobLocation.first, bobLocation.second)
             println("✓ Bob sent location via LocationClient")
 
-            val delayBeforeAliceReceive = random.nextLong(200, 800)
-            println("  Waiting ${delayBeforeAliceReceive}ms before Alice polls…")
-            delay(delayBeforeAliceReceive)
-
             println("\nPHASE 6: Alice Polls for Bob's Location")
             println("─────────────────────────────────────────────────────────────")
 
-            var aliceUpdates = aliceClient.poll()
-            var bobLocFromAlice = aliceUpdates.firstOrNull { it.userId == aliceFriendId }
-            if (bobLocFromAlice == null) {
-                // Alice's first poll might have only consumed the RatchetAck and committed the
-                // rotation, switching her recvToken to the new one. Poll again to get the location.
-                aliceUpdates = aliceClient.poll()
-                bobLocFromAlice = aliceUpdates.firstOrNull { it.userId == aliceFriendId }
-            }
-            assertNotNull(bobLocFromAlice, "Alice should receive Bob's location via poll()")
+            val allUpdates2 = drainStability(aliceClient to aliceStore, bobClient to bobStore)
+            val bobLocFromAlice = allUpdates2.firstOrNull { it.userId == aliceFriendId }
+            assertNotNull(bobLocFromAlice, "Alice should receive Bob's location via drainStability")
             assertEquals(bobLocation.first, bobLocFromAlice.lat, 0.0001)
             assertEquals(bobLocation.second, bobLocFromAlice.lng, 0.0001)
             println("✓ Alice received Bob's location: lat=${bobLocFromAlice.lat}, lng=${bobLocFromAlice.lng}")
@@ -191,33 +177,13 @@ class E2eeBidirectionalEndToEndTest {
                 val (lat, lng) = locations[i % locations.size]
                 aliceClient.sendLocation(lat, lng)
                 println("  Alice sent location $i: ($lat, $lng)")
-                delay(random.nextLong(50, 150))
+                delay(10)
                 bobClient.sendLocation(lat + 0.01, lng + 0.01)
                 println("  Bob sent location $i: (${lat + 0.01}, ${lng + 0.01})")
-                delay(random.nextLong(50, 150))
+                delay(10)
             }
 
-            // Poll in a loop to ensure everything is settled.
-            // Asynchronous messages (rotations, location updates) may take multiple
-            // poll cycles to converge across the network.
-            suspend fun stabilize() {
-                var quietRounds = 0
-                while (quietRounds < 3) {
-                    val aLen = aliceClient.poll().size
-                    val bLen = bobClient.poll().size
-
-                    val aOutbox = aliceStore.listFriends().any { it.outbox != null }
-                    val bOutbox = bobStore.listFriends().any { it.outbox != null }
-
-                    if (aLen == 0 && bLen == 0 && !aOutbox && !bOutbox) {
-                        quietRounds++
-                    } else {
-                        quietRounds = 0
-                    }
-                    delay(50)
-                }
-            }
-            stabilize()
+            drainStability(aliceClient to aliceStore, bobClient to bobStore)
             println("✓ Bob and Alice mailboxes fully drained and state stabilized")
             println()
 
@@ -295,6 +261,40 @@ class E2eeBidirectionalEndToEndTest {
         }
     }
 
+    private suspend fun drainStability(
+        vararg nodes: Pair<LocationClient, E2eeStore>,
+        timeoutMs: Long = 60_000,
+    ): List<net.af0.where.model.UserLocation> {
+        val start = System.currentTimeMillis()
+        var quiet = 0
+        val allUpdates = mutableListOf<net.af0.where.model.UserLocation>()
+        while (quiet < 5) {
+            if (System.currentTimeMillis() - start > timeoutMs) {
+                throw Exception("drainStability timed out after ${timeoutMs}ms")
+            }
+
+            var anyActivity = false
+            for ((client, store) in nodes) {
+                val updates = client.poll()
+                if (updates.isNotEmpty()) {
+                    allUpdates.addAll(updates)
+                    anyActivity = true
+                }
+                if (store.listFriends().any { it.outbox != null }) {
+                    anyActivity = true
+                }
+            }
+
+            if (!anyActivity) {
+                quiet++
+            } else {
+                quiet = 0
+            }
+            kotlinx.coroutines.delay(20)
+        }
+        return allUpdates
+    }
+
     private suspend fun runThreePartyTest(baseUrl: String) {
         coroutineScope {
             val aStorage = MemoryE2eeStorage()
@@ -335,26 +335,11 @@ class E2eeBidirectionalEndToEndTest {
                 )!!
             val friendIdAC = aEntryForC.id
 
-            suspend fun stabilize() {
-                var quiet = 0
-                while (quiet < 3) {
-                    val aLen = aClient.poll().size
-                    val bLen = bClient.poll().size
-                    val cLen = cClient.poll().size
-                    val pending =
-                        aStore.listFriends().any { it.outbox != null } ||
-                            bStore.listFriends().any { it.outbox != null } ||
-                            cStore.listFriends().any { it.outbox != null }
-                    if (aLen == 0 && bLen == 0 && cLen == 0 && !pending) quiet++ else quiet = 0
-                    delay(50)
-                }
-            }
-
             // Initial flush: A has isSendTokenPending=true for both B and C after handshake.
             // sendLocation posts to prevSendToken for each friend, triggering their DH ratchets.
             println("THREE-PARTY: Initial flush (A→B and A→C)")
             aClient.sendLocation(0.0, 0.0)
-            stabilize()
+            drainStability(aClient to aStore, bClient to bStore, cClient to cStore)
             println("THREE-PARTY: Tokens stabilized after initial flush")
 
             // ── A → B and A → C ──────────────────────────────────────
@@ -362,18 +347,15 @@ class E2eeBidirectionalEndToEndTest {
             val aLat = 37.7749
             val aLng = -122.4194
             aClient.sendLocation(aLat, aLng)
-            delay(400)
 
-            val bPoll = bClient.poll()
-            val aLocFromB = bPoll.firstOrNull { it.userId == friendIdAB }
+            val allUpdates1 = drainStability(aClient to aStore, bClient to bStore, cClient to cStore)
+
+            val aLocFromB = allUpdates1.firstOrNull { it.userId == friendIdAB && it.lat == aLat }
             assertNotNull(aLocFromB, "B should receive A's location (A→B direction)")
-            assertEquals(aLat, aLocFromB.lat, 0.0001)
             println("✓ A→B: B received A's location")
 
-            val cPoll = cClient.poll()
-            val aLocFromC = cPoll.firstOrNull { it.userId == friendIdAC }
+            val aLocFromC = allUpdates1.firstOrNull { it.userId == friendIdAC && it.lat == aLat }
             assertNotNull(aLocFromC, "C should receive A's location (A→C direction)")
-            assertEquals(aLat, aLocFromC.lat, 0.0001)
             println("✓ A→C: C received A's location")
 
             // ── B → A and C → A ──────────────────────────────────────
@@ -384,25 +366,16 @@ class E2eeBidirectionalEndToEndTest {
             val cLng = 139.6503
             bClient.sendLocation(bLat, bLng)
             cClient.sendLocation(cLat, cLng)
-            delay(600)
 
-            var aUpdates = aClient.poll()
-            if (aUpdates.size < 2) {
-                delay(300)
-                aUpdates = aUpdates + aClient.poll()
-            }
+            val allUpdates2 = drainStability(aClient to aStore, bClient to bStore, cClient to cStore)
 
-            val bLocFromA = aUpdates.firstOrNull { it.userId == friendIdAB }
+            val bLocFromA = allUpdates2.firstOrNull { it.userId == friendIdAB && it.lat == bLat }
             assertNotNull(bLocFromA, "A should receive B's location (B→A direction)")
-            assertEquals(bLat, bLocFromA.lat, 0.0001)
             println("✓ B→A: A received B's location")
 
-            val cLocFromA = aUpdates.firstOrNull { it.userId == friendIdAC }
+            val cLocFromA = allUpdates2.firstOrNull { it.userId == friendIdAC && it.lat == cLat }
             assertNotNull(cLocFromA, "A should receive C's location (C→A direction)")
-            assertEquals(cLat, cLocFromA.lat, 0.0001)
             println("✓ C→A: A received C's location")
-
-            stabilize()
 
             // ── Token integrity ───────────────────────────────────────
             val finalAB = aStore.getFriend(friendIdAB)!!.session
@@ -464,9 +437,9 @@ class E2eeBidirectionalEndToEndTest {
 
             // Initial flush
             aClient.sendLocation(0.0, 0.0)
-            delay(300)
+            delay(10)
             bClient.poll()
-            delay(200)
+            delay(10)
             aClient.poll()
 
             // Concurrent stress: sendLocation (no pollMutex) races against poll (holds pollMutex).
@@ -485,14 +458,14 @@ class E2eeBidirectionalEndToEndTest {
                                     random.nextDouble(-180.0, 180.0),
                                 )
                             }
-                            delay(random.nextLong(10, 80))
+                            delay(random.nextLong(2, 10))
                         }
                     }
                 val aPoll =
                     launch {
                         repeat(30) {
                             runCatching { aClient.poll() }
-                            delay(random.nextLong(15, 60))
+                            delay(random.nextLong(2, 10))
                         }
                     }
                 val bSend =
@@ -504,14 +477,14 @@ class E2eeBidirectionalEndToEndTest {
                                     random.nextDouble(-180.0, 180.0),
                                 )
                             }
-                            delay(random.nextLong(10, 80))
+                            delay(random.nextLong(2, 10))
                         }
                     }
                 val bPoll =
                     launch {
                         repeat(30) {
                             runCatching { bClient.poll() }
-                            delay(random.nextLong(15, 60))
+                            delay(random.nextLong(2, 10))
                         }
                     }
                 aSend.join()
@@ -521,16 +494,7 @@ class E2eeBidirectionalEndToEndTest {
             }
 
             // Drain all pending messages
-            var quiet = 0
-            while (quiet < 5) {
-                val aLen = aClient.poll().size
-                val bLen = bClient.poll().size
-                val pending =
-                    aStore.listFriends().any { it.outbox != null } ||
-                        bStore.listFriends().any { it.outbox != null }
-                if (aLen == 0 && bLen == 0 && !pending) quiet++ else quiet = 0
-                delay(100)
-            }
+            drainStability(aClient to aStore, bClient to bStore)
 
             // Token integrity
             val finalA = aStore.getFriend(friendId)!!.session
@@ -543,10 +507,10 @@ class E2eeBidirectionalEndToEndTest {
             // Final ping: confirm the channel is still functional end-to-end
             val pingLat = 12.3456
             aClient.sendLocation(pingLat, 0.0)
-            delay(500)
+            delay(50)
             var bFinal = bClient.poll()
             if (bFinal.none { it.userId == friendId }) {
-                delay(300)
+                delay(50)
                 bFinal = bFinal + bClient.poll()
             }
             assertNotNull(
@@ -598,32 +562,21 @@ class E2eeBidirectionalEndToEndTest {
             val friendId = aEntry.id
 
             aClient.sendLocation(0.0, 0.0)
-            var quiet = 0
-            while (quiet < 3) {
-                val aLen = aClient.poll().size
-                val bLen = bClient.poll().size
-                val pending =
-                    aStore.listFriends().any { it.outbox != null } ||
-                        bStore.listFriends().any { it.outbox != null }
-                if (aLen == 0 && bLen == 0 && !pending) quiet++ else quiet = 0
-                delay(50)
-            }
-            println("Initial flush complete — both sides stable")
+            drainStability(aClient to aStore, bClient to bStore)
+            println("Initial flush complete")
 
             // B sends a location; A polls to receive it, triggering A's send-token ratchet.
             bClient.sendLocation(10.0, 20.0)
-            delay(200)
+            delay(50)
             aClient.poll()
-            delay(100)
+            delay(50)
 
             val aSessionMid = aStore.getFriend(friendId)!!.session
-            println("After B→A send: A needsRatchet=${aSessionMid.needsRatchet} isSendTokenPending=${aSessionMid.isSendTokenPending}")
 
             // isSendTokenPending=true means A's send side ratcheted. A's next send will go to
             // prevSendToken (the transition message), then finalizeTokenTransition tries to post
             // a keepalive to sendToken. We want to fail that keepalive persistently.
             val tokenToFail = aSessionMid.sendToken.toHex()
-            println("Will permanently fail POSTs to ${tokenToFail.take(8)}... (A's new sendToken)")
 
             // Failing client: drops all POSTs to A's new sendToken (simulates a persistent
             // network failure for the finalizeTokenTransition keepalive, and any subsequent
@@ -636,7 +589,6 @@ class E2eeBidirectionalEndToEndTest {
                         payload: MailboxPayload,
                     ) {
                         if (token == tokenToFail) {
-                            println("  [FailingMailbox] dropping POST to ${token.take(8)}...")
                             throw RuntimeException("Injected: POST failure for A's new sendToken")
                         }
                         KtorMailboxClient.post(baseUrl, token, payload)
@@ -653,7 +605,7 @@ class E2eeBidirectionalEndToEndTest {
             // - Main POST goes to prevSendToken (NOT tokenToFail) → succeeds → B will see A's location
             // - finalizeTokenTransition clears isSendTokenPending, then tries keepalive to tokenToFail → FAILS
             // - Exception is swallowed; the keepalive is left in A's outbox (token=tokenToFail)
-            runCatching { aClientFailing.sendLocation(40.0, 50.0) }
+            aClientFailing.sendLocation(33.3, 44.4)
 
             val aSessionAfterFailure = aStore.getFriend(friendId)!!.session
             assertFalse(
@@ -663,10 +615,10 @@ class E2eeBidirectionalEndToEndTest {
             println("✓ isSendTokenPending=false after keepalive failure")
 
             // B polls prevSendToken → receives A's location and follows chain to tokenToFail.
-            delay(200)
+            delay(50)
             var bAfterFailure = bClient.poll()
             if (bAfterFailure.none { it.userId == friendId }) {
-                delay(300)
+                delay(50)
                 bAfterFailure = bAfterFailure + bClient.poll()
             }
             val aLocFromBAfterFailure = bAfterFailure.firstOrNull { it.userId == friendId }
@@ -676,12 +628,12 @@ class E2eeBidirectionalEndToEndTest {
             // Now switch to the normal client. The outbox retry in processOutboxes will post the
             // swallowed keepalive to tokenToFail. Then the recovery send also goes to tokenToFail.
             val recoveryLat = 55.123
-            aClient.sendLocation(recoveryLat, 30.0)
-            delay(300)
+            aClient.sendLocation(recoveryLat, 0.0)
+            delay(50)
 
             var bFinal = bClient.poll()
             if (bFinal.none { it.userId == friendId && Math.abs(it.lat - recoveryLat) < 0.001 }) {
-                delay(300)
+                delay(50)
                 bFinal = bFinal + bClient.poll()
             }
             assertNotNull(
@@ -691,20 +643,12 @@ class E2eeBidirectionalEndToEndTest {
             println("✓ B received recovery location — channel fully recovered")
 
             // Final token invariant
-            var quietRounds = 0
-            while (quietRounds < 3) {
-                val aLen = aClient.poll().size
-                val bLen = bClient.poll().size
-                val pending =
-                    aStore.listFriends().any { it.outbox != null } ||
-                        bStore.listFriends().any { it.outbox != null }
-                if (aLen == 0 && bLen == 0 && !pending) quietRounds++ else quietRounds = 0
-                delay(50)
-            }
+            drainStability(aClient to aStore, bClient to bStore)
             val finalA = aStore.getFriend(friendId)!!.session
             val finalB = bStore.getFriend(friendId)!!.session
             val aActiveSend = if (finalA.isSendTokenPending) finalA.prevSendToken else finalA.sendToken
             val bActiveSend = if (finalB.isSendTokenPending) finalB.prevSendToken else finalB.sendToken
+
             assertContentEquals(aActiveSend, finalB.recvToken, "A active send = B recv (after recovery)")
             assertContentEquals(bActiveSend, finalA.recvToken, "B active send = A recv (after recovery)")
             println("✓ Token invariant holds after full recovery")
@@ -749,17 +693,9 @@ class E2eeBidirectionalEndToEndTest {
 
             val aClient = LocationClient(baseUrl, aStore)
             val bClient = LocationClient(baseUrl, bStore)
+
             aClient.sendLocation(0.0, 0.0)
-            var quiet = 0
-            while (quiet < 3) {
-                val aLen = aClient.poll().size
-                val bLen = bClient.poll().size
-                val pending =
-                    aStore.listFriends().any { it.outbox != null } ||
-                        bStore.listFriends().any { it.outbox != null }
-                if (aLen == 0 && bLen == 0 && !pending) quiet++ else quiet = 0
-                delay(50)
-            }
+            drainStability(aClient to aStore, bClient to bStore)
 
             // Post a garbage EncryptedMessagePayload to A's recvToken.
             // The envelope bytes are random noise — AEAD decryption will fail,
@@ -803,12 +739,12 @@ class E2eeBidirectionalEndToEndTest {
                 }
             val aClientTracking = LocationClient(baseUrl, aStore, trackingClient)
 
-            // A polls — garbage message fails decryption → anySuccess=false → ACK must be suppressed
+            //  A polls — garbage message fails decryption → anySuccess=false → ACK must be suppressed
             aClientTracking.poll()
 
             assertEquals(0, ackCallCount, "ACK must NOT be sent when all messages fail decryption")
 
-            // The garbage message must still be on the server (was not ACKed away)
+            //  The garbage message must still be on the server (was not ACKed away)
             assertEquals(
                 1,
                 KtorMailboxClient.poll(baseUrl, aRecvToken).size,
@@ -844,7 +780,7 @@ class E2eeBidirectionalEndToEndTest {
 
             println("\n══ FINALIZE-TRANSITION KEEPALIVE FAILURE RECOVERY VIA POLL TEST ══")
 
-            // Pair and initial flush (same pattern as runFinalizeTransitionFailureTest)
+            //  Pair and initial flush (same pattern as runFinalizeTransitionFailureTest)
             val qr = aStore.createInvite("A")
             val (init, _) = bStore.processScannedQr(qr, "B")
             KtorMailboxClient.post(baseUrl, qr.discoveryToken().toHex(), init)
@@ -858,27 +794,17 @@ class E2eeBidirectionalEndToEndTest {
             val friendId = aEntry.id
 
             aClient.sendLocation(0.0, 0.0)
-            var quiet = 0
-            while (quiet < 3) {
-                val aLen = aClient.poll().size
-                val bLen = bClient.poll().size
-                val pending =
-                    aStore.listFriends().any { it.outbox != null } ||
-                        bStore.listFriends().any { it.outbox != null }
-                if (aLen == 0 && bLen == 0 && !pending) quiet++ else quiet = 0
-                delay(50)
-            }
+            drainStability(aClient to aStore, bClient to bStore)
             println("Initial flush complete")
 
-            // B sends a location; A polls to receive it, triggering A's send-token ratchet
+            // B sends a location; A polls to receive it, triggering A's send-token ratchet.
             bClient.sendLocation(10.0, 20.0)
-            delay(200)
+            delay(50)
             aClient.poll()
-            delay(100)
+            delay(50)
 
             val aSessionMid = aStore.getFriend(friendId)!!.session
             val tokenToFail = aSessionMid.sendToken.toHex()
-            println("Will permanently fail POSTs to ${tokenToFail.take(8)}... (A's new sendToken)")
 
             // Failing client: drops all POSTs to A's new sendToken
             val failingMailboxClient =
@@ -908,7 +834,7 @@ class E2eeBidirectionalEndToEndTest {
             val aClientFailing = LocationClient(baseUrl, aStore, failingMailboxClient)
 
             // A sends a location — main POST succeeds (to prevSendToken), keepalive fails (to tokenToFail)
-            runCatching { aClientFailing.sendLocation(40.0, 50.0) }
+            aClientFailing.sendLocation(33.3, 44.4)
 
             val aSessionAfterFailure = aStore.getFriend(friendId)!!.session
             assertFalse(
@@ -924,9 +850,9 @@ class E2eeBidirectionalEndToEndTest {
             // KEY DIFFERENCE FROM EXISTING TEST: instead of sendLocation, we just poll.
             // poll() calls processOutboxes() which retries the keepalive from the outbox.
             // We switch back to the normal client for the recovery poll.
-            delay(200)
+            delay(50)
             aClient.poll()
-            delay(100)
+            delay(50)
 
             // Outbox must be cleared by processOutboxes
             assertNull(
@@ -938,10 +864,10 @@ class E2eeBidirectionalEndToEndTest {
             // Verify channel is still functional: A sends a location, B receives it
             val pingLat = 77.7
             aClient.sendLocation(pingLat, 0.0)
-            delay(400)
+            delay(50)
             var bFinal = bClient.poll()
             if (bFinal.none { it.userId == friendId && Math.abs(it.lat - pingLat) < 0.001 }) {
-                delay(300)
+                delay(50)
                 bFinal = bFinal + bClient.poll()
             }
             assertNotNull(

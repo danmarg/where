@@ -37,7 +37,6 @@ class LocationServiceSharingPauseTest {
 
         fakeLocationSource = ServiceFakeLocationSource()
         LocationService.clock = { System.currentTimeMillis() }
-        LocationService.locationSource = fakeLocationSource
 
         mockFused = mockk(relaxed = true)
 
@@ -63,6 +62,7 @@ class LocationServiceSharingPauseTest {
             service.fusedClientOverride = mockFused
             service.locationClientOverride = mockk(relaxed = true)
             service.e2eeStoreOverride = mockk(relaxed = true)
+            service.locationSourceOverride = fakeLocationSource
 
             controller.create()
             advanceUntilIdle()
