@@ -32,11 +32,10 @@ internal object BatchProcessor {
             if (b1 != b2) {
                 b1.compareTo(b2)
             } else {
-                // Within the same bucket, rely on the server-provided FIFO order.
-                // Kotlin's sortedWith is stable, so returning 0 preserves the original order.
-                // For known epochs (b <= 1), we could sort by seq, but server order
-                // should already be correct.
-                0
+                // Within the same bucket (DH epoch), sort by sequence number.
+                // This is a defensive protocol invariant (§7.1): even if the server
+                // delivery is out-of-order, the ratchet requires strictly increasing seq.
+                h1.seq.compareTo(h2.seq)
             }
         }
     }

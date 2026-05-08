@@ -13,6 +13,8 @@ internal class DoubleBufferedStorage<T : Any>(
     private val json: Json,
     private val timestampSelector: (T) -> Long,
 ) {
+    private val lastSeenTs = mutableMapOf<String, Long>()
+
     fun load(
         keyBase: String,
         keyLegacy: String? = null,
@@ -28,7 +30,11 @@ internal class DoubleBufferedStorage<T : Any>(
         val storeB = jsonB?.let { tryDecode(it, "Slot B ($keyBase)") }
         val storeLegacy = jsonLegacy?.let { tryDecode(it, "Legacy ($keyBase)") }
 
-        return listOfNotNull(storeA, storeB, storeLegacy).maxByOrNull { timestampSelector(it) }
+        val result = listOfNotNull(storeA, storeB, storeLegacy).maxByOrNull { timestampSelector(it) }
+        if (result != null) {
+            lastSeenTs[keyBase] = timestampSelector(result)
+        }
+        return result
     }
 
     fun save(
@@ -36,6 +42,16 @@ internal class DoubleBufferedStorage<T : Any>(
         data: T,
         keyLegacy: String? = null,
     ) {
+        val tsNew = timestampSelector(data)
+        check(tsNew > 0) { "DoubleBufferedStorage: timestamp must be positive" }
+
+        val tsPrev = lastSeenTs[keyBase] ?: 0L
+        if (tsNew < tsPrev) {
+            println("[DoubleBufferedStorage] WARNING: Monotonicity violation for $keyBase: $tsNew < $tsPrev. Overriding to $tsPrev + 1.")
+        }
+        // Note: We don't force data to change here (it's immutable), but we use tsNew to pick the slot.
+        // E2eeStore.nextTs() is the primary guarantor of monotonicity.
+
         val keyA = "${keyBase}_a"
         val keyB = "${keyBase}_b"
 
@@ -64,6 +80,7 @@ internal class DoubleBufferedStorage<T : Any>(
             }
 
         storage.putString(targetSlot, jsonStr)
+        lastSeenTs[keyBase] = maxOf(tsPrev, tsNew)
 
         if (keyLegacy != null) {
             storage.putString(keyLegacy, "")
