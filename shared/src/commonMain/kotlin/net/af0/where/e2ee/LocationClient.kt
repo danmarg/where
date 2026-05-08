@@ -22,17 +22,11 @@ open class LocationClient(
     /** Secondary constructor for Swift/native compatibility (§9). */
     constructor(baseUrl: String, store: E2eeStore) : this(baseUrl, store, KtorMailboxClient)
 
-    private val pollMutex = Mutex()
-
-    // Tracks consecutive polls where header-parse failures blocked the ACK, per friend.
-    // Resets to 0 on any clean batch. Triggers a force-ACK at MAX_SILENT_DROP_RETRIES
-    // to break a permanent livelock caused by an unrecoverable corrupted message.
-    private val silentDropCounts = mutableMapOf<String, Int>()
+    private val inFlightPolls = mutableSetOf<String>()
+    private val inFlightMutex = Mutex()
 
     /**
      * Poll all friends and all pending invites.
-     *
-     * Poll calls are serialized to prevent concurrent ratchet state mutations.
      *
      * @param isForeground Whether the app is currently in the foreground.
      * @param pausedFriendIds Set of friend IDs for whom location sharing is currently paused.
@@ -42,7 +36,7 @@ open class LocationClient(
         isForeground: Boolean = true,
         pausedFriendIds: Set<String> = emptySet(),
     ): List<UserLocation> =
-        pollMutex.withLock {
+        coroutineScope {
             processOutboxes()
             // Periodic cleanup of expired invites
             try {
@@ -51,21 +45,53 @@ open class LocationClient(
                 println("[LocationClient] cleanup expired invites failed: ${e.message}")
             }
 
+            val friends = store.listFriends()
+            val deferreds =
+                friends.map { friend ->
+                    async {
+                        // Guard against concurrent polls for the same friend.
+                        // Since we parallelized the top-level poll() loop, we must ensure
+                        // that two calls to pollFriend(id) do not run concurrently for the
+                        // same friendId, as that would cause redundant synchronization and
+                        // waste battery/data.
+                        val alreadyPolling =
+                            inFlightMutex.withLock {
+                                if (inFlightPolls.contains(friend.id)) {
+                                    true
+                                } else {
+                                    inFlightPolls.add(friend.id)
+                                    false
+                                }
+                            }
+                        if (alreadyPolling) return@async Pair(emptyList<UserLocation>(), null)
+
+                        try {
+                            val updates = pollFriend(friend.id, friend.id in pausedFriendIds)
+                            Pair(updates, null)
+                        } catch (e: Exception) {
+                            println("[LocationClient] poll: failed for ${friend.id.take(8)}: ${e.message}")
+                            Pair(emptyList<UserLocation>(), e)
+                        } finally {
+                            inFlightMutex.withLock {
+                                inFlightPolls.remove(friend.id)
+                            }
+                        }
+                    }
+                }
+
+            val results = deferreds.awaitAll()
             val allUpdates = mutableListOf<UserLocation>()
             var successCount = 0
             var failCount = 0
             var lastError: Exception? = null
 
-            val friends = store.listFriends()
-
-            for (friend in friends) {
-                try {
-                    val friendUpdates = pollFriend(friend.id, friend.id in pausedFriendIds)
-                    allUpdates.addAll(friendUpdates)
+            for ((updates, error) in results) {
+                if (error == null) {
+                    allUpdates.addAll(updates)
                     successCount++
-                } catch (e: Exception) {
-                    lastError = e
+                } else {
                     failCount++
+                    lastError = error
                 }
             }
 
@@ -74,6 +100,17 @@ open class LocationClient(
             if (successCount == 0 && failCount > 0) {
                 lastError?.let { throw it }
             }
+
+            // Handle pending invites in parallel too
+            val inviteResults = pollPendingInvitesInternal()
+            for (result in inviteResults) {
+                try {
+                    store.processKeyExchangeInit(result.payload, result.payload.suggestedName, result.aliceEkPub)
+                } catch (e: Exception) {
+                    println("[LocationClient] poll: failed to process KeyExchangeInit: ${e.message}")
+                }
+            }
+
             allUpdates
         }
 
@@ -84,33 +121,33 @@ open class LocationClient(
      * Note: We randomize the order and parallelize requests to mitigate timing oracle attacks
      * and traffic analysis (Issue #222 security hardening).
      */
-    suspend fun pollPendingInvites(): List<PendingInviteResult> =
-        pollMutex.withLock {
-            coroutineScope {
-                val pending = store.listPendingInvites().shuffled()
-                pending.map { invite ->
-                    async {
-                        try {
-                            val discoveryHex = invite.qrPayload.discoveryToken().toHex()
-                            val messages = mailboxClient.poll(baseUrl, discoveryHex)
-                            val inits = messages.filterIsInstance<KeyExchangeInitPayload>()
-                            val last = inits.lastOrNull()
-                            if (last != null) {
-                                PendingInviteResult(last, inits.size > 1, invite.qrPayload.ekPub)
-                            } else {
-                                null
-                            }
-                        } catch (e: Exception) {
-                            println(
-                                "[LocationClient] pollPendingInvite failed for token=${invite.qrPayload.discoveryToken().toHex().take(
-                                    8,
-                                )}: ${e.message}",
-                            )
+    suspend fun pollPendingInvites(): List<PendingInviteResult> = pollPendingInvitesInternal()
+
+    internal suspend fun pollPendingInvitesInternal(): List<PendingInviteResult> =
+        coroutineScope {
+            val pending = store.listPendingInvites().shuffled()
+            pending.map { invite ->
+                async {
+                    try {
+                        val discoveryHex = invite.qrPayload.discoveryToken().toHex()
+                        val messages = mailboxClient.poll(baseUrl, discoveryHex)
+                        val inits = messages.filterIsInstance<KeyExchangeInitPayload>()
+                        val last = inits.lastOrNull()
+                        if (last != null) {
+                            PendingInviteResult(last, inits.size > 1, invite.qrPayload.ekPub)
+                        } else {
                             null
                         }
+                    } catch (e: Exception) {
+                        println(
+                            "[LocationClient] pollPendingInvite failed for token=${invite.qrPayload.discoveryToken().toHex().take(
+                                8,
+                            )}: ${e.message}",
+                        )
+                        null
                     }
-                }.awaitAll().filterNotNull()
-            }
+                }
+            }.awaitAll().filterNotNull()
         }
 
     /**
@@ -147,25 +184,25 @@ open class LocationClient(
             try {
                 val result = store.processBatch(friendId, currentTokenToPoll, messages) ?: break
 
+                // Update failure counters atomically in the store.
+                // We track consecutive polls where header-parse failures or total decryption
+                // failures blocked the ACK, per friend. Triggers a force-ACK at
+                // MAX_SILENT_DROP_RETRIES to break a permanent livelock caused by an
+                // unrecoverable corrupted message.
                 val hasFailures = result.hadSilentDrops || (messages.isNotEmpty() && !result.anySuccess)
-                if (hasFailures) {
-                    val count = (silentDropCounts[friendId] ?: 0) + 1
-                    silentDropCounts[friendId] = count
+                
+                val currentDropCount = if (hasFailures && !result.anyReplay) {
+                    val nextCount = store.incrementConsecutiveSilentDrops(friendId)
                     store.addDiagnosticEvent(
-                        "POLL FAILURES: ${friendId.take(8)} token=${currentTokenToPoll.take(8)} (retry $count/$MAX_SILENT_DROP_RETRIES)",
+                        "POLL FAILURES: ${friendId.take(8)} token=${currentTokenToPoll.take(8)} (retry $nextCount/$MAX_SILENT_DROP_RETRIES)",
                     )
+                    nextCount
                 } else {
-                    silentDropCounts.remove(friendId)
+                    store.resetConsecutiveSilentDrops(friendId)
+                    0
                 }
 
-                // ACK after durable save: tell the server to delete the messages we just processed.
-                // Only ACK if at least one message succeeded AND no messages were silently dropped
-                // at the header-parsing stage. A dropped message could be a ratchet transition
-                // message; ACK-ing it would cause a permanent token desync.
-                //
-                // Exception: if failures have persisted for MAX_SILENT_DROP_RETRIES consecutive
-                // polls, force-ACK to break a permanent livelock caused by an unrecoverable message.
-                val forceAck = (silentDropCounts[friendId] ?: 0) >= MAX_SILENT_DROP_RETRIES
+                val forceAck = currentDropCount >= MAX_SILENT_DROP_RETRIES
                 if (forceAck) {
                     println(
                         "[LocationClient] pollFriend: force-ACKing after $MAX_SILENT_DROP_RETRIES consecutive failures for ${friendId.take(
@@ -173,9 +210,25 @@ open class LocationClient(
                         )} — messages are unrecoverable",
                     )
                     store.addDiagnosticEvent("FORCE ACK: ${friendId.take(8)} — unrecoverable failures, re-pair if desynced")
-                    silentDropCounts.remove(friendId)
+                    store.resetConsecutiveSilentDrops(friendId)
                 }
-                if ((result.anySuccess && !result.hadSilentDrops) || forceAck) {
+                
+                // ACK after durable save: tell the server to delete the messages we just processed.
+                // Only ACK if at least one message succeeded AND no messages were silently dropped
+                // at the header-parsing stage. A dropped message could be a ratchet transition
+                // message; ACK-ing it would cause a permanent token desync.
+                //
+                // REPLAY ROBUSTNESS: We ALSO ACK if the batch consisted of PURE replays
+                // (anyReplay=true AND failCount=0). This breaks the "lost-ACK" livelock where
+                // the server keeps delivering messages the client has already ratcheted past.
+                //
+                // SAFETY VALVE: if failures have persisted for MAX_SILENT_DROP_RETRIES consecutive
+                // polls, force-ACK to break a permanent livelock caused by an unrecoverable message.
+                val safeToAck = (result.anySuccess && !result.hadSilentDrops) || 
+                               (result.anyReplay && result.failCount == 0) || 
+                               forceAck
+
+                if (safeToAck) {
                     try {
                         mailboxClient.ack(baseUrl, currentTokenToPoll, messages.size)
                     } catch (e: Exception) {
@@ -261,7 +314,7 @@ open class LocationClient(
         lat: Double,
         lng: Double,
         pausedFriendIds: Set<String> = emptySet(),
-    ) = pollMutex.withLock {
+    ) {
         processOutboxes()
         val ts = currentTimeSeconds()
         val payload = MessagePlaintext.Location(lat = lat, lng = lng, acc = 0.0, ts = ts)
@@ -294,7 +347,7 @@ open class LocationClient(
         friendId: String,
         lat: Double,
         lng: Double,
-    ) = pollMutex.withLock {
+    ) {
         val ts = currentTimeSeconds()
         val payload = MessagePlaintext.Location(lat = lat, lng = lng, acc = 0.0, ts = ts)
         sendMessageToFriendInternal(friendId, payload)
@@ -336,7 +389,7 @@ open class LocationClient(
         // This ensures that if the app crashes during the post, we don't
         // reuse the same sequence number/nonce on restart, AND we have
         // the message ready to retry.
-        // encryptAndStore re-checks outbox == null atomically under stateLock,
+        // encryptAndStore re-checks outbox == null atomically under friendLock,
         // closing the TOCTOU window between the early guard above and the store write.
         val message =
             try {
