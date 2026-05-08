@@ -189,7 +189,7 @@ class E2eeStore(
                 timestampSelector = { it.lastSavedTs },
             )
         // Legacy keys were e2ee_store_a, e2ee_store_b, and e2ee_store (as the direct fallback)
-        val legacy = legacyStorage.load(STORAGE_KEY_LEGACY_BASE, STORAGE_KEY_LEGACY)
+        val legacy = legacyStorage.load(STORAGE_KEY_LEGACY_BASE, STORAGE_KEY_LEGACY_SINGLE)
 
         if (global != null && (legacy == null || global.lastSavedTs >= legacy.lastSavedTs)) {
             // New format is up to date
@@ -218,7 +218,7 @@ class E2eeStore(
             // Perform an immediate granular save to finalize migration
             saveAll()
             // Clear legacy keys
-            storage.putString(STORAGE_KEY_LEGACY, "")
+            storage.putString(STORAGE_KEY_LEGACY_SINGLE, "")
             storage.putString("${STORAGE_KEY_LEGACY_BASE}_a", "")
             storage.putString("${STORAGE_KEY_LEGACY_BASE}_b", "")
         } else if (storage.getString("${STORAGE_KEY_GLOBAL}_a") != null) {
@@ -449,8 +449,13 @@ class E2eeStore(
             if (nextInvites.size != pendingInvites.size || toRemove.isNotEmpty()) {
                 val nextFriendIds = friends.keys.filterNot { toRemove.contains(it) }
                 saveGlobalInternal(nextFriendIds = nextFriendIds, nextInvites = nextInvites)
-                // Remove from memory
-                toRemove.forEach { friends.remove(it) }
+
+                // Remove from memory and clear underlying storage slots
+                toRemove.forEach { id ->
+                    friends.remove(id)
+                    storage.putString("${friendKey(id)}_a", "")
+                    storage.putString("${friendKey(id)}_b", "")
+                }
             }
         }
     }
@@ -787,8 +792,19 @@ class E2eeStore(
 
     companion object {
         private const val STORAGE_KEY_GLOBAL = "e2ee_global"
+
+        /**
+         * The base key for legacy double-buffered storage (e2ee_store_a, e2ee_store_b).
+         * Used during migration to the new granular storage format.
+         */
         private const val STORAGE_KEY_LEGACY_BASE = "e2ee_store"
-        private const val STORAGE_KEY_LEGACY = "e2ee_store"
+
+        /**
+         * The legacy non-buffered storage key. Before double-buffering was introduced,
+         * the entire store was saved under this single key.
+         */
+        private const val STORAGE_KEY_LEGACY_SINGLE = "e2ee_store"
+
         const val MAX_PENDING_INVITES = 10
     }
 }
