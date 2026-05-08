@@ -236,7 +236,7 @@ class E2eeBidirectionalEndToEndTest {
             initializeLibsodium()
             val bobStore = E2eeStore(MemoryE2eeStorage())
             val (qr, _) = KeyExchange.aliceCreateQrPayload("Alice")
-            val (initPayload, _) = bStore.processScannedQr(qr, "Bob")
+            val (initPayload, _) = bobStore.processScannedQr(qr, "Bob")
 
             // Use a non-existent host to trigger a failure
             val badUrl = "http://localhost:1"
@@ -678,7 +678,7 @@ class E2eeBidirectionalEndToEndTest {
             val aStore = E2eeStore(aStorage)
             val bStore = E2eeStore(bStorage)
 
-            //  Pair and stabilize
+            // Pair and stabilize
             val qr = aStore.createInvite("A")
             val (init, _) = bStore.processScannedQr(qr, "B")
             KtorMailboxClient.post(baseUrl, qr.discoveryToken().toHex(), init)
@@ -693,19 +693,6 @@ class E2eeBidirectionalEndToEndTest {
 
             val aClient = LocationClient(baseUrl, aStore)
             val bClient = LocationClient(baseUrl, bStore)
-
-            // Pair and stabilize
-            val qr = aStore.createInvite("A")
-            val (init, _) = bStore.processScannedQr(qr, "B")
-            KtorMailboxClient.post(baseUrl, qr.discoveryToken().toHex(), init)
-            val aEntry =
-                aStore.processKeyExchangeInit(
-                    KtorMailboxClient.poll(baseUrl, qr.discoveryToken().toHex())
-                        .filterIsInstance<KeyExchangeInitPayload>().first(),
-                    "B",
-                    qr.ekPub,
-                )!!
-            val friendId = aEntry.id
 
             aClient.sendLocation(0.0, 0.0)
             drainStability(aClient to aStore, bClient to bStore)
@@ -903,8 +890,5 @@ class E2eeBidirectionalEndToEndTest {
         ) {
             data[key] = value
         }
-    }
-}
-      }
     }
 }
