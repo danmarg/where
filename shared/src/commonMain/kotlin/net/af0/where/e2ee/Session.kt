@@ -119,7 +119,10 @@ object Session {
         val remoteDhPub = header.dhPub
         val isNewDhEpoch = !remoteDhPub.contentEquals(cleanState.remoteDhPub)
         val seq = header.seq
-        val cacheKey = remoteDhPub.toHex() + "_" + seq
+
+        // Cache Key Invariant (§5.5): toHex() on a 32-byte X25519 key is ALWAYS 64 chars.
+        // Colon separator prevents collision if platform hex implementations vary.
+        val cacheKey = remoteDhPub.toHex() + ":" + seq
 
         // 2. Check skipped message key cache first
         val cachedKey = cleanState.skippedMessageKeys[cacheKey]
@@ -169,7 +172,7 @@ object Session {
             val epochHex = remoteDhPub.toHex()
             val newEpochHeaderKeys =
                 if (cleanState.skippedEpochHeaderKeys.containsKey(epochHex) &&
-                    newCache.keys.none { it.startsWith(epochHex + "_") }
+                    newCache.keys.none { it.startsWith(epochHex + ":") }
                 ) {
                     val m = LinkedHashMap(cleanState.skippedEpochHeaderKeys)
                     m.remove(epochHex)?.zeroize()
@@ -246,7 +249,7 @@ object Session {
                     // We store 'speculativeState.pr' which is the 'pn' for CURRENT epoch messages.
                     val mkPlusNonce = step.messageKey + step.messageNonce + longToBeBytes(speculativeState.pr) + longToBeBytes(now)
                     addedSkippedKeys.add(mkPlusNonce)
-                    val mkKey = remoteDhPub.toHex() + "_" + currentSeq
+                    val mkKey = remoteDhPub.toHex() + ":" + currentSeq
                     derivationSkippedKeys[mkKey] = mkPlusNonce
                     // Limit cache size with deterministic FIFO (LinkedHashMap order)
                     if (derivationSkippedKeys.size > MAX_SKIPPED_KEYS) {
@@ -278,6 +281,7 @@ object Session {
                             recvSeq = seq,
                             skippedMessageKeys = derivationSkippedKeys.mapValues { it.value.copyOf() },
                             needsRatchet = cleanState.needsRatchet || isNewDhEpoch,
+                            prevRecvToken = if (isNewDhEpoch) cleanState.recvToken.copyOf() else cleanState.prevRecvToken.copyOf(),
                             seenRemoteDhPubs =
                                 if (isNewDhEpoch) {
                                     (speculativeState.seenRemoteDhPubs + cleanState.remoteDhPub.toHex()).toList().takeLast(MAX_SEEN_DH_PUBS).toSet()
@@ -322,7 +326,7 @@ object Session {
                     oldChainKey = step.newChainKey
 
                     val skippedSeq = cleanState.recvSeq + i + 1
-                    val mkKey = prevEpochHex + "_" + skippedSeq
+                    val mkKey = prevEpochHex + ":" + skippedSeq
                     // Skip keys are stored with the 'pn' of THEIR epoch (state.pr) and current timestamp
                     updatedCache[mkKey] = step.messageKey + step.messageNonce + longToBeBytes(cleanState.pr) + longToBeBytes(now)
 
@@ -356,6 +360,7 @@ object Session {
                     skippedMessageKeys = finalSkippedKeys,
                     skippedEpochHeaderKeys = finalEpochHeaderKeys,
                     needsRatchet = cleanState.needsRatchet || isNewDhEpoch,
+                    prevRecvToken = if (isNewDhEpoch) cleanState.recvToken.copyOf() else cleanState.prevRecvToken.copyOf(),
                     seenRemoteDhPubs =
                         if (isNewDhEpoch) {
                             (speculativeState.seenRemoteDhPubs + cleanState.remoteDhPub.toHex()).toList().takeLast(MAX_SEEN_DH_PUBS).toSet()
@@ -420,35 +425,45 @@ object Session {
             newSeenKeys.remove(oldest)
         }
 
-        stepRecv.newRootKey.zeroize()
-
         // HEADER ENCRYPTION TRANSITION (#186):
         // Standard advancement logic:
         // 1. headerKey matches what we just used to decrypt the first message.
         // 2. sendHeaderKey is derived from the RECV step.
         // 3. nextHeaderKey is derived from the SEND step.
-        return state.deepCopy().copy(
-            rootKey = stepSend.newRootKey.copyOf(),
-            recvChainKey = stepRecv.newChainKey.copyOf(),
-            sendChainKey = stepSend.newChainKey.copyOf(),
-            headerKey = state.nextHeaderKey.copyOf(),
-            sendHeaderKey = stepRecv.newHeaderKey.copyOf(),
-            nextHeaderKey = stepSend.newHeaderKey.copyOf(),
-            sendToken = newSendToken,
-            recvToken = newRecvToken,
-            sendSeq = 0L,
-            recvSeq = 0L,
-            pn = state.sendSeq,
-            pr = state.recvSeq,
-            localDhPriv = newLocalDh.priv.copyOf(),
-            localDhPub = newLocalDh.pub.copyOf(),
-            remoteDhPub = remoteDhPub.copyOf(),
-            lastRemoteDhPub = state.remoteDhPub.copyOf(),
-            seenRemoteDhPubs = newSeenKeys,
-            prevSendToken = state.sendToken.copyOf(),
-            isSendTokenPending = true,
-            needsRatchet = false,
-        )
+        val newState =
+            state.deepCopy().copy(
+                rootKey = stepSend.newRootKey.copyOf(),
+                recvChainKey = stepRecv.newChainKey.copyOf(),
+                sendChainKey = stepSend.newChainKey.copyOf(),
+                headerKey = state.nextHeaderKey.copyOf(),
+                sendHeaderKey = stepRecv.newHeaderKey.copyOf(),
+                nextHeaderKey = stepSend.newHeaderKey.copyOf(),
+                sendToken = newSendToken,
+                recvToken = newRecvToken,
+                sendSeq = 0L,
+                recvSeq = 0L,
+                pn = state.sendSeq,
+                pr = state.recvSeq,
+                localDhPriv = newLocalDh.priv.copyOf(),
+                localDhPub = newLocalDh.pub.copyOf(),
+                remoteDhPub = remoteDhPub.copyOf(),
+                lastRemoteDhPub = state.remoteDhPub.copyOf(),
+                seenRemoteDhPubs = newSeenKeys,
+                prevSendToken = state.sendToken.copyOf(),
+                prevRecvToken = state.recvToken.copyOf(),
+                isSendTokenPending = true,
+                needsRatchet = false,
+            )
+
+        // Memory Hygiene: wipe intermediate material once the return state is constructed (§9.1).
+        stepRecv.newRootKey.zeroize()
+        stepRecv.newChainKey.zeroize()
+        stepRecv.newHeaderKey.zeroize()
+        stepSend.newRootKey.zeroize()
+        stepSend.newChainKey.zeroize()
+        stepSend.newHeaderKey.zeroize()
+
+        return newState
     }
 
     internal fun encryptHeader(

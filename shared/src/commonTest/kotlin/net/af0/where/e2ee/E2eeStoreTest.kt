@@ -394,4 +394,45 @@ class E2eeStoreTest {
             bobStore.processBatch(bobEntry.id, bobEntry.session.recvToken.toHex(), listOf(validMsg))
             assertFalse(bobStore.getFriend(bobEntry.id)!!.lastDecryptFailed, "Should be reset to false after success")
         }
+
+    @Test
+    fun testClearSendTokenPendingAtomicity() =
+        runBlocking {
+            val qr = aliceStore.createInvite("Alice")
+            val (initPayload, bobEntry) = bobStore.processScannedQr(qr)
+            val aliceEntry = aliceStore.processKeyExchangeInit(initPayload, "Bob", qr.ekPub)!!
+
+            // Set isSendTokenPending to true
+            val sessionWithPending = aliceEntry.session.copy(isSendTokenPending = true)
+            aliceStore.updateSession(aliceEntry.id, sessionWithPending)
+
+            assertTrue(aliceStore.getFriend(aliceEntry.id)!!.session.isSendTokenPending)
+
+            // First call returns true
+            assertTrue(aliceStore.clearSendTokenPending(aliceEntry.id))
+
+            // Second call returns false
+            assertFalse(aliceStore.clearSendTokenPending(aliceEntry.id))
+
+            assertFalse(aliceStore.getFriend(aliceEntry.id)!!.session.isSendTokenPending)
+        }
+
+    @Test
+    fun testCleanupExpiredFriends() =
+        runBlocking {
+            val qr = aliceStore.createInvite("Alice")
+            // Bob scans Alice's QR. Bob's entry for Alice starts as unconfirmed.
+            val (_, bobFriendEntry) = bobStore.processScannedQr(qr)
+
+            assertFalse(bobStore.getFriend(bobFriendEntry.id)!!.isConfirmed)
+
+            // Advance time past expiry
+            timeProvider.advanceSeconds(3601)
+
+            // Cleanup Bob's store with 3600s threshold
+            bobStore.cleanupExpiredInvites(expirySeconds = 3600)
+
+            // Bob's entry for Alice should be removed
+            assertNull(bobStore.getFriend(bobFriendEntry.id))
+        }
 }

@@ -59,8 +59,8 @@ class GapFillTest {
 
             // Verify Bob skipped messages 2 and 3 from A1.
             val aliceA1PubHex = aliceSession.localDhPub.toHex()
-            val skipKey2 = aliceA1PubHex + "_2"
-            val skipKey3 = aliceA1PubHex + "_3"
+            val skipKey2 = aliceA1PubHex + ":2"
+            val skipKey3 = aliceA1PubHex + ":3"
 
             assertTrue(bS3.skippedMessageKeys.containsKey(skipKey2), "Should have skipped message 2 from A1")
             assertTrue(bS3.skippedMessageKeys.containsKey(skipKey3), "Should have skipped message 3 from A1")

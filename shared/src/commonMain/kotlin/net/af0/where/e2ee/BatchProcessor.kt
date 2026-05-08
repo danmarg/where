@@ -49,13 +49,13 @@ internal object BatchProcessor {
     ): Session.DecryptedHeader {
         return try {
             Session.decryptHeader(session.headerKey, envelope)
-        } catch (_: Exception) {
+        } catch (e0: Exception) {
             try {
                 Session.decryptHeader(session.nextHeaderKey, envelope)
-            } catch (_: Exception) {
+            } catch (e1: Exception) {
                 // Last resort: try skipped epoch header keys (#212-followup)
                 var found: Session.DecryptedHeader? = null
-                for ((_, hk) in session.skippedEpochHeaderKeys) {
+                for ((epoch, hk) in session.skippedEpochHeaderKeys) {
                     try {
                         found = Session.decryptHeader(hk, envelope)
                         break
@@ -67,14 +67,14 @@ internal object BatchProcessor {
         }
     }
 
-    private fun bucketForHeader(
+    internal fun bucketForHeader(
         session: SessionState,
         h: Session.DecryptedHeader,
     ): Int {
         return when {
             h.dhPub.contentEquals(session.remoteDhPub) -> 1
             h.dhPub.contentEquals(session.lastRemoteDhPub) -> 0
-            session.seenRemoteDhPubs.contains(h.dhPub.toHex()) -> -1
+            session.seenRemoteDhPubs.contains(h.dhPub.toHex()) -> 3 // Ancient epoch (already superseded)
             else -> 2 // Unknown NEW epoch
         }
     }

@@ -58,10 +58,11 @@ data class SessionState(
     @Serializable(with = ByteArrayBase64Serializer::class) val aliceFp: ByteArray,
     @Serializable(with = ByteArrayBase64Serializer::class) val bobFp: ByteArray,
     @Serializable(with = ByteArrayBase64Serializer::class) val prevSendToken: ByteArray,
+    @Serializable(with = ByteArrayBase64Serializer::class) val prevRecvToken: ByteArray = ByteArray(0),
     val isSendTokenPending: Boolean,
     val isAlice: Boolean,
     // REPLAY PROTECTION & OUT-OF-ORDER SUPPORT
-    // Map of (remoteDhPubHex + "_" + seq) to [MK (32) || Nonce (12)]
+    // Map of (remoteDhPubHex + ":" + seq) to [MK (32) || Nonce (12) || PN (8) || Timestamp (8)]
     val skippedMessageKeys: Map<
         String,
         @Serializable(with = ByteArrayBase64Serializer::class)
@@ -110,6 +111,7 @@ data class SessionState(
             aliceFp = aliceFp.copyOf(),
             bobFp = bobFp.copyOf(),
             prevSendToken = prevSendToken.copyOf(),
+            prevRecvToken = prevRecvToken.copyOf(),
             skippedMessageKeys = skippedMessageKeys.mapValues { it.value.copyOf() },
             skippedEpochHeaderKeys = skippedEpochHeaderKeys.mapValues { it.value.copyOf() },
             headerKey = headerKey.copyOf(),

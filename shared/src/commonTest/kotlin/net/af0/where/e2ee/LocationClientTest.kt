@@ -175,4 +175,36 @@ class LocationClientTest {
             // Invite should still be in the store (pollPendingInvites is read-only)
             assertEquals(1, aliceStore.listPendingInvites().size)
         }
+
+    @Test
+    fun `pollFriend should increment consecutiveSilentDrops on mixed replay and failure`() =
+        runTest {
+            val aliceStore = E2eeStore(MemoryStorage())
+            val bobStore = E2eeStore(MemoryStorage())
+            val qr = aliceStore.createInvite("Alice")
+            val (init, _) = bobStore.processScannedQr(qr)
+            val aliceEntry = aliceStore.processKeyExchangeInit(init, "Bob", qr.ekPub)!!
+            val friendId = aliceEntry.id
+
+            // Alice sends a message to Bob
+            val (sess1, msg1) = Session.encryptMessage(aliceEntry.session, MessagePlaintext.Keepalive())
+            aliceStore.updateSession(friendId, sess1)
+
+            // Bob processes it (now it's a replay for next time)
+            val bobFriendId = bobStore.listFriends().first().id
+            bobStore.processBatch(bobFriendId, bobStore.getFriend(bobFriendId)!!.session.recvToken.toHex(), listOf(msg1))
+
+            // Now mock mailbox returns [Replay, Malformed]
+            val malformed = EncryptedMessagePayload(1, byteArrayOf(1, 2, 3), byteArrayOf(4, 5, 6))
+            val fakeMailbox = object : MailboxClient {
+                override suspend fun poll(baseUrl: String, token: String) = listOf(msg1, malformed)
+                override suspend fun post(baseUrl: String, token: String, payload: MailboxPayload) {}
+            }
+
+            val client = LocationClient("http://fake", bobStore, fakeMailbox)
+            client.pollFriend(bobFriendId)
+
+            val friendAfter = bobStore.getFriend(bobFriendId)!!
+            assertEquals(1, friendAfter.consecutiveSilentDrops, "Should increment counter even if replay is present")
+        }
 }

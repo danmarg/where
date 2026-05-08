@@ -53,10 +53,10 @@ class LocationSyncServiceTests: XCTestCase {
         let lat = 37.7749
         let lng = -122.4194
 
-        let sendCountBox = SendCountBox()
+        let expectation1 = XCTestExpectation(description: "Initial send")
         let mockClient = MockLocationClient()
         mockClient.sendLocationCallback = {
-            sendCountBox.increment()
+            expectation1.fulfill()
         }
 
         // Re-init service with mock client and mock location provider
@@ -64,26 +64,24 @@ class LocationSyncServiceTests: XCTestCase {
 
         // Initial send
         service.sendLocation(lat: lat, lng: lng)
-
-        // Wait for the task to start and increment sendCount
-        for _ in 0..<100 {
-            if sendCountBox.getCount() == 1 { break }
-            try? await Task.sleep(nanoseconds: 10_000_000)
-        }
-        XCTAssertEqual(sendCountBox.getCount(), 1)
+        await fulfillment(of: [expectation1], timeout: 1.0)
 
         // Immediate second send should be throttled
+        let expectation2 = XCTestExpectation(description: "Throttled send")
+        expectation2.isInverted = true
+        mockClient.sendLocationCallback = {
+            expectation2.fulfill()
+        }
         service.sendLocation(lat: lat + 0.1, lng: lng + 0.1)
-        try? await Task.sleep(nanoseconds: 100_000_000)
-        XCTAssertEqual(sendCountBox.getCount(), 1)
+        await fulfillment(of: [expectation2], timeout: 0.1)
 
         // Forced send should bypass throttle
-        service.sendLocation(lat: lat + 0.2, lng: lng + 0.2, force: true)
-        for _ in 0..<100 {
-            if sendCountBox.getCount() == 2 { break }
-            try? await Task.sleep(nanoseconds: 10_000_000)
+        let expectation3 = XCTestExpectation(description: "Forced send")
+        mockClient.sendLocationCallback = {
+            expectation3.fulfill()
         }
-        XCTAssertEqual(sendCountBox.getCount(), 2)
+        service.sendLocation(lat: lat + 0.2, lng: lng + 0.2, force: true)
+        await fulfillment(of: [expectation3], timeout: 1.0)
     }
 
     @MainActor
@@ -245,18 +243,12 @@ class LocationSyncServiceTests: XCTestCase {
         service.lastSentTime = Date(timeIntervalSinceNow: -400) // > 300s ago — heartbeat due
         mockLocationProvider.location = CLLocation(latitude: 37.7749, longitude: -122.4194)
 
-        let sendCountBox = SendCountBox()
-        mockClient.sendLocationCallback = { sendCountBox.increment() }
+        let expectation = XCTestExpectation(description: "Heartbeat send")
+        mockClient.sendLocationCallback = { expectation.fulfill() }
 
         await service.pollAll(updateUi: false)
 
-        // sendLocation() dispatches an async Task; spin briefly to let it run.
-        for _ in 0..<100 {
-            if sendCountBox.getCount() >= 1 { break }
-            try? await Task.sleep(nanoseconds: 10_000_000)
-        }
-        XCTAssertGreaterThan(sendCountBox.getCount(), 0,
-            "pollAll() should trigger a heartbeat send when no location has been sent for >5 min")
+        await fulfillment(of: [expectation], timeout: 1.0)
     }
 
     func testPollAllSkipsHeartbeatWhenNoLocationAvailable() async throws {
@@ -266,14 +258,12 @@ class LocationSyncServiceTests: XCTestCase {
         service.lastSentTime = Date(timeIntervalSinceNow: -400) // > 300s — heartbeat due
         // mockLocationProvider.location is nil (simulates first-ever launch before any GPS fix)
 
-        let sendCountBox = SendCountBox()
-        mockClient.sendLocationCallback = { sendCountBox.increment() }
+        let expectation = XCTestExpectation(description: "No heartbeat send")
+        expectation.isInverted = true
+        mockClient.sendLocationCallback = { expectation.fulfill() }
 
         await service.pollAll(updateUi: false)
-        try? await Task.sleep(nanoseconds: 100_000_000)
-
-        XCTAssertEqual(sendCountBox.getCount(), 0,
-            "pollAll() should not crash or send when lastLocation is nil — LocationManager.init() should have pre-populated from UserDefaults in production")
+        await fulfillment(of: [expectation], timeout: 0.1)
     }
 
     func testPollAllDoesNotTriggerHeartbeatWhenRecentlySent() async throws {
@@ -283,14 +273,12 @@ class LocationSyncServiceTests: XCTestCase {
         service.lastSentTime = Date(timeIntervalSinceNow: -10) // just 10s ago — no heartbeat due
         mockLocationProvider.location = CLLocation(latitude: 37.7749, longitude: -122.4194)
 
-        let sendCountBox = SendCountBox()
-        mockClient.sendLocationCallback = { sendCountBox.increment() }
+        let expectation = XCTestExpectation(description: "No heartbeat send")
+        expectation.isInverted = true
+        mockClient.sendLocationCallback = { expectation.fulfill() }
 
         await service.pollAll(updateUi: false)
-        try? await Task.sleep(nanoseconds: 100_000_000)
-
-        XCTAssertEqual(sendCountBox.getCount(), 0,
-            "pollAll() should NOT send a heartbeat when location was sent recently")
+        await fulfillment(of: [expectation], timeout: 0.1)
     }
 
     // MARK: - Persistent Storage Tests
@@ -331,16 +319,12 @@ class LocationSyncServiceTests: XCTestCase {
         service.lastSentTime = Date(timeIntervalSinceNow: -60) // > 30s ago, not throttled
         mockLocationProvider.location = CLLocation(latitude: 37.7749, longitude: -122.4194)
 
-        let sendCountBox = SendCountBox()
-        mockClient.sendLocationCallback = { sendCountBox.increment() }
+        let expectation = XCTestExpectation(description: "Background send")
+        mockClient.sendLocationCallback = { expectation.fulfill() }
 
         service.sendLocationOnBackground()
 
-        for _ in 0..<100 {
-            if sendCountBox.getCount() >= 1 { break }
-            try? await Task.sleep(nanoseconds: 10_000_000)
-        }
-        XCTAssertGreaterThan(sendCountBox.getCount(), 0, "Should send when sharing and location available")
+        await fulfillment(of: [expectation], timeout: 1.0)
     }
 
     func testSendLocationOnBackground_SkipsWhenNotSharing() async throws {
@@ -351,13 +335,12 @@ class LocationSyncServiceTests: XCTestCase {
         service.endBackgroundTask = { _ in }
         mockLocationProvider.location = CLLocation(latitude: 37.7749, longitude: -122.4194)
 
-        let sendCountBox = SendCountBox()
-        mockClient.sendLocationCallback = { sendCountBox.increment() }
+        let expectation = XCTestExpectation(description: "No background send")
+        expectation.isInverted = true
+        mockClient.sendLocationCallback = { expectation.fulfill() }
 
         service.sendLocationOnBackground()
-        try? await Task.sleep(nanoseconds: 100_000_000)
-
-        XCTAssertEqual(sendCountBox.getCount(), 0, "Should not send when not sharing")
+        await fulfillment(of: [expectation], timeout: 0.1)
     }
 
     func testSendLocationOnBackground_SkipsWhenNoLocation() async throws {
@@ -368,13 +351,12 @@ class LocationSyncServiceTests: XCTestCase {
         service.endBackgroundTask = { _ in }
         // mockLocationProvider.location is nil and no prior send
 
-        let sendCountBox = SendCountBox()
-        mockClient.sendLocationCallback = { sendCountBox.increment() }
+        let expectation = XCTestExpectation(description: "No background send")
+        expectation.isInverted = true
+        mockClient.sendLocationCallback = { expectation.fulfill() }
 
         service.sendLocationOnBackground()
-        try? await Task.sleep(nanoseconds: 100_000_000)
-
-        XCTAssertEqual(sendCountBox.getCount(), 0, "Should not send when no location and no prior send")
+        await fulfillment(of: [expectation], timeout: 0.1)
     }
 
     func testSendLocationOnBackground_UsesLastSentLocationWhenGpsUnavailable() async throws {
@@ -389,17 +371,12 @@ class LocationSyncServiceTests: XCTestCase {
         // Advance lastSentTime so throttle doesn't block next call
         service.lastSentTime = Date(timeIntervalSinceNow: -60)
 
-        let sendCountBox = SendCountBox()
-        mockClient.sendLocationCallback = { sendCountBox.increment() }
+        let expectation = XCTestExpectation(description: "Background fallback send")
+        mockClient.sendLocationCallback = { expectation.fulfill() }
 
         service.sendLocationOnBackground()
 
-        for _ in 0..<100 {
-            if sendCountBox.getCount() >= 1 { break }
-            try? await Task.sleep(nanoseconds: 10_000_000)
-        }
-        XCTAssertGreaterThan(sendCountBox.getCount(), 0,
-            "Should fall back to lastSentLocation when GPS unavailable")
+        await fulfillment(of: [expectation], timeout: 1.0)
     }
 
     func testHeartbeatFallsBackToLastSentLocationWhenGpsUnavailable() async throws {
@@ -413,17 +390,12 @@ class LocationSyncServiceTests: XCTestCase {
         // Make heartbeat due
         service.lastSentTime = Date(timeIntervalSinceNow: -400)
 
-        let sendCountBox = SendCountBox()
-        mockClient.sendLocationCallback = { sendCountBox.increment() }
+        let expectation = XCTestExpectation(description: "Heartbeat fallback send")
+        mockClient.sendLocationCallback = { expectation.fulfill() }
 
         await service.pollAll(updateUi: false)
 
-        for _ in 0..<100 {
-            if sendCountBox.getCount() >= 1 { break }
-            try? await Task.sleep(nanoseconds: 10_000_000)
-        }
-        XCTAssertGreaterThan(sendCountBox.getCount(), 0,
-            "pollAll heartbeat should use lastSentLocation when GPS unavailable")
+        await fulfillment(of: [expectation], timeout: 1.0)
     }
 
     func testIsRapidPolling() async throws {

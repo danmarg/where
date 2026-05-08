@@ -381,53 +381,62 @@ class E2eeStore(
         payload: KeyExchangeInitPayload,
         bobName: String,
         aliceEkPub: ByteArray,
-    ): FriendEntry? =
-        metadataLock.withLock {
-            val pending =
+    ): FriendEntry? {
+        val pending =
+            metadataLock.withLock {
                 pendingInvites.find {
                     it.qrPayload.ekPub.contentEquals(aliceEkPub)
-                } ?: return@withLock null
+                }
+            } ?: return null
 
-            val tokenBytes = payload.token.hexToByteArray()
-            val msg =
-                KeyExchangeInitMessage(
-                    protocolVersion = payload.v,
-                    token = tokenBytes,
-                    ekPub = payload.ekPub,
-                    keyConfirmation = payload.keyConfirmation,
-                    suggestedName = payload.suggestedName,
-                )
+        val tokenBytes = payload.token.hexToByteArray()
+        val msg =
+            KeyExchangeInitMessage(
+                protocolVersion = payload.v,
+                token = tokenBytes,
+                ekPub = payload.ekPub,
+                keyConfirmation = payload.keyConfirmation,
+                suggestedName = payload.suggestedName,
+            )
 
+        // Perform crypto outside of metadataLock (§5.4)
+        val session =
             try {
-                val session =
-                    KeyExchange.aliceProcessInit(
-                        msg = msg,
-                        aliceEkPriv = pending.aliceEkPriv,
-                        aliceEkPub = pending.qrPayload.ekPub,
-                    ).let {
-                        if (it.isSendTokenPending) it.copy(sendTokenPendingSinceMs = currentTimeMillis()) else it
-                    }
-                val entry =
-                    FriendEntry(
-                        name = sanitizeName(bobName),
-                        session = session,
-                        isInitiator = true,
-                        lastRecvTs = currentTimeSeconds(),
-                        isConfirmed = true,
-                    )
-
-                val nextInvites = pendingInvites.filter { it != pending }
-                val nextFriendIds = friends.keys.toList() + entry.id
-
-                // Order matters: save friend first, then global index
-                saveFriendInternalWithTs(entry.id, entry, nextTs())
-                saveGlobalInternal(nextFriendIds = nextFriendIds, nextInvites = nextInvites)
-
-                entry
+                KeyExchange.aliceProcessInit(
+                    msg = msg,
+                    aliceEkPriv = pending.aliceEkPriv,
+                    aliceEkPub = pending.qrPayload.ekPub,
+                ).let {
+                    if (it.isSendTokenPending) it.copy(sendTokenPendingSinceMs = currentTimeMillis()) else it
+                }
             } finally {
+                // Ensure intermediate material is wiped regardless of success/failure
                 pending.aliceEkPriv.zeroize()
             }
+
+        return metadataLock.withLock {
+            // Re-verify pending state haven't changed while we were doing crypto
+            val stillPending = pendingInvites.find { it == pending } ?: return@withLock null
+
+            val entry =
+                FriendEntry(
+                    name = sanitizeName(bobName),
+                    session = session,
+                    isInitiator = true,
+                    lastRecvTs = currentTimeSeconds(),
+                    isConfirmed = true,
+                )
+
+            val nextInvites = pendingInvites.filter { it != stillPending }
+            val nextFriendIds = friends.keys.toList() + entry.id
+
+            // Order matters: save friend first, then global index
+            saveFriendInternalWithTs(entry.id, entry, nextTs())
+            saveGlobalInternal(nextFriendIds = nextFriendIds, nextInvites = nextInvites)
+
+            entry
         }
+    }
 
     suspend fun listPendingInvites(): List<PendingInviteView> = metadataLock.withLock { pendingInvites.map { it.toView() } }
 
@@ -453,6 +462,7 @@ class E2eeStore(
     }
 
     suspend fun cleanupExpiredInvites(expirySeconds: Long = 48 * 3600L) {
+        val toRemove: List<String>
         metadataLock.withLock {
             val now = currentTimeSeconds()
             val nextInvites =
@@ -461,7 +471,7 @@ class E2eeStore(
                     now - baseTime > expirySeconds
                 }
 
-            val toRemove =
+            toRemove =
                 friends.values.filter {
                     !it.isConfirmed && (now - it.lastRecvTs > expirySeconds)
                 }.map { it.id }
@@ -470,12 +480,24 @@ class E2eeStore(
                 val nextFriendIds = friends.keys.filterNot { toRemove.contains(it) }
                 saveGlobalInternal(nextFriendIds = nextFriendIds, nextInvites = nextInvites)
 
-                // Remove from memory and clear underlying storage slots
+                // Remove from memory
                 toRemove.forEach { id ->
                     friends.remove(id)
-                    storage.putString("${friendKey(id)}_a", "")
-                    storage.putString("${friendKey(id)}_b", "")
                 }
+            }
+        }
+
+        // Clear underlying storage slots outside metadataLock, but under individual friendLocks
+        // to match the deleteFriend pattern and avoid lock inversion.
+        toRemove.forEach { id ->
+            val friendLock = getFriendLock(id)
+            friendLock.withLock {
+                storage.putString("${friendKey(id)}_a", "")
+                storage.putString("${friendKey(id)}_b", "")
+            }
+            // Prune the lock from the map after releasing.
+            locksLock.withLock {
+                friendLocks.remove(id)
             }
         }
     }
@@ -690,6 +712,7 @@ class E2eeStore(
         val hadSilentDrops: Boolean,
         val anyReplay: Boolean = false,
         val failCount: Int = 0,
+        val hadStateUpdate: Boolean = false,
     )
 
     suspend fun processBatch(
@@ -753,11 +776,18 @@ class E2eeStore(
 
                 val lastLocation = decryptedLocations.lastOrNull()
 
+                // The recvToken must only change if we had a successful header decryption (§7.2).
+                // If we ratcheted the session state (e.g. DecryptionExceptionWithState), we must also
+                // commit the new recvToken to avoid polling the old token while the peer has advanced.
+                val hadStateUpdate = currentSession.recvSeq > entry.session.recvSeq ||
+                    !currentSession.rootKey.contentEquals(entry.session.rootKey)
+                val currentRecvToken = if (anySuccess || hadStateUpdate) currentSession.recvToken else entry.session.recvToken
+
                 val updatedSession =
                     if (currentSession.isSendTokenPending && !entry.session.isSendTokenPending) {
-                        currentSession.copy(sendTokenPendingSinceMs = currentTimeMillis())
+                        currentSession.copy(recvToken = currentRecvToken, sendTokenPendingSinceMs = currentTimeMillis())
                     } else {
-                        currentSession
+                        currentSession.copy(recvToken = currentRecvToken)
                     }
 
                 val updatedEntry =
@@ -773,14 +803,9 @@ class E2eeStore(
                         lastDecryptFailed = if (encryptedMessages.isNotEmpty()) isFailedBatch else entry.lastDecryptFailed,
                     )
 
-                // The recvToken must only change if we had a successful decryption (§7.2).
-                check(currentSession.recvToken.contentEquals(entry.session.recvToken) || anySuccess) {
-                    "recvToken changed without any successful decryption — invariant violated"
-                }
-
                 saveFriendInternalWithTs(friendId, updatedEntry, nextTs())
 
-                PollBatchResult(decryptedLocations, anySuccess, silentDrops > 0, anyReplay, failCount)
+                PollBatchResult(decryptedLocations, anySuccess, silentDrops > 0, anyReplay, failCount, hadStateUpdate)
             }
         }
     }

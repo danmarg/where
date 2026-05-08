@@ -264,6 +264,7 @@ object KeyExchange {
             aliceFp = aliceFp.copyOf(),
             bobFp = bobFp.copyOf(),
             prevSendToken = sendToken.copyOf(),
+            prevRecvToken = recvToken.copyOf(),
             isSendTokenPending = false,
             isAlice = isAlice,
             pn = 0L,

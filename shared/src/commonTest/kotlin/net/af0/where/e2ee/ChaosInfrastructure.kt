@@ -41,6 +41,8 @@ class ChaosMailboxClient(private val client: MailboxClient) : MailboxClient {
     var failPollProbability = 0.0
     var corruptNextPayload = false
     var corruptPayloadProbability = 0.0
+    var corruptNextPayloadOnly = false // Corrupt CT only, leave envelope intact
+    var corruptPayloadOnlyProbability = 0.0
     var reorderProbability = 0.0
     var dropProbability = 0.0
     var stealthDropProbability = 0.0
@@ -117,6 +119,16 @@ class ChaosMailboxClient(private val client: MailboxClient) : MailboxClient {
                 messages.map { msg ->
                     if (msg is EncryptedMessagePayload) {
                         msg.copy(ct = msg.ct.map { (it.toInt() xor 0xFF).toByte() }.toByteArray())
+                    } else {
+                        msg
+                    }
+                }
+            } else if (corruptNextPayloadOnly || Random.nextDouble() < corruptPayloadOnlyProbability) {
+                corruptNextPayloadOnly = false
+                messages.map { msg ->
+                    if (msg is EncryptedMessagePayload) {
+                        // Corrupt only CT, leave envelope (header) intact
+                        msg.copy(ct = msg.ct.map { (it.toInt() xor 0xAA).toByte() }.toByteArray())
                     } else {
                         msg
                     }
