@@ -27,6 +27,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.tasks.await
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
@@ -167,6 +168,7 @@ class LocationService : Service() {
         ensureLocationRegistration()
         if (intent?.action == ACTION_POLL_ALARM) {
             locationSource.wakePoll()
+            serviceScope.launch { doPoll() }
         }
         if (intent?.action == ACTION_FORCE_PUBLISH) {
             val friendId = intent.getStringExtra(EXTRA_FRIEND_ID)
@@ -267,12 +269,20 @@ class LocationService : Service() {
             // Runs regardless of foreground state so background location stays alive.
             if (isSharing) {
                 val now = clock()
-                if (now - lastSentTime > STATIONARY_FORCE_UPDATE_THRESHOLD_MS) {
+                val loc = if (now - lastSentTime > STATIONARY_FORCE_UPDATE_THRESHOLD_MS) {
                     Log.d(TAG, "Stationary threshold exceeded; forcing fresh location fix.")
-                    forceLocationUpdate()
+                    forceLocationUpdateAndGet()
+                } else {
+                    null
                 }
 
-                val lastLoc = locationSource.lastLocation.value
+                val lastLoc = if (loc != null) {
+                    locationSource.onLocation(loc.latitude, loc.longitude, if (loc.hasBearing()) loc.bearing.toDouble() else null)
+                    Triple(loc.latitude, loc.longitude, if (loc.hasBearing()) loc.bearing.toDouble() else null)
+                } else {
+                    locationSource.lastLocation.value
+                }
+
                 if (lastLoc != null) {
                     // Force the heartbeat send. The pollLoop timing (5 mins) is already
                     // what we want for stationary updates, and 'force' ensures we bypass
@@ -459,20 +469,22 @@ class LocationService : Service() {
         }
     }
 
-    private fun forceLocationUpdate() {
-        try {
-            fusedClient.getCurrentLocation(Priority.PRIORITY_HIGH_ACCURACY, null)
-                .addOnSuccessListener { loc ->
-                    if (loc != null) {
-                        Log.d(TAG, "Forced location fix successful: ${loc.latitude}, ${loc.longitude}")
-                        locationSource.onLocation(loc.latitude, loc.longitude, if (loc.hasBearing()) loc.bearing.toDouble() else null)
-                    }
-                }
-                .addOnFailureListener { e ->
-                    Log.e(TAG, "Forced location fix failed: ${e.message}")
-                }
+    @VisibleForTesting
+    internal suspend fun forceLocationUpdateAndGet(): android.location.Location? {
+        return try {
+            val loc = fusedClient.getCurrentLocation(Priority.PRIORITY_HIGH_ACCURACY, null).await()
+            if (loc != null) {
+                Log.d(TAG, "Forced location fix successful: ${loc.latitude}, ${loc.longitude}")
+            } else {
+                Log.d(TAG, "Forced location fix returned null")
+            }
+            loc
         } catch (e: SecurityException) {
             Log.e(TAG, "SecurityException during forced location fix: ${e.message}")
+            null
+        } catch (e: Exception) {
+            Log.e(TAG, "Forced location fix failed: ${e.message}")
+            null
         }
     }
 

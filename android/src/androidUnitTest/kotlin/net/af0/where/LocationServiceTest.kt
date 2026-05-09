@@ -3,11 +3,15 @@ package net.af0.where
 import android.Manifest
 import android.app.Application
 import android.content.Intent
+import android.location.Location
 import androidx.test.core.app.ApplicationProvider
+import com.google.android.gms.tasks.Task
+import kotlinx.coroutines.tasks.await
 import dev.icerock.moko.resources.desc.Raw
 import dev.icerock.moko.resources.desc.StringDesc
 import io.mockk.every
 import io.mockk.mockk
+import io.mockk.mockkStatic
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -194,11 +198,14 @@ class LocationServiceTest {
         // Mock KtorMailboxClient to prevent network calls during pollPendingInvite
         io.mockk.mockkObject(net.af0.where.e2ee.KtorMailboxClient)
         io.mockk.coEvery { net.af0.where.e2ee.KtorMailboxClient.poll(any(), any()) } returns emptyList()
+
+        mockkStatic("kotlinx.coroutines.tasks.TasksKt")
     }
 
     @After
     fun tearDown() {
         io.mockk.unmockkAll()
+        io.mockk.unmockkStatic("kotlinx.coroutines.tasks.TasksKt")
         Dispatchers.resetMain()
     }
 
@@ -398,11 +405,18 @@ class LocationServiceTest {
                 service.lastSentTime = currentTime - 60_000L // 1 minute ago
                 service.pollInterval(false, false, true) // Just to trigger some logic if needed
 
-                // Let's test forceLocationUpdate directly since it's the core of the fix.
-                val method = LocationService::class.java.getDeclaredMethod("forceLocationUpdate")
-                method.isAccessible = true
-                method.invoke(service)
+                val mockLocation = mockk<Location>()
+                every { mockLocation.latitude } returns 45.0
+                every { mockLocation.longitude } returns 90.0
+                every { mockLocation.hasBearing() } returns false
 
+                val mockTask = mockk<Task<Location>>()
+                io.mockk.coEvery { mockTask.await() } returns mockLocation
+                every { mockFused.getCurrentLocation(any<Int>(), null) } returns mockTask
+
+                val result = service.forceLocationUpdateAndGet()
+
+                assertEquals(mockLocation, result)
                 io.mockk.verify(exactly = 1) {
                     mockFused.getCurrentLocation(com.google.android.gms.location.Priority.PRIORITY_HIGH_ACCURACY, null)
                 }
