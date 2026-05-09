@@ -63,12 +63,6 @@ class ServiceFakeLocationSource : LocationSource {
     private val _pendingInitAliceEkPub = MutableStateFlow<ByteArray?>(null)
     override val pendingInitAliceEkPub: StateFlow<ByteArray?> = _pendingInitAliceEkPub.asStateFlow()
 
-    private val _isSharingLocation = MutableStateFlow(false)
-    override val isSharingLocation: StateFlow<Boolean> = _isSharingLocation.asStateFlow()
-
-    private val _pausedFriendIds = MutableStateFlow<Set<String>>(emptySet())
-    override val pausedFriendIds: StateFlow<Set<String>> = _pausedFriendIds.asStateFlow()
-
     private val _friends = MutableStateFlow<List<FriendEntry>>(emptyList())
     override val friends: StateFlow<List<FriendEntry>> = _friends.asStateFlow()
 
@@ -137,14 +131,6 @@ class ServiceFakeLocationSource : LocationSource {
         _allPendingInvites.value = invites
     }
 
-    override fun setSharingLocation(sharing: Boolean) {
-        _isSharingLocation.value = sharing
-    }
-
-    override fun setPausedFriends(friendIds: Set<String>) {
-        _pausedFriendIds.value = friendIds
-    }
-
     override fun onFriendsUpdated(friends: List<FriendEntry>) {
         _friends.value = friends
     }
@@ -198,6 +184,11 @@ class LocationServiceTest {
         shadowOf(context).grantPermissions(Manifest.permission.ACCESS_FINE_LOCATION)
         fakeLocationSource = ServiceFakeLocationSource()
         LocationService.clock = { System.currentTimeMillis() }
+
+        // Ensure userStore is at a known state
+        val app = context as TestWhereApplication
+        app.userStore.setSharing(true)
+        app.userStore.setPausedFriends(emptySet())
 
         // Mock KtorMailboxClient to prevent network calls during pollPendingInvite
         io.mockk.mockkObject(net.af0.where.e2ee.KtorMailboxClient)

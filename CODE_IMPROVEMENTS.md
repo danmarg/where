@@ -11,9 +11,6 @@ This document tracks technical debt, architectural improvements, and security-ha
 ### 2. Robustness & Error Handling
 - **[TODO] `LocationClient.pollPendingInvite()`**: Remove deprecated function (still used in tests).
 
-### 3. Test Coverage Gaps
-- **[TODO] Fragile Assertion**: Fix `testCorruptPayloadAdvancement` in `E2eeChaosTest.kt` to remove implicit dependency on background keepalives.
-
 ---
 
 ## COMPLETED

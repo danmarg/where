@@ -60,8 +60,8 @@ class LocationServicePermissionTest {
 
     @Test
     fun testServiceStarts_WithoutLocationPermission_Sharing() {
-        io.mockk.every { UserPrefs.isSharing(any()) } returns true
-        fakeLocationSource.setSharingLocation(true)
+        val app = context as TestWhereApplication
+        app.userStore.setSharing(true)
 
         val controller = Robolectric.buildService(LocationService::class.java)
         val service = controller.get()

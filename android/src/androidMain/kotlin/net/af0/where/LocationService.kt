@@ -69,6 +69,7 @@ class LocationService : Service() {
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
 
     private lateinit var e2eeManager: E2eeManager
+    private lateinit var userStore: UserStore
     private lateinit var locationClient: LocationClient
     private lateinit var locationSource: LocationSource
     private lateinit var uiStateStore: UiStateSource
@@ -86,9 +87,7 @@ class LocationService : Service() {
         val app = application as WhereApplication
         locationSource = locationSourceOverride ?: app.locationSource
         uiStateStore = uiStateStoreOverride ?: app.uiStateStore
-
-        // Initialise repository sharing state from prefs before starting any collection.
-        locationSource.setSharingLocation(UserPrefs.isSharing(this))
+        userStore = app.userStore
 
         // Always call startForeground immediately to avoid ForegroundServiceDidNotStartInTimeException.
         startForeground(NOTIFICATION_ID, buildNotification())
@@ -125,7 +124,7 @@ class LocationService : Service() {
         ensureLocationRegistration()
 
         serviceScope.launch {
-            locationSource.isSharingLocation.collect {
+            userStore.isSharingLocation.collect {
                 updateNotification()
                 ensureLocationRegistration()
             }
@@ -135,7 +134,7 @@ class LocationService : Service() {
         serviceScope.launch {
             locationSource.lastLocation.collect { loc ->
                 if (loc != null) {
-                    if (locationSource.isSharingLocation.value) {
+                    if (userStore.isSharingLocation.value) {
                         sendLocationIfNeeded(loc.first, loc.second, isHeartbeat = false)
                     }
 
@@ -191,7 +190,7 @@ class LocationService : Service() {
 
     private fun ensureLocationRegistration() {
         val hasPermission = hasLocationPermission()
-        val isSharing = locationSource.isSharingLocation.value
+        val isSharing = userStore.isSharingLocation.value
 
         if (!hasPermission || !isSharing) {
             if (isRegistered) {
@@ -258,7 +257,7 @@ class LocationService : Service() {
         while (true) {
             val rapid = isRapidPolling()
             val inForeground = locationSource.isAppInForeground.value
-            val isSharing = locationSource.isSharingLocation.value
+            val isSharing = userStore.isSharingLocation.value
             // Always poll — even when sharing is off we need to process incoming
             // EpochRotations and post Ratchet Acks so Alice's location doesn't get
             // stuck.  The interval is 30 min in that case (maintenance-only).
@@ -285,7 +284,7 @@ class LocationService : Service() {
                     try {
                         val activeFriends =
                             e2eeManager.listFriends().filter {
-                                it.id !in locationSource.pausedFriendIds.value && !it.isStale
+                                it.id !in userStore.pausedFriendIds.value && !it.isStale
                             }
                         for (friend in activeFriends) {
                             locationClient.sendKeepalive(friend.id)
@@ -357,7 +356,7 @@ class LocationService : Service() {
             val updates =
                 locationClient.poll(
                     isForeground = locationSource.isAppInForeground.value,
-                    pausedFriendIds = locationSource.pausedFriendIds.value,
+                    pausedFriendIds = userStore.pausedFriendIds.value,
                 )
             Log.d(TAG, "Got ${updates.size} location updates")
             withContext(Dispatchers.Main) {
@@ -426,7 +425,7 @@ class LocationService : Service() {
         isHeartbeat: Boolean,
         force: Boolean = false,
     ) {
-        if (!locationSource.isSharingLocation.value) return
+        if (!userStore.isSharingLocation.value) return
         val now = clock()
         val shouldSend =
             sendLock.withLock {
@@ -443,7 +442,7 @@ class LocationService : Service() {
             }
         if (!shouldSend) return
         try {
-            locationClient.sendLocation(lat, lng, locationSource.pausedFriendIds.value)
+            locationClient.sendLocation(lat, lng, userStore.pausedFriendIds.value)
             updateStatus(null)
         } catch (e: CancellationException) {
             throw e
@@ -499,7 +498,7 @@ class LocationService : Service() {
     private fun buildNotification(): Notification {
         // Use the live repository state for the notification.
         // Note: onCreate ensures this is initialised from UserPrefs before the first call.
-        val sharing = locationSource.isSharingLocation.value
+        val sharing = userStore.isSharingLocation.value
         val hasPermission = hasLocationPermission()
         val text =
             when {

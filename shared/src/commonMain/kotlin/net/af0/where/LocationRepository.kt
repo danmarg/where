@@ -27,8 +27,6 @@ interface LocationSource {
     val isAppInForeground: StateFlow<Boolean>
     val pendingInitPayload: StateFlow<KeyExchangeInitPayload?>
     val pendingInitAliceEkPub: StateFlow<ByteArray?>
-    val isSharingLocation: StateFlow<Boolean>
-    val pausedFriendIds: StateFlow<Set<String>>
     val friends: StateFlow<List<FriendEntry>>
     val allPendingInvites: StateFlow<List<PendingInviteView>>
     val lastRapidPollTrigger: StateFlow<Long>
@@ -61,10 +59,6 @@ interface LocationSource {
     )
 
     fun onPendingInvitesUpdated(invites: List<PendingInviteView>)
-
-    fun setSharingLocation(sharing: Boolean)
-
-    fun setPausedFriends(friendIds: Set<String>)
 
     fun setInitialFriendLocations(
         locations: Map<String, UserLocation>,
@@ -115,10 +109,6 @@ class LocationRepository(
 
     private val _pendingInitAliceEkPub = MutableStateFlow<ByteArray?>(null)
     override val pendingInitAliceEkPub: StateFlow<ByteArray?> = _pendingInitAliceEkPub.asStateFlow()
-
-    override val isSharingLocation: StateFlow<Boolean> = userStore.isSharingLocation
-
-    override val pausedFriendIds: StateFlow<Set<String>> = userStore.pausedFriendIds
 
     private val _friends = MutableStateFlow<List<FriendEntry>>(emptyList())
     override val friends: StateFlow<List<FriendEntry>> = _friends.asStateFlow()
@@ -199,14 +189,6 @@ class LocationRepository(
 
     override fun confirmQrScan() {
         pollWakeSignal.trySend(Unit)
-    }
-
-    override fun setSharingLocation(sharing: Boolean) {
-        userStore.setSharing(sharing)
-    }
-
-    override fun setPausedFriends(friendIds: Set<String>) {
-        userStore.setPausedFriends(friendIds)
     }
 
     override fun setInitialFriendLocations(

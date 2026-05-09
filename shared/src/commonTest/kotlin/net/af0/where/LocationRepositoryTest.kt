@@ -37,7 +37,7 @@ class LocationRepositoryTest {
     @Test
     fun testDefaultSharingStateIsTrue() {
         // UserStore default is sharing=true
-        assertTrue(repository.isSharingLocation.value, "Default sharing state should be true")
+        assertTrue(userStore.isSharingLocation.value, "Default sharing state should be true")
     }
 
     /**

@@ -72,12 +72,6 @@ class TestFakeLocationSource : LocationSource {
     private val _pendingInitAliceEkPub = MutableStateFlow<ByteArray?>(null)
     override val pendingInitAliceEkPub: StateFlow<ByteArray?> = _pendingInitAliceEkPub.asStateFlow()
 
-    private val _isSharingLocation = MutableStateFlow(false)
-    override val isSharingLocation: StateFlow<Boolean> = _isSharingLocation.asStateFlow()
-
-    private val _pausedFriendIds = MutableStateFlow<Set<String>>(emptySet())
-    override val pausedFriendIds: StateFlow<Set<String>> = _pausedFriendIds.asStateFlow()
-
     private val _friends = MutableStateFlow<List<FriendEntry>>(emptyList())
     override val friends: StateFlow<List<FriendEntry>> = _friends.asStateFlow()
 
@@ -140,14 +134,6 @@ class TestFakeLocationSource : LocationSource {
 
     override fun onPendingInvitesUpdated(invites: List<net.af0.where.e2ee.PendingInviteView>) {
         _allPendingInvites.value = invites
-    }
-
-    override fun setSharingLocation(sharing: Boolean) {
-        _isSharingLocation.value = sharing
-    }
-
-    override fun setPausedFriends(friendIds: Set<String>) {
-        _pausedFriendIds.value = friendIds
     }
 
     override fun onFriendsUpdated(friends: List<FriendEntry>) {

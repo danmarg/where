@@ -130,13 +130,10 @@ class LocationViewModel(
 
     init {
         Log.d(TAG, "LocationViewModel init: server=${BuildConfig.SERVER_HTTP_URL}")
-        // Sync sharing state and foreground state to manage the background service.
+        // Sync foreground state to manage the background service.
         viewModelScope.launch {
-            combine(isSharingLocation, locationSource.isAppInForeground) { sharing, inForeground ->
-                Pair(sharing, inForeground)
-            }.collect { (sharing, inForeground) ->
-                locationSource.setSharingLocation(sharing)
-                manageForegroundService(sharing, inForeground)
+            locationSource.isAppInForeground.collect { inForeground ->
+                manageForegroundService(isSharingLocation.value, inForeground)
             }
         }
 
@@ -155,12 +152,6 @@ class LocationViewModel(
                 }
             }
             locationSource.setInitialFriendLocations(initialLocations, initialLastPing)
-        }
-
-        viewModelScope.launch {
-            pausedFriendIds.collect { ids ->
-                locationSource.setPausedFriends(ids)
-            }
         }
 
         // When a friend response (init payload) arrives from the service, flip the invite
