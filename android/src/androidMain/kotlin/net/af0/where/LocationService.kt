@@ -33,6 +33,7 @@ import kotlinx.coroutines.withContext
 import net.af0.where.e2ee.ConnectionStatus
 import net.af0.where.e2ee.E2eeManager
 import net.af0.where.e2ee.LocationClient
+import net.af0.where.e2ee.UserStore
 import net.af0.where.shared.MR
 
 private const val TAG = "LocationService"
