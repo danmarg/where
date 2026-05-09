@@ -435,4 +435,65 @@ class E2eeStoreTest {
             // Bob's entry for Alice should be removed
             assertNull(bobStore.getFriend(bobFriendEntry.id))
         }
+
+    @Test
+    fun testAbandonPendingTransitionRollsBackToken() =
+        runBlocking {
+            val qr = aliceStore.createInvite("Alice")
+            val (initPayload, _) = bobStore.processScannedQr(qr)
+            val aliceEntry = aliceStore.processKeyExchangeInit(initPayload, "Bob", qr.ekPub)!!
+
+            // Alice sends a message to Bob
+            val payload1 = MessagePlaintext.Location(1.0, 2.0, 1.0, 1000)
+            aliceStore.encryptAndStore(aliceEntry.id, payload1)
+
+            val afterSend = aliceStore.getFriend(aliceEntry.id)!!
+            assertTrue(afterSend.session.isSendTokenPending)
+            val prevToken = afterSend.session.prevSendToken
+            assertFalse(prevToken.contentEquals(afterSend.session.sendToken))
+
+            // Abandon the transition
+            aliceStore.abandonPendingTransition(aliceEntry.id)
+
+            val afterAbandon = aliceStore.getFriend(aliceEntry.id)!!
+            assertFalse(afterAbandon.session.isSendTokenPending)
+            assertContentEquals(prevToken, afterAbandon.session.sendToken)
+            assertNull(afterAbandon.outbox)
+
+            // Send another message
+            val payload2 = MessagePlaintext.Location(1.1, 2.1, 1.0, 1001)
+            aliceStore.encryptAndStore(aliceEntry.id, payload2)
+
+            val afterSecondSend = aliceStore.getFriend(aliceEntry.id)!!
+            assertFalse(afterSecondSend.session.isSendTokenPending)
+            assertContentEquals(prevToken, afterSecondSend.session.sendToken)
+        }
+
+    @Test
+    fun testAbandonPendingTransitionTwice() =
+        runBlocking {
+            val qr = aliceStore.createInvite("Alice")
+            val (initPayload, _) = bobStore.processScannedQr(qr)
+            val aliceEntry = aliceStore.processKeyExchangeInit(initPayload, "Bob", qr.ekPub)!!
+
+            // Alice sends a message to Bob
+            val payload1 = MessagePlaintext.Location(1.0, 2.0, 1.0, 1000)
+            aliceStore.encryptAndStore(aliceEntry.id, payload1)
+
+            val afterSend = aliceStore.getFriend(aliceEntry.id)!!
+            val prevToken = afterSend.session.prevSendToken
+
+            // Abandon the transition
+            aliceStore.abandonPendingTransition(aliceEntry.id)
+
+            val afterAbandon1 = aliceStore.getFriend(aliceEntry.id)!!
+            assertContentEquals(prevToken, afterAbandon1.session.sendToken)
+
+            // Abandon again
+            aliceStore.abandonPendingTransition(aliceEntry.id)
+
+            val afterAbandon2 = aliceStore.getFriend(aliceEntry.id)!!
+            assertContentEquals(prevToken, afterAbandon2.session.sendToken)
+            assertFalse(afterAbandon2.session.isSendTokenPending)
+        }
 }

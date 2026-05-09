@@ -1,5 +1,6 @@
 package net.af0.where.e2ee
 
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.runTest
 import kotlin.test.*
 
@@ -10,11 +11,25 @@ class LocationClientTest {
 
     private lateinit var storage: MemoryStorage
     private lateinit var store: E2eeStore
+    private lateinit var timeProvider: MockTimeProvider
 
     @BeforeTest
     fun setup() {
+        timeProvider = MockTimeProvider()
+        TimeSource.setProvider(timeProvider)
         storage = MemoryStorage()
         store = E2eeStore(storage)
+    }
+
+    @AfterTest
+    fun tearDown() {
+        TimeSource.setProvider(
+            object : TimeProvider {
+                override fun currentTimeSeconds(): Long = DefaultTimeProvider.currentTimeSeconds()
+
+                override fun currentTimeMillis(): Long = DefaultTimeProvider.currentTimeMillis()
+            },
+        )
     }
 
     @Test
@@ -206,5 +221,75 @@ class LocationClientTest {
 
             val friendAfter = bobStore.getFriend(bobFriendId)!!
             assertEquals(1, friendAfter.consecutiveSilentDrops, "Should increment counter even if replay is present")
+        }
+
+    @Test
+    fun `pending transition abandoned after timeout`() =
+        runBlocking {
+            val qr = store.createInvite("Alice")
+            val bobStore = E2eeStore(MemoryStorage())
+            val (init, _) = bobStore.processScannedQr(qr, "Alice")
+
+            val discoveryHex = qr.discoveryToken().toHex()
+            val fakeMailbox =
+                object : MailboxClient {
+                    override suspend fun poll(
+                        baseUrl: String,
+                        token: String,
+                    ): List<MailboxPayload> {
+                        return if (token == discoveryHex) {
+                            listOf(
+                                KeyExchangeInitPayload(
+                                    v = init.v,
+                                    token = init.token,
+                                    ekPub = init.ekPub,
+                                    keyConfirmation = init.keyConfirmation,
+                                    suggestedName = init.suggestedName,
+                                ),
+                            )
+                        } else {
+                            emptyList()
+                        }
+                    }
+
+                    override suspend fun post(
+                        baseUrl: String,
+                        token: String,
+                        payload: MailboxPayload,
+                    ) {}
+                }
+
+            val client = LocationClient("http://fake", store, fakeMailbox)
+
+            // Process discovery to add Bob as a friend
+            val results = client.pollPendingInvites()
+            assertEquals(1, results.size, "Should find one pending invite")
+            val result = results.first()
+            val entry = store.processKeyExchangeInit(result.payload, "Bob", result.aliceEkPub)
+            assertNotNull(entry, "processKeyExchangeInit should return a friend entry")
+
+            val bobId = entry.id
+
+            // Friend session starts in a pending state after key exchange
+            val friendBefore = store.getFriend(bobId)
+            assertNotNull(friendBefore)
+            assertTrue(friendBefore.session.isSendTokenPending, "Session should be pending")
+            val prevToken = friendBefore.session.prevSendToken
+
+            // Advance time ALMOST to timeout (7 days - 1s)
+            timeProvider.advanceMillis(PENDING_TRANSITION_TIMEOUT_MS - 1000)
+            client.poll()
+            assertTrue(store.getFriend(bobId)!!.session.isSendTokenPending, "Should NOT be abandoned before timeout")
+
+            // Advance time past PENDING_TRANSITION_TIMEOUT_MS
+            timeProvider.advanceMillis(2000)
+
+            // Calling poll() should trigger processOutboxes() which checks for stale transitions
+            client.poll()
+
+            val afterPoll = store.getFriend(bobId)
+            assertNotNull(afterPoll)
+            assertFalse(afterPoll.session.isSendTokenPending, "Transition should be abandoned after timeout")
+            assertContentEquals(prevToken, afterPoll.session.sendToken, "Token should be rolled back")
         }
 }

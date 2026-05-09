@@ -158,7 +158,17 @@ class E2eeChaosTest {
         }
 
     @Test
-    fun testMultiFriendChaos() =
+    fun testMultiFriendChaos() = runMultiFriendChaos(iterations = 20, minChaos = 0.0, maxChaos = 0.1)
+
+    @Test
+    @Ignore
+    fun testMultiFriendChaosHighStress() = runMultiFriendChaos(iterations = 50, minChaos = 0.3, maxChaos = 0.5)
+
+    private fun runMultiFriendChaos(
+        iterations: Int,
+        minChaos: Double,
+        maxChaos: Double,
+    ) =
         runTest {
             initializeE2eeTests()
             val relay = RelayMailboxClient(rateLimitMaxPosts = 5000, rateLimitMaxPolls = 5000)
@@ -219,13 +229,10 @@ class E2eeChaosTest {
             val charlieToBobId = runBlocking { charlie.store.listFriends().find { it.name == "Bob" }!!.id }
 
             // 2. Chaos Phase
-            println("Starting Multi-Friend Chaos Phase...")
-            // Reduced volume and probability to ensure stability in CI while still exercising code paths.
-            // High chaos (especially mailbox expiration) can lead to permanent desync which is a
-            // known protocol limitation when transition messages are lost.
-            repeat(20) { i ->
+            println("Starting Multi-Friend Chaos Phase (min=$minChaos, max=$maxChaos)...")
+            repeat(iterations) { i ->
                 nodes.forEach { node ->
-                    node.setChaos(Random.nextDouble(0.0, 0.1))
+                    node.setChaos(Random.nextDouble(minChaos, maxChaos))
                     if (Random.nextDouble() < 0.01) node.restart()
 
                     // Send to all friends occasionally

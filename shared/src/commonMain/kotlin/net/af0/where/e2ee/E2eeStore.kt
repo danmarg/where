@@ -199,22 +199,11 @@ class E2eeStore(
     }
 
     private fun load() {
-        // 1. Try to load new GlobalMetadata
+        // 1. Try to load GlobalMetadata
         val global = globalDb.load(STORAGE_KEY_GLOBAL)
 
-        // 2. Try to load legacy SerializedStore for migration
-        val legacyStorage =
-            DoubleBufferedStorage(
-                storage = storage,
-                serializer = SerializedStore.serializer(),
-                json = json,
-                timestampSelector = { it.lastSavedTs },
-            )
-        // Legacy keys were e2ee_store_a, e2ee_store_b, and e2ee_store (as the direct fallback)
-        val legacy = legacyStorage.load(STORAGE_KEY_LEGACY_BASE, STORAGE_KEY_LEGACY_SINGLE)
-
-        if (global != null && (legacy == null || global.lastSavedTs >= legacy.lastSavedTs)) {
-            // New format is up to date
+        if (global != null) {
+            // Granular format found
             lastSavedGlobalTs = global.lastSavedTs
             lastUsedTs = maxOf(lastUsedTs, global.lastSavedTs)
             pendingInvites = global.pendingInvites.toMutableList()
@@ -232,32 +221,9 @@ class E2eeStore(
                 }
             }
             println("[E2eeStore] Loaded granular state (ts=$lastUsedTs, friends=${friends.size})")
-        } else if (legacy != null) {
-            // Migrate from legacy format
-            println("[E2eeStore] Migrating legacy state (ts=${legacy.lastSavedTs})")
-            lastUsedTs = legacy.lastSavedTs
-            applyLegacyStore(legacy)
-            // Perform an immediate granular save to finalize migration
-            saveAll()
-            // Clear legacy keys
-            storage.putString(STORAGE_KEY_LEGACY_SINGLE, "")
-            storage.putString("${STORAGE_KEY_LEGACY_BASE}_a", "")
-            storage.putString("${STORAGE_KEY_LEGACY_BASE}_b", "")
         } else if (storage.getString("${STORAGE_KEY_GLOBAL}_a") != null) {
             addDiagnosticEvent("CRITICAL: Global storage exists but failed to parse. Using empty state.")
         }
-    }
-
-    private fun applyLegacyStore(serialized: SerializedStore) {
-        friends =
-            serialized.friends.associate { s ->
-                val entry = s.toEntry()
-                s.friendId to entry
-            }.toMutableMap()
-
-        pendingInvites = serialized.pendingInvites.toMutableList()
-        _diagnosticLog.value = serialized.diagnosticLog
-        lastSavedGlobalTs = serialized.lastSavedTs
     }
 
     private fun nextTs(): Long {
@@ -939,27 +905,6 @@ class E2eeStore(
     companion object {
         private const val STORAGE_KEY_GLOBAL = "e2ee_global"
 
-        /**
-         * The base key for legacy double-buffered storage (e2ee_store_a, e2ee_store_b).
-         * Used during migration to the new granular storage format.
-         */
-        private const val STORAGE_KEY_LEGACY_BASE = "e2ee_store"
-
-        /**
-         * The legacy non-buffered storage key. Before double-buffering was introduced,
-         * the entire store was saved under this single key.
-         */
-        private const val STORAGE_KEY_LEGACY_SINGLE = "e2ee_store"
-
         const val MAX_PENDING_INVITES = 10
     }
 }
-
-/** Legacy monolithic store for migration. */
-@Serializable
-internal data class SerializedStore(
-    val friends: List<SerializedFriendEntry>,
-    val pendingInvites: List<PendingInvite> = emptyList(),
-    val diagnosticLog: List<String> = emptyList(),
-    val lastSavedTs: Long = 0L,
-)
