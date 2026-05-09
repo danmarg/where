@@ -146,13 +146,6 @@ open class LocationClient(
         // current recvToken and the previous one, as the peer might still be sending to
         // the old epoch until they receive our first message from the new epoch.
         val pollQueue = mutableListOf(friendBefore.session.recvToken.toHex())
-        if (friendBefore.session.isSendTokenPending && friendBefore.session.prevRecvToken.isNotEmpty()) {
-            val prevHex = friendBefore.session.prevRecvToken.toHex()
-            if (prevHex != pollQueue[0]) {
-                pollQueue.add(prevHex)
-            }
-        }
-        pollQueue.shuffle(kotlin.random.Random.Default)
 
         val polledTokens = mutableSetOf<String>()
         var hasIncrementedFailure = false
