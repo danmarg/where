@@ -316,13 +316,9 @@ class LocationService : Service() {
         val intent = Intent(this, LocationService::class.java).apply { action = ACTION_POLL_ALARM }
         val pi = PendingIntent.getService(this, 0, intent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
         val triggerAt = SystemClock.elapsedRealtime() + delayMs
-        // USE_EXACT_ALARM grants unconditionally on API 33+; on older APIs fall back gracefully
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            alarmManager.setExactAndAllowWhileIdle(AlarmManager.ELAPSED_REALTIME_WAKEUP, triggerAt, pi)
-        } else {
-            // API 31-32: SCHEDULE_EXACT_ALARM was required; on 31/32 use inexact fallback
-            alarmManager.setAndAllowWhileIdle(AlarmManager.ELAPSED_REALTIME_WAKEUP, triggerAt, pi)
-        }
+        // We use inexact alarms to comply with Play Store policies regarding USE_EXACT_ALARM.
+        // setAndAllowWhileIdle ensures the alarm fires even in Doze mode, albeit with some jitter.
+        alarmManager.setAndAllowWhileIdle(AlarmManager.ELAPSED_REALTIME_WAKEUP, triggerAt, pi)
     }
 
     private fun cancelDozeAlarm() {
