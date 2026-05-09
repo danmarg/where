@@ -169,7 +169,7 @@ open class LocationClient(
         var hasIncrementedFailure = false
         var follows = 0
 
-        while (pollQueue.isNotEmpty() && follows < MAX_TOKEN_FOLLOWS_PER_POLL) {
+        while (pollQueue.isNotEmpty()) {
             val currentTokenToPoll = pollQueue.removeAt(0)
             if (polledTokens.contains(currentTokenToPoll)) continue
             polledTokens.add(currentTokenToPoll)
@@ -200,12 +200,17 @@ open class LocationClient(
                     0
                 }
 
-                val forceAck = currentDropCount >= MAX_SILENT_DROP_RETRIES
+                val forceAck = currentDropCount >= MAX_SILENT_DROP_RETRIES || follows >= MAX_TOKEN_FOLLOWS_PER_POLL
                 if (forceAck) {
-                    println(
-                        "[LocationClient] pollFriend: force-ACKing after $MAX_SILENT_DROP_RETRIES consecutive failures for ${friendId.take(8)}",
-                    )
-                    store.addDiagnosticEvent("FORCE ACK: ${friendId.take(8)} — unrecoverable failures, re-pair if desynced")
+                    if (follows >= MAX_TOKEN_FOLLOWS_PER_POLL) {
+                        println("[LocationClient] pollFriend: force-ACKing due to TOKEN FOLLOW CAP for ${friendId.take(8)}")
+                        store.addDiagnosticEvent("TOKEN FOLLOW CAP: ${friendId.take(8)}")
+                    } else {
+                        println(
+                            "[LocationClient] pollFriend: force-ACKing after $MAX_SILENT_DROP_RETRIES consecutive failures for ${friendId.take(8)}",
+                        )
+                        store.addDiagnosticEvent("FORCE ACK: ${friendId.take(8)} — unrecoverable failures, re-pair if desynced")
+                    }
                     store.resetConsecutiveSilentDrops(friendId)
                 }
 
@@ -229,6 +234,10 @@ open class LocationClient(
                     },
                 )
 
+                if (follows >= MAX_TOKEN_FOLLOWS_PER_POLL) {
+                    break
+                }
+
                 // Follow rotation
                 val updatedFriend = store.getFriend(friendId) ?: break
                 val newToken = updatedFriend.session.recvToken.toHex()
@@ -239,11 +248,6 @@ open class LocationClient(
                 println("[LocationClient] pollFriend: processBatch failed for ${friendId.take(8)}: ${e.message}")
                 throw e
             }
-        }
-
-        if (follows >= MAX_TOKEN_FOLLOWS_PER_POLL) {
-            println("[LocationClient] pollFriend: TOKEN FOLLOW CAP HIT for ${friendId.take(8)}")
-            store.addDiagnosticEvent("TOKEN FOLLOW CAP: ${friendId.take(8)}")
         }
 
         store.updateLastPollTs(friendId, currentTimeSeconds())
