@@ -1,11 +1,7 @@
 package net.af0.where.e2ee
 
 import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.sync.Mutex
-import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 
@@ -28,8 +24,6 @@ interface E2eeStorage {
 
 /**
  * Friend entry containing their session state.
- *
- * @param isInitiator     true if the local user was "Alice" (created the QR); false if "Bob" (scanned QR).
  */
 data class FriendEntry(
     val name: String,
@@ -39,57 +33,28 @@ data class FriendEntry(
     val lastLng: Double? = null,
     val lastTs: Long? = null,
     val lastRecvTs: Long = currentTimeSeconds(),
-    /**
-     * True if the key exchange handshake is fully confirmed (both sides derived SK).
-     * Alice is confirmed as soon as she processes KeyExchangeInit; Bob is confirmed
-     * once he receives any valid message from Alice.
-     */
     val isConfirmed: Boolean = false,
     val lastSentTs: Long = 0L,
     val lastPollTs: Long = 0L,
-    /** Whether the local user is currently sharing their location with this friend. */
     val sharingEnabled: Boolean = true,
-    /** Optional outbox for transactional recovery (§5.4). */
     val outbox: EncryptedOutboxMessage? = null,
-    /** Set if the last poll for this friend resulted in decryption failures. */
     val lastDecryptFailed: Boolean = false,
-    /** Tracks consecutive 429 errors for the current outbox. */
     val outbox429Count: Int = 0,
-    /** Tracks consecutive polls with header failures to trigger force-ACK (#1). */
     val consecutiveSilentDrops: Int = 0,
 ) {
     companion object {
-        /** §12: Surface a "no recent location" warning after 7 days of silence. */
         const val ACK_TIMEOUT_SECONDS = 7 * 24 * 3600L
     }
 
-    /**
-     * Returns true if no messages have been received for [ACK_TIMEOUT_SECONDS].
-     * This is a heuristic for UI to show a "not seen recently" warning.
-     */
     val isStale: Boolean
         get() {
             val now = currentTimeSeconds()
             return lastRecvTs != Long.MAX_VALUE && (now - lastRecvTs) > ACK_TIMEOUT_SECONDS
         }
 
-    /** Computed friend ID: hex(SHA-256(EK_A.pub)) — full 64 hex chars. */
     val id: String get() = session.aliceFp.toHex()
-
-    /** Safety number (e.g., for display in UI). Stable for the lifetime of the session. */
     val safetyNumber: String get() = formatSafetyNumber(safetyNumber(session.aliceEkPub, session.bobEkPub))
 }
-
-/**
- * Alice's pending invite state.
- */
-@Serializable
-internal data class PendingInvite(
-    val qrPayload: QrPayload,
-    @Serializable(with = ByteArrayBase64Serializer::class) val aliceEkPriv: ByteArray,
-    val createdAt: Long = currentTimeSeconds(),
-    val exportedAt: Long? = null,
-)
 
 /**
  * A public view of a pending invite, suitable for UI display.
@@ -103,257 +68,44 @@ data class PendingInviteView(
 
 internal fun PendingInvite.toView() = PendingInviteView(qrPayload, createdAt, exportedAt)
 
-@Serializable
-internal data class SerializedFriendEntry(
-    val friendId: String,
-    val name: String,
-    val session: SessionState,
-    val isInitiator: Boolean = false,
-    val lastLat: Double? = null,
-    val lastLng: Double? = null,
-    val lastTs: Long? = null,
-    val lastRecvTs: Long = 0L,
-    val isConfirmed: Boolean = false,
-    val lastSentTs: Long = 0L,
-    val lastPollTs: Long = 0L,
-    val sharingEnabled: Boolean = true,
-    val outbox: EncryptedOutboxMessage? = null,
-    val lastDecryptFailed: Boolean = false,
-    val outbox429Count: Int = 0,
-    val consecutiveSilentDrops: Int = 0,
-    val lastSavedTs: Long = 0L,
-)
-
-@Serializable
-internal data class GlobalMetadata(
-    val friendIds: List<String> = emptyList(),
-    val pendingInvites: List<PendingInvite> = emptyList(),
-    val diagnosticLog: List<String> = emptyList(),
-    val lastSavedTs: Long = 0L,
-)
-
 /**
  * Durably manages the E2EE state, including friends, sessions, and outboxes.
- * Uses DoubleBufferedStorage to ensure atomic updates and prevent data loss.
- *
- * @param storage The underlying persistent storage.
+ * Acts as a coordinator between persistence and protocol logic.
  */
 class E2eeStore(
     private val storage: E2eeStorage,
 ) {
-    private var friends = mutableMapOf<String, FriendEntry>()
-    private var pendingInvites = mutableListOf<PendingInvite>()
-    private var lastSavedGlobalTs: Long = 0L
+    private val persistence = E2eePersistence(storage)
 
-    /**
-     * Monotonic clock to ensure absolute ordering of all saves (global and per-friend).
-     */
-    private var lastUsedTs: Long = 0L
-
-    /**
-     * LOCK ORDERING POLICY:
-     * To prevent deadlocks, the following hierarchy MUST be strictly followed:
-     * 1. friendLock (via getFriendLock(id))
-     * 2. metadataLock (for global state and the friend index)
-     *
-     * Never attempt to acquire a friendLock while holding metadataLock.
-     * Always acquire friendLock before metadataLock if both are needed.
-     */
-    private val metadataLock = Mutex()
-    private val friendLocks = mutableMapOf<String, Mutex>()
-    private val locksLock = Mutex() // Lock for the friendLocks map itself
-
-    private suspend fun getFriendLock(id: String): Mutex {
-        locksLock.withLock {
-            return friendLocks.getOrPut(id) { Mutex() }
-        }
-    }
-
-    private val json =
-        Json {
-            ignoreUnknownKeys = true
-            encodeDefaults = true
-        }
-
-    private val _diagnosticLog = MutableStateFlow<List<String>>(emptyList())
-    val diagnosticLog: StateFlow<List<String>> = _diagnosticLog.asStateFlow()
-
-    private val globalDb =
-        DoubleBufferedStorage(
-            storage = storage,
-            serializer = GlobalMetadata.serializer(),
-            json = json,
-            timestampSelector = { it.lastSavedTs },
-        )
-
-    private val friendDb =
-        DoubleBufferedStorage(
-            storage = storage,
-            serializer = SerializedFriendEntry.serializer(),
-            json = json,
-            timestampSelector = { it.lastSavedTs },
-        )
-
-    init {
-        load()
-    }
-
-    private fun load() {
-        // 1. Try to load GlobalMetadata
-        val global = globalDb.load(STORAGE_KEY_GLOBAL)
-
-        if (global != null) {
-            // Granular format found
-            lastSavedGlobalTs = global.lastSavedTs
-            lastUsedTs = maxOf(lastUsedTs, global.lastSavedTs)
-            pendingInvites = global.pendingInvites.toMutableList()
-            _diagnosticLog.value = global.diagnosticLog
-
-            // Load each friend
-            friends.clear()
-            global.friendIds.forEach { id ->
-                val s = friendDb.load(friendKey(id))
-                if (s != null) {
-                    friends[id] = s.toEntry()
-                    lastUsedTs = maxOf(lastUsedTs, s.lastSavedTs)
-                } else {
-                    addDiagnosticEvent("CRITICAL: Failed to load friend $id")
-                }
-            }
-            println("[E2eeStore] Loaded granular state (ts=$lastUsedTs, friends=${friends.size})")
-        } else if (storage.getString("${STORAGE_KEY_GLOBAL}_a") != null) {
-            addDiagnosticEvent("CRITICAL: Global storage exists but failed to parse. Using empty state.")
-        }
-    }
-
-    private fun nextTs(): Long {
-        val now = currentTimeSeconds()
-        lastUsedTs = if (now <= lastUsedTs) lastUsedTs + 1 else now
-        return lastUsedTs
-    }
-
-    private fun SerializedFriendEntry.toEntry() =
-        FriendEntry(
-            name = name,
-            session = session,
-            isInitiator = isInitiator,
-            lastLat = lastLat,
-            lastLng = lastLng,
-            lastTs = lastTs,
-            lastRecvTs = if (lastRecvTs == 0L) currentTimeSeconds() else lastRecvTs,
-            isConfirmed = isConfirmed,
-            lastSentTs = lastSentTs,
-            lastPollTs = lastPollTs,
-            sharingEnabled = sharingEnabled,
-            outbox = outbox,
-            lastDecryptFailed = lastDecryptFailed,
-            outbox429Count = outbox429Count,
-            consecutiveSilentDrops = consecutiveSilentDrops,
-        )
-
-    private fun FriendEntry.toSerialized(ts: Long) =
-        SerializedFriendEntry(
-            friendId = id,
-            name = name,
-            session = session,
-            isInitiator = isInitiator,
-            lastLat = lastLat,
-            lastLng = lastLng,
-            lastTs = lastTs,
-            lastRecvTs = lastRecvTs,
-            isConfirmed = isConfirmed,
-            lastSentTs = lastSentTs,
-            lastPollTs = lastPollTs,
-            sharingEnabled = sharingEnabled,
-            outbox = outbox,
-            lastDecryptFailed = lastDecryptFailed,
-            outbox429Count = outbox429Count,
-            consecutiveSilentDrops = consecutiveSilentDrops,
-            lastSavedTs = ts,
-        )
-
-    /** Saves only the global metadata. Throws on failure. */
-    private fun saveGlobalInternal(
-        nextFriendIds: List<String>? = null,
-        nextInvites: List<PendingInvite>? = null,
-        nextLog: List<String>? = null,
-    ) {
-        val saveTs = nextTs()
-
-        val metadata =
-            GlobalMetadata(
-                friendIds = nextFriendIds ?: friends.keys.toList(),
-                pendingInvites = nextInvites ?: pendingInvites,
-                diagnosticLog = nextLog ?: _diagnosticLog.value,
-                lastSavedTs = saveTs,
-            )
-        globalDb.save(STORAGE_KEY_GLOBAL, metadata)
-
-        // Update memory only after successful save
-        lastSavedGlobalTs = saveTs
-        if (nextInvites != null) pendingInvites = nextInvites.toMutableList()
-        if (nextLog != null) _diagnosticLog.value = nextLog
-    }
-
-    /** Saves a single friend entry. Throws on failure. */
-    private fun saveFriendInternal(
-        friendId: String,
-        entry: FriendEntry,
-    ) {
-        saveFriendInternalWithTs(friendId, entry, nextTs())
-    }
-
-    private fun saveFriendInternalWithTs(
-        friendId: String,
-        entry: FriendEntry,
-        ts: Long,
-    ) {
-        friendDb.save(friendKey(friendId), entry.toSerialized(ts))
-        // Update memory only after successful save
-        friends[friendId] = entry
-    }
-
-    /** Saves everything (used for initialization/migration). */
-    private fun saveAll() {
-        saveGlobalInternal()
-        friends.forEach { (id, entry) -> saveFriendInternal(id, entry) }
-    }
+    val diagnosticLog: StateFlow<List<String>> = persistence.diagnosticLog
 
     fun addDiagnosticEvent(message: String) {
-        val t = currentTimeSeconds()
-        val s = (t % 86400).toInt()
-        val entry = "${(s / 3600).toString().padStart(
-            2,
-            '0',
-        )}:${((s % 3600) / 60).toString().padStart(2, '0')}:${(s % 60).toString().padStart(2, '0')} $message"
-        _diagnosticLog.value = (listOf(entry) + _diagnosticLog.value).take(MAX_DIAGNOSTIC_EVENTS)
+        persistence.addDiagnosticEvent(message)
     }
 
-    fun diagnosticLogSnapshot(): List<String> = _diagnosticLog.value
+    fun diagnosticLogSnapshot(): List<String> = diagnosticLog.value
 
     suspend fun createInvite(suggestedName: String): QrPayload =
-        metadataLock.withLock {
+        persistence.withMetadataLock {
             if (pendingInvites.size >= MAX_PENDING_INVITES) {
                 throw IllegalStateException("Too many pending invites")
             }
             val (qr, priv) = KeyExchange.aliceCreateQrPayload(suggestedName)
-            val nextInvites = pendingInvites + PendingInvite(qr, priv)
-            saveGlobalInternal(nextInvites = nextInvites)
+            pendingInvites = pendingInvites + PendingInvite(qr, priv)
             qr
         }
 
-    @Throws(IllegalArgumentException::class, CancellationException::class)
+    @Throws(IllegalArgumentException::class, CancellationException::class, SelfPairingException::class)
     suspend fun processKeyExchangeInit(
         payload: KeyExchangeInitPayload,
         bobName: String,
         aliceEkPub: ByteArray,
     ): FriendEntry? {
-        val pending =
-            metadataLock.withLock {
-                pendingInvites.find {
-                    it.qrPayload.ekPub.contentEquals(aliceEkPub)
-                }
-            } ?: return null
+        val (pending, aliceEkPubBytes) = persistence.withMetadataLock {
+            val p = pendingInvites.find { it.qrPayload.ekPub.contentEquals(aliceEkPub) }
+            p to (p?.qrPayload?.ekPub)
+        }
+        if (pending == null || aliceEkPubBytes == null) return null
 
         val tokenBytes = payload.token.hexToByteArray()
         val msg =
@@ -365,232 +117,157 @@ class E2eeStore(
                 suggestedName = payload.suggestedName,
             )
 
-        // Perform crypto outside of metadataLock (§5.4)
         val session =
             try {
                 KeyExchange.aliceProcessInit(
                     msg = msg,
                     aliceEkPriv = pending.aliceEkPriv,
-                    aliceEkPub = pending.qrPayload.ekPub,
+                    aliceEkPub = aliceEkPubBytes,
                 ).let {
                     if (it.isSendTokenPending) it.copy(sendTokenPendingSinceMs = currentTimeMillis()) else it
                 }
             } finally {
-                // Ensure intermediate material is wiped regardless of success/failure
                 pending.aliceEkPriv.zeroize()
             }
 
-        return metadataLock.withLock {
-            // Re-verify pending state haven't changed while we were doing crypto
-            val stillPending = pendingInvites.find { it == pending } ?: return@withLock null
+        val entry = FriendEntry(
+            name = sanitizeName(bobName),
+            session = session,
+            isInitiator = true,
+            isConfirmed = true,
+        )
 
-            val entry =
-                FriendEntry(
-                    name = sanitizeName(bobName),
-                    session = session,
-                    isInitiator = true,
-                    lastRecvTs = currentTimeSeconds(),
-                    isConfirmed = true,
-                )
-
-            val nextInvites = pendingInvites.filter { it != stillPending }
-            val nextFriendIds = friends.keys.toList() + entry.id
-
-            // Order matters: save friend first, then global index
-            saveFriendInternalWithTs(entry.id, entry, nextTs())
-            saveGlobalInternal(nextFriendIds = nextFriendIds, nextInvites = nextInvites)
-
-            entry
+        persistence.withFriendAndMetadataLock(entry.id) { _, metadata ->
+            metadata.pendingInvites = metadata.pendingInvites.filterNot { it.qrPayload.ekPub.contentEquals(aliceEkPubBytes) }
+            PersistenceAction.Update(entry) to Unit
         }
+
+        return entry
     }
 
-    suspend fun listPendingInvites(): List<PendingInviteView> = metadataLock.withLock { pendingInvites.map { it.toView() } }
+    suspend fun listPendingInvites(): List<PendingInviteView> =
+        persistence.withMetadataLock {
+            pendingInvites.map { it.toView() }
+        }
 
     suspend fun clearInvite(ekPub: ByteArray) {
-        metadataLock.withLock {
-            val nextInvites = pendingInvites.filterNot { it.qrPayload.ekPub.contentEquals(ekPub) }
-            saveGlobalInternal(nextInvites = nextInvites)
+        persistence.withMetadataLock {
+            pendingInvites = pendingInvites.filterNot { it.qrPayload.ekPub.contentEquals(ekPub) }
         }
     }
 
     suspend fun markInviteExported(ekPub: ByteArray) {
-        metadataLock.withLock {
-            val idx = pendingInvites.indexOfFirst { it.qrPayload.ekPub.contentEquals(ekPub) }
-            if (idx != -1) {
-                val invite = pendingInvites[idx]
-                if (invite.exportedAt == null) {
-                    val nextInvites = pendingInvites.toMutableList()
-                    nextInvites[idx] = invite.copy(exportedAt = currentTimeSeconds())
-                    saveGlobalInternal(nextInvites = nextInvites)
+        persistence.withMetadataLock {
+            pendingInvites = pendingInvites.map {
+                if (it.qrPayload.ekPub.contentEquals(ekPub)) {
+                    it.copy(exportedAt = currentTimeSeconds())
+                } else {
+                    it
                 }
             }
         }
     }
 
     suspend fun cleanupExpiredInvites(expirySeconds: Long = 48 * 3600L) {
-        val toRemove: List<String>
-        metadataLock.withLock {
-            val now = currentTimeSeconds()
-            val nextInvites =
-                pendingInvites.filterNot {
-                    val baseTime = it.exportedAt ?: it.createdAt
-                    now - baseTime > expirySeconds
-                }
-
-            if (nextInvites.size != pendingInvites.size) {
-                saveGlobalInternal(nextInvites = nextInvites)
+        val now = currentTimeSeconds()
+        val toRemove = persistence.withMetadataLock {
+            val expired = pendingInvites.filter { 
+                val baseTime = it.exportedAt ?: it.createdAt
+                now - baseTime > expirySeconds 
             }
-
-            toRemove =
-                friends.values.filter {
-                    !it.isConfirmed && (now - it.lastRecvTs > expirySeconds)
-                }.map { it.id }
+            if (expired.isNotEmpty()) {
+                pendingInvites = pendingInvites.filter { 
+                    val baseTime = it.exportedAt ?: it.createdAt
+                    now - baseTime <= expirySeconds 
+                }
+            }
+            
+            // Also identify unconfirmed friends for cleanup
+            val unconfirmedExpired = friends.filter { 
+                !it.isConfirmed && (now - it.lastRecvTs > expirySeconds) 
+            }
+            expired to unconfirmedExpired
         }
 
-        // Clear underlying storage slots outside metadataLock, but under individual friendLocks
-        // to match the deleteFriend pattern and avoid lock inversion.
-        toRemove.forEach { id ->
-            val friendLock = getFriendLock(id)
-            friendLock.withLock {
-                metadataLock.withLock {
-                    val entry = friends[id] ?: return@withLock
-                    val now = currentTimeSeconds()
-                    // Re-verify expiration criteria under lock
-                    if (!entry.isConfirmed && (now - entry.lastRecvTs > expirySeconds)) {
-                        val nextFriendIds = friends.keys.filter { it != id }
-                        saveGlobalInternal(nextFriendIds = nextFriendIds)
-                        // Remove from memory
-                        friends.remove(id)
-                        // Clear the friend's storage keys.
-                        storage.putString("${friendKey(id)}_a", "")
-                        storage.putString("${friendKey(id)}_b", "")
-                    }
+        toRemove.second.forEach { friend ->
+            persistence.withFriendAndMetadataLock(friend.id) { current, _ ->
+                if (current != null && !current.isConfirmed && (now - current.lastRecvTs > expirySeconds)) {
+                    PersistenceAction.Delete to Unit
+                } else {
+                    PersistenceAction.None to Unit
                 }
-            }
-            // Prune the lock from the map after releasing.
-            locksLock.withLock {
-                friendLocks.remove(id)
             }
         }
     }
 
-    suspend fun getFriend(id: String): FriendEntry? = metadataLock.withLock { friends[id] }
+    suspend fun getFriend(id: String): FriendEntry? = persistence.getFriend(id)
 
-    suspend fun listFriends(): List<FriendEntry> = metadataLock.withLock { friends.values.toList() }
+    suspend fun listFriends(): List<FriendEntry> = persistence.listFriends()
 
-    suspend fun renameFriend(
-        id: String,
-        newName: String,
-    ) {
-        val friendLock = getFriendLock(id)
-        friendLock.withLock {
-            metadataLock.withLock {
-                val entry = friends[id] ?: return@withLock
-                val updated = entry.copy(name = sanitizeName(newName))
-                saveFriendInternalWithTs(id, updated, nextTs())
+    suspend fun renameFriend(id: String, newName: String) {
+        val sanitized = sanitizeName(newName)
+        persistence.withFriendAndMetadataLock(id) { entry, _ ->
+            if (entry != null) {
+                PersistenceAction.Update(entry.copy(name = sanitized)) to Unit
+            } else {
+                PersistenceAction.None to Unit
             }
         }
     }
 
     suspend fun deleteFriend(id: String) {
-        val friendLock = getFriendLock(id)
-        friendLock.withLock {
-            metadataLock.withLock {
-                if (friends.containsKey(id)) {
-                    val nextFriendIds = friends.keys.filter { it != id }
-                    saveGlobalInternal(nextFriendIds = nextFriendIds)
-                    // Remove from memory
-                    friends.remove(id)
-                    // Optionally clear the friend's storage keys here.
-                    storage.putString("${friendKey(id)}_a", "")
-                    storage.putString("${friendKey(id)}_b", "")
-                }
-            }
-        }
-        // Prune the lock from the map after releasing both locks.
-        // Between friendLock being released and friendLocks.remove(id), a concurrent 
-        // call to getFriendLock(id) will re-create a new Mutex for the same (now-deleted) 
-        // ID. This is benign: the racer will find friends[id] == null and return, 
-        // and the newly created mutex will be pruned by this block.
-        locksLock.withLock {
-            friendLocks.remove(id)
+        persistence.withFriendAndMetadataLock(id) { _, _ ->
+            PersistenceAction.Delete to Unit
         }
     }
 
-    /**
-     * Atomically encrypts a message and updates the session state in a single transaction.
-     * Prevents TOCTOU races (§5.4) where concurrent sends could re-use sequence numbers.
-     */
     suspend fun encryptAndStore(
         friendId: String,
         payload: MessagePlaintext,
     ): EncryptedMessagePayload {
-        val friendLock = getFriendLock(friendId)
-        return friendLock.withLock {
-            metadataLock.withLock {
-                val entry = friends[friendId] ?: throw Exception("Friend not found: $friendId")
+        return persistence.withFriendAndMetadataLock(friendId) { entry, _ ->
+            if (entry == null) throw Exception("Friend not found: $friendId")
+            if (entry.outbox != null) throw OutboxConflictException(friendId)
 
-                // Atomic guard: the caller checks outbox before acquiring this lock, but that
-                // check has a TOCTOU window. Re-checking here under friendLock + metadataLock makes it safe.
-                if (entry.outbox != null) {
-                    throw OutboxConflictException(friendId)
-                }
+            val (newSession, message) = Session.encryptMessage(entry.session, payload)
 
-                val (newSession, message) = Session.encryptMessage(entry.session, payload)
+            val seqAdvanced = newSession.sendSeq > entry.session.sendSeq ||
+                !newSession.rootKey.contentEquals(entry.session.rootKey)
+            check(seqAdvanced) { "Nonce safety violation: sequence number did not advance" }
 
-                // NONCE SAFETY ASSERTION (§5.4): The sequence number MUST advance.
-                val seqAdvanced =
-                    newSession.sendSeq > entry.session.sendSeq ||
-                        !newSession.rootKey.contentEquals(entry.session.rootKey)
-                check(seqAdvanced) { "Nonce safety violation: sequence number did not advance" }
+            val tokenToUse = if (newSession.isSendTokenPending) newSession.prevSendToken else newSession.sendToken
+            val updatedSession = if (newSession.isSendTokenPending && !entry.session.isSendTokenPending) {
+                newSession.copy(sendTokenPendingSinceMs = currentTimeMillis())
+            } else {
+                newSession
+            }
 
-                // Determine which token to use for posting
-                val tokenToUse = if (newSession.isSendTokenPending) newSession.prevSendToken else newSession.sendToken
+            val updatedEntry = entry.copy(
+                session = updatedSession,
+                outbox = EncryptedOutboxMessage(token = tokenToUse.toHex(), payload = message),
+                lastSentTs = currentTimeSeconds(),
+            )
+            
+            PersistenceAction.Update(updatedEntry) to message
+        }
+    }
 
-                val updatedSession =
-                    if (newSession.isSendTokenPending && !entry.session.isSendTokenPending) {
-                        newSession.copy(sendTokenPendingSinceMs = currentTimeMillis())
-                    } else {
-                        newSession
-                    }
-
-                val updatedEntry =
-                    entry.copy(
-                        session = updatedSession,
-                        outbox = EncryptedOutboxMessage(token = tokenToUse.toHex(), payload = message),
-                        lastSentTs = currentTimeSeconds(),
-                    )
-                
-                saveFriendInternalWithTs(friendId, updatedEntry, nextTs())
-                message
+    suspend fun updateSession(id: String, newSession: SessionState) {
+        persistence.withFriendAndMetadataLock(id) { entry, _ ->
+            if (entry != null) {
+                PersistenceAction.Update(entry.copy(session = newSession)) to Unit
+            } else {
+                PersistenceAction.None to Unit
             }
         }
     }
 
-    suspend fun updateSession(
-        id: String,
-        newSession: SessionState,
-    ) {
-        val friendLock = getFriendLock(id)
-        friendLock.withLock {
-            metadataLock.withLock {
-                val entry = friends[id] ?: return@withLock
-                val updated = entry.copy(session = newSession)
-                saveFriendInternalWithTs(id, updated, nextTs())
-            }
-        }
-    }
-
-    suspend fun updateFriend(
-        id: String,
-        transform: (FriendEntry) -> FriendEntry,
-    ) {
-        val friendLock = getFriendLock(id)
-        friendLock.withLock {
-            metadataLock.withLock {
-                val entry = friends[id] ?: return@withLock
-                val updated = transform(entry)
-                saveFriendInternalWithTs(id, updated, nextTs())
+    suspend fun updateFriend(id: String, transform: (FriendEntry) -> FriendEntry) {
+        persistence.withFriendAndMetadataLock(id) { entry, _ ->
+            if (entry != null) {
+                PersistenceAction.Update(transform(entry)) to Unit
+            } else {
+                PersistenceAction.None to Unit
             }
         }
     }
@@ -598,85 +275,69 @@ class E2eeStore(
     suspend fun processScannedQr(
         qr: QrPayload,
         bobSuggestedName: String = "",
-    ): Pair<KeyExchangeInitPayload, FriendEntry> =
-        metadataLock.withLock {
-            if (pendingInvites.any { it.qrPayload.ekPub.contentEquals(qr.ekPub) }) {
+    ): Pair<KeyExchangeInitPayload, FriendEntry> {
+        val sanitizedRequestedName = sanitizeName(bobSuggestedName)
+        val (initMsg, session) = KeyExchange.bobProcessQr(qr, sanitizedRequestedName)
+
+        val entry = FriendEntry(
+            name = sanitizedRequestedName.ifEmpty { qr.suggestedName },
+            session = session,
+            isInitiator = false,
+            lastRecvTs = currentTimeSeconds(),
+            isConfirmed = false,
+        )
+
+        val payload = KeyExchangeInitPayload(
+            v = initMsg.protocolVersion,
+            token = initMsg.token.toHex(),
+            ekPub = initMsg.ekPub,
+            keyConfirmation = initMsg.keyConfirmation,
+            suggestedName = sanitizedRequestedName,
+        )
+
+        return persistence.withFriendAndMetadataLock(entry.id) { _, metadata ->
+            if (metadata.pendingInvites.any { it.qrPayload.ekPub.contentEquals(qr.ekPub) }) {
                 throw SelfPairingException()
             }
-            val sanitizedRequestedName = sanitizeName(bobSuggestedName)
-            val (initMsg, session) = KeyExchange.bobProcessQr(qr, sanitizedRequestedName)
-
-            val entry =
-                FriendEntry(
-                    name = qr.suggestedName,
-                    session = session,
-                    isInitiator = false,
-                    lastRecvTs = currentTimeSeconds(),
-                    isConfirmed = false,
-                )
-
-            val nextFriendIds = friends.keys.toList() + entry.id
-            saveFriendInternalWithTs(entry.id, entry, nextTs())
-            saveGlobalInternal(nextFriendIds = nextFriendIds)
-
-            val payload =
-                KeyExchangeInitPayload(
-                    v = initMsg.protocolVersion,
-                    token = initMsg.token.toHex(),
-                    ekPub = initMsg.ekPub,
-                    keyConfirmation = initMsg.keyConfirmation,
-                    suggestedName = sanitizedRequestedName,
-                )
-            payload to entry
+            PersistenceAction.Update(entry) to (payload to entry)
         }
+    }
 
     suspend fun confirmFriend(id: String) {
-        val friendLock = getFriendLock(id)
-        friendLock.withLock {
-            metadataLock.withLock {
-                val entry = friends[id] ?: return@withLock
-                if (entry.isConfirmed) return@withLock
-                saveFriendInternalWithTs(id, entry.copy(isConfirmed = true), nextTs())
+        persistence.withFriendAndMetadataLock(id) { entry, _ ->
+            if (entry != null && !entry.isConfirmed) {
+                PersistenceAction.Update(entry.copy(isConfirmed = true)) to Unit
+            } else {
+                PersistenceAction.None to Unit
             }
         }
     }
 
-    suspend fun setSharingEnabled(
-        id: String,
-        enabled: Boolean,
-    ) {
-        val friendLock = getFriendLock(id)
-        friendLock.withLock {
-            metadataLock.withLock {
-                val entry = friends[id] ?: return@withLock
-                saveFriendInternalWithTs(id, entry.copy(sharingEnabled = enabled), nextTs())
+    suspend fun setSharingEnabled(id: String, enabled: Boolean) {
+        persistence.withFriendAndMetadataLock(id) { entry, _ ->
+            if (entry != null) {
+                PersistenceAction.Update(entry.copy(sharingEnabled = enabled)) to Unit
+            } else {
+                PersistenceAction.None to Unit
             }
         }
     }
 
-    /** Roll back a stale pending transition... */
     internal suspend fun abandonPendingTransition(friendId: String) {
-        val friendLock = getFriendLock(friendId)
-        friendLock.withLock {
-            metadataLock.withLock {
-                val entry = friends[friendId] ?: return@withLock
-                if (!entry.session.isSendTokenPending) return@withLock
-
-                val rolledBack =
-                    entry.session.copy(
-                        sendToken = entry.session.prevSendToken,
-                        isSendTokenPending = false,
-                        sendTokenPendingSinceMs = null,
-                        needsRatchet = entry.session.needsRatchet,
-                    )
-                saveFriendInternalWithTs(friendId, entry.copy(session = rolledBack, outbox = null), nextTs())
+        persistence.withFriendAndMetadataLock(friendId) { entry, _ ->
+            if (entry != null && entry.session.isSendTokenPending) {
+                val rolledBack = entry.session.copy(
+                    sendToken = entry.session.prevSendToken,
+                    isSendTokenPending = false,
+                    sendTokenPendingSinceMs = null,
+                    needsRatchet = entry.session.needsRatchet,
+                )
+                PersistenceAction.Update(entry.copy(session = rolledBack, outbox = null)) to Unit
+            } else {
+                PersistenceAction.None to Unit
             }
         }
     }
-
-    // -----------------------------------------------------------------------
-    // Batch poll processing
-    // -----------------------------------------------------------------------
 
     data class PollBatchResult(
         val decryptedLocations: List<LocationPlaintext>,
@@ -692,219 +353,155 @@ class E2eeStore(
         recvToken: String,
         messages: List<MailboxPayload>,
     ): PollBatchResult? {
-        val friendLock = getFriendLock(friendId)
-        return friendLock.withLock {
-            metadataLock.withLock {
-                val entry = friends[friendId] ?: return@withLock null
+        return persistence.withFriendAndMetadataLock(friendId) { entry, _ ->
+            if (entry == null) return@withFriendAndMetadataLock PersistenceAction.None to null
 
-                val decryptedLocations = mutableListOf<LocationPlaintext>()
-                val encryptedMessages = messages.filterIsInstance<EncryptedMessagePayload>()
-                val orderedMessages = BatchProcessor.decryptAndSort(entry.session, encryptedMessages)
-
-                var currentSession = entry.session
-                var anySuccess = false
-                var anyReplay = false
-                var softFailCount = 0
-                var hardFailCount = 0
-
-                for ((header, msg) in orderedMessages) {
-                    try {
-                        val (newSession, pt) = Session.decryptMessage(currentSession, msg, header)
-                        currentSession = newSession
-                        anySuccess = true
-                        if (pt is MessagePlaintext.Location) {
-                            decryptedLocations.add(
-                                LocationPlaintext(
-                                    lat = pt.lat,
-                                    lng = pt.lng,
-                                    acc = pt.acc,
-                                    ts = pt.ts,
-                                ),
-                            )
-                        }
-                    } catch (e: Exception) {
-                        if (e is ReplayException) {
-                            anyReplay = true
-                        } else if (e is DecryptionExceptionWithState) {
-                            // If header authenticated but payload failed, we MUST commit the 
-                            // ratcheted session state to prevent permanent DH desync (§5.5).
-                            currentSession = e.newState
-                            softFailCount++
-                        } else {
-                            hardFailCount++
-                        }
-                    }
-                }
-                val failCount = softFailCount + hardFailCount
-                if (!anySuccess && failCount > 0) {
-                    addDiagnosticEvent("DECRYPT FAIL: $failCount msgs failed ($hardFailCount hard, $softFailCount soft) for ${friendId.take(8)}")
-                }
-
-                val silentDrops = encryptedMessages.size - orderedMessages.size
-                val hadActivity = decryptedLocations.isNotEmpty() || (anySuccess && currentSession != entry.session)
-
-                // A batch is failed if there were ANY hard failures AND we didn't have any success.
-                // Soft failures (session ratchets) are treated as progress, not errors.
-                val isFailedBatch = (hardFailCount > 0 || silentDrops > 0) && !anySuccess
-
-                val lastLocation = decryptedLocations.lastOrNull()
-
-                // The recvToken must only change if we had a successful header decryption (§7.2).
-                // If we ratcheted the session state (e.g. DecryptionExceptionWithState), we must also
-                // commit the new recvToken to avoid polling the old token while the peer has advanced.
-                val hadStateUpdate = currentSession.recvSeq > entry.session.recvSeq ||
-                    !currentSession.rootKey.contentEquals(entry.session.rootKey)
-                val currentRecvToken = if (anySuccess || hadStateUpdate) currentSession.recvToken else entry.session.recvToken
-
-                val updatedSession =
-                    if (currentSession.isSendTokenPending && !entry.session.isSendTokenPending) {
-                        currentSession.copy(recvToken = currentRecvToken, sendTokenPendingSinceMs = currentTimeMillis())
-                    } else {
-                        currentSession.copy(recvToken = currentRecvToken)
-                    }
-
-                val updatedEntry =
-                    entry.copy(
-                        session = updatedSession,
-                        // Bob becomes confirmed once he receives any valid message from Alice
-                        isConfirmed = entry.isConfirmed || anySuccess,
-                        lastRecvTs = if (hadActivity) currentTimeSeconds() else entry.lastRecvTs,
-                        lastLat = lastLocation?.lat ?: entry.lastLat,
-                        lastLng = lastLocation?.lng ?: entry.lastLng,
-                        lastTs = lastLocation?.ts ?: entry.lastTs,
-                        lastPollTs = currentTimeSeconds(),
-                        lastDecryptFailed = if (encryptedMessages.isNotEmpty()) isFailedBatch else entry.lastDecryptFailed,
-                    )
-
-                saveFriendInternalWithTs(friendId, updatedEntry, nextTs())
-
-                PollBatchResult(decryptedLocations, anySuccess, silentDrops > 0, anyReplay, failCount, hadStateUpdate)
+            val encryptedMessages = messages.filterIsInstance<EncryptedMessagePayload>()
+            val orderedMessages = BatchProcessor.decryptAndSort(entry.session, encryptedMessages)
+            
+            val result = BatchProcessor.decryptBatch(entry.session, encryptedMessages.size, orderedMessages)
+            
+            val failCount = result.softFailCount + result.hardFailCount
+            if (!result.anySuccess && failCount > 0) {
+                addDiagnosticEvent("DECRYPT FAIL: $failCount msgs failed (${result.hardFailCount} hard, ${result.softFailCount} soft) for ${friendId.take(8)}")
             }
+
+            val hadActivity = result.decryptedLocations.isNotEmpty() || (result.anySuccess && result.finalSession != entry.session)
+            val isFailedBatch = (result.hardFailCount > 0 || result.silentDrops > 0) && !result.anySuccess
+            val lastLocation = result.decryptedLocations.lastOrNull()
+
+            val hadStateUpdate = result.finalSession.recvSeq > entry.session.recvSeq ||
+                !result.finalSession.rootKey.contentEquals(entry.session.rootKey)
+            
+            val currentRecvToken = if (result.anySuccess || hadStateUpdate) result.finalSession.recvToken else entry.session.recvToken
+
+            val updatedSession = if (result.finalSession.isSendTokenPending && !entry.session.isSendTokenPending) {
+                result.finalSession.copy(recvToken = currentRecvToken, sendTokenPendingSinceMs = currentTimeMillis())
+            } else {
+                result.finalSession.copy(recvToken = currentRecvToken)
+            }
+
+            val updatedEntry = entry.copy(
+                session = updatedSession,
+                isConfirmed = entry.isConfirmed || result.anySuccess,
+                lastRecvTs = if (hadActivity) currentTimeSeconds() else entry.lastRecvTs,
+                lastLat = lastLocation?.lat ?: entry.lastLat,
+                lastLng = lastLocation?.lng ?: entry.lastLng,
+                lastTs = lastLocation?.ts ?: entry.lastTs,
+                lastPollTs = currentTimeSeconds(),
+                lastDecryptFailed = if (encryptedMessages.isNotEmpty()) isFailedBatch else entry.lastDecryptFailed,
+            )
+
+            PersistenceAction.Update(updatedEntry) to PollBatchResult(
+                result.decryptedLocations, 
+                result.anySuccess, 
+                result.silentDrops > 0, 
+                result.anyReplay, 
+                failCount, 
+                hadStateUpdate
+            )
         }
     }
 
     suspend fun clearOutbox(id: String) {
-        val friendLock = getFriendLock(id)
-        friendLock.withLock {
-            metadataLock.withLock {
-                val entry = friends[id] ?: return@withLock
-                saveFriendInternalWithTs(id, entry.copy(outbox = null, outbox429Count = 0), nextTs())
+        persistence.withFriendAndMetadataLock(id) { entry, _ ->
+            if (entry != null) {
+                PersistenceAction.Update(entry.copy(outbox = null, outbox429Count = 0)) to Unit
+            } else {
+                PersistenceAction.None to Unit
             }
         }
     }
 
-    suspend fun clearOutboxAndUpdateSession(
-        id: String,
-        newSession: SessionState,
-    ) {
-        val friendLock = getFriendLock(id)
-        friendLock.withLock {
-            metadataLock.withLock {
-                val entry = friends[id] ?: return@withLock
-                saveFriendInternalWithTs(id, entry.copy(session = newSession, outbox = null, outbox429Count = 0), nextTs())
+    suspend fun clearOutboxAndUpdateSession(id: String, newSession: SessionState) {
+        persistence.withFriendAndMetadataLock(id) { entry, _ ->
+            if (entry != null) {
+                PersistenceAction.Update(entry.copy(session = newSession, outbox = null, outbox429Count = 0)) to Unit
+            } else {
+                PersistenceAction.None to Unit
             }
         }
     }
 
     suspend fun incrementOutbox429Count(id: String): Int =
-        getFriendLock(id).withLock {
-            metadataLock.withLock {
-                val entry = friends[id] ?: return@withLock 0
+        persistence.withFriendAndMetadataLock(id) { entry, _ ->
+            if (entry != null) {
                 val newCount = entry.outbox429Count + 1
-                saveFriendInternalWithTs(id, entry.copy(outbox429Count = newCount), nextTs())
-                newCount
+                PersistenceAction.Update(entry.copy(outbox429Count = newCount)) to newCount
+            } else {
+                PersistenceAction.None to 0
             }
         }
 
     suspend fun incrementConsecutiveSilentDrops(id: String): Int =
-        getFriendLock(id).withLock {
-            metadataLock.withLock {
-                val entry = friends[id] ?: return@withLock 0
+        persistence.withFriendAndMetadataLock(id) { entry, _ ->
+            if (entry != null) {
                 val nextCount = entry.consecutiveSilentDrops + 1
-                saveFriendInternalWithTs(id, entry.copy(consecutiveSilentDrops = nextCount), nextTs())
-                nextCount
+                PersistenceAction.Update(entry.copy(consecutiveSilentDrops = nextCount)) to nextCount
+            } else {
+                PersistenceAction.None to 0
             }
         }
 
     suspend fun resetConsecutiveSilentDrops(id: String) {
-        getFriendLock(id).withLock {
-            metadataLock.withLock {
-                val entry = friends[id] ?: return@withLock
-                if (entry.consecutiveSilentDrops == 0) return@withLock
-                saveFriendInternalWithTs(id, entry.copy(consecutiveSilentDrops = 0), nextTs())
+        persistence.withFriendAndMetadataLock(id) { entry, _ ->
+            if (entry != null && entry.consecutiveSilentDrops != 0) {
+                PersistenceAction.Update(entry.copy(consecutiveSilentDrops = 0)) to Unit
+            } else {
+                PersistenceAction.None to Unit
             }
         }
     }
 
-    suspend fun updateLastLocation(
-        id: String,
-        lat: Double,
-        lng: Double,
-        ts: Long,
-    ) {
-        val friendLock = getFriendLock(id)
-        friendLock.withLock {
-            metadataLock.withLock {
-                val entry = friends[id] ?: return@withLock
-                saveFriendInternalWithTs(id, entry.copy(lastLat = lat, lastLng = lng, lastTs = ts), nextTs())
+    suspend fun updateLastLocation(id: String, lat: Double, lng: Double, ts: Long) {
+        persistence.withFriendAndMetadataLock(id) { entry, _ ->
+            if (entry != null) {
+                PersistenceAction.Update(entry.copy(lastLat = lat, lastLng = lng, lastTs = ts)) to Unit
+            } else {
+                PersistenceAction.None to Unit
             }
         }
     }
 
-    suspend fun updateLastSentTs(
-        id: String,
-        ts: Long,
-    ) {
-        val friendLock = getFriendLock(id)
-        friendLock.withLock {
-            metadataLock.withLock {
-                val entry = friends[id] ?: return@withLock
-                saveFriendInternalWithTs(id, entry.copy(lastSentTs = ts), nextTs())
+    suspend fun updateLastSentTs(id: String, ts: Long) {
+        persistence.withFriendAndMetadataLock(id) { entry, _ ->
+            if (entry != null) {
+                PersistenceAction.Update(entry.copy(lastSentTs = ts)) to Unit
+            } else {
+                PersistenceAction.None to Unit
             }
         }
     }
 
-    suspend fun updateLastPollTs(
-        id: String,
-        ts: Long,
-    ) {
-        val friendLock = getFriendLock(id)
-        friendLock.withLock {
-            metadataLock.withLock {
-                val entry = friends[id] ?: return@withLock
-                saveFriendInternalWithTs(id, entry.copy(lastPollTs = ts), nextTs())
+    suspend fun updateLastPollTs(id: String, ts: Long) {
+        persistence.withFriendAndMetadataLock(id) { entry, _ ->
+            if (entry != null) {
+                PersistenceAction.Update(entry.copy(lastPollTs = ts)) to Unit
+            } else {
+                PersistenceAction.None to Unit
             }
         }
     }
 
-    suspend fun clearSendTokenPending(
-        id: String,
-        clearingToken: String? = null,
-    ): Boolean {
-        val friendLock = getFriendLock(id)
-        return friendLock.withLock {
-            metadataLock.withLock {
-                val entry = friends[id] ?: return@withLock false
-                if (!entry.session.isSendTokenPending) return@withLock false
-                if (clearingToken != null && entry.session.prevSendToken.toHex() != clearingToken) return@withLock false
-
-                val newSession = entry.session.copy(isSendTokenPending = false, sendTokenPendingSinceMs = null)
-                saveFriendInternalWithTs(id, entry.copy(session = newSession), nextTs())
-                true
+    suspend fun clearSendTokenPending(id: String, clearingToken: String? = null): Boolean {
+        return persistence.withFriendAndMetadataLock(id) { entry, _ ->
+            if (entry != null && entry.session.isSendTokenPending) {
+                if (clearingToken != null && entry.session.prevSendToken.toHex() != clearingToken) {
+                    PersistenceAction.None to false
+                } else {
+                    val newSession = entry.session.copy(isSendTokenPending = false, sendTokenPendingSinceMs = null)
+                    PersistenceAction.Update(entry.copy(session = newSession)) to true
+                }
+            } else {
+                PersistenceAction.None to false
             }
         }
     }
 
     private fun sanitizeName(name: String): String =
-        normalizeName(
-            name,
-        ).take(32).filter { it.isLetterOrDigit() || it.isWhitespace() }.trim()
-
-    private fun friendKey(id: String) = "e2ee_friend_$id"
+        normalizeName(name).take(32).filter { it.isLetterOrDigit() || it.isWhitespace() }.trim()
 
     companion object {
-        private const val STORAGE_KEY_GLOBAL = "e2ee_global"
-
         const val MAX_PENDING_INVITES = 10
     }
 }

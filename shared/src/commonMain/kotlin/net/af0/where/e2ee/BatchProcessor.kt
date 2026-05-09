@@ -2,9 +2,20 @@ package net.af0.where.e2ee
 
 /**
  * Utility for decrypting headers and sorting a batch of messages chronologically.
- * Handles the "Sealed Envelope" multi-key trial decryption.
+ * Handles the "Sealed Envelope" multi-key trial decryption and the core decryption loop.
  */
 internal object BatchProcessor {
+
+    data class DecryptionResult(
+        val finalSession: SessionState,
+        val decryptedLocations: List<LocationPlaintext>,
+        val anySuccess: Boolean,
+        val anyReplay: Boolean,
+        val softFailCount: Int,
+        val hardFailCount: Int,
+        val silentDrops: Int
+    )
+
     /**
      * Decrypts headers for all [messages] using the keys available in [session].
      * Sorts successfully decrypted messages in chronological order (DH epoch then sequence).
@@ -41,6 +52,62 @@ internal object BatchProcessor {
                 h1.seq.compareTo(h2.seq)
             }
         }
+    }
+
+    /**
+     * Executes the core decryption loop for a batch of ordered messages.
+     * Commits session ratchets even on payload decryption failures (DecryptionExceptionWithState).
+     */
+    fun decryptBatch(
+        initialSession: SessionState,
+        totalEncryptedCount: Int,
+        orderedMessages: List<Pair<Session.DecryptedHeader, EncryptedMessagePayload>>
+    ): DecryptionResult {
+        var currentSession = initialSession
+        val decryptedLocations = mutableListOf<LocationPlaintext>()
+        var anySuccess = false
+        var anyReplay = false
+        var softFailCount = 0
+        var hardFailCount = 0
+
+        for ((header, msg) in orderedMessages) {
+            try {
+                val (newSession, pt) = Session.decryptMessage(currentSession, msg, header)
+                currentSession = newSession
+                anySuccess = true
+                if (pt is MessagePlaintext.Location) {
+                    decryptedLocations.add(
+                        LocationPlaintext(
+                            lat = pt.lat,
+                            lng = pt.lng,
+                            acc = pt.acc,
+                            ts = pt.ts,
+                        ),
+                    )
+                }
+            } catch (e: Exception) {
+                if (e is ReplayException) {
+                    anyReplay = true
+                } else if (e is DecryptionExceptionWithState) {
+                    // If header authenticated but payload failed, we MUST commit the 
+                    // ratcheted session state to prevent permanent DH desync (§5.5).
+                    currentSession = e.newState
+                    softFailCount++
+                } else {
+                    hardFailCount++
+                }
+            }
+        }
+
+        return DecryptionResult(
+            finalSession = currentSession,
+            decryptedLocations = decryptedLocations,
+            anySuccess = anySuccess,
+            anyReplay = anyReplay,
+            softFailCount = softFailCount,
+            hardFailCount = hardFailCount,
+            silentDrops = totalEncryptedCount - orderedMessages.size
+        )
     }
 
     private fun tryDecryptHeader(
