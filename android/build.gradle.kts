@@ -60,8 +60,8 @@ android {
         applicationId = "net.af0.where"
         minSdk = 26
         targetSdk = 35
-        versionCode = 51
-        versionName = "2026.05.06.1"
+        versionCode = 52
+        versionName = "2026.05.09.1"
         manifestPlaceholders["MAPS_API_KEY"] = localProperties.getProperty("MAPS_API_KEY") ?: System.getenv("MAPS_API_KEY") ?: ""
     }
 
@@ -94,6 +94,8 @@ android {
                 storePassword = ksPassword
                 keyAlias = "where"
                 keyPassword = kPassword
+            } else {
+                throw GradleException("Release signing configuration is incomplete. Please ensure KEYSTORE_FILE, KEYSTORE_PASSWORD, and KEY_PASSWORD are set via environment variables or system properties.")
             }
         }
     }
