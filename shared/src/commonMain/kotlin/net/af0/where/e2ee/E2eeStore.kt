@@ -280,7 +280,7 @@ class E2eeStore(
         val (initMsg, session) = KeyExchange.bobProcessQr(qr, sanitizedRequestedName)
 
         val entry = FriendEntry(
-            name = sanitizedRequestedName.ifEmpty { qr.suggestedName },
+            name = qr.suggestedName,
             session = session,
             isInitiator = false,
             lastRecvTs = currentTimeSeconds(),
