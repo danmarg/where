@@ -8,7 +8,7 @@ class ReplayRobustnessTest {
         initializeE2eeTests()
     }
 
-    class MemoryStorage : E2eeStorage {
+    class MemoryStorage : RawKeyValueStorage {
         private val data = mutableMapOf<String, String>()
         override fun getString(key: String): String? = data[key]
         override fun putString(key: String, value: String) { data[key] = value }
@@ -16,8 +16,8 @@ class ReplayRobustnessTest {
 
     @Test
     fun testLostAckReplayDoesNotStall() = runTest {
-        val aliceStore = E2eeStore(MemoryStorage())
-        val bobStore = E2eeStore(MemoryStorage())
+        val aliceManager = E2eeManager(MemoryStorage())
+        val bobManager = E2eeManager(MemoryStorage())
         
         // Custom mailbox that allows us to simulate a "lost ACK"
         class ReplayMailbox : MailboxClient {
@@ -44,24 +44,24 @@ class ReplayRobustnessTest {
         }
 
         val mailbox = ReplayMailbox()
-        val aliceClient = LocationClient("http://fake", aliceStore, mailbox)
-        val bobClient = LocationClient("http://fake", bobStore, mailbox)
+        val aliceClient = LocationClient("http://fake", aliceManager, mailbox)
+        val bobClient = LocationClient("http://fake", bobManager, mailbox)
 
         // 1. Pairing
-        val qr = aliceStore.createInvite("Alice")
-        val (initPayload, bobEntry) = bobStore.processScannedQr(qr)
-        aliceStore.processKeyExchangeInit(initPayload, "Bob", qr.ekPub)
-        val aliceToBobId = aliceStore.listFriends().find { it.name == "Bob" }!!.id
+        val qr = aliceManager.createInvite("Alice")
+        val (initPayload, bobEntry) = bobManager.processScannedQr(qr)
+        aliceManager.processKeyExchangeInit(initPayload, "Bob", qr.ekPub)
+        val aliceToBobId = aliceManager.listFriends().find { it.name == "Bob" }!!.id
         val bobToAliceId = bobEntry.id
 
         // 2. Alice sends A1 (Transition Message)
         aliceClient.sendLocation(1.0, 1.0)
-        val t0 = aliceStore.getFriend(aliceToBobId)!!.session.prevSendToken.toHex()
+        val t0 = aliceManager.getFriend(aliceToBobId)!!.session.prevSendToken.toHex()
         
         // 3. Bob polls T0. Bob receives A1, ratchets to B1.
         // Bob attempts to ACK T0, but we simulate the ACK is lost (messages stay in mailbox).
         bobClient.poll()
-        val bobEntry1 = bobStore.getFriend(bobToAliceId)!!
+        val bobEntry1 = bobManager.getFriend(bobToAliceId)!!
         // recvSeq=2 because of A1 + automated Keepalive
         assertEquals(2L, bobEntry1.session.recvSeq)
         
@@ -73,7 +73,7 @@ class ReplayRobustnessTest {
         assertTrue(updates.isEmpty(), "Replayed location should be ignored")
         
         // Bob's state should still be healthy
-        val bobEntry2 = bobStore.getFriend(bobToAliceId)!!
+        val bobEntry2 = bobManager.getFriend(bobToAliceId)!!
         // recvSeq=2 because of A1 + automated Keepalive
         assertEquals(2L, bobEntry2.session.recvSeq, "Sequence should not advance on replay")
         

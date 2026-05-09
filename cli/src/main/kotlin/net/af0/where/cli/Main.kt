@@ -13,7 +13,7 @@ import net.af0.where.initializeLibsodium
 import java.io.File
 import kotlin.system.exitProcess
 
-class FileE2eeStorage(private val file: File) : E2eeStorage {
+class FileRawKeyValueStorage(private val file: File) : RawKeyValueStorage {
     private val json = Json { prettyPrint = true }
     private var data = mutableMapOf<String, String>()
 
@@ -96,8 +96,8 @@ fun main(args: Array<String>) {
     }
 
     val storageFile = File(statePath)
-    val storage = FileE2eeStorage(storageFile)
-    val store = E2eeStore(storage)
+    val storage = FileRawKeyValueStorage(storageFile)
+    val store = E2eeManager(storage)
 
     var host = "http://localhost:8080"
     val hostIdx = args.indexOf("--host")
@@ -231,7 +231,7 @@ fun main(args: Array<String>) {
 
 suspend fun poll(
     locationClient: LocationClient,
-    store: E2eeStore,
+    store: E2eeManager,
     host: String,
 ) {
     // Poll for pending invites if Alice

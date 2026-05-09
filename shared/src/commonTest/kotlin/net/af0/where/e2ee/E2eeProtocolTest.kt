@@ -2,7 +2,7 @@ package net.af0.where.e2ee
 
 import kotlin.test.*
 
-class BatchProcessorTest {
+class E2eeProtocolTest {
     init {
         initializeE2eeTests()
     }
@@ -64,15 +64,15 @@ class BatchProcessorTest {
         )
 
         // Verify buckets
-        assertEquals(1, BatchProcessor.bucketForHeader(session, hCurrent))
-        assertEquals(0, BatchProcessor.bucketForHeader(session, hLast))
-        assertEquals(3, BatchProcessor.bucketForHeader(session, hAncient))
-        assertEquals(2, BatchProcessor.bucketForHeader(session, hNew))
+        assertEquals(1, E2eeProtocol.bucketForHeader(session, hCurrent))
+        assertEquals(0, E2eeProtocol.bucketForHeader(session, hLast))
+        assertEquals(3, E2eeProtocol.bucketForHeader(session, hAncient))
+        assertEquals(2, E2eeProtocol.bucketForHeader(session, hNew))
 
-        // Simulated sort using the same logic as BatchProcessor.decryptAndSort
+        // Simulated sort using the same logic as E2eeProtocol.decryptAndSort
         val sorted = input.sortedWith { (h1, _), (h2, _) ->
-            val b1 = BatchProcessor.bucketForHeader(session, h1)
-            val b2 = BatchProcessor.bucketForHeader(session, h2)
+            val b1 = E2eeProtocol.bucketForHeader(session, h1)
+            val b2 = E2eeProtocol.bucketForHeader(session, h2)
 
             if (b1 != b2) {
                 b1.compareTo(b2)

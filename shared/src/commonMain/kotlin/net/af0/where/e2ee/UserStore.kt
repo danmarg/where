@@ -12,9 +12,9 @@ private val json = Json { ignoreUnknownKeys = true }
 
 /**
  * Shared store for user-level preferences that need to be reactive across platforms.
- * Uses the same E2eeStorage as E2eeStore but manages its own keys.
+ * Uses the same RawKeyValueStorage as E2eeManager but manages its own keys.
  */
-class UserStore(private val storage: E2eeStorage) {
+class UserStore(private val storage: RawKeyValueStorage) {
     private val _isSharingLocation =
         MutableStateFlow(
             storage.getString(KEY_IS_SHARING)?.toBoolean() ?: true,

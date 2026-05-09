@@ -51,12 +51,12 @@ class E2eeBidirectionalEndToEndTest {
         coroutineScope {
             val random = Random(System.currentTimeMillis())
 
-            val aliceStorage = MemoryE2eeStorage()
-            val bobStorage = MemoryE2eeStorage()
-            val aliceStore = E2eeStore(aliceStorage)
-            val bobStore = E2eeStore(bobStorage)
-            val aliceClient = LocationClient(baseUrl, aliceStore)
-            val bobClient = LocationClient(baseUrl, bobStore)
+            val aliceStorage = MemoryRawKeyValueStorage()
+            val bobStorage = MemoryRawKeyValueStorage()
+            val aliceManager = E2eeManager(aliceStorage)
+            val bobManager = E2eeManager(bobStorage)
+            val aliceClient = LocationClient(baseUrl, aliceManager)
+            val bobClient = LocationClient(baseUrl, bobManager)
 
             println("\n════════════════════════════════════════════════════════════")
             println("  E2EE Bidirectional End-to-End Test")
@@ -69,7 +69,7 @@ class E2eeBidirectionalEndToEndTest {
             println("PHASE 1: Alice Creates Invite")
             println("─────────────────────────────────────────────────────────────")
 
-            val qr = aliceStore.createInvite("Alice")
+            val qr = aliceManager.createInvite("Alice")
             assertNotNull(qr.ekPub, "QR should contain Alice's ephemeral key")
             assertEquals("Alice", qr.suggestedName)
             println("✓ Alice created invite: fingerprint=${qr.fingerprint}")
@@ -81,7 +81,7 @@ class E2eeBidirectionalEndToEndTest {
             println("PHASE 2: Bob Joins Using Invite")
             println("─────────────────────────────────────────────────────────────")
 
-            val (initPayload, bobEntry) = bobStore.processScannedQr(qr, "Bob")
+            val (initPayload, bobEntry) = bobManager.processScannedQr(qr, "Bob")
             assertEquals("Alice", bobEntry.name)
 
             val discoveryHex = qr.discoveryToken().toHex()
@@ -94,15 +94,15 @@ class E2eeBidirectionalEndToEndTest {
             val initMsg = discoveryMessages.filterIsInstance<KeyExchangeInitPayload>().firstOrNull()
             assertNotNull(initMsg, "Alice should find Bob's KeyExchangeInit on the discovery token")
 
-            val aliceEntry = aliceStore.processKeyExchangeInit(initMsg, initMsg.suggestedName, qr.ekPub)
+            val aliceEntry = aliceManager.processKeyExchangeInit(initMsg, initMsg.suggestedName, qr.ekPub)
             assertNotNull(aliceEntry, "Alice should process KeyExchangeInit successfully")
             val aliceFriendId = aliceEntry.id
             println("✓ Alice processed KeyExchangeInit, friendId=${aliceFriendId.take(8)}")
             println()
 
             // Verify both sides have matching, symmetric tokens
-            val aliceSession = aliceStore.getFriend(aliceFriendId)!!.session
-            val bobSession = bobStore.getFriend(aliceFriendId)!!.session
+            val aliceSession = aliceManager.getFriend(aliceFriendId)!!.session
+            val bobSession = bobManager.getFriend(aliceFriendId)!!.session
 
             // Verify initial session symmetry.
             // In the new Sealed Envelope protocol, Alice performs an initial DH ratchet
@@ -128,7 +128,7 @@ class E2eeBidirectionalEndToEndTest {
             println("\nPHASE 4: Bob Polls for Alice's Location")
             println("─────────────────────────────────────────────────────────────")
 
-            val allUpdates1 = drainStability(aliceClient to aliceStore, bobClient to bobStore)
+            val allUpdates1 = drainStability(aliceClient to aliceManager, bobClient to bobManager)
             val aliceLocFromBob = allUpdates1.firstOrNull { it.userId == aliceFriendId }
             assertNotNull(aliceLocFromBob, "Bob should receive Alice's location via drainStability")
             assertEquals(aliceLocation.first, aliceLocFromBob.lat, 0.0001)
@@ -149,7 +149,7 @@ class E2eeBidirectionalEndToEndTest {
             println("\nPHASE 6: Alice Polls for Bob's Location")
             println("─────────────────────────────────────────────────────────────")
 
-            val allUpdates2 = drainStability(aliceClient to aliceStore, bobClient to bobStore)
+            val allUpdates2 = drainStability(aliceClient to aliceManager, bobClient to bobManager)
             val bobLocFromAlice = allUpdates2.firstOrNull { it.userId == aliceFriendId }
             assertNotNull(bobLocFromAlice, "Alice should receive Bob's location via drainStability")
             assertEquals(bobLocation.first, bobLocFromAlice.lat, 0.0001)
@@ -183,7 +183,7 @@ class E2eeBidirectionalEndToEndTest {
                 delay(10)
             }
 
-            drainStability(aliceClient to aliceStore, bobClient to bobStore)
+            drainStability(aliceClient to aliceManager, bobClient to bobManager)
             println("✓ Bob and Alice mailboxes fully drained and state stabilized")
             println()
 
@@ -193,8 +193,8 @@ class E2eeBidirectionalEndToEndTest {
             println("PHASE 8: Verify State Integrity")
             println("─────────────────────────────────────────────────────────────")
 
-            val finalAliceSession = aliceStore.getFriend(aliceFriendId)!!.session
-            val finalBobSession = bobStore.getFriend(aliceFriendId)!!.session
+            val finalAliceSession = aliceManager.getFriend(aliceFriendId)!!.session
+            val finalBobSession = bobManager.getFriend(aliceFriendId)!!.session
 
             println("Final Session State:")
             println(
@@ -234,9 +234,9 @@ class E2eeBidirectionalEndToEndTest {
     fun `mailbox POST failure during Bob exchange`() {
         runBlocking {
             initializeLibsodium()
-            val bobStore = E2eeStore(MemoryE2eeStorage())
+            val bobManager = E2eeManager(MemoryRawKeyValueStorage())
             val (qr, _) = KeyExchange.aliceCreateQrPayload("Alice")
-            val (initPayload, _) = bobStore.processScannedQr(qr, "Bob")
+            val (initPayload, _) = bobManager.processScannedQr(qr, "Bob")
 
             // Use a non-existent host to trigger a failure
             val badUrl = "http://localhost:1"
@@ -262,7 +262,7 @@ class E2eeBidirectionalEndToEndTest {
     }
 
     private suspend fun drainStability(
-        vararg nodes: Pair<LocationClient, E2eeStore>,
+        vararg nodes: Pair<LocationClient, E2eeManager>,
         timeoutMs: Long = 60_000,
     ): List<net.af0.where.model.UserLocation> {
         val start = System.currentTimeMillis()
@@ -297,12 +297,12 @@ class E2eeBidirectionalEndToEndTest {
 
     private suspend fun runThreePartyTest(baseUrl: String) {
         coroutineScope {
-            val aStorage = MemoryE2eeStorage()
-            val bStorage = MemoryE2eeStorage()
-            val cStorage = MemoryE2eeStorage()
-            val aStore = E2eeStore(aStorage)
-            val bStore = E2eeStore(bStorage)
-            val cStore = E2eeStore(cStorage)
+            val aStorage = MemoryRawKeyValueStorage()
+            val bStorage = MemoryRawKeyValueStorage()
+            val cStorage = MemoryRawKeyValueStorage()
+            val aStore = E2eeManager(aStorage)
+            val bStore = E2eeManager(bStorage)
+            val cStore = E2eeManager(cStorage)
             val aClient = LocationClient(baseUrl, aStore)
             val bClient = LocationClient(baseUrl, bStore)
             val cClient = LocationClient(baseUrl, cStore)
@@ -414,10 +414,10 @@ class E2eeBidirectionalEndToEndTest {
 
     private suspend fun runConcurrentSendPollTest(baseUrl: String) {
         coroutineScope {
-            val aStorage = MemoryE2eeStorage()
-            val bStorage = MemoryE2eeStorage()
-            val aStore = E2eeStore(aStorage)
-            val bStore = E2eeStore(bStorage)
+            val aStorage = MemoryRawKeyValueStorage()
+            val bStorage = MemoryRawKeyValueStorage()
+            val aStore = E2eeManager(aStorage)
+            val bStore = E2eeManager(bStorage)
             val aClient = LocationClient(baseUrl, aStore)
             val bClient = LocationClient(baseUrl, bStore)
 
@@ -539,10 +539,10 @@ class E2eeBidirectionalEndToEndTest {
 
     private suspend fun runFinalizeTransitionFailureTest(baseUrl: String) {
         coroutineScope {
-            val aStorage = MemoryE2eeStorage()
-            val bStorage = MemoryE2eeStorage()
-            val aStore = E2eeStore(aStorage)
-            val bStore = E2eeStore(bStorage)
+            val aStorage = MemoryRawKeyValueStorage()
+            val bStorage = MemoryRawKeyValueStorage()
+            val aStore = E2eeManager(aStorage)
+            val bStore = E2eeManager(bStorage)
             val aClient = LocationClient(baseUrl, aStore)
             val bClient = LocationClient(baseUrl, bStore)
 
@@ -673,10 +673,10 @@ class E2eeBidirectionalEndToEndTest {
 
     private suspend fun runNoAckOnAllFailureTest(baseUrl: String) {
         coroutineScope {
-            val aStorage = MemoryE2eeStorage()
-            val bStorage = MemoryE2eeStorage()
-            val aStore = E2eeStore(aStorage)
-            val bStore = E2eeStore(bStorage)
+            val aStorage = MemoryRawKeyValueStorage()
+            val bStorage = MemoryRawKeyValueStorage()
+            val aStore = E2eeManager(aStorage)
+            val bStore = E2eeManager(bStorage)
 
             // Pair and stabilize
             val qr = aStore.createInvite("A")
@@ -771,10 +771,10 @@ class E2eeBidirectionalEndToEndTest {
 
     private suspend fun runFinalizeTransitionRecoveryViaPollTest(baseUrl: String) {
         coroutineScope {
-            val aStorage = MemoryE2eeStorage()
-            val bStorage = MemoryE2eeStorage()
-            val aStore = E2eeStore(aStorage)
-            val bStore = E2eeStore(bStorage)
+            val aStorage = MemoryRawKeyValueStorage()
+            val bStorage = MemoryRawKeyValueStorage()
+            val aStore = E2eeManager(aStorage)
+            val bStore = E2eeManager(bStorage)
             val aClient = LocationClient(baseUrl, aStore)
             val bClient = LocationClient(baseUrl, bStore)
 
@@ -879,7 +879,7 @@ class E2eeBidirectionalEndToEndTest {
         }
     }
 
-    private class MemoryE2eeStorage : E2eeStorage {
+    private class MemoryRawKeyValueStorage : RawKeyValueStorage {
         private val data = mutableMapOf<String, String>()
 
         override fun getString(key: String): String? = data[key]

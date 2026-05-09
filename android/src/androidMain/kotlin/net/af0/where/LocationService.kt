@@ -31,7 +31,7 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import net.af0.where.e2ee.ConnectionStatus
-import net.af0.where.e2ee.E2eeStore
+import net.af0.where.e2ee.E2eeManager
 import net.af0.where.e2ee.LocationClient
 import net.af0.where.shared.MR
 
@@ -46,13 +46,16 @@ class LocationService : Service() {
     internal var fusedClientOverride: com.google.android.gms.location.FusedLocationProviderClient? = null
 
     @VisibleForTesting
-    internal var e2eeStoreOverride: E2eeStore? = null
+    internal var e2eeManagerOverride: E2eeManager? = null
 
     @VisibleForTesting
     internal var locationClientOverride: LocationClient? = null
 
     @VisibleForTesting
     internal var locationSourceOverride: LocationSource? = null
+
+    @VisibleForTesting
+    internal var uiStateStoreOverride: UiStateSource? = null
 
     private lateinit var alarmManager: AlarmManager
     private lateinit var fusedClient: com.google.android.gms.location.FusedLocationProviderClient
@@ -65,9 +68,10 @@ class LocationService : Service() {
 
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
 
-    private lateinit var e2eeStore: E2eeStore
+    private lateinit var e2eeManager: E2eeManager
     private lateinit var locationClient: LocationClient
     private lateinit var locationSource: LocationSource
+    private lateinit var uiStateStore: UiStateSource
 
     private fun hasLocationPermission(): Boolean {
         return ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED ||
@@ -81,6 +85,7 @@ class LocationService : Service() {
 
         val app = application as WhereApplication
         locationSource = locationSourceOverride ?: app.locationSource
+        uiStateStore = uiStateStoreOverride ?: app.uiStateStore
 
         // Initialise repository sharing state from prefs before starting any collection.
         locationSource.setSharingLocation(UserPrefs.isSharing(this))
@@ -90,7 +95,7 @@ class LocationService : Service() {
 
         alarmManager = getSystemService(AlarmManager::class.java)
 
-        e2eeStore = e2eeStoreOverride ?: app.e2eeStore
+        e2eeManager = e2eeManagerOverride ?: app.e2eeManager
         locationClient = locationClientOverride ?: app.locationClient
         fusedClient = fusedClientOverride ?: LocationServices.getFusedLocationProviderClient(this)
 
@@ -279,7 +284,7 @@ class LocationService : Service() {
                     // and let them know we're still there.
                     try {
                         val activeFriends =
-                            e2eeStore.listFriends().filter {
+                            e2eeManager.listFriends().filter {
                                 it.id !in locationSource.pausedFriendIds.value && !it.isStale
                             }
                         for (friend in activeFriends) {
@@ -332,9 +337,9 @@ class LocationService : Service() {
         // We consider it rapid if the share sheet is open, or we're in key exchange naming.
         val now = clock()
         val recentlyTriggered = now - locationSource.lastRapidPollTrigger.value < 60_000L
-        val isSheetShowing = locationSource.isInviteSheetShowing.value
+        val isSheetShowing = uiStateStore.isInviteSheetShowing.value
         // Also check if Bob is on the naming screen.
-        val isNaming = locationSource.pendingQrForNaming.value != null
+        val isNaming = uiStateStore.pendingQrForNaming.value != null
         return isSheetShowing || locationSource.pendingInitPayload.value != null || recentlyTriggered || isNaming
     }
 
@@ -346,7 +351,7 @@ class LocationService : Service() {
             Log.d(TAG, "Polling for location updates")
             val now = clock()
             if (now - lastCleanupTime > 3600_000L) {
-                e2eeStore.cleanupExpiredInvites(48 * 3600L)
+                e2eeManager.cleanupExpiredInvites(48 * 3600L)
                 lastCleanupTime = now
             }
             val updates =
@@ -361,11 +366,11 @@ class LocationService : Service() {
                     locationSource.onFriendUpdate(update, now)
                     locationSource.onFriendLocationReceived(update.userId)
                     // Persistence: use the timestamp from the update payload.
-                    e2eeStore.updateLastLocation(update.userId, update.lat, update.lng, update.timestamp)
+                    e2eeManager.updateLastLocation(update.userId, update.lat, update.lng, update.timestamp)
                 }
                 pollPendingInvites()
-                locationSource.onFriendsUpdated(e2eeStore.listFriends())
-                locationSource.onPendingInvitesUpdated(e2eeStore.listPendingInvites())
+                locationSource.onFriendsUpdated(e2eeManager.listFriends())
+                locationSource.onPendingInvitesUpdated(e2eeManager.listPendingInvites())
                 updateStatus(null)
             }
         } catch (e: CancellationException) {
@@ -381,7 +386,7 @@ class LocationService : Service() {
             val results = locationClient.pollPendingInvites()
             if (results.isEmpty()) return
 
-            val pendingInvites = e2eeStore.listPendingInvites()
+            val pendingInvites = e2eeManager.listPendingInvites()
             val filteredResults =
                 results.filter { result ->
                     pendingInvites.any { it.qrPayload.ekPub.contentEquals(result.aliceEkPub) }
@@ -403,7 +408,8 @@ class LocationService : Service() {
                         "(multipleScans=${result.multipleScansDetected})",
                 )
                 withContext(Dispatchers.Main) {
-                    locationSource.onPendingInit(initPayload, result.multipleScansDetected, result.aliceEkPub)
+                    uiStateStore.setMultipleScansDetected(result.multipleScansDetected)
+                    locationSource.onPendingInit(initPayload, result.aliceEkPub)
                     updateStatus(null)
                 }
             }

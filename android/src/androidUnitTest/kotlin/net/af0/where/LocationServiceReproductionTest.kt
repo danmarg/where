@@ -8,7 +8,7 @@ import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
-import net.af0.where.e2ee.E2eeStore
+import net.af0.where.e2ee.E2eeManager
 import net.af0.where.e2ee.KeyExchangeInitPayload
 import net.af0.where.e2ee.LocationClient
 import net.af0.where.e2ee.PendingInviteResult
@@ -48,9 +48,9 @@ class LocationServiceReproductionTest {
             val service = controller.get()
 
             val mockClient = mockk<LocationClient>(relaxed = true)
-            val mockStore = mockk<E2eeStore>(relaxed = true)
+            val mockStore = mockk<E2eeManager>(relaxed = true)
             service.locationClientOverride = mockClient
-            service.e2eeStoreOverride = mockStore
+            service.e2eeManagerOverride = mockStore
             service.locationSourceOverride = fakeLocationSource
 
             controller.create()

@@ -28,18 +28,18 @@ class RatchetCollisionTest {
     @Test
     fun testSimultaneousSymmetricAndDhRatchet() =
         runTest {
-            val aliceStore = E2eeStore(MemoryStorage())
-            val bobStore = E2eeStore(MemoryStorage())
+            val aliceManager = E2eeManager(MemoryStorage())
+            val bobManager = E2eeManager(MemoryStorage())
             val relay = RelayMailboxClient()
-            val aliceClient = LocationClient("http://fake", aliceStore, relay)
-            val bobClient = LocationClient("http://fake", bobStore, relay)
+            val aliceClient = LocationClient("http://fake", aliceManager, relay)
+            val bobClient = LocationClient("http://fake", bobManager, relay)
 
             // 1. Initial pairing
-            val qr = aliceStore.createInvite("Alice")
-            val (init, _) = bobStore.processScannedQr(qr)
-            aliceStore.processKeyExchangeInit(init, "Bob", qr.ekPub)
-            val aliceToBobId = aliceStore.listFriends().find { it.name == "Bob" }!!.id
-            val bobToAliceId = bobStore.listFriends().find { it.name == "Alice" }!!.id
+            val qr = aliceManager.createInvite("Alice")
+            val (init, _) = bobManager.processScannedQr(qr)
+            aliceManager.processKeyExchangeInit(init, "Bob", qr.ekPub)
+            val aliceToBobId = aliceManager.listFriends().find { it.name == "Bob" }!!.id
+            val bobToAliceId = bobManager.listFriends().find { it.name == "Alice" }!!.id
 
             // 2. Alice sends A1_S1 (Bootstrap transition).
             // Alice: local=A1, remote=B0, isSendTokenPending=true (posting to T_A0)
@@ -49,7 +49,7 @@ class RatchetCollisionTest {
             // Bob: ratchets to B1 (triggered by A1).
             // Bob's state: local=B1, remote=A1, recvToken=T_A1, isSendTokenPending=true (posting to T_B0)
             bobClient.poll()
-            val bobAfterA1 = bobStore.getFriend(bobToAliceId)!!
+            val bobAfterA1 = bobManager.getFriend(bobToAliceId)!!
             val b1 = bobAfterA1.session.localDhPub.toHex()
             assertTrue(bobAfterA1.session.isSendTokenPending)
 
@@ -68,7 +68,7 @@ class RatchetCollisionTest {
             // Alice: ratchets to A2 (triggered by B1).
             // Alice's state: local=A2, remote=B1, recvToken=T_B1.
             val aliceUpdates = aliceClient.poll()
-            val aliceAfterB1 = aliceStore.getFriend(aliceToBobId)!!
+            val aliceAfterB1 = aliceManager.getFriend(aliceToBobId)!!
             val a2 = aliceAfterB1.session.localDhPub.toHex()
             assertTrue(aliceAfterB1.session.isSendTokenPending, "Alice should have a pending transition after seeing B1")
 
@@ -90,8 +90,8 @@ class RatchetCollisionTest {
             assertEquals(2.0, bobUpdatesFinal.first().lat)
 
             // Verify session health
-            val finalAlice = aliceStore.getFriend(aliceToBobId)!!
-            val finalBob = bobStore.getFriend(bobToAliceId)!!
+            val finalAlice = aliceManager.getFriend(aliceToBobId)!!
+            val finalBob = bobManager.getFriend(bobToAliceId)!!
             assertEquals(a2, finalBob.session.remoteDhPub.toHex())
             assertEquals(b1, finalAlice.session.remoteDhPub.toHex())
         }
@@ -103,17 +103,17 @@ class RatchetCollisionTest {
     @Test
     fun testCrossInitialization() =
         runTest {
-            val aliceStore = E2eeStore(MemoryStorage())
-            val bobStore = E2eeStore(MemoryStorage())
+            val aliceManager = E2eeManager(MemoryStorage())
+            val bobManager = E2eeManager(MemoryStorage())
             val relay = RelayMailboxClient()
-            val aliceClient = LocationClient("http://fake", aliceStore, relay)
-            val bobClient = LocationClient("http://fake", bobStore, relay)
+            val aliceClient = LocationClient("http://fake", aliceManager, relay)
+            val bobClient = LocationClient("http://fake", bobManager, relay)
 
-            val qr = aliceStore.createInvite("Alice")
-            val (init, _) = bobStore.processScannedQr(qr)
-            aliceStore.processKeyExchangeInit(init, "Bob", qr.ekPub)
-            val aliceToBobId = aliceStore.listFriends().find { it.name == "Bob" }!!.id
-            val bobToAliceId = bobStore.listFriends().find { it.name == "Alice" }!!.id
+            val qr = aliceManager.createInvite("Alice")
+            val (init, _) = bobManager.processScannedQr(qr)
+            aliceManager.processKeyExchangeInit(init, "Bob", qr.ekPub)
+            val aliceToBobId = aliceManager.listFriends().find { it.name == "Bob" }!!.id
+            val bobToAliceId = bobManager.listFriends().find { it.name == "Alice" }!!.id
 
             // Alice and Bob both send a location BEFORE polling each other.
             // Alice: sends A1_S1 to T_A0 (transition).
@@ -132,8 +132,8 @@ class RatchetCollisionTest {
             assertEquals(10.0, bobUpdates.first().lat)
 
             // Verify tokens
-            val aliceEntry = aliceStore.getFriend(aliceToBobId)!!
-            val bobEntry = bobStore.getFriend(bobToAliceId)!!
+            val aliceEntry = aliceManager.getFriend(aliceToBobId)!!
+            val bobEntry = bobManager.getFriend(bobToAliceId)!!
 
             // Bob should have ratcheted to B1 after seeing Alice's A1.
             assertTrue(bobEntry.session.isSendTokenPending, "Bob should be pending transition to B1")

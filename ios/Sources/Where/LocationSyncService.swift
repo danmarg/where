@@ -126,17 +126,17 @@ final class LocationSyncService: ObservableObject {
         }
     }
 
-    let e2eeStore: Shared.E2eeStore
+    let e2eeManager: Shared.E2eeManager
     let userStore: Shared.UserStore
     let locationClient: LocationClientProtocol
     let locationProvider: LocationProviding
 
-    init(e2eeStore: Shared.E2eeStore? = nil, userStore: Shared.UserStore? = nil, locationClient: LocationClientProtocol? = nil, locationProvider: LocationProviding? = nil) {
+    init(e2eeManager: Shared.E2eeManager? = nil, userStore: Shared.UserStore? = nil, locationClient: LocationClientProtocol? = nil, locationProvider: LocationProviding? = nil) {
         logger.debug("LocationSyncService init: serverUrl=\(ServerConfig.httpBaseUrl)")
 
-        let keychain = KeychainE2eeStorage()
-        let store = e2eeStore ?? Shared.E2eeStore(storage: keychain)
-        self.e2eeStore = store
+        let keychain = KeychainRawKeyValueStorage()
+        let store = e2eeManager ?? Shared.E2eeManager(storage: keychain)
+        self.e2eeManager = store
         let userStoreValue = userStore ?? Shared.UserStore(storage: keychain)
         self.userStore = userStoreValue
         self.locationClient = locationClient ?? Shared.LocationClient(baseUrl: ServerConfig.httpBaseUrl, store: store)
@@ -194,7 +194,7 @@ final class LocationSyncService: ObservableObject {
             return
         }
         do {
-            let qr = try await e2eeStore.createInvite(suggestedName: displayName)
+            let qr = try await e2eeManager.createInvite(suggestedName: displayName)
             inviteState = Shared.InviteState.Pending(qr: qr)
             triggerRapidPoll()
         } catch {
@@ -280,8 +280,8 @@ final class LocationSyncService: ObservableObject {
     func markCurrentInviteExported() async {
         guard let qr = (inviteState as? Shared.InviteState.Pending)?.qr else { return }
         do {
-            try await e2eeStore.markInviteExported(ekPub: qr.ekPub)
-            pendingInvites = try await e2eeStore.listPendingInvites()
+            try await e2eeManager.markInviteExported(ekPub: qr.ekPub)
+            pendingInvites = try await e2eeManager.listPendingInvites()
         } catch {
             logger.error("Failed to mark invite exported: \(error.localizedDescription)")
         }
@@ -292,7 +292,7 @@ final class LocationSyncService: ObservableObject {
         
         // Refresh pendingInvites to get latest exportedAt state
         do {
-            let list = try await e2eeStore.listPendingInvites()
+            let list = try await e2eeManager.listPendingInvites()
             if let current = list.first(where: { toSwiftData($0.qrPayload.ekPub) == toSwiftData(pending.qr.ekPub) }) {
                 if current.exportedAt == nil {
                     await clearInvite(ekPub: toSwiftData(pending.qr.ekPub))
@@ -332,7 +332,7 @@ final class LocationSyncService: ObservableObject {
 
         if Date().timeIntervalSince(lastCleanupTime) > 3600 {
             do {
-                try await e2eeStore.cleanupExpiredInvites(expirySeconds: 48 * 3600)
+                try await e2eeManager.cleanupExpiredInvites(expirySeconds: 48 * 3600)
                 lastCleanupTime = Date()
             } catch {
                 logger.error("Failed to cleanup expired invites: \(error.localizedDescription)")
@@ -354,7 +354,7 @@ final class LocationSyncService: ObservableObject {
             logger.debug("Got \(updates.count) location updates")
             for update in updates {
                 do {
-                    try await e2eeStore.updateLastLocation(id: update.userId, lat: update.lat, lng: update.lng, ts: update.timestamp)
+                    try await e2eeManager.updateLastLocation(id: update.userId, lat: update.lat, lng: update.lng, ts: update.timestamp)
                 } catch {
                     logger.error("Failed to update last location for \(update.userId): \(error.localizedDescription)")
                 }
@@ -363,9 +363,9 @@ final class LocationSyncService: ObservableObject {
                 onFriendLocationReceived(friendId: update.userId)
             }
 
-            friends = try await e2eeStore.listFriends()
-            diagnosticLog = e2eeStore.diagnosticLogSnapshot() as? [String] ?? []
-            pendingInvites = try await e2eeStore.listPendingInvites()
+            friends = try await e2eeManager.listFriends()
+            diagnosticLog = e2eeManager.diagnosticLogSnapshot() as? [String] ?? []
+            pendingInvites = try await e2eeManager.listPendingInvites()
             // Always update visibleUsers to ensure map is fresh when returning to foreground.
             updateVisibleUsers()
 
@@ -404,7 +404,7 @@ final class LocationSyncService: ObservableObject {
         let results = try await locationClient.pollPendingInvites()
         if results.isEmpty { return [] }
 
-        let pendingInvites = try await e2eeStore.listPendingInvites()
+        let pendingInvites = try await e2eeManager.listPendingInvites()
         let filteredResults = results.filter { result in
             pendingInvites.contains { invite in
                 toSwiftData(invite.qrPayload.ekPub) == toSwiftData(result.aliceEkPub)
@@ -433,15 +433,15 @@ final class LocationSyncService: ObservableObject {
         do {
             let ekPubToClear = ekPub ?? pendingInitAliceEkPub
             if let ekPubToClear = ekPubToClear {
-                try await e2eeStore.clearInvite(ekPub: kotlinByteArray(from: ekPubToClear))
+                try await e2eeManager.clearInvite(ekPub: kotlinByteArray(from: ekPubToClear))
             } else if inviteState is Shared.InviteState.Pending {
                 // If we are currently showing a QR but no one has scanned it yet,
                 // clear that specific one.
                 if let qr = (inviteState as? Shared.InviteState.Pending)?.qr {
-                    try await e2eeStore.clearInvite(ekPub: qr.ekPub)
+                    try await e2eeManager.clearInvite(ekPub: qr.ekPub)
                 }
             }
-            pendingInvites = try await e2eeStore.listPendingInvites()
+            pendingInvites = try await e2eeManager.listPendingInvites()
         } catch {
             logger.error("Failed to clear invite: \(error.localizedDescription)")
         }
@@ -477,7 +477,7 @@ final class LocationSyncService: ObservableObject {
 
         defer { isExchanging = false }
         do {
-            let result = try await e2eeStore.processScannedQr(qr: qrWithName, bobSuggestedName: displayName)
+            let result = try await e2eeManager.processScannedQr(qr: qrWithName, bobSuggestedName: displayName)
             guard let initPayload = result.first, let bobEntry = result.second else {
                 logger.error("processScannedQr returned nil components")
                 updateStatus(NSError(domain: "Where", code: -1, userInfo: [NSLocalizedDescriptionKey: MR.strings().pairing_failed.localized()]))
@@ -488,7 +488,7 @@ final class LocationSyncService: ObservableObject {
             // Insert AFTER clearInvite: clearInvite calls resetRapidPoll which clears
             // awaitingFirstUpdateIds, so inserting before it is a no-op.
             awaitingFirstUpdateIds.insert(bobEntry.id)
-            friends = try await e2eeStore.listFriends()
+            friends = try await e2eeManager.listFriends()
             updateVisibleUsers()
 
             do {
@@ -511,7 +511,7 @@ final class LocationSyncService: ObservableObject {
                     locationProvider.requestPermissionAndStart()
                 }
                 await pollAll(updateUi: true)
-                friends = try await e2eeStore.listFriends()
+                friends = try await e2eeManager.listFriends()
                 updateVisibleUsers()
                 triggerRapidPoll()
 
@@ -535,11 +535,11 @@ final class LocationSyncService: ObservableObject {
 
         defer { isExchanging = false }
         do {
-            let result = try await e2eeStore.processKeyExchangeInit(payload: payload, bobName: name, aliceEkPub: kotlinByteArray(from: aliceEkPub))
+            let result = try await e2eeManager.processKeyExchangeInit(payload: payload, bobName: name, aliceEkPub: kotlinByteArray(from: aliceEkPub))
 
             if let entry = result ?? nil {
                 awaitingFirstUpdateIds.insert(entry.id)
-                friends = try await e2eeStore.listFriends()
+                friends = try await e2eeManager.listFriends()
                 updateVisibleUsers()
 
                 if let last = locationProvider.lastLocation {
@@ -556,7 +556,7 @@ final class LocationSyncService: ObservableObject {
                 }
             }
             triggerRapidPoll()
-            friends = try await e2eeStore.listFriends()
+            friends = try await e2eeManager.listFriends()
             updateVisibleUsers()
         } catch {
             logger.error("confirmPendingInit failed: \(error.localizedDescription)")
@@ -578,8 +578,8 @@ final class LocationSyncService: ObservableObject {
 
     func renameFriend(id: String, newName: String) async {
         do {
-            try await e2eeStore.renameFriend(id: id, newName: newName)
-            friends = try await e2eeStore.listFriends()
+            try await e2eeManager.renameFriend(id: id, newName: newName)
+            friends = try await e2eeManager.listFriends()
             updateVisibleUsers()
         } catch {
             logger.error("Failed to rename friend: \(error.localizedDescription)")
@@ -588,9 +588,9 @@ final class LocationSyncService: ObservableObject {
 
     func removeFriend(id: String) async {
         do {
-            try await e2eeStore.deleteFriend(id: id)
+            try await e2eeManager.deleteFriend(id: id)
             pausedFriendIds.remove(id)
-            friends = try await e2eeStore.listFriends()
+            friends = try await e2eeManager.listFriends()
             friendLocations.removeValue(forKey: id)
             friendLastPing.removeValue(forKey: id)
             updateVisibleUsers()

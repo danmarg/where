@@ -9,20 +9,20 @@ class OutboxRecoveryTest {
     }
 
     private lateinit var storage: MemoryStorage
-    private lateinit var store: E2eeStore
+    private lateinit var store: E2eeManager
 
     @BeforeTest
     fun setup() {
         storage = MemoryStorage()
-        store = E2eeStore(storage)
+        store = E2eeManager(storage)
     }
 
     @Test
     fun testOutboxPersistence() =
         runTest {
             // Setup a friend session briefly
-            val aliceStore = E2eeStore(MemoryStorage())
-            val qr = aliceStore.createInvite("Alice")
+            val aliceManager = E2eeManager(MemoryStorage())
+            val qr = aliceManager.createInvite("Alice")
             val (_, bobEntry) = store.processScannedQr(qr)
             val friendId = bobEntry.id
 
@@ -38,7 +38,7 @@ class OutboxRecoveryTest {
             assertTrue(originalSeq > 0)
 
             // Simulate crash: create a new store instance from same storage
-            val recoveredStore = E2eeStore(storage)
+            val recoveredStore = E2eeManager(storage)
             val friendRecovered = recoveredStore.getFriend(friendId)
 
             assertNotNull(friendRecovered?.outbox)
@@ -61,10 +61,10 @@ class OutboxRecoveryTest {
     fun testOutboxPermanentFailureClearsOutbox() =
         runTest {
             // use 'store' (Bob's side, pre-initialized with 'storage' in setup())
-            // and 'aliceStore' (Alice's side, sharing the same storage)
-            val aliceStore = E2eeStore(storage)
+            // and 'aliceManager' (Alice's side, sharing the same storage)
+            val aliceManager = E2eeManager(storage)
 
-            val qr = aliceStore.createInvite("Alice")
+            val qr = aliceManager.createInvite("Alice")
             val (_, bobEntry) = store.processScannedQr(qr)
             val friendId = bobEntry.id
 

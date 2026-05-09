@@ -61,7 +61,7 @@ class LocationServiceSharingPauseTest {
             val service = controller.get()
             service.fusedClientOverride = mockFused
             service.locationClientOverride = mockk(relaxed = true)
-            service.e2eeStoreOverride = mockk(relaxed = true)
+            service.e2eeManagerOverride = mockk(relaxed = true)
             service.locationSourceOverride = fakeLocationSource
 
             controller.create()

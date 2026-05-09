@@ -13,23 +13,23 @@ class DesyncReproTest {
         runTest {
             val storage = MemoryStorage()
             val chaosStorage = ChaosStorage(storage)
-            val store = E2eeStore(chaosStorage)
+            val store = E2eeManager(chaosStorage)
 
-            val aliceStore = E2eeStore(MemoryStorage())
-            val qr = aliceStore.createInvite("Alice")
+            val aliceManager = E2eeManager(MemoryStorage())
+            val qr = aliceManager.createInvite("Alice")
             val (initPayload, bobEntry) = store.processScannedQr(qr)
-            aliceStore.processKeyExchangeInit(initPayload, "Bob", qr.ekPub)
+            aliceManager.processKeyExchangeInit(initPayload, "Bob", qr.ekPub)
 
-            val aliceToBobId = aliceStore.listFriends().first().id
+            val aliceToBobId = aliceManager.listFriends().first().id
             val bobToAliceId = bobEntry.id
 
             // 1. Alice sends a message
             val (aSess, msg) =
                 Session.encryptMessage(
-                    aliceStore.getFriend(aliceToBobId)!!.session,
+                    aliceManager.getFriend(aliceToBobId)!!.session,
                     MessagePlaintext.Location(1.0, 1.0, 1.0, 1000L),
                 )
-            aliceStore.updateSession(aliceToBobId, aSess)
+            aliceManager.updateSession(aliceToBobId, aSess)
 
             // 2. Bob processes batch, but DISK WRITE FAILS
             chaosStorage.failNextWrite = true
@@ -43,7 +43,7 @@ class DesyncReproTest {
             val inMemorySeq = store.getFriend(bobToAliceId)!!.session.recvSeq
             assertEquals(0L, inMemorySeq, "In-memory state should NOT be ratcheted if disk write failed")
 
-            val reloadedStore = E2eeStore(storage)
+            val reloadedStore = E2eeManager(storage)
             val onDiskSeq = reloadedStore.getFriend(bobToAliceId)!!.session.recvSeq
             assertEquals(0L, onDiskSeq, "On-disk state should NOT be ratcheted")
 

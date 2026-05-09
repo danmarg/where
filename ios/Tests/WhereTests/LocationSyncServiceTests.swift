@@ -9,7 +9,7 @@ import CoreLocation
 class LocationSyncServiceTests: XCTestCase {
     var service: LocationSyncService!
 
-    class MockE2eeStorage: Shared.E2eeStorage, @unchecked Sendable {
+    class MockRawKeyValueStorage: Shared.RawKeyValueStorage, @unchecked Sendable {
         private let lock = NSLock()
         private var data: [String: String] = [:]
         func getString(key: String) -> String? {
@@ -35,15 +35,15 @@ class LocationSyncServiceTests: XCTestCase {
         }
     }
 
-    var mockStorage: MockE2eeStorage!
+    var mockStorage: MockRawKeyValueStorage!
     var mockLocationProvider: MockLocationProvider!
 
     override func setUp() async throws {
-        self.mockStorage = MockE2eeStorage()
+        self.mockStorage = MockRawKeyValueStorage()
         self.mockLocationProvider = MockLocationProvider()
-        let e2eeStore = Shared.E2eeStore(storage: mockStorage)
+        let e2eeManager = Shared.E2eeManager(storage: mockStorage)
         let userStore = Shared.UserStore(storage: mockStorage)
-        self.service = LocationSyncService(e2eeStore: e2eeStore, userStore: userStore, locationClient: nil, locationProvider: mockLocationProvider)
+        self.service = LocationSyncService(e2eeManager: e2eeManager, userStore: userStore, locationClient: nil, locationProvider: mockLocationProvider)
         self.service.skipUpdateVisibleUsers = true
         self.service.beginBackgroundTask = { _, _ in .invalid }
         self.service.endBackgroundTask = { _ in }
@@ -60,7 +60,7 @@ class LocationSyncServiceTests: XCTestCase {
         }
 
         // Re-init service with mock client and mock location provider
-        service = LocationSyncService(e2eeStore: service.e2eeStore, userStore: service.userStore, locationClient: mockClient, locationProvider: mockLocationProvider)
+        service = LocationSyncService(e2eeManager: service.e2eeManager, userStore: service.userStore, locationClient: mockClient, locationProvider: mockLocationProvider)
 
         // Initial send
         service.sendLocation(lat: lat, lng: lng)
@@ -114,7 +114,7 @@ class LocationSyncServiceTests: XCTestCase {
 
     func testFirePoll_ForegroundDoesPollFriends() async throws {
         let mockClient = MockLocationClient()
-        service = LocationSyncService(e2eeStore: service.e2eeStore, userStore: service.userStore, locationClient: mockClient, locationProvider: mockLocationProvider)
+        service = LocationSyncService(e2eeManager: service.e2eeManager, userStore: service.userStore, locationClient: mockClient, locationProvider: mockLocationProvider)
         service.isInForeground = { true }
         service.startPolling()
 
@@ -125,7 +125,7 @@ class LocationSyncServiceTests: XCTestCase {
 
     func testFirePoll_BackgroundStillPollsFriends() async throws {
         let mockClient = MockLocationClient()
-        service = LocationSyncService(e2eeStore: service.e2eeStore, userStore: service.userStore, locationClient: mockClient, locationProvider: mockLocationProvider)
+        service = LocationSyncService(e2eeManager: service.e2eeManager, userStore: service.userStore, locationClient: mockClient, locationProvider: mockLocationProvider)
         service.isInForeground = { false }
         service.startPolling()
 
@@ -137,7 +137,7 @@ class LocationSyncServiceTests: XCTestCase {
 
     func testFirePoll_BackgroundPollsEvenWhenNotSharing() async throws {
         let mockClient = MockLocationClient()
-        service = LocationSyncService(e2eeStore: service.e2eeStore, userStore: service.userStore, locationClient: mockClient, locationProvider: mockLocationProvider)
+        service = LocationSyncService(e2eeManager: service.e2eeManager, userStore: service.userStore, locationClient: mockClient, locationProvider: mockLocationProvider)
         service.isInForeground = { false }
         service.isSharingLocation = false
         service.startPolling()
@@ -150,7 +150,7 @@ class LocationSyncServiceTests: XCTestCase {
 
     func testTimerInterval_BackgroundNotSharing_Is30min() async throws {
         let mockClient = MockLocationClient()
-        service = LocationSyncService(e2eeStore: service.e2eeStore, userStore: service.userStore, locationClient: mockClient, locationProvider: mockLocationProvider)
+        service = LocationSyncService(e2eeManager: service.e2eeManager, userStore: service.userStore, locationClient: mockClient, locationProvider: mockLocationProvider)
         service.isInForeground = { false }
         service.isSharingLocation = false
         service.startPolling()
@@ -164,7 +164,7 @@ class LocationSyncServiceTests: XCTestCase {
 
     func testFirePoll_RapidPollsEvenInBackground() async throws {
         let mockClient = MockLocationClient()
-        service = LocationSyncService(e2eeStore: service.e2eeStore, userStore: service.userStore, locationClient: mockClient, locationProvider: mockLocationProvider)
+        service = LocationSyncService(e2eeManager: service.e2eeManager, userStore: service.userStore, locationClient: mockClient, locationProvider: mockLocationProvider)
         service.isInForeground = { false }
         service.startPolling()
         service.lastRapidPollTrigger = Date()
@@ -178,7 +178,7 @@ class LocationSyncServiceTests: XCTestCase {
 
     func testTimerInterval_Foreground_Is10s() async throws {
         let mockClient = MockLocationClient()
-        service = LocationSyncService(e2eeStore: service.e2eeStore, userStore: service.userStore, locationClient: mockClient, locationProvider: mockLocationProvider)
+        service = LocationSyncService(e2eeManager: service.e2eeManager, userStore: service.userStore, locationClient: mockClient, locationProvider: mockLocationProvider)
         service.isInForeground = { true }
         service.startPolling()
 
@@ -191,7 +191,7 @@ class LocationSyncServiceTests: XCTestCase {
 
     func testTimerInterval_Background_Is5min() async throws {
         let mockClient = MockLocationClient()
-        service = LocationSyncService(e2eeStore: service.e2eeStore, userStore: service.userStore, locationClient: mockClient, locationProvider: mockLocationProvider)
+        service = LocationSyncService(e2eeManager: service.e2eeManager, userStore: service.userStore, locationClient: mockClient, locationProvider: mockLocationProvider)
         service.isInForeground = { false }
         service.startPolling()
 
@@ -204,7 +204,7 @@ class LocationSyncServiceTests: XCTestCase {
 
     func testRapidPollResetAfterFirstLocationUpdate() async throws {
         let mockClient = MockLocationClient()
-        service = LocationSyncService(e2eeStore: service.e2eeStore, userStore: service.userStore, locationClient: mockClient, locationProvider: mockLocationProvider)
+        service = LocationSyncService(e2eeManager: service.e2eeManager, userStore: service.userStore, locationClient: mockClient, locationProvider: mockLocationProvider)
 
         service.lastRapidPollTrigger = Date()
         let isRapidInitial = await service.isRapidPolling()
@@ -238,7 +238,7 @@ class LocationSyncServiceTests: XCTestCase {
 
     func testPollAllTriggersHeartbeatWhenOverdue() async throws {
         let mockClient = MockLocationClient()
-        service = LocationSyncService(e2eeStore: service.e2eeStore, userStore: service.userStore, locationClient: mockClient, locationProvider: mockLocationProvider)
+        service = LocationSyncService(e2eeManager: service.e2eeManager, userStore: service.userStore, locationClient: mockClient, locationProvider: mockLocationProvider)
         service.isSharingLocation = true
         service.lastSentTime = Date(timeIntervalSinceNow: -400) // > 300s ago — heartbeat due
         mockLocationProvider.location = CLLocation(latitude: 37.7749, longitude: -122.4194)
@@ -253,7 +253,7 @@ class LocationSyncServiceTests: XCTestCase {
 
     func testPollAllSkipsHeartbeatWhenNoLocationAvailable() async throws {
         let mockClient = MockLocationClient()
-        service = LocationSyncService(e2eeStore: service.e2eeStore, userStore: service.userStore, locationClient: mockClient, locationProvider: mockLocationProvider)
+        service = LocationSyncService(e2eeManager: service.e2eeManager, userStore: service.userStore, locationClient: mockClient, locationProvider: mockLocationProvider)
         service.isSharingLocation = true
         service.lastSentTime = Date(timeIntervalSinceNow: -400) // > 300s — heartbeat due
         // mockLocationProvider.location is nil (simulates first-ever launch before any GPS fix)
@@ -268,7 +268,7 @@ class LocationSyncServiceTests: XCTestCase {
 
     func testPollAllDoesNotTriggerHeartbeatWhenRecentlySent() async throws {
         let mockClient = MockLocationClient()
-        service = LocationSyncService(e2eeStore: service.e2eeStore, userStore: service.userStore, locationClient: mockClient, locationProvider: mockLocationProvider)
+        service = LocationSyncService(e2eeManager: service.e2eeManager, userStore: service.userStore, locationClient: mockClient, locationProvider: mockLocationProvider)
         service.isSharingLocation = true
         service.lastSentTime = Date(timeIntervalSinceNow: -10) // just 10s ago — no heartbeat due
         mockLocationProvider.location = CLLocation(latitude: 37.7749, longitude: -122.4194)
@@ -312,7 +312,7 @@ class LocationSyncServiceTests: XCTestCase {
 
     func testSendLocationOnBackground_SendsWhenSharingAndLocationAvailable() async throws {
         let mockClient = MockLocationClient()
-        service = LocationSyncService(e2eeStore: service.e2eeStore, userStore: service.userStore, locationClient: mockClient, locationProvider: mockLocationProvider)
+        service = LocationSyncService(e2eeManager: service.e2eeManager, userStore: service.userStore, locationClient: mockClient, locationProvider: mockLocationProvider)
         service.isSharingLocation = true
         service.beginBackgroundTask = { _, _ in .invalid }
         service.endBackgroundTask = { _ in }
@@ -329,7 +329,7 @@ class LocationSyncServiceTests: XCTestCase {
 
     func testSendLocationOnBackground_SkipsWhenNotSharing() async throws {
         let mockClient = MockLocationClient()
-        service = LocationSyncService(e2eeStore: service.e2eeStore, userStore: service.userStore, locationClient: mockClient, locationProvider: mockLocationProvider)
+        service = LocationSyncService(e2eeManager: service.e2eeManager, userStore: service.userStore, locationClient: mockClient, locationProvider: mockLocationProvider)
         service.isSharingLocation = false
         service.beginBackgroundTask = { _, _ in .invalid }
         service.endBackgroundTask = { _ in }
@@ -345,7 +345,7 @@ class LocationSyncServiceTests: XCTestCase {
 
     func testSendLocationOnBackground_SkipsWhenNoLocation() async throws {
         let mockClient = MockLocationClient()
-        service = LocationSyncService(e2eeStore: service.e2eeStore, userStore: service.userStore, locationClient: mockClient, locationProvider: mockLocationProvider)
+        service = LocationSyncService(e2eeManager: service.e2eeManager, userStore: service.userStore, locationClient: mockClient, locationProvider: mockLocationProvider)
         service.isSharingLocation = true
         service.beginBackgroundTask = { _, _ in .invalid }
         service.endBackgroundTask = { _ in }
@@ -361,7 +361,7 @@ class LocationSyncServiceTests: XCTestCase {
 
     func testSendLocationOnBackground_UsesLastSentLocationWhenGpsUnavailable() async throws {
         let mockClient = MockLocationClient()
-        service = LocationSyncService(e2eeStore: service.e2eeStore, userStore: service.userStore, locationClient: mockClient, locationProvider: mockLocationProvider)
+        service = LocationSyncService(e2eeManager: service.e2eeManager, userStore: service.userStore, locationClient: mockClient, locationProvider: mockLocationProvider)
         service.isSharingLocation = true
         service.beginBackgroundTask = { _, _ in .invalid }
         service.endBackgroundTask = { _ in }
@@ -381,7 +381,7 @@ class LocationSyncServiceTests: XCTestCase {
 
     func testHeartbeatFallsBackToLastSentLocationWhenGpsUnavailable() async throws {
         let mockClient = MockLocationClient()
-        service = LocationSyncService(e2eeStore: service.e2eeStore, userStore: service.userStore, locationClient: mockClient, locationProvider: mockLocationProvider)
+        service = LocationSyncService(e2eeManager: service.e2eeManager, userStore: service.userStore, locationClient: mockClient, locationProvider: mockLocationProvider)
         service.isSharingLocation = true
         service.beginBackgroundTask = { _, _ in .invalid }
         service.endBackgroundTask = { _ in }

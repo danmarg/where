@@ -22,7 +22,7 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import net.af0.where.e2ee.ConnectionStatus
-import net.af0.where.e2ee.E2eeStore
+import net.af0.where.e2ee.E2eeManager
 import net.af0.where.e2ee.FriendEntry
 import net.af0.where.e2ee.InviteState
 import net.af0.where.e2ee.KeyExchangeInitPayload
@@ -37,12 +37,13 @@ private const val TAG = "LocationViewModel"
 
 class LocationViewModel(
     app: Application,
-    e2eeStoreParam: E2eeStore? = null,
+    e2eeManagerParam: E2eeManager? = null,
     userStoreParam: UserStore? = null,
     locationClientParam: LocationClient? = null,
     startPolling: Boolean = true,
     private val clock: () -> Long = { System.currentTimeMillis() },
     locationSourceParam: LocationSource? = null,
+    uiStateStoreParam: UiStateSource? = null,
 ) : AndroidViewModel(app) {
     // Secondary constructor for reflection-based instantiation in release builds.
     constructor(app: Application) : this(app, null, null, null, true)
@@ -50,22 +51,26 @@ class LocationViewModel(
     // Use the Application-level singletons so LocationService and this ViewModel share the same
     // E2EE state. Fall back to creating new instances when running under test (app is not
     // WhereApplication in unit tests).
-    private val e2eeStore: E2eeStore =
-        e2eeStoreParam
-            ?: (app as? WhereApplication)?.e2eeStore
-            ?: E2eeStore(SharedPrefsE2eeStorage(app))
+    private val e2eeManager: E2eeManager =
+        e2eeManagerParam
+            ?: (app as? WhereApplication)?.e2eeManager
+            ?: E2eeManager(SharedPrefsRawKeyValueStorage(app))
     private val userStore: UserStore =
         userStoreParam
             ?: (app as? WhereApplication)?.userStore
-            ?: UserStore(SharedPrefsE2eeStorage(app))
+            ?: UserStore(SharedPrefsRawKeyValueStorage(app))
     private val locationClient: LocationClient =
         locationClientParam
             ?: (app as? WhereApplication)?.locationClient
-            ?: LocationClient(BuildConfig.SERVER_HTTP_URL, this.e2eeStore)
+            ?: LocationClient(BuildConfig.SERVER_HTTP_URL, this.e2eeManager)
     private val locationSource: LocationSource =
         locationSourceParam
             ?: (app as? WhereApplication)?.locationSource
             ?: LocationRepository(userStore)
+    private val uiStateStore: UiStateSource =
+        uiStateStoreParam
+            ?: (app as? WhereApplication)?.uiStateStore
+            ?: UiStateStore()
 
     val isSharingLocation: StateFlow<Boolean> = userStore.isSharingLocation
 
@@ -91,17 +96,19 @@ class LocationViewModel(
     val inviteState: StateFlow<InviteState> = _inviteState
     private var inviteJob: Job? = null
 
-    val pendingQrForNaming: StateFlow<QrPayload?> = locationSource.pendingQrForNaming
+    val pendingQrForNaming: StateFlow<QrPayload?> = uiStateStore.pendingQrForNaming
     val pendingInitPayload: StateFlow<KeyExchangeInitPayload?> = locationSource.pendingInitPayload
     val allPendingInvites: StateFlow<List<PendingInviteView>> = locationSource.allPendingInvites
 
-    val multipleScansDetected: StateFlow<Boolean> = locationSource.multipleScansDetected
+    val multipleScansDetected: StateFlow<Boolean> = uiStateStore.multipleScansDetected
+
+    val isInviteSheetShowing: StateFlow<Boolean> = uiStateStore.isInviteSheetShowing
 
     private val _isExchanging = MutableStateFlow(false)
     val isExchanging: StateFlow<Boolean> = _isExchanging
 
     val connectionStatus: StateFlow<ConnectionStatus> = locationSource.connectionStatus
-    val diagnosticLog: StateFlow<List<String>> = e2eeStore.diagnosticLog
+    val diagnosticLog: StateFlow<List<String>> = e2eeManager.diagnosticLog
 
     val ownLocation: StateFlow<UserLocation?> =
         combine(locationSource.lastLocation, isSharingLocation) { myLoc, sharing ->
@@ -134,7 +141,7 @@ class LocationViewModel(
         }
 
         viewModelScope.launch {
-            val savedFriends = this@LocationViewModel.e2eeStore.listFriends()
+            val savedFriends = this@LocationViewModel.e2eeManager.listFriends()
             locationSource.onFriendsUpdated(savedFriends)
             val initialLocations = mutableMapOf<String, UserLocation>()
             val initialLastPing = mutableMapOf<String, Long>()
@@ -197,17 +204,16 @@ class LocationViewModel(
     ) {
         check(Looper.myLooper() == Looper.getMainLooper()) { "renameFriend must be called on the main thread" }
         viewModelScope.launch {
-            e2eeStore.renameFriend(id, newName)
-            locationSource.onFriendsUpdated(e2eeStore.listFriends())
+            e2eeManager.renameFriend(id, newName)
         }
     }
 
     fun removeFriend(id: String) {
         check(Looper.myLooper() == Looper.getMainLooper()) { "removeFriend must be called on the main thread" }
         viewModelScope.launch {
-            e2eeStore.deleteFriend(id)
+            e2eeManager.deleteFriend(id)
             userStore.removePausedFriend(id)
-            val updatedFriends = e2eeStore.listFriends()
+            val updatedFriends = e2eeManager.listFriends()
             withContext(Dispatchers.Main.immediate) {
                 locationSource.onFriendRemoved(id)
                 locationSource.onFriendsUpdated(updatedFriends)
@@ -222,9 +228,8 @@ class LocationViewModel(
         inviteJob =
             viewModelScope.launch {
                 try {
-                    val qr = e2eeStore.createInvite(displayName.value)
+                    val qr = e2eeManager.createInvite(displayName.value)
                     _inviteState.value = InviteState.Pending(qr)
-                    locationSource.onPendingInvitesUpdated(e2eeStore.listPendingInvites())
                     triggerRapidPoll()
                 } finally {
                     if (inviteJob?.isCancelled == false) {
@@ -242,13 +247,13 @@ class LocationViewModel(
                 return false
             }
         Log.d(TAG, "processQrUrl: parsed qr, suggestedName=${qr.suggestedName}")
-        locationSource.onPendingQrForNaming(qr)
+        uiStateStore.onPendingQrForNaming(qr)
         triggerRapidPoll()
         return true
     }
 
     fun cancelQrScan() {
-        locationSource.onPendingQrForNaming(null)
+        uiStateStore.onPendingQrForNaming(null)
         locationSource.resetRapidPoll()
     }
 
@@ -257,7 +262,7 @@ class LocationViewModel(
         friendName: String,
     ) {
         Log.d(TAG, "confirmQrScan: friendName=$friendName")
-        locationSource.onPendingQrForNaming(null)
+        uiStateStore.onPendingQrForNaming(null)
         locationSource.confirmQrScan()
         val qrWithName = qr.copy(suggestedName = friendName)
         val currentInvite = _inviteState.value
@@ -268,11 +273,11 @@ class LocationViewModel(
                     // Bob: clear his own outgoing invite state if he's currently showing one,
                     // but keep other persistent invites.
                     if (currentInvite is InviteState.Pending) {
-                        e2eeStore.clearInvite(currentInvite.qr.ekPub)
+                        e2eeManager.clearInvite(currentInvite.qr.ekPub)
                     }
                     _inviteState.value = InviteState.None
                 }
-                val (initPayload, bobEntry) = e2eeStore.processScannedQr(qrWithName, displayName.value)
+                val (initPayload, bobEntry) = e2eeManager.processScannedQr(qrWithName, displayName.value)
                 val sendToken = bobEntry.session.sendToken.toHex()
                 Log.d(
                     TAG,
@@ -281,8 +286,8 @@ class LocationViewModel(
                     )}, sendToken=$sendToken",
                 )
                 withContext(Dispatchers.Main.immediate) {
-                    locationSource.onFriendsUpdated(e2eeStore.listFriends())
-                    locationSource.onPendingInvitesUpdated(e2eeStore.listPendingInvites())
+                    locationSource.onFriendsUpdated(e2eeManager.listFriends())
+                    locationSource.onPendingInvitesUpdated(e2eeManager.listPendingInvites())
                 }
                 try {
                     try {
@@ -304,8 +309,7 @@ class LocationViewModel(
                     }
 
                     withContext(Dispatchers.Main.immediate) {
-                        locationSource.onFriendsUpdated(e2eeStore.listFriends())
-                    }
+                                }
                     locationSource.markAwaitingFirstUpdate(bobEntry.id)
                     locationSource.triggerRapidPoll()
                     locationSource.wakePoll()
@@ -331,12 +335,12 @@ class LocationViewModel(
         _isExchanging.value = true
         viewModelScope.launch {
             try {
-                val entry = e2eeStore.processKeyExchangeInit(payload, name, aliceEkPub)
+                val entry = e2eeManager.processKeyExchangeInit(payload, name, aliceEkPub)
                 if (entry != null) {
                     Log.d(TAG, "confirmPendingInit: processKeyExchangeInit succeeded, friendId=${entry.id}")
                     withContext(Dispatchers.Main.immediate) {
-                        locationSource.onFriendsUpdated(e2eeStore.listFriends())
-                        locationSource.onPendingInvitesUpdated(e2eeStore.listPendingInvites())
+                        locationSource.onFriendsUpdated(e2eeManager.listFriends())
+                        locationSource.onPendingInvitesUpdated(e2eeManager.listPendingInvites())
                     }
                     locationSource.markAwaitingFirstUpdate(entry.id)
                     locationSource.triggerRapidPoll()
@@ -377,26 +381,27 @@ class LocationViewModel(
 
         viewModelScope.launch {
             if (aliceEkPub != null) {
-                e2eeStore.clearInvite(aliceEkPub)
+                e2eeManager.clearInvite(aliceEkPub)
             } else {
-                val last = e2eeStore.listPendingInvites().lastOrNull()
+                val last = e2eeManager.listPendingInvites().lastOrNull()
                 if (last != null) {
-                    e2eeStore.clearInvite(last.qrPayload.ekPub)
+                    e2eeManager.clearInvite(last.qrPayload.ekPub)
                 }
             }
-            locationSource.onPendingInvitesUpdated(e2eeStore.listPendingInvites())
         }
     }
 
     fun cancelPendingInvite(ekPub: ByteArray) {
         viewModelScope.launch {
-            e2eeStore.clearInvite(ekPub)
-            locationSource.onPendingInvitesUpdated(e2eeStore.listPendingInvites())
+            e2eeManager.clearInvite(ekPub)
         }
     }
 
     fun setInviteSheetShowing(showing: Boolean) {
-        locationSource.setInviteSheetShowing(showing)
+        uiStateStore.setInviteSheetShowing(showing)
+        if (showing) {
+            locationSource.triggerRapidPoll()
+        }
     }
 
     fun markCurrentInviteExported() {
@@ -408,13 +413,12 @@ class LocationViewModel(
 
     fun markInviteExported(ekPub: ByteArray) {
         viewModelScope.launch {
-            e2eeStore.markInviteExported(ekPub)
-            locationSource.onPendingInvitesUpdated(e2eeStore.listPendingInvites())
+            e2eeManager.markInviteExported(ekPub)
         }
     }
 
     fun clearInviteIfNotExported() {
-        locationSource.setInviteSheetShowing(false)
+        uiStateStore.setInviteSheetShowing(false)
         val current = _inviteState.value
 
         // Reset UI state immediately
@@ -424,11 +428,10 @@ class LocationViewModel(
         if (current is InviteState.Pending && locationSource.pendingInitPayload.value == null) {
             viewModelScope.launch {
                 // Refresh list from store to check exportedAt
-                val invites = e2eeStore.listPendingInvites()
+                val invites = e2eeManager.listPendingInvites()
                 val match = invites.find { it.qrPayload.ekPub.contentEquals(current.qr.ekPub) }
                 if (match != null && match.exportedAt == null) {
-                    e2eeStore.clearInvite(current.qr.ekPub)
-                    locationSource.onPendingInvitesUpdated(e2eeStore.listPendingInvites())
+                    e2eeManager.clearInvite(current.qr.ekPub)
                 }
             }
         }
@@ -445,9 +448,8 @@ class LocationViewModel(
         // from the store to match previous behavior (though it's now multi-invite).
         if (current is InviteState.Pending && locationSource.pendingInitPayload.value == null) {
             viewModelScope.launch {
-                e2eeStore.clearInvite(current.qr.ekPub)
-                locationSource.onPendingInvitesUpdated(e2eeStore.listPendingInvites())
-            }
+                e2eeManager.clearInvite(current.qr.ekPub)
+                }
         }
     }
 

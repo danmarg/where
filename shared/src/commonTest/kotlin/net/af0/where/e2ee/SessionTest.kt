@@ -467,31 +467,31 @@ class SessionTest {
     @Test
     fun testRecycledDhPubRejection() =
         runTest {
-            val aliceStore = E2eeStore(MemoryStorage())
-            val bobStore = E2eeStore(MemoryStorage())
+            val aliceManager = E2eeManager(MemoryStorage())
+            val bobManager = E2eeManager(MemoryStorage())
 
             // 1. Establish session
-            val qr = aliceStore.createInvite("Alice")
-            val (initPayload, bobEntry) = bobStore.processScannedQr(qr)
-            aliceStore.processKeyExchangeInit(initPayload, "Bob", qr.ekPub)
-            val aliceToBobId = aliceStore.listFriends().first().id
+            val qr = aliceManager.createInvite("Alice")
+            val (initPayload, bobEntry) = bobManager.processScannedQr(qr)
+            aliceManager.processKeyExchangeInit(initPayload, "Bob", qr.ekPub)
+            val aliceToBobId = aliceManager.listFriends().first().id
             val bobToAliceId = bobEntry.id
 
-            val aliceRecvToken = aliceStore.getFriend(aliceToBobId)!!.session.recvToken.toHex()
-            val bobRecvToken = bobStore.getFriend(bobToAliceId)!!.session.recvToken.toHex()
+            val aliceRecvToken = aliceManager.getFriend(aliceToBobId)!!.session.recvToken.toHex()
+            val bobRecvToken = bobManager.getFriend(bobToAliceId)!!.session.recvToken.toHex()
 
             // Helper to perform a full turn: Alice sends, Bob receives, Bob sends, Alice receives.
             // This advances the DH ratchet on both sides.
             suspend fun handshakeTurn() {
                 // Alice -> Bob
-                val (aState, aMsg) = Session.encryptMessage(aliceStore.getFriend(aliceToBobId)!!.session, MessagePlaintext.Keepalive())
-                aliceStore.updateSession(aliceToBobId, aState)
-                bobStore.processBatch(bobToAliceId, bobRecvToken, listOf(aMsg))
+                val (aState, aMsg) = Session.encryptMessage(aliceManager.getFriend(aliceToBobId)!!.session, MessagePlaintext.Keepalive())
+                aliceManager.updateSession(aliceToBobId, aState)
+                bobManager.processBatch(bobToAliceId, bobRecvToken, listOf(aMsg))
 
                 // Bob -> Alice
-                val (bState, bMsg) = Session.encryptMessage(bobStore.getFriend(bobToAliceId)!!.session, MessagePlaintext.Keepalive())
-                bobStore.updateSession(bobToAliceId, bState)
-                aliceStore.processBatch(aliceToBobId, aliceRecvToken, listOf(bMsg))
+                val (bState, bMsg) = Session.encryptMessage(bobManager.getFriend(bobToAliceId)!!.session, MessagePlaintext.Keepalive())
+                bobManager.updateSession(bobToAliceId, bState)
+                aliceManager.processBatch(aliceToBobId, aliceRecvToken, listOf(bMsg))
             }
 
             // 2. Perform two turns to ensure seenRemoteDhPubs is populated with Bob's old keys.
@@ -502,7 +502,7 @@ class SessionTest {
 
             // 3. Alice's seenRemoteDhPubs should now contain Bob's initial and intermediate keys
             val bobInitialDh = initPayload.ekPub
-            val aliceSession = aliceStore.getFriend(aliceToBobId)!!.session
+            val aliceSession = aliceManager.getFriend(aliceToBobId)!!.session
 
             assertTrue(aliceSession.seenRemoteDhPubs.contains(bobInitialDh.toHex()), "seenRemoteDhPubs should have Bob's initial DH")
 

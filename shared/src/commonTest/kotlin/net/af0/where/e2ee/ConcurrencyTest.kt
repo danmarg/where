@@ -11,7 +11,7 @@ class ConcurrencyTest {
         initializeE2eeTests()
     }
 
-    private class DelayStorage(private val delegate: E2eeStorage) : E2eeStorage {
+    private class DelayStorage(private val delegate: RawKeyValueStorage) : RawKeyValueStorage {
         override fun getString(key: String): String? = delegate.getString(key)
         override fun putString(key: String, value: String) {
             // Inject delay before write to expand the TOCTOU window.
@@ -28,14 +28,14 @@ class ConcurrencyTest {
     fun testConcurrentEncryptAndStore() = runBlocking(Dispatchers.Default) {
         val storage = MemoryStorage()
         val delayStorage = DelayStorage(storage)
-        val aliceStore = E2eeStore(delayStorage)
-        val bobStore = E2eeStore(MemoryStorage())
+        val aliceManager = E2eeManager(delayStorage)
+        val bobManager = E2eeManager(MemoryStorage())
 
         // 1. Pair
-        val qr = aliceStore.createInvite("Alice")
-        val (init, _) = bobStore.processScannedQr(qr)
-        aliceStore.processKeyExchangeInit(init, "Bob", qr.ekPub)
-        val bobId = aliceStore.listFriends().first().id
+        val qr = aliceManager.createInvite("Alice")
+        val (init, _) = bobManager.processScannedQr(qr)
+        aliceManager.processKeyExchangeInit(init, "Bob", qr.ekPub)
+        val bobId = aliceManager.listFriends().first().id
 
         // 2. Launch two concurrent encryptAndStore calls
         val payload1 = MessagePlaintext.Location(1.0, 1.0, 1.0, 1000)
@@ -43,7 +43,7 @@ class ConcurrencyTest {
 
         val job1 = async {
             try {
-                aliceStore.encryptAndStore(bobId, payload1)
+                aliceManager.encryptAndStore(bobId, payload1)
                 null
             } catch (e: Exception) {
                 e
@@ -53,7 +53,7 @@ class ConcurrencyTest {
             // Small delay to ensure they are slightly staggered but still overlap in the 100ms window
             delay(20)
             try {
-                aliceStore.encryptAndStore(bobId, payload2)
+                aliceManager.encryptAndStore(bobId, payload2)
                 null
             } catch (e: Exception) {
                 e
@@ -69,7 +69,7 @@ class ConcurrencyTest {
         assertIs<OutboxConflictException>(failures[0])
 
         // 4. Verify session state is consistent (no nonce reuse if it had advanced)
-        val entry = aliceStore.getFriend(bobId)!!
+        val entry = aliceManager.getFriend(bobId)!!
         assertNotNull(entry.outbox)
         // If it was the first send after pairing, seq should be 1 (transition was already seq 0)
         // actually Session.encryptMessage for transition (Alice init) sets seq=0, pn=session.sendSeq (0)

@@ -11,32 +11,32 @@ class Issue210Test {
     @Test
     fun reproduceStaleTokenReuseAfterCrash() =
         runBlocking {
-            val aliceStore = E2eeStore(MemoryStorage())
-            val bobStore = E2eeStore(MemoryStorage())
+            val aliceManager = E2eeManager(MemoryStorage())
+            val bobManager = E2eeManager(MemoryStorage())
             val fakeMailbox = FakeMailboxClient()
-            val aliceClient = LocationClient("http://fake", aliceStore, fakeMailbox)
+            val aliceClient = LocationClient("http://fake", aliceManager, fakeMailbox)
 
             // 1. Establish session
-            val qr = aliceStore.createInvite("Alice")
-            val (initPayload, bobEntry) = bobStore.processScannedQr(qr)
-            aliceStore.processKeyExchangeInit(initPayload, "Bob", qr.ekPub)
-            val aliceToBobId = aliceStore.listFriends().first().id
+            val qr = aliceManager.createInvite("Alice")
+            val (initPayload, bobEntry) = bobManager.processScannedQr(qr)
+            aliceManager.processKeyExchangeInit(initPayload, "Bob", qr.ekPub)
+            val aliceToBobId = aliceManager.listFriends().first().id
             val bobToAliceId = bobEntry.id
 
             // 2. Perform a successful exchange so Bob is polling Alice's sendToken
-            val (aState, aMsg) = Session.encryptMessage(aliceStore.getFriend(aliceToBobId)!!.session, MessagePlaintext.Keepalive())
-            aliceStore.updateSession(aliceToBobId, aState)
-            bobStore.processBatch(bobToAliceId, bobStore.getFriend(bobToAliceId)!!.session.recvToken.toHex(), listOf(aMsg))
+            val (aState, aMsg) = Session.encryptMessage(aliceManager.getFriend(aliceToBobId)!!.session, MessagePlaintext.Keepalive())
+            aliceManager.updateSession(aliceToBobId, aState)
+            bobManager.processBatch(bobToAliceId, bobManager.getFriend(bobToAliceId)!!.session.recvToken.toHex(), listOf(aMsg))
 
             // 3. Trigger a DH ratchet (Bob sends a new DH key to Alice)
-            val (bState, bMsg) = Session.encryptMessage(bobStore.getFriend(bobToAliceId)!!.session, MessagePlaintext.Keepalive())
-            bobStore.updateSession(bobToAliceId, bState)
-            fakeMailbox.polls[aliceStore.getFriend(aliceToBobId)!!.session.recvToken.toHex()] = mutableListOf(bMsg)
+            val (bState, bMsg) = Session.encryptMessage(bobManager.getFriend(bobToAliceId)!!.session, MessagePlaintext.Keepalive())
+            bobManager.updateSession(bobToAliceId, bState)
+            fakeMailbox.polls[aliceManager.getFriend(aliceToBobId)!!.session.recvToken.toHex()] = mutableListOf(bMsg)
 
             // Alice polls, which triggers ratchet and set isSendTokenPending = true.
             aliceClient.pollFriend(aliceToBobId)
 
-            var aliceFriend = aliceStore.getFriend(aliceToBobId)!!
+            var aliceFriend = aliceManager.getFriend(aliceToBobId)!!
             assertTrue(aliceFriend.session.isSendTokenPending, "Flag should be pending after ratchet but before first send")
             val newToken = aliceFriend.session.sendToken.toHex()
             val oldToken = aliceFriend.session.prevSendToken.toHex()
@@ -52,19 +52,19 @@ class Issue210Test {
 
             // Bob receives the flush and rotates
             val flushPost = transitionPosts.find { it.second == oldToken }!!
-            bobStore.processBatch(bobToAliceId, oldToken, listOf(flushPost.third))
+            bobManager.processBatch(bobToAliceId, oldToken, listOf(flushPost.third))
             assertEquals(
                 newToken,
-                bobStore.getFriend(bobToAliceId)!!.session.recvToken.toHex(),
+                bobManager.getFriend(bobToAliceId)!!.session.recvToken.toHex(),
                 "Bob should have rotated to newToken after receiving flush",
             )
 
             // 5. SIMULATE CRASH: manually revert state to isSendTokenPending = true (but outbox is already null)
-            aliceFriend = aliceStore.getFriend(aliceToBobId)!!
+            aliceFriend = aliceManager.getFriend(aliceToBobId)!!
             assertFalse(aliceFriend.session.isSendTokenPending, "Flag should have been cleared by successful send")
 
             val crashedSession = aliceFriend.session.copy(isSendTokenPending = true)
-            aliceStore.updateSession(aliceToBobId, crashedSession)
+            aliceManager.updateSession(aliceToBobId, crashedSession)
 
             // 6. Alice tries to send a SECOND message after "restart".
             // With the fix, this should detect the crash and finalize the transition before sending.
@@ -79,7 +79,7 @@ class Issue210Test {
             }
 
             // Also verify the flag is cleared now
-            aliceFriend = aliceStore.getFriend(aliceToBobId)!!
+            aliceFriend = aliceManager.getFriend(aliceToBobId)!!
             assertFalse(aliceFriend.session.isSendTokenPending, "Flag should be cleared after recovery")
         }
 }

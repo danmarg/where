@@ -15,64 +15,64 @@ class E2eeChaosTest {
     @Test
     fun testProcessBatchResilienceToStorageFailure() =
         runTest {
-            val aliceStore = E2eeStore(MemoryStorage())
+            val aliceManager = E2eeManager(MemoryStorage())
             val bobStorage = MemoryStorage()
             val chaosBobStorage = ChaosStorage(bobStorage)
-            val bobStore = E2eeStore(chaosBobStorage)
+            val bobManager = E2eeManager(chaosBobStorage)
 
             // Pair
-            val qr = aliceStore.createInvite("Alice")
-            val (init, _) = bobStore.processScannedQr(qr)
-            aliceStore.processKeyExchangeInit(init, "Bob", qr.ekPub)
+            val qr = aliceManager.createInvite("Alice")
+            val (init, _) = bobManager.processScannedQr(qr)
+            aliceManager.processKeyExchangeInit(init, "Bob", qr.ekPub)
 
-            val aliceToBobId = aliceStore.listFriends().first().id
-            val bobToAliceId = bobStore.listFriends().first().id
+            val aliceToBobId = aliceManager.listFriends().first().id
+            val bobToAliceId = bobManager.listFriends().first().id
 
             // Alice sends a message
-            val (sess, msg) = Session.encryptMessage(aliceStore.getFriend(aliceToBobId)!!.session, MessagePlaintext.Keepalive())
-            aliceStore.updateSession(aliceToBobId, sess)
+            val (sess, msg) = Session.encryptMessage(aliceManager.getFriend(aliceToBobId)!!.session, MessagePlaintext.Keepalive())
+            aliceManager.updateSession(aliceToBobId, sess)
 
             // Bob's storage fails during batch processing
             chaosBobStorage.failNextWrite = true
-            val bobToken = bobStore.getFriend(bobToAliceId)!!.session.recvToken.toHex()
+            val bobToken = bobManager.getFriend(bobToAliceId)!!.session.recvToken.toHex()
             try {
-                bobStore.processBatch(bobToAliceId, bobToken, listOf(msg))
+                bobManager.processBatch(bobToAliceId, bobToken, listOf(msg))
                 fail("Should have thrown storage exception")
             } catch (_: Exception) {
             }
 
             // Invariant (§5.4): if storage fails, Bob's memory state and DB state must
             // remain consistent (no partial updates).
-            val bobEntry = bobStore.getFriend(bobToAliceId)!!
+            val bobEntry = bobManager.getFriend(bobToAliceId)!!
             assertEquals(0, bobEntry.session.recvSeq, "Bob's state should not have advanced after storage failure")
 
             // Alice sends another message
-            val (sess2, msg2) = Session.encryptMessage(aliceStore.getFriend(aliceToBobId)!!.session, MessagePlaintext.Keepalive())
-            aliceStore.updateSession(aliceToBobId, sess2)
+            val (sess2, msg2) = Session.encryptMessage(aliceManager.getFriend(aliceToBobId)!!.session, MessagePlaintext.Keepalive())
+            aliceManager.updateSession(aliceToBobId, sess2)
 
             // Bob retries with working storage — both messages should succeed
             chaosBobStorage.failNextWrite = false
-            val result = bobStore.processBatch(bobToAliceId, bobToken, listOf(msg, msg2))
+            val result = bobManager.processBatch(bobToAliceId, bobToken, listOf(msg, msg2))
             assertNotNull(result)
             assertTrue(result.anySuccess)
-            assertEquals(2, bobStore.getFriend(bobToAliceId)!!.session.recvSeq)
+            assertEquals(2, bobManager.getFriend(bobToAliceId)!!.session.recvSeq)
         }
 
     @Test
     fun testRecoveryAfterNetworkFailureOnTransitionFlush() =
         runTest {
             val relay = RelayMailboxClient()
-            val aliceStore = E2eeStore(MemoryStorage())
-            val bobStore = E2eeStore(MemoryStorage())
+            val aliceManager = E2eeManager(MemoryStorage())
+            val bobManager = E2eeManager(MemoryStorage())
             val aliceChaosMailbox = ChaosMailboxClient(relay)
-            val aliceClient = LocationClient("http://fake", aliceStore, aliceChaosMailbox)
-            val bobClient = LocationClient("http://fake", bobStore, relay)
+            val aliceClient = LocationClient("http://fake", aliceManager, aliceChaosMailbox)
+            val bobClient = LocationClient("http://fake", bobManager, relay)
 
             // 1. Pair
-            val qr = aliceStore.createInvite("Alice")
-            val (init, _) = bobStore.processScannedQr(qr)
-            aliceStore.processKeyExchangeInit(init, "Bob", qr.ekPub)
-            val aliceToBobId = aliceStore.listFriends().first().id
+            val qr = aliceManager.createInvite("Alice")
+            val (init, _) = bobManager.processScannedQr(qr)
+            aliceManager.processKeyExchangeInit(init, "Bob", qr.ekPub)
+            val aliceToBobId = aliceManager.listFriends().first().id
 
             // 2. Bob sends a message to Alice (Triggering DH ratchet on Alice's side)
             bobClient.sendLocation(1.0, 1.0)
@@ -87,7 +87,7 @@ class E2eeChaosTest {
             } catch (_: NetworkException) {
             }
 
-            val aliceMid = aliceStore.getFriend(aliceToBobId)!!
+            val aliceMid = aliceManager.getFriend(aliceToBobId)!!
             assertTrue(aliceMid.session.isSendTokenPending, "Alice should be pending transition")
             assertNotNull(aliceMid.outbox, "Alice should have outbox after post 'failure'")
 
@@ -102,7 +102,7 @@ class E2eeChaosTest {
             aliceChaosMailbox.stealthPost = false
             aliceClient.poll()
 
-            val aliceFinal = aliceStore.getFriend(aliceToBobId)!!
+            val aliceFinal = aliceManager.getFriend(aliceToBobId)!!
             assertFalse(aliceFinal.session.isSendTokenPending, "isSendTokenPending should be cleared after recovery")
             assertNull(aliceFinal.outbox, "Outbox should be cleared")
 
@@ -117,17 +117,17 @@ class E2eeChaosTest {
     fun testRecoveryAfterMailboxExpirationDuringTransition() =
         runTest {
             val relay = RelayMailboxClient()
-            val aliceStore = E2eeStore(MemoryStorage())
-            val bobStore = E2eeStore(MemoryStorage())
+            val aliceManager = E2eeManager(MemoryStorage())
+            val bobManager = E2eeManager(MemoryStorage())
             val aliceChaosMailbox = ChaosMailboxClient(relay)
-            val aliceClient = LocationClient("http://fake", aliceStore, aliceChaosMailbox)
-            val bobClient = LocationClient("http://fake", bobStore, relay)
+            val aliceClient = LocationClient("http://fake", aliceManager, aliceChaosMailbox)
+            val bobClient = LocationClient("http://fake", bobManager, relay)
 
             // 1. Pair
-            val qr = aliceStore.createInvite("Alice")
-            val (init, _) = bobStore.processScannedQr(qr)
-            aliceStore.processKeyExchangeInit(init, "Bob", qr.ekPub)
-            val aliceToBobId = aliceStore.listFriends().first().id
+            val qr = aliceManager.createInvite("Alice")
+            val (init, _) = bobManager.processScannedQr(qr)
+            aliceManager.processKeyExchangeInit(init, "Bob", qr.ekPub)
+            val aliceToBobId = aliceManager.listFriends().first().id
 
             // 2. Bob sends a message (Alice ratchets)
             bobClient.sendLocation(1.0, 1.0)
@@ -141,7 +141,7 @@ class E2eeChaosTest {
             } catch (_: Exception) {
             }
 
-            val aliceMid = aliceStore.getFriend(aliceToBobId)!!
+            val aliceMid = aliceManager.getFriend(aliceToBobId)!!
             assertTrue(aliceMid.session.isSendTokenPending, "Alice should be pending")
             assertNotNull(aliceMid.outbox, "Alice should have outbox")
 
@@ -149,7 +149,7 @@ class E2eeChaosTest {
             aliceChaosMailbox.expireMailboxProbability = 0.0
             aliceChaosMailbox.resetExpirations()
             aliceClient.poll()
-            val aliceFinal = aliceStore.getFriend(aliceToBobId)!!
+            val aliceFinal = aliceManager.getFriend(aliceToBobId)!!
             assertFalse(
                 aliceFinal.session.isSendTokenPending,
                 "isSendTokenPending should be cleared after recovery from 404 on transition token",
@@ -178,13 +178,13 @@ class E2eeChaosTest {
             class Node(val name: String) {
                 val baseStorage = MemoryStorage()
                 val chaosStorage = ChaosStorage(baseStorage)
-                var store = E2eeStore(chaosStorage)
+                var store = E2eeManager(chaosStorage)
                 val chaosMailbox = ChaosMailboxClient(relay)
                 var client = LocationClient("http://fake", store, chaosMailbox)
                 val receivedLocations = mutableMapOf<String, MutableSet<Int>>()
 
                 fun restart() {
-                    store = E2eeStore(chaosStorage)
+                    store = E2eeManager(chaosStorage)
                     client = LocationClient("http://fake", store, chaosMailbox)
                 }
 
@@ -346,18 +346,18 @@ class E2eeChaosTest {
         runTest {
             initializeE2eeTests()
             val relay = RelayMailboxClient()
-            val aliceStore = E2eeStore(MemoryStorage())
-            val bobStore = E2eeStore(MemoryStorage())
+            val aliceManager = E2eeManager(MemoryStorage())
+            val bobManager = E2eeManager(MemoryStorage())
             val bobChaosMailbox = ChaosMailboxClient(relay)
-            val aliceClient = LocationClient("http://fake", aliceStore, relay)
-            val bobClient = LocationClient("http://fake", bobStore, bobChaosMailbox)
+            val aliceClient = LocationClient("http://fake", aliceManager, relay)
+            val bobClient = LocationClient("http://fake", bobManager, bobChaosMailbox)
 
             // 1. Pair
-            val qr = aliceStore.createInvite("Alice")
-            val (init, _) = bobStore.processScannedQr(qr)
-            aliceStore.processKeyExchangeInit(init, "Bob", qr.ekPub)
-            val bobToAliceId = bobStore.listFriends().first().id
-            val aliceToBobId = aliceStore.listFriends().first().id
+            val qr = aliceManager.createInvite("Alice")
+            val (init, _) = bobManager.processScannedQr(qr)
+            aliceManager.processKeyExchangeInit(init, "Bob", qr.ekPub)
+            val bobToAliceId = bobManager.listFriends().first().id
+            val aliceToBobId = aliceManager.listFriends().first().id
 
             // 2. Alice sends a message that will be corrupted (Payload only)
             aliceClient.sendLocation(1.1, 1.1)
@@ -367,7 +367,7 @@ class E2eeChaosTest {
             val result = bobClient.poll()
             assertTrue(result.isEmpty(), "Decryption should fail due to corruption")
 
-            val bobEntry = bobStore.getFriend(bobToAliceId)!!
+            val bobEntry = bobManager.getFriend(bobToAliceId)!!
             assertEquals(2, bobEntry.session.recvSeq, "Session should have ratcheted forward to 2 (corrupted transition + valid keepalive)")
 
             // 4. Alice sends another message. This one should succeed.
@@ -375,7 +375,7 @@ class E2eeChaosTest {
             val result2 = bobClient.poll()
             assertEquals(1, result2.size)
             assertEquals(2.2, result2[0].lat)
-            assertEquals(3, bobStore.getFriend(bobToAliceId)!!.session.recvSeq)
+            assertEquals(3, bobManager.getFriend(bobToAliceId)!!.session.recvSeq)
         }
 
     @Test
@@ -384,24 +384,24 @@ class E2eeChaosTest {
             initializeE2eeTests()
             // Small queue and drain size to make the deadlock trigger in a few iterations.
             val relay = RelayMailboxClient(maxQueueDepth = 5, maxDrainSize = 3, rateLimitMaxPosts = 5000, rateLimitMaxPolls = 5000)
-            val aliceStore = E2eeStore(MemoryStorage())
-            val bobStore = E2eeStore(MemoryStorage())
+            val aliceManager = E2eeManager(MemoryStorage())
+            val bobManager = E2eeManager(MemoryStorage())
             val aliceChaosMailbox = ChaosMailboxClient(relay)
             val bobChaosMailbox = ChaosMailboxClient(relay)
-            val aliceClient = LocationClient("http://fake", aliceStore, aliceChaosMailbox)
-            val bobClient = LocationClient("http://fake", bobStore, bobChaosMailbox)
+            val aliceClient = LocationClient("http://fake", aliceManager, aliceChaosMailbox)
+            val bobClient = LocationClient("http://fake", bobManager, bobChaosMailbox)
 
             // 1. Pair
-            val qr = aliceStore.createInvite("Alice")
-            val (init, _) = bobStore.processScannedQr(qr)
-            aliceStore.processKeyExchangeInit(init, "Bob", qr.ekPub)
-            val aliceToBobId = aliceStore.listFriends().first().id
-            val bobToAliceId = bobStore.listFriends().first().id
+            val qr = aliceManager.createInvite("Alice")
+            val (init, _) = bobManager.processScannedQr(qr)
+            aliceManager.processKeyExchangeInit(init, "Bob", qr.ekPub)
+            val aliceToBobId = aliceManager.listFriends().first().id
+            val bobToAliceId = bobManager.listFriends().first().id
 
             // 2. Alice fills Bob's inbox (T_B0) manually to maxQueueDepth.
-            val tB0 = bobStore.getFriend(bobToAliceId)!!.session.recvToken.toHex()
-            val (aliceSess1, aliceMsg1) = Session.encryptMessage(aliceStore.getFriend(aliceToBobId)!!.session, MessagePlaintext.Keepalive())
-            aliceStore.updateSession(aliceToBobId, aliceSess1)
+            val tB0 = bobManager.getFriend(bobToAliceId)!!.session.recvToken.toHex()
+            val (aliceSess1, aliceMsg1) = Session.encryptMessage(aliceManager.getFriend(aliceToBobId)!!.session, MessagePlaintext.Keepalive())
+            aliceManager.updateSession(aliceToBobId, aliceSess1)
             repeat(5) {
                 relay.post("http://fake", tB0, aliceMsg1)
             }
@@ -414,9 +414,9 @@ class E2eeChaosTest {
             // We fill Alice's T_A0 AFTER Alice has already polled, to ensure it's full when Bob posts.
             aliceClient.poll() // Drain Alice's mailbox first
             
-            val tA0 = aliceStore.getFriend(aliceToBobId)!!.session.recvToken.toHex()
-            val (bobSess1, bobMsg1) = Session.encryptMessage(bobStore.getFriend(bobToAliceId)!!.session, MessagePlaintext.Keepalive())
-            bobStore.updateSession(bobToAliceId, bobSess1)
+            val tA0 = aliceManager.getFriend(aliceToBobId)!!.session.recvToken.toHex()
+            val (bobSess1, bobMsg1) = Session.encryptMessage(bobManager.getFriend(bobToAliceId)!!.session, MessagePlaintext.Keepalive())
+            bobManager.updateSession(bobToAliceId, bobSess1)
             repeat(5) {
                 relay.post("http://fake", tA0, bobMsg1)
             }
@@ -427,7 +427,7 @@ class E2eeChaosTest {
                 bobClient.sendKeepalive(bobToAliceId)
             } catch (_: ServerException) {
             }
-            val bobMid = bobStore.getFriend(bobToAliceId)!!
+            val bobMid = bobManager.getFriend(bobToAliceId)!!
             assertNotNull(bobMid.outbox, "Bob's outbox should still be pending due to 429")
 
             // 6. Deadlock condition: Alice is polling T_A1, but Bob's outbox (with his new DH key)

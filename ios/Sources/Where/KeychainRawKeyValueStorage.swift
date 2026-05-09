@@ -2,7 +2,7 @@ import Foundation
 import Shared
 import Security
 
-final class KeychainE2eeStorage: E2eeStorage {
+final class KeychainRawKeyValueStorage: RawKeyValueStorage {
     private let service = "net.af0.where.e2ee"
 
     func getString(key: String) -> String? {
@@ -26,7 +26,7 @@ final class KeychainE2eeStorage: E2eeStorage {
 
     func putString(key: String, value: String) throws {
         guard let data = value.data(using: .utf8) else {
-            throw NSError(domain: "KeychainE2eeStorage", code: -1,
+            throw NSError(domain: "KeychainRawKeyValueStorage", code: -1,
                           userInfo: [NSLocalizedDescriptionKey: "Failed to encode value as UTF-8"])
         }
 
@@ -51,7 +51,7 @@ final class KeychainE2eeStorage: E2eeStorage {
         }
 
         guard status == errSecSuccess else {
-            throw NSError(domain: "KeychainE2eeStorage", code: Int(status),
+            throw NSError(domain: "KeychainRawKeyValueStorage", code: Int(status),
                           userInfo: [NSLocalizedDescriptionKey: "Keychain write failed: OSStatus \(status)"])
         }
     }

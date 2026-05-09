@@ -16,11 +16,11 @@ import net.af0.where.model.UserLocation
  */
 open class LocationClient(
     private val baseUrl: String,
-    private val store: E2eeStore,
+    private val store: E2eeManager,
     private val mailboxClient: MailboxClient = KtorMailboxClient,
 ) {
     /** Secondary constructor for Swift/native compatibility (§9). */
-    constructor(baseUrl: String, store: E2eeStore) : this(baseUrl, store, KtorMailboxClient)
+    constructor(baseUrl: String, store: E2eeManager) : this(baseUrl, store, KtorMailboxClient)
 
     private val friendMutexes = mutableMapOf<String, Mutex>()
     private val mutexLock = Mutex()

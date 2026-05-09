@@ -19,7 +19,7 @@ class ChaosTimeProvider(private var offsetMillis: Long = 0) : TimeProvider {
     override fun currentTimeSeconds(): Long = (platformCurrentTimeMillis() + offsetMillis) / 1000
 }
 
-class ChaosStorage(private val storage: E2eeStorage) : E2eeStorage {
+class ChaosStorage(private val storage: RawKeyValueStorage) : RawKeyValueStorage {
     var failNextWrite = false
     var failWriteProbability = 0.0
 
@@ -29,7 +29,7 @@ class ChaosStorage(private val storage: E2eeStorage) : E2eeStorage {
         key: String,
         value: String,
     ) {
-        // storage.putString in E2eeStorage is NOT suspend, but MemoryStorage is synchronous.
+        // storage.putString in RawKeyValueStorage is NOT suspend, but MemoryStorage is synchronous.
         // Thread safety is handled by underlying implementation or plain map access if single-threaded.
         // For chaos flags, we accept slight races as they are benign in this context.
         if (failNextWrite || Random.nextDouble() < failWriteProbability) {

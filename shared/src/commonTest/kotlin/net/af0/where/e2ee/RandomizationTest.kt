@@ -30,12 +30,12 @@ class RandomizationTest {
     @Test
     fun testPollShufflesFriendOrder() = runTest {
         val storage = MemoryStorage()
-        val store = E2eeStore(storage)
-        val aliceStore = E2eeStore(MemoryStorage())
+        val store = E2eeManager(storage)
+        val aliceManager = E2eeManager(MemoryStorage())
 
         // Create 5 friends
         for (i in 1..5) {
-            val qr = aliceStore.createInvite("Friend $i")
+            val qr = aliceManager.createInvite("Friend $i")
             val (init, session) = KeyExchange.bobProcessQr(qr, "Me")
             store.processScannedQr(qr, "Friend $i") // This adds to 'friends' map in store
         }
@@ -57,11 +57,11 @@ class RandomizationTest {
     @Test
     fun testPollFriendShufflesTokenOrder() = runTest {
         val storage = MemoryStorage()
-        val store = E2eeStore(storage)
-        val aliceStore = E2eeStore(MemoryStorage())
+        val store = E2eeManager(storage)
+        val aliceManager = E2eeManager(MemoryStorage())
 
         // Create a friend
-        val qr = aliceStore.createInvite("Friend")
+        val qr = aliceManager.createInvite("Friend")
         val (init, _) = store.processScannedQr(qr, "Friend")
         val friendId = store.listFriends().first().id
 
@@ -94,11 +94,11 @@ class RandomizationTest {
     @Test
     fun testSendLocationShufflesFriendOrder() = runTest {
         val storage = MemoryStorage()
-        val store = E2eeStore(storage)
-        val aliceStore = E2eeStore(MemoryStorage())
+        val store = E2eeManager(storage)
+        val aliceManager = E2eeManager(MemoryStorage())
 
         for (i in 1..5) {
-            val qr = aliceStore.createInvite("Friend $i")
+            val qr = aliceManager.createInvite("Friend $i")
             store.processScannedQr(qr, "Friend $i")
         }
 

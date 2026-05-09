@@ -27,14 +27,11 @@ interface LocationSource {
     val isAppInForeground: StateFlow<Boolean>
     val pendingInitPayload: StateFlow<KeyExchangeInitPayload?>
     val pendingInitAliceEkPub: StateFlow<ByteArray?>
-    val multipleScansDetected: StateFlow<Boolean>
     val isSharingLocation: StateFlow<Boolean>
     val pausedFriendIds: StateFlow<Set<String>>
     val friends: StateFlow<List<FriendEntry>>
     val allPendingInvites: StateFlow<List<PendingInviteView>>
     val lastRapidPollTrigger: StateFlow<Long>
-    val pendingQrForNaming: StateFlow<QrPayload?>
-    val isInviteSheetShowing: StateFlow<Boolean>
 
     /** Wait for a poll wake signal (either interval timeout or immediate trigger). */
     suspend fun awaitPollWake(timeoutMillis: Long)
@@ -60,7 +57,6 @@ interface LocationSource {
 
     fun onPendingInit(
         payload: KeyExchangeInitPayload?,
-        multipleScans: Boolean = false,
         aliceEkPub: ByteArray? = null,
     )
 
@@ -77,15 +73,11 @@ interface LocationSource {
 
     fun onFriendsUpdated(friends: List<FriendEntry>)
 
-    fun onPendingQrForNaming(qr: QrPayload?)
-
     fun confirmQrScan()
 
     fun triggerRapidPoll()
 
     fun resetRapidPoll()
-
-    fun setInviteSheetShowing(showing: Boolean)
 
     fun markAwaitingFirstUpdate(friendId: String)
 
@@ -124,9 +116,6 @@ class LocationRepository(
     private val _pendingInitAliceEkPub = MutableStateFlow<ByteArray?>(null)
     override val pendingInitAliceEkPub: StateFlow<ByteArray?> = _pendingInitAliceEkPub.asStateFlow()
 
-    private val _multipleScansDetected = MutableStateFlow(false)
-    override val multipleScansDetected: StateFlow<Boolean> = _multipleScansDetected.asStateFlow()
-
     override val isSharingLocation: StateFlow<Boolean> = userStore.isSharingLocation
 
     override val pausedFriendIds: StateFlow<Set<String>> = userStore.pausedFriendIds
@@ -138,12 +127,6 @@ class LocationRepository(
     override val allPendingInvites: StateFlow<List<PendingInviteView>> = _allPendingInvites.asStateFlow()
 
     private val awaitingFirstUpdateIds = mutableSetOf<String>()
-
-    private val _pendingQrForNaming = MutableStateFlow<QrPayload?>(null)
-    override val pendingQrForNaming: StateFlow<QrPayload?> = _pendingQrForNaming.asStateFlow()
-
-    private val _isInviteSheetShowing = MutableStateFlow(false)
-    override val isInviteSheetShowing: StateFlow<Boolean> = _isInviteSheetShowing.asStateFlow()
 
     private val pollWakeSignal = Channel<Unit>(Channel.CONFLATED)
 
@@ -204,21 +187,14 @@ class LocationRepository(
 
     override fun onPendingInit(
         payload: KeyExchangeInitPayload?,
-        multipleScans: Boolean,
         aliceEkPub: ByteArray?,
     ) {
         _pendingInitPayload.value = payload
-        _multipleScansDetected.value = multipleScans
         _pendingInitAliceEkPub.value = aliceEkPub
     }
 
     override fun onPendingInvitesUpdated(invites: List<PendingInviteView>) {
         _allPendingInvites.value = invites
-    }
-
-    /** Called by ViewModel to notify Bob scanned a QR and is naming the friend. */
-    override fun onPendingQrForNaming(qr: QrPayload?) {
-        _pendingQrForNaming.value = qr
     }
 
     override fun confirmQrScan() {
@@ -256,13 +232,6 @@ class LocationRepository(
         awaitingFirstUpdateIds.clear()
     }
 
-    override fun setInviteSheetShowing(showing: Boolean) {
-        _isInviteSheetShowing.value = showing
-        if (showing) {
-            triggerRapidPoll()
-        }
-    }
-
     override fun markAwaitingFirstUpdate(friendId: String) {
         awaitingFirstUpdateIds.add(friendId)
     }
@@ -294,10 +263,8 @@ class LocationRepository(
         _isAppInForeground.value = false
         _pendingInitPayload.value = null
         _pendingInitAliceEkPub.value = null
-        _multipleScansDetected.value = false
         _friends.value = emptyList()
         _allPendingInvites.value = emptyList()
-        _isInviteSheetShowing.value = false
         _lastRapidPollTrigger.value = 0L
         while (pollWakeSignal.tryReceive().isSuccess) { /* drain */ }
     }

@@ -69,8 +69,9 @@ class LocationServicePermissionTest {
         val mockClient = io.mockk.mockk<net.af0.where.e2ee.LocationClient>(relaxed = true)
         service.locationClientOverride = mockClient
         service.locationSourceOverride = fakeLocationSource
-        val mockStore = io.mockk.mockk<net.af0.where.e2ee.E2eeStore>(relaxed = true)
-        service.e2eeStoreOverride = mockStore
+        val mockStore = io.mockk.mockk<net.af0.where.e2ee.E2eeManager>(relaxed = true)
+        service.e2eeManagerOverride = mockStore
+        service.uiStateStoreOverride = FakeUiStateStore()
         service.fusedClientOverride = mockFused
 
         controller.create()
@@ -107,8 +108,9 @@ class LocationServicePermissionTest {
         val mockClient = io.mockk.mockk<net.af0.where.e2ee.LocationClient>(relaxed = true)
         service.locationClientOverride = mockClient
         service.locationSourceOverride = fakeLocationSource
-        val mockStore = io.mockk.mockk<net.af0.where.e2ee.E2eeStore>(relaxed = true)
-        service.e2eeStoreOverride = mockStore
+        val mockStore = io.mockk.mockk<net.af0.where.e2ee.E2eeManager>(relaxed = true)
+        service.e2eeManagerOverride = mockStore
+        service.uiStateStoreOverride = FakeUiStateStore()
         service.fusedClientOverride = mockFused
 
         controller.create()
@@ -141,8 +143,9 @@ class LocationServicePermissionTest {
         val mockClient = io.mockk.mockk<net.af0.where.e2ee.LocationClient>(relaxed = true)
         service.locationClientOverride = mockClient
         service.locationSourceOverride = fakeLocationSource
-        val mockStore = io.mockk.mockk<net.af0.where.e2ee.E2eeStore>(relaxed = true)
-        service.e2eeStoreOverride = mockStore
+        val mockStore = io.mockk.mockk<net.af0.where.e2ee.E2eeManager>(relaxed = true)
+        service.e2eeManagerOverride = mockStore
+        service.uiStateStoreOverride = FakeUiStateStore()
         service.fusedClientOverride = mockFused
 
         controller.create()

@@ -23,8 +23,8 @@ import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
 import net.af0.where.e2ee.ConnectionStatus
-import net.af0.where.e2ee.E2eeStorage
-import net.af0.where.e2ee.E2eeStore
+import net.af0.where.e2ee.RawKeyValueStorage
+import net.af0.where.e2ee.E2eeManager
 import net.af0.where.e2ee.FriendEntry
 import net.af0.where.e2ee.InviteState
 import net.af0.where.e2ee.KeyExchangeInitPayload
@@ -72,9 +72,6 @@ class TestFakeLocationSource : LocationSource {
     private val _pendingInitAliceEkPub = MutableStateFlow<ByteArray?>(null)
     override val pendingInitAliceEkPub: StateFlow<ByteArray?> = _pendingInitAliceEkPub.asStateFlow()
 
-    private val _multipleScansDetected = MutableStateFlow(false)
-    override val multipleScansDetected: StateFlow<Boolean> = _multipleScansDetected.asStateFlow()
-
     private val _isSharingLocation = MutableStateFlow(false)
     override val isSharingLocation: StateFlow<Boolean> = _isSharingLocation.asStateFlow()
 
@@ -89,12 +86,6 @@ class TestFakeLocationSource : LocationSource {
 
     private val _lastRapidPollTrigger = MutableStateFlow(0L)
     override val lastRapidPollTrigger: StateFlow<Long> = _lastRapidPollTrigger.asStateFlow()
-
-    private val _pendingQrForNaming = MutableStateFlow<QrPayload?>(null)
-    override val pendingQrForNaming: StateFlow<QrPayload?> = _pendingQrForNaming.asStateFlow()
-
-    private val _isInviteSheetShowing = MutableStateFlow(false)
-    override val isInviteSheetShowing: StateFlow<Boolean> = _isInviteSheetShowing.asStateFlow()
 
     private val pollWakeSignal = Channel<Unit>(Channel.CONFLATED)
 
@@ -141,20 +132,14 @@ class TestFakeLocationSource : LocationSource {
 
     override fun onPendingInit(
         payload: KeyExchangeInitPayload?,
-        multipleScans: Boolean,
         aliceEkPub: ByteArray?,
     ) {
         _pendingInitPayload.value = payload
-        _multipleScansDetected.value = multipleScans
         _pendingInitAliceEkPub.value = aliceEkPub
     }
 
     override fun onPendingInvitesUpdated(invites: List<net.af0.where.e2ee.PendingInviteView>) {
         _allPendingInvites.value = invites
-    }
-
-    override fun setInviteSheetShowing(showing: Boolean) {
-        _isInviteSheetShowing.value = showing
     }
 
     override fun setSharingLocation(sharing: Boolean) {
@@ -167,10 +152,6 @@ class TestFakeLocationSource : LocationSource {
 
     override fun onFriendsUpdated(friends: List<FriendEntry>) {
         _friends.value = friends
-    }
-
-    override fun onPendingQrForNaming(qr: QrPayload?) {
-        _pendingQrForNaming.value = qr
     }
 
     override fun confirmQrScan() {
@@ -205,9 +186,9 @@ class TestFakeLocationSource : LocationSource {
 }
 
 /**
- * FakeE2eeStorage for testing.
+ * FakeRawKeyValueStorage for testing.
  */
-private class FakeE2eeStorage : E2eeStorage {
+private class FakeRawKeyValueStorage : RawKeyValueStorage {
     private val data = mutableMapOf<String, String>()
 
     override fun getString(key: String): String? = data[key]
@@ -266,16 +247,17 @@ class LocationViewModelTest {
     fun testInviteLifecycle_AliceSide() =
         runTest {
             val fakeLocationSource = TestFakeLocationSource()
-            val store = E2eeStore(FakeE2eeStorage())
+            val store = E2eeManager(FakeRawKeyValueStorage())
             val client = LocationClient("http://localhost", store)
             // Disable automatic polling loop to prevent hangs
             viewModel =
                 LocationViewModel(
                     app,
-                    e2eeStoreParam = store,
+                    e2eeManagerParam = store,
                     locationClientParam = client,
                     startPolling = false,
                     locationSourceParam = fakeLocationSource,
+                    uiStateStoreParam = FakeUiStateStore(),
                 )
             val vm = viewModel!!
 
@@ -317,12 +299,14 @@ class LocationViewModelTest {
     fun testCancelQrScan_BobSide() =
         runTest {
             val source = TestFakeLocationSource()
+            val uiStore = FakeUiStateStore()
             viewModel =
                 LocationViewModel(
                     app,
-                    e2eeStoreParam = E2eeStore(FakeE2eeStorage()),
+                    e2eeManagerParam = E2eeManager(FakeRawKeyValueStorage()),
                     startPolling = false,
                     locationSourceParam = source,
+                    uiStateStoreParam = uiStore,
                 )
             val vm = viewModel!!
 
@@ -336,7 +320,7 @@ class LocationViewModelTest {
                 )
 
             // Bob scans
-            source.onPendingQrForNaming(qr)
+            uiStore.onPendingQrForNaming(qr)
 
             assertEquals(qr, vm.pendingQrForNaming.value)
 
@@ -348,16 +332,17 @@ class LocationViewModelTest {
     @Test
     fun testPairingFlow_ConfirmPendingInit() =
         runTest {
-            val store = mockk<E2eeStore>(relaxed = true)
+            val store = mockk<E2eeManager>(relaxed = true)
             val client = mockk<LocationClient>(relaxed = true)
             val source = TestFakeLocationSource()
             viewModel =
                 LocationViewModel(
                     app,
-                    e2eeStoreParam = store,
+                    e2eeManagerParam = store,
                     locationClientParam = client,
                     startPolling = false,
                     locationSourceParam = source,
+                    uiStateStoreParam = FakeUiStateStore(),
                 )
             val vm = viewModel!!
 
@@ -387,17 +372,18 @@ class LocationViewModelTest {
     @Test
     fun testCancelPendingInit_SurgicalRemoval() =
         runTest {
-            val storage = FakeE2eeStorage()
-            val store = E2eeStore(storage)
+            val storage = FakeRawKeyValueStorage()
+            val store = E2eeManager(storage)
             val client = mockk<LocationClient>(relaxed = true)
             val source = TestFakeLocationSource()
             viewModel =
                 LocationViewModel(
                     app,
-                    e2eeStoreParam = store,
+                    e2eeManagerParam = store,
                     locationClientParam = client,
                     startPolling = false,
                     locationSourceParam = source,
+                    uiStateStoreParam = FakeUiStateStore(),
                 )
             val vm = viewModel!!
 
@@ -440,16 +426,17 @@ class LocationViewModelTest {
     @Test
     fun testPairingFlow_CancelPendingInit() =
         runTest {
-            val store = mockk<E2eeStore>(relaxed = true)
+            val store = mockk<E2eeManager>(relaxed = true)
             val client = mockk<LocationClient>(relaxed = true)
             val source = TestFakeLocationSource()
             viewModel =
                 LocationViewModel(
                     app,
-                    e2eeStoreParam = store,
+                    e2eeManagerParam = store,
                     locationClientParam = client,
                     startPolling = false,
                     locationSourceParam = source,
+                    uiStateStoreParam = FakeUiStateStore(),
                 )
             val vm = viewModel!!
 
@@ -479,16 +466,18 @@ class LocationViewModelTest {
     @Test
     fun testPairingFlow_BobScanningAlice() =
         runTest {
-            val store = mockk<E2eeStore>(relaxed = true)
+            val store = mockk<E2eeManager>(relaxed = true)
             val client = mockk<LocationClient>(relaxed = true)
             val source = TestFakeLocationSource()
+            val uiStore = FakeUiStateStore()
             viewModel =
                 LocationViewModel(
                     app,
-                    e2eeStoreParam = store,
+                    e2eeManagerParam = store,
                     locationClientParam = client,
                     startPolling = false,
                     locationSourceParam = source,
+                    uiStateStoreParam = uiStore,
                 )
             val vm = viewModel!!
 
@@ -511,7 +500,7 @@ class LocationViewModelTest {
             every { mockFriend.id } returns "alice_fp"
             io.mockk.coEvery { store.processScannedQr(any(), any()) } returns (mockPayload to mockFriend)
 
-            source.onPendingQrForNaming(qr)
+            uiStore.onPendingQrForNaming(qr)
             (vm.inviteState as MutableStateFlow).value = InviteState.Pending(qr)
 
             // 2. Bob confirms Alice's name
@@ -525,16 +514,18 @@ class LocationViewModelTest {
     @Test
     fun testPairingFlow_CancelQrScan() =
         runTest {
-            val store = mockk<E2eeStore>(relaxed = true)
+            val store = mockk<E2eeManager>(relaxed = true)
             val client = mockk<LocationClient>(relaxed = true)
             val source = TestFakeLocationSource()
+            val uiStore = FakeUiStateStore()
             viewModel =
                 LocationViewModel(
                     app,
-                    e2eeStoreParam = store,
+                    e2eeManagerParam = store,
                     locationClientParam = client,
                     startPolling = false,
                     locationSourceParam = source,
+                    uiStateStoreParam = uiStore,
                 )
             val vm = viewModel!!
 
@@ -547,7 +538,7 @@ class LocationViewModelTest {
                     discoverySecret = ByteArray(32),
                 )
 
-            source.onPendingQrForNaming(qr)
+            uiStore.onPendingQrForNaming(qr)
 
             // Bob cancels naming Alice
             vm.cancelQrScan()
@@ -565,7 +556,7 @@ class LocationViewModelTest {
         runTest {
             shadowOf(app).grantPermissions(Manifest.permission.ACCESS_FINE_LOCATION)
 
-            val inMemory = FakeE2eeStorage()
+            val inMemory = FakeRawKeyValueStorage()
             val userStore = net.af0.where.e2ee.UserStore(inMemory)
             userStore.setSharing(true)
 
@@ -575,10 +566,11 @@ class LocationViewModelTest {
             viewModel =
                 LocationViewModel(
                     app,
-                    e2eeStoreParam = E2eeStore(inMemory),
+                    e2eeManagerParam = E2eeManager(inMemory),
                     userStoreParam = userStore,
                     startPolling = false,
                     locationSourceParam = source,
+                    uiStateStoreParam = FakeUiStateStore(),
                 )
             advanceUntilIdle()
 
@@ -604,16 +596,17 @@ class LocationViewModelTest {
     @Test
     fun testConfirmQrScan_TriggersRapidPollAndForcedLocationUpdate() =
         runTest {
-            val store = mockk<E2eeStore>(relaxed = true)
+            val store = mockk<E2eeManager>(relaxed = true)
             val client = mockk<LocationClient>(relaxed = true)
             val source = TestFakeLocationSource()
             viewModel =
                 LocationViewModel(
                     app,
-                    e2eeStoreParam = store,
+                    e2eeManagerParam = store,
                     locationClientParam = client,
                     startPolling = false,
                     locationSourceParam = source,
+                    uiStateStoreParam = FakeUiStateStore(),
                 )
             val vm = viewModel!!
 

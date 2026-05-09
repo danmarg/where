@@ -8,7 +8,7 @@ class MultiFriendSyncTest {
         initializeE2eeTests()
     }
 
-    class MemoryStorage : E2eeStorage {
+    class MemoryStorage : RawKeyValueStorage {
         private val map = mutableMapOf<String, String>()
 
         override fun getString(key: String): String? = map[key]
@@ -24,25 +24,25 @@ class MultiFriendSyncTest {
     @Test
     fun `poll returns updates from successful friends even if one fails`() =
         runTest {
-            val aliceStore = E2eeStore(MemoryStorage())
-            val bobStore = E2eeStore(MemoryStorage())
-            val charlieStore = E2eeStore(MemoryStorage())
+            val aliceManager = E2eeManager(MemoryStorage())
+            val bobManager = E2eeManager(MemoryStorage())
+            val charlieStore = E2eeManager(MemoryStorage())
 
             // Pair A-B
-            val qrAB = aliceStore.createInvite("Alice")
-            val (initAB, _) = bobStore.processScannedQr(qrAB, "Alice")
-            val friendB = aliceStore.processKeyExchangeInit(initAB, "Bob", qrAB.ekPub)
+            val qrAB = aliceManager.createInvite("Alice")
+            val (initAB, _) = bobManager.processScannedQr(qrAB, "Alice")
+            val friendB = aliceManager.processKeyExchangeInit(initAB, "Bob", qrAB.ekPub)
             assertNotNull(friendB)
 
             // Pair A-C
-            val qrAC = aliceStore.createInvite("Alice")
+            val qrAC = aliceManager.createInvite("Alice")
             val (initAC, _) = charlieStore.processScannedQr(qrAC, "Alice")
-            val friendC = aliceStore.processKeyExchangeInit(initAC, "Charlie", qrAC.ekPub)
+            val friendC = aliceManager.processKeyExchangeInit(initAC, "Charlie", qrAC.ekPub)
             assertNotNull(friendC)
 
             // Bob sends a location to Alice
             val locationB = MessagePlaintext.Location(lat = 1.0, lng = 2.0, acc = 0.0, ts = 100L)
-            val bobSideOfAlice = bobStore.getFriend(aliceStore.listFriends()[0].id)!!
+            val bobSideOfAlice = bobManager.getFriend(aliceManager.listFriends()[0].id)!!
             val encryptedB = Session.encryptMessage(bobSideOfAlice.session, locationB).second
 
             // Mock MailboxClient
@@ -75,7 +75,7 @@ class MultiFriendSyncTest {
                     ) {}
                 }
 
-            val client = LocationClient("http://fake", aliceStore, fakeMailbox)
+            val client = LocationClient("http://fake", aliceManager, fakeMailbox)
 
             // Alice polls
             val updates = client.poll()
@@ -92,18 +92,18 @@ class MultiFriendSyncTest {
     fun `poll updates friend location persistently in store`() =
         runTest {
             val storage = MemoryStorage()
-            val aliceStore = E2eeStore(storage)
-            val bobStore = E2eeStore(MemoryStorage())
+            val aliceManager = E2eeManager(storage)
+            val bobManager = E2eeManager(MemoryStorage())
 
             // Pair A-B
-            val qr = aliceStore.createInvite("Alice")
-            val (init, _) = bobStore.processScannedQr(qr, "Alice")
-            val friendB = aliceStore.processKeyExchangeInit(init, "Bob", qr.ekPub)!!
+            val qr = aliceManager.createInvite("Alice")
+            val (init, _) = bobManager.processScannedQr(qr, "Alice")
+            val friendB = aliceManager.processKeyExchangeInit(init, "Bob", qr.ekPub)!!
             val bobId = friendB.id
 
             // Bob sends location
             val location = MessagePlaintext.Location(lat = 50.0, lng = 50.0, acc = 0.0, ts = 100L)
-            val bobSideOfAlice = bobStore.getFriend(aliceStore.listFriends()[0].id)!!
+            val bobSideOfAlice = bobManager.getFriend(aliceManager.listFriends()[0].id)!!
             val encrypted = Session.encryptMessage(bobSideOfAlice.session, location).second
 
             val fakeMailbox =
@@ -122,14 +122,14 @@ class MultiFriendSyncTest {
                     ) {}
                 }
 
-            val client = LocationClient("http://fake", aliceStore, fakeMailbox)
+            val client = LocationClient("http://fake", aliceManager, fakeMailbox)
 
             // Alice polls
             client.poll()
 
             // Simulate restart: Create a NEW store instance using the SAME storage
-            val aliceStoreRestarted = E2eeStore(storage)
-            val bobAfterRestart = aliceStoreRestarted.getFriend(bobId)!!
+            val aliceManagerRestarted = E2eeManager(storage)
+            val bobAfterRestart = aliceManagerRestarted.getFriend(bobId)!!
 
             assertEquals(100L, bobAfterRestart.lastTs, "Location timestamp should persist")
             assertEquals(50.0, bobAfterRestart.lastLat, "Latitude should persist")
@@ -138,18 +138,18 @@ class MultiFriendSyncTest {
     @Test
     fun `sendLocation succeeds if at least one friend succeeds`() =
         runTest {
-            val aliceStore = E2eeStore(MemoryStorage())
-            val bobStore = E2eeStore(MemoryStorage())
-            val charlieStore = E2eeStore(MemoryStorage())
+            val aliceManager = E2eeManager(MemoryStorage())
+            val bobManager = E2eeManager(MemoryStorage())
+            val charlieStore = E2eeManager(MemoryStorage())
 
-            val qrAB = aliceStore.createInvite("Alice")
-            val (initAB, _) = bobStore.processScannedQr(qrAB, "Alice")
-            val friendB = aliceStore.processKeyExchangeInit(initAB, "Bob", qrAB.ekPub)
+            val qrAB = aliceManager.createInvite("Alice")
+            val (initAB, _) = bobManager.processScannedQr(qrAB, "Alice")
+            val friendB = aliceManager.processKeyExchangeInit(initAB, "Bob", qrAB.ekPub)
             assertNotNull(friendB)
 
-            val qrAC = aliceStore.createInvite("Alice")
+            val qrAC = aliceManager.createInvite("Alice")
             val (initAC, _) = charlieStore.processScannedQr(qrAC, "Alice")
-            val friendC = aliceStore.processKeyExchangeInit(initAC, "Charlie", qrAC.ekPub)
+            val friendC = aliceManager.processKeyExchangeInit(initAC, "Charlie", qrAC.ekPub)
             assertNotNull(friendC)
 
             // Mock MailboxClient
@@ -177,7 +177,7 @@ class MultiFriendSyncTest {
                     }
                 }
 
-            val client = LocationClient("http://fake", aliceStore, fakeMailbox)
+            val client = LocationClient("http://fake", aliceManager, fakeMailbox)
 
             // Should not throw because Bob succeeds
             client.sendLocation(1.0, 2.0)
@@ -189,11 +189,11 @@ class MultiFriendSyncTest {
     @Test
     fun `poll throws if ALL friends fail`() =
         runTest {
-            val aliceStore = E2eeStore(MemoryStorage())
-            val bobStore = E2eeStore(MemoryStorage())
-            val qrAB = aliceStore.createInvite("Alice")
-            val (initAB, _) = bobStore.processScannedQr(qrAB, "Alice")
-            aliceStore.processKeyExchangeInit(initAB, "Bob", qrAB.ekPub)!!
+            val aliceManager = E2eeManager(MemoryStorage())
+            val bobManager = E2eeManager(MemoryStorage())
+            val qrAB = aliceManager.createInvite("Alice")
+            val (initAB, _) = bobManager.processScannedQr(qrAB, "Alice")
+            aliceManager.processKeyExchangeInit(initAB, "Bob", qrAB.ekPub)!!
 
             val fakeMailbox =
                 object : MailboxClient {
@@ -211,7 +211,7 @@ class MultiFriendSyncTest {
                     ) {}
                 }
 
-            val client = LocationClient("http://fake", aliceStore, fakeMailbox)
+            val client = LocationClient("http://fake", aliceManager, fakeMailbox)
 
             assertFailsWith<Exception> {
                 client.poll()

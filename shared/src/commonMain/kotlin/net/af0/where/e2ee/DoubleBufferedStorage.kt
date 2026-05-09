@@ -8,7 +8,7 @@ import kotlinx.serialization.json.Json
  * Prevents data loss by alternating between two slots and always overwriting the older one.
  */
 internal class DoubleBufferedStorage<T : Any>(
-    private val storage: E2eeStorage,
+    private val storage: RawKeyValueStorage,
     private val serializer: KSerializer<T>,
     private val json: Json,
     private val timestampSelector: (T) -> Long,
@@ -50,7 +50,7 @@ internal class DoubleBufferedStorage<T : Any>(
             println("[DoubleBufferedStorage] WARNING: Monotonicity violation for $keyBase: $tsNew < $tsPrev. Overriding to $tsPrev + 1.")
         }
         // Note: We don't force data to change here (it's immutable), but we use tsNew to pick the slot.
-        // E2eeStore.nextTs() is the primary guarantor of monotonicity.
+        // E2eeManager.nextTs() is the primary guarantor of monotonicity.
 
         val keyA = "${keyBase}_a"
         val keyB = "${keyBase}_b"

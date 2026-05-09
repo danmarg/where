@@ -4,7 +4,7 @@ package net.af0.where.e2ee
  * Utility for decrypting headers and sorting a batch of messages chronologically.
  * Handles the "Sealed Envelope" multi-key trial decryption and the core decryption loop.
  */
-internal object BatchProcessor {
+internal object E2eeProtocol {
 
     data class DecryptionResult(
         val finalSession: SessionState,

@@ -63,9 +63,6 @@ class ServiceFakeLocationSource : LocationSource {
     private val _pendingInitAliceEkPub = MutableStateFlow<ByteArray?>(null)
     override val pendingInitAliceEkPub: StateFlow<ByteArray?> = _pendingInitAliceEkPub.asStateFlow()
 
-    private val _multipleScansDetected = MutableStateFlow(false)
-    override val multipleScansDetected: StateFlow<Boolean> = _multipleScansDetected.asStateFlow()
-
     private val _isSharingLocation = MutableStateFlow(false)
     override val isSharingLocation: StateFlow<Boolean> = _isSharingLocation.asStateFlow()
 
@@ -82,12 +79,6 @@ class ServiceFakeLocationSource : LocationSource {
     override val lastRapidPollTrigger: StateFlow<Long> = _lastRapidPollTrigger.asStateFlow()
 
     private val awaitingFirstUpdateIds = mutableSetOf<String>()
-
-    private val _pendingQrForNaming = MutableStateFlow<QrPayload?>(null)
-    override val pendingQrForNaming: StateFlow<QrPayload?> = _pendingQrForNaming.asStateFlow()
-
-    private val _isInviteSheetShowing = MutableStateFlow(false)
-    override val isInviteSheetShowing: StateFlow<Boolean> = _isInviteSheetShowing.asStateFlow()
 
     private val pollWakeSignal = Channel<Unit>(Channel.CONFLATED)
 
@@ -136,20 +127,14 @@ class ServiceFakeLocationSource : LocationSource {
 
     override fun onPendingInit(
         payload: KeyExchangeInitPayload?,
-        multipleScans: Boolean,
         aliceEkPub: ByteArray?,
     ) {
         _pendingInitPayload.value = payload
-        _multipleScansDetected.value = multipleScans
         _pendingInitAliceEkPub.value = aliceEkPub
     }
 
     override fun onPendingInvitesUpdated(invites: List<net.af0.where.e2ee.PendingInviteView>) {
         _allPendingInvites.value = invites
-    }
-
-    override fun setInviteSheetShowing(showing: Boolean) {
-        _isInviteSheetShowing.value = showing
     }
 
     override fun setSharingLocation(sharing: Boolean) {
@@ -162,10 +147,6 @@ class ServiceFakeLocationSource : LocationSource {
 
     override fun onFriendsUpdated(friends: List<FriendEntry>) {
         _friends.value = friends
-    }
-
-    override fun onPendingQrForNaming(qr: QrPayload?) {
-        _pendingQrForNaming.value = qr
     }
 
     override fun confirmQrScan() {
@@ -277,8 +258,8 @@ class LocationServiceTest {
             service.locationClientOverride = mockClient
             service.locationSourceOverride = fakeLocationSource
             io.mockk.coEvery { mockClient.pollPendingInvites() } returns emptyList()
-            val mockStore = io.mockk.mockk<net.af0.where.e2ee.E2eeStore>(relaxed = true)
-            service.e2eeStoreOverride = mockStore
+            val mockStore = io.mockk.mockk<net.af0.where.e2ee.E2eeManager>(relaxed = true)
+            service.e2eeManagerOverride = mockStore
             controller.create()
 
             try {
@@ -321,8 +302,8 @@ class LocationServiceTest {
             service.locationClientOverride = mockClient
             service.locationSourceOverride = fakeLocationSource
             io.mockk.coEvery { mockClient.pollPendingInvites() } returns emptyList()
-            val mockStore = io.mockk.mockk<net.af0.where.e2ee.E2eeStore>(relaxed = true)
-            service.e2eeStoreOverride = mockStore
+            val mockStore = io.mockk.mockk<net.af0.where.e2ee.E2eeManager>(relaxed = true)
+            service.e2eeManagerOverride = mockStore
             controller.create()
 
             try {

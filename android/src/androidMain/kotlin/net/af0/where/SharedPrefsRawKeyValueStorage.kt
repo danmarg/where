@@ -7,9 +7,9 @@ import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
 import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
-import net.af0.where.e2ee.E2eeStorage
+import net.af0.where.e2ee.RawKeyValueStorage
 
-class SharedPrefsE2eeStorage(context: Context) : E2eeStorage {
+class SharedPrefsRawKeyValueStorage(context: Context) : RawKeyValueStorage {
     private val prefs =
         (context.applicationContext as? WhereApplication)?.encryptedPrefs
             ?: context.getSharedPreferences(ENCRYPTED_PREFS_NAME, Context.MODE_PRIVATE)

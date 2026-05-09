@@ -107,38 +107,38 @@ class TokenTransitionTest {
     @Test
     fun testTokenFollowLimit() =
         runTest {
-            val aliceStore = E2eeStore(MemoryStorage())
-            val bobStore = E2eeStore(MemoryStorage())
+            val aliceManager = E2eeManager(MemoryStorage())
+            val bobManager = E2eeManager(MemoryStorage())
             val fakeMailbox = FakeMailboxClient()
-            val client = LocationClient("http://fake", bobStore, fakeMailbox)
+            val client = LocationClient("http://fake", bobManager, fakeMailbox)
 
             // 1. Establish session
-            val qr = aliceStore.createInvite("Alice")
-            val (initPayload, bobEntry) = bobStore.processScannedQr(qr)
-            aliceStore.processKeyExchangeInit(initPayload, "Bob", qr.ekPub)
+            val qr = aliceManager.createInvite("Alice")
+            val (initPayload, bobEntry) = bobManager.processScannedQr(qr)
+            aliceManager.processKeyExchangeInit(initPayload, "Bob", qr.ekPub)
 
-            val aliceId = aliceStore.listFriends().first().id
+            val aliceId = aliceManager.listFriends().first().id
             val bobId = bobEntry.id
 
             // 2. Trigger many ratchets on Bob's side by Alice sending messages
             // To trigger a ratchet, Alice must first receive a message from Bob.
             repeat(MAX_TOKEN_FOLLOWS_PER_POLL + 5) {
                 // Bob sends to Alice
-                val bobSess = bobStore.getFriend(bobId)!!.session
+                val bobSess = bobManager.getFriend(bobId)!!.session
                 val (nextBobSess, bobMsg) = Session.encryptMessage(bobSess, MessagePlaintext.Keepalive())
-                bobStore.updateSession(bobId, nextBobSess)
+                bobManager.updateSession(bobId, nextBobSess)
                 
                 // Alice polls and ratchets
-                val aliceToken = aliceStore.getFriend(aliceId)!!.session.recvToken.toHex()
-                aliceStore.processBatch(aliceId, aliceToken, listOf(bobMsg))
+                val aliceToken = aliceManager.getFriend(aliceId)!!.session.recvToken.toHex()
+                aliceManager.processBatch(aliceId, aliceToken, listOf(bobMsg))
                 
                 // Alice sends back to Bob (this message will carry a new DH key and trigger Bob's ratchet)
-                val aliceFriend = aliceStore.getFriend(aliceId)!!
+                val aliceFriend = aliceManager.getFriend(aliceId)!!
                 val (nextAliceSess, aliceMsg) = Session.encryptMessage(aliceFriend.session, MessagePlaintext.Keepalive())
-                aliceStore.updateSession(aliceId, nextAliceSess)
+                aliceManager.updateSession(aliceId, nextAliceSess)
                 
                 // Put Alice's message in the token Bob is currently polling
-                val tokenBobPolls = bobStore.getFriend(bobId)!!.session.recvToken.toHex()
+                val tokenBobPolls = bobManager.getFriend(bobId)!!.session.recvToken.toHex()
                 fakeMailbox.polls.getOrPut(tokenBobPolls) { mutableListOf() }.add(aliceMsg)
                 
                 // Bob polls ONE message to advance ONE epoch
@@ -153,28 +153,28 @@ class TokenTransitionTest {
             fakeMailbox.pollCount = 0
             
             // Fill many tokens in a chain
-            var currentToken = bobStore.getFriend(bobId)!!.session.recvToken.toHex()
+            var currentToken = bobManager.getFriend(bobId)!!.session.recvToken.toHex()
             repeat(MAX_TOKEN_FOLLOWS_PER_POLL + 5) {
                 // Bob sends to Alice
-                val bobSess = bobStore.getFriend(bobId)!!.session
+                val bobSess = bobManager.getFriend(bobId)!!.session
                 val (nextBobSess, bobMsg) = Session.encryptMessage(bobSess, MessagePlaintext.Keepalive())
-                bobStore.updateSession(bobId, nextBobSess)
+                bobManager.updateSession(bobId, nextBobSess)
                 
                 // Alice ratchets
-                val aliceToken = aliceStore.getFriend(aliceId)!!.session.recvToken.toHex()
-                aliceStore.processBatch(aliceId, aliceToken, listOf(bobMsg))
+                val aliceToken = aliceManager.getFriend(aliceId)!!.session.recvToken.toHex()
+                aliceManager.processBatch(aliceId, aliceToken, listOf(bobMsg))
                 
                 // Alice sends to Bob
-                val aliceFriend = aliceStore.getFriend(aliceId)!!
+                val aliceFriend = aliceManager.getFriend(aliceId)!!
                 val (nextAliceSess, aliceMsg) = Session.encryptMessage(aliceFriend.session, MessagePlaintext.Keepalive())
-                aliceStore.updateSession(aliceId, nextAliceSess)
+                aliceManager.updateSession(aliceId, nextAliceSess)
                 
                 fakeMailbox.polls.getOrPut(currentToken) { mutableListOf() }.add(aliceMsg)
                 
                 // Bob ratchets in memory to find the NEXT token he will poll
-                val bobEntryBefore = bobStore.getFriend(bobId)!!
+                val bobEntryBefore = bobManager.getFriend(bobId)!!
                 val (bobSessAfter, _) = Session.decryptMessage(bobEntryBefore.session, aliceMsg)
-                bobStore.updateSession(bobId, bobSessAfter)
+                bobManager.updateSession(bobId, bobSessAfter)
                 currentToken = bobSessAfter.recvToken.toHex()
             }
             
@@ -187,21 +187,21 @@ class TokenTransitionTest {
     @Test
     fun testTransitionKeepaliveWhenSharingEnabled() =
         runTest {
-            val aliceStore = E2eeStore(MemoryStorage())
-            val bobStore = E2eeStore(MemoryStorage())
+            val aliceManager = E2eeManager(MemoryStorage())
+            val bobManager = E2eeManager(MemoryStorage())
             val relay = RelayMailboxClient()
-            val aliceClient = LocationClient("http://fake", aliceStore, relay)
-            val bobClient = LocationClient("http://fake", bobStore, relay)
+            val aliceClient = LocationClient("http://fake", aliceManager, relay)
+            val bobClient = LocationClient("http://fake", bobManager, relay)
 
             // 1. Pair
-            val qr = aliceStore.createInvite("Alice")
-            val (init, bobEntry) = bobStore.processScannedQr(qr)
-            aliceStore.processKeyExchangeInit(init, "Bob", qr.ekPub)
-            val aliceToBobId = aliceStore.listFriends().first().id
+            val qr = aliceManager.createInvite("Alice")
+            val (init, bobEntry) = bobManager.processScannedQr(qr)
+            aliceManager.processKeyExchangeInit(init, "Bob", qr.ekPub)
+            val aliceToBobId = aliceManager.listFriends().first().id
             val bobToAliceId = bobEntry.id
 
             // 2. Bob enables sharing
-            bobStore.setSharingEnabled(bobToAliceId, true)
+            bobManager.setSharingEnabled(bobToAliceId, true)
 
             // 3. Alice sends a message (ratchets)
             aliceClient.sendLocation(1.0, 1.0)
@@ -216,7 +216,7 @@ class TokenTransitionTest {
             // 5. Bob sends location. This should carry the ratchet and clear needsRatchet.
             bobClient.sendLocation(2.0, 2.0)
 
-            val bobFinal = bobStore.getFriend(bobToAliceId)!!
+            val bobFinal = bobManager.getFriend(bobToAliceId)!!
             assertFalse(bobFinal.session.needsRatchet)
             
             // 6. Alice polls. She should receive Bob's message and rotate.
@@ -228,32 +228,32 @@ class TokenTransitionTest {
     @Test
     fun testMultiEpochCatchupRequiresTwoPollCycles() =
         runTest {
-            val aliceStore = E2eeStore(MemoryStorage())
-            val bobStore = E2eeStore(MemoryStorage())
+            val aliceManager = E2eeManager(MemoryStorage())
+            val bobManager = E2eeManager(MemoryStorage())
             val relay = RelayMailboxClient()
-            val aliceClient = LocationClient("http://fake", aliceStore, relay)
-            val bobClient = LocationClient("http://fake", bobStore, relay)
+            val aliceClient = LocationClient("http://fake", aliceManager, relay)
+            val bobClient = LocationClient("http://fake", bobManager, relay)
 
             // 1. Pair
-            val qr = aliceStore.createInvite("Alice")
-            val (init, bobEntry) = bobStore.processScannedQr(qr)
-            aliceStore.processKeyExchangeInit(init, "Bob", qr.ekPub)
-            val aliceToBobId = aliceStore.listFriends().first().id
+            val qr = aliceManager.createInvite("Alice")
+            val (init, bobEntry) = bobManager.processScannedQr(qr)
+            aliceManager.processKeyExchangeInit(init, "Bob", qr.ekPub)
+            val aliceToBobId = aliceManager.listFriends().first().id
             val bobToAliceId = bobEntry.id
 
             // 2. Alice sends 2 messages (2 epochs)
             // Alice needs a reason to ratchet. Bob sends to her.
-            val (bS1, bM1) = Session.encryptMessage(bobStore.getFriend(bobToAliceId)!!.session, MessagePlaintext.Keepalive())
-            bobStore.updateSession(bobToAliceId, bS1)
-            aliceStore.processBatch(aliceToBobId, aliceStore.getFriend(aliceToBobId)!!.session.recvToken.toHex(), listOf(bM1))
+            val (bS1, bM1) = Session.encryptMessage(bobManager.getFriend(bobToAliceId)!!.session, MessagePlaintext.Keepalive())
+            bobManager.updateSession(bobToAliceId, bS1)
+            aliceManager.processBatch(aliceToBobId, aliceManager.getFriend(aliceToBobId)!!.session.recvToken.toHex(), listOf(bM1))
             
             // Alice sends msg 1 -> T0, carries A1.
             aliceClient.sendLocation(1.0, 1.0)
             
             // Alice needs to ratchet again. Bob sends again.
-            val (bS2, bM2) = Session.encryptMessage(bobStore.getFriend(bobToAliceId)!!.session, MessagePlaintext.Keepalive())
-            bobStore.updateSession(bobToAliceId, bS2)
-            aliceStore.processBatch(aliceToBobId, aliceStore.getFriend(aliceToBobId)!!.session.recvToken.toHex(), listOf(bM2))
+            val (bS2, bM2) = Session.encryptMessage(bobManager.getFriend(bobToAliceId)!!.session, MessagePlaintext.Keepalive())
+            bobManager.updateSession(bobToAliceId, bS2)
+            aliceManager.processBatch(aliceToBobId, aliceManager.getFriend(aliceToBobId)!!.session.recvToken.toHex(), listOf(bM2))
 
             // Alice sends msg 2 -> T1, carries A2.
             aliceClient.sendLocation(2.0, 2.0)
@@ -263,7 +263,7 @@ class TokenTransitionTest {
             assertEquals(2, updates.size)
             assertEquals(2.0, updates[1].lat)
             
-            val bobFinal = bobStore.getFriend(bobToAliceId)!!
+            val bobFinal = bobManager.getFriend(bobToAliceId)!!
             // Location(1.0) + auto-keepalive from finalizeTokenTransition + Location(2.0) = 3
             assertEquals(3, bobFinal.session.recvSeq)
         }
@@ -271,17 +271,17 @@ class TokenTransitionTest {
     @Test
     fun testMultiRoundRatchetStability() =
         runTest {
-            val aliceStore = E2eeStore(MemoryStorage())
-            val bobStore = E2eeStore(MemoryStorage())
+            val aliceManager = E2eeManager(MemoryStorage())
+            val bobManager = E2eeManager(MemoryStorage())
             val relay = RelayMailboxClient()
-            val aliceClient = LocationClient("http://fake", aliceStore, relay)
-            val bobClient = LocationClient("http://fake", bobStore, relay)
+            val aliceClient = LocationClient("http://fake", aliceManager, relay)
+            val bobClient = LocationClient("http://fake", bobManager, relay)
 
             // 1. Pair
-            val qr = aliceStore.createInvite("Alice")
-            val (init, bobEntry) = bobStore.processScannedQr(qr)
-            aliceStore.processKeyExchangeInit(init, "Bob", qr.ekPub)
-            val aliceId = aliceStore.listFriends().first().id
+            val qr = aliceManager.createInvite("Alice")
+            val (init, bobEntry) = bobManager.processScannedQr(qr)
+            aliceManager.processKeyExchangeInit(init, "Bob", qr.ekPub)
+            val aliceId = aliceManager.listFriends().first().id
             val bobId = bobEntry.id
 
             // 2. Rapid back and forth
@@ -292,8 +292,8 @@ class TokenTransitionTest {
                 aliceClient.poll()
             }
 
-            val aliceFinal = aliceStore.getFriend(aliceId)!!
-            val bobFinal = bobStore.getFriend(bobId)!!
+            val aliceFinal = aliceManager.getFriend(aliceId)!!
+            val bobFinal = bobManager.getFriend(bobId)!!
             
             // Bob's transition is complete — he sent last and finalizeTokenTransition cleared his flag.
             assertFalse(bobFinal.session.isSendTokenPending)

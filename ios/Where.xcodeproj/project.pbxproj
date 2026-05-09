@@ -10,7 +10,6 @@
 		0B55ED6589BBEEAFECFC9FFD /* MapKit in Frameworks */ = {isa = PBXBuildFile; fileRef = CFF6771BE7FE45B2F4F8952B /* MapKit */; };
 		1FFAFDE1493671FC1146F2E3 /* ServerConfig.swift in Sources */ = {isa = PBXBuildFile; fileRef = E54EC15388BAF720E7755291 /* ServerConfig.swift */; };
 		25C7C204409EE87B7316383F /* LocationSyncService.swift in Sources */ = {isa = PBXBuildFile; fileRef = D4B36665B05EA8E1F42A11EA /* LocationSyncService.swift */; };
-		283CFCE7F99DA35571F0EA88 /* KeychainE2eeStorage.swift in Sources */ = {isa = PBXBuildFile; fileRef = D11AE7B7423D7D8B04C7C2C2 /* KeychainE2eeStorage.swift */; };
 		296E222ADF2ED6BA05F597CC /* FriendsSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 28DD2FC8358389E8C9F6ABE6 /* FriendsSheet.swift */; };
 		2F25461E66995FAC063DAD07 /* LocationSyncServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9849DF78DF23CE90DE4F7F10 /* LocationSyncServiceTests.swift */; };
 		3A351D2D318606B612957163 /* Security in Frameworks */ = {isa = PBXBuildFile; fileRef = 072A149EB28769F34BCED9D8 /* Security */; };
@@ -21,6 +20,7 @@
 		6E06317DAA727CD5D54FFF08 /* BrandLaunch.storyboard in Resources */ = {isa = PBXBuildFile; fileRef = B57072E2FB8B41E587A705FF /* BrandLaunch.storyboard */; };
 		879D3942338D8B373CBA6A4E /* Shared.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 4CCEF0D6661013EBFBD2A61F /* Shared.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		907110FAC1EDCF0B63C3B573 /* Shared.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 4CCEF0D6661013EBFBD2A61F /* Shared.xcframework */; };
+		A9DED1D3FE0D23575EFA45B1 /* KeychainRawKeyValueStorage.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4193F83983F122AC92674584 /* KeychainRawKeyValueStorage.swift */; };
 		ACE3C7F5E723E981710460E2 /* CoreLocation in Frameworks */ = {isa = PBXBuildFile; fileRef = 18F48F8FCFBE392E06CD2BB3 /* CoreLocation */; };
 		B60DEE3289B4F67659B77C8A /* LocationManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3ADAF0FD19742D151B957FD9 /* LocationManager.swift */; };
 		C6B7D5B6964E195E120267EE /* QrScannerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 220A8EA077B99368AF6DA3D4 /* QrScannerView.swift */; };
@@ -65,6 +65,7 @@
 		28DD2FC8358389E8C9F6ABE6 /* FriendsSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FriendsSheet.swift; sourceTree = "<group>"; };
 		304D2BD0F9737BE6C9A22125 /* TimeUtils.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TimeUtils.swift; sourceTree = "<group>"; };
 		3ADAF0FD19742D151B957FD9 /* LocationManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocationManager.swift; sourceTree = "<group>"; };
+		4193F83983F122AC92674584 /* KeychainRawKeyValueStorage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeychainRawKeyValueStorage.swift; sourceTree = "<group>"; };
 		4CCEF0D6661013EBFBD2A61F /* Shared.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = Shared.xcframework; path = "../shared/build/XCFrameworks/$(CONFIGURATION:lower)/Shared.xcframework"; sourceTree = "<group>"; };
 		5DBE659D6FC99FBE57AB21DB /* QrCodeView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QrCodeView.swift; sourceTree = "<group>"; };
 		7A1BBBBE8782378C8B03BB4C /* WhereApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WhereApp.swift; sourceTree = "<group>"; };
@@ -73,7 +74,6 @@
 		AC2B156B7AAD99EBB5C7C775 /* KotlinByteArrayUtils.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KotlinByteArrayUtils.swift; sourceTree = "<group>"; };
 		B57072E2FB8B41E587A705FF /* BrandLaunch.storyboard */ = {isa = PBXFileReference; lastKnownFileType = file.storyboard; path = BrandLaunch.storyboard; sourceTree = "<group>"; };
 		CFF6771BE7FE45B2F4F8952B /* MapKit */ = {isa = PBXFileReference; path = MapKit; sourceTree = "<group>"; };
-		D11AE7B7423D7D8B04C7C2C2 /* KeychainE2eeStorage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeychainE2eeStorage.swift; sourceTree = "<group>"; };
 		D43663670EB5FB46B5C7C4EA /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
 		D4B36665B05EA8E1F42A11EA /* LocationSyncService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocationSyncService.swift; sourceTree = "<group>"; };
 		D50607048DEAB44CE2CAD7BA /* Where.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = Where.entitlements; sourceTree = "<group>"; };
@@ -135,7 +135,7 @@
 				D43663670EB5FB46B5C7C4EA /* ContentView.swift */,
 				28DD2FC8358389E8C9F6ABE6 /* FriendsSheet.swift */,
 				1D232AA64C61387DE75E8145 /* Info.plist */,
-				D11AE7B7423D7D8B04C7C2C2 /* KeychainE2eeStorage.swift */,
+				4193F83983F122AC92674584 /* KeychainRawKeyValueStorage.swift */,
 				AC2B156B7AAD99EBB5C7C775 /* KotlinByteArrayUtils.swift */,
 				3ADAF0FD19742D151B957FD9 /* LocationManager.swift */,
 				D4B36665B05EA8E1F42A11EA /* LocationSyncService.swift */,
@@ -303,7 +303,7 @@
 			files = (
 				6CB91DD32C87A081852B00C4 /* ContentView.swift in Sources */,
 				296E222ADF2ED6BA05F597CC /* FriendsSheet.swift in Sources */,
-				283CFCE7F99DA35571F0EA88 /* KeychainE2eeStorage.swift in Sources */,
+				A9DED1D3FE0D23575EFA45B1 /* KeychainRawKeyValueStorage.swift in Sources */,
 				FC1918F51962F01656F21EE5 /* KotlinByteArrayUtils.swift in Sources */,
 				B60DEE3289B4F67659B77C8A /* LocationManager.swift in Sources */,
 				25C7C204409EE87B7316383F /* LocationSyncService.swift in Sources */,

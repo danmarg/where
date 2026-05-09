@@ -30,7 +30,7 @@ class MultiFriendIntegrationTest {
             encodeDefaults = true
         }
 
-    class MemoryStorage : E2eeStorage {
+    class MemoryStorage : RawKeyValueStorage {
         private val map = mutableMapOf<String, String>()
 
         override fun getString(key: String): String? = map[key]
@@ -85,28 +85,28 @@ class MultiFriendIntegrationTest {
             val mailboxClient = KtorTestMailboxClient(testClient)
 
             // 1. Setup Alice (iPhone)
-            val aliceStore = E2eeStore(MemoryStorage())
-            val aliceClient = LocationClient("", aliceStore, mailboxClient)
+            val aliceManager = E2eeManager(MemoryStorage())
+            val aliceClient = LocationClient("", aliceManager, mailboxClient)
 
             // 2. Setup Bob (Android 1)
-            val bobStore = E2eeStore(MemoryStorage())
-            val bobClient = LocationClient("", bobStore, mailboxClient)
+            val bobManager = E2eeManager(MemoryStorage())
+            val bobClient = LocationClient("", bobManager, mailboxClient)
 
             // 3. Setup Charlie (Android 2)
-            val charlieStore = E2eeStore(MemoryStorage())
+            val charlieStore = E2eeManager(MemoryStorage())
             val charlieClient = LocationClient("", charlieStore, mailboxClient)
 
             // --- PAIR ALICE AND BOB ---
-            val qrAB = aliceStore.createInvite("Alice")
-            val (initAB, _) = bobStore.processScannedQr(qrAB, "Alice")
-            aliceStore.processKeyExchangeInit(initAB, "Bob", qrAB.ekPub)
+            val qrAB = aliceManager.createInvite("Alice")
+            val (initAB, _) = bobManager.processScannedQr(qrAB, "Alice")
+            aliceManager.processKeyExchangeInit(initAB, "Bob", qrAB.ekPub)
 
             // --- PAIR ALICE AND CHARLIE ---
-            val qrAC = aliceStore.createInvite("Alice")
+            val qrAC = aliceManager.createInvite("Alice")
             val (initAC, _) = charlieStore.processScannedQr(qrAC, "Alice")
-            aliceStore.processKeyExchangeInit(initAC, "Charlie", qrAC.ekPub)
+            aliceManager.processKeyExchangeInit(initAC, "Charlie", qrAC.ekPub)
 
-            val friends = aliceStore.listFriends()
+            val friends = aliceManager.listFriends()
             assertEquals(2, friends.size)
             val bobId = friends.find { it.name == "Bob" }!!.id
             val charlieId = friends.find { it.name == "Charlie" }!!.id
@@ -133,8 +133,8 @@ class MultiFriendIntegrationTest {
             assertEquals(2.0, charlieUpdate.lat)
 
             // Check persistent lastTs
-            val bobAfter = aliceStore.getFriend(bobId)!!
-            val charlieAfter = aliceStore.getFriend(charlieId)!!
+            val bobAfter = aliceManager.getFriend(bobId)!!
+            val charlieAfter = aliceManager.getFriend(charlieId)!!
 
             assertNotNull(bobAfter.lastTs, "Bob's lastTs should be updated in store")
             assertNotNull(charlieAfter.lastTs, "Charlie's lastTs should be updated in store")
@@ -153,20 +153,20 @@ class MultiFriendIntegrationTest {
                 }
             val mailboxClient = KtorTestMailboxClient(testClient)
 
-            val aliceStore = E2eeStore(MemoryStorage())
-            val aliceClient = LocationClient("", aliceStore, mailboxClient)
+            val aliceManager = E2eeManager(MemoryStorage())
+            val aliceClient = LocationClient("", aliceManager, mailboxClient)
 
-            val bobStore = E2eeStore(MemoryStorage())
-            val charlieStore = E2eeStore(MemoryStorage())
+            val bobManager = E2eeManager(MemoryStorage())
+            val charlieStore = E2eeManager(MemoryStorage())
 
             // 1. Alice creates two invites
-            val qrBob = aliceStore.createInvite("Alice")
-            val qrCharlie = aliceStore.createInvite("Alice")
+            val qrBob = aliceManager.createInvite("Alice")
+            val qrCharlie = aliceManager.createInvite("Alice")
 
-            assertEquals(2, aliceStore.listPendingInvites().size)
+            assertEquals(2, aliceManager.listPendingInvites().size)
 
             // 2. Bob joins via first invite
-            val (initBob, _) = bobStore.processScannedQr(qrBob, "Alice")
+            val (initBob, _) = bobManager.processScannedQr(qrBob, "Alice")
             mailboxClient.post("", qrBob.discoveryToken().toHex(), initBob)
 
             // 3. Charlie joins via second invite
@@ -180,17 +180,17 @@ class MultiFriendIntegrationTest {
             // 5. Alice accepts Bob
             val bobResult = results.find { it.aliceEkPub.contentEquals(qrBob.ekPub) }
             assertNotNull(bobResult)
-            val bobEntry = aliceStore.processKeyExchangeInit(bobResult.payload, "Bob", qrBob.ekPub)
+            val bobEntry = aliceManager.processKeyExchangeInit(bobResult.payload, "Bob", qrBob.ekPub)
             assertNotNull(bobEntry)
 
             // 6. Alice accepts Charlie
             val charlieResult = results.find { it.aliceEkPub.contentEquals(qrCharlie.ekPub) }
             assertNotNull(charlieResult)
-            val charlieEntry = aliceStore.processKeyExchangeInit(charlieResult.payload, "Charlie", qrCharlie.ekPub)
+            val charlieEntry = aliceManager.processKeyExchangeInit(charlieResult.payload, "Charlie", qrCharlie.ekPub)
             assertNotNull(charlieEntry)
 
-            assertEquals(2, aliceStore.listFriends().size)
-            assertTrue(aliceStore.listPendingInvites().isEmpty())
+            assertEquals(2, aliceManager.listFriends().size)
+            assertTrue(aliceManager.listPendingInvites().isEmpty())
         }
 
     @Test
@@ -207,17 +207,17 @@ class MultiFriendIntegrationTest {
             val mailboxClient = KtorTestMailboxClient(testClient)
 
             val storage = MemoryStorage()
-            val aliceStore = E2eeStore(storage)
-            val aliceClient = LocationClient("", aliceStore, mailboxClient)
+            val aliceManager = E2eeManager(storage)
+            val aliceClient = LocationClient("", aliceManager, mailboxClient)
 
-            val bobStore = E2eeStore(MemoryStorage())
-            val bobClient = LocationClient("", bobStore, mailboxClient)
+            val bobManager = E2eeManager(MemoryStorage())
+            val bobClient = LocationClient("", bobManager, mailboxClient)
 
             // Pair A-B
-            val qr = aliceStore.createInvite("Alice")
-            val (init, _) = bobStore.processScannedQr(qr, "Alice")
-            aliceStore.processKeyExchangeInit(init, "Bob", qr.ekPub)
-            val bobId = aliceStore.listFriends()[0].id
+            val qr = aliceManager.createInvite("Alice")
+            val (init, _) = bobManager.processScannedQr(qr, "Alice")
+            aliceManager.processKeyExchangeInit(init, "Bob", qr.ekPub)
+            val bobId = aliceManager.listFriends()[0].id
 
             // Bob sends location
             bobClient.sendLocation(50.0, 50.0)
@@ -227,8 +227,8 @@ class MultiFriendIntegrationTest {
 
             // --- SIMULATE RESTART ---
             // Create a NEW store instance using the SAME storage
-            val aliceStoreRestarted = E2eeStore(storage)
-            val bobAfterRestart = aliceStoreRestarted.getFriend(bobId)!!
+            val aliceManagerRestarted = E2eeManager(storage)
+            val bobAfterRestart = aliceManagerRestarted.getFriend(bobId)!!
 
             // THIS IS THE BUG: Currently, this will be NULL because poll()
             // didn't update the FriendEntry in the store!
@@ -249,26 +249,26 @@ class MultiFriendIntegrationTest {
                 }
             val mailboxClient = KtorTestMailboxClient(testClient)
 
-            val aliceStore = E2eeStore(MemoryStorage())
-            val aliceClient = LocationClient("", aliceStore, mailboxClient)
+            val aliceManager = E2eeManager(MemoryStorage())
+            val aliceClient = LocationClient("", aliceManager, mailboxClient)
 
-            val bobStore = E2eeStore(MemoryStorage())
-            val bobClient = LocationClient("", bobStore, mailboxClient)
+            val bobManager = E2eeManager(MemoryStorage())
+            val bobClient = LocationClient("", bobManager, mailboxClient)
 
-            val charlieStore = E2eeStore(MemoryStorage())
+            val charlieStore = E2eeManager(MemoryStorage())
             val charlieClient = LocationClient("", charlieStore, mailboxClient)
 
             // Pair A-B and A-C
-            val qrAB = aliceStore.createInvite("Alice")
-            val (initAB, _) = bobStore.processScannedQr(qrAB, "Alice")
-            aliceStore.processKeyExchangeInit(initAB, "Bob", qrAB.ekPub)
+            val qrAB = aliceManager.createInvite("Alice")
+            val (initAB, _) = bobManager.processScannedQr(qrAB, "Alice")
+            aliceManager.processKeyExchangeInit(initAB, "Bob", qrAB.ekPub)
 
-            val qrAC = aliceStore.createInvite("Alice")
+            val qrAC = aliceManager.createInvite("Alice")
             val (initAC, _) = charlieStore.processScannedQr(qrAC, "Alice")
-            aliceStore.processKeyExchangeInit(initAC, "Charlie", qrAC.ekPub)
+            aliceManager.processKeyExchangeInit(initAC, "Charlie", qrAC.ekPub)
 
-            val bobId = aliceStore.listFriends().find { it.name == "Bob" }!!.id
-            val charlieId = aliceStore.listFriends().find { it.name == "Charlie" }!!.id
+            val bobId = aliceManager.listFriends().find { it.name == "Bob" }!!.id
+            val charlieId = aliceManager.listFriends().find { it.name == "Charlie" }!!.id
 
             // 1. Bob sends location to Alice
             bobClient.sendLocation(1.1, 1.1)

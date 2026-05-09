@@ -2,19 +2,20 @@ package net.af0.where
 
 import android.app.Application
 import android.content.SharedPreferences
-import net.af0.where.e2ee.E2eeStore
+import net.af0.where.e2ee.E2eeManager
 import net.af0.where.e2ee.LocationClient
 import net.af0.where.e2ee.UserStore
 
 open class WhereApplication : Application() {
     open val encryptedPrefs: SharedPreferences by lazy {
-        SharedPrefsE2eeStorage.createEncryptedPrefs(this)
+        SharedPrefsRawKeyValueStorage.createEncryptedPrefs(this)
     }
 
-    open val e2eeStore: E2eeStore by lazy { E2eeStore(SharedPrefsE2eeStorage(this)) }
-    open val userStore: UserStore by lazy { UserStore(SharedPrefsE2eeStorage(this)) }
-    val locationClient: LocationClient by lazy { LocationClient(BuildConfig.SERVER_HTTP_URL, e2eeStore) }
+    open val e2eeManager: E2eeManager by lazy { E2eeManager(SharedPrefsRawKeyValueStorage(this)) }
+    open val userStore: UserStore by lazy { UserStore(SharedPrefsRawKeyValueStorage(this)) }
+    val locationClient: LocationClient by lazy { LocationClient(BuildConfig.SERVER_HTTP_URL, e2eeManager) }
     open val locationSource: LocationSource by lazy { LocationRepository(userStore) }
+    open val uiStateStore: UiStateSource by lazy { UiStateStore() }
 
     override fun onCreate() {
         super.onCreate()

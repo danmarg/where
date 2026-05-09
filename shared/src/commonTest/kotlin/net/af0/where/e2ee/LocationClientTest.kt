@@ -10,7 +10,7 @@ class LocationClientTest {
     }
 
     private lateinit var storage: MemoryStorage
-    private lateinit var store: E2eeStore
+    private lateinit var store: E2eeManager
     private lateinit var timeProvider: MockTimeProvider
 
     @BeforeTest
@@ -18,7 +18,7 @@ class LocationClientTest {
         timeProvider = MockTimeProvider()
         TimeSource.setProvider(timeProvider)
         storage = MemoryStorage()
-        store = E2eeStore(storage)
+        store = E2eeManager(storage)
     }
 
     @AfterTest
@@ -35,8 +35,8 @@ class LocationClientTest {
     @Test
     fun `pollPendingInvite picks most recent scan`() =
         runTest {
-            val aliceStore = E2eeStore(MemoryStorage())
-            val qr = aliceStore.createInvite("Alice")
+            val aliceManager = E2eeManager(MemoryStorage())
+            val qr = aliceManager.createInvite("Alice")
 
             // Simulate two scans (Bob1 and Bob2) in the same mailbox.
             // Bob1 scan
@@ -77,7 +77,7 @@ class LocationClientTest {
                     ) {}
                 }
 
-            val client = LocationClient("http://fake", aliceStore, fakeMailbox)
+            val client = LocationClient("http://fake", aliceManager, fakeMailbox)
             val results = client.pollPendingInvites()
 
             assertNotNull(results)
@@ -90,14 +90,14 @@ class LocationClientTest {
     @Test
     fun `poll should NOT process pending invites automatically`() =
         runTest {
-            val aliceStore = E2eeStore(MemoryStorage())
-            val bobStore = E2eeStore(MemoryStorage())
+            val aliceManager = E2eeManager(MemoryStorage())
+            val bobManager = E2eeManager(MemoryStorage())
 
             // Alice creates an invite
-            val qr = aliceStore.createInvite("Alice")
+            val qr = aliceManager.createInvite("Alice")
 
             // Bob scans it and posts his Init
-            val (init, _) = bobStore.processScannedQr(qr, "Alice")
+            val (init, _) = bobManager.processScannedQr(qr, "Alice")
 
             // Mock MailboxClient that returns the Init when Alice polls the discovery token
             val discoveryHex = qr.discoveryToken().toHex()
@@ -129,28 +129,28 @@ class LocationClientTest {
                     ) {}
                 }
 
-            val client = LocationClient("http://fake", aliceStore, fakeMailbox)
+            val client = LocationClient("http://fake", aliceManager, fakeMailbox)
 
             // Verify there are no friends yet
-            assertEquals(0, aliceStore.listFriends().size)
-            assertEquals(1, aliceStore.listPendingInvites().size)
+            assertEquals(0, aliceManager.listFriends().size)
+            assertEquals(1, aliceManager.listPendingInvites().size)
 
             // Alice polls for location updates (she has no friends, so no updates expected)
             client.poll()
 
             // BUG: In the faulty implementation, poll() would have processed the invite.
-            assertEquals(0, aliceStore.listFriends().size, "poll() should not have processed the invite and added a friend")
-            assertEquals(1, aliceStore.listPendingInvites().size, "Invite should still be pending")
+            assertEquals(0, aliceManager.listFriends().size, "poll() should not have processed the invite and added a friend")
+            assertEquals(1, aliceManager.listPendingInvites().size, "Invite should still be pending")
         }
 
     @Test
     fun `pollPendingInvites should still find pending invites`() =
         runTest {
-            val aliceStore = E2eeStore(MemoryStorage())
-            val bobStore = E2eeStore(MemoryStorage())
+            val aliceManager = E2eeManager(MemoryStorage())
+            val bobManager = E2eeManager(MemoryStorage())
 
-            val qr = aliceStore.createInvite("Alice")
-            val (init, _) = bobStore.processScannedQr(qr, "Alice")
+            val qr = aliceManager.createInvite("Alice")
+            val (init, _) = bobManager.processScannedQr(qr, "Alice")
 
             val discoveryHex = qr.discoveryToken().toHex()
             val fakeMailbox =
@@ -181,33 +181,33 @@ class LocationClientTest {
                     ) {}
                 }
 
-            val client = LocationClient("http://fake", aliceStore, fakeMailbox)
+            val client = LocationClient("http://fake", aliceManager, fakeMailbox)
 
             val results = client.pollPendingInvites()
             assertEquals(1, results.size)
             assertEquals("Alice", results[0].payload.suggestedName)
 
             // Invite should still be in the store (pollPendingInvites is read-only)
-            assertEquals(1, aliceStore.listPendingInvites().size)
+            assertEquals(1, aliceManager.listPendingInvites().size)
         }
 
     @Test
     fun `pollFriend should increment consecutiveSilentDrops on mixed replay and failure`() =
         runTest {
-            val aliceStore = E2eeStore(MemoryStorage())
-            val bobStore = E2eeStore(MemoryStorage())
-            val qr = aliceStore.createInvite("Alice")
-            val (init, _) = bobStore.processScannedQr(qr)
-            val aliceEntry = aliceStore.processKeyExchangeInit(init, "Bob", qr.ekPub)!!
+            val aliceManager = E2eeManager(MemoryStorage())
+            val bobManager = E2eeManager(MemoryStorage())
+            val qr = aliceManager.createInvite("Alice")
+            val (init, _) = bobManager.processScannedQr(qr)
+            val aliceEntry = aliceManager.processKeyExchangeInit(init, "Bob", qr.ekPub)!!
             val friendId = aliceEntry.id
 
             // Alice sends a message to Bob
             val (sess1, msg1) = Session.encryptMessage(aliceEntry.session, MessagePlaintext.Keepalive())
-            aliceStore.updateSession(friendId, sess1)
+            aliceManager.updateSession(friendId, sess1)
 
             // Bob processes it (now it's a replay for next time)
-            val bobFriendId = bobStore.listFriends().first().id
-            bobStore.processBatch(bobFriendId, bobStore.getFriend(bobFriendId)!!.session.recvToken.toHex(), listOf(msg1))
+            val bobFriendId = bobManager.listFriends().first().id
+            bobManager.processBatch(bobFriendId, bobManager.getFriend(bobFriendId)!!.session.recvToken.toHex(), listOf(msg1))
 
             // Now mock mailbox returns [Replay, Malformed]
             val malformed = EncryptedMessagePayload(1, byteArrayOf(1, 2, 3), byteArrayOf(4, 5, 6))
@@ -216,10 +216,10 @@ class LocationClientTest {
                 override suspend fun post(baseUrl: String, token: String, payload: MailboxPayload) {}
             }
 
-            val client = LocationClient("http://fake", bobStore, fakeMailbox)
+            val client = LocationClient("http://fake", bobManager, fakeMailbox)
             client.pollFriend(bobFriendId)
 
-            val friendAfter = bobStore.getFriend(bobFriendId)!!
+            val friendAfter = bobManager.getFriend(bobFriendId)!!
             assertEquals(1, friendAfter.consecutiveSilentDrops, "Should increment counter even if replay is present")
         }
 
@@ -227,8 +227,8 @@ class LocationClientTest {
     fun `pending transition abandoned after timeout`() =
         runBlocking {
             val qr = store.createInvite("Alice")
-            val bobStore = E2eeStore(MemoryStorage())
-            val (init, _) = bobStore.processScannedQr(qr, "Alice")
+            val bobManager = E2eeManager(MemoryStorage())
+            val (init, _) = bobManager.processScannedQr(qr, "Alice")
 
             val discoveryHex = qr.discoveryToken().toHex()
             val fakeMailbox =
