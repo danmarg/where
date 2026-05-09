@@ -8,9 +8,6 @@ This document tracks technical debt, architectural improvements, and security-ha
 - **[TODO] Unify Preferences**: Make `LocationRepository` a consumer of `UserStore` rather than duplicating sharing preferences (`isSharingLocation`, `pausedFriendIds`).
 - **[TODO] Singleton Global State**: Refactor `object LocationRepository` to a standard class to support parallel testing and better dependency injection.
 
-### 2. Robustness & Error Handling
-- **[TODO] `LocationClient.pollPendingInvite()`**: Remove deprecated function (still used in tests).
-
 ---
 
 ## COMPLETED
