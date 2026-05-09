@@ -22,6 +22,15 @@ open class LocationClient(
     /** Secondary constructor for Swift/native compatibility (§9). */
     constructor(baseUrl: String, store: E2eeStore) : this(baseUrl, store, KtorMailboxClient)
 
+    private val friendMutexes = mutableMapOf<String, Mutex>()
+    private val mutexLock = Mutex()
+
+    private suspend fun getFriendMutex(id: String): Mutex {
+        mutexLock.withLock {
+            return friendMutexes.getOrPut(id) { Mutex() }
+        }
+    }
+
     private val inFlightPolls = mutableSetOf<String>()
     private val inFlightMutex = Mutex()
 
@@ -50,26 +59,29 @@ open class LocationClient(
             val deferreds =
                 friends.map { friend ->
                     async {
-                        val alreadyPolling =
-                            inFlightMutex.withLock {
-                                if (inFlightPolls.contains(friend.id)) {
-                                    true
-                                } else {
-                                    inFlightPolls.add(friend.id)
-                                    false
+                        val mutex = getFriendMutex(friend.id)
+                        mutex.withLock {
+                            val alreadyPolling =
+                                inFlightMutex.withLock {
+                                    if (inFlightPolls.contains(friend.id)) {
+                                        true
+                                    } else {
+                                        inFlightPolls.add(friend.id)
+                                        false
+                                    }
                                 }
-                            }
-                        if (alreadyPolling) return@async Pair(emptyList<UserLocation>(), null)
+                            if (alreadyPolling) return@async Pair(emptyList<UserLocation>(), null)
 
-                        try {
-                            val updates = pollFriend(friend.id, friend.id in pausedFriendIds)
-                            Pair(updates, null)
-                        } catch (e: Exception) {
-                            println("[LocationClient] poll: failed for ${friend.id.take(8)}: ${e.message}")
-                            Pair(emptyList<UserLocation>(), e)
-                        } finally {
-                            inFlightMutex.withLock {
-                                inFlightPolls.remove(friend.id)
+                            try {
+                                val updates = pollFriend(friend.id, friend.id in pausedFriendIds)
+                                Pair(updates, null)
+                            } catch (e: Exception) {
+                                println("[LocationClient] poll: failed for ${friend.id.take(8)}: ${e.message}")
+                                Pair(emptyList<UserLocation>(), e)
+                            } finally {
+                                inFlightMutex.withLock {
+                                    inFlightPolls.remove(friend.id)
+                                }
                             }
                         }
                     }
@@ -237,7 +249,7 @@ open class LocationClient(
                 if (!friendAfter.isStale && (!friendAfter.sharingEnabled || isPaused)) {
                     println("[LocationClient] pollFriend: needsRatchet/new DH for ${friendId.take(8)}, sending automated keepalive")
                     try {
-                        sendKeepalive(friendId)
+                        sendMessageToFriendInternal(friendId, MessagePlaintext.Keepalive())
                     } catch (e: Exception) {
                         println("[LocationClient] pollFriend: keepalive failed for ${friendId.take(8)}: ${e.message}")
                         store.addDiagnosticEvent("KEEPALIVE FAIL: ${friendId.take(8)}: ${e.message?.take(40)}")
@@ -264,7 +276,10 @@ open class LocationClient(
         var lastError: Exception? = null
         for (friend in activeFriends) {
             try {
-                sendMessageToFriendInternal(friend.id, payload)
+                val mutex = getFriendMutex(friend.id)
+                mutex.withLock {
+                    sendMessageToFriendInternal(friend.id, payload)
+                }
                 successCount++
             } catch (e: Exception) {
                 lastError = e
@@ -282,13 +297,19 @@ open class LocationClient(
         lat: Double,
         lng: Double,
     ) {
-        val ts = currentTimeSeconds()
-        val payload = MessagePlaintext.Location(lat = lat, lng = lng, acc = 0.0, ts = ts)
-        sendMessageToFriendInternal(friendId, payload)
+        val mutex = getFriendMutex(friendId)
+        mutex.withLock {
+            val ts = currentTimeSeconds()
+            val payload = MessagePlaintext.Location(lat = lat, lng = lng, acc = 0.0, ts = ts)
+            sendMessageToFriendInternal(friendId, payload)
+        }
     }
 
     suspend fun sendKeepalive(friendId: String) {
-        sendMessageToFriendInternal(friendId, MessagePlaintext.Keepalive())
+        val mutex = getFriendMutex(friendId)
+        mutex.withLock {
+            sendMessageToFriendInternal(friendId, MessagePlaintext.Keepalive())
+        }
     }
 
     private suspend fun sendMessageToFriendInternal(
@@ -355,7 +376,7 @@ open class LocationClient(
                         "on new token ${session.sendToken.toHex().take(8)}",
                 )
                 try {
-                    sendKeepalive(friendId)
+                    sendMessageToFriendInternal(friendId, MessagePlaintext.Keepalive())
                 } catch (e: Exception) {
                     println("[LocationClient] finalizeTokenTransition: keepalive failed for ${friendId.take(8)}: ${e.message}")
                     store.addDiagnosticEvent("KEEPALIVE FAIL: ${friendId.take(8)}: ${e.message?.take(40)}")
@@ -368,50 +389,53 @@ open class LocationClient(
         val friends = store.listFriends()
         friends.map { friend ->
             async {
-                if (friend.session.isSendTokenPending) {
-                    val staleSince = friend.session.sendTokenPendingSinceMs
-                    val isStale = staleSince != null && (currentTimeMillis() - staleSince) > PENDING_TRANSITION_TIMEOUT_MS
-                    if (isStale) {
-                        println("[LocationClient] pending transition stale for ${friend.id.take(8)}")
-                        store.addDiagnosticEvent("STALE ROLLBACK: ${friend.id.take(8)}")
-                        store.abandonPendingTransition(friend.id)
-                        return@async
-                    }
-                }
-
-                val outbox = friend.outbox
-                if (outbox == null) {
-                    if (friend.session.isSendTokenPending && friend.session.sendSeq > 1) {
-                        println("[LocationClient] recovery: detected stale transition flag for ${friend.id.take(8)}, finalizing now")
-                        finalizeTokenTransition(friend.id)
-                    }
-                    return@async
-                }
-
-                try {
-                    println("[LocationClient] recovery: retrying outbox for ${friend.id.take(8)} token=${outbox.token.take(8)}")
-                    mailboxClient.post(baseUrl, outbox.token, outbox.payload)
-                    store.clearOutbox(friend.id)
-                    finalizeTokenTransition(friend.id, clearingToken = outbox.token)
-                } catch (e: Exception) {
-                    if (e is ProtocolGapException) {
-                        println("[LocationClient] recovery: permanent cryptodesync for ${friend.id.take(8)}")
-                        store.clearOutbox(friend.id)
-                        return@async
-                    }
-                    val statusCode = (e as? ServerException)?.statusCode
-                    if (statusCode == 404 || statusCode == 410) {
-                        if (friend.session.isSendTokenPending &&
-                            outbox.token == friend.session.prevSendToken.toHex()
-                        ) {
-                            println("[LocationClient] recovery: DESYNC: transition lost for ${friend.id.take(8)}")
-                            store.addDiagnosticEvent("DESYNC: transition lost for ${friend.id.take(8)}")
-                            store.clearOutboxAndUpdateSession(friend.id, friend.session.copy(isSendTokenPending = false))
-                        } else {
-                            store.clearOutbox(friend.id)
+                val mutex = getFriendMutex(friend.id)
+                mutex.withLock {
+                    if (friend.session.isSendTokenPending) {
+                        val staleSince = friend.session.sendTokenPendingSinceMs
+                        val isStale = staleSince != null && (currentTimeMillis() - staleSince) > PENDING_TRANSITION_TIMEOUT_MS
+                        if (isStale) {
+                            println("[LocationClient] pending transition stale for ${friend.id.take(8)}")
+                            store.addDiagnosticEvent("STALE ROLLBACK: ${friend.id.take(8)}")
+                            store.abandonPendingTransition(friend.id)
+                            return@async
                         }
-                    } else if (statusCode == 429) {
-                        store.incrementOutbox429Count(friend.id)
+                    }
+
+                    val outbox = friend.outbox
+                    if (outbox == null) {
+                        if (friend.session.isSendTokenPending && friend.session.sendSeq > 1) {
+                            println("[LocationClient] recovery: detected stale transition flag for ${friend.id.take(8)}, finalizing now")
+                            finalizeTokenTransition(friend.id)
+                        }
+                        return@async
+                    }
+
+                    try {
+                        println("[LocationClient] recovery: retrying outbox for ${friend.id.take(8)} token=${outbox.token.take(8)}")
+                        mailboxClient.post(baseUrl, outbox.token, outbox.payload)
+                        store.clearOutbox(friend.id)
+                        finalizeTokenTransition(friend.id, clearingToken = outbox.token)
+                    } catch (e: Exception) {
+                        if (e is ProtocolGapException) {
+                            println("[LocationClient] recovery: permanent cryptodesync for ${friend.id.take(8)}")
+                            store.clearOutbox(friend.id)
+                            return@async
+                        }
+                        val statusCode = (e as? ServerException)?.statusCode
+                        if (statusCode == 404 || statusCode == 410) {
+                            if (friend.session.isSendTokenPending &&
+                                outbox.token == friend.session.prevSendToken.toHex()
+                            ) {
+                                println("[LocationClient] recovery: DESYNC: transition lost for ${friend.id.take(8)}")
+                                store.addDiagnosticEvent("DESYNC: transition lost for ${friend.id.take(8)}")
+                                store.clearOutboxAndUpdateSession(friend.id, friend.session.copy(isSendTokenPending = false))
+                            } else {
+                                store.clearOutbox(friend.id)
+                            }
+                        } else if (statusCode == 429) {
+                            store.incrementOutbox429Count(friend.id)
+                        }
                     }
                 }
             }
