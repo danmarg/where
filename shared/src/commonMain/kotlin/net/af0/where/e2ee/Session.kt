@@ -213,10 +213,19 @@ object Session {
         val addedSkippedKeys = mutableListOf<ByteArray>()
 
         // If we entered a new DH epoch, standard DR says we should eventually clear
-        // very old skipped keys. We'll clear keys belonging to epochs older than 'lastRemoteDhPub'.
+        // very old skipped keys. We'll clear keys belonging to epochs no longer in our seen window.
         if (isNewDhEpoch) {
             val validEpochs = mutableSetOf(remoteDhPub.toHex(), cleanState.remoteDhPub.toHex())
-            derivationSkippedKeys.keys.retainAll { k -> validEpochs.any { e -> k.startsWith(e) } }
+            validEpochs.addAll(speculativeState.seenRemoteDhPubs)
+
+            val it = derivationSkippedKeys.entries.iterator()
+            while (it.hasNext()) {
+                val entry = it.next()
+                if (validEpochs.none { e -> entry.key.startsWith(e) }) {
+                    entry.value.zeroize()
+                    it.remove()
+                }
+            }
         }
 
         val pnGaps =
