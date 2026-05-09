@@ -55,7 +55,7 @@ open class LocationClient(
                 }
             }
 
-            val friends = store.listFriends()
+            val friends = store.listFriends().shuffled()
             val deferreds =
                 friends.map { friend ->
                     async {
@@ -157,7 +157,13 @@ open class LocationClient(
         // Multi-Token Polling (§5.3): if a transition is pending, we must poll BOTH the
         // current recvToken and the previous one, as the peer might still be sending to
         // the old epoch until they receive our first message from the new epoch.
-        val pollQueue = mutableListOf(friendBefore.session.recvToken.toHex())
+        val pollQueue = mutableListOf<String>()
+        pollQueue.add(friendBefore.session.recvToken.toHex())
+        val prev = friendBefore.session.prevRecvToken.toHex()
+        if (prev.isNotEmpty() && prev != friendBefore.session.recvToken.toHex()) {
+            pollQueue.add(prev)
+        }
+        pollQueue.shuffle()
 
         val polledTokens = mutableSetOf<String>()
         var hasIncrementedFailure = false
@@ -269,7 +275,7 @@ open class LocationClient(
         processOutboxes()
         val ts = currentTimeSeconds()
         val payload = MessagePlaintext.Location(lat = lat, lng = lng, acc = 0.0, ts = ts)
-        val activeFriends = store.listFriends().filter { it.id !in pausedFriendIds && !it.isStale }
+        val activeFriends = store.listFriends().filter { it.id !in pausedFriendIds && !it.isStale }.shuffled()
 
         var successCount = 0
         var failCount = 0
@@ -386,7 +392,7 @@ open class LocationClient(
     }
 
     private suspend fun processOutboxes() = coroutineScope {
-        val friends = store.listFriends()
+        val friends = store.listFriends().shuffled()
         friends.map { friend ->
             async {
                 val mutex = getFriendMutex(friend.id)
