@@ -189,6 +189,7 @@ class LocationServiceTest {
         val app = context as TestWhereApplication
         app.userStore.setSharing(true)
         app.userStore.setPausedFriends(emptySet())
+        app.userStore.setDisplayName("Test User")
 
         // Mock KtorMailboxClient to prevent network calls during pollPendingInvite
         io.mockk.mockkObject(net.af0.where.e2ee.KtorMailboxClient)
@@ -248,6 +249,8 @@ class LocationServiceTest {
             val mockClient = io.mockk.mockk<LocationClient>(relaxed = true)
             service.locationClientOverride = mockClient
             service.locationSourceOverride = fakeLocationSource
+            val app = context as TestWhereApplication
+            app.userStore.setSharing(true)
             io.mockk.coEvery { mockClient.pollPendingInvites() } returns emptyList()
             val mockStore = io.mockk.mockk<net.af0.where.e2ee.E2eeManager>(relaxed = true)
             service.e2eeManagerOverride = mockStore
@@ -292,6 +295,8 @@ class LocationServiceTest {
             val mockClient = io.mockk.mockk<LocationClient>(relaxed = true)
             service.locationClientOverride = mockClient
             service.locationSourceOverride = fakeLocationSource
+            val app = context as TestWhereApplication
+            app.userStore.setSharing(true)
             io.mockk.coEvery { mockClient.pollPendingInvites() } returns emptyList()
             val mockStore = io.mockk.mockk<net.af0.where.e2ee.E2eeManager>(relaxed = true)
             service.e2eeManagerOverride = mockStore
@@ -356,7 +361,8 @@ class LocationServiceTest {
             val mockClient = io.mockk.mockk<LocationClient>(relaxed = true)
             service.locationClientOverride = mockClient
             service.locationSourceOverride = fakeLocationSource
-            fakeLocationSource.setSharingLocation(true)
+            val app = context as TestWhereApplication
+            app.userStore.setSharing(true)
             fakeLocationSource.onLocation(1.0, 2.0, null)
             controller.create()
 
@@ -382,7 +388,8 @@ class LocationServiceTest {
             service.fusedClientOverride = mockFused
 
             // Initialize sharing
-            fakeLocationSource.setSharingLocation(true)
+            val app = context as TestWhereApplication
+            app.userStore.setSharing(true)
 
             controller.create()
             try {
