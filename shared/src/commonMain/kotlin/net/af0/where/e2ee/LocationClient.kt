@@ -149,9 +149,10 @@ open class LocationClient(
         if (friendBefore.session.isSendTokenPending && friendBefore.session.prevRecvToken.isNotEmpty()) {
             val prevHex = friendBefore.session.prevRecvToken.toHex()
             if (prevHex != pollQueue[0]) {
-                pollQueue.add(0, prevHex) // Poll previous token first
+                pollQueue.add(prevHex)
             }
         }
+        pollQueue.shuffle(kotlin.random.Random.Default)
 
         val polledTokens = mutableSetOf<String>()
         var hasIncrementedFailure = false
