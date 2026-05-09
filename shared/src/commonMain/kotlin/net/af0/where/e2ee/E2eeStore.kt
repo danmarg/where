@@ -471,20 +471,14 @@ class E2eeStore(
                     now - baseTime > expirySeconds
                 }
 
+            if (nextInvites.size != pendingInvites.size) {
+                saveGlobalInternal(nextInvites = nextInvites)
+            }
+
             toRemove =
                 friends.values.filter {
                     !it.isConfirmed && (now - it.lastRecvTs > expirySeconds)
                 }.map { it.id }
-
-            if (nextInvites.size != pendingInvites.size || toRemove.isNotEmpty()) {
-                val nextFriendIds = friends.keys.filterNot { toRemove.contains(it) }
-                saveGlobalInternal(nextFriendIds = nextFriendIds, nextInvites = nextInvites)
-
-                // Remove from memory
-                toRemove.forEach { id ->
-                    friends.remove(id)
-                }
-            }
         }
 
         // Clear underlying storage slots outside metadataLock, but under individual friendLocks
@@ -492,8 +486,20 @@ class E2eeStore(
         toRemove.forEach { id ->
             val friendLock = getFriendLock(id)
             friendLock.withLock {
-                storage.putString("${friendKey(id)}_a", "")
-                storage.putString("${friendKey(id)}_b", "")
+                metadataLock.withLock {
+                    val entry = friends[id] ?: return@withLock
+                    val now = currentTimeSeconds()
+                    // Re-verify expiration criteria under lock
+                    if (!entry.isConfirmed && (now - entry.lastRecvTs > expirySeconds)) {
+                        val nextFriendIds = friends.keys.filter { it != id }
+                        saveGlobalInternal(nextFriendIds = nextFriendIds)
+                        // Remove from memory
+                        friends.remove(id)
+                        // Clear the friend's storage keys.
+                        storage.putString("${friendKey(id)}_a", "")
+                        storage.putString("${friendKey(id)}_b", "")
+                    }
+                }
             }
             // Prune the lock from the map after releasing.
             locksLock.withLock {
