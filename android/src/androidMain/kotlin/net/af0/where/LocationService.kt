@@ -469,7 +469,8 @@ class LocationService : Service() {
         }
     }
 
-    private suspend fun forceLocationUpdateAndGet(): android.location.Location? {
+    @VisibleForTesting
+    internal suspend fun forceLocationUpdateAndGet(): android.location.Location? {
         return try {
             val loc = fusedClient.getCurrentLocation(Priority.PRIORITY_HIGH_ACCURACY, null).await()
             if (loc != null) {
