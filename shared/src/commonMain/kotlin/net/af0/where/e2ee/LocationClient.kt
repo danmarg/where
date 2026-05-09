@@ -171,7 +171,7 @@ open class LocationClient(
                 val result = store.processBatch(friendId, currentTokenToPoll, messages) ?: continue
 
                 // Update failure counters
-                val hasFailures = (result.failCount > 0 || result.hadSilentDrops) && !result.anySuccess
+                val hasFailures = (result.failCount > 0 || result.hadSilentDrops) && !result.anySuccess && !result.hadStateUpdate
                 val currentDropCount = if (hasFailures) {
                     if (!hasIncrementedFailure) {
                         hasIncrementedFailure = true

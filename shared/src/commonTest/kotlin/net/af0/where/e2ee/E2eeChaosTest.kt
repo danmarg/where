@@ -271,14 +271,31 @@ class E2eeChaosTest {
                 node.restart()
             }
 
-            repeat(200) {
+            repeat(500) {
                 nodes.forEach { node ->
                     try {
                         val updates = node.client.poll()
                         updates.forEach { update ->
                             node.receivedLocations.getOrPut(update.userId) { mutableSetOf() }.add(update.lat.toInt())
                         }
-                        node.client.sendLocation(999.0, 999.0)
+                    } catch (_: Exception) {
+                    }
+                }
+            }
+            // Send recovery signal
+            nodes.forEach { node ->
+                try {
+                    node.client.sendLocation(999.0, 999.0)
+                } catch (_: Exception) {
+                }
+            }
+            repeat(500) {
+                nodes.forEach { node ->
+                    try {
+                        val updates = node.client.poll()
+                        updates.forEach { update ->
+                            node.receivedLocations.getOrPut(update.userId) { mutableSetOf() }.add(update.lat.toInt())
+                        }
                     } catch (_: Exception) {
                     }
                 }
