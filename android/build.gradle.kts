@@ -34,6 +34,7 @@ kotlin {
     sourceSets {
         androidMain.dependencies {
             implementation(libs.kotlinx.serialization.json)
+            implementation(libs.kotlinx.coroutines.play.services)
             implementation(libs.security.crypto)
             implementation(libs.androidx.core.splashscreen)
         }
