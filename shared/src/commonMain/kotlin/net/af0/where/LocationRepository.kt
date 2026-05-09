@@ -189,6 +189,7 @@ class LocationRepository(
                     }
                 }
                 is net.af0.where.e2ee.AuthenticationException -> StringDesc.Resource(MR.strings.error_auth)
+                is net.af0.where.e2ee.SelfPairingException -> StringDesc.Raw("Cannot pair with yourself")
                 is net.af0.where.e2ee.ProtocolException -> StringDesc.Resource(MR.strings.error_protocol)
                 is net.af0.where.e2ee.CryptoException -> StringDesc.Resource(MR.strings.error_crypto)
                 is net.af0.where.e2ee.NetworkException -> StringDesc.Raw("Network error: ${e.message}")

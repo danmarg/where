@@ -532,8 +532,8 @@ class E2eeStore(
 
                 // Atomic guard: the caller checks outbox before acquiring this lock, but that
                 // check has a TOCTOU window. Re-checking here under friendLock + metadataLock makes it safe.
-                check(entry.outbox == null) {
-                    "Outbox already pending for ${friendId.take(8)} — refusing to overwrite"
+                if (entry.outbox != null) {
+                    throw OutboxConflictException(friendId)
                 }
 
                 val (newSession, message) = Session.encryptMessage(entry.session, payload)
@@ -601,7 +601,7 @@ class E2eeStore(
     ): Pair<KeyExchangeInitPayload, FriendEntry> =
         metadataLock.withLock {
             if (pendingInvites.any { it.qrPayload.ekPub.contentEquals(qr.ekPub) }) {
-                throw IllegalArgumentException("Cannot pair with yourself")
+                throw SelfPairingException()
             }
             val sanitizedRequestedName = sanitizeName(bobSuggestedName)
             val (initMsg, session) = KeyExchange.bobProcessQr(qr, sanitizedRequestedName)

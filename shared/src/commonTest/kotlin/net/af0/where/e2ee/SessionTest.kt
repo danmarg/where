@@ -100,11 +100,8 @@ class SessionTest {
 
         val (bobNew, _) = Session.decryptMessage(bobSession, message)
         // Second delivery of the same message must be rejected.
-        try {
+        assertFailsWith<ReplayException> {
             Session.decryptMessage(bobNew, message)
-            kotlin.test.fail("Expected ReplayException for replay")
-        } catch (e: ReplayException) {
-            assertTrue(e.message?.contains("replay") == true)
         }
     }
 
@@ -176,7 +173,7 @@ class SessionTest {
         // This will attempt to skip 6000 messages in Epoch 1 (pnGaps = 6000)
         // and 9999 messages in Epoch 2 (stepsNeeded = 10000).
         // Total projected cache size = 15999 > 10000.
-        assertFailsWith<ProtocolException> {
+        assertFailsWith<ProtocolGapException> {
             Session.decryptMessage(bSess, aMsg2!!)
         }
     }
@@ -203,11 +200,8 @@ class SessionTest {
 
         // Re-deliver any of them — all should be rejected.
         for (message in messages) {
-            try {
+            assertFailsWith<ReplayException> {
                 Session.decryptMessage(bSess, message)
-                kotlin.test.fail("Expected ProtocolException for lower seq")
-            } catch (e: ProtocolException) {
-                assertTrue(e.message?.contains("replay") == true)
             }
         }
     }
@@ -282,11 +276,8 @@ class SessionTest {
             aSess = newA
             lastMessage = message
         }
-        try {
+        assertFailsWith<ProtocolGapException> {
             Session.decryptMessage(bobSession, lastMessage!!)
-            kotlin.test.fail("Expected ProtocolException for gap exceeding MAX_GAP")
-        } catch (e: ProtocolException) {
-            assertTrue(e.message?.contains("gap too large") == true)
         }
     }
 
@@ -301,11 +292,8 @@ class SessionTest {
         val message = EncryptedMessagePayload(envelope = envelope, ct = dummyCt)
 
         val startTime = currentTimeMillis()
-        try {
+        assertFailsWith<ProtocolGapException> {
             Session.decryptMessage(bobSession, message)
-            kotlin.test.fail("Expected ProtocolException for large seq")
-        } catch (e: ProtocolException) {
-            assertTrue(e.message?.contains("gap too large") == true)
         }
         val duration = currentTimeMillis() - startTime
 
@@ -522,12 +510,8 @@ class SessionTest {
             val recycledEnvelope = Session.encryptHeader(aliceSession.headerKey, bobInitialDh, 1L, 0L)
             val recycledPayload = EncryptedMessagePayload(envelope = recycledEnvelope, ct = ByteArray(32))
 
-            try {
+            assertFailsWith<ReplayException> {
                 Session.decryptMessage(aliceSession, recycledPayload)
-                kotlin.test.fail("Expected ReplayException for recycled/replayed DH public key")
-            } catch (e: ReplayException) {
-                println("[DEBUG] Caught expected exception: ${e.message}")
-                assertTrue(e.message!!.contains("dhPub already superseded"), "Error should indicate superseded/old DH: ${e.message}")
             }
         }
 }

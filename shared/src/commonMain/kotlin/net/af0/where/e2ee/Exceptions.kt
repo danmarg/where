@@ -33,8 +33,14 @@ open class ProtocolException(message: String) : CryptoException(message)
 /** Thrown when a message is rejected as a duplicate (replay). */
 class ReplayException(message: String) : ProtocolException(message)
 
+/** Thrown when an outbox message is already pending for a friend. */
+class OutboxConflictException(friendId: String) : ProtocolException("Outbox already pending for ${friendId.take(8)} — refusing to overwrite")
+
 /** Thrown when a ratchet gap is too large to process (§8.3.1). */
 class ProtocolGapException(message: String) : ProtocolException(message)
+
+/** Thrown when trying to pair with yourself. */
+class SelfPairingException() : WhereException("Cannot pair with yourself")
 
 /**
  * Thrown when header decryption and DH ratchet succeed, but the message payload

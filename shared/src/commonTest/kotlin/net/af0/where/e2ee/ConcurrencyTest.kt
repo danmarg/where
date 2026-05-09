@@ -66,7 +66,7 @@ class ConcurrencyTest {
         // 3. Verify exactly one failed
         val failures = listOfNotNull(res1, res2)
         assertEquals(1, failures.size, "Exactly one call should fail due to outbox conflict")
-        assertTrue(failures[0].message!!.contains("Outbox already pending"), "Error should be outbox conflict")
+        assertIs<OutboxConflictException>(failures[0])
 
         // 4. Verify session state is consistent (no nonce reuse if it had advanced)
         val entry = aliceStore.getFriend(bobId)!!

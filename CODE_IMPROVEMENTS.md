@@ -1,61 +1,41 @@
-# Code Review & Architectural Improvements
+# Project Roadmap & Improvement Log
 
-This document outlines technical debt, architectural flaws, and security-hardening opportunities identified during the comprehensive code review.
+This document tracks technical debt, architectural improvements, and security-hardening tasks.
 
-## 1. Security & Memory Hygiene
+## PENDING
 
-### Sensitive Material Persistence [DONE]
-While `zeroize()` is used for many keys, some sensitive materials were previously left for the Garbage Collector:
-*   **`PendingInvite.aliceEkPriv`**: [DONE] In `E2eeStore.processKeyExchangeInit`, it is now explicitly zeroized in a `finally` block.
-*   **Bootstrap `localDhPriv`**: [DONE] In `KeyExchange.aliceProcessInit`, the initial bootstrap key is now zeroized after being superseded.
+### 1. Architectural Refactoring
+- **[TODO] Decompose `LocationSource`**: Move UI state (e.g., `isInviteSheetShowing`, `pendingQrForNaming`) out of `LocationRepository` into dedicated ViewModels or a `UIStore`.
+- **[TODO] Unify Preferences**: Make `LocationRepository` a consumer of `UserStore` rather than duplicating sharing preferences (`isSharingLocation`, `pausedFriendIds`).
+- **[TODO] Refactor `E2eeStore`**: Extract persistence logic and batch-sorting logic into dedicated components to reduce the 900+ line complexity.
+- **[TODO] Singleton Global State**: Refactor `object LocationRepository` to a standard class to support parallel testing and better dependency injection.
 
-### Serialization Bloat [DONE]
-[DONE] The monolithic `SerializedStore` has been removed and replaced with granular per-friend storage using `DoubleBufferedStorage`. This significantly reduces memory pressure during save/load cycles.
+### 2. Robustness & Error Handling
+- **[DONE] Typed Exceptions**: Replaced brittle string-based exception checking (e.g., `e.message.contains("resolve")`) with explicit exception types or sealed result classes.
+- **[TODO] `LocationClient.pollPendingInvite()`**: Remove deprecated function (still used in tests).
 
-## 2. Architectural Flaws
+### 3. Test Coverage Gaps
+- **[TODO] Fragile Assertion**: Fix `testCorruptPayloadAdvancement` in `E2eeChaosTest.kt` to remove implicit dependency on background keepalives.
+- **[TODO] Consecutive Soft Failures**: Add test coverage for multiple consecutive `DecryptionExceptionWithState` events.
+- **[TODO] Concurrent Cleanup vs. Processing**: Add concurrency test for `cleanupExpiredInvites` in `E2eeStoreTest.kt`.
 
-### Leaky Abstractions in `LocationSource` [TODO]
-`LocationRepository` (implementing `LocationSource`) has become a catch-all for state:
-*   **UI State Leakage**: Properties like `isInviteSheetShowing` and `pendingQrForNaming` are purely UI concerns and should not be in a shared multiplatform repository.
-*   **Massive Interface**: `LocationSource` handles location updates, connection status, friend management, and UI state. It should be decomposed.
+---
 
-### Duplicate Source of Truth [TODO]
-There is significant duplication of state between `UserStore` and `LocationRepository`:
-*   Fields like `isSharingLocation` and `pausedFriendIds` exist in both.
-*   `LocationViewModel` manually syncs them, which is error-prone. If sync logic is missing in a new component, the background service and UI will diverge.
+## COMPLETED
 
-## 3. Performance & Scaling [DONE]
+### Security & Memory Hygiene
+- **[DONE] Sensitive Material Persistence**: Explicitly zeroized `PendingInvite.aliceEkPriv` and bootstrap `localDhPriv` in `E2eeStore` and `KeyExchange`.
+- **[DONE] Serialization Bloat**: Removed monolithic `SerializedStore` and implemented granular per-friend storage using `DoubleBufferedStorage`.
+- **[DONE] Memory Hygiene**: Added explicit `zeroize()` calls for ephemeral keys.
 
-### Parallel Network Processing [DONE]
-`LocationClient` now uses `async`/`awaitAll` for polling and sending, ensuring a single slow peer doesn't degrade the experience for others.
+### Protocol & Logic Improvements
+- **[DONE] Silent Drop Counter**: `LocationClient` now resets `consecutiveSilentDrops` on soft failures (`DecryptionExceptionWithState`).
+- **[DONE] Failure Conflation**: Separated hard and soft failures in `E2eeStore.processBatch`, ensuring `lastDecryptFailed` only triggers on genuine errors.
+- **[DONE] Header Key Pruning**: `Session.kt` now retains header keys for all epochs present in `seenRemoteDhPubs`.
+- **[DONE] Atomic Cleanup**: `cleanupExpiredInvites` now uses a synchronized lock hierarchy (`friendLock` then `metadataLock`) to prevent TOCTOU races.
+- **[DONE] Constant Alignment**: Aligned `MAX_TOKEN_FOLLOWS_PER_POLL` with `MAX_SILENT_DROP_RETRIES` to 20.
+- **[DONE] Abandoned Transitions**: Implemented automatic rollback for pending transitions after a 7-day timeout.
 
-## 4. Robustness
-
-### Brittle Error Handling [TODO]
-The project frequently relies on parsing exception message strings (e.g., `e.message?.contains("resolve")`) to determine error types in `KtorMailboxClient` and `LocationRepository`. This is brittle and liable to break if the underlying platform or library changes its error messages.
-
-### `E2eeStore` Bloat [TODO]
-At over 900 lines, `E2eeStore` handles:
-1.  Persistent storage logic (Double Buffering).
-2.  Friend registry management.
-3.  Complex "Sealed Envelope" header decryption and batch sorting.
-4.  Diagnostic logging.
-
-## 5. Dead & Deprecated Code [TODO]
-
-*   **`LocationClient.pollPendingInvite()`**: Marked as deprecated in favor of `pollPendingInvites()`. It is still used in `LocationClientTest.kt` but nowhere in the production app.
-*   **`LocationRepository.reset()`**: Only used in unit tests. This highlights the testing friction caused by using a Singleton (`object`) for shared state.
-
-## 6. Testing & Architectural Friction [TODO]
-
-### Singleton Global State [TODO]
-Using `object LocationRepository` makes it difficult to run tests in parallel and requires manual cleanup (`reset()`) between tests. This pattern also makes it harder to swap implementations for different build variants or mock environments.
-
-## Recommendations
-
-1.  **Parallelize Networking**: [DONE] Update `LocationClient` to use `async`/`awaitAll` for polling and sending.
-2.  **Extract UI State**: [TODO] Move UI-specific flags out of the shared repositories and into ViewModels or a dedicated `UIStore`.
-3.  **Unify Preferences**: [TODO] Make `LocationRepository` a consumer of `UserStore` rather than a duplicate holder of sharing preferences.
-4.  **Strengthen Memory Hygiene**: [DONE] Add explicit `zeroize()` calls for ephemeral keys in `KeyExchange` and `E2eeStore`.
-5.  **Refactor `E2eeStore`**: [TODO] Extract the persistence logic and the batch-sorting logic into dedicated components.
-6.  **Typed Exceptions**: [TODO] Replace string-based exception checking with explicit exception types or sealed result classes.
+### Performance & Testing
+- **[DONE] Parallel Networking**: `LocationClient` uses `async`/`awaitAll` for concurrent peer processing.
+- **[DONE] High-Stress Chaos**: Added `testMultiFriendChaosHighStress()` with 30-50% chaos probability for manual verification.
