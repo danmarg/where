@@ -1,12 +1,16 @@
 package net.af0.where.e2ee
 
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlin.random.Random
 
 class ProcessKilledException : Exception("Simulated process kill mid-operation")
 
 class ChaosTimeProvider(private var offsetMillis: Long = 0) : TimeProvider {
-    fun addOffset(millis: Long) {
+    private val mutex = Mutex()
+
+    suspend fun addOffset(millis: Long) = mutex.withLock {
         offsetMillis += millis
     }
 
@@ -25,6 +29,9 @@ class ChaosStorage(private val storage: E2eeStorage) : E2eeStorage {
         key: String,
         value: String,
     ) {
+        // storage.putString in E2eeStorage is NOT suspend, but MemoryStorage is synchronous.
+        // Thread safety is handled by underlying implementation or plain map access if single-threaded.
+        // For chaos flags, we accept slight races as they are benign in this context.
         if (failNextWrite || Random.nextDouble() < failWriteProbability) {
             failNextWrite = false
             throw Exception("Simulated disk write failure")
@@ -51,19 +58,16 @@ class ChaosMailboxClient(private val client: MailboxClient) : MailboxClient {
     var expireMailboxStatusCode = 404 // 404 or 410
     var killProbability = 0.0
 
-    // When true: the message IS delivered to the server (relay) but the HTTP response is
-    // "lost" and a NetworkException is thrown to the caller. This simulates the production
-    // failure where a POST reaches the server (message stored) but the client never receives
-    // the 204, treats it as a failure, and retries — depositing duplicate messages.
     var stealthPost = false
     private val outboxBuffer = mutableListOf<Pair<String, MailboxPayload>>()
     private val expiredTokens = mutableSetOf<String>()
+    private val mutex = Mutex()
 
     override suspend fun post(
         baseUrl: String,
         token: String,
         payload: MailboxPayload,
-    ) {
+    ) = mutex.withLock {
         applyLatency()
         checkKill()
         if (expiredTokens.contains(token) || Random.nextDouble() < expireMailboxProbability) {
@@ -77,16 +81,15 @@ class ChaosMailboxClient(private val client: MailboxClient) : MailboxClient {
         if (Random.nextDouble() < reorderProbability) {
             outboxBuffer.add(token to payload)
         } else {
-            // Flush buffer first to simulate late delivery to the correct original token
             if (outboxBuffer.isNotEmpty()) {
                 outboxBuffer.forEach { (t, p) -> client.post(baseUrl, t, p) }
                 outboxBuffer.clear()
             }
             if (Random.nextDouble() >= dropProbability) {
                 if (Random.nextDouble() < stealthDropProbability) {
-                    return // Simulate success but drop on server
+                    return@withLock
                 }
-                client.post(baseUrl, token, payload) // may throw 429 if queue full — propagates as-is
+                client.post(baseUrl, token, payload)
                 if (stealthPost) throw NetworkException("Simulated timeout: POST delivered but response lost")
             }
         }
@@ -96,7 +99,7 @@ class ChaosMailboxClient(private val client: MailboxClient) : MailboxClient {
     override suspend fun poll(
         baseUrl: String,
         token: String,
-    ): List<MailboxPayload> {
+    ): List<MailboxPayload> = mutex.withLock {
         applyLatency()
         checkKill()
         if (expiredTokens.contains(token) || Random.nextDouble() < expireMailboxProbability) {
@@ -108,7 +111,6 @@ class ChaosMailboxClient(private val client: MailboxClient) : MailboxClient {
             throw NetworkException("Simulated network failure on POLL")
         }
         val messages = client.poll(baseUrl, token).toMutableList()
-        // Simulate reordering by shuffling retrieved messages
         if (Random.nextDouble() < reorderProbability) {
             messages.shuffle()
         }
@@ -127,7 +129,6 @@ class ChaosMailboxClient(private val client: MailboxClient) : MailboxClient {
                 corruptNextPayloadOnly = false
                 messages.map { msg ->
                     if (msg is EncryptedMessagePayload) {
-                        // Corrupt only CT, leave envelope (header) intact
                         msg.copy(ct = msg.ct.map { (it.toInt() xor 0xAA).toByte() }.toByteArray())
                     } else {
                         msg
@@ -137,14 +138,14 @@ class ChaosMailboxClient(private val client: MailboxClient) : MailboxClient {
                 messages
             }
         checkKill()
-        return result
+        return@withLock result
     }
 
     override suspend fun ack(
         baseUrl: String,
         token: String,
         count: Int,
-    ) {
+    ) = mutex.withLock {
         applyLatency()
         checkKill()
         if (expiredTokens.contains(token)) {
@@ -167,6 +168,7 @@ class ChaosMailboxClient(private val client: MailboxClient) : MailboxClient {
     }
 
     fun resetExpirations() {
+        // Not using mutex here as it's typically called during recovery/setup
         expiredTokens.clear()
     }
 }

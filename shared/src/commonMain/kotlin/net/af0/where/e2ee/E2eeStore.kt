@@ -732,7 +732,8 @@ class E2eeStore(
                 var currentSession = entry.session
                 var anySuccess = false
                 var anyReplay = false
-                var failCount = 0
+                var softFailCount = 0
+                var hardFailCount = 0
 
                 for ((header, msg) in orderedMessages) {
                     try {
@@ -756,23 +757,23 @@ class E2eeStore(
                             // If header authenticated but payload failed, we MUST commit the 
                             // ratcheted session state to prevent permanent DH desync (§5.5).
                             currentSession = e.newState
-                            failCount++
+                            softFailCount++
                         } else {
-                            failCount++
+                            hardFailCount++
                         }
                     }
                 }
+                val failCount = softFailCount + hardFailCount
                 if (!anySuccess && failCount > 0) {
-                    addDiagnosticEvent("DECRYPT FAIL: $failCount msgs failed for ${friendId.take(8)}")
+                    addDiagnosticEvent("DECRYPT FAIL: $failCount msgs failed ($hardFailCount hard, $softFailCount soft) for ${friendId.take(8)}")
                 }
 
                 val silentDrops = encryptedMessages.size - orderedMessages.size
                 val hadActivity = decryptedLocations.isNotEmpty() || (anySuccess && currentSession != entry.session)
 
-                // A batch is failed if there were ANY real failures AND we didn't have any success.
-                // If anySuccess=true, we avoid marking the batch as failed to prevent false-positive
-                // warning UI for the user on partially successful batches.
-                val isFailedBatch = (failCount > 0 || silentDrops > 0) && !anySuccess
+                // A batch is failed if there were ANY hard failures AND we didn't have any success.
+                // Soft failures (session ratchets) are treated as progress, not errors.
+                val isFailedBatch = (hardFailCount > 0 || silentDrops > 0) && !anySuccess
 
                 val lastLocation = decryptedLocations.lastOrNull()
 
