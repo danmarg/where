@@ -54,8 +54,8 @@ class LocationServiceSharingPauseTest {
     @Test
     fun testRegistrationRemovedWhenSharingPaused() =
         runTest {
-            io.mockk.every { UserPrefs.isSharing(any()) } returns true
-            fakeLocationSource.setSharingLocation(true)
+            val app = context as TestWhereApplication
+            app.userStore.setSharing(true)
 
             val controller = Robolectric.buildService(LocationService::class.java)
             val service = controller.get()
@@ -77,14 +77,14 @@ class LocationServiceSharingPauseTest {
             }
 
             // Pause sharing
-            fakeLocationSource.setSharingLocation(false)
+            app.userStore.setSharing(false)
             advanceUntilIdle()
 
             assertFalse(service.isRegistered, "Should be unregistered when sharing is paused")
             verify(exactly = 1) { mockFused.removeLocationUpdates(any<com.google.android.gms.location.LocationCallback>()) }
 
             // Resume sharing
-            fakeLocationSource.setSharingLocation(true)
+            app.userStore.setSharing(true)
             advanceUntilIdle()
 
             assertTrue(service.isRegistered, "Should be registered again when sharing is resumed")

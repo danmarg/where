@@ -99,8 +99,8 @@ class LocationServicePermissionTest {
 
     @Test
     fun testServiceStarts_WithoutLocationPermission_Paused() {
-        io.mockk.every { UserPrefs.isSharing(any()) } returns false
-        fakeLocationSource.setSharingLocation(false)
+        val app = context as TestWhereApplication
+        app.userStore.setSharing(false)
 
         val controller = Robolectric.buildService(LocationService::class.java)
         val service = controller.get()
@@ -132,7 +132,8 @@ class LocationServicePermissionTest {
 
     @Test
     fun testServiceStarts_WithCoarseLocationPermissionOnly() {
-        io.mockk.every { UserPrefs.isSharing(any()) } returns true
+        val app = context as TestWhereApplication
+        app.userStore.setSharing(true)
         // Android 12+ "Approximate" location grants Coarse but not Fine.
         shadowOf(context).grantPermissions(Manifest.permission.ACCESS_COARSE_LOCATION)
         shadowOf(context).denyPermissions(Manifest.permission.ACCESS_FINE_LOCATION)
