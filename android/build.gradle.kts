@@ -85,17 +85,15 @@ android {
 
     signingConfigs {
         create("release") {
-            val ksFile = System.getenv("KEYSTORE_FILE") ?: System.getProperty("KEYSTORE_FILE") ?: ""
-            val ksPassword = System.getenv("KEYSTORE_PASSWORD") ?: System.getProperty("KEYSTORE_PASSWORD") ?: ""
-            val kPassword = System.getenv("KEY_PASSWORD") ?: System.getProperty("KEY_PASSWORD") ?: ""
+            val ksFile = System.getenv("KEYSTORE_FILE") ?: System.getProperty("KEYSTORE_FILE")
+            val ksPassword = System.getenv("KEYSTORE_PASSWORD") ?: System.getProperty("KEYSTORE_PASSWORD")
+            val kPassword = System.getenv("KEY_PASSWORD") ?: System.getProperty("KEY_PASSWORD")
 
-            if (ksFile.isNotEmpty() && ksPassword.isNotEmpty() && kPassword.isNotEmpty()) {
+            if (ksFile != null && ksPassword != null && kPassword != null) {
                 storeFile = file(ksFile)
                 storePassword = ksPassword
                 keyAlias = "where"
                 keyPassword = kPassword
-            } else {
-                throw GradleException("Release signing configuration is incomplete. Please ensure KEYSTORE_FILE, KEYSTORE_PASSWORD, and KEY_PASSWORD are set via environment variables or system properties.")
             }
         }
     }
