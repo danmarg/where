@@ -275,8 +275,13 @@ class E2eeChaosTest {
                 node.setChaos(0.0)
                 node.chaosMailbox.expireMailboxProbability = 0.0
                 node.chaosMailbox.resetExpirations()
-                // Use direct relay for recovery to ensure stable re-sync
-                node.client = LocationClient("http://fake", node.store, relay)
+                node.restart()
+                // Clear any stuck pending transition from chaos phase
+                node.store.listFriends().forEach { friend ->
+                    if (friend.session.isSendTokenPending && friend.outbox != null) {
+                        node.store.abandonPendingTransition(friend.id)
+                    }
+                }
             }
 
             repeat(1000) { i ->

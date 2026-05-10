@@ -303,10 +303,16 @@ object Session {
                         ackRemoteDhPub.contentEquals(cleanState.localDhPub) || 
                         ackRemoteDhPub.contentEquals(speculativeState.localDhPub)
                     )
-                    val newRetiredDhPubs = if (!cleanState.lastRemoteDhPub.isEmpty() && (shouldRetirePrevToken || isNewDhEpoch)) {
+                    val newRetiredDhPubs = if (!cleanState.lastRemoteDhPub.isEmpty() && isNewDhEpoch) {
                         (speculativeState.retiredDhPubs + cleanState.lastRemoteDhPub.toHex()).toList().takeLast(MAX_SEEN_DH_PUBS).toSet()
                     } else {
                         speculativeState.retiredDhPubs
+                    }
+
+                    val newRetiredRecvTokens = if (isNewDhEpoch) {
+                        (speculativeState.retiredRecvTokens + cleanState.recvToken.copyOf()).takeLast(MAX_SEEN_DH_PUBS)
+                    } else {
+                        speculativeState.retiredRecvTokens
                     }
 
                     val failedState =
@@ -315,8 +321,9 @@ object Session {
                             recvSeq = seq,
                             skippedMessageKeys = derivationSkippedKeys.mapValues { it.value.copyOf() },
                             needsRatchet = cleanState.needsRatchet || isNewDhEpoch,
-                            prevRecvToken = if (shouldRetirePrevToken) ByteArray(0) else if (isNewDhEpoch) cleanState.recvToken.copyOf() else cleanState.prevRecvToken.copyOf(),
+                            prevRecvToken = if (isNewDhEpoch) cleanState.recvToken.copyOf() else cleanState.prevRecvToken.copyOf(),
                             retiredDhPubs = newRetiredDhPubs,
+                            retiredRecvTokens = newRetiredRecvTokens,
                         )
                     // Also wipe any message keys derived during this failed call
                     addedSkippedKeys.forEach { it.zeroize() }
