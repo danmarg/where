@@ -337,7 +337,7 @@ A sender MUST send to the peer mailbox token associated with the last **proven**
 Formally:
 `active_send_target = token_for(highest_peer_dh_pub_seen)`
 
-- On session bootstrap, `highest_peer_dh_pub_seen` is the initial value derived from `SK`. The initial outbound target is `T_AB_0`.
+- **Bootstrap Rule:** At session bootstrap, neither party has any prior peer DH state. `highest_peer_dh_pub_seen` is initialized to the peer's bootstrap ephemeral public key: Alice initializes it to `EK_B.pub`; Bob initializes it to `EK_A.pub`. Consequently, the `ack_remote_dh_pub` field in the first outbound message MUST be set to that same bootstrap key (`EK_B.pub` for Alice, `EK_A.pub` for Bob). Until the first decrypted peer message arrives and updates this belief, the initial outbound target remains `T_AB_0` and no alternate token is permitted.
 - A sender MUST NOT switch to the next token solely because it locally ratcheted.
 - A sender may switch only after the peer’s newer DH state is observed in a decrypted message and acknowledged by the protocol state machine.
 
@@ -345,6 +345,8 @@ Formally:
 Each direction keeps at most two active epochs:
 - **current**: The latest verified peer epoch.
 - **previous_pending**: The prior epoch, kept only for safety during transition.
+
+**Initialization:** At session bootstrap, `prev_recv_token` is unset (zero bytes / null sentinel). The polling loop MUST skip `prev_recv_token` when it is unset, and MUST NOT poll a zero-byte token. `prev_recv_token` becomes set only after the first DH ratchet step advances `recv_token`.
 
 Messages may be accepted from both. When a message is decrypted:
 1. If the sender `dh_pub` is newer than the local view, ratchet forward.
@@ -355,9 +357,11 @@ Messages may be accepted from both. When a message is decrypted:
 **Ack Rule:**
 Each message carries an `ack_remote_dh_pub` field, which is an authenticated claim inside the encrypted header: "I have successfully decrypted and processed at least one message from the peer up to this DH public key."
 
+This field is the **only authoritative signal** for retiring mailbox paths. It MUST NOT be treated as informational telemetry.
+
 **Retirement Rule:**
-- **Primary Rule:** Retire `previous_pending` only after receiving an authenticated `ack_remote_dh_pub` that proves the peer has moved forward (i.e., `ack_remote_dh_pub >= my_previous_dh_pub`).
-- **Secondary Bounded Fallback:** If no authenticated message has arrived on the old mailbox for 7 days, and the server TTL guarantees the mailbox entry is dead, the old mailbox MAY be retired. Timeout alone must never be the primary retirement mechanism.
+- **Primary Rule:** Retire `previous_pending` only after receiving an authenticated `ack_remote_dh_pub` that proves the peer has moved forward. The value MUST be compared against the peer’s previous active `dh_pub` (e.g., `ack_remote_dh_pub == local_dh_pub_prev`), not against a local epoch counter.
+- **Secondary Bounded Fallback:** If no authenticated message has arrived on the old mailbox for 7 days, and the server TTL guarantees the mailbox entry is dead, the old mailbox MAY be retired. This fallback is safe only because the server TTL bounds liveness ambiguity; timeout alone must never be the primary retirement mechanism.
 
 #### 5.4.4 Duplicate Handling and Batch Ordering
 **Duplicate Handling:**
@@ -371,7 +375,7 @@ When processing a batch of messages from the server, sort them as follows:
 
 This ensures historical messages are processed before any later ratchet step in the same batch.
 
-#### 5.4.1 Receive-Side Crash Safety
+#### 5.4.5 Receive-Side Crash Safety
 
 The GET → process → DELETE sequence is the receive-side analogue of the send-side transactional outbox:
 
@@ -568,20 +572,22 @@ Each friendship maintains a standard Double Ratchet state:
 
 ```
 SessionState {
-  root_key:           [32]byte   // current root key
-  send_chain_key:     [32]byte   // CK for outgoing messages
-  recv_chain_key:     [32]byte   // CK for incoming messages
-  send_token:         [16]byte   // token for highest_peer_dh_pub_seen
-  recv_token:         [16]byte   // token for current local ratchet key
-  prev_recv_token:    [16]byte   // token for previous local ratchet key (pending retirement)
-  send_msg_num:       uint64     // sender chain message number
-  highest_peer_dh_pub_seen: [32]byte // highest peer DH pub key successfully processed
-  local_dh_pub:       [32]byte   // current local ratchet public key
-  remote_dh_pub:      [32]byte   // last received remote ratchet public key
-  alice_ek_pub:       [32]byte   // bootstrap public key EK_A.pub (stable)
-  bob_ek_pub:         [32]byte   // bootstrap public key EK_B.pub (stable)
-  alice_fp:           [32]byte   // SHA-256(EK_A.pub) (stable)
-  bob_fp:             [32]byte   // SHA-256(EK_B.pub) (stable)
+  root_key:           [32]byte        // current root key
+  send_chain_key:     [32]byte        // CK for outgoing messages
+  recv_chain_key:     [32]byte        // CK for incoming messages
+  send_token:         [16]byte        // token for highest_peer_dh_pub_seen
+  recv_token:         [16]byte        // token for current local ratchet key
+  prev_recv_token:    [16]byte        // token for previous local ratchet key (pending retirement); zero = unset
+  send_msg_num:       uint64          // sender chain message number
+  recv_msg_num:       uint64          // highest received msg_num in the current epoch (for replay rejection)
+  highest_peer_dh_pub_seen: [32]byte  // highest peer DH pub key successfully processed
+  local_dh_pub:       [32]byte        // current local ratchet public key
+  remote_dh_pub:      [32]byte        // last received remote ratchet public key
+  alice_ek_pub:       [32]byte        // bootstrap public key EK_A.pub (stable)
+  bob_ek_pub:         [32]byte        // bootstrap public key EK_B.pub (stable)
+  alice_fp:           [32]byte        // SHA-256(EK_A.pub) (stable)
+  bob_fp:             [32]byte        // SHA-256(EK_B.pub) (stable)
+  retired_dh_pubs:    Set<[32]byte>   // bounded set of retired peer DH pub keys (max 10) for across-epoch replay rejection
 }
 ```
 
@@ -630,7 +636,7 @@ Each message frame carries a `msg_num` counter. Recipients enforce:
 3.  **OutOfOrder Support:** If a message is skipped (e.g., recipient receives `msg_num=10` after `msg_num=8`), the recipient advances the symmetric ratchet to `msg_num=10` and stores the intermediate message keys in a bounded cache (100 entries).
 4.  **Transactional Commitment:** The receiving state (receiving chain, root key, skipped keys) MUST only be updated if the message AEAD authentication succeeds.
 5.  **Epoch Transition:** When a message with a new `dh_pub` is received, the `msg_num` counter resets to 0. All skipped message keys belonging to epochs older than the *previous* valid epoch MUST be cleared.
-6.  **Across-Epoch Replay:** Recipients MUST keep track of recently seen `dh_pub` keys (epoch identifiers) and reject any message for an epoch that has already been superseded and retired (§5.4.3).
+6.  **Across-Epoch Replay:** Recipients MUST reject any message for an epoch that has already been superseded and retired (§5.4.3). Retired peer DH public keys are stored in `retired_dh_pubs` (§8.2, max 10 entries, evict oldest when full). When a `previous_pending` epoch is retired, its `dh_pub` is added to this set. Any incoming message whose `dh_pub` matches an entry in `retired_dh_pubs` MUST be dropped without further processing.
 
 
 ---
@@ -708,6 +714,8 @@ For a **Keepalive**:
 ### 9.2 Poll Request (Bob → Server)
 
 Bob retrieves pending messages by performing a `GET` request to his pairwise receive token: `GET /inbox/{hex(recv_token_T)}`. There is no JSON payload for the poll request itself.
+
+During an epoch transition, Bob MUST also poll `prev_recv_token` if it is set (non-zero): `GET /inbox/{hex(prev_recv_token)}`. Both polls occur within the same polling cycle. `prev_recv_token` is unset at bootstrap and after it has been retired per §5.4.3.
 
 The server returns a JSON array of `MailboxPayload` objects, or an empty array `[]` if no messages are pending (§7.2).
 
