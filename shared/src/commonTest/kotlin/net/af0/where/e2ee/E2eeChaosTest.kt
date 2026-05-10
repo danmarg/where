@@ -160,8 +160,8 @@ class E2eeChaosTest {
     @Test
     fun testMultiFriendChaos() = runMultiFriendChaos(iterations = 20, minChaos = 0.0, maxChaos = 0.1)
 
+//  @Ignore
     @Test
-    @Ignore
     fun testMultiFriendChaosHighStress() = runMultiFriendChaos(iterations = 50, minChaos = 0.3, maxChaos = 0.5)
 
     private fun runMultiFriendChaos(

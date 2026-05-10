@@ -378,7 +378,8 @@ object Session {
             }
 
             // Retirement Rule (§5.4.3): proves the peer has moved forward (matches current local DH key).
-            val isValidAck = ackRemoteDhPub.contentEquals(cleanState.localDhPub) ||
+            val isValidAck =
+                ackRemoteDhPub.contentEquals(cleanState.localDhPub) ||
                 ackRemoteDhPub.contentEquals(cleanState.prevLocalDhPub) ||
                 ackRemoteDhPub.contentEquals(cleanState.aliceEkPub) ||
                 ackRemoteDhPub.contentEquals(cleanState.bobEkPub)
