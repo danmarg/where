@@ -458,7 +458,16 @@ object Session {
                 remoteDhPub = remoteDhPub.copyOf(),
                 lastRemoteDhPub = state.remoteDhPub.copyOf(),
                 seenRemoteDhPubs = newSeenKeys,
-                prevSendToken = if (state.isSendTokenPending) state.prevSendToken.copyOf() else state.sendToken.copyOf(),
+                // ONE-MESSAGE LAG (§5.4): If a transition is already pending but we haven't sent
+                // anything yet (sendSeq == 0), keep the original prevSendToken to avoid skipping
+                // the token the peer is currently polling. If we HAVE sent something (seq > 0),
+                // the peer has likely received our first message and is ready to rotate, so
+                // we advance prevSendToken to our current sendToken to maintain the lag.
+                prevSendToken = if (state.isSendTokenPending && state.sendSeq == 0L) {
+                    state.prevSendToken.copyOf()
+                } else {
+                    state.sendToken.copyOf()
+                },
                 prevRecvToken = state.recvToken.copyOf(),
                 isSendTokenPending = true,
                 needsRatchet = false,
