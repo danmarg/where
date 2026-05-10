@@ -66,7 +66,7 @@ class DualPostReplayTest {
 
         // Create a message with a NEW DH key but TAMPERED ciphertext
         val attackerEk = generateX25519KeyPair()
-        val envelope = Session.encryptHeader(bobSession.headerKey, attackerEk.pub, 1L, 0L)
+        val envelope = Session.encryptHeader(bobSession.headerKey, attackerEk.pub, bobSession.remoteDhPub, 1L, 0L)
         val badMsg =
             EncryptedMessagePayload(
                 envelope = envelope,

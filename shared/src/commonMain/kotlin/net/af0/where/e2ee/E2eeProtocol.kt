@@ -141,7 +141,7 @@ internal object E2eeProtocol {
         return when {
             h.dhPub.contentEquals(session.remoteDhPub) -> 1
             h.dhPub.contentEquals(session.lastRemoteDhPub) -> 0
-            session.seenRemoteDhPubs.contains(h.dhPub.toHex()) -> 3 // Ancient epoch (already superseded)
+            session.retiredDhPubs.contains(h.dhPub.toHex()) -> 3 // Ancient epoch (already superseded)
             else -> 2 // Unknown NEW epoch
         }
     }
