@@ -300,7 +300,7 @@ data class QrPayload(
     fun toUrl(): String {
         val jsonStr = qrJson.encodeToString(serializer(), this)
         val encoded = Base64.UrlSafe.encode(jsonStr.encodeToByteArray())
-        return "https://where.af0.net/invite#$encoded"
+        return "where://invite?q=$encoded"
     }
 
     companion object {
