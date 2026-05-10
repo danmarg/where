@@ -399,13 +399,14 @@ class E2eeManager(
             )
 
             PersistenceAction.Update(updatedEntry) to PollBatchResult(
-                result.decryptedLocations, 
-                result.anySuccess, 
-                result.silentDrops > 0, 
-                result.anyReplay, 
-                failCount, 
-                hadStateUpdate
+                decryptedLocations = result.decryptedLocations,
+                anySuccess = result.anySuccess,
+                hadSilentDrops = result.silentDrops > 0 || (messages.size > encryptedMessages.size),
+                anyReplay = result.anyReplay,
+                failCount = failCount,
+                hadStateUpdate = hadStateUpdate
             )
+
         }
     }
 

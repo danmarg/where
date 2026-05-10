@@ -60,8 +60,8 @@ android {
         applicationId = "net.af0.where"
         minSdk = 26
         targetSdk = 35
-        versionCode = 51
-        versionName = "2026.05.06.1"
+        versionCode = 55
+        versionName = "2026.05.10.1"
         manifestPlaceholders["MAPS_API_KEY"] = localProperties.getProperty("MAPS_API_KEY") ?: System.getenv("MAPS_API_KEY") ?: ""
     }
 
@@ -85,11 +85,11 @@ android {
 
     signingConfigs {
         create("release") {
-            val ksFile = System.getenv("KEYSTORE_FILE") ?: System.getProperty("KEYSTORE_FILE") ?: ""
-            val ksPassword = System.getenv("KEYSTORE_PASSWORD") ?: System.getProperty("KEYSTORE_PASSWORD") ?: ""
-            val kPassword = System.getenv("KEY_PASSWORD") ?: System.getProperty("KEY_PASSWORD") ?: ""
+            val ksFile = System.getenv("KEYSTORE_FILE") ?: System.getProperty("KEYSTORE_FILE")
+            val ksPassword = System.getenv("KEYSTORE_PASSWORD") ?: System.getProperty("KEYSTORE_PASSWORD")
+            val kPassword = System.getenv("KEY_PASSWORD") ?: System.getProperty("KEY_PASSWORD")
 
-            if (ksFile.isNotEmpty() && ksPassword.isNotEmpty() && kPassword.isNotEmpty()) {
+            if (ksFile != null && ksPassword != null && kPassword != null) {
                 storeFile = file(ksFile)
                 storePassword = ksPassword
                 keyAlias = "where"

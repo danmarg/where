@@ -217,7 +217,7 @@ class SessionTest {
 
         // Create a message with a NEW DH key but corrupted ciphertext
         val newAliceDh = generateX25519KeyPair()
-        val envelope = Session.encryptHeader(bobSession.headerKey, newAliceDh.pub, 1L, 0L)
+        val envelope = Session.encryptHeader(bobSession.headerKey, newAliceDh.pub, bobSession.remoteDhPub, 1L, 0L)
         val badMsg =
             EncryptedMessagePayload(
                 envelope = envelope,
@@ -288,7 +288,7 @@ class SessionTest {
 
         // Attacker sends seq = 2^63 - 1
         val largeSeq = Long.MAX_VALUE
-        val envelope = Session.encryptHeader(bobSession.headerKey, bobSession.remoteDhPub, largeSeq, 0L)
+        val envelope = Session.encryptHeader(bobSession.headerKey, bobSession.remoteDhPub, bobSession.remoteDhPub, largeSeq, 0L)
         val message = EncryptedMessagePayload(envelope = envelope, ct = dummyCt)
 
         val startTime = currentTimeMillis()
@@ -494,20 +494,20 @@ class SessionTest {
                 aliceManager.processBatch(aliceToBobId, aliceRecvToken, listOf(bMsg))
             }
 
-            // 2. Perform two turns to ensure seenRemoteDhPubs is populated with Bob's old keys.
-            // Turn 1: Alice sees Bob's B0, sends A1. Bob sees A1, rotates to B1. Bob sends B1. Alice sees B1, rotates to A2. seen={B0}
+            // 2. Perform two turns to ensure retiredDhPubs is populated with Bob's old keys.
+            // Turn 1: Alice sees Bob's B0, sends A1. Bob sees A1, rotates to B1. Bob sends B1. Alice sees B1, rotates to A2. retired={B0}
             handshakeTurn()
-            // Turn 2: Alice sends A2. Bob sees A2, rotates to B2. Bob sends B2. Alice sees B2, rotates to A3. seen={B0, B1}
+            // Turn 2: Alice sends A2. Bob sees A2, rotates to B2. Bob sends B2. Alice sees B2, rotates to A3. retired={B0, B1}
             handshakeTurn()
 
-            // 3. Alice's seenRemoteDhPubs should now contain Bob's initial and intermediate keys
+            // 3. Alice's retiredDhPubs should now contain Bob's initial and intermediate keys
             val bobInitialDh = initPayload.ekPub
             val aliceSession = aliceManager.getFriend(aliceToBobId)!!.session
 
-            assertTrue(aliceSession.seenRemoteDhPubs.contains(bobInitialDh.toHex()), "seenRemoteDhPubs should have Bob's initial DH")
+            assertTrue(aliceSession.retiredDhPubs.contains(bobInitialDh.toHex()), "retiredDhPubs should have Bob's initial DH")
 
             // 4. Attacker tries to send a message (seq=1) using Bob's initial DH key
-            val recycledEnvelope = Session.encryptHeader(aliceSession.headerKey, bobInitialDh, 1L, 0L)
+            val recycledEnvelope = Session.encryptHeader(aliceSession.headerKey, bobInitialDh, aliceSession.localDhPub, 1L, 0L)
             val recycledPayload = EncryptedMessagePayload(envelope = recycledEnvelope, ct = ByteArray(32))
 
             assertFailsWith<ReplayException> {

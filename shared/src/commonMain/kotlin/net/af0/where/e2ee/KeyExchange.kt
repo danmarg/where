@@ -171,6 +171,7 @@ object KeyExchange {
                 sendToken = newSendToken,
                 localDhPriv = newLocalDh.priv.copyOf(),
                 localDhPub = newLocalDh.pub.copyOf(),
+                prevLocalDhPub = session.localDhPub.copyOf(),
                 prevSendToken = session.sendToken.copyOf(),
                 isSendTokenPending = true,
                 pn = session.sendSeq,
@@ -258,13 +259,14 @@ object KeyExchange {
             recvSeq = 0L,
             localDhPriv = myDhPriv.copyOf(),
             localDhPub = myDhPub.copyOf(),
+            prevLocalDhPub = ByteArray(0), // No previous local DH at bootstrap
             remoteDhPub = theirDhPub.copyOf(),
             aliceEkPub = (if (isAlice) myDhPub else theirDhPub).copyOf(),
             bobEkPub = (if (isAlice) theirDhPub else myDhPub).copyOf(),
             aliceFp = aliceFp.copyOf(),
             bobFp = bobFp.copyOf(),
             prevSendToken = sendToken.copyOf(),
-            prevRecvToken = recvToken.copyOf(),
+            prevRecvToken = ByteArray(0),
             isSendTokenPending = false,
             isAlice = isAlice,
             pn = 0L,
@@ -272,6 +274,7 @@ object KeyExchange {
             headerKey = recvHeaderKey,
             sendHeaderKey = sendHeaderKey,
             nextHeaderKey = nextHeaderKey,
+            retiredDhPubs = emptySet()
         )
     }
 

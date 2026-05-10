@@ -29,7 +29,7 @@ class E2eeProtocolTest {
             localDhPub = localKeyPair.pub,
             remoteDhPub = remoteDhPubCurrent,
             lastRemoteDhPub = remoteDhPubLast,
-            seenRemoteDhPubs = seenKeys,
+            retiredDhPubs = seenKeys,
             isAlice = true,
             aliceFp = ByteArray(32),
             bobFp = ByteArray(32),
@@ -43,11 +43,13 @@ class E2eeProtocolTest {
             isSendTokenPending = false
         )
 
+        val dummyAck = ByteArray(32)
+
         // Mock headers for different buckets
-        val hCurrent = Session.DecryptedHeader(remoteDhPubCurrent, 10, 5) // Bucket 1
-        val hLast = Session.DecryptedHeader(remoteDhPubLast, 8, 4)       // Bucket 0
-        val hAncient = Session.DecryptedHeader(remoteDhPubAncient, 6, 3) // Bucket 3 (was -1)
-        val hNew = Session.DecryptedHeader(remoteDhPubNew, 12, 6)         // Bucket 2
+        val hCurrent = Session.DecryptedHeader(remoteDhPubCurrent, dummyAck, 10, 5) // Bucket 1
+        val hLast = Session.DecryptedHeader(remoteDhPubLast, dummyAck, 8, 4)       // Bucket 0
+        val hAncient = Session.DecryptedHeader(remoteDhPubAncient, dummyAck, 6, 3) // Bucket 3 (was -1)
+        val hNew = Session.DecryptedHeader(remoteDhPubNew, dummyAck, 12, 6)         // Bucket 2
 
         // Payloads (mapped by their headers)
         val pCurrent = EncryptedMessagePayload(1, byteArrayOf(), byteArrayOf())

@@ -48,6 +48,7 @@ data class SessionState(
     // localDhPriv MUST be persisted across app restarts to allow DH ratcheting.
     @Serializable(with = ByteArrayBase64Serializer::class) val localDhPriv: ByteArray,
     @Serializable(with = ByteArrayBase64Serializer::class) val localDhPub: ByteArray,
+    @Serializable(with = ByteArrayBase64Serializer::class) val prevLocalDhPub: ByteArray = ByteArray(0),
     @Serializable(with = ByteArrayBase64Serializer::class) val remoteDhPub: ByteArray,
     // The DH public key from the epoch immediately preceding remoteDhPub. Used for
     // bucketed out-of-order message processing to prevent epoch rotation from
@@ -70,7 +71,9 @@ data class SessionState(
         > = emptyMap(),
     // Recent DH public keys seen (to reject replays from epochs older than lastRemoteDhPub)
     // Stored as hex strings for O(1) lookup and clean serialization.
-    val seenRemoteDhPubs: Set<String> = emptySet(),
+    val retiredDhPubs: Set<String> = emptySet(),
+    // Recent receiving tokens seen (to catch up peers that are multiple epochs behind)
+    val retiredRecvTokens: List<@Serializable(with = ByteArrayBase64Serializer::class) ByteArray> = emptyList(),
     // Header keys for prior epochs that still have skipped message keys in the cache.
     // Keyed by remoteDhPub.toHex(); needed to decrypt the envelope of late-arriving
     // messages from an epoch we have already ratcheted past.
@@ -104,6 +107,7 @@ data class SessionState(
             recvToken = recvToken.copyOf(),
             localDhPriv = localDhPriv.copyOf(),
             localDhPub = localDhPub.copyOf(),
+            prevLocalDhPub = prevLocalDhPub.copyOf(),
             remoteDhPub = remoteDhPub.copyOf(),
             lastRemoteDhPub = lastRemoteDhPub.copyOf(),
             aliceEkPub = aliceEkPub.copyOf(),
@@ -112,6 +116,7 @@ data class SessionState(
             bobFp = bobFp.copyOf(),
             prevSendToken = prevSendToken.copyOf(),
             prevRecvToken = prevRecvToken.copyOf(),
+            retiredRecvTokens = retiredRecvTokens.map { it.copyOf() },
             skippedMessageKeys = skippedMessageKeys.mapValues { it.value.copyOf() },
             skippedEpochHeaderKeys = skippedEpochHeaderKeys.mapValues { it.value.copyOf() },
             headerKey = headerKey.copyOf(),
@@ -130,6 +135,7 @@ data class SessionState(
             recvSeq == other.recvSeq &&
             localDhPriv.contentEquals(other.localDhPriv) &&
             localDhPub.contentEquals(other.localDhPub) &&
+            prevLocalDhPub.contentEquals(other.prevLocalDhPub) &&
             remoteDhPub.contentEquals(other.remoteDhPub) &&
             lastRemoteDhPub.contentEquals(other.lastRemoteDhPub) &&
             aliceEkPub.contentEquals(other.aliceEkPub) &&
@@ -141,7 +147,7 @@ data class SessionState(
             isAlice == other.isAlice &&
             skippedMessageKeys.size == other.skippedMessageKeys.size &&
             skippedMessageKeys.all { (k, v) -> other.skippedMessageKeys[k]?.contentEquals(v) == true } &&
-            seenRemoteDhPubs == other.seenRemoteDhPubs &&
+            retiredDhPubs == other.retiredDhPubs &&
             skippedEpochHeaderKeys.size == other.skippedEpochHeaderKeys.size &&
             skippedEpochHeaderKeys.all { (k, v) -> other.skippedEpochHeaderKeys[k]?.contentEquals(v) == true } &&
             pn == other.pn &&
@@ -163,6 +169,7 @@ data class SessionState(
         h = 31 * h + recvSeq.hashCode()
         h = 31 * h + localDhPriv.contentHashCode()
         h = 31 * h + localDhPub.contentHashCode()
+        h = 31 * h + prevLocalDhPub.contentHashCode()
         h = 31 * h + remoteDhPub.contentHashCode()
         h = 31 * h + lastRemoteDhPub.contentHashCode()
         h = 31 * h + aliceEkPub.contentHashCode()
@@ -176,7 +183,7 @@ data class SessionState(
         var skipHash = 0
         skippedMessageKeys.forEach { (k, v) -> skipHash += 31 * k.hashCode() + v.contentHashCode() }
         h = 31 * h + skipHash
-        h = 31 * h + seenRemoteDhPubs.hashCode()
+        h = 31 * h + retiredDhPubs.hashCode()
         var epochHkHash = 0
         skippedEpochHeaderKeys.forEach { (k, v) -> epochHkHash += 31 * k.hashCode() + v.contentHashCode() }
         h = 31 * h + epochHkHash
@@ -205,8 +212,8 @@ fun SessionState.assertInvariants() {
     check(skippedEpochHeaderKeys.size <= MAX_SKIPPED_EPOCHS) {
         "skippedEpochHeaderKeys overflow: ${skippedEpochHeaderKeys.size} > $MAX_SKIPPED_EPOCHS"
     }
-    check(seenRemoteDhPubs.size <= MAX_SEEN_DH_PUBS) {
-        "seenRemoteDhPubs overflow: ${seenRemoteDhPubs.size} > $MAX_SEEN_DH_PUBS"
+    check(retiredDhPubs.size <= MAX_SEEN_DH_PUBS) {
+        "retiredDhPubs overflow: ${retiredDhPubs.size} > $MAX_SEEN_DH_PUBS"
     }
     if (isSendTokenPending) {
         check(!prevSendToken.contentEquals(sendToken) || sendSeq == 0L) {
