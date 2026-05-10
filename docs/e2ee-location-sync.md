@@ -199,10 +199,10 @@ Using a random secret (rather than `EK_A.pub`) as HKDF IKM ensures that only som
 For situations where QR scanning is impossible (e.g., remote setup over a secure chat), Alice can encode the setup payload as a string URL.
 
 **Format:**
-The payload is identical to the QR content defined in §4.2. Alice shares this setup payload via a secure out-of-band channel, typically encoded into a URL. The application supports two primary URL formats for sharing:
+The payload is identical to the QR content defined in §4.2. Alice shares this setup payload via a secure out-of-band channel, typically encoded into a URL. The application supports various URL formats for sharing, including:
 
-1. **Custom URI Scheme:** `where://invite?q=<encoded-payload>`
-2. **Web Link (App Linking):** `https://<domain>/invite#<encoded-payload>`
+- **Custom URI Scheme:** `where://invite?q=<encoded-payload>`
+- **Web Link (App Linking):** A dedicated website URL that can trigger app linking (e.g., `https://where.af0.net/invite#<encoded-payload>`).
 
 The `<encoded-payload>` is a URL-safe Base64 representation of the JSON setup payload. Bob clicks the link or manually imports the URL, and the process continues exactly as it would for a QR scan (polling the discovery mailbox).
 

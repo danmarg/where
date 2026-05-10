@@ -20,7 +20,7 @@ The CLI tool allows you to simulate a user from your terminal. It supports creat
 
 ### Basic Workflow
 1. **Initialize:** `cli init` (creates `alice.priv` and `alice.pub` by default).
-2. **Invite:** `cli invite` (outputs a `where://invite?q=...` URL).
+2. **Invite:** `cli invite` (outputs a `https://where.af0.net/invite#...` URL).
 3. **Join:** From another terminal/device, `cli join <url> <name>`.
 4. **Sync:** `cli sync` (starts a loop that polls and sends random location updates).
 
@@ -87,4 +87,4 @@ iOS uses `ServerConfig.swift` for configuration.
 ## 4. Troubleshooting
 
 ### Simulator Fallbacks
-- **iOS/Android:** Since cameras don't work in the simulator, clicking "Scan" will open a manual input dialog. You can paste a `where://invite?q=...` URL here to simulate a scan.
+- **iOS/Android:** Since cameras don't work in the simulator, clicking "Scan" will open a manual input dialog. You can paste a `https://where.af0.net/invite#...` URL here to simulate a scan.

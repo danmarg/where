@@ -91,7 +91,7 @@ Useful for scripting, integration testing, and pairing two terminals to verify t
 
 # Terminal A — create an invite
 ./cli/build/install/cli/bin/cli init
-./cli/build/install/cli/bin/cli invite          # prints a where://invite?q=… URL
+./cli/build/install/cli/bin/cli invite          # prints a where.af0.net/invite#… URL
 
 # Terminal B — accept and start syncing
 ./cli/build/install/cli/bin/cli join <url> bob
