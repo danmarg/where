@@ -280,8 +280,8 @@ Alice receives the `KeyExchangeInit` and:
 5. **Alice MUST verify** that the `token` in `KeyExchangeInit` matches her independently derived `T_AB_0`. If they do not match, she MUST abort and discard the session.
 6. **Deletes `EK_A.priv` immediately.**
 7. Prompts user to name Bob (pre-filled with `suggested_name` from `KeyExchangeInit`).
-8. Stores the session.
-   - **Bootstrapping the Ratchet:** Alice's initial `remoteDhPub` is set to `EK_B.pub`. This ensures her next outgoing message triggers a DH ratchet step on Bob's side, breaking the bootstrap deadlock. If Bob never sends a message, Alice's ratchet remains in this initial epoch; the periodic Keepalive mechanism (§5.3) is used to ensure eventual rotation even in asymmetric usage.
+8. **Eager Ratchet (Deadlock Breaker):** To prevent the session from being stuck in the initial symmetric chain (Epoch 0), Alice immediately generates a new DH keypair (`A1`) and performs one DH ratchet step using `EK_B.pub` before returning the session. This ensures her very first location message is sent in Epoch 1. When Bob receives this message, he will observe the new `A1` and perform his own DH ratchet step, completing the transition to a fully ratcheted state. This eager approach is a deliberate deadlock breaker; while a Keepalive mechanism (§5.3) provides an alternative path for rotation, the implementation chooses this eager transition to ensure post-compromise security from the first message.
+9. Stores the session.
 
 Bob **deletes `EK_B.priv` immediately** after posting the `KeyExchangeInit`.
 
@@ -587,6 +587,8 @@ SessionState {
   retired_dh_pubs:    Set<[32]byte>   // bounded set of retired peer DH pub keys (max 10) for across-epoch replay rejection
 }
 ```
+
+**Note on Alice's Initial State:** Due to the eager ratchet step performed in `aliceProcessInit` (§4.4), Alice's initial session state will already have `isSendTokenPending = true` and `local_dh_pub` set to $A_1$, with $A_0$ stored in `prev_local_dh_pub`. Bob's initial state remains in Epoch 0 until he receives Alice's first message.
 
 ### 8.3 Ratchet Step Functions
 
