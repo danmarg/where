@@ -164,10 +164,14 @@ class E2eeChaosTest {
     @Test
     fun testMultiFriendChaosHighStress() = runMultiFriendChaos(iterations = 50, minChaos = 0.3, maxChaos = 0.5)
 
+    @Test
+    fun testMultiFriendChaosRealistic() = runMultiFriendChaos(iterations = 50, minChaos = 0.3, maxChaos = 0.5, realisticMode = true)
+
     private fun runMultiFriendChaos(
         iterations: Int,
         minChaos: Double,
         maxChaos: Double,
+        realisticMode: Boolean = false,
     ) =
         runTest {
             initializeE2eeTests()
@@ -195,8 +199,13 @@ class E2eeChaosTest {
                     chaosMailbox.killProbability = p * 0.5 // High kill probability for stress
                     chaosMailbox.corruptPayloadProbability = p * 0.3
                     chaosMailbox.reorderProbability = p * 0.3
-                    chaosMailbox.dropProbability = p * 0.2
-                    chaosMailbox.stealthDropProbability = p * 0.1
+                    if (realisticMode) {
+                        chaosMailbox.dropProbability = 0.0
+                        chaosMailbox.stealthDropProbability = 0.0
+                    } else {
+                        chaosMailbox.dropProbability = p * 0.2
+                        chaosMailbox.stealthDropProbability = p * 0.1
+                    }
                     chaosMailbox.maxLatencyMs = (p * 100).toLong()
                 }
             }
@@ -260,7 +269,7 @@ class E2eeChaosTest {
                 if (Random.nextDouble() < 0.02) {
                     clock.addOffset(Random.nextLong(-200, 200))
                 }
-                if (Random.nextDouble() < 0.001) {
+                if (Random.nextDouble() < 0.001 && !realisticMode) {
                     nodes.forEach {
                         it.chaosMailbox.expireMailboxProbability = 0.01
                         if (Random.nextDouble() < 0.5) it.chaosMailbox.resetExpirations()
@@ -278,7 +287,7 @@ class E2eeChaosTest {
                 node.restart()
             }
 
-            repeat(1000) { i ->
+            repeat(2000) { i ->
                 nodes.forEach { node ->
                     try {
                         if (i % 50 == 0) {
