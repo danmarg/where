@@ -291,18 +291,6 @@ object Session {
                     // Decryption failure: We still want to persist the ratcheted state if the header
                     // authenticated, to prevent permanent DH desync (§5.5).
                     
-                    // Retirement Rule (§5.4.3): proves the peer has moved forward (matches current local DH key).
-                    val isValidAck = ackRemoteDhPub.contentEquals(cleanState.localDhPub) ||
-                        ackRemoteDhPub.contentEquals(cleanState.prevLocalDhPub) ||
-                        ackRemoteDhPub.contentEquals(cleanState.aliceEkPub) ||
-                        ackRemoteDhPub.contentEquals(cleanState.bobEkPub)
-
-                    // We retire the transition window once the peer has acknowledged our current local key
-                    // (the one they just saw) or our next local key (if they already saw our ratchet).
-                    val shouldRetirePrevToken = isValidAck && (
-                        ackRemoteDhPub.contentEquals(cleanState.localDhPub) || 
-                        ackRemoteDhPub.contentEquals(speculativeState.localDhPub)
-                    )
                     val newRetiredDhPubs = if (!cleanState.lastRemoteDhPub.isEmpty() && isNewDhEpoch) {
                         (speculativeState.retiredDhPubs + cleanState.lastRemoteDhPub.toHex()).toList().takeLast(MAX_SEEN_DH_PUBS).toSet()
                     } else {
