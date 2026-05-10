@@ -385,8 +385,8 @@ object Session {
 
             // We retire the transition window once the peer has acknowledged our current local key
             // (the one they just saw) or our next local key (if they already saw our ratchet).
-            val shouldRetirePrevToken = isValidAck && (
-                ackRemoteDhPub.contentEquals(cleanState.localDhPub) || 
+            val shouldRetirePrevToken = isNewDhEpoch && isValidAck && (
+                ackRemoteDhPub.contentEquals(cleanState.localDhPub) ||
                 ackRemoteDhPub.contentEquals(speculativeState.localDhPub)
             )
             val newRetiredDhPubs = if (!cleanState.lastRemoteDhPub.isEmpty() && (shouldRetirePrevToken || isNewDhEpoch)) {

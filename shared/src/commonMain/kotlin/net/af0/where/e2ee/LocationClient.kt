@@ -223,7 +223,10 @@ open class LocationClient(
                 }
 
                 // ACK logic: progress (success/replay/state) or unrecoverable failure (forceAck)
-                val safeToAck = result.anySuccess || result.anyReplay || result.hadStateUpdate || forceAck
+                val safeToAck = (result.anySuccess && !result.hadSilentDrops) ||
+                    (result.anyReplay && result.failCount == 0) ||
+                    result.hadStateUpdate ||
+                    forceAck
 
                 if (safeToAck) {
                     try {

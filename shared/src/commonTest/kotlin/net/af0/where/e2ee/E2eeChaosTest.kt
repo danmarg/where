@@ -276,12 +276,6 @@ class E2eeChaosTest {
                 node.chaosMailbox.expireMailboxProbability = 0.0
                 node.chaosMailbox.resetExpirations()
                 node.restart()
-                // Clear any stuck pending transition from chaos phase
-                node.store.listFriends().forEach { friend ->
-                    if (friend.session.isSendTokenPending && friend.outbox != null) {
-                        node.store.abandonPendingTransition(friend.id)
-                    }
-                }
             }
 
             repeat(1000) { i ->
