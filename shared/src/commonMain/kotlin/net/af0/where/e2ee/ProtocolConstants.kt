@@ -19,13 +19,14 @@ internal const val MAX_DIAGNOSTIC_EVENTS = 30
 // After this many consecutive polls where header-parse failures blocked the ACK,
 // force-ACK the batch to break a permanent livelock. The dropped messages are
 // accepted as lost; the session may need re-pairing if they contained DH keys.
-internal const val MAX_SILENT_DROP_RETRIES = 20
+internal const val MAX_SILENT_DROP_RETRIES = 100
 internal const val MAX_GAP = 10000
 internal const val MAX_SKIPPED_KEYS = 10000
 internal const val MAX_SKIPPED_EPOCHS = 10
 internal const val MAX_KEY_AGE_MS = 604_800_000L // 7 days in milliseconds
-internal const val PENDING_TRANSITION_TIMEOUT_MS = MAX_KEY_AGE_MS // 7 days
-internal const val MAX_SEEN_DH_PUBS = 10
+internal const val PENDING_TRANSITION_TIMEOUT_MS = 3_600_000L // 1 hour
+internal const val MAX_SEEN_DH_PUBS = 50
+
 const val PROTOCOL_VERSION = 1
 const val SUPPORTED_MAX_VERSION = 1
 internal const val AAD_PREFIX = "Where-v1-Message"

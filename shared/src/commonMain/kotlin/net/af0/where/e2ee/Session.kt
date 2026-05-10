@@ -399,6 +399,12 @@ object Session {
             } else {
                 speculativeState.retiredDhPubs
             }
+            val newRetiredRecvTokens = if (isNewDhEpoch) {
+                (speculativeState.retiredRecvTokens + cleanState.recvToken.copyOf()).takeLast(MAX_SEEN_DH_PUBS)
+            } else {
+                speculativeState.retiredRecvTokens
+            }
+
             val newState =
                 speculativeState.deepCopy().copy(
                     recvChainKey = chainKey, // Move ownership
@@ -408,6 +414,7 @@ object Session {
                     needsRatchet = cleanState.needsRatchet || isNewDhEpoch,
                     prevRecvToken = if (shouldRetirePrevToken) ByteArray(0) else if (isNewDhEpoch) cleanState.recvToken.copyOf() else cleanState.prevRecvToken.copyOf(),
                     retiredDhPubs = newRetiredDhPubs,
+                    retiredRecvTokens = newRetiredRecvTokens,
                 )
 
             return newState to decoded
@@ -483,6 +490,7 @@ object Session {
                 remoteDhPub = remoteDhPub.copyOf(),
                 lastRemoteDhPub = state.remoteDhPub.copyOf(),
                 retiredDhPubs = state.retiredDhPubs,
+                retiredRecvTokens = (state.retiredRecvTokens + state.recvToken.copyOf()).takeLast(MAX_SEEN_DH_PUBS),
                 prevSendToken = state.sendToken.copyOf(),
                 prevRecvToken = state.recvToken.copyOf(),
                 isSendTokenPending = true,

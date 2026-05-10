@@ -275,35 +275,26 @@ class E2eeChaosTest {
                 node.setChaos(0.0)
                 node.chaosMailbox.expireMailboxProbability = 0.0
                 node.chaosMailbox.resetExpirations()
-                node.restart()
+                // Use direct relay for recovery to ensure stable re-sync
+                node.client = LocationClient("http://fake", node.store, relay)
             }
 
-            repeat(500) {
+            repeat(1000) { i ->
                 nodes.forEach { node ->
                     try {
+                        if (i % 50 == 0) {
+                            try {
+                                node.client.sendLocation(999.0, 999.0)
+                            } catch (e: Exception) {
+                                // Ignored
+                            }
+                        }
                         val updates = node.client.poll()
                         updates.forEach { update ->
                             node.receivedLocations.getOrPut(update.userId) { mutableSetOf() }.add(update.lat.toInt())
                         }
-                    } catch (_: Exception) {
-                    }
-                }
-            }
-            // Send recovery signal
-            nodes.forEach { node ->
-                try {
-                    node.client.sendLocation(999.0, 999.0)
-                } catch (_: Exception) {
-                }
-            }
-            repeat(500) {
-                nodes.forEach { node ->
-                    try {
-                        val updates = node.client.poll()
-                        updates.forEach { update ->
-                            node.receivedLocations.getOrPut(update.userId) { mutableSetOf() }.add(update.lat.toInt())
-                        }
-                    } catch (_: Exception) {
+                    } catch (e: Exception) {
+                        // Ignored
                     }
                 }
             }

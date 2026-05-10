@@ -72,6 +72,8 @@ data class SessionState(
     // Recent DH public keys seen (to reject replays from epochs older than lastRemoteDhPub)
     // Stored as hex strings for O(1) lookup and clean serialization.
     val retiredDhPubs: Set<String> = emptySet(),
+    // Recent receiving tokens seen (to catch up peers that are multiple epochs behind)
+    val retiredRecvTokens: List<@Serializable(with = ByteArrayBase64Serializer::class) ByteArray> = emptyList(),
     // Header keys for prior epochs that still have skipped message keys in the cache.
     // Keyed by remoteDhPub.toHex(); needed to decrypt the envelope of late-arriving
     // messages from an epoch we have already ratcheted past.
@@ -114,6 +116,7 @@ data class SessionState(
             bobFp = bobFp.copyOf(),
             prevSendToken = prevSendToken.copyOf(),
             prevRecvToken = prevRecvToken.copyOf(),
+            retiredRecvTokens = retiredRecvTokens.map { it.copyOf() },
             skippedMessageKeys = skippedMessageKeys.mapValues { it.value.copyOf() },
             skippedEpochHeaderKeys = skippedEpochHeaderKeys.mapValues { it.value.copyOf() },
             headerKey = headerKey.copyOf(),

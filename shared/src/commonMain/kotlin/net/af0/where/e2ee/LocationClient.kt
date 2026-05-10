@@ -163,6 +163,14 @@ open class LocationClient(
         if (prev.isNotEmpty() && prev != friendBefore.session.recvToken.toHex()) {
             pollQueue.add(prev)
         }
+
+        // Also poll retired tokens to catch up peers that are multiple epochs behind
+        friendBefore.session.retiredRecvTokens.forEach { tokenBytes ->
+            val token = tokenBytes.toHex()
+            if (!pollQueue.contains(token)) {
+                pollQueue.add(token)
+            }
+        }
         pollQueue.shuffle()
 
         val polledTokens = mutableSetOf<String>()
@@ -214,11 +222,8 @@ open class LocationClient(
                     store.resetConsecutiveSilentDrops(friendId)
                 }
 
-                // ACK logic
-                val safeToAck = (result.anySuccess && !result.hadSilentDrops) ||
-                    (result.anyReplay && result.failCount == 0) ||
-                    result.hadStateUpdate ||
-                    forceAck
+                // ACK logic: progress (success/replay/state) or unrecoverable failure (forceAck)
+                val safeToAck = result.anySuccess || result.anyReplay || result.hadStateUpdate || forceAck
 
                 if (safeToAck) {
                     try {
@@ -406,7 +411,6 @@ open class LocationClient(
                         val isStale = staleSince != null && (currentTimeMillis() - staleSince) > PENDING_TRANSITION_TIMEOUT_MS
                         if (isStale) {
                             println("[LocationClient] pending transition stale for ${friend.id.take(8)}")
-                            store.addDiagnosticEvent("STALE ROLLBACK: ${friend.id.take(8)}")
                             store.abandonPendingTransition(friend.id)
                             return@async
                         }
@@ -414,10 +418,6 @@ open class LocationClient(
 
                     val outbox = friend.outbox
                     if (outbox == null) {
-                        if (friend.session.isSendTokenPending && friend.session.sendSeq > 1) {
-                            println("[LocationClient] recovery: detected stale transition flag for ${friend.id.take(8)}, finalizing now")
-                            finalizeTokenTransition(friend.id)
-                        }
                         return@async
                     }
 
@@ -434,12 +434,13 @@ open class LocationClient(
                         }
                         val statusCode = (e as? ServerException)?.statusCode
                         if (statusCode == 404 || statusCode == 410) {
-                            if (friend.session.isSendTokenPending &&
+                            val isTransitionToken = friend.session.isSendTokenPending && 
                                 outbox.token == friend.session.prevSendToken.toHex()
-                            ) {
-                                println("[LocationClient] recovery: DESYNC: transition lost for ${friend.id.take(8)}")
-                                store.addDiagnosticEvent("DESYNC: transition lost for ${friend.id.take(8)}")
-                                store.clearOutboxAndUpdateSession(friend.id, friend.session.copy(isSendTokenPending = false))
+                            
+                            if (isTransitionToken) {
+                                println("[LocationClient] recovery: mailbox gone (404/410) for ${friend.id.take(8)} during outbox retry. Clearing outbox and pending transition.")
+                                store.clearOutbox(friend.id)
+                                finalizeTokenTransition(friend.id, clearingToken = outbox.token)
                             } else {
                                 store.clearOutbox(friend.id)
                             }
