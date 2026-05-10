@@ -355,12 +355,20 @@ Messages may be accepted from both. When a message is decrypted:
 
 #### 5.4.3 Ack and Retirement Rules
 **Ack Rule:**
-Each message carries an `ack_remote_dh_pub` field, which is an authenticated claim inside the encrypted header: "I have successfully decrypted and processed at least one message from the peer up to this DH public key."
+Each message carries an `ack_remote_dh_pub` field, an authenticated claim inside the encrypted header defined as: **the newest peer DH public key for which at least one message has been successfully authenticated and committed to session state.** "Committed" means the AEAD tag verified and the resulting session state was durably saved to local storage; speculative ratchet steps, temporary observations, or replayed historical epochs MUST NOT advance this value.
 
 This field is the **only authoritative signal** for retiring mailbox paths. It MUST NOT be treated as informational telemetry.
 
+**`ack_remote_dh_pub` Validation:**
+Before using `ack_remote_dh_pub` for retirement decisions, the receiver MUST validate it against known state. If the value is not one of:
+- the bootstrap peer key (initial `remote_dh_pub` from session setup), or
+- the current peer `dh_pub` (most recently committed remote epoch), or
+- a peer `dh_pub` retained in `previous_pending` state,
+
+then the receiver MUST ignore `ack_remote_dh_pub` for retirement purposes and continue processing the message normally if the rest of the AEAD authentication succeeds. This prevents a malformed or replayed ack value from triggering premature epoch retirement.
+
 **Retirement Rule:**
-- **Primary Rule:** Retire `previous_pending` only after receiving an authenticated `ack_remote_dh_pub` that proves the peer has moved forward. The value MUST be compared against the peer’s previous active `dh_pub` (e.g., `ack_remote_dh_pub == local_dh_pub_prev`), not against a local epoch counter.
+- **Primary Rule:** Retire `previous_pending` only after receiving an authenticated `ack_remote_dh_pub` that passes the validation above and proves the peer has moved forward. The value MUST be compared against the peer’s previous active `dh_pub` (e.g., `ack_remote_dh_pub == local_dh_pub_prev`), not against a local epoch counter.
 - **Secondary Bounded Fallback:** If no authenticated message has arrived on the old mailbox for 7 days, and the server TTL guarantees the mailbox entry is dead, the old mailbox MAY be retired. This fallback is safe only because the server TTL bounds liveness ambiguity; timeout alone must never be the primary retirement mechanism.
 
 #### 5.4.4 Duplicate Handling and Batch Ordering
@@ -667,7 +675,7 @@ The `envelope` is a 110-byte binary blob consisting of:
 **Header Plaintext (82 bytes):**
 - `PROTOCOL_VERSION` (1 byte, `0x01`)
 - `dh_pub` (32 bytes): sender’s current DH public key.
-- `ack_remote_dh_pub` (32 bytes): the highest peer DH public key the sender has successfully processed.
+- `ack_remote_dh_pub` (32 bytes): the newest peer DH public key for which at least one message has been successfully authenticated and committed to session state (see §5.4.3).
 - `msg_num` (8 bytes, big-endian Long): sender chain message number.
 - `prev_chain_len` (8 bytes, big-endian Long): length of the previous sending chain.
 - `flags` (1 byte): optional flags, such as `TRANSITION` (0x01).
