@@ -346,7 +346,7 @@ Each direction keeps at most two active epochs:
 - **current**: The latest verified peer epoch.
 - **previous_pending**: The prior epoch, kept only for safety during transition.
 
-**Initialization:** At session bootstrap, `prev_recv_token` is unset (zero bytes / null sentinel). The polling loop MUST skip `prev_recv_token` when it is unset, and MUST NOT poll a zero-byte token. `prev_recv_token` becomes set only after the first DH ratchet step advances `recv_token`.
+**Initialization:** At session bootstrap, `prev_recv_token` is unset. The client MUST NOT poll or derive any mailbox token from an unset `prev_recv_token`. `prev_recv_token` becomes valid only after the first inbound message advances the receive ratchet and establishes a previous epoch.
 
 Messages may be accepted from both. When a message is decrypted:
 1. If the sender `dh_pub` is newer than the local view, ratchet forward.
@@ -357,31 +357,20 @@ Messages may be accepted from both. When a message is decrypted:
 **Ack Rule:**
 Each message carries an `ack_remote_dh_pub` field, an authenticated claim inside the encrypted header defined as: **the newest peer DH public key for which at least one message has been successfully authenticated and committed to session state.** "Committed" means the AEAD tag verified and the resulting session state was durably saved to local storage; speculative ratchet steps, temporary observations, or replayed historical epochs MUST NOT advance this value.
 
-This field is the **only authoritative signal** for retiring mailbox paths. It MUST NOT be treated as informational telemetry.
+`ack_remote_dh_pub` is the **only authenticated signal** that a peer has successfully processed a message for the corresponding DH epoch. Implementations MUST use it as the sole basis for retiring `previous_pending`; it MUST NOT be treated as telemetry or as an advisory hint.
 
-**`ack_remote_dh_pub` Validation:**
-Before using `ack_remote_dh_pub` for retirement decisions, the receiver MUST validate it against known state. If the value is not one of:
-- the bootstrap peer key (initial `remote_dh_pub` from session setup), or
-- the current peer `dh_pub` (most recently committed remote epoch), or
-- a peer `dh_pub` retained in `previous_pending` state,
+Before using `ack_remote_dh_pub` for retirement decisions, the receiver MUST validate it against known state. If the value is not one of the bootstrap peer key, the current peer `dh_pub`, or a peer `dh_pub` retained in `previous_pending`, then the receiver MUST ignore it for retirement purposes and continue processing the message normally if the rest of the AEAD authentication succeeds.
 
-then the receiver MUST ignore `ack_remote_dh_pub` for retirement purposes and continue processing the message normally if the rest of the AEAD authentication succeeds. This prevents a malformed or replayed ack value from triggering premature epoch retirement.
+**Retirement Rule:** Retire `previous_pending` only after receiving an authenticated `ack_remote_dh_pub` equal to the peer’s previous active `dh_pub`. Implementations MUST compare against a retained peer `dh_pub` value, not against any locally assigned epoch number.
 
-**Retirement Rule:**
-- **Primary Rule:** Retire `previous_pending` only after receiving an authenticated `ack_remote_dh_pub` that passes the validation above and proves the peer has moved forward. The value MUST be compared against the peer’s previous active `dh_pub` (e.g., `ack_remote_dh_pub == local_dh_pub_prev`), not against a local epoch counter.
-- **Secondary Bounded Fallback:** If no authenticated message has arrived on the old mailbox for 7 days, and the server TTL guarantees the mailbox entry is dead, the old mailbox MAY be retired. This fallback is safe only because the server TTL bounds liveness ambiguity; timeout alone must never be the primary retirement mechanism.
+**Secondary Bounded Fallback:** The 7-day timeout is a liveness fallback only. It MAY be used to retire an old mailbox path when server TTL guarantees that the mailbox entry can no longer deliver messages. It MUST NOT be used as a substitute for authenticated acknowledgment during normal operation.
 
 #### 5.4.4 Duplicate Handling and Batch Ordering
 **Duplicate Handling:**
 Duplicates MUST be ACKable. If a peer receives multiple copies of the same transition message, the first advances state. Subsequent duplicates must not poison the batch and should still allow the receiver to generate the authenticated ACK needed to drain the old queue.
 
 **Batch Ordering:**
-When processing a batch of messages from the server, sort them as follows:
-1. Older epoch class before newer epoch class.
-2. Within the same epoch class, lower `prev_chain_len` first.
-3. Within the same chain, lower `msg_num` first.
-
-This ensures historical messages are processed before any later ratchet step in the same batch.
+When processing a batch of messages already retrieved from the server, clients SHOULD process older epoch classes before newer ones, then lower `prev_chain_len`, then lower `msg_num`.
 
 #### 5.4.5 Receive-Side Crash Safety
 
@@ -516,9 +505,9 @@ The server's role is strictly limited to acting as a stateless message router fo
 
 To prevent the server from learning whether a routing token corresponds to a real relationship, the following invariant is mandatory:
 
-**The server MUST return an identical response (HTTP 200 OK with `[]`) for all token queries where no messages are pending, regardless of whether the token has ever been "registered" or used.**
+**The server MUST return an identical response body for all token queries where no messages are pending, regardless of whether the token has ever been used.**
 
-There is no "create mailbox" or "register token" step. Mailboxes exist implicitly upon the first `POST`. A `GET` for a non-existent token is indistinguishable from a `GET` for an empty real mailbox.
+There is no "create mailbox" or "register token" step. Mailboxes exist implicitly upon the first `POST`. A `GET` for a non-existent token MUST be indistinguishable at the API level from a `GET` for an empty real mailbox.
 
 ### 7.3 Metadata Exposure and Traffic Analysis
 
@@ -535,7 +524,7 @@ To mitigate this, Where moves all session metadata into the **encrypted envelope
 2. **Post-Decryption Extraction:** The receiver first decrypts the envelope header using the current or next `header_key` and *then* reads the metadata to perform historical gap-filling of the old chain (§5.3).
 3. **Cache Storage:** When storing skipped keys for out-of-order delivery, the receiver stores the active `prev_chain_len` alongside the message key: `(MK_n, Nonce_n, PN_n)`. This ensures that if the message arrives later, the AAD can be re-verified against the correct historical value.
 
-This removes all session-related metadata from the server's view. The server only sees opaque mailbox tokens and encrypted blobs.
+This removes session-related metadata from the server's payload view, but it does not eliminate timing, IP correlation, or polling-pattern leakage.
 
 #### 7.4.2 Payload padding
 
@@ -543,7 +532,7 @@ This removes all session-related metadata from the server's view. The server onl
 
 #### 7.4.3 Polling Strategy
 
-To prevent timing-based social-graph inference, Bob MUST poll at a **constant rate** regardless of whether messages are expected. Polling more frequently when a location update is expected, or less frequently when offline, creates a timing side-channel the server can exploit to infer when friends are actively sharing.
+To prevent timing-based social-graph inference, Bob SHOULD poll at a roughly constant rate regardless of whether messages are expected. Polling more frequently when a location update is expected, or less frequently when offline, creates a timing side-channel the server can exploit to infer when friends are actively sharing. Implementations that deviate from constant-rate polling — due to battery optimizations, foreground/background transitions, or movement-triggered updates — increase the risk that the server can infer presence, movement state, or session activity from polling patterns alone.
 
 **Polling cadence is a UX/battery parameter, not a cryptographic one.** The polling interval should be set based on freshness requirements and battery budget. A 60–120 second poll interval provides acceptable location freshness for a mapping application without the battery drain of 10-second polling, and without revealing fine-grained app-foreground state to the server. Recommended default: **60 seconds**.
 
@@ -585,7 +574,7 @@ SessionState {
   recv_chain_key:     [32]byte        // CK for incoming messages
   send_token:         [16]byte        // token for highest_peer_dh_pub_seen
   recv_token:         [16]byte        // token for current local ratchet key
-  prev_recv_token:    [16]byte        // token for previous local ratchet key (pending retirement); zero = unset
+  prev_recv_token:    [16]byte        // token for previous local ratchet key (pending retirement); unset at bootstrap
   send_msg_num:       uint64          // sender chain message number
   recv_msg_num:       uint64          // highest received msg_num in the current epoch (for replay rejection)
   highest_peer_dh_pub_seen: [32]byte  // highest peer DH pub key successfully processed
@@ -642,7 +631,7 @@ Each message frame carries a `msg_num` counter. Recipients enforce:
 1.  **Replay rejection:** Any frame with `msg_num <= max_msg_num_received` (within the same DH epoch) is dropped, EXCEPT if the key for that message number is present in the **skipped message key cache**.
 2.  **Maximum gap (MAX_GAP):** recipients MUST enforce a maximum gap (default 2000) for chain advancement to prevent resource exhaustion attacks.
 3.  **OutOfOrder Support:** If a message is skipped (e.g., recipient receives `msg_num=10` after `msg_num=8`), the recipient advances the symmetric ratchet to `msg_num=10` and stores the intermediate message keys in a bounded cache (100 entries).
-4.  **Transactional Commitment:** The receiving state (receiving chain, root key, skipped keys) MUST only be updated if the message AEAD authentication succeeds.
+4.  **Transactional Commitment:** The receiving state (receiving chain, root key, skipped keys) MUST only be updated if the message AEAD authentication succeeds. The receiving state MUST not be committed earlier.
 5.  **Epoch Transition:** When a message with a new `dh_pub` is received, the `msg_num` counter resets to 0. All skipped message keys belonging to epochs older than the *previous* valid epoch MUST be cleared.
 6.  **Across-Epoch Replay:** Recipients MUST reject any message for an epoch that has already been superseded and retired (§5.4.3). Retired peer DH public keys are stored in `retired_dh_pubs` (§8.2, max 10 entries, evict oldest when full). When a `previous_pending` epoch is retired, its `dh_pub` is added to this set. Any incoming message whose `dh_pub` matches an entry in `retired_dh_pubs` MUST be dropped without further processing.
 
@@ -762,12 +751,12 @@ The server maintains a persistent map of **mailboxes** indexed by 16-byte routin
 
 1. **POST /inbox/{token}:**
    - Push the payload into the corresponding queue.
-   - Apply a TTL of 7 days. This aligns with the client re-pair timeout: if Bob has not polled within 7 days, the session will be abandoned on both sides regardless.
+   - Apply a TTL of 7 days. This is a server retention policy, not a cryptographic guarantee. The 7-day window is only used as a bounded liveness fallback in the client retirement logic.
    - The server MUST durably persist the payload before returning `204 No Content`. Clients treat any non-2xx response as delivery failure and retain the outbox for retry.
 
 2. **GET /inbox/{token}:**
    - Return up to 50 messages from the front of the queue. **Does not delete them.**
-   - **Constant-Time Invariant:** The server MUST return an identical response (HTTP 200 OK with `[]`) for non-existent tokens. To prevent timing side-channels, the lookup logic must ensure that the time taken to respond for a "hit" (active token) versus a "miss" (empty/unknown token) is indistinguishable to an attacker.
+   - **Empty-Response Invariant:** The server MUST return an identical response body for non-existent tokens. Server implementations SHOULD minimize timing differences between "hit" and "miss" cases. A server that does not will increase the risk of token-existence oracle attacks, allowing a metadata-analyzing adversary to confirm whether a given token has ever been used and thereby partially reconstruct the social graph.
 
 3. **DELETE /inbox/{token}?n={count}:**
    - Remove the first `count` messages from the queue. Called by the client after session state has been durably saved to local storage (§5.4.1).
@@ -784,7 +773,7 @@ The server exposes the mailbox API: `POST /inbox/{token}`, `GET /inbox/{token}`,
 
 ### 10.4 Server Cannot Decrypt or Link
 
-With this design:
+With this design, and assuming only the advertised mailbox API and payload encryption:
 - The server has no knowledge of any session keys or identity keys.
 - The server does not know the sender or recipient identity—only the opaque routing token.
 - A full server compromise reveals only the timing and frequency of anonymous posts and polls. Social graph and content remain hidden.
@@ -818,7 +807,7 @@ While this protocol shares the core **Double Ratchet** design with Signal, it ma
 ### 12.1 Identity and Handshake (No X3DH)
 
 - **Signal:** Uses **X3DH** (Extended Triple Diffie-Hellman) which relies on long-term **Identity Keys (IK)** and a central server to host Signed Prekeys and One-time Prekeys. This enables asynchronous session establishment (Alice can message Bob even if he is offline).
-- **Where:** Uses an **ephemeral-only handshake**. There are no long-term identity keys. "Identity" is scoped to a single friendship session ("Session as Identity"). This eliminates the need for a central PKI or prekey server and ensures that no stable device identifier is ever exposed to the server. Key exchange is synchronous and out-of-band (QR code or secure link).
+- **Where:** Uses an **ephemeral-only bootstrap handshake**. There are no long-term identity keys. "Identity" is scoped to a single friendship session ("Session as Identity"). This eliminates the need for a central PKI or prekey server and ensures that no stable device identifier is ever exposed to the server. Key exchange is synchronous and out-of-band (QR code or secure link).
 
 ### 12.2 Cryptographic Primitives (ChaChaPoly vs AES-GCM)
 
@@ -857,4 +846,4 @@ While this protocol shares the core **Double Ratchet** design with Signal, it ma
 
 3. **Multi-Device Support.** Full session synchronization across multiple devices (e.g., phone and tablet) is a complex challenge planned for future work.
 
-4. **Session Expiry and Staleness Handling.** If Alice stops sharing (app uninstalled, account deleted, extended offline period), Bob's client continues polling indefinitely against a token that will never receive new messages. To provide UX signals, `FriendEntry.isStale` is a heuristic that returns true if no messages have been received for more than 7 days (`ACK_TIMEOUT_SECONDS`). Clients SHOULD surface a "no recent location" warning to the user based on this flag.
+4. **Session Expiry and Staleness Handling.** If Alice stops sharing (app uninstalled, account deleted, extended offline period), Bob's client continues polling indefinitely against a token that will never receive new messages. To provide UX signals, `FriendEntry.isStale` is a heuristic that returns true if no messages have been received for more than 7 days (`ACK_TIMEOUT_SECONDS`). Clients SHOULD surface a "no recent location" warning to the user based on this flag. This is a UX heuristic, not a protocol retirement rule.
