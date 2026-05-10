@@ -584,7 +584,7 @@ SessionState {
   bob_ek_pub:         [32]byte        // bootstrap public key EK_B.pub (stable)
   alice_fp:           [32]byte        // SHA-256(EK_A.pub) (stable)
   bob_fp:             [32]byte        // SHA-256(EK_B.pub) (stable)
-  retired_dh_pubs:    Set<[32]byte>   // bounded set of retired peer DH pub keys (max 10) for across-epoch replay rejection
+  retired_dh_pubs:    Set<[32]byte>   // bounded set of retired peer DH pub keys (max 50) for across-epoch replay rejection
 }
 ```
 
@@ -629,7 +629,7 @@ The `dh_pub` is included in the AAD to cryptographically bind the message to the
 Each message frame carries a `msg_num` counter. Recipients enforce:
 
 1.  **Replay rejection:** Any frame with `msg_num <= max_msg_num_received` (within the same DH epoch) is dropped, EXCEPT if the key for that message number is present in the **skipped message key cache**.
-2.  **Maximum gap (MAX_GAP):** recipients MUST enforce a maximum gap (default 2000) for chain advancement to prevent resource exhaustion attacks.
+2.  **Maximum gap (MAX_GAP):** recipients MUST enforce a maximum gap (default 10,000) for chain advancement to prevent resource exhaustion attacks.
 3.  **OutOfOrder Support:** If a message is skipped (e.g., recipient receives `msg_num=10` after `msg_num=8`), the recipient advances the symmetric ratchet to `msg_num=10` and stores the intermediate message keys in a bounded cache (100 entries).
 4.  **Transactional Commitment:** The receiving state (receiving chain, root key, skipped keys) MUST only be updated if the message AEAD authentication succeeds. The receiving state MUST not be committed earlier.
 5.  **Epoch Transition:** When a message with a new `dh_pub` is received, the `msg_num` counter resets to 0. All skipped message keys belonging to epochs older than the *previous* valid epoch MUST be cleared.
