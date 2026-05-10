@@ -85,4 +85,4 @@ private fun exchangeKeys(): Pair<SessionState, SessionState> {
     return aliceSession to bobSession
 }
 
-private fun ByteArray.isEmpty(): Boolean = this.all { it == 0.toByte() } || this.size == 0
+private fun ByteArray.isEmpty(): Boolean = this.size == 0
