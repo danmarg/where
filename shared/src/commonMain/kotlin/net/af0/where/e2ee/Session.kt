@@ -458,7 +458,7 @@ object Session {
                 remoteDhPub = remoteDhPub.copyOf(),
                 lastRemoteDhPub = state.remoteDhPub.copyOf(),
                 seenRemoteDhPubs = newSeenKeys,
-                prevSendToken = state.sendToken.copyOf(),
+                prevSendToken = if (state.isSendTokenPending) state.prevSendToken.copyOf() else state.sendToken.copyOf(),
                 prevRecvToken = state.recvToken.copyOf(),
                 isSendTokenPending = true,
                 needsRatchet = false,
