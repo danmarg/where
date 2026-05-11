@@ -23,7 +23,7 @@ object Session {
         if (state.sendSeq == Long.MAX_VALUE) throw SessionBrickedException("sequence number overflow")
 
         var currentState = state
-        if (currentState.needsRatchet && !currentState.isSendTokenPending) {
+        if (currentState.needsRatchet) {
             currentState = performDhRatchet(currentState, currentState.remoteDhPub)
         }
 
@@ -35,6 +35,7 @@ object Session {
         // AAD directionality: include sender and recipient fingerprints explicitly.
         val (sender, recipient) = if (currentState.isAlice) currentState.aliceFp to currentState.bobFp else currentState.bobFp to currentState.aliceFp
         val aad = buildMessageAad(sender, recipient, seq, dhPub, ackRemoteDhPub)
+
 
         // PH-3.3 (BELT-AND-SUSPENDERS): Ensure internal 'pn' matches what we put in the header (#212)
         val updatedPayload =
@@ -190,6 +191,23 @@ object Session {
         // We do NOT mutate the original 'state' or commit anything until decryption succeeds.
         var speculativeState = cleanState
 
+        // Implicit Finalization (§5.4.3): if the peer ACKs our current local key,
+        // then we've successfully confirmed our previous transition.
+        // This MUST be checked before performDhRatchet to ensure isSendTokenPending is
+        // cleared correctly before a new transition is potentially initiated.
+        val isValidAck =
+            ackRemoteDhPub.contentEquals(cleanState.localDhPub) ||
+            ackRemoteDhPub.contentEquals(cleanState.prevLocalDhPub) ||
+            ackRemoteDhPub.contentEquals(cleanState.aliceEkPub) ||
+            ackRemoteDhPub.contentEquals(cleanState.bobEkPub)
+
+        if (isValidAck && ackRemoteDhPub.contentEquals(cleanState.localDhPub)) {
+            speculativeState = speculativeState.copy(
+                isSendTokenPending = false,
+                sendTokenPendingSinceMs = null
+            )
+        }
+
         if (isNewDhEpoch) {
             // Unified error message to satisfy existing brittle test assertions (§9.2)
             if (remoteDhPub.contentEquals(cleanState.lastRemoteDhPub) || cleanState.retiredDhPubs.contains(remoteDhPub.toHex())) {
@@ -291,16 +309,15 @@ object Session {
                     // Decryption failure: We still want to persist the ratcheted state if the header
                     // authenticated, to prevent permanent DH desync (§5.5).
                     
-                    val newRetiredDhPubs = if (!cleanState.lastRemoteDhPub.isEmpty() && isNewDhEpoch) {
-                        (speculativeState.retiredDhPubs + cleanState.lastRemoteDhPub.toHex()).toList().takeLast(MAX_SEEN_DH_PUBS).toSet()
+                    val finalEpochHeaderKeys = if (isNewDhEpoch) {
+                        val updatedEpochHks = LinkedHashMap(cleanState.skippedEpochHeaderKeys)
+                        updatedEpochHks[cleanState.remoteDhPub.toHex()] = cleanState.headerKey.copyOf()
+                        if (updatedEpochHks.size > MAX_SKIPPED_EPOCHS) {
+                            updatedEpochHks.remove(updatedEpochHks.keys.first())?.zeroize()
+                        }
+                        updatedEpochHks
                     } else {
-                        speculativeState.retiredDhPubs
-                    }
-
-                    val newRetiredRecvTokens = if (isNewDhEpoch) {
-                        (speculativeState.retiredRecvTokens + cleanState.recvToken.copyOf()).takeLast(MAX_SEEN_DH_PUBS)
-                    } else {
-                        speculativeState.retiredRecvTokens
+                        cleanState.skippedEpochHeaderKeys
                     }
 
                     val failedState =
@@ -308,10 +325,12 @@ object Session {
                             recvChainKey = chainKey.copyOf(),
                             recvSeq = seq,
                             skippedMessageKeys = derivationSkippedKeys.mapValues { it.value.copyOf() },
-                            needsRatchet = cleanState.needsRatchet || isNewDhEpoch,
-                            prevRecvToken = if (isNewDhEpoch) cleanState.recvToken.copyOf() else cleanState.prevRecvToken.copyOf(),
-                            retiredDhPubs = newRetiredDhPubs,
-                            retiredRecvTokens = newRetiredRecvTokens,
+                            skippedEpochHeaderKeys = finalEpochHeaderKeys,
+                            retiredDhPubs = if (!cleanState.lastRemoteDhPub.isEmpty() && isNewDhEpoch) {
+                                (speculativeState.retiredDhPubs + cleanState.lastRemoteDhPub.toHex()).toList().takeLast(MAX_SEEN_DH_PUBS).toSet()
+                            } else {
+                                speculativeState.retiredDhPubs
+                            },
                         )
                     // Also wipe any message keys derived during this failed call
                     addedSkippedKeys.forEach { it.zeroize() }
@@ -378,11 +397,7 @@ object Session {
             }
 
             // Retirement Rule (§5.4.3): proves the peer has moved forward (matches current local DH key).
-            val isValidAck =
-                ackRemoteDhPub.contentEquals(cleanState.localDhPub) ||
-                ackRemoteDhPub.contentEquals(cleanState.prevLocalDhPub) ||
-                ackRemoteDhPub.contentEquals(cleanState.aliceEkPub) ||
-                ackRemoteDhPub.contentEquals(cleanState.bobEkPub)
+            // (isValidAck already computed in speculative phase)
 
             // We retire the transition window once the peer has acknowledged our current local key
             // (the one they just saw) or our next local key (if they already saw our ratchet).
@@ -407,10 +422,8 @@ object Session {
                     recvSeq = seq,
                     skippedMessageKeys = finalSkippedKeys,
                     skippedEpochHeaderKeys = finalEpochHeaderKeys,
-                    needsRatchet = cleanState.needsRatchet || isNewDhEpoch,
-                    prevRecvToken = if (shouldRetirePrevToken) ByteArray(0) else if (isNewDhEpoch) cleanState.recvToken.copyOf() else cleanState.prevRecvToken.copyOf(),
+                    prevRecvToken = if (shouldRetirePrevToken) ByteArray(0) else speculativeState.prevRecvToken,
                     retiredDhPubs = newRetiredDhPubs,
-                    retiredRecvTokens = newRetiredRecvTokens,
                 )
 
             return newState to decoded
@@ -487,7 +500,7 @@ object Session {
                 lastRemoteDhPub = state.remoteDhPub.copyOf(),
                 retiredDhPubs = state.retiredDhPubs,
                 retiredRecvTokens = (state.retiredRecvTokens + state.recvToken.copyOf()).takeLast(MAX_SEEN_DH_PUBS),
-                prevSendToken = state.sendToken.copyOf(),
+                prevSendToken = if (state.isSendTokenPending && state.sendSeq == 0L) state.prevSendToken.copyOf() else state.sendToken.copyOf(),
                 prevRecvToken = state.recvToken.copyOf(),
                 isSendTokenPending = true,
                 needsRatchet = false,

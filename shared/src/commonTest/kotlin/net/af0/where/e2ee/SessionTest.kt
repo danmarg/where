@@ -395,12 +395,12 @@ class SessionTest {
 
         // Now Bob receives msg1 AGAIN (from epoch 1).
         // Bob is currently holding state from epoch 3, so msg1's header cannot be unsealed.
-        // It SHOULD be rejected as an authentication failure because the epoch 1 header key was rotated out.
+        // It SHOULD be rejected as a ReplayException because the dhPub is in retiredDhPubs.
         try {
             Session.decryptMessage(bob3, msg1)
-            kotlin.test.fail("Expected AuthenticationException for across-epoch replay")
-        } catch (e: AuthenticationException) {
-            // Success: In Protocol V1 with Sealed Envelopes, old epochs are opaque once rotated out.
+            kotlin.test.fail("Expected ReplayException for across-epoch replay")
+        } catch (e: ReplayException) {
+            // Success
         }
     }
 

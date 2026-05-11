@@ -4,6 +4,8 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.runTest
+import kotlinx.serialization.encodeToString
+import kotlinx.serialization.json.Json
 import kotlin.random.Random
 import kotlin.test.*
 
@@ -307,6 +309,8 @@ class E2eeChaosTest {
                 }
             }
 
+            val json = Json { prettyPrint = true }
+
             // Verification: Everyone should have eventually received at least some locations from everyone else,
             // and crucially, the final recovery messages should arrive.
             fun verify(
@@ -316,18 +320,23 @@ class E2eeChaosTest {
             ) {
                 val received = receiver.receivedLocations[senderId] ?: emptySet()
                 if (!received.contains(999)) {
-                    val entry = runBlocking { receiver.store.getFriend(senderId)!! }
                     println("VERIFY FAIL: ${receiver.name} did not receive 999 from $senderName")
-                    println(
-                        "  Session with $senderName: sendSeq=${entry.session.sendSeq} recvSeq=${entry.session.recvSeq} pending=${entry.session.isSendTokenPending} outbox=${entry.outbox?.token?.take(
-                            8,
-                        )}",
-                    )
-                    println(
-                        "  Relay state for tokens: recvToken=${entry.session.recvToken.toHex().take(
-                            8,
-                        )} inboxSize=${relay.inbox[entry.session.recvToken.toHex()]?.size ?: 0}",
-                    )
+
+                    nodes.forEach { node ->
+                        println("--- STATE DUMP: ${node.name} ---")
+                        runBlocking {
+                            node.store.listFriends().forEach { friend ->
+                                println("  Friend: ${friend.name} (id=${friend.id.take(8)})")
+                                println("    Session: ${json.encodeToString(friend.session)}")
+                                println("    Outbox: ${friend.outbox?.token?.take(8)}")
+                                println("    Inbox tokens: recv=${friend.session.recvToken.toHex().take(8)} prevRecv=${friend.session.prevRecvToken.toHex().take(8)}")
+                                println("    Relay Inbox Size (recv): ${relay.inbox[friend.session.recvToken.toHex()]?.size ?: 0}")
+                                if (friend.session.prevRecvToken.isNotEmpty()) {
+                                    println("    Relay Inbox Size (prevRecv): ${relay.inbox[friend.session.prevRecvToken.toHex()]?.size ?: 0}")
+                                }
+                            }
+                        }
+                    }
                 }
                 assertTrue(received.contains(999), "${receiver.name} should have received final message from $senderName")
             }

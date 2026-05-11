@@ -493,7 +493,9 @@ class E2eeManager(
     suspend fun clearSendTokenPending(id: String, clearingToken: String? = null): Boolean {
         return persistence.withFriendAndMetadataLock(id) { entry, _ ->
             if (entry != null && entry.session.isSendTokenPending) {
-                if (clearingToken != null && entry.session.prevSendToken.toHex() != clearingToken) {
+                if (clearingToken != null &&
+                    entry.session.prevSendToken.toHex() != clearingToken &&
+                    entry.session.sendToken.toHex() != clearingToken) {
                     PersistenceAction.None to false
                 } else {
                     val newSession = entry.session.copy(isSendTokenPending = false, sendTokenPendingSinceMs = null)
