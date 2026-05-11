@@ -385,6 +385,26 @@ data class EncryptedOutboxMessage(
     val payload: MailboxPayload,
 )
 
+/**
+ * A KeyExchangeInit post that is pending delivery to a discovery token.
+ */
+@Serializable
+data class PendingDiscoveryPost(
+    val discoveryToken: String,
+    val payload: KeyExchangeInitPayload,
+    val createdAt: Long = currentTimeMillis(),
+)
+
+/**
+ * An ACK that is pending delivery to a mailbox.
+ */
+@Serializable
+data class PendingAck(
+    val token: String,
+    val n: Int,
+    val createdAt: Long = currentTimeMillis(),
+)
+
 /** Output of a symmetric ratchet step (KDF_CK). */
 internal data class ChainStep(
     val newChainKey: ByteArray,

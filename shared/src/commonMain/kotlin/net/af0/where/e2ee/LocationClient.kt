@@ -143,8 +143,7 @@ open class LocationClient(
         qr: QrPayload,
         initPayload: KeyExchangeInitPayload,
     ) {
-        val discoveryHex = qr.discoveryToken().toHex()
-        mailboxClient.post(baseUrl, discoveryHex, initPayload)
+        processOutboxes()
     }
 
     internal suspend fun pollFriend(
@@ -152,7 +151,24 @@ open class LocationClient(
         isPaused: Boolean = false,
     ): List<UserLocation> {
         val resultLocations = mutableListOf<UserLocation>()
-        val friendBefore = store.getFriend(friendId) ?: return emptyList()
+        var friendBefore = store.getFriend(friendId) ?: return emptyList()
+
+        // RECOVERY (§5.4): detect stale transition flag after crash
+        if (friendBefore.outbox == null && friendBefore.session.isSendTokenPending && friendBefore.session.sendSeq > 1) {
+            println("[LocationClient] pollFriend: detected stale transition flag for ${friendId.take(8)}, finalizing now")
+            finalizeTokenTransition(friendId)
+            friendBefore = store.getFriend(friendId) ?: return emptyList()
+        }
+
+        // Phase 0: Retry pending ACKs
+        friendBefore.pendingAcks.forEach { ack ->
+            try {
+                mailboxClient.ack(baseUrl, ack.token, ack.n)
+                store.confirmAck(friendId, ack.token, ack.n)
+            } catch (e: Exception) {
+                println("[LocationClient] pollFriend: retry ACK failed for ${friendId.take(8)}: ${e.message}")
+            }
+        }
 
         // Multi-Token Polling (§5.3): if a transition is pending, we must poll BOTH the
         // current recvToken and the previous one, as the peer might still be sending to
@@ -231,6 +247,7 @@ open class LocationClient(
                 if (safeToAck) {
                     try {
                         mailboxClient.ack(baseUrl, currentTokenToPoll, messages.size)
+                        store.confirmAck(friendId, currentTokenToPoll, messages.size)
                     } catch (e: Exception) {
                         println("[LocationClient] pollFriend: ACK failed for ${friendId.take(8)}: ${e.message}")
                     }
@@ -334,13 +351,6 @@ open class LocationClient(
         friendId: String,
         payload: MessagePlaintext,
     ) {
-        // RECOVERY (§5.4): detect stale transition flag after crash
-        val friendBefore = store.getFriend(friendId) ?: return
-        if (friendBefore.outbox == null && friendBefore.session.isSendTokenPending && friendBefore.session.sendSeq > 1) {
-            println("[LocationClient] send: detected stale transition flag for ${friendId.take(8)}, finalizing now")
-            finalizeTokenTransition(friendId)
-        }
-
         val friendCheck = store.getFriend(friendId) ?: return
         if (friendCheck.outbox != null) {
             println("[LocationClient] send: skipping send for ${friendId.take(8)} — outbox still pending")
@@ -419,6 +429,18 @@ open class LocationClient(
                         }
                     }
 
+                    // Recovery for pending discovery posts
+                    val pendingPost = friend.pendingDiscoveryPost
+                    if (pendingPost != null) {
+                        try {
+                            println("[LocationClient] recovery: retrying pendingDiscoveryPost for ${friend.id.take(8)}")
+                            mailboxClient.post(baseUrl, pendingPost.discoveryToken, pendingPost.payload)
+                            store.confirmDiscoveryPost(friend.id)
+                        } catch (e: Exception) {
+                            println("[LocationClient] recovery: pendingDiscoveryPost failed for ${friend.id.take(8)}: ${e.message}")
+                        }
+                    }
+
                     val outbox = friend.outbox
                     if (outbox == null) {
                         return@async
@@ -437,15 +459,19 @@ open class LocationClient(
                         }
                         val statusCode = (e as? ServerException)?.statusCode
                         if (statusCode == 404 || statusCode == 410) {
-                            val isTransitionToken = friend.session.isSendTokenPending && 
-                                outbox.token == friend.session.prevSendToken.toHex()
-                            
-                            if (isTransitionToken) {
-                                println("[LocationClient] recovery: mailbox gone (404/410) for ${friend.id.take(8)} during outbox retry. Clearing outbox and pending transition.")
-                                store.clearOutbox(friend.id)
-                                finalizeTokenTransition(friend.id, clearingToken = outbox.token)
-                            } else {
-                                store.clearOutbox(friend.id)
+                            val currentRetries = store.incrementOutboxRetryCount(friend.id)
+                            if (currentRetries >= MAX_OUTBOX_PARK_RETRIES) {
+                                val prevTokenHex = friend.session.prevSendToken.toHex()
+                                if (prevTokenHex != outbox.token && prevTokenHex.isNotEmpty()) {
+                                    println("[LocationClient] recovery: outbox token ${outbox.token.take(8)} returned 404/410, rerouting to prevSendToken ${prevTokenHex.take(8)}")
+                                    store.updateOutboxToken(friend.id, prevTokenHex)
+                                } else {
+                                    println("[LocationClient] recovery: outbox token ${outbox.token.take(8)} returned 404/410, max retries reached. Clearing outbox.")
+                                    store.clearOutbox(friend.id)
+                                    if (friend.session.isSendTokenPending && outbox.token == friend.session.prevSendToken.toHex()) {
+                                        finalizeTokenTransition(friend.id, clearingToken = outbox.token)
+                                    }
+                                }
                             }
                         } else if (statusCode == 429) {
                             store.incrementOutbox429Count(friend.id)

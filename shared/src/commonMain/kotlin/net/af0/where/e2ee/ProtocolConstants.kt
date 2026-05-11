@@ -20,6 +20,7 @@ internal const val MAX_DIAGNOSTIC_EVENTS = 30
 // force-ACK the batch to break a permanent livelock. The dropped messages are
 // accepted as lost; the session may need re-pairing if they contained DH keys.
 internal const val MAX_SILENT_DROP_RETRIES = 100
+internal const val MAX_OUTBOX_PARK_RETRIES = 20
 internal const val MAX_GAP = 10000
 internal const val MAX_SKIPPED_KEYS = 10000
 internal const val MAX_SKIPPED_EPOCHS = 10

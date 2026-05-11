@@ -43,6 +43,9 @@ data class FriendEntry(
     val lastPollTs: Long = 0L,
     val sharingEnabled: Boolean = true,
     val outbox: EncryptedOutboxMessage? = null,
+    val pendingDiscoveryPost: PendingDiscoveryPost? = null,
+    val pendingAcks: List<PendingAck> = emptyList(),
+    val outboxRetryCount: Int = 0,
     val lastDecryptFailed: Boolean = false,
     val outbox429Count: Int = 0,
     val consecutiveSilentDrops: Int = 0,
@@ -173,6 +176,48 @@ class E2eeManager(
             }
         }
     }
+
+    suspend fun confirmDiscoveryPost(id: String) {
+        persistence.withFriendAndMetadataLock(id) { entry, _ ->
+            if (entry != null) {
+                PersistenceAction.Update(entry.copy(pendingDiscoveryPost = null)) to Unit
+            } else {
+                PersistenceAction.None to Unit
+            }
+        }
+    }
+
+    suspend fun confirmAck(id: String, token: String, n: Int) {
+        persistence.withFriendAndMetadataLock(id) { entry, _ ->
+            if (entry != null) {
+                val nextAcks = entry.pendingAcks.filterNot { it.token == token && it.n == n }
+                PersistenceAction.Update(entry.copy(pendingAcks = nextAcks)) to Unit
+            } else {
+                PersistenceAction.None to Unit
+            }
+        }
+    }
+
+    suspend fun updateOutboxToken(id: String, newToken: String) {
+        persistence.withFriendAndMetadataLock(id) { entry, _ ->
+            if (entry != null && entry.outbox != null) {
+                val nextOutbox = entry.outbox.copy(token = newToken)
+                PersistenceAction.Update(entry.copy(outbox = nextOutbox, outboxRetryCount = 0)) to Unit
+            } else {
+                PersistenceAction.None to Unit
+            }
+        }
+    }
+
+    suspend fun incrementOutboxRetryCount(id: String): Int =
+        persistence.withFriendAndMetadataLock(id) { entry, _ ->
+            if (entry != null) {
+                val nextCount = entry.outboxRetryCount + 1
+                PersistenceAction.Update(entry.copy(outboxRetryCount = nextCount)) to nextCount
+            } else {
+                PersistenceAction.None to 0
+            }
+        }
 
     suspend fun cleanupExpiredInvites(expirySeconds: Long = 48 * 3600L) {
         val now = currentTimeSeconds()
@@ -305,7 +350,13 @@ class E2eeManager(
             if (metadata.pendingInvites.any { it.qrPayload.ekPub.contentEquals(qr.ekPub) }) {
                 throw SelfPairingException()
             }
-            PersistenceAction.Update(entry) to (payload to entry)
+            val updatedEntry = entry.copy(
+                pendingDiscoveryPost = PendingDiscoveryPost(
+                    discoveryToken = qr.discoveryToken().toHex(),
+                    payload = payload,
+                )
+            )
+            PersistenceAction.Update(updatedEntry) to (payload to updatedEntry)
         }
     }
 
@@ -387,6 +438,16 @@ class E2eeManager(
                 result.finalSession.copy(recvToken = currentRecvToken)
             }
 
+            val safeToAck = (result.anySuccess && result.silentDrops == 0) ||
+                (result.anyReplay && failCount == 0) ||
+                hadStateUpdate
+
+            val nextAcks = if (safeToAck) {
+                entry.pendingAcks + PendingAck(token = recvToken, n = messages.size)
+            } else {
+                entry.pendingAcks
+            }
+
             val updatedEntry = entry.copy(
                 session = updatedSession,
                 isConfirmed = entry.isConfirmed || result.anySuccess,
@@ -396,6 +457,7 @@ class E2eeManager(
                 lastTs = lastLocation?.ts ?: entry.lastTs,
                 lastPollTs = currentTimeSeconds(),
                 lastDecryptFailed = if (encryptedMessages.isNotEmpty()) isFailedBatch else entry.lastDecryptFailed,
+                pendingAcks = nextAcks,
             )
 
             PersistenceAction.Update(updatedEntry) to PollBatchResult(
@@ -413,7 +475,7 @@ class E2eeManager(
     suspend fun clearOutbox(id: String) {
         persistence.withFriendAndMetadataLock(id) { entry, _ ->
             if (entry != null) {
-                PersistenceAction.Update(entry.copy(outbox = null, outbox429Count = 0)) to Unit
+                PersistenceAction.Update(entry.copy(outbox = null, outbox429Count = 0, outboxRetryCount = 0)) to Unit
             } else {
                 PersistenceAction.None to Unit
             }
@@ -423,7 +485,7 @@ class E2eeManager(
     suspend fun clearOutboxAndUpdateSession(id: String, newSession: SessionState) {
         persistence.withFriendAndMetadataLock(id) { entry, _ ->
             if (entry != null) {
-                PersistenceAction.Update(entry.copy(session = newSession, outbox = null, outbox429Count = 0)) to Unit
+                PersistenceAction.Update(entry.copy(session = newSession, outbox = null, outbox429Count = 0, outboxRetryCount = 0)) to Unit
             } else {
                 PersistenceAction.None to Unit
             }
