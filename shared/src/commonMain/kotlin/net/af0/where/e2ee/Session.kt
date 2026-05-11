@@ -308,18 +308,6 @@ object Session {
                     // Decryption failure: We still want to persist the ratcheted state if the header
                     // authenticated, to prevent permanent DH desync (§5.5).
                     
-                    val newRetiredDhPubs = if (!cleanState.lastRemoteDhPub.isEmpty() && isNewDhEpoch) {
-                        (speculativeState.retiredDhPubs + cleanState.lastRemoteDhPub.toHex()).toList().takeLast(MAX_SEEN_DH_PUBS).toSet()
-                    } else {
-                        speculativeState.retiredDhPubs
-                    }
-
-                    val newRetiredRecvTokens = if (isNewDhEpoch) {
-                        (speculativeState.retiredRecvTokens + cleanState.recvToken.copyOf()).takeLast(MAX_SEEN_DH_PUBS)
-                    } else {
-                        speculativeState.retiredRecvTokens
-                    }
-
                     val finalEpochHeaderKeys = if (isNewDhEpoch) {
                         val updatedEpochHks = LinkedHashMap(cleanState.skippedEpochHeaderKeys)
                         updatedEpochHks[cleanState.remoteDhPub.toHex()] = cleanState.headerKey.copyOf()

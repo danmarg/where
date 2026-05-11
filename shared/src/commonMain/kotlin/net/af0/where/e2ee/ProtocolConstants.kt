@@ -22,10 +22,10 @@ internal const val MAX_DIAGNOSTIC_EVENTS = 30
 internal const val MAX_SILENT_DROP_RETRIES = 20
 internal const val MAX_GAP = 10000
 internal const val MAX_SKIPPED_KEYS = 10000
-internal const val MAX_SKIPPED_EPOCHS = 10
+internal const val MAX_SKIPPED_EPOCHS = 20
 internal const val MAX_KEY_AGE_MS = 604_800_000L // 7 days in milliseconds
 internal const val PENDING_TRANSITION_TIMEOUT_MS = MAX_KEY_AGE_MS // 7 days
-internal const val MAX_SEEN_DH_PUBS = 50
+internal const val MAX_SEEN_DH_PUBS = 100
 
 const val PROTOCOL_VERSION = 1
 const val SUPPORTED_MAX_VERSION = 1
