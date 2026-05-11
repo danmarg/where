@@ -139,9 +139,9 @@ internal object E2eeProtocol {
         h: Session.DecryptedHeader,
     ): Int {
         return when {
-            h.dhPub.contentEquals(session.remoteDhPub) -> 1
+            session.retiredDhPubs.contains(h.dhPub.toHex()) -> -1 // Ancient epoch
             h.dhPub.contentEquals(session.lastRemoteDhPub) -> 0
-            session.retiredDhPubs.contains(h.dhPub.toHex()) -> 3 // Ancient epoch (already superseded)
+            h.dhPub.contentEquals(session.remoteDhPub) -> 1
             else -> 2 // Unknown NEW epoch
         }
     }
