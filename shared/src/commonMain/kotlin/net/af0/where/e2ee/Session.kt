@@ -36,15 +36,7 @@ object Session {
         val (sender, recipient) = if (currentState.isAlice) currentState.aliceFp to currentState.bobFp else currentState.bobFp to currentState.aliceFp
         val aad = buildMessageAad(sender, recipient, seq, dhPub, ackRemoteDhPub)
 
-
-        // PH-3.3 (BELT-AND-SUSPENDERS): Ensure internal 'pn' matches what we put in the header (#212)
-        val updatedPayload =
-            when (payload) {
-                is MessagePlaintext.Location -> payload.copy(pn = currentState.pn)
-                is MessagePlaintext.Keepalive -> payload.copy(pn = currentState.pn)
-            }
-
-        val plaintext = padToFixedSize(encodeMessage(updatedPayload), PADDING_SIZE)
+        val plaintext = padToFixedSize(encodeMessage(payload), PADDING_SIZE)
         val ct = aeadEncrypt(step.messageKey, step.messageNonce, plaintext, aad)
 
         val newState =
@@ -596,12 +588,10 @@ object Session {
                     // empty object
                 }
             }
-            put("pn", msg.pn)
         }.let { Json.encodeToString(it) }.encodeToByteArray()
 
     private fun decodeMessage(bytes: ByteArray): MessagePlaintext {
         val obj = Json.decodeFromString<JsonObject>(bytes.decodeToString())
-        val pn = obj["pn"]?.jsonPrimitive?.long ?: 0L
         return if (obj.containsKey("lat")) {
             MessagePlaintext.Location(
                 lat = obj["lat"]!!.jsonPrimitive.double,
@@ -609,10 +599,9 @@ object Session {
                 acc = obj["acc"]!!.jsonPrimitive.double,
                 ts = obj["ts"]!!.jsonPrimitive.long,
                 precision = obj["precision"]?.jsonPrimitive?.content?.let { LocationPrecision.valueOf(it) } ?: LocationPrecision.FINE,
-                pn = pn,
             )
         } else {
-            MessagePlaintext.Keepalive(pn = pn)
+            MessagePlaintext.Keepalive()
         }
     }
 
@@ -650,15 +639,12 @@ object Session {
 }
 
 sealed class MessagePlaintext {
-    abstract val pn: Long
-
     data class Location(
         val lat: Double,
         val lng: Double,
         val acc: Double,
         val ts: Long,
         val precision: LocationPrecision = LocationPrecision.FINE,
-        override val pn: Long = 0,
     ) : MessagePlaintext() {
         fun blur(): Location =
             if (precision == LocationPrecision.COARSE) {
@@ -672,7 +658,7 @@ sealed class MessagePlaintext {
             }
     }
 
-    data class Keepalive(override val pn: Long = 0) : MessagePlaintext()
+    class Keepalive : MessagePlaintext()
 }
 
 class SessionBrickedException(message: String) : WhereException(message)
