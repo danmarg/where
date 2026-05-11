@@ -48,7 +48,7 @@ class E2eeProtocolTest {
         // Mock headers for different buckets
         val hCurrent = Session.DecryptedHeader(remoteDhPubCurrent, dummyAck, 10, 5) // Bucket 1
         val hLast = Session.DecryptedHeader(remoteDhPubLast, dummyAck, 8, 4)       // Bucket 0
-        val hAncient = Session.DecryptedHeader(remoteDhPubAncient, dummyAck, 6, 3) // Bucket 3 (was -1)
+        val hAncient = Session.DecryptedHeader(remoteDhPubAncient, dummyAck, 6, 3) // Bucket -1
         val hNew = Session.DecryptedHeader(remoteDhPubNew, dummyAck, 12, 6)         // Bucket 2
 
         // Payloads (mapped by their headers)
@@ -68,7 +68,7 @@ class E2eeProtocolTest {
         // Verify buckets
         assertEquals(1, E2eeProtocol.bucketForHeader(session, hCurrent))
         assertEquals(0, E2eeProtocol.bucketForHeader(session, hLast))
-        assertEquals(3, E2eeProtocol.bucketForHeader(session, hAncient))
+        assertEquals(-1, E2eeProtocol.bucketForHeader(session, hAncient))
         assertEquals(2, E2eeProtocol.bucketForHeader(session, hNew))
 
         // Simulated sort using the same logic as E2eeProtocol.decryptAndSort
@@ -85,10 +85,10 @@ class E2eeProtocolTest {
             }
         }
 
-        // Expected order: 0 (Last), 1 (Current), 2 (New), 3 (Ancient)
-        assertEquals(hLast, sorted[0].first)
-        assertEquals(hCurrent, sorted[1].first)
-        assertEquals(hNew, sorted[2].first)
-        assertEquals(hAncient, sorted[3].first)
+        // Expected chronological order: -1 (Ancient), 0 (Last), 1 (Current), 2 (New)
+        assertEquals(hAncient, sorted[0].first)
+        assertEquals(hLast, sorted[1].first)
+        assertEquals(hCurrent, sorted[2].first)
+        assertEquals(hNew, sorted[3].first)
     }
 }
