@@ -339,8 +339,11 @@ object Session {
                             skippedEpochHeaderKeys = finalEpochHeaderKeys,
                             needsRatchet = cleanState.needsRatchet || isNewDhEpoch,
                             prevRecvToken = if (isNewDhEpoch) cleanState.recvToken.copyOf() else cleanState.prevRecvToken.copyOf(),
-                            retiredDhPubs = newRetiredDhPubs,
-                            retiredRecvTokens = newRetiredRecvTokens,
+                            retiredDhPubs = if (!cleanState.lastRemoteDhPub.isEmpty() && isNewDhEpoch) {
+                                (speculativeState.retiredDhPubs + cleanState.lastRemoteDhPub.toHex()).toList().takeLast(MAX_SEEN_DH_PUBS).toSet()
+                            } else {
+                                speculativeState.retiredDhPubs
+                            },
                         )
                     // Also wipe any message keys derived during this failed call
                     addedSkippedKeys.forEach { it.zeroize() }
@@ -420,11 +423,6 @@ object Session {
             } else {
                 speculativeState.retiredDhPubs
             }
-            val newRetiredRecvTokens = if (isNewDhEpoch) {
-                (speculativeState.retiredRecvTokens + cleanState.recvToken.copyOf()).takeLast(MAX_SEEN_DH_PUBS)
-            } else {
-                speculativeState.retiredRecvTokens
-            }
 
             val newState =
                 speculativeState.deepCopy().copy(
@@ -435,7 +433,6 @@ object Session {
                     needsRatchet = cleanState.needsRatchet || isNewDhEpoch,
                     prevRecvToken = if (shouldRetirePrevToken) ByteArray(0) else if (isNewDhEpoch) cleanState.recvToken.copyOf() else cleanState.prevRecvToken.copyOf(),
                     retiredDhPubs = newRetiredDhPubs,
-                    retiredRecvTokens = newRetiredRecvTokens,
                     isSendTokenPending = speculativeState.isSendTokenPending,
                     sendTokenPendingSinceMs = speculativeState.sendTokenPendingSinceMs,
                 )

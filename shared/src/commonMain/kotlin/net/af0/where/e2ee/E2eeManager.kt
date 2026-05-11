@@ -242,7 +242,7 @@ class E2eeManager(
             check(seqAdvanced) { "Nonce safety violation: sequence number did not advance" }
 
             val tokenToUse = if (newSession.isSendTokenPending) newSession.prevSendToken else newSession.sendToken
-            val updatedSession = if (newSession.isSendTokenPending && !entry.session.isSendTokenPending) {
+            val updatedSession = if (newSession.isSendTokenPending && (newSession.sendSeq == 0L || !entry.session.isSendTokenPending)) {
                 newSession.copy(sendTokenPendingSinceMs = currentTimeMillis())
             } else {
                 newSession
@@ -381,7 +381,7 @@ class E2eeManager(
             
             val currentRecvToken = if (result.anySuccess || hadStateUpdate) result.finalSession.recvToken else entry.session.recvToken
 
-            val updatedSession = if (result.finalSession.isSendTokenPending && !entry.session.isSendTokenPending) {
+            val updatedSession = if (result.finalSession.isSendTokenPending && (result.finalSession.recvSeq == 0L || !entry.session.isSendTokenPending)) {
                 result.finalSession.copy(recvToken = currentRecvToken, sendTokenPendingSinceMs = currentTimeMillis())
             } else {
                 result.finalSession.copy(recvToken = currentRecvToken)
