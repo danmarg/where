@@ -381,10 +381,9 @@ class E2eeManager(
             
             val currentRecvToken = if (result.anySuccess || hadStateUpdate) result.finalSession.recvToken else entry.session.recvToken
 
-            val updatedSession = if (result.finalSession.isSendTokenPending && (result.finalSession.recvSeq == 0L || !entry.session.isSendTokenPending)) {
-                result.finalSession.copy(recvToken = currentRecvToken, sendTokenPendingSinceMs = currentTimeMillis())
-            } else {
-                result.finalSession.copy(recvToken = currentRecvToken)
+            var updatedSession = result.finalSession.copy(recvToken = currentRecvToken)
+            if (result.finalSession.isSendTokenPending && (result.finalSession.recvSeq == 0L || !entry.session.isSendTokenPending)) {
+                updatedSession = updatedSession.copy(sendTokenPendingSinceMs = currentTimeMillis())
             }
 
             val updatedEntry = entry.copy(

@@ -408,11 +408,6 @@ object Session {
                 ackRemoteDhPub.contentEquals(cleanState.localDhPub) ||
                 ackRemoteDhPub.contentEquals(speculativeState.localDhPub)
             )
-            val newRetiredDhPubs = if (!cleanState.lastRemoteDhPub.isEmpty() && (shouldRetirePrevToken || isNewDhEpoch)) {
-                (speculativeState.retiredDhPubs + cleanState.lastRemoteDhPub.toHex()).toList().takeLast(MAX_SEEN_DH_PUBS).toSet()
-            } else {
-                speculativeState.retiredDhPubs
-            }
 
             val newState =
                 speculativeState.deepCopy().copy(
@@ -421,8 +416,12 @@ object Session {
                     skippedMessageKeys = finalSkippedKeys,
                     skippedEpochHeaderKeys = finalEpochHeaderKeys,
                     needsRatchet = cleanState.needsRatchet || isNewDhEpoch,
-                    prevRecvToken = if (shouldRetirePrevToken) ByteArray(0) else if (isNewDhEpoch) cleanState.recvToken.copyOf() else cleanState.prevRecvToken.copyOf(),
-                    retiredDhPubs = newRetiredDhPubs,
+                    prevRecvToken = if (isNewDhEpoch) cleanState.recvToken.copyOf() else cleanState.prevRecvToken.copyOf(),
+                    retiredDhPubs = if (!cleanState.lastRemoteDhPub.isEmpty() && (shouldRetirePrevToken || isNewDhEpoch)) {
+                        (speculativeState.retiredDhPubs + cleanState.lastRemoteDhPub.toHex()).toList().takeLast(MAX_SEEN_DH_PUBS).toSet()
+                    } else {
+                        speculativeState.retiredDhPubs
+                    },
                     isSendTokenPending = speculativeState.isSendTokenPending,
                     sendTokenPendingSinceMs = speculativeState.sendTokenPendingSinceMs,
                 )
