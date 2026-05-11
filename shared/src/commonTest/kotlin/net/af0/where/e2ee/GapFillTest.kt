@@ -101,6 +101,6 @@ class GapFillTest {
 
             // 6. Decrypt and check pn. Bob must use bS2 because it has his new DH key B1.
             val (_, dec) = Session.decryptMessage(bS2, m1)
-            assertTrue(dec is MessagePlaintext.Location)
+            assertEquals(5L, dec.pn, "Plaintext pn should be injected by encryptMessage")
         }
 }

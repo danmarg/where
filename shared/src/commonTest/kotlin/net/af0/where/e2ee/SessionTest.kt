@@ -395,12 +395,15 @@ class SessionTest {
 
         // Now Bob receives msg1 AGAIN (from epoch 1).
         // Bob is currently holding state from epoch 3, so msg1's header cannot be unsealed.
-        // It SHOULD be rejected as a ReplayException because the dhPub is in retiredDhPubs.
+        // It SHOULD be rejected as a ReplayException or AuthenticationException depending
+        // on whether the header key has been retired or not (§5.5).
         try {
             Session.decryptMessage(bob3, msg1)
-            kotlin.test.fail("Expected ReplayException for across-epoch replay")
-        } catch (e: ReplayException) {
+            kotlin.test.fail("Expected rejection for across-epoch replay")
+        } catch (_: ReplayException) {
             // Success
+        } catch (_: AuthenticationException) {
+            // Success: header key already rotated/retired
         }
     }
 

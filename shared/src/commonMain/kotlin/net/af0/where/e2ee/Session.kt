@@ -23,7 +23,7 @@ object Session {
         if (state.sendSeq == Long.MAX_VALUE) throw SessionBrickedException("sequence number overflow")
 
         var currentState = state
-        if (currentState.needsRatchet) {
+        if (currentState.needsRatchet && !currentState.isSendTokenPending) {
             currentState = performDhRatchet(currentState, currentState.remoteDhPub)
         }
 
@@ -36,7 +36,14 @@ object Session {
         val (sender, recipient) = if (currentState.isAlice) currentState.aliceFp to currentState.bobFp else currentState.bobFp to currentState.aliceFp
         val aad = buildMessageAad(sender, recipient, seq, dhPub, ackRemoteDhPub)
 
-        val plaintext = padToFixedSize(encodeMessage(payload), PADDING_SIZE)
+        // PH-3.3 (BELT-AND-SUSPENDERS): Ensure internal 'pn' matches what we put in the header (#212)
+        val updatedPayload =
+            when (payload) {
+                is MessagePlaintext.Location -> payload.copy(pn = currentState.pn)
+                is MessagePlaintext.Keepalive -> payload.copy(pn = currentState.pn)
+            }
+
+        val plaintext = padToFixedSize(encodeMessage(updatedPayload), PADDING_SIZE)
         val ct = aeadEncrypt(step.messageKey, step.messageNonce, plaintext, aad)
 
         val newState =
@@ -185,8 +192,8 @@ object Session {
 
         // Implicit Finalization (§5.4.3): if the peer ACKs our current local key,
         // then we've successfully confirmed our previous transition.
-        // This MUST be checked before performDhRatchet to ensure isSendTokenPending is
-        // cleared correctly before a new transition is potentially initiated.
+        // This MUST be checked before performDhRatchet to ensure we don't accidentally
+        // clear a newly-initiated transition flag.
         val isValidAck =
             ackRemoteDhPub.contentEquals(cleanState.localDhPub) ||
             ackRemoteDhPub.contentEquals(cleanState.prevLocalDhPub) ||
@@ -301,6 +308,18 @@ object Session {
                     // Decryption failure: We still want to persist the ratcheted state if the header
                     // authenticated, to prevent permanent DH desync (§5.5).
                     
+                    val newRetiredDhPubs = if (!cleanState.lastRemoteDhPub.isEmpty() && isNewDhEpoch) {
+                        (speculativeState.retiredDhPubs + cleanState.lastRemoteDhPub.toHex()).toList().takeLast(MAX_SEEN_DH_PUBS).toSet()
+                    } else {
+                        speculativeState.retiredDhPubs
+                    }
+
+                    val newRetiredRecvTokens = if (isNewDhEpoch) {
+                        (speculativeState.retiredRecvTokens + cleanState.recvToken.copyOf()).takeLast(MAX_SEEN_DH_PUBS)
+                    } else {
+                        speculativeState.retiredRecvTokens
+                    }
+
                     val finalEpochHeaderKeys = if (isNewDhEpoch) {
                         val updatedEpochHks = LinkedHashMap(cleanState.skippedEpochHeaderKeys)
                         updatedEpochHks[cleanState.remoteDhPub.toHex()] = cleanState.headerKey.copyOf()
@@ -318,11 +337,10 @@ object Session {
                             recvSeq = seq,
                             skippedMessageKeys = derivationSkippedKeys.mapValues { it.value.copyOf() },
                             skippedEpochHeaderKeys = finalEpochHeaderKeys,
-                            retiredDhPubs = if (!cleanState.lastRemoteDhPub.isEmpty() && isNewDhEpoch) {
-                                (speculativeState.retiredDhPubs + cleanState.lastRemoteDhPub.toHex()).toList().takeLast(MAX_SEEN_DH_PUBS).toSet()
-                            } else {
-                                speculativeState.retiredDhPubs
-                            },
+                            needsRatchet = cleanState.needsRatchet || isNewDhEpoch,
+                            prevRecvToken = if (isNewDhEpoch) cleanState.recvToken.copyOf() else cleanState.prevRecvToken.copyOf(),
+                            retiredDhPubs = newRetiredDhPubs,
+                            retiredRecvTokens = newRetiredRecvTokens,
                         )
                     // Also wipe any message keys derived during this failed call
                     addedSkippedKeys.forEach { it.zeroize() }
@@ -414,8 +432,12 @@ object Session {
                     recvSeq = seq,
                     skippedMessageKeys = finalSkippedKeys,
                     skippedEpochHeaderKeys = finalEpochHeaderKeys,
-                    prevRecvToken = if (shouldRetirePrevToken) ByteArray(0) else speculativeState.prevRecvToken,
+                    needsRatchet = cleanState.needsRatchet || isNewDhEpoch,
+                    prevRecvToken = if (shouldRetirePrevToken) ByteArray(0) else if (isNewDhEpoch) cleanState.recvToken.copyOf() else cleanState.prevRecvToken.copyOf(),
                     retiredDhPubs = newRetiredDhPubs,
+                    retiredRecvTokens = newRetiredRecvTokens,
+                    isSendTokenPending = speculativeState.isSendTokenPending,
+                    sendTokenPendingSinceMs = speculativeState.sendTokenPendingSinceMs,
                 )
 
             return newState to decoded
@@ -588,10 +610,12 @@ object Session {
                     // empty object
                 }
             }
+            put("pn", msg.pn)
         }.let { Json.encodeToString(it) }.encodeToByteArray()
 
     private fun decodeMessage(bytes: ByteArray): MessagePlaintext {
         val obj = Json.decodeFromString<JsonObject>(bytes.decodeToString())
+        val pn = obj["pn"]?.jsonPrimitive?.long ?: 0L
         return if (obj.containsKey("lat")) {
             MessagePlaintext.Location(
                 lat = obj["lat"]!!.jsonPrimitive.double,
@@ -599,9 +623,10 @@ object Session {
                 acc = obj["acc"]!!.jsonPrimitive.double,
                 ts = obj["ts"]!!.jsonPrimitive.long,
                 precision = obj["precision"]?.jsonPrimitive?.content?.let { LocationPrecision.valueOf(it) } ?: LocationPrecision.FINE,
+                pn = pn,
             )
         } else {
-            MessagePlaintext.Keepalive()
+            MessagePlaintext.Keepalive(pn = pn)
         }
     }
 
@@ -639,12 +664,15 @@ object Session {
 }
 
 sealed class MessagePlaintext {
+    abstract val pn: Long
+
     data class Location(
         val lat: Double,
         val lng: Double,
         val acc: Double,
         val ts: Long,
         val precision: LocationPrecision = LocationPrecision.FINE,
+        override val pn: Long = 0,
     ) : MessagePlaintext() {
         fun blur(): Location =
             if (precision == LocationPrecision.COARSE) {
@@ -658,7 +686,7 @@ sealed class MessagePlaintext {
             }
     }
 
-    class Keepalive : MessagePlaintext()
+    data class Keepalive(override val pn: Long = 0) : MessagePlaintext()
 }
 
 class SessionBrickedException(message: String) : WhereException(message)
