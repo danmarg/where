@@ -332,6 +332,8 @@ object Session {
                             } else {
                                 speculativeState.retiredDhPubs
                             },
+                            // Ensure we don't lose retired tokens during a transition failure
+                            retiredRecvTokens = (speculativeState.retiredRecvTokens + (if (isNewDhEpoch) listOf(cleanState.recvToken.copyOf()) else emptyList())).takeLast(MAX_SEEN_DH_PUBS),
                         )
                     // Also wipe any message keys derived during this failed call
                     addedSkippedKeys.forEach { it.zeroize() }
