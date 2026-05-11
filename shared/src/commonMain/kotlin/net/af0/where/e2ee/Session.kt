@@ -416,7 +416,7 @@ object Session {
                     skippedMessageKeys = finalSkippedKeys,
                     skippedEpochHeaderKeys = finalEpochHeaderKeys,
                     needsRatchet = cleanState.needsRatchet || isNewDhEpoch,
-                    prevRecvToken = if (isNewDhEpoch) cleanState.recvToken.copyOf() else cleanState.prevRecvToken.copyOf(),
+                    prevRecvToken = if (shouldRetirePrevToken) ByteArray(0) else if (isNewDhEpoch) cleanState.recvToken.copyOf() else cleanState.prevRecvToken.copyOf(),
                     retiredDhPubs = if (!cleanState.lastRemoteDhPub.isEmpty() && (shouldRetirePrevToken || isNewDhEpoch)) {
                         (speculativeState.retiredDhPubs + cleanState.lastRemoteDhPub.toHex()).toList().takeLast(MAX_SEEN_DH_PUBS).toSet()
                     } else {
