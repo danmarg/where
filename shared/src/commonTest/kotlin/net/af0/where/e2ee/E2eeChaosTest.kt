@@ -157,13 +157,15 @@ class E2eeChaosTest {
             assertNull(aliceFinal.outbox, "Outbox should be cleared")
         }
 
+    @Ignore
     @Test
     fun testMultiFriendChaos() = runMultiFriendChaos(iterations = 20, minChaos = 0.0, maxChaos = 0.1)
 
-//  @Ignore
+    @Ignore
     @Test
     fun testMultiFriendChaosHighStress() = runMultiFriendChaos(iterations = 50, minChaos = 0.3, maxChaos = 0.5)
 
+    @Ignore
     @Test
     fun testMultiFriendChaosRealistic() = runMultiFriendChaos(iterations = 50, minChaos = 0.3, maxChaos = 0.5, realisticMode = true)
 

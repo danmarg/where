@@ -245,15 +245,13 @@ open class LocationClient(
                         store.addDiagnosticEvent("FORCE ACK: ${friendId.take(8)} — unrecoverable failures, re-pair if desynced")
                     }
                     store.resetConsecutiveSilentDrops(friendId)
+                    store.recordPendingAck(friendId, currentTokenToPoll, messages.size)
                 }
 
-                // ACK logic: progress (success/replay/state) or unrecoverable failure (forceAck)
-                val safeToAck = (result.anySuccess && !result.hadSilentDrops) ||
-                    (result.anyReplay && result.failCount == 0) ||
-                    result.hadStateUpdate ||
-                    forceAck
-
-                if (safeToAck) {
+                // ACK logic: progress (success/replay/state) already recorded intent in processBatch.
+                // We only need to check if we have a pending record to flush.
+                val friendAfterBatch = store.getFriend(friendId)
+                if (friendAfterBatch?.pendingAcks?.any { it.token == currentTokenToPoll && it.n == messages.size } == true) {
                     try {
                         mailboxClient.ack(baseUrl, currentTokenToPoll, messages.size)
                         store.confirmAck(friendId, currentTokenToPoll, messages.size)

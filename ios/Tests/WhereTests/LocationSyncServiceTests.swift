@@ -16,7 +16,7 @@ class LocationSyncServiceTests: XCTestCase {
             lock.lock(); defer { lock.unlock() }
             return data[key]
         }
-        func putString(key: String, value: String) {
+        func putString(key: String, value: String) throws {
             lock.lock(); defer { lock.unlock() }
             data[key] = value
         }
@@ -33,6 +33,7 @@ class LocationSyncServiceTests: XCTestCase {
         func requestPermissionAndStart() {
             requestPermissionAndStartCalled = true
         }
+        func sharingStateChanged() {}
     }
 
     var mockStorage: MockRawKeyValueStorage!

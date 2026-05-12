@@ -553,6 +553,17 @@ class E2eeManager(
         }
     }
 
+    suspend fun recordPendingAck(id: String, token: String, n: Int) {
+        persistence.withFriendAndMetadataLock(id) { entry, _ ->
+            if (entry != null) {
+                val nextAcks = entry.pendingAcks + PendingAck(token = token, n = n)
+                PersistenceAction.Update(entry.copy(pendingAcks = nextAcks)) to Unit
+            } else {
+                PersistenceAction.None to Unit
+            }
+        }
+    }
+
     suspend fun clearSendTokenPending(id: String, clearingToken: String? = null): Boolean {
         return persistence.withFriendAndMetadataLock(id) { entry, _ ->
             if (entry != null && entry.session.isSendTokenPending) {
