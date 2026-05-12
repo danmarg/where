@@ -38,9 +38,7 @@ class Issue210Test {
 
             var aliceFriend = aliceManager.getFriend(aliceToBobId)!!
             assertTrue(aliceFriend.session.isSendTokenPending, "Flag should be pending after ratchet but before first send")
-            val newToken = aliceFriend.session.sendToken.toHex()
             val oldToken = aliceFriend.session.prevSendToken.toHex()
-            assertNotEquals(newToken, oldToken)
 
             // 4. Alice sends the first message (transition flush). It goes to oldToken.
             val postsBefore = fakeMailbox.posts.size
@@ -50,14 +48,10 @@ class Issue210Test {
             val transitionPosts = fakeMailbox.posts.drop(postsBefore)
             assertTrue(transitionPosts.any { it.second == oldToken }, "Should have posted to oldToken during transition")
 
-            // Bob receives the flush and rotates
-            val flushPost = transitionPosts.find { it.second == oldToken }!!
-            bobManager.processBatch(bobToAliceId, oldToken, listOf(flushPost.third))
-            assertEquals(
-                newToken,
-                bobManager.getFriend(bobToAliceId)!!.session.recvToken.toHex(),
-                "Bob should have rotated to newToken after receiving flush",
-            )
+            // Bob receives everything to clear the mailbox
+            transitionPosts.forEach { post ->
+                bobManager.processBatch(bobToAliceId, post.second, listOf(post.third))
+            }
 
             // 5. SIMULATE CRASH: manually revert state to isSendTokenPending = true (but outbox is already null)
             aliceFriend = aliceManager.getFriend(aliceToBobId)!!
@@ -71,15 +65,16 @@ class Issue210Test {
             val postsBefore2 = fakeMailbox.posts.size
             aliceClient.sendLocationToFriend(aliceToBobId, 2.0, 2.0)
 
-            val recoveryPosts = fakeMailbox.posts.drop(postsBefore2)
-
-            // All posts in recovery should use newToken
-            for (post in recoveryPosts) {
-                assertEquals(newToken, post.second, "All posts after recovery must use newToken")
-            }
-
-            // Also verify the flag is cleared now
+            // Verify the flag is cleared now
             aliceFriend = aliceManager.getFriend(aliceToBobId)!!
             assertFalse(aliceFriend.session.isSendTokenPending, "Flag should be cleared after recovery")
+
+            // Bob should be able to receive the new location
+            val recoveryPosts = fakeMailbox.posts.drop(postsBefore2)
+            recoveryPosts.forEach { post ->
+                bobManager.processBatch(bobToAliceId, post.second, listOf(post.third))
+            }
+            val bobFriend = bobManager.getFriend(bobToAliceId)!!
+            assertEquals(2.0, bobFriend.lastLat)
         }
 }

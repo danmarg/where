@@ -143,7 +143,16 @@ open class LocationClient(
         qr: QrPayload,
         initPayload: KeyExchangeInitPayload,
     ) {
-        processOutboxes()
+        try {
+            mailboxClient.post(baseUrl, qr.discoveryToken().toHex(), initPayload)
+            // Finalize WAL record
+            val friend = store.listFriends().find { it.pendingDiscoveryPost?.payload == initPayload }
+            if (friend != null) {
+                store.confirmDiscoveryPost(friend.id)
+            }
+        } catch (e: Exception) {
+            println("[LocationClient] postKeyExchangeInit: eager post failed, will retry via processOutboxes: ${e.message}")
+        }
     }
 
     internal suspend fun pollFriend(
@@ -154,7 +163,7 @@ open class LocationClient(
         var friendBefore = store.getFriend(friendId) ?: return emptyList()
 
         // RECOVERY (§5.4): detect stale transition flag after crash
-        if (friendBefore.outbox == null && friendBefore.session.isSendTokenPending && friendBefore.session.sendSeq > 1) {
+        if (friendBefore.outbox == null && friendBefore.session.isSendTokenPending && friendBefore.session.sendSeq >= 1) {
             println("[LocationClient] pollFriend: detected stale transition flag for ${friendId.take(8)}, finalizing now")
             finalizeTokenTransition(friendId)
             friendBefore = store.getFriend(friendId) ?: return emptyList()

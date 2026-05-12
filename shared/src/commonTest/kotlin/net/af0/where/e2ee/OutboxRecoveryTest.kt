@@ -92,7 +92,10 @@ class OutboxRecoveryTest {
 
             // 3. Process outboxes.
             // Recovery logic is triggered at the start of any poll (§5.4).
-            client.poll()
+            // We need to reach MAX_OUTBOX_PARK_RETRIES for it to clear.
+            repeat(MAX_OUTBOX_PARK_RETRIES) {
+                client.poll()
+            }
 
             // 4. Verify outbox is cleared
             val finalFriend = store.getFriend(friendId)

@@ -223,12 +223,23 @@ class E2eeChaosTest {
                 runBlocking {
                     val qr = a.store.createInvite(a.name)
                     val (init, _) = b.store.processScannedQr(qr)
+                    b.client.postKeyExchangeInit(qr, init)
                     a.store.processKeyExchangeInit(init, b.name, qr.ekPub)
                 }
             }
             pair(alice, bob)
             pair(alice, charlie)
             pair(bob, charlie)
+
+            // Ensure sharingEnabled = false so automated keepalives fire and drive the ratchet
+            // forward during the chaos phase, which is expected by this stress test.
+            nodes.forEach { node ->
+                runBlocking {
+                    node.store.listFriends().forEach { friend ->
+                        node.store.setSharingEnabled(friend.id, false)
+                    }
+                }
+            }
 
             val aliceToBobId = runBlocking { alice.store.listFriends().find { it.name == "Bob" }!!.id }
             val aliceToCharlieId = runBlocking { alice.store.listFriends().find { it.name == "Charlie" }!!.id }
@@ -354,6 +365,7 @@ class E2eeChaosTest {
             // 1. Pair
             val qr = aliceManager.createInvite("Alice")
             val (init, _) = bobManager.processScannedQr(qr)
+            bobClient.postKeyExchangeInit(qr, init)
             aliceManager.processKeyExchangeInit(init, "Bob", qr.ekPub)
             val bobToAliceId = bobManager.listFriends().first().id
             val aliceToBobId = aliceManager.listFriends().first().id

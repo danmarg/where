@@ -313,12 +313,13 @@ class E2eeManager(
         }
     }
 
-    suspend fun updateFriend(id: String, transform: (FriendEntry) -> FriendEntry) {
-        persistence.withFriendAndMetadataLock(id) { entry, _ ->
+    suspend fun updateFriend(id: String, transform: (FriendEntry) -> FriendEntry): FriendEntry? {
+        return persistence.withFriendAndMetadataLock(id) { entry, _ ->
             if (entry != null) {
-                PersistenceAction.Update(transform(entry)) to Unit
+                val next = transform(entry)
+                PersistenceAction.Update(next) to next
             } else {
-                PersistenceAction.None to Unit
+                PersistenceAction.None to null
             }
         }
     }
