@@ -42,10 +42,6 @@ data class FriendEntry(
     val lastSentTs: Long = 0L,
     val lastPollTs: Long = 0L,
     val sharingEnabled: Boolean = true,
-    val outbox: EncryptedOutboxMessage? = null,
-    val lastDecryptFailed: Boolean = false,
-    val outbox429Count: Int = 0,
-    val consecutiveSilentDrops: Int = 0,
 ) {
     companion object {
         const val ACK_TIMEOUT_SECONDS = 7 * 24 * 3600L
@@ -227,13 +223,17 @@ class E2eeManager(
         }
     }
 
-    suspend fun encryptAndStore(
+    /**
+     * Encrypts a message for a friend and atomically persists the advanced ratchet state.
+     * This ensures that the sequence number is ALWAYS advanced locally before a network
+     * attempt, preventing nonce reuse if the same message is retried later.
+     */
+    suspend fun encryptAndAdvance(
         friendId: String,
         payload: MessagePlaintext,
-    ): EncryptedMessagePayload {
+    ): Pair<EncryptedMessagePayload, SessionState> {
         return persistence.withFriendAndMetadataLock(friendId) { entry, _ ->
             if (entry == null) throw Exception("Friend not found: $friendId")
-            if (entry.outbox != null) throw OutboxConflictException(friendId)
 
             val (newSession, message) = Session.encryptMessage(entry.session, payload)
 
@@ -241,7 +241,6 @@ class E2eeManager(
                 !newSession.rootKey.contentEquals(entry.session.rootKey)
             check(seqAdvanced) { "Nonce safety violation: sequence number did not advance" }
 
-            val tokenToUse = if (newSession.isSendTokenPending) newSession.prevSendToken else newSession.sendToken
             val updatedSession = if (newSession.isSendTokenPending && !entry.session.isSendTokenPending) {
                 newSession.copy(sendTokenPendingSinceMs = currentTimeMillis())
             } else {
@@ -250,33 +249,34 @@ class E2eeManager(
 
             val updatedEntry = entry.copy(
                 session = updatedSession,
-                outbox = EncryptedOutboxMessage(token = tokenToUse.toHex(), payload = message),
-                lastSentTs = currentTimeSeconds(),
+                lastSentTs = if (payload is MessagePlaintext.Location) currentTimeSeconds() else entry.lastSentTs,
             )
             
-            PersistenceAction.Update(updatedEntry) to message
+            PersistenceAction.Update(updatedEntry) to (message to updatedSession)
         }
     }
 
-    suspend fun updateSession(id: String, newSession: SessionState) {
+    /**
+     * Atomically updates a friend's metadata.
+     */
+    suspend fun updateFriendMetadata(
+        id: String,
+        isConfirmed: Boolean? = null,
+        sharingEnabled: Boolean? = null,
+    ) {
         persistence.withFriendAndMetadataLock(id) { entry, _ ->
             if (entry != null) {
-                PersistenceAction.Update(entry.copy(session = newSession)) to Unit
+                val updated = entry.copy(
+                    isConfirmed = isConfirmed ?: entry.isConfirmed,
+                    sharingEnabled = sharingEnabled ?: entry.sharingEnabled,
+                )
+                PersistenceAction.Update(updated) to Unit
             } else {
                 PersistenceAction.None to Unit
             }
         }
     }
 
-    suspend fun updateFriend(id: String, transform: (FriendEntry) -> FriendEntry) {
-        persistence.withFriendAndMetadataLock(id) { entry, _ ->
-            if (entry != null) {
-                PersistenceAction.Update(transform(entry)) to Unit
-            } else {
-                PersistenceAction.None to Unit
-            }
-        }
-    }
 
     suspend fun processScannedQr(
         qr: QrPayload,
@@ -338,7 +338,7 @@ class E2eeManager(
                     sendTokenPendingSinceMs = null,
                     needsRatchet = entry.session.needsRatchet,
                 )
-                PersistenceAction.Update(entry.copy(session = rolledBack, outbox = null)) to Unit
+                PersistenceAction.Update(entry.copy(session = rolledBack)) to Unit
             } else {
                 PersistenceAction.None to Unit
             }
@@ -373,7 +373,6 @@ class E2eeManager(
             }
 
             val hadActivity = result.decryptedLocations.isNotEmpty() || (result.anySuccess && result.finalSession != entry.session)
-            val isFailedBatch = (result.hardFailCount > 0 || result.silentDrops > 0) && !result.anySuccess
             val lastLocation = result.decryptedLocations.lastOrNull()
 
             val hadStateUpdate = result.finalSession.recvSeq > entry.session.recvSeq ||
@@ -395,7 +394,6 @@ class E2eeManager(
                 lastLng = lastLocation?.lng ?: entry.lastLng,
                 lastTs = lastLocation?.ts ?: entry.lastTs,
                 lastPollTs = currentTimeSeconds(),
-                lastDecryptFailed = if (encryptedMessages.isNotEmpty()) isFailedBatch else entry.lastDecryptFailed,
             )
 
             PersistenceAction.Update(updatedEntry) to PollBatchResult(
@@ -410,70 +408,10 @@ class E2eeManager(
         }
     }
 
-    suspend fun clearOutbox(id: String) {
-        persistence.withFriendAndMetadataLock(id) { entry, _ ->
-            if (entry != null) {
-                PersistenceAction.Update(entry.copy(outbox = null, outbox429Count = 0)) to Unit
-            } else {
-                PersistenceAction.None to Unit
-            }
-        }
-    }
-
-    suspend fun clearOutboxAndUpdateSession(id: String, newSession: SessionState) {
-        persistence.withFriendAndMetadataLock(id) { entry, _ ->
-            if (entry != null) {
-                PersistenceAction.Update(entry.copy(session = newSession, outbox = null, outbox429Count = 0)) to Unit
-            } else {
-                PersistenceAction.None to Unit
-            }
-        }
-    }
-
-    suspend fun incrementOutbox429Count(id: String): Int =
-        persistence.withFriendAndMetadataLock(id) { entry, _ ->
-            if (entry != null) {
-                val newCount = entry.outbox429Count + 1
-                PersistenceAction.Update(entry.copy(outbox429Count = newCount)) to newCount
-            } else {
-                PersistenceAction.None to 0
-            }
-        }
-
-    suspend fun incrementConsecutiveSilentDrops(id: String): Int =
-        persistence.withFriendAndMetadataLock(id) { entry, _ ->
-            if (entry != null) {
-                val nextCount = entry.consecutiveSilentDrops + 1
-                PersistenceAction.Update(entry.copy(consecutiveSilentDrops = nextCount)) to nextCount
-            } else {
-                PersistenceAction.None to 0
-            }
-        }
-
-    suspend fun resetConsecutiveSilentDrops(id: String) {
-        persistence.withFriendAndMetadataLock(id) { entry, _ ->
-            if (entry != null && entry.consecutiveSilentDrops != 0) {
-                PersistenceAction.Update(entry.copy(consecutiveSilentDrops = 0)) to Unit
-            } else {
-                PersistenceAction.None to Unit
-            }
-        }
-    }
-
     suspend fun updateLastLocation(id: String, lat: Double, lng: Double, ts: Long) {
         persistence.withFriendAndMetadataLock(id) { entry, _ ->
             if (entry != null) {
                 PersistenceAction.Update(entry.copy(lastLat = lat, lastLng = lng, lastTs = ts)) to Unit
-            } else {
-                PersistenceAction.None to Unit
-            }
-        }
-    }
-
-    suspend fun updateLastSentTs(id: String, ts: Long) {
-        persistence.withFriendAndMetadataLock(id) { entry, _ ->
-            if (entry != null) {
-                PersistenceAction.Update(entry.copy(lastSentTs = ts)) to Unit
             } else {
                 PersistenceAction.None to Unit
             }

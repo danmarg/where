@@ -30,10 +30,6 @@ internal data class SerializedFriendEntry(
     val lastSentTs: Long = 0L,
     val lastPollTs: Long = 0L,
     val sharingEnabled: Boolean = true,
-    val outbox: EncryptedOutboxMessage? = null,
-    val lastDecryptFailed: Boolean = false,
-    val outbox429Count: Int = 0,
-    val consecutiveSilentDrops: Int = 0,
     val lastSavedTs: Long = 0L,
 )
 
@@ -228,10 +224,6 @@ internal class E2eeStore(
         lastSentTs = lastSentTs,
         lastPollTs = lastPollTs,
         sharingEnabled = sharingEnabled,
-        outbox = outbox,
-        lastDecryptFailed = lastDecryptFailed,
-        outbox429Count = outbox429Count,
-        consecutiveSilentDrops = consecutiveSilentDrops,
     )
 
     private fun FriendEntry.toSerialized(ts: Long) = SerializedFriendEntry(
@@ -247,10 +239,6 @@ internal class E2eeStore(
         lastSentTs = lastSentTs,
         lastPollTs = lastPollTs,
         sharingEnabled = sharingEnabled,
-        outbox = outbox,
-        lastDecryptFailed = lastDecryptFailed,
-        outbox429Count = outbox429Count,
-        consecutiveSilentDrops = consecutiveSilentDrops,
         lastSavedTs = ts,
     )
 
