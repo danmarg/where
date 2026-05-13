@@ -28,124 +28,9 @@ struct FriendsSheet: View {
     var body: some View {
         NavigationStack {
             List {
-                Section {
-                    VStack(spacing: 12) {
-                        HStack(spacing: 12) {
-                            Button {
-                                onCreateInvite()
-                            } label: {
-                                Label(MR.strings().invite.localized(), systemImage: "qrcode")
-                                    .frame(maxWidth: .infinity)
-                            }
-                            .buttonStyle(.bordered)
-
-                            Button {
-                                onScanQr()
-                            } label: {
-                                Label(MR.strings().scan.localized(), systemImage: "qrcode.viewfinder")
-                                    .frame(maxWidth: .infinity)
-                            }
-                            .buttonStyle(.bordered)
-                        }
-
-
-                    }
-                }
-
-                if !friends.isEmpty {
-                    Section(MR.strings().friends.localized() + " (\(friends.count))") {
-                        ForEach(friends, id: \.id) { friend in
-                            VStack(alignment: .leading, spacing: 0) {
-                                HStack {
-                                    VStack(alignment: .leading, spacing: 2) {
-                                        let pendingText = "(" + MR.strings().pending.localized() + ")"
-                                        let displayName = friend.isConfirmed ? friend.name : "\(friend.name) \(pendingText)"
-                                        Text(displayName)
-                                            .font(.body)
-                                        Text(friend.safetyNumber)
-                                            .font(.caption2)
-                                            .fontDesign(.monospaced)
-                                            .foregroundStyle(.secondary)
-                                        Text(timeAgoString(lastPingTimes[friend.id]))
-                                            .font(.caption)
-                                            .foregroundStyle(.secondary)
-                                        if friend.isStale {
-                                            Text(MR.strings().friend_inactive_warning.localized())
-                                                .font(.caption)
-                                                .foregroundStyle(.red)
-                                        }
-                                    }
-                                    Spacer()
-
-                                    Button {
-                                        friendToRename = friend
-                                        newFriendName = friend.name
-                                    } label: {
-                                        Image(systemName: "pencil")
-                                            .font(.title3)
-                                            .foregroundStyle(.gray)
-                                    }
-                                    .buttonStyle(.plain)
-
-                                    let isPaused = pausedFriendIds.contains(friend.id)
-                                    Button {
-                                        onTogglePause(friend.id)
-                                    } label: {
-                                        Image(systemName: isPaused ? "play.circle" : "pause.circle")
-                                            .font(.title3)
-                                            .foregroundStyle(isPaused ? .blue : .gray)
-                                    }
-                                    .buttonStyle(.plain)
-                                }
-                                if debugExpandedFriendId == friend.id {
-                                    FriendDebugView(friend: friend)
-                                }
-                            }
-                            .contentShape(Rectangle())
-                            .onTapGesture { onZoomTo(friend.id) }
-                            .onLongPressGesture {
-                                debugExpandedFriendId = debugExpandedFriendId == friend.id ? nil : friend.id
-                            }
-                            .swipeActions {
-                                Button(MR.strings().remove.localized(), role: .destructive) {
-                                    friendToRemove = friend
-                                }
-                            }
-                        }
-                    }
-                } else {
-                    Section {
-                        Text(MR.strings().no_friends_yet.localized())
-                            .foregroundStyle(.secondary)
-                            .font(.subheadline)
-                    }
-                }
-                if !diagnosticLog.isEmpty && debugExpandedFriendId != nil {
-                    let hasError = diagnosticLog.contains { $0.contains("FAIL") || $0.contains("DESYNC") || $0.contains("STORAGE") }
-                    Section {
-                        Button {
-                            showDiagnosticLog.toggle()
-                        } label: {
-                            Label(
-                                showDiagnosticLog ? "Hide Events" : "Events (\(diagnosticLog.count))",
-                                systemImage: showDiagnosticLog ? "chevron.down" : "chevron.right"
-                            )
-                            .font(.caption2)
-                            .fontDesign(.monospaced)
-                            .foregroundStyle(hasError ? .red : .secondary)
-                        }
-                        .buttonStyle(.plain)
-                        if showDiagnosticLog {
-                            ForEach(diagnosticLog, id: \.self) { event in
-                                let isError = event.contains("FAIL") || event.contains("DESYNC") || event.contains("STORAGE")
-                                Text(event)
-                                    .font(.caption2)
-                                    .fontDesign(.monospaced)
-                                    .foregroundStyle(isError ? .red : .secondary)
-                            }
-                        }
-                    }
-                }
+                inviteButtonsSection
+                friendsSection
+                diagnosticLogSection
             }
             .navigationTitle(MR.strings().friends.localized())
             .navigationBarTitleDisplayMode(.inline)
@@ -171,6 +56,140 @@ struct FriendsSheet: View {
                 }
                 Button(MR.strings().cancel.localized(), role: .cancel) {
                     friendToRename = nil
+                }
+            }
+        }
+    }
+}
+
+extension FriendsSheet {
+    private var inviteButtonsSection: some View {
+        Section {
+            VStack(spacing: 12) {
+                HStack(spacing: 12) {
+                    Button {
+                        onCreateInvite()
+                    } label: {
+                        Label(MR.strings().invite.localized(), systemImage: "qrcode")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.bordered)
+
+                    Button {
+                        onScanQr()
+                    } label: {
+                        Label(MR.strings().scan.localized(), systemImage: "qrcode.viewfinder")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.bordered)
+                }
+            }
+        }
+    }
+
+    private var friendsSection: some View {
+        Group {
+            if !friends.isEmpty {
+                Section(MR.strings().friends.localized() + " (\(friends.count))") {
+                    ForEach(friends, id: \.id) { friend in
+                        friendRow(friend)
+                    }
+                }
+            } else {
+                Section {
+                    Text(MR.strings().no_friends_yet.localized())
+                        .foregroundStyle(.secondary)
+                        .font(.subheadline)
+                }
+            }
+        }
+    }
+
+    private func friendRow(_ friend: Shared.FriendEntry) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack {
+                VStack(alignment: .leading, spacing: 2) {
+                    let pendingText = "(" + MR.strings().pending.localized() + ")"
+                    let displayName = friend.isConfirmed ? friend.name : "\(friend.name) \(pendingText)"
+                    Text(displayName)
+                        .font(.body)
+                    Text(friend.safetyNumber)
+                        .font(.caption2)
+                        .fontDesign(.monospaced)
+                        .foregroundStyle(.secondary)
+                    Text(timeAgoString(lastPingTimes[friend.id]))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    if friend.isStale {
+                        Text(MR.strings().friend_inactive_warning.localized())
+                            .font(.caption)
+                            .foregroundStyle(.red)
+                    }
+                }
+                Spacer()
+
+                Button {
+                    friendToRename = friend
+                    newFriendName = friend.name
+                } label: {
+                    Image(systemName: "pencil")
+                        .font(.title3)
+                        .foregroundStyle(.gray)
+                }
+                .buttonStyle(.plain)
+
+                let isPaused = pausedFriendIds.contains(friend.id)
+                Button {
+                    onTogglePause(friend.id)
+                } label: {
+                    Image(systemName: isPaused ? "play.circle" : "pause.circle")
+                        .font(.title3)
+                        .foregroundStyle(isPaused ? .blue : .gray)
+                }
+                .buttonStyle(.plain)
+            }
+            if debugExpandedFriendId == friend.id {
+                FriendDebugView(friend: friend)
+            }
+        }
+        .contentShape(Rectangle())
+        .onTapGesture { onZoomTo(friend.id) }
+        .onLongPressGesture {
+            debugExpandedFriendId = debugExpandedFriendId == friend.id ? nil : friend.id
+        }
+        .swipeActions {
+            Button(MR.strings().remove.localized(), role: .destructive) {
+                friendToRemove = friend
+            }
+        }
+    }
+
+    private var diagnosticLogSection: some View {
+        Group {
+            if !diagnosticLog.isEmpty && debugExpandedFriendId != nil {
+                let hasError = diagnosticLog.contains { $0.contains("FAIL") || $0.contains("DESYNC") || $0.contains("STORAGE") }
+                Section {
+                    Button {
+                        showDiagnosticLog.toggle()
+                    } label: {
+                        Label(
+                            showDiagnosticLog ? "Hide Events" : "Events (\(diagnosticLog.count))",
+                            systemImage: showDiagnosticLog ? "chevron.down" : "chevron.right"
+                        )
+                        .font(.caption2)
+                        .fontDesign(.monospaced)
+                        .foregroundStyle(hasError ? .red : .secondary)
+                    }
+                    .buttonStyle(.plain)
+                    if showDiagnosticLog {
+                        ForEach(diagnosticLog, id: \.self) { event in
+                            let isError = event.contains("FAIL") || event.contains("DESYNC") || event.contains("STORAGE")
+                            Text(event)
+                                .font(.caption2)
+                                .fontDesign(.monospaced)
+                                .foregroundStyle(isError ? .red : .secondary)
+                        }
+                    }
                 }
             }
         }
