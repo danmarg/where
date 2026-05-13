@@ -249,7 +249,7 @@ class E2eeManager(
 
             val updatedEntry = entry.copy(
                 session = updatedSession,
-                lastSentTs = if (payload is MessagePlaintext.Location) currentTimeSeconds() else entry.lastSentTs,
+                lastSentTs = currentTimeSeconds(),
             )
             
             PersistenceAction.Update(updatedEntry) to (message to updatedSession)

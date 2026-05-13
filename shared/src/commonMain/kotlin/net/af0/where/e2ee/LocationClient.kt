@@ -176,8 +176,10 @@ open class LocationClient(
             try {
                 val result = store.processBatch(friendId, currentTokenToPoll, messages) ?: continue
 
-                // ACK logic: assume success or progress
-                service.ack(currentTokenToPoll, messages.size)
+                // ACK logic: only if progress was made
+                if (result.anySuccess || result.anyReplay || result.hadStateUpdate) {
+                    service.ack(currentTokenToPoll, messages.size)
+                }
 
                 resultLocations.addAll(
                     result.decryptedLocations.map { loc ->
