@@ -54,7 +54,10 @@ class LocationViewModel(
     private val e2eeManager: E2eeManager =
         e2eeManagerParam
             ?: (app as? WhereApplication)?.e2eeManager
-            ?: E2eeManager(SharedPrefsRawKeyValueStorage(app))
+            ?: E2eeManager(
+                SharedPrefsRawKeyValueStorage(app),
+                app.cash.sqldelight.driver.android.AndroidSqliteDriver(net.af0.where.db.WhereDatabase.Schema, app, "where.db")
+            )
     private val userStore: UserStore =
         userStoreParam
             ?: (app as? WhereApplication)?.userStore

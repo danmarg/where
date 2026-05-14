@@ -42,7 +42,6 @@ data class FriendEntry(
     val lastSentTs: Long = 0L,
     val lastPollTs: Long = 0L,
     val sharingEnabled: Boolean = true,
-    val outbox: List<EncryptedOutboxMessage> = emptyList(),
 ) {
     companion object {
         const val ACK_TIMEOUT_SECONDS = 7 * 24 * 3600L
@@ -76,8 +75,10 @@ internal fun PendingInvite.toView() = PendingInviteView(qrPayload, createdAt, ex
  */
 class E2eeManager(
     private val storage: RawKeyValueStorage,
+    sqlDriver: app.cash.sqldelight.db.SqlDriver,
 ) {
-    private val persistence = E2eeStore(storage)
+    internal val database = net.af0.where.db.WhereDatabase(sqlDriver)
+    private val persistence = E2eeStore(storage, database)
 
 
     val diagnosticLog: StateFlow<List<String>> = persistence.diagnosticLog
@@ -257,7 +258,14 @@ class E2eeManager(
             val updatedEntry = entry.copy(
                 session = updatedSession,
                 lastSentTs = if (payload is MessagePlaintext.Location) currentTimeSeconds() else entry.lastSentTs,
-                outbox = entry.outbox + outboxMsg
+            )
+            
+            database.outboxQueries.insert(
+                msgId = outboxMsg.msgId,
+                friendId = friendId,
+                token = outboxMsg.token,
+                payloadBlob = E2eeStore.json.encodeToString(MailboxPayload.serializer(), outboxMsg.payload).encodeToByteArray(),
+                createdAt = outboxMsg.createdAt
             )
             
             PersistenceAction.Update(updatedEntry) to (message to updatedSession)
@@ -307,10 +315,17 @@ class E2eeManager(
             isInitiator = false,
             lastRecvTs = currentTimeSeconds(),
             isConfirmed = false,
-            outbox = listOf(EncryptedOutboxMessage(token = qr.discoveryToken().toHex(), payload = payload))
         )
 
         return persistence.withFriendAndMetadataLock(entry.id) { _, metadata ->
+            val msgId = qr.discoveryToken().toHex()
+            database.outboxQueries.insert(
+                msgId = msgId,
+                friendId = entry.id,
+                token = msgId,
+                payloadBlob = E2eeStore.json.encodeToString(MailboxPayload.serializer(), payload).encodeToByteArray(),
+                createdAt = currentTimeSeconds()
+            )
             if (metadata.pendingInvites.any { it.qrPayload.ekPub.contentEquals(qr.ekPub) }) {
                 throw SelfPairingException()
             }
@@ -319,17 +334,20 @@ class E2eeManager(
     }
 
     suspend fun removeFromOutbox(friendId: String, msgId: String) {
-        persistence.withFriendAndMetadataLock(friendId) { entry, _ ->
-            if (entry != null) {
-                val nextOutbox = entry.outbox.filter { it.msgId != msgId }
-                if (nextOutbox.size != entry.outbox.size) {
-                    PersistenceAction.Update(entry.copy(outbox = nextOutbox)) to Unit
-                } else {
-                    PersistenceAction.None to Unit
-                }
-            } else {
-                PersistenceAction.None to Unit
-            }
+        persistence.withFriendAndMetadataLock(friendId) { _, _ ->
+            database.outboxQueries.deleteByMsgId(msgId)
+            PersistenceAction.None to Unit
+        }
+    }
+
+    fun getOutbox(friendId: String): List<EncryptedOutboxMessage> {
+        return database.outboxQueries.getForFriend(friendId).executeAsList().map { row ->
+            EncryptedOutboxMessage(
+                msgId = row.msgId,
+                token = row.token,
+                payload = E2eeStore.json.decodeFromString(MailboxPayload.serializer(), row.payloadBlob.decodeToString()),
+                createdAt = row.createdAt
+            )
         }
     }
 
@@ -362,8 +380,10 @@ class E2eeManager(
                     sendTokenPendingSinceMs = null,
                     needsRatchet = entry.session.needsRatchet,
                 )
-                // WAL: Clear the outbox as these messages are now stale and likely unusable
-                PersistenceAction.Update(entry.copy(session = rolledBack, outbox = emptyList())) to Unit
+                database.outboxQueries.getForFriend(friendId).executeAsList().forEach {
+                    database.outboxQueries.deleteByMsgId(it.msgId)
+                }
+                PersistenceAction.Update(entry.copy(session = rolledBack)) to Unit
             } else {
                 PersistenceAction.None to Unit
             }
@@ -431,9 +451,9 @@ class E2eeManager(
                 session = updatedSession,
                 isConfirmed = entry.isConfirmed || result.anySuccess,
                 lastRecvTs = if (hadActivity) currentTimeSeconds() else entry.lastRecvTs,
-                lastLat = lastLocation?.lat ?: entry.lastLat,
-                lastLng = lastLocation?.lng ?: entry.lastLng,
-                lastTs = lastLocation?.ts ?: entry.lastTs,
+                lastLat = if (lastLocation != null && (lastLocation.ts >= (entry.lastTs ?: 0))) lastLocation.lat else entry.lastLat,
+                lastLng = if (lastLocation != null && (lastLocation.ts >= (entry.lastTs ?: 0))) lastLocation.lng else entry.lastLng,
+                lastTs = if (lastLocation != null && (lastLocation.ts >= (entry.lastTs ?: 0))) lastLocation.ts else entry.lastTs,
                 lastPollTs = currentTimeSeconds(),
             )
 

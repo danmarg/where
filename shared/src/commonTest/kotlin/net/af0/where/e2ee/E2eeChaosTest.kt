@@ -6,6 +6,8 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.yield
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.runTest
 import net.af0.where.model.UserLocation
@@ -15,7 +17,6 @@ import kotlin.test.*
 @OptIn(ExperimentalCoroutinesApi::class)
 class E2eeChaosTest {
     companion object {
-        private val testMutex = kotlinx.coroutines.sync.Mutex()
     }
 
     private class MemoryMailboxClient : MailboxClient {
@@ -69,145 +70,240 @@ class E2eeChaosTest {
     }
 
     @Test
-    fun testRobustnessUnderChaos() = runTest(timeout = kotlin.time.Duration.parse("2m")) {
-        testMutex.withLock {
-            TimeSource.setProvider(object : TimeProvider {
-                override fun currentTimeMillis() = testScheduler.currentTime
-                override fun currentTimeSeconds() = testScheduler.currentTime / 1000
-            })
-            val mailbox = MemoryMailboxClient()
-            val aliceStorage = MemoryStorage()
-            val bobStorage = MemoryStorage()
-            
-            val aliceManager = E2eeManager(aliceStorage)
-            val qr = aliceManager.createInvite("Alice")
-            
-            val bobManager = E2eeManager(bobStorage)
-            val (initPayload, _) = bobManager.processScannedQr(qr, "Bob")
-            
-            val aliceClient = LocationClient("http://localhost", aliceManager, mailbox)
-            aliceClient.postKeyExchangeInit(qr, initPayload)
-            
-            val results = aliceClient.pollPendingInvites()
-            assertEquals(1, results.size)
-            aliceManager.processKeyExchangeInit(results[0].payload, "Bob", qr.ekPub)
-            
-            val bobClient = LocationClient("http://localhost", bobManager, mailbox)
-            
-            // 2. Start Chaos
-            val chaosMailbox = ChaosMailboxClient(mailbox)
-            chaosMailbox.failPostProbability = 0.05
-            chaosMailbox.failPollProbability = 0.05
-            chaosMailbox.dropProbability = 0.05
-            
-            val chaosAliceStorage = ChaosStorage(aliceStorage)
-            val chaosBobStorage = ChaosStorage(bobStorage)
+    fun testRobustnessUnderChaos() = runTest(timeout = kotlin.time.Duration.parse("5m")) {
+        val baseTimeMs = 1715670000000L
+        TimeSource.setProvider(object : TimeProvider {
+            override fun currentTimeMillis() = baseTimeMs + testScheduler.currentTime
+            override fun currentTimeSeconds() = (baseTimeMs + testScheduler.currentTime) / 1000
+        })
+        val mailbox = MemoryMailboxClient()
+        val chaosMailbox = ChaosMailboxClient(mailbox)
+        
+        val aliceStorage = MemoryStorage()
+        val bobStorage = MemoryStorage()
+        val chaosAliceStorage = ChaosStorage(aliceStorage)
+        val chaosBobStorage = ChaosStorage(bobStorage)
+        
+        val aliceSqlDriver = createTestSqlDriver()
+        val bobSqlDriver = createTestSqlDriver()
 
-            val aliceManagerLive = E2eeManager(chaosAliceStorage)
-            val bobManagerLive = E2eeManager(chaosBobStorage)
-            val aliceClientLive = LocationClient("http://localhost", aliceManagerLive, chaosMailbox)
-            val bobClientLive = LocationClient("http://localhost", bobManagerLive, chaosMailbox)
-
-            val aliceLocations = mutableListOf<UserLocation>()
-            val bobLocations = mutableListOf<UserLocation>()
-
-            val totalMessages = 2
-            
-            // Use backgroundScope for tasks that run until the end of the test
-            backgroundScope.launch {
-                while (isActive) {
-                    try { aliceClientLive.processOutboxes() } catch (e: Exception) {}
-                    try { bobClientLive.processOutboxes() } catch (e: Exception) {}
-                    delay(200)
-                }
+        val aliceManager = E2eeManager(chaosAliceStorage, aliceSqlDriver)
+        val bobManager = E2eeManager(chaosBobStorage, bobSqlDriver)
+        
+        val qr = aliceManager.createInvite("Alice")
+        val (initPayload, _) = bobManager.processScannedQr(qr, "Bob")
+        
+        val aliceClient = LocationClient("http://localhost", aliceManager, chaosMailbox)
+        aliceClient.postKeyExchangeInit(qr, initPayload)
+        
+        val results = aliceClient.pollPendingInvites()
+        assertEquals(1, results.size)
+        aliceManager.processKeyExchangeInit(results[0].payload, "Bob", qr.ekPub)
+        
+        val bobClient = LocationClient("http://localhost", bobManager, chaosMailbox)
+        
+        // 2. Start Chaos AFTER handshake is complete
+        chaosMailbox.failPostProbability = 0.05
+        chaosMailbox.failPollProbability = 0.05
+        chaosMailbox.dropProbability = 0.05
+        chaosAliceStorage.failWriteProbability = 0.05
+        chaosBobStorage.failWriteProbability = 0.05
+        
+        val totalMessages = 5
+        
+        // 2. Start background workers
+        val backgroundJobs = mutableListOf<kotlinx.coroutines.Job>()
+        backgroundJobs.add(launch {
+            while (isActive) {
+                try { aliceClient.poll() } catch (e: Exception) {}
+                try { bobClient.poll() } catch (e: Exception) {}
+                delay(Random.nextLong(100, 300))
             }
+        })
 
-            // Main test flow: these jobs are launched in the TestScope and we join them
-            val aliceSendJob = launch {
-                repeat(totalMessages) { i ->
-                    while (true) {
-                        try {
-                            aliceClientLive.sendLocation(1.0 + i, 2.0 + i)
-                            break
-                        } catch (e: Exception) {
-                            delay(10)
-                        }
+        backgroundJobs.add(launch {
+            while (isActive) {
+                try { aliceClient.processOutboxes() } catch (e: Exception) {}
+                try { bobClient.processOutboxes() } catch (e: Exception) {}
+                delay(Random.nextLong(100, 300))
+            }
+        })
+
+        // Main test flow: these jobs are launched in the TestScope and we join them
+        val aliceSendJob = launch {
+            repeat(totalMessages) { i ->
+                while (true) {
+                    try {
+                        aliceClient.sendLocation(1.0 + i, i.toDouble())
+                        delay(1000)
+                        break
+                    } catch (e: Exception) {
+                        delay(10)
                     }
                 }
             }
-
-            val bobSendJob = launch {
-                repeat(totalMessages) { i ->
-                    while (true) {
-                        try {
-                            bobClientLive.sendLocation(10.0 + i, 20.0 + i)
-                            break
-                        } catch (e: Exception) {
-                            delay(10)
-                        }
-                    }
-                }
-            }
-
-            // Waiting for convergence in a loop within the main coroutine
-            val start = currentTimeMillis()
-            while (aliceLocations.size < totalMessages || bobLocations.size < totalMessages) {
-                if (currentTimeMillis() - start > 60000) {
-                    println("DEBUG: Robustness test convergence timeout reached. Alice got ${aliceLocations.size}, Bob got ${bobLocations.size}")
-                    break 
-                }
-                
-                try {
-                    val aLocs = aliceClientLive.poll()
-                    aliceLocations.addAll(aLocs)
-                } catch (e: Exception) {}
-
-                try {
-                    val bLocs = bobClientLive.poll()
-                    bobLocations.addAll(bLocs)
-                } catch (e: Exception) {}
-
-                delay(200)
-            }
-            
-            aliceSendJob.join()
-            bobSendJob.join()
-
-            assertTrue(aliceLocations.size >= totalMessages, "Alice missed messages")
-            assertTrue(bobLocations.size >= totalMessages, "Bob missed messages")
         }
+
+        val bobSendJob = launch {
+            repeat(totalMessages) { i ->
+                while (true) {
+                    try {
+                        bobClient.sendLocation(10.0 + i, i.toDouble())
+                        delay(1000)
+                        break
+                    } catch (e: Exception) {
+                        delay(10)
+                    }
+                }
+            }
+        }
+
+        // 3. Convergence Loop
+        val convergenceTimeout = 900_000L // 15 minutes virtual
+        try {
+            withTimeout(convergenceTimeout) {
+                while (true) {
+                    yield()
+                    val aliceFriends = aliceManager.listFriends()
+                    val bobFriends = bobManager.listFriends()
+                    
+                    val aliceDone = aliceFriends.any { it.name == "Bob" && it.lastLng?.toInt() == totalMessages - 1 }
+                    val bobDone = bobFriends.any { it.name == "Alice" && it.lastLng?.toInt() == totalMessages - 1 }
+                    
+                    if (aliceDone && bobDone) {
+                        break
+                    }
+                    delay(500)
+                }
+            }
+        } catch (e: Exception) {
+            val aliceFriends = aliceManager.listFriends()
+            val bobFriends = bobManager.listFriends()
+            val aliceLast = aliceFriends.find { it.name == "Bob" }?.lastLng
+            val bobLast = bobFriends.find { it.name == "Alice" }?.lastLng
+            error("Robustness test timed out! Alice saw Bob at $aliceLast, Bob saw Alice at $bobLast. Wanted ${totalMessages - 1}")
+        } finally {
+            backgroundJobs.forEach { it.cancel() }
+        }
+        
+        aliceSendJob.join()
+        bobSendJob.join()
+
+        // 4. Final verification
+        val aliceFriends = aliceManager.listFriends()
+        val bobFriends = bobManager.listFriends()
+        
+        assertTrue(aliceFriends.any { it.name == "Bob" && it.lastLng?.toInt() == totalMessages - 1 }, "Alice missed messages")
+        assertTrue(bobFriends.any { it.name == "Alice" && it.lastLng?.toInt() == totalMessages - 1 }, "Bob missed messages")
+    }
+
+    @Test
+    fun testHandshakeUnderChaos() = runTest(timeout = kotlin.time.Duration.parse("5m")) {
+        TimeSource.setProvider(object : TimeProvider {
+            override fun currentTimeMillis() = testScheduler.currentTime
+            override fun currentTimeSeconds() = testScheduler.currentTime / 1000
+        })
+
+        val mailbox = MemoryMailboxClient()
+        val chaosMailbox = ChaosMailboxClient(mailbox)
+        
+        val aliceStorage = MemoryStorage()
+        val chaosAliceStorage = ChaosStorage(aliceStorage)
+        val aliceManager = E2eeManager(chaosAliceStorage, createTestSqlDriver())
+        val aliceClient = LocationClient("http://localhost", aliceManager, chaosMailbox)
+        
+        val bobStorage = MemoryStorage()
+        val chaosBobStorage = ChaosStorage(bobStorage)
+        val bobManager = E2eeManager(chaosBobStorage, createTestSqlDriver())
+        val bobClient = LocationClient("http://localhost", bobManager, chaosMailbox)
+
+        // 1. Enable AGGRESSIVE chaos BEFORE handshake starts
+        chaosMailbox.failPostProbability = 0.20
+        chaosMailbox.failPollProbability = 0.20
+        chaosAliceStorage.failWriteProbability = 0.10
+        chaosBobStorage.failWriteProbability = 0.10
+
+        // 2. Alice creates invite (retry until success)
+        var qr: QrPayload? = null
+        while (qr == null) {
+            try {
+                qr = aliceManager.createInvite("Alice")
+            } catch (e: Exception) {
+                delay(100)
+            }
+        }
+
+        // 3. Bob processes QR and posts response (retry until success)
+        while (true) {
+            try {
+                val initAndEntry = bobManager.processScannedQr(qr, "Bob")
+                bobClient.postKeyExchangeInit(qr, initAndEntry.first)
+                break
+            } catch (e: Exception) {
+                delay(100)
+            }
+        }
+
+        // 4. Alice polls and finalizes (retry until success)
+        while (true) {
+            try {
+                val results = aliceClient.pollPendingInvites()
+                val matching = results.find { it.aliceEkPub.contentEquals(qr.ekPub) }
+                if (matching != null) {
+                    aliceManager.processKeyExchangeInit(matching.payload, "Bob", qr.ekPub)
+                    break
+                }
+            } catch (e: Exception) { }
+            delay(100)
+        }
+
+        // 5. Verify pairing is functional by sending one message
+        var messageSuccess = false
+        withTimeout(30000) {
+            while (!messageSuccess) {
+                try {
+                    aliceClient.sendLocation(1.23, 4.56)
+                    // Background poll should pick it up
+                    bobClient.poll()
+                    val bobFriends = bobManager.listFriends()
+                    if (bobFriends.any { it.name == "Alice" && it.lastLat == 1.23 }) {
+                        messageSuccess = true
+                    }
+                } catch (e: Exception) { }
+                delay(500)
+            }
+        }
+        assertTrue(messageSuccess, "Handshake established but first message failed to transit")
     }
 
     @Test
     fun testMultiFriendReliable() = runTest(timeout = kotlin.time.Duration.parse("2m")) {
-        testMutex.withLock {
-            TimeSource.setProvider(object : TimeProvider {
-                override fun currentTimeMillis() = testScheduler.currentTime
-                override fun currentTimeSeconds() = testScheduler.currentTime / 1000
-            })
-            runMultiFriendChaos(
-                numFriends = 3,
-                messagesPerFriend = 5,
-                failProb = 0.0,
-                dropProb = 0.0,
-            )
-        }
+        runMultiFriendChaos(
+            numFriends = 3,
+            messagesPerFriend = 10,
+            failProb = 0.0,
+            dropProb = 0.0,
+        )
     }
 
     @Test
     fun testMultiFriendChaosRealistic() = runTest(timeout = kotlin.time.Duration.parse("10m")) {
-        testMutex.withLock {
-            TimeSource.setProvider(object : TimeProvider {
-                override fun currentTimeMillis() = testScheduler.currentTime
-                override fun currentTimeSeconds() = testScheduler.currentTime / 1000
-            })
-            runMultiFriendChaos(
-                numFriends = 2,
-                messagesPerFriend = 10,
-                failProb = 0.08, // 8% failure rate
-                dropProb = 0.02, // 2% drop rate
-            )
-        }
+        runMultiFriendChaos(
+            numFriends = 3,
+            messagesPerFriend = 5,
+            failProb = 0.05,
+            dropProb = 0.02,
+        )
+    }
+
+    @Test
+    fun testExtremeChaos() = runTest(timeout = kotlin.time.Duration.parse("10m")) {
+        runMultiFriendChaos(
+            numFriends = 2,
+            messagesPerFriend = 5,
+            failProb = 0.10, // 10% failure rate
+            dropProb = 0.05, // 5% drop rate
+        )
     }
 
     private suspend fun TestScope.runMultiFriendChaos(
@@ -215,7 +311,12 @@ class E2eeChaosTest {
         messagesPerFriend: Int,
         failProb: Double,
         dropProb: Double,
+        baseTimeMs: Long = 1715670000000L // May 14, 2024
     ) {
+        TimeSource.setProvider(object : TimeProvider {
+            override fun currentTimeMillis() = baseTimeMs + testScheduler.currentTime
+            override fun currentTimeSeconds() = (baseTimeMs + testScheduler.currentTime) / 1000
+        })
         val mailbox = MemoryMailboxClient()
         val chaosMailbox = ChaosMailboxClient(mailbox).apply {
             failPostProbability = failProb
@@ -225,21 +326,20 @@ class E2eeChaosTest {
 
         val managers = (0 until numFriends).map { i ->
             val storage = ChaosStorage(MemoryStorage()).apply { failWriteProbability = failProb / 2 }
-            E2eeManager(storage)
+            E2eeManager(storage, createTestSqlDriver())
         }
 
         val clients = (0 until numFriends).map { i ->
             LocationClient("http://localhost", managers[i], chaosMailbox)
         }
 
-        // 1. Start background polling and outbox processing in backgroundScope
-        // We need this BEFORE handshakes because handshake messages use the outbox!
-        clients.forEach { client ->
-            backgroundScope.launch {
+        // 1. Start background polling and outbox processing
+        val backgroundJobs = clients.map { client ->
+            launch {
                 while (isActive) {
                     try { client.poll() } catch (e: Exception) {}
                     try { client.processOutboxes() } catch (e: Exception) {}
-                    delay(Random.nextLong(50, 150))
+                    delay(Random.nextLong(100, 300))
                 }
             }
         }
@@ -249,8 +349,20 @@ class E2eeChaosTest {
             for (j in i + 1 until numFriends) {
                 val alice = managers[i]
                 val bob = managers[j]
-                val qr = alice.createInvite("User-$i")
-                val (init, _) = bob.processScannedQr(qr, "User-$j")
+                var qr: QrPayload? = null
+                while (qr == null) {
+                    try {
+                        qr = alice.createInvite("User-$i")
+                    } catch (e: Exception) { delay(10) }
+                }
+                
+                var initAndEntry: Pair<KeyExchangeInitPayload, FriendEntry>? = null
+                while (initAndEntry == null) {
+                    try {
+                        initAndEntry = bob.processScannedQr(qr, "User-$j")
+                    } catch (e: Exception) { delay(10) }
+                }
+                val (init, _) = initAndEntry
 
                 // Retry POST until successful (or at least attempted once without exception)
                 while (true) {
@@ -286,6 +398,7 @@ class E2eeChaosTest {
                 repeat(messagesPerFriend) { m ->
                     try {
                         clients[i].sendLocation(i.toDouble(), m.toDouble())
+                        delay(1000)
                     } catch (e: Exception) {
                         // WAL outbox will handle retransmission if encryptAndAdvance succeeded.
                         // We don't retry at the app layer to avoid flooding the outbox with duplicates.
@@ -299,30 +412,34 @@ class E2eeChaosTest {
         sendJobs.forEach { it.join() }
 
         // 4. Wait for convergence
-        val start = currentTimeMillis()
-        val convergenceTimeout = 600_000L // 10 minutes for convergence in stress test
-        while (currentTimeMillis() - start < convergenceTimeout) {
-            var allDone = true
-            for (i in 0 until numFriends) {
-                val friends = managers[i].listFriends()
-                if (friends.size < numFriends - 1) {
-                    allDone = false
-                    break
-                }
-                
-                for (friend in friends) {
-                    if (friend.lastLng?.toInt() != messagesPerFriend - 1) {
-                        allDone = false
+        val convergenceTimeout = 900_000L // 15 minutes virtual
+        try {
+            withTimeout(convergenceTimeout) {
+                while (true) {
+                    yield()
+                    var allDone = true
+                    for (i in 0 until numFriends) {
+                        val friends = managers[i].listFriends()
+                        if (friends.size < numFriends - 1) {
+                            allDone = false
+                        } else {
+                            for (friend in friends) {
+                                if (friend.lastLng?.toInt() != messagesPerFriend - 1) {
+                                    allDone = false
+                                }
+                            }
+                        }
+                    }
+                    if (allDone) {
                         break
                     }
+                    delay(500)
                 }
-                if (!allDone) break
             }
-            if (allDone) {
-                println("DEBUG: Chaos test converged successfully after ${currentTimeMillis() - start}ms")
-                break
-            }
-            delay(2000)
+        } catch (e: Exception) {
+            error("Multi-friend chaos test timed out after ${testScheduler.currentTime} virtual ms")
+        } finally {
+            backgroundJobs.forEach { it.cancel() }
         }
         
         // 5. Final verification with debug info

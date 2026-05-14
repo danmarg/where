@@ -383,7 +383,7 @@ data class EncryptedOutboxMessage(
     val token: String,
     val payload: MailboxPayload,
     val msgId: String = payload.msgId,
-    val createdAt: Long = currentTimeSeconds(),
+    val createdAt: Long = currentTimeMillis(),
 )
 
 /** Output of a symmetric ratchet step (KDF_CK). */

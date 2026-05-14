@@ -9,6 +9,8 @@ import android.app.PendingIntent
 import android.app.Service
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.net.ConnectivityManager
+import android.net.Network
 import android.os.Build
 import android.os.IBinder
 import android.os.SystemClock
@@ -124,6 +126,14 @@ class LocationService : Service() {
         }
 
         ensureLocationRegistration()
+
+        val connectivityManager = getSystemService(ConnectivityManager::class.java)
+        connectivityManager?.registerDefaultNetworkCallback(object : ConnectivityManager.NetworkCallback() {
+            override fun onAvailable(network: Network) {
+                Log.d(TAG, "Network available, triggering syncNow()")
+                serviceScope.launch { locationClient.syncNow() }
+            }
+        })
 
         serviceScope.launch {
             userStore.isSharingLocation.collect {

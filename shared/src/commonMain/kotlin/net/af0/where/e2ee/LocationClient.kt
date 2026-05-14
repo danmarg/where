@@ -228,6 +228,18 @@ open class LocationClient(
         return resultLocations
     }
 
+    suspend fun syncNow() {
+        val friends = store.listFriends()
+        friends.forEach { friend ->
+            processOutbox(friend.id)
+            try {
+                pollFriend(friend.id)
+            } catch (e: Exception) {
+                println("[LocationClient] syncNow: poll failed for ${friend.id.take(8)}: ${e.message}")
+            }
+        }
+    }
+
     suspend fun processOutboxes() {
         val friends = store.listFriends()
         friends.forEach { friend ->
@@ -236,14 +248,12 @@ open class LocationClient(
     }
 
     private suspend fun processOutbox(friendId: String) {
-        val friend = store.getFriend(friendId) ?: return
-        if (friend.outbox.isEmpty()) return
+        val outbox = store.getOutbox(friendId)
+        if (outbox.isEmpty()) return
 
-        println("[LocationClient] processOutbox: retrying ${friend.outbox.size} messages for ${friendId.take(8)}")
+        println("[LocationClient] processOutbox: retrying ${outbox.size} messages for ${friendId.take(8)}")
         
-        // We iterate over a copy of the outbox because removeFromOutbox will modify the entry
-        val pending = friend.outbox.toList()
-        for (outboxMsg in pending) {
+        for (outboxMsg in outbox) {
             try {
                 service.post(outboxMsg.token, outboxMsg.payload)
                 store.removeFromOutbox(friendId, outboxMsg.msgId)
@@ -307,42 +317,15 @@ open class LocationClient(
         }
     }
 
-    private suspend fun sendMessageToFriendInternal(
-        friendId: String,
-        payload: MessagePlaintext,
-    ) {
-        val friendBefore = store.getFriend(friendId) ?: return
 
-        // 7-day rotation pause check
-        if (friendBefore.session.isSendTokenPending) {
-            val staleSince = friendBefore.session.sendTokenPendingSinceMs
-            val isStale = staleSince != null && (currentTimeMillis() - staleSince) > PENDING_TRANSITION_TIMEOUT_MS
-            if (isStale) {
-                println("[LocationClient] pending transition stale for ${friendId.take(8)}, abandoning")
-                store.abandonPendingTransition(friendId)
-                return
-            }
-        }
-
-        // Atomically advance state BEFORE network attempt. This ensures nonce safety.
-        // It ALSO adds the message to the outbox (WAL).
-        val (message, nextSession) = store.encryptAndAdvance(friendId, payload)
-        val tokenToUse = if (nextSession.isSendTokenPending) nextSession.prevSendToken else nextSession.sendToken
-        val tokenHex = tokenToUse.toHex()
-
-        println(
-            "[LocationClient] send: friend=${friendId.take(8)} token=${tokenHex.take(8)} " +
-                "seq=${nextSession.sendSeq} type=${payload::class.simpleName} " +
-                "pending=${nextSession.isSendTokenPending}",
-        )
-
-        try {
-            service.post(tokenHex, message)
-            store.removeFromOutbox(friendId, message.msgId)
-        } catch (e: Exception) {
-            println("[LocationClient] send failed for ${friendId.take(8)}: ${e.message}")
-            throw e
-        }
+    private suspend fun sendMessageToFriendInternal(friendId: String, payload: MessagePlaintext) {
+        val (tokenHex, message) = store.encryptAndAdvance(friendId, payload)
+        
+        println("[LocationClient] send: friend=$friendId token=$tokenHex seq=${message.recvSeq} type=${payload::class.simpleName} pending=${message.isSendTokenPending}")
+        
+        // We trigger sequential outbox processing for this friend.
+        // This ensures messages are sent in order (0, 1, 2...) even if multiple calls happen rapidly.
+        processOutbox(friendId)
     }
 
 }

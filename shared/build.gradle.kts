@@ -5,6 +5,15 @@ plugins {
     alias(libs.plugins.android.library)
     alias(libs.plugins.kotlin.serialization)
     alias(libs.plugins.moko.resources)
+    alias(libs.plugins.sqldelight)
+}
+
+sqldelight {
+    databases {
+        create("WhereDatabase") {
+            packageName.set("net.af0.where.db")
+        }
+    }
 }
 
 multiplatformResources {
@@ -23,9 +32,6 @@ kotlin {
         }
     }
     androidTarget {
-        compilerOptions {
-            jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17)
-        }
     }
 
     jvm()
@@ -51,12 +57,23 @@ kotlin {
         jvmMain { dependsOn(jvmAndAndroidMain) }
         androidMain { dependsOn(jvmAndAndroidMain) }
 
+        val jvmAndAndroidTest by creating {
+            dependsOn(commonTest.get())
+        }
+        jvmTest { dependsOn(jvmAndAndroidTest) }
+        val androidUnitTest by getting { dependsOn(jvmAndAndroidTest) }
+
         // Explicit iOS hierarchy wiring (required because the explicit dependsOn calls above
         // disable Kotlin's default hierarchy template for all source sets)
         val iosMain by creating { dependsOn(commonMain.get()) }
         val iosX64Main by getting { dependsOn(iosMain) }
         val iosArm64Main by getting { dependsOn(iosMain) }
         val iosSimulatorArm64Main by getting { dependsOn(iosMain) }
+
+        val iosTest by creating { dependsOn(commonTest.get()) }
+        val iosX64Test by getting { dependsOn(iosTest) }
+        val iosArm64Test by getting { dependsOn(iosTest) }
+        val iosSimulatorArm64Test by getting { dependsOn(iosTest) }
 
         commonMain.dependencies {
             implementation(libs.ktor.client.core)
@@ -65,6 +82,7 @@ kotlin {
             implementation(libs.kotlinx.coroutines.core)
             implementation(libs.kotlinx.serialization.json)
             implementation(libs.libsodium.kmp)
+            implementation(libs.sqldelight.coroutines)
             api(libs.moko.resources)
         }
 
@@ -75,10 +93,12 @@ kotlin {
         androidMain.dependencies {
             implementation(libs.ktor.client.okhttp)
             implementation(libs.kotlinx.coroutines.android)
+            implementation(libs.sqldelight.android)
         }
 
         iosMain.dependencies {
             implementation(libs.ktor.client.darwin)
+            implementation(libs.sqldelight.native)
         }
 
         commonTest.dependencies {
@@ -92,6 +112,10 @@ kotlin {
             implementation(libs.ktor.server.content.negotiation)
             implementation(libs.ktor.serialization.kotlinx.json)
             implementation(libs.logback.classic)
+        }
+
+        jvmAndAndroidTest.dependencies {
+            implementation(libs.sqldelight.sqlite)
         }
     }
 }

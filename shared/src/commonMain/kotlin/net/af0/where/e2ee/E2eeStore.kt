@@ -31,7 +31,6 @@ internal data class SerializedFriendEntry(
     val lastPollTs: Long = 0L,
     val sharingEnabled: Boolean = true,
     val lastSavedTs: Long = 0L,
-    val outbox: List<EncryptedOutboxMessage> = emptyList(),
 )
 
 @Serializable
@@ -54,10 +53,15 @@ internal sealed class PersistenceAction {
  */
 internal class E2eeStore(
     private val storage: RawKeyValueStorage,
+    private val database: net.af0.where.db.WhereDatabase,
 ) {
-    private val json = Json {
-        ignoreUnknownKeys = true
-        encodeDefaults = true
+    internal companion object {
+        private const val STORAGE_KEY_GLOBAL = "e2ee_global"
+        
+        val json = Json {
+            ignoreUnknownKeys = true
+            encodeDefaults = true
+        }
     }
 
     private val globalDb = DoubleBufferedStorage(
@@ -225,7 +229,6 @@ internal class E2eeStore(
         lastSentTs = lastSentTs,
         lastPollTs = lastPollTs,
         sharingEnabled = sharingEnabled,
-        outbox = outbox,
     )
 
     private fun FriendEntry.toSerialized(ts: Long) = SerializedFriendEntry(
@@ -242,7 +245,6 @@ internal class E2eeStore(
         lastPollTs = lastPollTs,
         sharingEnabled = sharingEnabled,
         lastSavedTs = ts,
-        outbox = outbox,
     )
 
     private fun friendKey(id: String) = "e2ee_friend_$id"
@@ -268,7 +270,4 @@ internal class E2eeStore(
             }
     }
 
-    companion object {
-        private const val STORAGE_KEY_GLOBAL = "e2ee_global"
-    }
 }

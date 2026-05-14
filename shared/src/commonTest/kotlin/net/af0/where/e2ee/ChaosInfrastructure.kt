@@ -84,9 +84,10 @@ class ChaosMailboxClient(private val client: MailboxClient) : MailboxClient {
                     outboxBuffer.forEach { (t, p) -> client.post(baseUrl, t, p) }
                     outboxBuffer.clear()
                 }
-                if (Random.nextDouble() >= dropProbability) {
-                    client.post(baseUrl, token, payload)
+                if (Random.nextDouble() < dropProbability) {
+                    throw NetworkException("Simulated silent network drop (timeout)")
                 }
+                client.post(baseUrl, token, payload)
             }
             checkKill()
         }

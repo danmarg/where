@@ -4,6 +4,7 @@ import os
 import UIKit
 import CoreLocation
 import Combine
+import Network
 private let logger = Logger(subsystem: "net.af0.where", category: "LocationSync")
 
 private class RawStringDesc: NSObject, Shared.ResourcesStringDesc {
@@ -19,6 +20,7 @@ protocol LocationClientProtocol: AnyObject, Sendable {
     func poll(isForeground: Bool, pausedFriendIds: Set<String>) async throws -> [Shared.UserLocation]
     func pollPendingInvites() async throws -> [Shared.PendingInviteResult]
     func postKeyExchangeInit(qr: Shared.QrPayload, initPayload: Shared.KeyExchangeInitPayload) async throws
+    func syncNow() async throws
 }
 
 extension Shared.LocationClient: @unchecked Sendable, LocationClientProtocol {}
@@ -92,6 +94,8 @@ final class LocationSyncService: ObservableObject {
     private static let normalPollInterval: TimeInterval = 300.0 // 5 min (background sharing)
     private static let maintenancePollInterval: TimeInterval = 30 * 60  // ack-only when not sharing
     private var visibleUsersCancellables = Set<AnyCancellable>()
+    private let pathMonitor = NWPathMonitor()
+    private let monitorQueue = DispatchQueue(label: "NWPathMonitorQueue")
 
     private var lastSentLocation: (lat: Double, lng: Double)? = nil
 
@@ -135,7 +139,8 @@ final class LocationSyncService: ObservableObject {
         logger.debug("LocationSyncService init: serverUrl=\(ServerConfig.httpBaseUrl)")
 
         let keychain = KeychainRawKeyValueStorage()
-        let store = e2eeManager ?? Shared.E2eeManager(storage: keychain)
+        let driver = IosSqlDriverKt.createIosSqlDriver()
+        let store = e2eeManager ?? Shared.E2eeManager(storage: keychain, sqlDriver: driver)
         self.e2eeManager = store
         let userStoreValue = userStore ?? Shared.UserStore(storage: keychain)
         self.userStore = userStoreValue
@@ -170,6 +175,20 @@ final class LocationSyncService: ObservableObject {
         }
 
         // Subscribe to updates on friendLocations, isSharingLocation, and user location
+        
+        pathMonitor.pathUpdateHandler = { path in
+            if path.status == .satisfied {
+                logger.debug("Network path satisfied, triggering syncNow()")
+                Task { @MainActor in
+                    do {
+                        try await self.locationClient.syncNow()
+                    } catch {
+                        logger.error("syncNow failed on path update: \(error.localizedDescription)")
+                    }
+                }
+            }
+        }
+        pathMonitor.start(queue: monitorQueue)
     }
 
     func setDisplayName(name: String) {
