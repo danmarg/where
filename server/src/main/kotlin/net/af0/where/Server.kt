@@ -37,10 +37,14 @@ private const val MAILBOX_TTL_MS = 7 * 24 * 60 * 60 * 1000L
 /** Maximum messages retained per token. Prevents unbounded memory growth from floods. */
 private const val MAX_QUEUE_DEPTH = 10000
 
-/** Maximum POST requests per token within the rate-limit window. */
+/** Maximum POST requests per token within the rate-limit window. 
+ * Increased 10x to accommodate WAL retry bursts during reconnects (e.g. 20 friends x 50 retries).
+ */
 internal const val RATE_LIMIT_MAX_POSTS = 1000
 
-/** Maximum GET (poll) requests per token within the rate-limit window. */
+/** Maximum GET (poll) requests per token within the rate-limit window.
+ * Increased 10x to prevent polling lockouts during rapid state recovery.
+ */
 internal const val RATE_LIMIT_MAX_GETS = 10000
 
 /** Rate-limit window duration in milliseconds (1 minute). */

@@ -50,10 +50,8 @@ class E2eeBidirectionalEndToEndTest {
 
     private suspend fun runBidirectionalTest(baseUrl: String) {
         coroutineScope {
-            val aliceStorage = MemoryRawKeyValueStorage()
-            val bobStorage = MemoryRawKeyValueStorage()
-            val aliceManager = E2eeManager(aliceStorage, createTestSqlDriver())
-            val bobManager = E2eeManager(bobStorage, createTestSqlDriver())
+            val aliceManager = E2eeManager(createTestSqlDriver())
+            val bobManager = E2eeManager(createTestSqlDriver())
             val aliceClient = LocationClient(baseUrl, aliceManager)
             val bobClient = LocationClient(baseUrl, bobManager)
 
@@ -129,16 +127,16 @@ class E2eeBidirectionalEndToEndTest {
             }
 
             if (!anyActivity) quiet++ else quiet = 0
-            delay(50)
+            delay(20)
         }
         return allUpdates
     }
 
     private suspend fun runThreePartyTest(baseUrl: String) {
         coroutineScope {
-            val aStore = E2eeManager(MemoryRawKeyValueStorage(), createTestSqlDriver())
-            val bStore = E2eeManager(MemoryRawKeyValueStorage(), createTestSqlDriver())
-            val cStore = E2eeManager(MemoryRawKeyValueStorage(), createTestSqlDriver())
+            val aStore = E2eeManager(createTestSqlDriver())
+            val bStore = E2eeManager(createTestSqlDriver())
+            val cStore = E2eeManager(createTestSqlDriver())
             val aClient = LocationClient(baseUrl, aStore)
             val bClient = LocationClient(baseUrl, bStore)
             val cClient = LocationClient(baseUrl, cStore)
@@ -203,8 +201,8 @@ class E2eeBidirectionalEndToEndTest {
         server.start(wait = false)
         try {
             runBlocking {
-                val aStore = E2eeManager(MemoryRawKeyValueStorage(), createTestSqlDriver())
-                val bStore = E2eeManager(MemoryRawKeyValueStorage(), createTestSqlDriver())
+                val aStore = E2eeManager(createTestSqlDriver())
+                val bStore = E2eeManager(createTestSqlDriver())
                 val aClient = LocationClient(baseUrl, aStore)
                 val bClient = LocationClient(baseUrl, bStore)
 
@@ -251,8 +249,8 @@ class E2eeBidirectionalEndToEndTest {
         server.start(wait = false)
         try {
             runBlocking {
-                val aStore = E2eeManager(MemoryRawKeyValueStorage(), createTestSqlDriver())
-                val bStore = E2eeManager(MemoryRawKeyValueStorage(), createTestSqlDriver())
+                val aStore = E2eeManager(createTestSqlDriver())
+                val bStore = E2eeManager(createTestSqlDriver())
                 val qr = aStore.createInvite("A")
                 val (init, _) = bStore.processScannedQr(qr, "B")
                 KtorMailboxClient.post(baseUrl, qr.discoveryToken().toHex(), init)
@@ -284,18 +282,113 @@ class E2eeBidirectionalEndToEndTest {
                 val aClientFailing = LocationClient(baseUrl, aStore, failingClient)
 
                 // Alice sends location. Main post to prevSendToken succeeds. Keepalive to sendToken fails.
-                aClientFailing.sendLocation(2.2, 2.2)
-                
-                assertFalse(aStore.getFriend(idAforB)!!.session.isSendTokenPending, "Cleared after first send")
-                
-                // Bob polls prevSendToken, gets location, ratchets
-                drainStability(aClient to aStore, bClient to bStore)
-                
-                // Bob sends ACK back
-                bClient.sendLocation(3.3, 3.3)
-                drainStability(aClient to aStore, bClient to bStore)
+                // Alice polls, gets Bob's ACK, should clear pending
+                aClientFailing.poll()
+                assertFalse(aStore.getFriend(idAforB)!!.session.isSendTokenPending, "Cleared via poll ACK")
+            }
+        } finally {
+            server.stop(0, 0)
+        }
+    }
 
-                assertFalse(aStore.getFriend(idAforB)!!.session.isSendTokenPending, "Pending cleared after ACK")
+    @Test
+    fun `mailbox POST failure during Bob exchange test`() {
+        initializeLibsodium()
+        val port = 18085
+        val baseUrl = "http://localhost:$port"
+        val server = embeddedServer(Netty, port = port) { module(ServerState()) }
+        server.start(wait = false)
+        try {
+            runBlocking {
+                val aStore = E2eeManager(createTestSqlDriver())
+                val bStore = E2eeManager(createTestSqlDriver())
+                val qr = aStore.createInvite("Alice")
+                
+                val failingClient = object : MailboxClient {
+                    var failCount = 2
+                    override suspend fun post(baseUrl: String, token: String, payload: MailboxPayload) {
+                        if (failCount > 0) {
+                            failCount--
+                            throw RuntimeException("Fail")
+                        }
+                        KtorMailboxClient.post(baseUrl, token, payload)
+                    }
+                    override suspend fun poll(baseUrl: String, token: String) = KtorMailboxClient.poll(baseUrl, token)
+                }
+                
+                val bClient = LocationClient(baseUrl, bStore, failingClient)
+                val (init, _) = bStore.processScannedQr(qr, "Bob")
+                
+                // Should fail a few times but eventually succeed via processOutboxes
+                repeat(3) {
+                    try { bClient.postKeyExchangeInit(qr, init) } catch (e: Exception) {}
+                    bClient.processOutboxes()
+                    delay(50)
+                }
+                
+                // Alice should eventually get it
+                val aClient = LocationClient(baseUrl, aStore)
+                val results = aClient.pollPendingInvites()
+                assertTrue(results.isNotEmpty(), "Alice should receive Bob's init")
+            }
+        } finally {
+            server.stop(0, 0)
+        }
+    }
+
+    @Test
+    fun `finalizeTokenTransition keepalive failure recovers on next poll test`() {
+        initializeLibsodium()
+        val port = 18086
+        val baseUrl = "http://localhost:$port"
+        val server = embeddedServer(Netty, port = port) { module(ServerState()) }
+        server.start(wait = false)
+        try {
+            runBlocking {
+                val aStore = E2eeManager(createTestSqlDriver())
+                val bStore = E2eeManager(createTestSqlDriver())
+                val aClient = LocationClient(baseUrl, aStore)
+                val bClient = LocationClient(baseUrl, bStore)
+                
+                // Handshake
+                val qr = aStore.createInvite("Alice")
+                val (init, _) = bStore.processScannedQr(qr, "Bob")
+                KtorMailboxClient.post(baseUrl, qr.discoveryToken().toHex(), init)
+                val aEntry = aStore.processKeyExchangeInit(KtorMailboxClient.poll(baseUrl, qr.discoveryToken().toHex()).filterIsInstance<KeyExchangeInitPayload>().first(), "Bob", qr.ekPub)!!
+                val idAforB = aEntry.id
+                
+                aClient.sendLocation(0.0, 0.0)
+                drainStability(aClient to aStore, bClient to bStore)
+                
+                // Trigger transition on Alice
+                bClient.sendLocation(1.0, 1.0)
+                delay(50)
+                aClient.poll()
+                
+                val aSessionMid = aStore.getFriend(idAforB)!!.session
+                assertTrue(aSessionMid.isSendTokenPending, "Alice should be pending")
+                
+                // Fail POSTs to the new token
+                val failingClient = object : MailboxClient {
+                    override suspend fun post(baseUrl: String, token: String, payload: MailboxPayload) {
+                        if (token == aSessionMid.sendToken.toHex()) throw RuntimeException("Fail")
+                        KtorMailboxClient.post(baseUrl, token, payload)
+                    }
+                    override suspend fun poll(baseUrl: String, token: String) = KtorMailboxClient.poll(baseUrl, token)
+                }
+                val aClientFailing = LocationClient(baseUrl, aStore, failingClient)
+                
+                // Alice sends location. Transitions but keepalive fails.
+                aClientFailing.sendLocation(2.0, 2.0)
+                assertTrue(aStore.getFriend(idAforB)!!.session.isSendTokenPending, "Still pending due to keepalive failure")
+                
+                // Bob polls prevSendToken, gets message, sends ACK
+                bClient.poll()
+                bClient.sendLocation(3.0, 3.0)
+                
+                // Alice polls, gets Bob's ACK, should clear pending
+                aClientFailing.poll()
+                assertFalse(aStore.getFriend(idAforB)!!.session.isSendTokenPending, "Cleared via poll ACK")
             }
         } finally {
             server.stop(0, 0)
@@ -311,11 +404,11 @@ class E2eeBidirectionalEndToEndTest {
         server.start(wait = false)
         try {
             runBlocking {
-                val aStore = E2eeManager(MemoryRawKeyValueStorage(), createTestSqlDriver())
+                val aStore = E2eeManager(createTestSqlDriver())
                 val aClient = LocationClient(baseUrl, aStore)
                 val qr = aStore.createInvite("A")
                 // Fake handshake enough to have a session
-                val bStore = E2eeManager(MemoryRawKeyValueStorage(), createTestSqlDriver())
+                val bStore = E2eeManager(createTestSqlDriver())
                 val (init, _) = bStore.processScannedQr(qr, "B")
                 KtorMailboxClient.post(baseUrl, qr.discoveryToken().toHex(), init)
                 val aEntry = aStore.processKeyExchangeInit(KtorMailboxClient.poll(baseUrl, qr.discoveryToken().toHex()).filterIsInstance<KeyExchangeInitPayload>().first(), "B", qr.ekPub)!!

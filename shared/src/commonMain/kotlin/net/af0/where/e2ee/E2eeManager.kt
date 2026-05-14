@@ -13,6 +13,12 @@ import kotlinx.serialization.json.Json
 /** Platform-specific Unicode normalization (NFKC) for homograph protection. */
 internal expect fun normalizeName(name: String): String
 
+internal fun canonicalId(aliceFp: ByteArray, bobFp: ByteArray): String {
+    val a = aliceFp.toHex()
+    val b = bobFp.toHex()
+    return if (a < b) "$a:$b" else "$b:$a"
+}
+
 /**
  * Storage interface for persistent E2EE state.
  * Actual implementations will wrap SharedPreferences/UserDefaults.
@@ -54,7 +60,7 @@ data class FriendEntry(
             return lastRecvTs != Long.MAX_VALUE && (now - lastRecvTs) > ACK_TIMEOUT_SECONDS
         }
 
-    val id: String get() = if (session.isAlice) session.bobFp.toHex() else session.aliceFp.toHex()
+    val id: String get() = canonicalId(session.aliceFp, session.bobFp)
     val safetyNumber: String get() = formatSafetyNumber(safetyNumber(session.aliceEkPub, session.bobEkPub))
 }
 
@@ -77,8 +83,7 @@ internal fun PendingInvite.toView() = PendingInviteView(qrPayload, createdAt, ex
 class E2eeManager(
     sqlDriver: app.cash.sqldelight.db.SqlDriver,
 ) {
-    internal val database = net.af0.where.db.WhereDatabase(sqlDriver)
-    private val persistence = E2eeStore(database)
+    private val persistence = E2eeStore(net.af0.where.db.WhereDatabase(sqlDriver))
 
 
     val diagnosticLog: StateFlow<List<String>> = persistence.diagnosticLog
@@ -250,16 +255,10 @@ class E2eeManager(
             val tokenToUse = if (newSession.isSendTokenPending) newSession.prevSendToken else newSession.sendToken
 
             // Finalize state for the NEXT message.
-            // We switch to the new token immediately for the NEXT message.
-            // If the recipient missed this transition message, they'll miss subsequent ones too,
-            // but we'll eventually recover via abandonPendingTransition.
-            // This prevents head-of-line blocking where multiple messages are sent to an old token
-            // that the recipient has already stopped polling.
-            val updatedSession = newSession.copy(
-                isSendTokenPending = false,
-                prevSendToken = ByteArray(0),
-                sendTokenPendingSinceMs = null
-            )
+            // We NO LONGER switch to the new token immediately. We keep isSendTokenPending=true
+            // until we receive an acknowledgement from the peer (verified in processBatch).
+            // This ensures DH ratchet liveness under packet loss (§6).
+            val updatedSession = newSession
 
             val outboxMsg = EncryptedOutboxMessage(
                 token = tokenToUse.toHex(),
@@ -271,7 +270,7 @@ class E2eeManager(
                 lastSentTs = if (payload is MessagePlaintext.Location) currentTimeSeconds() else entry.lastSentTs,
             )
             
-            database.outboxQueries.insertOutbox(
+            persistence.insertOutbox(
                 msgId = outboxMsg.msgId,
                 friendId = friendId,
                 token = outboxMsg.token,
@@ -329,7 +328,7 @@ class E2eeManager(
         )
 
         return persistence.withFriendAndMetadataLock(entry.id) { _, metadata ->
-            database.outboxQueries.insertOutbox(
+            persistence.insertOutbox(
                 msgId = payload.msgId,
                 friendId = entry.id,
                 token = qr.discoveryToken().toHex(),
@@ -344,22 +343,10 @@ class E2eeManager(
     }
 
     suspend fun removeFromOutbox(friendId: String, msgId: String) {
-        persistence.withFriendAndMetadataLock(friendId) { _, _ ->
-            database.outboxQueries.deleteOutboxByMsgId(msgId)
-            PersistenceAction.None to Unit
-        }
+        persistence.deleteOutboxByMsgId(msgId)
     }
 
-    fun getOutbox(friendId: String): List<EncryptedOutboxMessage> {
-        return database.outboxQueries.getOutboxForFriend(friendId).executeAsList().map { row ->
-            EncryptedOutboxMessage(
-                msgId = row.msgId,
-                token = row.token,
-                payload = E2eeStore.json.decodeFromString(MailboxPayload.serializer(), row.payloadBlob.decodeToString()),
-                createdAt = row.createdAt
-            )
-        }
-    }
+    suspend fun getOutbox(friendId: String): List<EncryptedOutboxMessage> = persistence.getOutbox(friendId)
 
     suspend fun confirmFriend(id: String) {
         persistence.withFriendAndMetadataLock(id) { entry, _ ->
@@ -390,7 +377,7 @@ class E2eeManager(
                     sendTokenPendingSinceMs = null,
                     needsRatchet = entry.session.needsRatchet,
                 )
-                database.outboxQueries.deleteOutboxByFriendId(friendId)
+                persistence.deleteOutboxByFriendId(friendId)
                 PersistenceAction.Update(entry.copy(session = rolledBack)) to Unit
             } else {
                 PersistenceAction.None to Unit

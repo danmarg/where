@@ -176,7 +176,8 @@ final class LocationSyncService: ObservableObject {
 
         // Subscribe to updates on friendLocations, isSharingLocation, and user location
         
-        pathMonitor.pathUpdateHandler = { path in
+        pathMonitor.pathUpdateHandler = { [weak self] path in
+            guard let self = self else { return }
             if path.status == .satisfied {
                 logger.debug("Network path satisfied, triggering syncNow()")
                 Task { @MainActor in

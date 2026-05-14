@@ -78,6 +78,8 @@ class LocationService : Service() {
     private lateinit var locationSource: LocationSource
     private lateinit var uiStateStore: UiStateSource
 
+    private var networkCallback: ConnectivityManager.NetworkCallback? = null
+
     private fun hasLocationPermission(): Boolean {
         return ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED ||
             ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED
@@ -128,12 +130,13 @@ class LocationService : Service() {
         ensureLocationRegistration()
 
         val connectivityManager = getSystemService(ConnectivityManager::class.java)
-        connectivityManager?.registerDefaultNetworkCallback(object : ConnectivityManager.NetworkCallback() {
+        networkCallback = object : ConnectivityManager.NetworkCallback() {
             override fun onAvailable(network: Network) {
                 Log.d(TAG, "Network available, triggering syncNow()")
                 serviceScope.launch { locationClient.syncNow() }
             }
-        })
+        }
+        connectivityManager?.registerDefaultNetworkCallback(networkCallback!!)
 
         serviceScope.launch {
             userStore.isSharingLocation.collect {
@@ -252,6 +255,8 @@ class LocationService : Service() {
         } catch (e: SecurityException) {
             Log.w(TAG, "SecurityException removing location updates in onDestroy", e)
         }
+        val connectivityManager = getSystemService(ConnectivityManager::class.java)
+        networkCallback?.let { connectivityManager?.unregisterNetworkCallback(it) }
         isRegistered = false
         pendingFriendSends.close()
         cancelDozeAlarm()

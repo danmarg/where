@@ -72,11 +72,7 @@ internal class E2eeStore(
     suspend fun <T> withMetadataLock(block: suspend MetadataScope.() -> T): T {
         return storeLock.withLock {
             val scope = MetadataScopeImpl()
-            val result = block(scope)
-            if (scope.dirty) {
-                // Persistent metadata (invites) updated via scope methods which call DB
-            }
-            result
+            block(scope)
         }
     }
 
@@ -137,6 +133,35 @@ internal class E2eeStore(
         friends.remove(friendId)
     }
 
+    suspend fun insertOutbox(
+        msgId: String,
+        friendId: String,
+        token: String,
+        payloadBlob: ByteArray,
+        createdAt: Long,
+    ) = storeLock.withLock {
+        database.outboxQueries.insertOutbox(msgId, friendId, token, payloadBlob, createdAt)
+    }
+
+    suspend fun deleteOutboxByMsgId(msgId: String) = storeLock.withLock {
+        database.outboxQueries.deleteOutboxByMsgId(msgId)
+    }
+
+    suspend fun deleteOutboxByFriendId(friendId: String) = storeLock.withLock {
+        database.outboxQueries.deleteOutboxByFriendId(friendId)
+    }
+
+    suspend fun getOutbox(friendId: String): List<EncryptedOutboxMessage> = storeLock.withLock {
+        database.outboxQueries.getOutboxForFriend(friendId).executeAsList().map { row ->
+            EncryptedOutboxMessage(
+                msgId = row.msgId,
+                token = row.token,
+                payload = json.decodeFromString(MailboxPayload.serializer(), row.payloadBlob.decodeToString()),
+                createdAt = row.createdAt
+            )
+        }
+    }
+
     private fun net.af0.where.db.Friends.toEntry() = FriendEntry(
         name = name,
         session = json.decodeFromString(SessionState.serializer(), sessionBlob.decodeToString()),
@@ -171,7 +196,6 @@ internal class E2eeStore(
     }
 
     private inner class MetadataScopeImpl : MetadataScope {
-        var dirty = false
         override val friends: List<FriendEntry> get() = this@E2eeStore.friends.values.toList()
         
         override var pendingInvites: List<PendingInvite> = this@E2eeStore.pendingInvites
@@ -199,14 +223,12 @@ internal class E2eeStore(
                 this@E2eeStore.pendingInvites.clear()
                 this@E2eeStore.pendingInvites.addAll(value)
                 field = value
-                dirty = true
             }
             
         override var diagnosticLog: List<String> = this@E2eeStore._diagnosticLog.value
             set(value) {
                 this@E2eeStore._diagnosticLog.value = value
                 field = value
-                dirty = true
             }
     }
 }
