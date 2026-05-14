@@ -380,9 +380,10 @@ data class PendingInviteResult(
  */
 @Serializable
 data class EncryptedOutboxMessage(
-    val v: Int = 1,
     val token: String,
     val payload: MailboxPayload,
+    val msgId: String = payload.msgId,
+    val createdAt: Long = currentTimeSeconds(),
 )
 
 /** Output of a symmetric ratchet step (KDF_CK). */

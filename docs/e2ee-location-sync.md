@@ -88,7 +88,14 @@ For threat models that include a metadata-analyzing server, the mitigations in �
 
 - **Server compromise revealing historical locations.** *Forward secrecy (per-message):* deleting each message key `MK_n` immediately after use ensures that compromise of one key does not expose others. *Post-compromise security (per DH ratchet step):* the DH ratchet step refreshing the root key and symmetric chains limits how long a leaked chain key remains exploitable.
 - **Passive eavesdropping.** All location payloads are encrypted with ephemeral symmetric keys derived from a per-friend ratchet. A passive observer with access to ciphertext learns nothing about coordinates.
-- **Replay attacks.** Each message carries a monotonically increasing message number `msg_num` which is also authenticated (as AEAD additional data for the body, and encrypted within the header envelope). The recipient rejects any frame with a counter it has already seen within the same DH epoch. Across-epoch replay protection utilizes a sliding window of the most recent 10 DH public keys; replays from older epochs will trigger a speculative ratchet but always fail final AEAD authentication.
+- **Replay attacks.** Each message carries a monotonically increasing message number `msg_num` which is also authenticated (as AEAD additional data for the body, and encrypted within the header envelope). The recipient rejects any frame with a counter it has already seen within the same DH epoch. 
+
+To ensure robustness against network failures, the protocol employs **Server-side Idempotency** and **Client-side Write Ahead Logging (WAL)**:
+- **Unique Message IDs:** Every message (encrypted frame or handshake) includes a unique `msg_id` (derived from the ciphertext or public key).
+- **Idempotent POST:** Clients use `PUT /inbox/{token}/{msgId}` to post messages. The server tracks received IDs and treats duplicate attempts for the same `msgId` as a no-op success.
+- **Outbox WAL:** Clients durably persist outgoing messages in a per-friend **outbox** before any network attempt. Messages are only removed from the outbox after the server returns a success code. This allows for reliable recovery and retry after app crashes or network timeouts.
+
+Across-epoch replay protection utilizes a sliding window of the most recent 10 DH public keys; replays from older epochs will trigger a speculative ratchet but always fail final AEAD authentication.
 - **Ciphertext forgery.** ChaCha20-Poly1305 authentication tags cover both the ciphertext and associated data. In version 1, metadata (DH public key and sequence number) is sealed within an encrypted envelope, preventing a malicious server from reading or correlating them across token rotations.
 - **Ratchet hijacking.** All messages are AEAD-encrypted under keys derived from the current session root key and symmetric chains. An attacker without session state or header keys cannot forge or inject valid messages.
 - **Key mismatch at bootstrap.** The `key_confirmation` field in `KeyExchangeInit` (§4.2) detects corruption or bit-flips in `EK_B.pub` in transit. It does NOT authenticate the origin of the QR code or defeat an active MITM who can intercept and substitute the initial ephemeral key material. Trust establishment relies on TOFU + Safety Number verification (§3.4).
@@ -495,9 +502,10 @@ The server's role is strictly limited to acting as a stateless message router fo
 
 1. **Routing Token (T):** A random-looking 16-byte token derived pairwise by clients (§4.2).
 2. **Mailbox API:**
-   - `POST /inbox/{token}`: Clients push an encrypted payload into the mailbox.
+   - `PUT /inbox/{token}/{msgId}`: Clients push an encrypted payload into the mailbox. **Idempotent.**
    - `GET /inbox/{token}`: Clients poll for pending payloads. **Non-destructive:** messages are retained until explicitly deleted.
-   - `DELETE /inbox/{token}?n=<count>`: Clients confirm receipt by deleting the first `count` messages from the queue. Called after session state is durably saved to local storage.
+   - `DELETE /inbox/{token}/{msgId}`: Clients confirm receipt of a specific message by its ID. **Idempotent.**
+   - `DELETE /inbox/{token}?n=<count>`: (Legacy) Clients confirm receipt by deleting the first `count` messages from the queue. 
 3. **Server Obliviousness:** The server does not know the sender or recipient identity—only the opaque routing token.
 
 **Receive atomicity (§5.4.1):** The three-step GET → save → DELETE sequence ensures that a client crash between receiving messages and persisting session state does not cause permanent token desync. On restart, the unACK'd messages are still available for re-processing from the same session state.
@@ -752,8 +760,9 @@ Alice MUST verify `key_confirmation` before accepting the session. Abort and dis
 
 The server maintains a persistent map of **mailboxes** indexed by 16-byte routing tokens. Mailboxes are durable across server restarts.
 
-1. **POST /inbox/{token}:**
-   - Push the payload into the corresponding queue.
+1. **PUT /inbox/{token}/{msgId}:**
+   - Push the payload into the corresponding queue if `msgId` hasn't been seen yet.
+   - If `msgId` has been seen, return `204 No Content` without adding to queue (Idempotent).
    - Apply a TTL of 7 days. This is a server retention policy, not a cryptographic guarantee. The 7-day window is only used as a bounded liveness fallback in the client retirement logic.
    - The server MUST durably persist the payload before returning `204 No Content`. Clients treat any non-2xx response as delivery failure and retain the outbox for retry.
 
@@ -761,12 +770,14 @@ The server maintains a persistent map of **mailboxes** indexed by 16-byte routin
    - Return up to 50 messages from the front of the queue. **Does not delete them.**
    - **Empty-Response Invariant:** The server MUST return an identical response body for non-existent tokens. Server implementations SHOULD minimize timing differences between "hit" and "miss" cases. A server that does not will increase the risk of token-existence oracle attacks, allowing a metadata-analyzing adversary to confirm whether a given token has ever been used and thereby partially reconstruct the social graph.
 
-3. **DELETE /inbox/{token}?n={count}:**
-   - Remove the first `count` messages from the queue. Called by the client after session state has been durably saved to local storage (§5.4.1).
-   - Idempotent: if `count` exceeds the current queue length, the server removes all available messages without error.
-   - No Constant-Time Invariant required: clients only call DELETE after a successful GET, so the server can respond immediately without artificial delay.
+3. **DELETE /inbox/{token}/{msgId}:**
+   - Remove the specific message by ID from the queue. **Idempotent.**
 
-The server exposes the mailbox API: `POST /inbox/{token}`, `GET /inbox/{token}`, and `DELETE /inbox/{token}`.
+4. **DELETE /inbox/{token}?n={count}:** (Legacy)
+   - Remove the first `count` messages from the queue. 
+   - Idempotent: if `count` exceeds the current queue length, the server removes all available messages without error.
+
+The server exposes the mailbox API: `PUT /inbox/{token}/{msgId}`, `GET /inbox/{token}`, and `DELETE /inbox/{token}/{msgId}`.
 
 ### 10.3 What Stays the Same
 

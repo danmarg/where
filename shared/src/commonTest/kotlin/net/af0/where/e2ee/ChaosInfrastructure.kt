@@ -52,13 +52,11 @@ class ChaosMailboxClient(private val client: MailboxClient) : MailboxClient {
     var corruptPayloadOnlyProbability = 0.0
     var reorderProbability = 0.0
     var dropProbability = 0.0
-    var stealthDropProbability = 0.0
     var maxLatencyMs = 0L
     var expireMailboxProbability = 0.0
     var expireMailboxStatusCode = 404 // 404 or 410
     var killProbability = 0.0
 
-    var stealthPost = false
     private val outboxBuffer = mutableListOf<Pair<String, MailboxPayload>>()
     private val expiredTokens = mutableSetOf<String>()
     private val mutex = Mutex()
@@ -67,92 +65,126 @@ class ChaosMailboxClient(private val client: MailboxClient) : MailboxClient {
         baseUrl: String,
         token: String,
         payload: MailboxPayload,
-    ) = mutex.withLock {
+    ) {
         applyLatency()
-        checkKill()
-        if (expiredTokens.contains(token) || Random.nextDouble() < expireMailboxProbability) {
-            expiredTokens.add(token)
-            throw ServerException(expireMailboxStatusCode, "Simulated mailbox expiration")
-        }
-        if (failNextPost || Random.nextDouble() < failPostProbability) {
-            failNextPost = false
-            throw NetworkException("Simulated network failure on POST")
-        }
-        if (Random.nextDouble() < reorderProbability) {
-            outboxBuffer.add(token to payload)
-        } else {
-            if (outboxBuffer.isNotEmpty()) {
-                outboxBuffer.forEach { (t, p) -> client.post(baseUrl, t, p) }
-                outboxBuffer.clear()
+        mutex.withLock {
+            checkKill()
+            if (expiredTokens.contains(token) || Random.nextDouble() < expireMailboxProbability) {
+                expiredTokens.add(token)
+                throw ServerException(expireMailboxStatusCode, "Simulated mailbox expiration")
             }
-            if (Random.nextDouble() >= dropProbability) {
-                if (Random.nextDouble() < stealthDropProbability) {
-                    return@withLock
+            if (failNextPost || Random.nextDouble() < failPostProbability) {
+                failNextPost = false
+                throw NetworkException("Simulated network failure on POST")
+            }
+            if (Random.nextDouble() < reorderProbability) {
+                outboxBuffer.add(token to payload)
+            } else {
+                if (outboxBuffer.isNotEmpty()) {
+                    outboxBuffer.forEach { (t, p) -> client.post(baseUrl, t, p) }
+                    outboxBuffer.clear()
                 }
-                client.post(baseUrl, token, payload)
-                if (stealthPost) throw NetworkException("Simulated timeout: POST delivered but response lost")
+                if (Random.nextDouble() >= dropProbability) {
+                    client.post(baseUrl, token, payload)
+                }
             }
+            checkKill()
         }
-        checkKill()
     }
 
     override suspend fun poll(
         baseUrl: String,
         token: String,
-    ): List<MailboxPayload> = mutex.withLock {
+    ): List<MailboxPayload> {
         applyLatency()
-        checkKill()
-        if (expiredTokens.contains(token) || Random.nextDouble() < expireMailboxProbability) {
-            expiredTokens.add(token)
-            throw ServerException(expireMailboxStatusCode, "Simulated mailbox expiration")
-        }
-        if (failNextPoll || failPoll || Random.nextDouble() < failPollProbability) {
-            failNextPoll = false
-            throw NetworkException("Simulated network failure on POLL")
-        }
-        val messages = client.poll(baseUrl, token).toMutableList()
-        if (Random.nextDouble() < reorderProbability) {
-            messages.shuffle()
-        }
-
-        val result =
-            if (corruptNextPayload || Random.nextDouble() < corruptPayloadProbability) {
-                corruptNextPayload = false
-                messages.map { msg ->
-                    if (msg is EncryptedMessagePayload) {
-                        msg.copy(ct = msg.ct.map { (it.toInt() xor 0xFF).toByte() }.toByteArray())
-                    } else {
-                        msg
-                    }
-                }
-            } else if (corruptNextPayloadOnly || Random.nextDouble() < corruptPayloadOnlyProbability) {
-                corruptNextPayloadOnly = false
-                messages.map { msg ->
-                    if (msg is EncryptedMessagePayload) {
-                        msg.copy(ct = msg.ct.map { (it.toInt() xor 0xAA).toByte() }.toByteArray())
-                    } else {
-                        msg
-                    }
-                }
-            } else {
-                messages
+        return mutex.withLock {
+            checkKill()
+            if (expiredTokens.contains(token) || Random.nextDouble() < expireMailboxProbability) {
+                expiredTokens.add(token)
+                throw ServerException(expireMailboxStatusCode, "Simulated mailbox expiration")
             }
-        checkKill()
-        return@withLock result
+            if (failNextPoll || failPoll || Random.nextDouble() < failPollProbability) {
+                failNextPoll = false
+                throw NetworkException("Simulated network failure on POLL")
+            }
+            val messages = client.poll(baseUrl, token).toMutableList()
+            if (Random.nextDouble() < reorderProbability) {
+                messages.shuffle()
+            }
+
+            val result =
+                if (corruptNextPayload || Random.nextDouble() < corruptPayloadProbability) {
+                    corruptNextPayload = false
+                    messages.map { msg ->
+                        if (msg is EncryptedMessagePayload) {
+                            msg.copy(ct = msg.ct.map { (it.toInt() xor 0xFF).toByte() }.toByteArray())
+                        } else {
+                            msg
+                        }
+                    }
+                } else if (corruptNextPayloadOnly || Random.nextDouble() < corruptPayloadOnlyProbability) {
+                    corruptNextPayloadOnly = false
+                    messages.map { msg ->
+                        if (msg is EncryptedMessagePayload) {
+                            msg.copy(ct = msg.ct.map { (it.toInt() xor 0xAA).toByte() }.toByteArray())
+                        } else {
+                            msg
+                        }
+                    }
+                } else {
+                    messages
+                }
+            checkKill()
+            result
+        }
     }
 
     override suspend fun ack(
         baseUrl: String,
         token: String,
         count: Int,
-    ) = mutex.withLock {
+    ) {
         applyLatency()
-        checkKill()
-        if (expiredTokens.contains(token)) {
-            throw ServerException(expireMailboxStatusCode, "Simulated mailbox expiration")
+        mutex.withLock {
+            checkKill()
+            if (expiredTokens.contains(token)) {
+                throw ServerException(expireMailboxStatusCode, "Simulated mailbox expiration")
+            }
+            client.ack(baseUrl, token, count)
+            checkKill()
         }
-        client.ack(baseUrl, token, count)
-        checkKill()
+    }
+
+    override suspend fun ackId(
+        baseUrl: String,
+        token: String,
+        msgId: String,
+    ) {
+        applyLatency()
+        mutex.withLock {
+            checkKill()
+            if (expiredTokens.contains(token)) {
+                throw ServerException(expireMailboxStatusCode, "Simulated mailbox expiration")
+            }
+            client.ackId(baseUrl, token, msgId)
+            checkKill()
+        }
+    }
+
+    override suspend fun ackIds(
+        baseUrl: String,
+        token: String,
+        msgIds: List<String>,
+    ) {
+        applyLatency()
+        mutex.withLock {
+            checkKill()
+            if (expiredTokens.contains(token)) {
+                throw ServerException(expireMailboxStatusCode, "Simulated mailbox expiration")
+            }
+            client.ackIds(baseUrl, token, msgIds)
+            checkKill()
+        }
     }
 
     private suspend fun applyLatency() {

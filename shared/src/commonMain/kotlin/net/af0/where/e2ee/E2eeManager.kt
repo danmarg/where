@@ -42,6 +42,7 @@ data class FriendEntry(
     val lastSentTs: Long = 0L,
     val lastPollTs: Long = 0L,
     val sharingEnabled: Boolean = true,
+    val outbox: List<EncryptedOutboxMessage> = emptyList(),
 ) {
     companion object {
         const val ACK_TIMEOUT_SECONDS = 7 * 24 * 3600L
@@ -247,9 +248,16 @@ class E2eeManager(
                 newSession
             }
 
+            val tokenToUse = if (updatedSession.isSendTokenPending) updatedSession.prevSendToken else updatedSession.sendToken
+            val outboxMsg = EncryptedOutboxMessage(
+                token = tokenToUse.toHex(),
+                payload = message
+            )
+
             val updatedEntry = entry.copy(
                 session = updatedSession,
                 lastSentTs = if (payload is MessagePlaintext.Location) currentTimeSeconds() else entry.lastSentTs,
+                outbox = entry.outbox + outboxMsg
             )
             
             PersistenceAction.Update(updatedEntry) to (message to updatedSession)
@@ -285,14 +293,6 @@ class E2eeManager(
         val sanitizedRequestedName = sanitizeName(bobSuggestedName)
         val (initMsg, session) = KeyExchange.bobProcessQr(qr, sanitizedRequestedName)
 
-        val entry = FriendEntry(
-            name = qr.suggestedName,
-            session = session,
-            isInitiator = false,
-            lastRecvTs = currentTimeSeconds(),
-            isConfirmed = false,
-        )
-
         val payload = KeyExchangeInitPayload(
             v = initMsg.protocolVersion,
             token = initMsg.token.toHex(),
@@ -301,11 +301,35 @@ class E2eeManager(
             suggestedName = sanitizedRequestedName,
         )
 
+        val entry = FriendEntry(
+            name = qr.suggestedName,
+            session = session,
+            isInitiator = false,
+            lastRecvTs = currentTimeSeconds(),
+            isConfirmed = false,
+            outbox = listOf(EncryptedOutboxMessage(token = qr.discoveryToken().toHex(), payload = payload))
+        )
+
         return persistence.withFriendAndMetadataLock(entry.id) { _, metadata ->
             if (metadata.pendingInvites.any { it.qrPayload.ekPub.contentEquals(qr.ekPub) }) {
                 throw SelfPairingException()
             }
             PersistenceAction.Update(entry) to (payload to entry)
+        }
+    }
+
+    suspend fun removeFromOutbox(friendId: String, msgId: String) {
+        persistence.withFriendAndMetadataLock(friendId) { entry, _ ->
+            if (entry != null) {
+                val nextOutbox = entry.outbox.filter { it.msgId != msgId }
+                if (nextOutbox.size != entry.outbox.size) {
+                    PersistenceAction.Update(entry.copy(outbox = nextOutbox)) to Unit
+                } else {
+                    PersistenceAction.None to Unit
+                }
+            } else {
+                PersistenceAction.None to Unit
+            }
         }
     }
 
@@ -338,7 +362,8 @@ class E2eeManager(
                     sendTokenPendingSinceMs = null,
                     needsRatchet = entry.session.needsRatchet,
                 )
-                PersistenceAction.Update(entry.copy(session = rolledBack)) to Unit
+                // WAL: Clear the outbox as these messages are now stale and likely unusable
+                PersistenceAction.Update(entry.copy(session = rolledBack, outbox = emptyList())) to Unit
             } else {
                 PersistenceAction.None to Unit
             }
@@ -380,10 +405,26 @@ class E2eeManager(
             
             val currentRecvToken = if (result.anySuccess || hadStateUpdate) result.finalSession.recvToken else entry.session.recvToken
 
-            val updatedSession = if (result.finalSession.isSendTokenPending && !entry.session.isSendTokenPending) {
-                result.finalSession.copy(recvToken = currentRecvToken, sendTokenPendingSinceMs = currentTimeMillis())
+            val updatedSession = if (result.finalSession.isSendTokenPending) {
+                if (entry.session.isSendTokenPending) {
+                    // Preserve existing timestamp
+                    result.finalSession.copy(
+                        recvToken = currentRecvToken,
+                        sendTokenPendingSinceMs = entry.session.sendTokenPendingSinceMs
+                    )
+                } else {
+                    // New transition, set fresh timestamp
+                    result.finalSession.copy(
+                        recvToken = currentRecvToken,
+                        sendTokenPendingSinceMs = currentTimeMillis()
+                    )
+                }
             } else {
                 result.finalSession.copy(recvToken = currentRecvToken)
+            }
+
+            if (!updatedSession.isSendTokenPending && entry.session.isSendTokenPending) {
+                addDiagnosticEvent("TRANSITION COMPLETE: ACK received for ${friendId.take(8)}")
             }
 
             val updatedEntry = entry.copy(
@@ -428,20 +469,6 @@ class E2eeManager(
         }
     }
 
-    suspend fun clearSendTokenPending(id: String, clearingToken: String? = null): Boolean {
-        return persistence.withFriendAndMetadataLock(id) { entry, _ ->
-            if (entry != null && entry.session.isSendTokenPending) {
-                if (clearingToken != null && entry.session.prevSendToken.toHex() != clearingToken) {
-                    PersistenceAction.None to false
-                } else {
-                    val newSession = entry.session.copy(isSendTokenPending = false, sendTokenPendingSinceMs = null)
-                    PersistenceAction.Update(entry.copy(session = newSession)) to true
-                }
-            } else {
-                PersistenceAction.None to false
-            }
-        }
-    }
 
     private fun sanitizeName(name: String): String =
         normalizeName(name).take(32).filter { it.isLetterOrDigit() || it.isWhitespace() }.trim()

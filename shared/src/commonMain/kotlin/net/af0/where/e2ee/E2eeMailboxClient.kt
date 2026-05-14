@@ -11,6 +11,7 @@ import io.ktor.client.request.delete
 import io.ktor.client.request.get
 import io.ktor.client.request.parameter
 import io.ktor.client.request.post
+import io.ktor.client.request.put
 import io.ktor.client.request.setBody
 import io.ktor.http.ContentType
 import io.ktor.http.HttpStatusCode
@@ -44,6 +45,24 @@ interface MailboxClient {
         baseUrl: String,
         token: String,
         count: Int,
+    ) {}
+
+    /**
+     * Confirm receipt of a specific message by [msgId].
+     */
+    suspend fun ackId(
+        baseUrl: String,
+        token: String,
+        msgId: String,
+    ) {}
+
+    /**
+     * Confirm receipt of specific messages by [msgIds].
+     */
+    suspend fun ackIds(
+        baseUrl: String,
+        token: String,
+        msgIds: List<String>,
     ) {}
 }
 
@@ -79,8 +98,9 @@ object KtorMailboxClient : MailboxClient {
         payload: MailboxPayload,
     ) {
         try {
+            val url = "$baseUrl/inbox/$token/${payload.msgId}"
             val response =
-                client.post("$baseUrl/inbox/$token") {
+                client.put(url) {
                     contentType(ContentType.Application.Json)
                     setBody(payload)
                 }
@@ -126,6 +146,40 @@ object KtorMailboxClient : MailboxClient {
                 }
             if (!response.status.isSuccess()) {
                 throw ServerException(response.status.value, "ACK failed for token $token")
+            }
+        } catch (e: Exception) {
+            throw mapException(e)
+        }
+    }
+
+    override suspend fun ackId(
+        baseUrl: String,
+        token: String,
+        msgId: String,
+    ) {
+        try {
+            val response = client.delete("$baseUrl/inbox/$token/$msgId")
+            if (!response.status.isSuccess()) {
+                throw ServerException(response.status.value, "ACK failed for msgId $msgId")
+            }
+        } catch (e: Exception) {
+            throw mapException(e)
+        }
+    }
+
+    override suspend fun ackIds(
+        baseUrl: String,
+        token: String,
+        msgIds: List<String>,
+    ) {
+        if (msgIds.isEmpty()) return
+        try {
+            val response =
+                client.delete("$baseUrl/inbox/$token") {
+                    parameter("ids", msgIds.joinToString(","))
+                }
+            if (!response.status.isSuccess()) {
+                throw ServerException(response.status.value, "Batch ACK failed for token $token")
             }
         } catch (e: Exception) {
             throw mapException(e)

@@ -139,6 +139,10 @@ open class LocationClient(
     ) {
         val discoveryHex = qr.discoveryToken().toHex()
         service.post(discoveryHex, initPayload)
+        
+        // WAL: Cleanup the outbox for the newly created friendship
+        val friendId = sha256(qr.ekPub).toHex()
+        store.removeFromOutbox(friendId, initPayload.msgId)
     }
 
     internal suspend fun pollFriend(
@@ -176,8 +180,12 @@ open class LocationClient(
             try {
                 val result = store.processBatch(friendId, currentTokenToPoll, messages) ?: continue
 
-                // ACK logic: assume success or progress
-                service.ack(currentTokenToPoll, messages.size)
+                // Batch ACK logic
+                try {
+                    service.ackIds(currentTokenToPoll, messages.map { it.msgId })
+                } catch (e: Exception) {
+                    println("[LocationClient] pollFriend: ackIds failed for ${currentTokenToPoll.take(8)}: ${e.message}")
+                }
 
                 resultLocations.addAll(
                     result.decryptedLocations.map { loc ->
@@ -199,11 +207,14 @@ open class LocationClient(
 
         store.updateLastPollTs(friendId, currentTimeSeconds())
 
+        // Recovery: process any pending outbox messages for this friend
+        processOutbox(friendId)
+
         val friendAfter = store.getFriend(friendId)
         if (friendAfter != null) {
             val remoteDhChanged = !friendBefore.session.remoteDhPub.contentEquals(friendAfter.session.remoteDhPub)
-            if (friendAfter.session.needsRatchet || remoteDhChanged) {
-                if (!friendAfter.isStale && (!friendAfter.sharingEnabled || isPaused)) {
+            if (friendAfter.session.needsRatchet || remoteDhChanged || friendAfter.session.isSendTokenPending) {
+                if (!friendAfter.isStale) {
                     println("[LocationClient] pollFriend: needsRatchet/new DH for ${friendId.take(8)}, sending automated keepalive")
                     try {
                         sendMessageToFriendInternal(friendId, MessagePlaintext.Keepalive())
@@ -215,6 +226,35 @@ open class LocationClient(
         }
 
         return resultLocations
+    }
+
+    suspend fun processOutboxes() {
+        val friends = store.listFriends()
+        friends.forEach { friend ->
+            processOutbox(friend.id)
+        }
+    }
+
+    private suspend fun processOutbox(friendId: String) {
+        val friend = store.getFriend(friendId) ?: return
+        if (friend.outbox.isEmpty()) return
+
+        println("[LocationClient] processOutbox: retrying ${friend.outbox.size} messages for ${friendId.take(8)}")
+        
+        // We iterate over a copy of the outbox because removeFromOutbox will modify the entry
+        val pending = friend.outbox.toList()
+        for (outboxMsg in pending) {
+            try {
+                service.post(outboxMsg.token, outboxMsg.payload)
+                store.removeFromOutbox(friendId, outboxMsg.msgId)
+            } catch (e: Exception) {
+                println("[LocationClient] processOutbox: retry failed for ${friendId.take(8)}: ${e.message}")
+                // Stop processing this outbox on first error to maintain ordering if needed, 
+                // though the protocol handles out-of-order. 
+                // However, if it's a network error, further attempts will likely fail too.
+                break
+            }
+        }
     }
 
     open suspend fun sendLocation(
@@ -285,8 +325,7 @@ open class LocationClient(
         }
 
         // Atomically advance state BEFORE network attempt. This ensures nonce safety.
-        // Even if the network fails, we've advanced our local ratchet so a retry
-        // will use a new sequence number.
+        // It ALSO adds the message to the outbox (WAL).
         val (message, nextSession) = store.encryptAndAdvance(friendId, payload)
         val tokenToUse = if (nextSession.isSendTokenPending) nextSession.prevSendToken else nextSession.sendToken
         val tokenHex = tokenToUse.toHex()
@@ -299,35 +338,11 @@ open class LocationClient(
 
         try {
             service.post(tokenHex, message)
-            finalizeTokenTransition(friendId, clearingToken = tokenHex)
+            store.removeFromOutbox(friendId, message.msgId)
         } catch (e: Exception) {
             println("[LocationClient] send failed for ${friendId.take(8)}: ${e.message}")
             throw e
         }
     }
 
-    private suspend fun finalizeTokenTransition(
-        friendId: String,
-        clearingToken: String? = null,
-    ) {
-        if (store.clearSendTokenPending(friendId, clearingToken)) {
-            println("[LocationClient] finalizeTokenTransition: clearing pending flag for ${friendId.take(8)}")
-
-            val updatedFriend = store.getFriend(friendId) ?: return
-            val session = updatedFriend.session
-
-            val tokensRotated = !session.sendToken.contentEquals(session.prevSendToken)
-            if (tokensRotated) {
-                println(
-                    "[LocationClient] finalizeTokenTransition: triggering fresh keepalive for ${friendId.take(8)} " +
-                        "on new token ${session.sendToken.toHex().take(8)}",
-                )
-                try {
-                    sendMessageToFriendInternal(friendId, MessagePlaintext.Keepalive())
-                } catch (e: Exception) {
-                    println("[LocationClient] finalizeTokenTransition: keepalive failed for ${friendId.take(8)}: ${e.message}")
-                }
-            }
-        }
-    }
 }

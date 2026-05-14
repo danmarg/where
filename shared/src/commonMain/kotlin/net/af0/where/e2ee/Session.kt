@@ -394,6 +394,10 @@ object Session {
                 speculativeState.retiredRecvTokens
             }
 
+            val shouldClearSendPending = isValidAck && (
+                ackRemoteDhPub.contentEquals(speculativeState.localDhPub)
+            )
+
             val newState =
                 speculativeState.deepCopy().copy(
                     recvChainKey = chainKey, // Move ownership
@@ -404,6 +408,8 @@ object Session {
                     prevRecvToken = if (shouldRetirePrevToken) ByteArray(0) else if (isNewDhEpoch) cleanState.recvToken.copyOf() else cleanState.prevRecvToken.copyOf(),
                     retiredDhPubs = newRetiredDhPubs,
                     retiredRecvTokens = newRetiredRecvTokens,
+                    isSendTokenPending = if (shouldClearSendPending) false else speculativeState.isSendTokenPending,
+                    sendTokenPendingSinceMs = if (shouldClearSendPending) null else speculativeState.sendTokenPendingSinceMs,
                 )
 
             return newState to decoded
