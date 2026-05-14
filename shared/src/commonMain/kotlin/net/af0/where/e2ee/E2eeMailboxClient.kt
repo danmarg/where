@@ -38,16 +38,6 @@ interface MailboxClient {
     ): List<MailboxPayload>
 
     /**
-     * Confirm receipt of [count] messages from [token], allowing the server to delete them.
-     * Called after session state has been durably saved. Failures are non-fatal.
-     */
-    suspend fun ack(
-        baseUrl: String,
-        token: String,
-        count: Int,
-    ) {}
-
-    /**
      * Confirm receipt of a specific message by [msgId].
      */
     suspend fun ackId(
@@ -128,25 +118,6 @@ object KtorMailboxClient : MailboxClient {
                 throw ServerException(response.status.value, "Failed to poll mailbox")
             }
             return response.body()
-        } catch (e: Exception) {
-            throw mapException(e)
-        }
-    }
-
-    override suspend fun ack(
-        baseUrl: String,
-        token: String,
-        count: Int,
-    ) {
-        if (count <= 0) return
-        try {
-            val response =
-                client.delete("$baseUrl/inbox/$token") {
-                    parameter("n", count)
-                }
-            if (!response.status.isSuccess()) {
-                throw ServerException(response.status.value, "ACK failed for token $token")
-            }
         } catch (e: Exception) {
             throw mapException(e)
         }

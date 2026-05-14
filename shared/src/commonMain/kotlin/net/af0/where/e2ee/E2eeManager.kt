@@ -42,6 +42,7 @@ data class FriendEntry(
     val lastSentTs: Long = 0L,
     val lastPollTs: Long = 0L,
     val sharingEnabled: Boolean = true,
+    val lastDecryptFailed: Boolean = false,
 ) {
     companion object {
         const val ACK_TIMEOUT_SECONDS = 7 * 24 * 3600L
@@ -53,7 +54,7 @@ data class FriendEntry(
             return lastRecvTs != Long.MAX_VALUE && (now - lastRecvTs) > ACK_TIMEOUT_SECONDS
         }
 
-    val id: String get() = session.aliceFp.toHex()
+    val id: String get() = if (session.isAlice) session.bobFp.toHex() else session.aliceFp.toHex()
     val safetyNumber: String get() = formatSafetyNumber(safetyNumber(session.aliceEkPub, session.bobEkPub))
 }
 
@@ -74,11 +75,10 @@ internal fun PendingInvite.toView() = PendingInviteView(qrPayload, createdAt, ex
  * Acts as a coordinator between persistence and protocol logic.
  */
 class E2eeManager(
-    private val storage: RawKeyValueStorage,
     sqlDriver: app.cash.sqldelight.db.SqlDriver,
 ) {
     internal val database = net.af0.where.db.WhereDatabase(sqlDriver)
-    private val persistence = E2eeStore(storage, database)
+    private val persistence = E2eeStore(database)
 
 
     val diagnosticLog: StateFlow<List<String>> = persistence.diagnosticLog
@@ -128,6 +128,7 @@ class E2eeManager(
                     aliceEkPriv = pending.aliceEkPriv,
                     aliceEkPub = aliceEkPubBytes,
                 ).let {
+                    // Alice starts in Epoch 1 (eager ratchet), so isSendTokenPending is true.
                     if (it.isSendTokenPending) it.copy(sendTokenPendingSinceMs = currentTimeMillis()) else it
                 }
             } finally {
@@ -243,13 +244,23 @@ class E2eeManager(
                 !newSession.rootKey.contentEquals(entry.session.rootKey)
             check(seqAdvanced) { "Nonce safety violation: sequence number did not advance" }
 
-            val updatedSession = if (newSession.isSendTokenPending && !entry.session.isSendTokenPending) {
-                newSession.copy(sendTokenPendingSinceMs = currentTimeMillis())
-            } else {
-                newSession
-            }
+            // Determine which token to use for THIS message.
+            // If isSendTokenPending is true, it means THIS message is the transition message (e.g. keepalive)
+            // and should be sent to the previous token.
+            val tokenToUse = if (newSession.isSendTokenPending) newSession.prevSendToken else newSession.sendToken
 
-            val tokenToUse = if (updatedSession.isSendTokenPending) updatedSession.prevSendToken else updatedSession.sendToken
+            // Finalize state for the NEXT message.
+            // We switch to the new token immediately for the NEXT message.
+            // If the recipient missed this transition message, they'll miss subsequent ones too,
+            // but we'll eventually recover via abandonPendingTransition.
+            // This prevents head-of-line blocking where multiple messages are sent to an old token
+            // that the recipient has already stopped polling.
+            val updatedSession = newSession.copy(
+                isSendTokenPending = false,
+                prevSendToken = ByteArray(0),
+                sendTokenPendingSinceMs = null
+            )
+
             val outboxMsg = EncryptedOutboxMessage(
                 token = tokenToUse.toHex(),
                 payload = message
@@ -260,7 +271,7 @@ class E2eeManager(
                 lastSentTs = if (payload is MessagePlaintext.Location) currentTimeSeconds() else entry.lastSentTs,
             )
             
-            database.outboxQueries.insert(
+            database.outboxQueries.insertOutbox(
                 msgId = outboxMsg.msgId,
                 friendId = friendId,
                 token = outboxMsg.token,
@@ -318,13 +329,12 @@ class E2eeManager(
         )
 
         return persistence.withFriendAndMetadataLock(entry.id) { _, metadata ->
-            val msgId = qr.discoveryToken().toHex()
-            database.outboxQueries.insert(
-                msgId = msgId,
+            database.outboxQueries.insertOutbox(
+                msgId = payload.msgId,
                 friendId = entry.id,
-                token = msgId,
+                token = qr.discoveryToken().toHex(),
                 payloadBlob = E2eeStore.json.encodeToString(MailboxPayload.serializer(), payload).encodeToByteArray(),
-                createdAt = currentTimeSeconds()
+                createdAt = currentTimeMillis()
             )
             if (metadata.pendingInvites.any { it.qrPayload.ekPub.contentEquals(qr.ekPub) }) {
                 throw SelfPairingException()
@@ -335,13 +345,13 @@ class E2eeManager(
 
     suspend fun removeFromOutbox(friendId: String, msgId: String) {
         persistence.withFriendAndMetadataLock(friendId) { _, _ ->
-            database.outboxQueries.deleteByMsgId(msgId)
+            database.outboxQueries.deleteOutboxByMsgId(msgId)
             PersistenceAction.None to Unit
         }
     }
 
     fun getOutbox(friendId: String): List<EncryptedOutboxMessage> {
-        return database.outboxQueries.getForFriend(friendId).executeAsList().map { row ->
+        return database.outboxQueries.getOutboxForFriend(friendId).executeAsList().map { row ->
             EncryptedOutboxMessage(
                 msgId = row.msgId,
                 token = row.token,
@@ -380,9 +390,7 @@ class E2eeManager(
                     sendTokenPendingSinceMs = null,
                     needsRatchet = entry.session.needsRatchet,
                 )
-                database.outboxQueries.getForFriend(friendId).executeAsList().forEach {
-                    database.outboxQueries.deleteByMsgId(it.msgId)
-                }
+                database.outboxQueries.deleteOutboxByFriendId(friendId)
                 PersistenceAction.Update(entry.copy(session = rolledBack)) to Unit
             } else {
                 PersistenceAction.None to Unit
@@ -397,6 +405,8 @@ class E2eeManager(
         val anyReplay: Boolean = false,
         val failCount: Int = 0,
         val hadStateUpdate: Boolean = false,
+        val hadDhRatchet: Boolean = false,
+        val shouldAck: Boolean = true,
     )
 
     suspend fun processBatch(
@@ -457,13 +467,19 @@ class E2eeManager(
                 lastPollTs = currentTimeSeconds(),
             )
 
+            val shouldAck = result.anySuccess || hadStateUpdate || result.anyReplay || result.silentDrops > 0 || (messages.size > encryptedMessages.size)
+
+            val hadDhRatchet = !result.finalSession.rootKey.contentEquals(entry.session.rootKey)
+
             PersistenceAction.Update(updatedEntry) to PollBatchResult(
                 decryptedLocations = result.decryptedLocations,
                 anySuccess = result.anySuccess,
                 hadSilentDrops = result.silentDrops > 0 || (messages.size > encryptedMessages.size),
                 anyReplay = result.anyReplay,
                 failCount = failCount,
-                hadStateUpdate = hadStateUpdate
+                hadStateUpdate = hadStateUpdate,
+                hadDhRatchet = hadDhRatchet,
+                shouldAck = shouldAck
             )
 
         }

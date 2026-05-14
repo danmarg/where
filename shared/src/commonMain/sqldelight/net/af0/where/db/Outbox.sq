@@ -6,15 +6,73 @@ CREATE TABLE Outbox (
     createdAt INTEGER NOT NULL
 );
 
-insert:
+CREATE TABLE Friends (
+    id TEXT NOT NULL PRIMARY KEY,
+    name TEXT NOT NULL,
+    sessionBlob BLOB NOT NULL,
+    isInitiator INTEGER NOT NULL DEFAULT 0,
+    lastLat REAL,
+    lastLng REAL,
+    lastTs INTEGER,
+    lastRecvTs INTEGER NOT NULL,
+    isConfirmed INTEGER NOT NULL DEFAULT 0,
+    lastSentTs INTEGER NOT NULL DEFAULT 0,
+    lastPollTs INTEGER NOT NULL DEFAULT 0,
+    sharingEnabled INTEGER NOT NULL DEFAULT 1,
+    lastDecryptFailed INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE TABLE PendingInvites (
+    ekPub BLOB NOT NULL PRIMARY KEY,
+    suggestedName TEXT NOT NULL,
+    fingerprint TEXT NOT NULL,
+    discoverySecret BLOB NOT NULL,
+    privKeyBlob BLOB NOT NULL,
+    createdAt INTEGER NOT NULL,
+    exportedAt INTEGER
+);
+
+-- Outbox Queries
+insertOutbox:
 INSERT OR REPLACE INTO Outbox(msgId, friendId, token, payloadBlob, createdAt)
 VALUES (?, ?, ?, ?, ?);
 
-deleteByMsgId:
+deleteOutboxByMsgId:
 DELETE FROM Outbox WHERE msgId = ?;
 
-getForFriend:
+deleteOutboxByFriendId:
+DELETE FROM Outbox WHERE friendId = ?;
+
+getOutboxForFriend:
 SELECT * FROM Outbox WHERE friendId = ? ORDER BY createdAt ASC;
 
+-- Friends Queries
+insertFriend:
+INSERT OR REPLACE INTO Friends(id, name, sessionBlob, isInitiator, lastLat, lastLng, lastTs, lastRecvTs, isConfirmed, lastSentTs, lastPollTs, sharingEnabled, lastDecryptFailed)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+
+deleteFriend:
+DELETE FROM Friends WHERE id = ?;
+
+getAllFriends:
+SELECT * FROM Friends;
+
+getFriend:
+SELECT * FROM Friends WHERE id = ?;
+
+-- PendingInvites Queries
+insertPendingInvite:
+INSERT OR REPLACE INTO PendingInvites(ekPub, suggestedName, fingerprint, discoverySecret, privKeyBlob, createdAt, exportedAt)
+VALUES (?, ?, ?, ?, ?, ?, ?);
+
+deletePendingInvite:
+DELETE FROM PendingInvites WHERE ekPub = ?;
+
+getAllPendingInvites:
+SELECT * FROM PendingInvites;
+
+-- Cleanup
 deleteAll:
 DELETE FROM Outbox;
+DELETE FROM Friends;
+DELETE FROM PendingInvites;

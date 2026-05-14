@@ -32,6 +32,7 @@ import net.af0.where.e2ee.QrPayload
 import net.af0.where.e2ee.UserStore
 import net.af0.where.e2ee.toHex
 import net.af0.where.model.UserLocation
+import app.cash.sqldelight.driver.android.AndroidSqliteDriver
 
 private const val TAG = "LocationViewModel"
 
@@ -55,8 +56,7 @@ class LocationViewModel(
         e2eeManagerParam
             ?: (app as? WhereApplication)?.e2eeManager
             ?: E2eeManager(
-                SharedPrefsRawKeyValueStorage(app),
-                app.cash.sqldelight.driver.android.AndroidSqliteDriver(net.af0.where.db.WhereDatabase.Schema, app, "where.db")
+                AndroidSqliteDriver(net.af0.where.db.WhereDatabase.Schema, app, "where.db")
             )
     private val userStore: UserStore =
         userStoreParam

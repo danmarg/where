@@ -27,5 +27,6 @@ dependencies {
     testImplementation(libs.ktor.serialization.kotlinx.json)
     testImplementation(libs.kotlinx.coroutines.test)
     testImplementation(libs.libsodium.kmp)
+    testImplementation(libs.sqldelight.sqlite)
     testImplementation(kotlin("test"))
 }

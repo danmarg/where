@@ -1,6 +1,7 @@
 package net.af0.where.e2ee
 
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
@@ -36,10 +37,6 @@ class E2eeChaosTest {
             mailboxes[token]?.toList() ?: emptyList()
         }
 
-        override suspend fun ack(baseUrl: String, token: String, count: Int) = lock.withLock {
-            val list = mailboxes[token] ?: return@withLock
-            repeat(count) { if (list.isNotEmpty()) list.removeAt(0) }
-        }
 
         override suspend fun ackId(baseUrl: String, token: String, msgId: String) {
             lock.withLock {
@@ -79,16 +76,11 @@ class E2eeChaosTest {
         val mailbox = MemoryMailboxClient()
         val chaosMailbox = ChaosMailboxClient(mailbox)
         
-        val aliceStorage = MemoryStorage()
-        val bobStorage = MemoryStorage()
-        val chaosAliceStorage = ChaosStorage(aliceStorage)
-        val chaosBobStorage = ChaosStorage(bobStorage)
-        
         val aliceSqlDriver = createTestSqlDriver()
         val bobSqlDriver = createTestSqlDriver()
 
-        val aliceManager = E2eeManager(chaosAliceStorage, aliceSqlDriver)
-        val bobManager = E2eeManager(chaosBobStorage, bobSqlDriver)
+        val aliceManager = E2eeManager(aliceSqlDriver)
+        val bobManager = E2eeManager(bobSqlDriver)
         
         val qr = aliceManager.createInvite("Alice")
         val (initPayload, _) = bobManager.processScannedQr(qr, "Bob")
@@ -106,8 +98,6 @@ class E2eeChaosTest {
         chaosMailbox.failPostProbability = 0.05
         chaosMailbox.failPollProbability = 0.05
         chaosMailbox.dropProbability = 0.05
-        chaosAliceStorage.failWriteProbability = 0.05
-        chaosBobStorage.failWriteProbability = 0.05
         
         val totalMessages = 5
         
@@ -183,7 +173,7 @@ class E2eeChaosTest {
             val bobLast = bobFriends.find { it.name == "Alice" }?.lastLng
             error("Robustness test timed out! Alice saw Bob at $aliceLast, Bob saw Alice at $bobLast. Wanted ${totalMessages - 1}")
         } finally {
-            backgroundJobs.forEach { it.cancel() }
+            backgroundJobs.forEach { it.cancelAndJoin() }
         }
         
         aliceSendJob.join()
@@ -207,21 +197,15 @@ class E2eeChaosTest {
         val mailbox = MemoryMailboxClient()
         val chaosMailbox = ChaosMailboxClient(mailbox)
         
-        val aliceStorage = MemoryStorage()
-        val chaosAliceStorage = ChaosStorage(aliceStorage)
-        val aliceManager = E2eeManager(chaosAliceStorage, createTestSqlDriver())
+        val aliceManager = E2eeManager(createTestSqlDriver())
         val aliceClient = LocationClient("http://localhost", aliceManager, chaosMailbox)
         
-        val bobStorage = MemoryStorage()
-        val chaosBobStorage = ChaosStorage(bobStorage)
-        val bobManager = E2eeManager(chaosBobStorage, createTestSqlDriver())
+        val bobManager = E2eeManager(createTestSqlDriver())
         val bobClient = LocationClient("http://localhost", bobManager, chaosMailbox)
 
         // 1. Enable AGGRESSIVE chaos BEFORE handshake starts
         chaosMailbox.failPostProbability = 0.20
         chaosMailbox.failPollProbability = 0.20
-        chaosAliceStorage.failWriteProbability = 0.10
-        chaosBobStorage.failWriteProbability = 0.10
 
         // 2. Alice creates invite (retry until success)
         var qr: QrPayload? = null
@@ -325,8 +309,7 @@ class E2eeChaosTest {
         }
 
         val managers = (0 until numFriends).map { i ->
-            val storage = ChaosStorage(MemoryStorage()).apply { failWriteProbability = failProb / 2 }
-            E2eeManager(storage, createTestSqlDriver())
+            E2eeManager(createTestSqlDriver())
         }
 
         val clients = (0 until numFriends).map { i ->
@@ -439,7 +422,7 @@ class E2eeChaosTest {
         } catch (e: Exception) {
             error("Multi-friend chaos test timed out after ${testScheduler.currentTime} virtual ms")
         } finally {
-            backgroundJobs.forEach { it.cancel() }
+            backgroundJobs.forEach { it.cancelAndJoin() }
         }
         
         // 5. Final verification with debug info

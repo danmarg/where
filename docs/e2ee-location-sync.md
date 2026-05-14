@@ -386,7 +386,7 @@ The GET → process → DELETE sequence is the receive-side analogue of the send
 
 1. `GET /inbox/{token}` returns messages; the server retains them.
 2. The client decrypts, updates session state, and **durably saves** the new `recvToken` and ratchet state to local storage.
-3. The client calls `DELETE /inbox/{token}?n=<count>` to release the messages from the server.
+3. The client calls `DELETE /inbox/{token}?ids=...` to release the messages from the server.
 
 If the client crashes between steps 1 and 2, it re-fetches the same messages on next startup (server still holds them) and re-processes them from the same prior session state — idempotent and correct. If it crashes between steps 2 and 3, the session is already saved with the new `recvToken`; the leftover messages on the server are never fetched again and expire after TTL.
 
@@ -505,7 +505,6 @@ The server's role is strictly limited to acting as a stateless message router fo
    - `PUT /inbox/{token}/{msgId}`: Clients push an encrypted payload into the mailbox. **Idempotent.**
    - `GET /inbox/{token}`: Clients poll for pending payloads. **Non-destructive:** messages are retained until explicitly deleted.
    - `DELETE /inbox/{token}/{msgId}`: Clients confirm receipt of a specific message by its ID. **Idempotent.**
-   - `DELETE /inbox/{token}?n=<count>`: (Legacy) Clients confirm receipt by deleting the first `count` messages from the queue. 
 3. **Server Obliviousness:** The server does not know the sender or recipient identity—only the opaque routing token.
 
 **Receive atomicity (§5.4.1):** The three-step GET → save → DELETE sequence ensures that a client crash between receiving messages and persisting session state does not cause permanent token desync. On restart, the unACK'd messages are still available for re-processing from the same session state.
@@ -772,10 +771,6 @@ The server maintains a persistent map of **mailboxes** indexed by 16-byte routin
 
 3. **DELETE /inbox/{token}/{msgId}:**
    - Remove the specific message by ID from the queue. **Idempotent.**
-
-4. **DELETE /inbox/{token}?n={count}:** (Legacy)
-   - Remove the first `count` messages from the queue. 
-   - Idempotent: if `count` exceeds the current queue length, the server removes all available messages without error.
 
 The server exposes the mailbox API: `PUT /inbox/{token}/{msgId}`, `GET /inbox/{token}`, and `DELETE /inbox/{token}/{msgId}`.
 

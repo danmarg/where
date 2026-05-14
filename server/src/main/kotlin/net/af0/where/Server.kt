@@ -77,14 +77,6 @@ interface MailboxStore {
     fun drain(token: String): List<JsonElement>?
 
     /**
-     * Remove the first [count] messages from [token]'s queue. Idempotent.
-     */
-    fun delete(
-        token: String,
-        count: Int,
-    ): Int
-
-    /**
      * Remove a specific message by [msgId]. Idempotent.
      */
     fun deleteById(
@@ -161,19 +153,6 @@ class InMemoryMailboxState : MailboxStore {
             .map { it.payload }
             .take(50)
             .toList()
-    }
-
-    override fun delete(
-        token: String,
-        count: Int,
-    ): Int {
-        if (count < 0) return 0
-        val queue = mailboxes[token] ?: return 0
-        var removedCount = 0
-        repeat(count) {
-            if (queue.poll() != null) removedCount++ else return@repeat
-        }
-        return removedCount
     }
 
     override fun deleteById(
@@ -274,21 +253,6 @@ class RedisMailboxState(redisUrl: String) : MailboxStore {
         return redis.call('LRANGE', KEYS[2], 0, 49)
         """.trimIndent()
 
-    private val deleteScript =
-        """
-        local n = tonumber(ARGV[1])
-        if n <= 0 then return 0 end
-        local len = redis.call('LLEN', KEYS[1])
-        if len == 0 then return 0 end
-        if n >= len then
-            redis.call('DEL', KEYS[1])
-            return len
-        else
-            redis.call('LTRIM', KEYS[1], n, -1)
-            return n
-        end
-        """.trimIndent()
-
     override fun post(
         token: String,
         payload: JsonElement,
@@ -325,14 +289,6 @@ class RedisMailboxState(redisUrl: String) : MailboxStore {
             val str = if (item is ByteArray) item.decodeToString() else item.toString()
             json.parseToJsonElement(str)
         }
-    }
-
-    override fun delete(
-        token: String,
-        count: Int,
-    ): Int {
-        val result = jedis.eval(deleteScript, listOf("inbox:$token"), listOf(count.toString()))
-        return (result as Long).toInt()
     }
 
     override fun deleteById(
@@ -458,22 +414,13 @@ fun Application.module(state: ServerState = ServerState()) {
 
         delete("/inbox/{token}") {
             val token = call.parameters["token"] ?: return@delete call.respond(HttpStatusCode.BadRequest)
-            
             val ids = call.request.queryParameters["ids"]?.split(",")?.filter { it.isNotEmpty() }
-            if (ids != null) {
-                state.mailbox.deleteByIds(token, ids)
-                call.respond(HttpStatusCode.NoContent)
+            if (ids == null) {
+                call.respond(HttpStatusCode.BadRequest)
                 return@delete
             }
-
-            val n = call.request.queryParameters["n"]?.toIntOrNull()
-            if (n != null && n >= 0) {
-                state.mailbox.delete(token, n)
-                call.respond(HttpStatusCode.NoContent)
-                return@delete
-            }
-
-            call.respond(HttpStatusCode.BadRequest)
+            state.mailbox.deleteByIds(token, ids)
+            call.respond(HttpStatusCode.NoContent)
         }
 
         delete("/inbox/{token}/{msgId}") {

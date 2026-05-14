@@ -22,4 +22,5 @@ dependencies {
     implementation(libs.ktor.serialization.kotlinx.json)
     implementation(libs.logback.classic)
     implementation(libs.zxing.core)
+    implementation("app.cash.sqldelight:sqlite-driver:2.0.2")
 }

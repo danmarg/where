@@ -140,7 +140,7 @@ final class LocationSyncService: ObservableObject {
 
         let keychain = KeychainRawKeyValueStorage()
         let driver = IosSqlDriverKt.createIosSqlDriver()
-        let store = e2eeManager ?? Shared.E2eeManager(storage: keychain, sqlDriver: driver)
+        let store = e2eeManager ?? Shared.E2eeManager(sqlDriver: driver)
         self.e2eeManager = store
         let userStoreValue = userStore ?? Shared.UserStore(storage: keychain)
         self.userStore = userStoreValue

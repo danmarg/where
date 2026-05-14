@@ -181,10 +181,22 @@ open class LocationClient(
                 val result = store.processBatch(friendId, currentTokenToPoll, messages) ?: continue
 
                 // Batch ACK logic
-                try {
-                    service.ackIds(currentTokenToPoll, messages.map { it.msgId })
-                } catch (e: Exception) {
-                    println("[LocationClient] pollFriend: ackIds failed for ${currentTokenToPoll.take(8)}: ${e.message}")
+                if (result.shouldAck) {
+                    try {
+                        service.ackIds(currentTokenToPoll, messages.map { it.msgId })
+                    } catch (e: Exception) {
+                        println("[LocationClient] pollFriend: ackIds failed for ${currentTokenToPoll.take(8)}: ${e.message}")
+                    }
+                }
+                val updatedFriend = store.getFriend(friendId) ?: break
+                if (updatedFriend.session.needsRatchet) {
+                    // Protocol hardening: send a keepalive if we received a new DH key from the peer
+                    // but haven't responded with our own new key yet. This completes the DH transition.
+                    try {
+                        sendMessageToFriendInternal(friendId, MessagePlaintext.Keepalive())
+                    } catch (e: Exception) {
+                        println("[LocationClient] pollFriend: keepalive failed for ${friendId.take(8)}: ${e.message}")
+                    }
                 }
 
                 resultLocations.addAll(
@@ -193,8 +205,8 @@ open class LocationClient(
                     },
                 )
 
+
                 // Follow rotation if session state changed
-                val updatedFriend = store.getFriend(friendId) ?: break
                 val newToken = updatedFriend.session.recvToken.toHex()
                 if (newToken != currentTokenToPoll) {
                     pollQueue.add(newToken)
@@ -231,11 +243,14 @@ open class LocationClient(
     suspend fun syncNow() {
         val friends = store.listFriends()
         friends.forEach { friend ->
-            processOutbox(friend.id)
-            try {
-                pollFriend(friend.id)
-            } catch (e: Exception) {
-                println("[LocationClient] syncNow: poll failed for ${friend.id.take(8)}: ${e.message}")
+            val mutex = getFriendMutex(friend.id)
+            mutex.withLock {
+                processOutbox(friend.id)
+                try {
+                    pollFriend(friend.id)
+                } catch (e: Exception) {
+                    println("[LocationClient] syncNow: poll failed for ${friend.id.take(8)}: ${e.message}")
+                }
             }
         }
     }
@@ -319,9 +334,9 @@ open class LocationClient(
 
 
     private suspend fun sendMessageToFriendInternal(friendId: String, payload: MessagePlaintext) {
-        val (tokenHex, message) = store.encryptAndAdvance(friendId, payload)
+        val (message, session) = store.encryptAndAdvance(friendId, payload)
         
-        println("[LocationClient] send: friend=$friendId token=$tokenHex seq=${message.recvSeq} type=${payload::class.simpleName} pending=${message.isSendTokenPending}")
+        println("[LocationClient] send: friend=$friendId type=${payload::class.simpleName} seq=${session.sendSeq} pending=${session.isSendTokenPending}")
         
         // We trigger sequential outbox processing for this friend.
         // This ensures messages are sent in order (0, 1, 2...) even if multiple calls happen rapidly.

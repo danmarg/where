@@ -140,22 +140,6 @@ class ChaosMailboxClient(private val client: MailboxClient) : MailboxClient {
         }
     }
 
-    override suspend fun ack(
-        baseUrl: String,
-        token: String,
-        count: Int,
-    ) {
-        applyLatency()
-        mutex.withLock {
-            checkKill()
-            if (expiredTokens.contains(token)) {
-                throw ServerException(expireMailboxStatusCode, "Simulated mailbox expiration")
-            }
-            client.ack(baseUrl, token, count)
-            checkKill()
-        }
-    }
-
     override suspend fun ackId(
         baseUrl: String,
         token: String,

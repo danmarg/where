@@ -5,6 +5,7 @@ import android.content.SharedPreferences
 import net.af0.where.e2ee.E2eeManager
 import net.af0.where.e2ee.LocationClient
 import net.af0.where.e2ee.UserStore
+import app.cash.sqldelight.driver.android.AndroidSqliteDriver
 
 open class WhereApplication : Application() {
     open val encryptedPrefs: SharedPreferences by lazy {
@@ -13,8 +14,7 @@ open class WhereApplication : Application() {
 
     open val e2eeManager: E2eeManager by lazy { 
         E2eeManager(
-            SharedPrefsRawKeyValueStorage(this),
-            app.cash.sqldelight.driver.android.AndroidSqliteDriver(net.af0.where.db.WhereDatabase.Schema, this, "where.db")
+            AndroidSqliteDriver(net.af0.where.db.WhereDatabase.Schema, this, "where.db")
         ) 
     }
     open val userStore: UserStore by lazy { UserStore(SharedPrefsRawKeyValueStorage(this)) }

@@ -23,13 +23,6 @@ class MailboxService(
     }
 
     /**
-     * Acknowledges receipt of messages from a mailbox token.
-     */
-    suspend fun ack(token: String, count: Int) {
-        client.ack(baseUrl, token, count)
-    }
-
-    /**
      * Acknowledges receipt of a specific message by ID.
      */
     suspend fun ackId(token: String, msgId: String) {

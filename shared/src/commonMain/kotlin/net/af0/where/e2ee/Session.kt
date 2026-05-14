@@ -486,7 +486,7 @@ object Session {
                 lastRemoteDhPub = state.remoteDhPub.copyOf(),
                 retiredDhPubs = state.retiredDhPubs,
                 retiredRecvTokens = (state.retiredRecvTokens + state.recvToken.copyOf()).takeLast(MAX_SEEN_DH_PUBS),
-                prevSendToken = state.sendToken.copyOf(),
+                prevSendToken = if (state.isSendTokenPending) state.prevSendToken.copyOf() else state.sendToken.copyOf(),
                 prevRecvToken = state.recvToken.copyOf(),
                 isSendTokenPending = true,
                 needsRatchet = false,
