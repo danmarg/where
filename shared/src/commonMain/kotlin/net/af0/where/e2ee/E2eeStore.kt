@@ -17,6 +17,12 @@ internal data class PendingInvite(
 )
 
 @Serializable
+data class PendingOutboxMessage(
+    val token: String,
+    val message: EncryptedMessagePayload
+)
+
+@Serializable
 internal data class SerializedFriendEntry(
     val friendId: String,
     val name: String,
@@ -31,6 +37,8 @@ internal data class SerializedFriendEntry(
     val lastPollTs: Long = 0L,
     val sharingEnabled: Boolean = true,
     val lastSavedTs: Long = 0L,
+    val pendingOutbox: List<PendingOutboxMessage> = emptyList(),
+    val pendingAcks: Map<String, List<String>> = emptyMap(),
 )
 
 @Serializable
@@ -54,7 +62,7 @@ internal sealed class PersistenceAction {
 internal class E2eeStore(
     private val storage: RawKeyValueStorage,
 ) {
-    private val json = Json {
+    internal val json = Json {
         ignoreUnknownKeys = true
         encodeDefaults = true
     }
@@ -224,6 +232,8 @@ internal class E2eeStore(
         lastSentTs = lastSentTs,
         lastPollTs = lastPollTs,
         sharingEnabled = sharingEnabled,
+        pendingOutbox = pendingOutbox,
+        pendingAcks = pendingAcks,
     )
 
     private fun FriendEntry.toSerialized(ts: Long) = SerializedFriendEntry(
@@ -240,6 +250,8 @@ internal class E2eeStore(
         lastPollTs = lastPollTs,
         sharingEnabled = sharingEnabled,
         lastSavedTs = ts,
+        pendingOutbox = pendingOutbox,
+        pendingAcks = pendingAcks,
     )
 
     private fun friendKey(id: String) = "e2ee_friend_$id"
@@ -267,5 +279,6 @@ internal class E2eeStore(
 
     companion object {
         private const val STORAGE_KEY_GLOBAL = "e2ee_global"
+        private const val MAX_DIAGNOSTIC_EVENTS = 100
     }
 }

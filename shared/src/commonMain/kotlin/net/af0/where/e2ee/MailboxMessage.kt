@@ -9,6 +9,7 @@ import kotlinx.serialization.descriptors.SerialDescriptor
 import kotlinx.serialization.encoding.Decoder
 import kotlinx.serialization.encoding.Encoder
 import kotlin.io.encoding.Base64
+import kotlinx.serialization.json.JsonElement
 import kotlin.io.encoding.ExperimentalEncodingApi
 
 /**
@@ -46,8 +47,7 @@ sealed class MailboxPayload {
  * An encrypted message frame (Alice ↔ Bob, §9.1).
  *
  * @property v       Protocol version.
- * @property dhPub   Sender's current DH ratchet public key.
- * @property seq     Monotone counter as a decimal string.
+ * @property envelope Metadata envelope (DH public key, etc.)
  * @property ct      ChaCha20-Poly1305 ciphertext + 16-byte tag.
  */
 @Serializable
@@ -56,7 +56,20 @@ data class EncryptedMessagePayload(
     override val v: Int = PROTOCOL_VERSION,
     @Serializable(with = ByteArrayBase64Serializer::class) val envelope: ByteArray,
     @Serializable(with = ByteArrayBase64Serializer::class) val ct: ByteArray,
-) : MailboxPayload()
+) : MailboxPayload() {
+    override fun equals(other: Any?): Boolean {
+        if (this === other) return true
+        if (other !is EncryptedMessagePayload) return false
+        return v == other.v && envelope.contentEquals(other.envelope) && ct.contentEquals(other.ct)
+    }
+
+    override fun hashCode(): Int {
+        var result = v
+        result = 31 * result + envelope.contentHashCode()
+        result = 31 * result + ct.contentHashCode()
+        return result
+    }
+}
 
 /**
  * Bob's KeyExchangeInit posted to the discovery token address (§4.2).
@@ -86,3 +99,13 @@ data class KeyExchangeInitPayload(
 
     override fun hashCode(): Int = token.hashCode()
 }
+
+/**
+ * A message from the mailbox server, including its ID and payload.
+ * Shared between server and client for protocol robustness.
+ */
+@Serializable
+data class MailboxMessage(
+    val id: String,
+    val payload: JsonElement,
+)

@@ -3,6 +3,7 @@ package net.af0.where.e2ee
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.serialization.json.Json
 import kotlin.random.Random
 
 class ProcessKilledException : Exception("Simulated process kill mid-operation")
@@ -29,9 +30,6 @@ class ChaosStorage(private val storage: RawKeyValueStorage) : RawKeyValueStorage
         key: String,
         value: String,
     ) {
-        // storage.putString in RawKeyValueStorage is NOT suspend, but MemoryStorage is synchronous.
-        // Thread safety is handled by underlying implementation or plain map access if single-threaded.
-        // For chaos flags, we accept slight races as they are benign in this context.
         if (failNextWrite || Random.nextDouble() < failWriteProbability) {
             failNextWrite = false
             throw Exception("Simulated disk write failure")
@@ -41,6 +39,7 @@ class ChaosStorage(private val storage: RawKeyValueStorage) : RawKeyValueStorage
 }
 
 class ChaosMailboxClient(private val client: MailboxClient) : MailboxClient {
+    private val json = Json { ignoreUnknownKeys = true; encodeDefaults = true; classDiscriminator = "type" }
     var failNextPost = false
     var failPostProbability = 0.0
     var failNextPoll = false
@@ -48,14 +47,14 @@ class ChaosMailboxClient(private val client: MailboxClient) : MailboxClient {
     var failPollProbability = 0.0
     var corruptNextPayload = false
     var corruptPayloadProbability = 0.0
-    var corruptNextPayloadOnly = false // Corrupt CT only, leave envelope intact
+    var corruptNextPayloadOnly = false
     var corruptPayloadOnlyProbability = 0.0
     var reorderProbability = 0.0
     var dropProbability = 0.0
     var stealthDropProbability = 0.0
     var maxLatencyMs = 0L
     var expireMailboxProbability = 0.0
-    var expireMailboxStatusCode = 404 // 404 or 410
+    var expireMailboxStatusCode = 404
     var killProbability = 0.0
 
     var stealthPost = false
@@ -99,7 +98,7 @@ class ChaosMailboxClient(private val client: MailboxClient) : MailboxClient {
     override suspend fun poll(
         baseUrl: String,
         token: String,
-    ): List<MailboxPayload> = mutex.withLock {
+    ): List<MailboxMessage> = mutex.withLock {
         applyLatency()
         checkKill()
         if (expiredTokens.contains(token) || Random.nextDouble() < expireMailboxProbability) {
@@ -119,8 +118,10 @@ class ChaosMailboxClient(private val client: MailboxClient) : MailboxClient {
             if (corruptNextPayload || Random.nextDouble() < corruptPayloadProbability) {
                 corruptNextPayload = false
                 messages.map { msg ->
-                    if (msg is EncryptedMessagePayload) {
-                        msg.copy(ct = msg.ct.map { (it.toInt() xor 0xFF).toByte() }.toByteArray())
+                    val p = json.decodeFromJsonElement(MailboxPayload.serializer(), msg.payload)
+                    if (p is EncryptedMessagePayload) {
+                        val newPayload = p.copy(ct = p.ct.map { (it.toInt() xor 0xFF).toByte() }.toByteArray())
+                        msg.copy(payload = json.encodeToJsonElement(MailboxPayload.serializer(), newPayload))
                     } else {
                         msg
                     }
@@ -128,8 +129,10 @@ class ChaosMailboxClient(private val client: MailboxClient) : MailboxClient {
             } else if (corruptNextPayloadOnly || Random.nextDouble() < corruptPayloadOnlyProbability) {
                 corruptNextPayloadOnly = false
                 messages.map { msg ->
-                    if (msg is EncryptedMessagePayload) {
-                        msg.copy(ct = msg.ct.map { (it.toInt() xor 0xAA).toByte() }.toByteArray())
+                    val p = json.decodeFromJsonElement(MailboxPayload.serializer(), msg.payload)
+                    if (p is EncryptedMessagePayload) {
+                        val newPayload = p.copy(ct = p.ct.map { (it.toInt() xor 0xAA).toByte() }.toByteArray())
+                        msg.copy(payload = json.encodeToJsonElement(MailboxPayload.serializer(), newPayload))
                     } else {
                         msg
                     }
@@ -144,14 +147,14 @@ class ChaosMailboxClient(private val client: MailboxClient) : MailboxClient {
     override suspend fun ack(
         baseUrl: String,
         token: String,
-        count: Int,
+        ids: List<String>,
     ) = mutex.withLock {
         applyLatency()
         checkKill()
         if (expiredTokens.contains(token)) {
             throw ServerException(expireMailboxStatusCode, "Simulated mailbox expiration")
         }
-        client.ack(baseUrl, token, count)
+        client.ack(baseUrl, token, ids)
         checkKill()
     }
 
@@ -168,7 +171,41 @@ class ChaosMailboxClient(private val client: MailboxClient) : MailboxClient {
     }
 
     fun resetExpirations() {
-        // Not using mutex here as it's typically called during recovery/setup
         expiredTokens.clear()
+    }
+}
+
+class MemoryStorage : RawKeyValueStorage {
+    private val data = mutableMapOf<String, String>()
+    override fun getString(key: String): String? = data[key]
+    override fun putString(key: String, value: String) {
+        data[key] = value
+    }
+}
+
+data class MailboxEntry(val id: String, val payload: kotlinx.serialization.json.JsonElement, val expiresAt: Long)
+
+class MockMailbox {
+    private val mailboxes = mutableMapOf<String, MutableList<MailboxEntry>>()
+
+    fun post(token: String, payload: kotlinx.serialization.json.JsonElement): Boolean {
+        val digest = sha256(payload.toString().encodeToByteArray())
+        val id = digest.toHex()
+        val queue = mailboxes.getOrPut(token) { mutableListOf() }
+        if (queue.any { it.id == id }) return true
+        queue.add(MailboxEntry(id, payload, currentTimeSeconds() * 1000 + 3600000))
+        return true
+    }
+
+    fun drain(token: String): List<MailboxMessage> {
+        val queue = mailboxes[token] ?: return emptyList()
+        return queue.map { MailboxMessage(it.id, it.payload) }
+    }
+
+    fun delete(token: String, ids: List<String>): Int {
+        val queue = mailboxes[token] ?: return 0
+        val before = queue.size
+        queue.removeAll { it.id in ids }
+        return before - queue.size
     }
 }

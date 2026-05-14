@@ -18,14 +18,14 @@ class MailboxService(
     /**
      * Polls a specific mailbox token for messages.
      */
-    suspend fun poll(token: String): List<MailboxPayload> {
+    suspend fun poll(token: String): List<MailboxMessage> {
         return client.poll(baseUrl, token)
     }
 
     /**
      * Acknowledges receipt of messages from a mailbox token.
      */
-    suspend fun ack(token: String, count: Int) {
-        client.ack(baseUrl, token, count)
+    suspend fun ack(token: String, ids: List<String>) {
+        client.ack(baseUrl, token, ids)
     }
 }

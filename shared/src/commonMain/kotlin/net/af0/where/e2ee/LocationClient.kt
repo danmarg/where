@@ -116,7 +116,7 @@ open class LocationClient(
                     try {
                         val discoveryHex = invite.qrPayload.discoveryToken().toHex()
                         val messages = service.poll(discoveryHex)
-                        val inits = messages.filterIsInstance<KeyExchangeInitPayload>()
+                        val inits = messages.map { it.payload }.map { store.persistence.json.decodeFromJsonElement(MailboxPayload.serializer(), it) }.filterIsInstance<KeyExchangeInitPayload>()
                         val last = inits.lastOrNull()
                         if (last != null) {
                             PendingInviteResult(last, inits.size > 1, invite.qrPayload.ekPub)
@@ -146,6 +146,10 @@ open class LocationClient(
         isPaused: Boolean = false,
     ): List<UserLocation> {
         val resultLocations = mutableListOf<UserLocation>()
+
+        // Transactional Recovery: Process pending items first
+        processOutboxes(friendId)
+
         val friendBefore = store.getFriend(friendId) ?: return emptyList()
 
         val pollQueue = mutableListOf<String>()
@@ -178,7 +182,13 @@ open class LocationClient(
 
                 // ACK logic: only if progress was made
                 if (result.anySuccess || result.anyReplay || result.hadStateUpdate) {
-                    service.ack(currentTokenToPoll, messages.size)
+                    val ids = messages.map { it.id }
+                    try {
+                        service.ack(currentTokenToPoll, ids)
+                        store.clearPendingAcks(friendId, currentTokenToPoll, ids)
+                    } catch (e: Exception) {
+                        println("[LocationClient] pollFriend: deferred ACK failed for $currentTokenToPoll: ${e.message}")
+                    }
                 }
 
                 resultLocations.addAll(
@@ -301,12 +311,44 @@ open class LocationClient(
 
         try {
             service.post(tokenHex, message)
+
+            // Success: clear from WAL and finalize
+            val messageId = hashJson(store.persistence.json.encodeToJsonElement(EncryptedMessagePayload.serializer(), message))
+            store.clearPendingOutbox(friendId, messageId)
+
             finalizeTokenTransition(friendId, clearingToken = tokenHex)
         } catch (e: Exception) {
             println("[LocationClient] send failed for ${friendId.take(8)}: ${e.message}")
             throw e
         }
     }
+
+    private suspend fun processOutboxes(friendId: String) {
+        val friend = store.getFriend(friendId) ?: return
+
+        // 1. Process pending ACKs
+        for ((token, ids) in friend.pendingAcks) {
+            try {
+                service.ack(token, ids)
+                store.clearPendingAcks(friendId, token, ids)
+            } catch (e: Exception) {
+                println("[LocationClient] recovery: ACK failed for $friendId/$token: ${e.message}")
+            }
+        }
+
+        // 2. Process pending outbox
+        for (pending in friend.pendingOutbox) {
+            try {
+                service.post(pending.token, pending.message)
+                val messageId = hashJson(store.persistence.json.encodeToJsonElement(EncryptedMessagePayload.serializer(), pending.message))
+                store.clearPendingOutbox(friendId, messageId)
+                finalizeTokenTransition(friendId, clearingToken = pending.token)
+            } catch (e: Exception) {
+                println("[LocationClient] recovery: POST failed for $friendId/${pending.token}: ${e.message}")
+            }
+        }
+    }
+
 
     private suspend fun finalizeTokenTransition(
         friendId: String,

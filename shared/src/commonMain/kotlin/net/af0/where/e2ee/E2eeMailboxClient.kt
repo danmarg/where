@@ -9,7 +9,6 @@ import io.ktor.client.plugins.HttpTimeout
 import io.ktor.client.plugins.contentnegotiation.ContentNegotiation
 import io.ktor.client.request.delete
 import io.ktor.client.request.get
-import io.ktor.client.request.parameter
 import io.ktor.client.request.post
 import io.ktor.client.request.setBody
 import io.ktor.http.ContentType
@@ -34,17 +33,17 @@ interface MailboxClient {
     suspend fun poll(
         baseUrl: String,
         token: String,
-    ): List<MailboxPayload>
+    ): List<MailboxMessage>
 
     /**
-     * Confirm receipt of [count] messages from [token], allowing the server to delete them.
+     * Confirm receipt of messages with the given [ids] from [token], allowing the server to delete them.
      * Called after session state has been durably saved. Failures are non-fatal.
      */
     suspend fun ack(
         baseUrl: String,
         token: String,
-        count: Int,
-    ) {}
+        ids: List<String>,
+    )
 }
 
 object KtorMailboxClient : MailboxClient {
@@ -84,7 +83,7 @@ object KtorMailboxClient : MailboxClient {
                     contentType(ContentType.Application.Json)
                     setBody(payload)
                 }
-            if (response.status != HttpStatusCode.NoContent && response.status != HttpStatusCode.OK) {
+            if (!response.status.isSuccess()) {
                 throw ServerException(response.status.value, "Failed to post to mailbox")
             }
         } catch (e: Exception) {
@@ -96,12 +95,12 @@ object KtorMailboxClient : MailboxClient {
      * GET all pending messages for a mailbox address.
      * @param baseUrl Server base URL.
      * @param token Hex-encoded mailbox address.
-     * @return List of payloads, or empty if none.
+     * @return List of MailboxMessage, or empty if none.
      */
     override suspend fun poll(
         baseUrl: String,
         token: String,
-    ): List<MailboxPayload> {
+    ): List<MailboxMessage> {
         try {
             val response = client.get("$baseUrl/inbox/$token")
             if (response.status != HttpStatusCode.OK) {
@@ -116,13 +115,14 @@ object KtorMailboxClient : MailboxClient {
     override suspend fun ack(
         baseUrl: String,
         token: String,
-        count: Int,
+        ids: List<String>,
     ) {
-        if (count <= 0) return
+        if (ids.isEmpty()) return
         try {
             val response =
                 client.delete("$baseUrl/inbox/$token") {
-                    parameter("n", count)
+                    contentType(ContentType.Application.Json)
+                    setBody(ids)
                 }
             if (!response.status.isSuccess()) {
                 throw ServerException(response.status.value, "ACK failed for token $token")

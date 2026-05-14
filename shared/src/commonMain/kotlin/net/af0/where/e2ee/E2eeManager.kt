@@ -42,6 +42,8 @@ data class FriendEntry(
     val lastSentTs: Long = 0L,
     val lastPollTs: Long = 0L,
     val sharingEnabled: Boolean = true,
+    val pendingOutbox: List<PendingOutboxMessage> = emptyList(),
+    val pendingAcks: Map<String, List<String>> = emptyMap(),
 ) {
     companion object {
         const val ACK_TIMEOUT_SECONDS = 7 * 24 * 3600L
@@ -76,7 +78,7 @@ internal fun PendingInvite.toView() = PendingInviteView(qrPayload, createdAt, ex
 class E2eeManager(
     private val storage: RawKeyValueStorage,
 ) {
-    private val persistence = E2eeStore(storage)
+    internal val persistence = E2eeStore(storage)
 
 
     val diagnosticLog: StateFlow<List<String>> = persistence.diagnosticLog
@@ -247,9 +249,13 @@ class E2eeManager(
                 newSession
             }
 
+            val tokenToUse = if (updatedSession.isSendTokenPending) updatedSession.prevSendToken else updatedSession.sendToken
+            val pendingMsg = PendingOutboxMessage(tokenToUse.toHex(), message)
+
             val updatedEntry = entry.copy(
                 session = updatedSession,
                 lastSentTs = currentTimeSeconds(),
+                pendingOutbox = entry.pendingOutbox + pendingMsg
             )
             
             PersistenceAction.Update(updatedEntry) to (message to updatedSession)
@@ -357,12 +363,12 @@ class E2eeManager(
     suspend fun processBatch(
         friendId: String,
         recvToken: String,
-        messages: List<MailboxPayload>,
+        messages: List<MailboxMessage>,
     ): PollBatchResult? {
         return persistence.withFriendAndMetadataLock(friendId) { entry, _ ->
             if (entry == null) return@withFriendAndMetadataLock PersistenceAction.None to null
 
-            val encryptedMessages = messages.filterIsInstance<EncryptedMessagePayload>()
+            val encryptedMessages = messages.map { it.payload }.map { persistence.json.decodeFromJsonElement(MailboxPayload.serializer(), it) }.filterIsInstance<EncryptedMessagePayload>()
             val orderedMessages = E2eeProtocol.decryptAndSort(entry.session, encryptedMessages)
             
             val result = E2eeProtocol.decryptBatch(entry.session, encryptedMessages.size, orderedMessages)
@@ -386,6 +392,12 @@ class E2eeManager(
                 result.finalSession.copy(recvToken = currentRecvToken)
             }
 
+            val nextPendingAcks = entry.pendingAcks.toMutableMap()
+            if (messages.isNotEmpty()) {
+                val existing = nextPendingAcks[recvToken] ?: emptyList()
+                nextPendingAcks[recvToken] = existing + messages.map { it.id }
+            }
+
             val updatedEntry = entry.copy(
                 session = updatedSession,
                 isConfirmed = entry.isConfirmed || result.anySuccess,
@@ -394,6 +406,7 @@ class E2eeManager(
                 lastLng = lastLocation?.lng ?: entry.lastLng,
                 lastTs = lastLocation?.ts ?: entry.lastTs,
                 lastPollTs = currentTimeSeconds(),
+                pendingAcks = nextPendingAcks
             )
 
             PersistenceAction.Update(updatedEntry) to PollBatchResult(
@@ -412,6 +425,45 @@ class E2eeManager(
         persistence.withFriendAndMetadataLock(id) { entry, _ ->
             if (entry != null) {
                 PersistenceAction.Update(entry.copy(lastLat = lat, lastLng = lng, lastTs = ts)) to Unit
+            } else {
+                PersistenceAction.None to Unit
+            }
+        }
+    }
+
+    suspend fun clearPendingOutbox(friendId: String, messageId: String) {
+        persistence.withFriendAndMetadataLock(friendId) { entry, _ ->
+            if (entry != null) {
+                val nextOutbox = entry.pendingOutbox.filter {
+                    val currentId = persistence.json.encodeToJsonElement(EncryptedMessagePayload.serializer(), it.message).let { el ->
+                        // Need a way to hash this consistently with how the server does it
+                        // For now, let's just use the object reference or another unique property
+                        // Actually, the server uses SHA-256 of the JSON.
+                        hashJson(el)
+                    }
+                    currentId != messageId
+                }
+                PersistenceAction.Update(entry.copy(pendingOutbox = nextOutbox)) to Unit
+            } else {
+                PersistenceAction.None to Unit
+            }
+        }
+    }
+
+    // Helper for hashing JSON consistently with the server
+
+    suspend fun clearPendingAcks(friendId: String, token: String, ids: List<String>) {
+        persistence.withFriendAndMetadataLock(friendId) { entry, _ ->
+            if (entry != null) {
+                val nextAcks = entry.pendingAcks.toMutableMap()
+                val currentIds = nextAcks[token] ?: emptyList()
+                val remaining = currentIds.filter { it !in ids }
+                if (remaining.isEmpty()) {
+                    nextAcks.remove(token)
+                } else {
+                    nextAcks[token] = remaining
+                }
+                PersistenceAction.Update(entry.copy(pendingAcks = nextAcks)) to Unit
             } else {
                 PersistenceAction.None to Unit
             }

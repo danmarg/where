@@ -16,12 +16,16 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonNull
+import net.af0.where.e2ee.MailboxMessage
+import net.af0.where.e2ee.MailboxPayload
 import redis.clients.jedis.JedisPooled
 import java.net.URI
+import java.security.MessageDigest
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.ConcurrentLinkedQueue
 
@@ -29,6 +33,7 @@ private val json =
     Json {
         classDiscriminator = "type"
         ignoreUnknownKeys = true
+        encodeDefaults = true
     }
 
 /** TTL for mailbox messages: 7 days, matching the session staleness threshold. */
@@ -67,6 +72,7 @@ interface MailboxStore {
     /**
      * Store [payload] under [token]. Returns false if the token is rate-limited
      * or has reached [MAX_QUEUE_DEPTH].
+     * Implementation should be idempotent based on payload hash.
      */
     fun post(
         token: String,
@@ -77,14 +83,14 @@ interface MailboxStore {
      * Non-destructively read all non-expired messages for [token].
      * Returns null if the request is rejected due to rate limiting.
      */
-    fun drain(token: String): List<JsonElement>?
+    fun drain(token: String): List<MailboxMessage>?
 
     /**
-     * Remove the first [count] messages from [token]'s queue. Idempotent.
+     * Remove messages with the given [ids] from [token]'s queue. Idempotent.
      */
     fun delete(
         token: String,
-        count: Int,
+        ids: List<String>,
     ): Int
 
     /** Reclaim stale entries. No-op for implementations where the store handles expiry. */
@@ -98,7 +104,13 @@ interface MailboxStore {
 // In-memory implementation (tests / no Redis)
 // ---------------------------------------------------------------------------
 
-private data class MailboxEntry(val payload: JsonElement, val expiresAt: Long)
+private fun hashJson(jsonElement: JsonElement): String {
+    val digest = MessageDigest.getInstance("SHA-256")
+    val hashBytes = digest.digest(jsonElement.toString().toByteArray())
+    return hashBytes.joinToString("") { "%02x".format(it) }
+}
+
+private data class MailboxEntry(val id: String, val payload: JsonElement, val expiresAt: Long)
 
 /**
  * Anonymous mailbox routing table backed by in-process maps (§7.1, §10).
@@ -130,20 +142,28 @@ class InMemoryMailboxState : MailboxStore {
         payload: JsonElement,
     ): Boolean {
         val now = System.currentTimeMillis()
+        val id = hashJson(payload)
 
         // Rate-limit check: drop if too many posts in the sliding window.
         val times = postTimes.getOrPut(token) { ConcurrentLinkedQueue() }
         times.removeIf { it < now - RATE_LIMIT_WINDOW_MS }
         if (times.size >= RATE_LIMIT_MAX_POSTS) return false
-        times.add(now)
 
         val queue = mailboxes.getOrPut(token) { ConcurrentLinkedQueue() }
         queue.removeIf { it.expiresAt <= now }
 
+        // Idempotency check
+        if (queue.any { it.id == id }) {
+            return true
+        }
+
+        if (times.size >= RATE_LIMIT_MAX_POSTS) return false
+        times.add(now)
+
         // Queue-depth cap: drop if already at maximum.
         if (queue.size >= MAX_QUEUE_DEPTH) return false
 
-        queue.add(MailboxEntry(payload, now + MAILBOX_TTL_MS))
+        queue.add(MailboxEntry(id, payload, now + MAILBOX_TTL_MS))
         return true
     }
 
@@ -192,7 +212,7 @@ class InMemoryMailboxState : MailboxStore {
      * Returns null if rate-limited (§7.2: indistinguishable responses for unknown vs empty,
      * but rate-limiting returns 429).
      */
-    override fun drain(token: String): List<JsonElement>? {
+    override fun drain(token: String): List<MailboxMessage>? {
         val now = System.currentTimeMillis()
 
         // Rate-limit check for GET (§10)
@@ -209,23 +229,25 @@ class InMemoryMailboxState : MailboxStore {
         // Non-destructively peek at the queue.
         return queue.asSequence()
             .filter { it.expiresAt > now }
-            .map { it.payload }
+            .map { MailboxMessage(it.id, it.payload) }
             .take(50)
             .toList()
     }
 
     override fun delete(
         token: String,
-        count: Int,
+        ids: List<String>,
     ): Int {
-        if (count < 0) return 0
+        if (ids.isEmpty()) return 0
         val queue = mailboxes[token] ?: return 0
         var removedCount = 0
-        for (i in 0 until count) {
-            if (queue.poll() != null) {
+        val idSet = ids.toSet()
+        val iterator = queue.iterator()
+        while (iterator.hasNext()) {
+            val entry = iterator.next()
+            if (idSet.contains(entry.id)) {
+                iterator.remove()
                 removedCount++
-            } else {
-                break
             }
         }
         return removedCount
@@ -250,7 +272,7 @@ class RedisMailboxState(redisUrl: String) : MailboxStore {
     private val jedis = JedisPooled(URI(redisUrl))
 
     /**
-     * Atomically: check fixed-window rate limit, check queue depth, append payload.
+     * Atomically: check fixed-window rate limit, check queue depth, append payload if not present.
      *
      * Rate limiting uses a fixed 1-minute window (INCR + EXPIRE on first increment).
      * At window boundaries a client could burst up to 2× the per-minute limit, which
@@ -263,14 +285,25 @@ class RedisMailboxState(redisUrl: String) : MailboxStore {
         local maxPosts = tonumber(ARGV[1])
         local maxDepth = tonumber(ARGV[2])
         local payload  = ARGV[3]
-        local ttlSec   = tonumber(ARGV[4])
-        local rlTtlSec = tonumber(ARGV[5])
+        local msgId    = ARGV[4]
+        local ttlSec   = tonumber(ARGV[5])
+        local rlTtlSec = tonumber(ARGV[6])
+
+        -- Idempotency check: we store msgId:payload in a separate hash to avoid scanning the list
+        if redis.call('HEXISTS', KEYS[3], msgId) == 1 then
+            return 1
+        end
+
         local count = redis.call('INCR', KEYS[1])
         if count == 1 then redis.call('EXPIRE', KEYS[1], rlTtlSec) end
         if count > maxPosts then return 0 end
         if redis.call('LLEN', KEYS[2]) >= maxDepth then return 0 end
-        redis.call('RPUSH', KEYS[2], payload)
+
+        local msgJson = '{"id":"' .. msgId .. '","payload":' .. payload .. '}'
+        redis.call('RPUSH', KEYS[2], msgJson)
+        redis.call('HSET', KEYS[3], msgId, 1)
         redis.call('EXPIRE', KEYS[2], ttlSec)
+        redis.call('EXPIRE', KEYS[3], ttlSec)
         return 1
         """.trimIndent()
 
@@ -288,36 +321,45 @@ class RedisMailboxState(redisUrl: String) : MailboxStore {
         """.trimIndent()
 
     /**
-     * Atomically: delete the first N items from a list.
+     * Atomically: delete the specific items from the list and hash.
      * Returns the number of items actually removed.
      */
     private val deleteScript =
         """
-        local n = tonumber(ARGV[1])
-        if n <= 0 then return 0 end
-        local len = redis.call('LLEN', KEYS[1])
-        if len == 0 then return 0 end
-        if n >= len then
-            redis.call('DEL', KEYS[1])
-            return len
-        else
-            redis.call('LTRIM', KEYS[1], n, -1)
-            return n
+        local removed = 0
+        for i, msgId in ipairs(ARGV) do
+            if redis.call('HDEL', KEYS[2], msgId) == 1 then
+                -- This is expensive for large lists (O(N)), but our queues are capped at MAX_QUEUE_DEPTH.
+                -- To do this better we'd need a hash of ID -> payload in the list or use a sorted set.
+                -- For this protocol, we just iterate and LREM.
+                -- We need to find the full JSON string that has this ID.
+                local messages = redis.call('LRANGE', KEYS[1], 0, -1)
+                for j, msgStr in ipairs(messages) do
+                    if string.find(msgStr, '"id":"' .. msgId .. '"') then
+                        redis.call('LREM', KEYS[1], 1, msgStr)
+                        removed = removed + 1
+                        break
+                    end
+                end
+            end
         end
+        return removed
         """.trimIndent()
 
     override fun post(
         token: String,
         payload: JsonElement,
     ): Boolean {
+        val id = hashJson(payload)
         val result =
             jedis.eval(
                 postScript,
-                listOf("ratelimit:$token", "inbox:$token"),
+                listOf("ratelimit:$token", "inbox:$token", "inbox-ids:$token"),
                 listOf(
                     RATE_LIMIT_MAX_POSTS.toString(),
                     MAX_QUEUE_DEPTH.toString(),
                     payload.toString(),
+                    id,
                     (MAILBOX_TTL_MS / 1000).toString(),
                     (RATE_LIMIT_WINDOW_MS / 1000).toString(),
                 ),
@@ -325,7 +367,7 @@ class RedisMailboxState(redisUrl: String) : MailboxStore {
         return result == 1L
     }
 
-    override fun drain(token: String): List<JsonElement>? {
+    override fun drain(token: String): List<MailboxMessage>? {
         @Suppress("UNCHECKED_CAST")
         val result =
             jedis.eval(
@@ -345,19 +387,20 @@ class RedisMailboxState(redisUrl: String) : MailboxStore {
                     is ByteArray -> item.decodeToString()
                     else -> item.toString()
                 }
-            json.parseToJsonElement(str)
+            val serverMsg = json.decodeFromString<MailboxMessage>(str)
+            serverMsg
         }
     }
 
     override fun delete(
         token: String,
-        count: Int,
+        ids: List<String>,
     ): Int {
         val result =
             jedis.eval(
                 deleteScript,
-                listOf("inbox:$token"),
-                listOf(count.toString()),
+                listOf("inbox:$token", "inbox-ids:$token"),
+                ids,
             )
         return (result as Long).toInt()
     }
@@ -465,16 +508,16 @@ fun Application.module(state: ServerState = ServerState()) {
             if (state.debug) application.log.info("DEBUG: [Poll] token=$token")
 
             val startTime = System.currentTimeMillis()
-            val messages = state.mailbox.drain(token)
-            if (messages == null) {
+            val payloads = state.mailbox.drain(token)
+            if (payloads == null) {
                 application.log.info("Rejected [Poll] token=$token - (rate-limited)")
                 call.respond(HttpStatusCode.TooManyRequests)
                 return@get
             }
 
-            if (state.debug) application.log.info("DEBUG: [Poll] token=$token - Returning ${messages.size} messages")
+            if (state.debug) application.log.info("DEBUG: [Poll] token=$token - Returning ${payloads.size} messages")
 
-            val responseString = json.encodeToString(messages)
+            val responseString = json.encodeToString(payloads)
             val elapsed = System.currentTimeMillis() - startTime
             if (elapsed < POLL_BASELINE_LATENCY_MS) {
                 delay(POLL_BASELINE_LATENCY_MS - elapsed)
@@ -490,13 +533,14 @@ fun Application.module(state: ServerState = ServerState()) {
                     return@delete
                 }
 
-            val n = call.request.queryParameters["n"]?.toIntOrNull()
-            if (n == null || n < 0) {
-                call.respond(HttpStatusCode.BadRequest, "n query parameter must be a non-negative integer")
+            val body = call.receiveText()
+            val ids = runCatching { json.decodeFromString<List<String>>(body) }.getOrNull()
+            if (ids == null) {
+                call.respond(HttpStatusCode.BadRequest, "body must be a JSON list of message IDs")
                 return@delete
             }
 
-            state.mailbox.delete(token, n)
+            state.mailbox.delete(token, ids)
             call.respond(HttpStatusCode.NoContent)
         }
     }
