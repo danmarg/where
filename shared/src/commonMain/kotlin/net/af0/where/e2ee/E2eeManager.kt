@@ -270,7 +270,7 @@ class E2eeManager(
                 lastSentTs = if (payload is MessagePlaintext.Location) currentTimeSeconds() else entry.lastSentTs,
             )
             
-            persistence.insertOutbox(
+            persistence.insertOutboxInternal(
                 msgId = outboxMsg.msgId,
                 friendId = friendId,
                 token = outboxMsg.token,
@@ -328,7 +328,7 @@ class E2eeManager(
         )
 
         return persistence.withFriendAndMetadataLock(entry.id) { _, metadata ->
-            persistence.insertOutbox(
+            persistence.insertOutboxInternal(
                 msgId = payload.msgId,
                 friendId = entry.id,
                 token = qr.discoveryToken().toHex(),
@@ -377,7 +377,7 @@ class E2eeManager(
                     sendTokenPendingSinceMs = null,
                     needsRatchet = entry.session.needsRatchet,
                 )
-                persistence.deleteOutboxByFriendId(friendId)
+                persistence.deleteOutboxByFriendIdInternal(friendId)
                 PersistenceAction.Update(entry.copy(session = rolledBack)) to Unit
             } else {
                 PersistenceAction.None to Unit

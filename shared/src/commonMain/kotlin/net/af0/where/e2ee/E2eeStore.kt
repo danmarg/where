@@ -140,19 +140,41 @@ internal class E2eeStore(
         payloadBlob: ByteArray,
         createdAt: Long,
     ) = storeLock.withLock {
+        insertOutboxInternal(msgId, friendId, token, payloadBlob, createdAt)
+    }
+
+    internal fun insertOutboxInternal(
+        msgId: String,
+        friendId: String,
+        token: String,
+        payloadBlob: ByteArray,
+        createdAt: Long,
+    ) {
         database.outboxQueries.insertOutbox(msgId, friendId, token, payloadBlob, createdAt)
     }
 
     suspend fun deleteOutboxByMsgId(msgId: String) = storeLock.withLock {
+        deleteOutboxByMsgIdInternal(msgId)
+    }
+
+    internal fun deleteOutboxByMsgIdInternal(msgId: String) {
         database.outboxQueries.deleteOutboxByMsgId(msgId)
     }
 
     suspend fun deleteOutboxByFriendId(friendId: String) = storeLock.withLock {
+        deleteOutboxByFriendIdInternal(friendId)
+    }
+
+    internal fun deleteOutboxByFriendIdInternal(friendId: String) {
         database.outboxQueries.deleteOutboxByFriendId(friendId)
     }
 
     suspend fun getOutbox(friendId: String): List<EncryptedOutboxMessage> = storeLock.withLock {
-        database.outboxQueries.getOutboxForFriend(friendId).executeAsList().map { row ->
+        getOutboxInternal(friendId)
+    }
+
+    internal fun getOutboxInternal(friendId: String): List<EncryptedOutboxMessage> {
+        return database.outboxQueries.getOutboxForFriend(friendId).executeAsList().map { row ->
             EncryptedOutboxMessage(
                 msgId = row.msgId,
                 token = row.token,

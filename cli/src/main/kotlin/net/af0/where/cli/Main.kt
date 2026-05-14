@@ -102,11 +102,12 @@ fun main(args: Array<String>) {
     val storageFile = File(statePath)
     val storage = FileRawKeyValueStorage(storageFile)
     
-    // WAL DB: where_cli_wal.db
-    val dbFile = File(storageFile.parentFile ?: File("."), "where_cli_wal.db")
+    // WAL DB: derived from state file name (e.g. where_cli_state.db)
+    val dbBaseName = storageFile.nameWithoutExtension
+    val dbFile = File(storageFile.parentFile ?: File("."), "$dbBaseName.db")
     val driver: SqlDriver = JdbcSqliteDriver("jdbc:sqlite:${dbFile.absolutePath}", Properties(), WhereDatabase.Schema)
     
-    val store = E2eeManager(storage, driver)
+    val store = E2eeManager(driver)
 
     var host = "http://localhost:8080"
     val hostIdx = args.indexOf("--host")
