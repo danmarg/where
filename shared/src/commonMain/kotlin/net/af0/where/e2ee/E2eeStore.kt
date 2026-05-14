@@ -53,12 +53,12 @@ internal class E2eeStore(
     }
 
     private fun loadFromDb() {
-        database.outboxQueries.getAllFriends().executeAsList().forEach { f ->
+        database.friendsQueries.getAllFriends().executeAsList().forEach { f ->
             val entry = f.toEntry()
             friends[f.id] = entry
             lastUsedTs = maxOf(lastUsedTs, f.lastTs ?: 0L, f.lastRecvTs, f.lastSentTs, f.lastPollTs)
         }
-        database.outboxQueries.getAllPendingInvites().executeAsList().forEach { p ->
+        database.invitesQueries.getAllPendingInvites().executeAsList().forEach { p ->
             pendingInvites.add(p.toInvite())
         }
     }
@@ -113,7 +113,7 @@ internal class E2eeStore(
     }
 
     private fun saveFriendInternal(friendId: String, entry: FriendEntry) {
-        database.outboxQueries.insertFriend(
+        database.friendsQueries.insertFriend(
             id = friendId,
             name = entry.name,
             sessionBlob = json.encodeToString(SessionState.serializer(), entry.session).encodeToByteArray(),
@@ -132,7 +132,7 @@ internal class E2eeStore(
     }
 
     private fun deleteFriendInternal(friendId: String) {
-        database.outboxQueries.deleteFriend(friendId)
+        database.friendsQueries.deleteFriend(friendId)
         database.outboxQueries.deleteOutboxByFriendId(friendId)
         friends.remove(friendId)
     }
@@ -180,7 +180,7 @@ internal class E2eeStore(
                 val current = this@E2eeStore.pendingInvites
                 value.forEach { invite ->
                     if (current.none { it.qrPayload.ekPub.contentEquals(invite.qrPayload.ekPub) }) {
-                        database.outboxQueries.insertPendingInvite(
+                        database.invitesQueries.insertPendingInvite(
                             ekPub = invite.qrPayload.ekPub,
                             suggestedName = invite.qrPayload.suggestedName,
                             fingerprint = invite.qrPayload.fingerprint,
@@ -193,7 +193,7 @@ internal class E2eeStore(
                 }
                 current.forEach { invite ->
                     if (value.none { it.qrPayload.ekPub.contentEquals(invite.qrPayload.ekPub) }) {
-                        database.outboxQueries.deletePendingInvite(invite.qrPayload.ekPub)
+                        database.invitesQueries.deletePendingInvite(invite.qrPayload.ekPub)
                     }
                 }
                 this@E2eeStore.pendingInvites.clear()

@@ -112,11 +112,14 @@ class InMemoryMailboxState : MailboxStore {
     private val receivedIds = ConcurrentHashMap<String, MutableSet<String>>()
     private val dummyQueue = ConcurrentLinkedQueue<MailboxEntry>()
 
+    private val locks = ConcurrentHashMap<String, Any>()
+    private fun getLock(token: String) = locks.getOrPut(token) { Any() }
+
     override fun post(
         token: String,
         payload: JsonElement,
         msgId: String?,
-    ): Boolean {
+    ): Boolean = synchronized(getLock(token)) {
         val now = System.currentTimeMillis()
 
         if (msgId != null) {
@@ -300,7 +303,7 @@ class RedisMailboxState(redisUrl: String) : MailboxStore {
             local msgId    = ARGV[1]
             local list = redis.call('LRANGE', inboxKey, 0, -1)
             for i, v in ipairs(list) do
-                if string.find(v, msgId) then
+                if string.find(v, msgId, 1, true) then
                     redis.call('LREM', inboxKey, 1, v)
                     return 1
                 end
@@ -319,10 +322,12 @@ class RedisMailboxState(redisUrl: String) : MailboxStore {
         val deleteByIdsScript = """
             local inboxKey = KEYS[1]
             local count = 0
+            -- O(N*M) where N is inbox depth and M is msgIds count.
+            -- Acceptable for small inbox depth (MAX_QUEUE_DEPTH is large but typical size is ~50).
             for _, msgId in ipairs(ARGV) do
                 local list = redis.call('LRANGE', inboxKey, 0, -1)
                 for _, v in ipairs(list) do
-                    if string.find(v, msgId) then
+                    if string.find(v, msgId, 1, true) then
                         redis.call('LREM', inboxKey, 1, v)
                         count = count + 1
                         break
