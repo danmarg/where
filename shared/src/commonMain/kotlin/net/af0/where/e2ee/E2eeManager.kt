@@ -454,7 +454,7 @@ class E2eeManager(
                 lastPollTs = currentTimeSeconds(),
             )
 
-            val shouldAck = result.anySuccess || hadStateUpdate || result.anyReplay || result.silentDrops > 0 || (messages.size > encryptedMessages.size)
+            val shouldAck = result.anySuccess || hadStateUpdate || result.anyReplay || (messages.size > encryptedMessages.size)
 
             val hadDhRatchet = !result.finalSession.rootKey.contentEquals(entry.session.rootKey)
 

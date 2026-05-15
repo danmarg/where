@@ -94,15 +94,15 @@ class MultiFriendIntegrationTest {
             val mailboxClient = KtorTestMailboxClient(testClient)
 
             // 1. Setup Alice (iPhone)
-            val aliceManager = E2eeManager(MemoryStorage(), createTestSqlDriver())
+            val aliceManager = E2eeManager(createTestSqlDriver())
             val aliceClient = LocationClient("", aliceManager, mailboxClient)
 
             // 2. Setup Bob (Android 1)
-            val bobManager = E2eeManager(MemoryStorage(), createTestSqlDriver())
+            val bobManager = E2eeManager(createTestSqlDriver())
             val bobClient = LocationClient("", bobManager, mailboxClient)
 
             // 3. Setup Charlie (Android 2)
-            val charlieStore = E2eeManager(MemoryStorage(), createTestSqlDriver())
+            val charlieStore = E2eeManager(createTestSqlDriver())
             val charlieClient = LocationClient("", charlieStore, mailboxClient)
 
             // --- PAIR ALICE AND BOB ---
@@ -162,11 +162,11 @@ class MultiFriendIntegrationTest {
                 }
             val mailboxClient = KtorTestMailboxClient(testClient)
 
-            val aliceManager = E2eeManager(MemoryStorage(), createTestSqlDriver())
+            val aliceManager = E2eeManager(createTestSqlDriver())
             val aliceClient = LocationClient("", aliceManager, mailboxClient)
 
-            val bobManager = E2eeManager(MemoryStorage(), createTestSqlDriver())
-            val charlieStore = E2eeManager(MemoryStorage(), createTestSqlDriver())
+            val bobManager = E2eeManager(createTestSqlDriver())
+            val charlieStore = E2eeManager(createTestSqlDriver())
 
             // 1. Alice creates two invites
             val qrBob = aliceManager.createInvite("Alice")
@@ -215,11 +215,11 @@ class MultiFriendIntegrationTest {
                 }
             val mailboxClient = KtorTestMailboxClient(testClient)
 
-            val storage = MemoryStorage()
-            val aliceManager = E2eeManager(storage, createTestSqlDriver())
+            val aliceDriver = createTestSqlDriver()
+            val aliceManager = E2eeManager(aliceDriver)
             val aliceClient = LocationClient("", aliceManager, mailboxClient)
 
-            val bobManager = E2eeManager(MemoryStorage(), createTestSqlDriver())
+            val bobManager = E2eeManager(createTestSqlDriver())
             val bobClient = LocationClient("", bobManager, mailboxClient)
 
             // Pair A-B
@@ -235,8 +235,8 @@ class MultiFriendIntegrationTest {
             aliceClient.poll()
 
             // --- SIMULATE RESTART ---
-            // Create a NEW store instance using the SAME storage
-            val aliceManagerRestarted = E2eeManager(storage, createTestSqlDriver())
+            // Create a NEW store instance using the SAME driver
+            val aliceManagerRestarted = E2eeManager(aliceDriver)
             val bobAfterRestart = aliceManagerRestarted.getFriend(bobId)!!
 
             // THIS IS THE BUG: Currently, this will be NULL because poll()
@@ -258,13 +258,13 @@ class MultiFriendIntegrationTest {
                 }
             val mailboxClient = KtorTestMailboxClient(testClient)
 
-            val aliceManager = E2eeManager(MemoryStorage(), createTestSqlDriver())
+            val aliceManager = E2eeManager(createTestSqlDriver())
             val aliceClient = LocationClient("", aliceManager, mailboxClient)
 
-            val bobManager = E2eeManager(MemoryStorage(), createTestSqlDriver())
+            val bobManager = E2eeManager(createTestSqlDriver())
             val bobClient = LocationClient("", bobManager, mailboxClient)
 
-            val charlieStore = E2eeManager(MemoryStorage(), createTestSqlDriver())
+            val charlieStore = E2eeManager(createTestSqlDriver())
             val charlieClient = LocationClient("", charlieStore, mailboxClient)
 
             // Pair A-B and A-C

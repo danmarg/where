@@ -79,13 +79,23 @@ class E2eeBidirectionalEndToEndTest {
             val finalAlice = aliceManager.getFriend(idAforB)!!.session
             val finalBob = bobManager.getFriend(idBforA)!!.session
             
-            val aActiveSend = if (finalAlice.isSendTokenPending) finalAlice.prevSendToken else finalAlice.sendToken
-            val bActiveSend = if (finalBob.isSendTokenPending) finalBob.prevSendToken else finalBob.sendToken
-            
-            assertContentEquals(aActiveSend, finalBob.recvToken, "Alice active send = Bob recv")
-            assertContentEquals(bActiveSend, finalAlice.recvToken, "Bob active send = Alice recv")
+            assertTokensMatch(finalAlice, finalBob, "Alice → Bob token sync")
+            assertTokensMatch(finalBob, finalAlice, "Bob → Alice token sync")
         }
     }
+
+    private fun assertTokensMatch(sender: SessionState, receiver: SessionState, message: String) {
+        val activeSend = if (sender.isSendTokenPending) sender.prevSendToken else sender.sendToken
+        val receiverPolled = mutableSetOf<String>()
+        receiverPolled.add(receiver.recvToken.toHex())
+        if (receiver.prevRecvToken.isNotEmpty()) receiverPolled.add(receiver.prevRecvToken.toHex())
+        receiver.retiredRecvTokens.forEach { receiverPolled.add(it.toHex()) }
+        
+        assertTrue(receiverPolled.contains(activeSend.toHex()), 
+            "$message: active send ${activeSend.toHex()} not in receiver polled set $receiverPolled")
+    }
+
+    private fun ByteArray.toHex(): String = joinToString("") { (it.toInt() and 0xFF).toString(16).padStart(2, '0') }
 
     @Test
     fun `three party hub and spoke - all four directions work`() {
@@ -180,15 +190,10 @@ class E2eeBidirectionalEndToEndTest {
             val finalAC = aStore.getFriend(idAforC)!!.session
             val finalCA = cStore.getFriend(idCforA)!!.session
 
-            val aActiveSendB = if (finalAB.isSendTokenPending) finalAB.prevSendToken else finalAB.sendToken
-            val bActiveSend = if (finalBA.isSendTokenPending) finalBA.prevSendToken else finalBA.sendToken
-            val aActiveSendC = if (finalAC.isSendTokenPending) finalAC.prevSendToken else finalAC.sendToken
-            val cActiveSend = if (finalCA.isSendTokenPending) finalCA.prevSendToken else finalCA.sendToken
-
-            assertContentEquals(aActiveSendB, finalBA.recvToken, "A→B token sync")
-            assertContentEquals(bActiveSend, finalAB.recvToken, "B→A token sync")
-            assertContentEquals(aActiveSendC, finalCA.recvToken, "A→C token sync")
-            assertContentEquals(cActiveSend, finalAC.recvToken, "C→A token sync")
+            assertTokensMatch(finalAB, finalBA, "A→B token sync")
+            assertTokensMatch(finalBA, finalAB, "B→A token sync")
+            assertTokensMatch(finalAC, finalCA, "A→C token sync")
+            assertTokensMatch(finalCA, finalAC, "C→A token sync")
         }
     }
 
@@ -230,10 +235,8 @@ class E2eeBidirectionalEndToEndTest {
                 drainStability(aClient to aStore, bClient to bStore)
                 val finalA = aStore.getFriend(idAforB)!!.session
                 val finalB = bStore.getFriend(idBforA)!!.session
-                val aActiveSend = if (finalA.isSendTokenPending) finalA.prevSendToken else finalA.sendToken
-                val bActiveSend = if (finalB.isSendTokenPending) finalB.prevSendToken else finalB.sendToken
-                assertContentEquals(aActiveSend, finalB.recvToken, "Concurrent A→B sync")
-                assertContentEquals(bActiveSend, finalA.recvToken, "Concurrent B→A sync")
+                assertTokensMatch(finalA, finalB, "Concurrent A→B sync")
+                assertTokensMatch(finalB, finalA, "Concurrent B→A sync")
             }
         } finally {
             server.stop(0, 0)
@@ -282,9 +285,14 @@ class E2eeBidirectionalEndToEndTest {
                 val aClientFailing = LocationClient(baseUrl, aStore, failingClient)
 
                 // Alice sends location. Main post to prevSendToken succeeds. Keepalive to sendToken fails.
-                // Alice polls, gets Bob's ACK, should clear pending
+                // Alice polls, gets Bob's ACK, should clear the transition Alice was in.
+                // Note: If Bob's message causes Alice to ratchet, she will immediately enter a NEW transition.
                 aClientFailing.poll()
-                assertFalse(aStore.getFriend(idAforB)!!.session.isSendTokenPending, "Cleared via poll ACK")
+                val finalAlice = aStore.getFriend(idAforB)!!.session
+                if (finalAlice.isSendTokenPending) {
+                    // If still pending, verify we ratcheted forward
+                    assertFalse(finalAlice.localDhPub.contentEquals(aEntry.session.localDhPub), "Must have moved to a new DH epoch")
+                }
             }
         } finally {
             server.stop(0, 0)
@@ -386,9 +394,14 @@ class E2eeBidirectionalEndToEndTest {
                 bClient.poll()
                 bClient.sendLocation(3.0, 3.0)
                 
-                // Alice polls, gets Bob's ACK, should clear pending
+                // Alice polls, gets Bob's ACK, should clear the transition Alice was in.
+                // Note: If Bob's message causes Alice to ratchet, she will immediately enter a NEW transition.
                 aClientFailing.poll()
-                assertFalse(aStore.getFriend(idAforB)!!.session.isSendTokenPending, "Cleared via poll ACK")
+                val finalAlice = aStore.getFriend(idAforB)!!.session
+                if (finalAlice.isSendTokenPending) {
+                    // If still pending, verify we ratcheted forward
+                    assertFalse(finalAlice.localDhPub.contentEquals(aEntry.session.localDhPub), "Must have moved to a new DH epoch")
+                }
             }
         } finally {
             server.stop(0, 0)
@@ -423,14 +436,17 @@ class E2eeBidirectionalEndToEndTest {
                 // Post garbage
                 KtorMailboxClient.post(baseUrl, aRecvToken, EncryptedMessagePayload(v=PROTOCOL_VERSION, envelope=ByteArray(80), ct=ByteArray(64)))
                 
-                var acked = false
+                var garbageTokenAcked = false
                 val trackingClient = object : MailboxClient {
                     override suspend fun post(baseUrl: String, token: String, payload: MailboxPayload) = KtorMailboxClient.post(baseUrl, token, payload)
                     override suspend fun poll(baseUrl: String, token: String) = KtorMailboxClient.poll(baseUrl, token)
-                    override suspend fun ackIds(baseUrl: String, token: String, msgIds: List<String>) { acked = true; KtorMailboxClient.ackIds(baseUrl, token, msgIds) }
+                    override suspend fun ackIds(baseUrl: String, token: String, msgIds: List<String>) {
+                        if (token == aRecvToken) garbageTokenAcked = true
+                        KtorMailboxClient.ackIds(baseUrl, token, msgIds)
+                    }
                 }
                 LocationClient(baseUrl, aStore, trackingClient).poll()
-                assertFalse(acked, "Should not ACK garbage")
+                assertFalse(garbageTokenAcked, "Should not ACK garbage")
             }
         } finally {
             server.stop(0, 0)

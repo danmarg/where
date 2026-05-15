@@ -34,6 +34,9 @@ import net.af0.where.e2ee.PROTOCOL_VERSION
 import net.af0.where.e2ee.QrPayload
 import net.af0.where.e2ee.SessionState
 import net.af0.where.model.UserLocation
+import app.cash.sqldelight.db.SqlDriver
+import app.cash.sqldelight.driver.android.AndroidSqliteDriver
+import net.af0.where.db.WhereDatabase
 import org.junit.After
 import org.junit.Before
 import org.junit.Test
@@ -46,6 +49,14 @@ import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+
+private fun createTestSqlDriver(): SqlDriver {
+    return AndroidSqliteDriver(
+        WhereDatabase.Schema,
+        ApplicationProvider.getApplicationContext(),
+        null
+    )
+}
 
 /**
  * TestFakeLocationSource for testing.
@@ -233,7 +244,7 @@ class LocationViewModelTest {
     fun testInviteLifecycle_AliceSide() =
         runTest {
             val fakeLocationSource = TestFakeLocationSource()
-            val store = E2eeManager(FakeRawKeyValueStorage())
+            val store = E2eeManager(createTestSqlDriver())
             val client = LocationClient("http://localhost", store)
             // Disable automatic polling loop to prevent hangs
             viewModel =
@@ -289,7 +300,7 @@ class LocationViewModelTest {
             viewModel =
                 LocationViewModel(
                     app,
-                    e2eeManagerParam = E2eeManager(FakeRawKeyValueStorage()),
+                    e2eeManagerParam = E2eeManager(createTestSqlDriver()),
                     startPolling = false,
                     locationSourceParam = source,
                     uiStateStoreParam = uiStore,
@@ -358,8 +369,7 @@ class LocationViewModelTest {
     @Test
     fun testCancelPendingInit_SurgicalRemoval() =
         runTest {
-            val storage = FakeRawKeyValueStorage()
-            val store = E2eeManager(storage)
+            val store = E2eeManager(createTestSqlDriver())
             val client = mockk<LocationClient>(relaxed = true)
             val source = TestFakeLocationSource()
             viewModel =
@@ -548,11 +558,10 @@ class LocationViewModelTest {
 
             val source = TestFakeLocationSource()
             source.setAppForeground(false) // app is in background
-
             viewModel =
                 LocationViewModel(
                     app,
-                    e2eeManagerParam = E2eeManager(inMemory),
+                    e2eeManagerParam = E2eeManager(createTestSqlDriver()),
                     userStoreParam = userStore,
                     startPolling = false,
                     locationSourceParam = source,
