@@ -109,22 +109,45 @@ internal class E2eeStore(
     }
 
     private fun saveFriendInternal(friendId: String, entry: FriendEntry) {
+        val current = friends[friendId]
+        if (current != null) {
+            // Optimistic concurrency check: ensure we haven't modified the state
+            // since it was read from the cache. This guards against race conditions
+            // if someone uses an old FriendEntry snapshot to attempt an update.
+            if (entry.version != current.version) {
+                val msg = "STALE UPDATE: friendId=$friendId version mismatch! current=${current.version}, updating=${entry.version}"
+                println(msg)
+                throw IllegalStateException(msg)
+            }
+
+            // Double Ratchet safety: ensure receiving sequence doesn't regress (§5.5)
+            if (entry.session.recvSeq < current.session.recvSeq) {
+                val msg = "CRITICAL: recvSeq regression! friendId=$friendId, current=${current.session.recvSeq}, new=${entry.session.recvSeq}"
+                println(msg)
+                throw IllegalStateException(msg)
+            }
+        }
+
+        val nextVersion = entry.version + 1
+        val finalEntry = entry.copy(version = nextVersion)
+
         database.friendsQueries.insertFriend(
             id = friendId,
-            name = entry.name,
-            sessionBlob = json.encodeToString(SessionState.serializer(), entry.session).encodeToByteArray(),
-            isInitiator = if (entry.isInitiator) 1L else 0L,
-            lastLat = entry.lastLat,
-            lastLng = entry.lastLng,
-            lastTs = entry.lastTs,
-            lastRecvTs = entry.lastRecvTs,
-            isConfirmed = if (entry.isConfirmed) 1L else 0L,
-            lastSentTs = entry.lastSentTs,
-            lastPollTs = entry.lastPollTs,
-            sharingEnabled = if (entry.sharingEnabled) 1L else 0L,
-            lastDecryptFailed = if (entry.lastDecryptFailed) 1L else 0L
+            name = finalEntry.name,
+            sessionBlob = json.encodeToString(SessionState.serializer(), finalEntry.session).encodeToByteArray(),
+            isInitiator = if (finalEntry.isInitiator) 1L else 0L,
+            lastLat = finalEntry.lastLat,
+            lastLng = finalEntry.lastLng,
+            lastTs = finalEntry.lastTs,
+            lastRecvTs = finalEntry.lastRecvTs,
+            isConfirmed = if (finalEntry.isConfirmed) 1L else 0L,
+            lastSentTs = finalEntry.lastSentTs,
+            lastPollTs = finalEntry.lastPollTs,
+            sharingEnabled = if (finalEntry.sharingEnabled) 1L else 0L,
+            lastDecryptFailed = if (finalEntry.lastDecryptFailed) 1L else 0L,
+            version = nextVersion.toLong(),
         )
-        friends[friendId] = entry
+        friends[friendId] = finalEntry
     }
 
     private fun deleteFriendInternal(friendId: String) {
@@ -158,7 +181,9 @@ internal class E2eeStore(
     }
 
     internal fun deleteOutboxByMsgIdInternal(msgId: String) {
-        database.outboxQueries.deleteOutboxByMsgId(msgId)
+        val affected = database.outboxQueries.deleteOutboxByMsgId(msgId)
+        // println("DEBUG: Deleted msgId $msgId, affected rows?") 
+        // SQLDelight doesn't return affected rows easily for DELETE?
     }
 
     suspend fun deleteOutboxByFriendId(friendId: String) = storeLock.withLock {
@@ -197,6 +222,7 @@ internal class E2eeStore(
         lastPollTs = lastPollTs,
         sharingEnabled = sharingEnabled == 1L,
         lastDecryptFailed = lastDecryptFailed == 1L,
+        version = version.toInt(),
     )
 
     private fun net.af0.where.db.PendingInvites.toInvite() = PendingInvite(

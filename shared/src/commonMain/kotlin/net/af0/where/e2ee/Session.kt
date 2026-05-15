@@ -197,6 +197,9 @@ object Session {
         if (seq <= speculativeState.recvSeq) {
             throw ReplayException("replay: seq $seq <= recvSeq ${speculativeState.recvSeq}")
         }
+        
+        println("DEBUG: Decrypting message: dh=${header.dhPub.toHex().take(8)} seq=$seq (current recvSeq=${speculativeState.recvSeq})")
+        
         val stepsNeeded = seq - speculativeState.recvSeq
         if (stepsNeeded > MAX_GAP + 1) {
             throw ProtocolGapException("gap too large: stepsNeeded $stepsNeeded")

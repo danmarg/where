@@ -11,6 +11,8 @@ internal object E2eeProtocol {
         val decryptedLocations: List<LocationPlaintext>,
         val anySuccess: Boolean,
         val anyReplay: Boolean,
+        val processedIds: List<String>,
+        val replayedIds: List<String>,
         val softFailCount: Int,
         val hardFailCount: Int,
         val silentDrops: Int
@@ -70,11 +72,15 @@ internal object E2eeProtocol {
         var softFailCount = 0
         var hardFailCount = 0
 
+        val processedIds = mutableListOf<String>()
+        val replayedIds = mutableListOf<String>()
+
         for ((header, msg) in orderedMessages) {
             try {
                 val (newSession, pt) = Session.decryptMessage(currentSession, msg, header)
                 currentSession = newSession
                 anySuccess = true
+                processedIds.add(msg.msgId)
                 if (pt is MessagePlaintext.Location) {
                     decryptedLocations.add(
                         LocationPlaintext(
@@ -88,11 +94,13 @@ internal object E2eeProtocol {
             } catch (e: Exception) {
                 if (e is ReplayException) {
                     anyReplay = true
+                    replayedIds.add(msg.msgId)
                 } else if (e is DecryptionExceptionWithState) {
                     // If header authenticated but payload failed, we MUST commit the 
                     // ratcheted session state to prevent permanent DH desync (§5.5).
                     currentSession = e.newState
                     softFailCount++
+                    processedIds.add(msg.msgId)
                 } else {
                     hardFailCount++
                 }
@@ -104,6 +112,8 @@ internal object E2eeProtocol {
             decryptedLocations = decryptedLocations,
             anySuccess = anySuccess,
             anyReplay = anyReplay,
+            processedIds = processedIds,
+            replayedIds = replayedIds,
             softFailCount = softFailCount,
             hardFailCount = hardFailCount,
             silentDrops = totalEncryptedCount - orderedMessages.size

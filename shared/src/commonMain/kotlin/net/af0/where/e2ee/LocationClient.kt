@@ -53,7 +53,7 @@ open class LocationClient(
                 }
             }
 
-            val friends = store.listFriends().shuffled()
+            val friends = store.listFriends()
             val deferreds =
                 friends.map { friend ->
                     async {
@@ -110,7 +110,7 @@ open class LocationClient(
 
     suspend fun pollPendingInvites(): List<PendingInviteResult> =
         coroutineScope {
-            val pending = store.listPendingInvites().shuffled()
+            val pending = store.listPendingInvites()
             pending.map { invite ->
                 async {
                     try {
@@ -158,14 +158,14 @@ open class LocationClient(
         if (prev.isNotEmpty() && prev != friendBefore.session.recvToken.toHex()) {
             pollQueue.add(prev)
         }
-
         friendBefore.session.retiredRecvTokens.forEach { tokenBytes ->
             val token = tokenBytes.toHex()
             if (!pollQueue.contains(token)) {
                 pollQueue.add(token)
             }
         }
-        pollQueue.shuffle()
+
+        println("DEBUG: Polling tokens for friend ${friendId.take(4)}: ${pollQueue.map { it.take(8) }}")
 
         val polledTokens = mutableSetOf<String>()
 
@@ -183,7 +183,7 @@ open class LocationClient(
                 // Batch ACK logic
                 if (result.shouldAck) {
                     try {
-                        service.ackIds(currentTokenToPoll, messages.map { it.msgId })
+                        service.ackIds(currentTokenToPoll, result.processedIds)
                     } catch (e: Exception) {
                         println("[LocationClient] pollFriend: ackIds failed for ${currentTokenToPoll.take(8)}: ${e.message}")
                     }
@@ -224,10 +224,16 @@ open class LocationClient(
 
         val friendAfter = store.getFriend(friendId)
         if (friendAfter != null) {
-            val remoteDhChanged = !friendBefore.session.remoteDhPub.contentEquals(friendAfter.session.remoteDhPub)
-            if (friendAfter.session.needsRatchet || remoteDhChanged || friendAfter.session.isSendTokenPending) {
+            val now = currentTimeSeconds()
+            
+            // Automated Keepalive Rules:
+            // 1. We are pending a send token ACK (isSendTokenPending) for more than 10 seconds.
+            // (We no longer eagerly respond to new DH keys with keepalives to avoid ping-pong loops).
+            val retryPendingAck = friendAfter.session.isSendTokenPending && (now - friendAfter.lastSentTs >= 10)
+            
+            if (retryPendingAck) {
                 if (!friendAfter.isStale) {
-                    println("[LocationClient] pollFriend: needsRatchet/new DH for ${friendId.take(8)}, sending automated keepalive")
+                    println("[LocationClient] pollFriend: retrying pending ACK with keepalive for ${friendId.take(8)}")
                     try {
                         sendMessageToFriendInternal(friendId, MessagePlaintext.Keepalive())
                     } catch (e: Exception) {
@@ -289,7 +295,7 @@ open class LocationClient(
     ) {
         val ts = currentTimeSeconds()
         val payload = MessagePlaintext.Location(lat = lat, lng = lng, acc = 0.0, ts = ts)
-        val activeFriends = store.listFriends().filter { it.id !in pausedFriendIds && !it.isStale }.shuffled()
+        val activeFriends = store.listFriends().filter { it.id !in pausedFriendIds && !it.isStale }
 
         var successCount = 0
         var failCount = 0

@@ -49,6 +49,10 @@ class E2eeChaosTest {
                 mailboxes[token]?.removeAll { payload: MailboxPayload -> payload.msgId in msgIds }
             }
         }
+
+        suspend fun totalMessages(): Int = lock.withLock {
+            mailboxes.values.sumOf { it.size }
+        }
     }
 
     private class MemoryStorage : RawKeyValueStorage {
@@ -317,11 +321,15 @@ class E2eeChaosTest {
         }
 
         // 1. Start background polling and outbox processing
-        val backgroundJobs = clients.map { client ->
+        val backgroundJobs = clients.mapIndexed { i, client ->
             launch {
                 while (isActive) {
-                    try { client.poll() } catch (e: Exception) {}
-                    try { client.processOutboxes() } catch (e: Exception) {}
+                    try { client.poll() } catch (e: Exception) {
+                        println("ERROR: User $i poll failed: ${e.message}")
+                    }
+                    try { client.processOutboxes() } catch (e: Exception) {
+                        println("ERROR: User $i processOutboxes failed: ${e.message}")
+                    }
                     delay(Random.nextLong(100, 300))
                 }
             }
@@ -380,14 +388,15 @@ class E2eeChaosTest {
             launch {
                 repeat(messagesPerFriend) { m ->
                     try {
+                        println("DEBUG: User $i sending message $m")
                         clients[i].sendLocation(i.toDouble(), m.toDouble())
                         delay(1000)
                     } catch (e: Exception) {
-                        // WAL outbox will handle retransmission if encryptAndAdvance succeeded.
-                        // We don't retry at the app layer to avoid flooding the outbox with duplicates.
+                        println("DEBUG: User $i send message $m failed: ${e.message}")
                     }
                     delay(Random.nextLong(100, 300)) // Throttle sends
                 }
+                println("DEBUG: User $i finished sending all $messagesPerFriend messages")
             }
         }
 
@@ -398,22 +407,40 @@ class E2eeChaosTest {
         val convergenceTimeout = 900_000L // 15 minutes virtual
         try {
             withTimeout(convergenceTimeout) {
+                var lastLogTime = 0L
                 while (true) {
                     yield()
                     var allDone = true
+                    val status = StringBuilder()
+                    val mailboxCount = mailbox.totalMessages()
+                    status.append("MB:$mailboxCount MPF:$messagesPerFriend ")
+                    
                     for (i in 0 until numFriends) {
                         val friends = managers[i].listFriends()
+                        status.append("U$i:[")
                         if (friends.size < numFriends - 1) {
                             allDone = false
+                            status.append("ONLY ${friends.size} FRIENDS")
                         } else {
                             for (friend in friends) {
-                                if (friend.lastLng?.toInt() != messagesPerFriend - 1) {
+                                val lastLng = friend.lastLng?.toInt() ?: -1
+                                val outbox = managers[i].getOutbox(friend.id)
+                                status.append("${friend.name.takeLast(1)}:$lastLng(out=${outbox.size}) ")
+                                if (lastLng != messagesPerFriend - 1 || outbox.isNotEmpty()) {
                                     allDone = false
                                 }
                             }
                         }
+                        status.append("] ")
                     }
+                    
+                    if (testScheduler.currentTime - lastLogTime >= 5000) {
+                        println("DEBUG: Convergence status at ${testScheduler.currentTime}ms: $status")
+                        lastLogTime = testScheduler.currentTime
+                    }
+
                     if (allDone) {
+                        println("DEBUG: Convergence reached at ${testScheduler.currentTime}ms: $status")
                         break
                     }
                     delay(500)

@@ -49,6 +49,7 @@ data class FriendEntry(
     val lastPollTs: Long = 0L,
     val sharingEnabled: Boolean = true,
     val lastDecryptFailed: Boolean = false,
+    val version: Int = 0,
 ) {
     companion object {
         const val ACK_TIMEOUT_SECONDS = 7 * 24 * 3600L
@@ -267,7 +268,7 @@ class E2eeManager(
 
             val updatedEntry = entry.copy(
                 session = updatedSession,
-                lastSentTs = if (payload is MessagePlaintext.Location) currentTimeSeconds() else entry.lastSentTs,
+                lastSentTs = currentTimeSeconds(),
             )
             
             persistence.insertOutboxInternal(
@@ -389,6 +390,7 @@ class E2eeManager(
         val decryptedLocations: List<LocationPlaintext>,
         val anySuccess: Boolean,
         val hadSilentDrops: Boolean,
+        val processedIds: List<String>,
         val anyReplay: Boolean = false,
         val failCount: Int = 0,
         val hadStateUpdate: Boolean = false,
@@ -453,15 +455,25 @@ class E2eeManager(
                 lastTs = if (lastLocation != null && (lastLocation.ts >= (entry.lastTs ?: 0))) lastLocation.ts else entry.lastTs,
                 lastPollTs = currentTimeSeconds(),
             )
+            
+            if (updatedSession != entry.session) {
+                println("DEBUG: State transition for ${friendId.take(8)}: recvSeq ${entry.session.recvSeq} -> ${updatedSession.recvSeq}")
+            }
 
-            val shouldAck = result.anySuccess || hadStateUpdate || result.anyReplay || (messages.size > encryptedMessages.size)
+            // Calculate which IDs to ACK
+            val allProcessedIds = result.processedIds + result.replayedIds
+            val nonEncryptedIds = messages.filter { it !is EncryptedMessagePayload }.map { it.msgId }
+            val idsToAck = allProcessedIds + nonEncryptedIds
+
+            val shouldAck = idsToAck.isNotEmpty()
 
             val hadDhRatchet = !result.finalSession.rootKey.contentEquals(entry.session.rootKey)
 
             PersistenceAction.Update(updatedEntry) to PollBatchResult(
                 decryptedLocations = result.decryptedLocations,
                 anySuccess = result.anySuccess,
-                hadSilentDrops = result.silentDrops > 0 || (messages.size > encryptedMessages.size),
+                hadSilentDrops = result.silentDrops > 0 || (messages.size > (encryptedMessages.size + nonEncryptedIds.size)),
+                processedIds = idsToAck,
                 anyReplay = result.anyReplay,
                 failCount = failCount,
                 hadStateUpdate = hadStateUpdate,
