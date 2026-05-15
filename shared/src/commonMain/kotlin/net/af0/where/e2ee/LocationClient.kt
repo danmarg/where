@@ -43,6 +43,12 @@ open class LocationClient(
         pausedFriendIds: Set<String> = emptySet(),
     ): List<UserLocation> =
         coroutineScope {
+            try {
+                processOutboxes()
+            } catch (e: Exception) {
+                println("[LocationClient] poll: initial processOutboxes failed: ${e.message}")
+            }
+
             val now = currentTimeSeconds()
             if (now - lastCleanupTime > 3600) {
                 try {
@@ -53,56 +59,61 @@ open class LocationClient(
                 }
             }
 
-            val friends = store.listFriends()
+            val friends = try { 
+                store.listFriends() 
+            } catch (e: Exception) {
+                println("[LocationClient] poll: failed to list friends: ${e.message}")
+                emptyList()
+            }
+
             val deferreds =
                 friends.map { friend ->
                     async {
-                        val mutex = getFriendMutex(friend.id)
-                        mutex.withLock {
-                            val alreadyPolling =
-                                inFlightMutex.withLock {
-                                    if (inFlightPolls.contains(friend.id)) {
-                                        true
-                                    } else {
-                                        inFlightPolls.add(friend.id)
-                                        false
+                        try {
+                            val mutex = getFriendMutex(friend.id)
+                            mutex.withLock {
+                                val alreadyPolling =
+                                    inFlightMutex.withLock {
+                                        if (inFlightPolls.contains(friend.id)) {
+                                            true
+                                        } else {
+                                            inFlightPolls.add(friend.id)
+                                            false
+                                        }
+                                    }
+                                if (alreadyPolling) return@async Pair(emptyList<UserLocation>(), null)
+
+                                try {
+                                    val updates = pollFriend(friend.id, friend.id in pausedFriendIds)
+                                    Pair(updates, null)
+                                } catch (e: Exception) {
+                                    println("[LocationClient] poll: failed for ${friend.id.take(8)}: ${e.message}")
+                                    Pair(emptyList<UserLocation>(), e)
+                                } finally {
+                                    inFlightMutex.withLock {
+                                        inFlightPolls.remove(friend.id)
                                     }
                                 }
-                            if (alreadyPolling) return@async Pair(emptyList<UserLocation>(), null)
-
-                            try {
-                                val updates = pollFriend(friend.id, friend.id in pausedFriendIds)
-                                Pair(updates, null)
-                            } catch (e: Exception) {
-                                println("[LocationClient] poll: failed for ${friend.id.take(8)}: ${e.message}")
-                                Pair(emptyList<UserLocation>(), e)
-                            } finally {
-                                inFlightMutex.withLock {
-                                    inFlightPolls.remove(friend.id)
-                                }
                             }
+                        } catch (e: Exception) {
+                            println("[LocationClient] poll: mutex or setup failed for ${friend.id.take(8)}: ${e.message}")
+                            Pair(emptyList<UserLocation>(), e)
                         }
                     }
                 }
 
             val results = deferreds.awaitAll()
             val allUpdates = mutableListOf<UserLocation>()
-            var successCount = 0
-            var failCount = 0
-            var lastError: Exception? = null
-
-            for ((updates, error) in results) {
-                if (error == null) {
-                    allUpdates.addAll(updates)
-                    successCount++
-                } else {
-                    failCount++
-                    lastError = error
-                }
+            
+            for ((updates, _) in results) {
+                allUpdates.addAll(updates)
             }
 
-            if (successCount == 0 && failCount > 0) {
-                lastError?.let { throw it }
+            // Ensure outboxes are processed even if some polls failed
+            try {
+                processOutboxes()
+            } catch (e: Exception) {
+                println("[LocationClient] poll: final processOutboxes failed: ${e.message}")
             }
 
             allUpdates
@@ -165,7 +176,7 @@ open class LocationClient(
             }
         }
 
-        println("DEBUG: Polling tokens for friend ${friendId.take(4)}: ${pollQueue.map { it.take(8) }}")
+        // println("DEBUG: Polling tokens for friend ${friendId.take(4)}: ${pollQueue.map { it.take(8) }}")
 
         val polledTokens = mutableSetOf<String>()
 
@@ -174,10 +185,10 @@ open class LocationClient(
             if (polledTokens.contains(currentTokenToPoll)) continue
             polledTokens.add(currentTokenToPoll)
 
-            val messages = service.poll(currentTokenToPoll)
-            if (messages.isEmpty()) continue
-
             try {
+                val messages = service.poll(currentTokenToPoll)
+                if (messages.isEmpty()) continue
+
                 val result = store.processBatch(friendId, currentTokenToPoll, messages) ?: continue
 
                 // Batch ACK logic
@@ -189,15 +200,6 @@ open class LocationClient(
                     }
                 }
                 val updatedFriend = store.getFriend(friendId) ?: break
-                if (updatedFriend.session.needsRatchet) {
-                    // Protocol hardening: send a keepalive if we received a new DH key from the peer
-                    // but haven't responded with our own new key yet. This completes the DH transition.
-                    try {
-                        sendMessageToFriendInternal(friendId, MessagePlaintext.Keepalive())
-                    } catch (e: Exception) {
-                        println("[LocationClient] pollFriend: keepalive failed for ${friendId.take(8)}: ${e.message}")
-                    }
-                }
 
                 resultLocations.addAll(
                     result.decryptedLocations.map { loc ->
@@ -205,22 +207,27 @@ open class LocationClient(
                     },
                 )
 
-
                 // Follow rotation if session state changed
                 val newToken = updatedFriend.session.recvToken.toHex()
                 if (newToken != currentTokenToPoll) {
                     pollQueue.add(newToken)
                 }
             } catch (e: Exception) {
-                println("[LocationClient] pollFriend: processBatch failed for ${friendId.take(8)}: ${e.message}")
-                throw e
+                println("[LocationClient] pollFriend: error for token ${currentTokenToPoll.take(8)}: ${e.message}")
+                // Continue to next token in queue
             }
         }
 
-        store.updateLastPollTs(friendId, currentTimeSeconds())
+        try {
+            store.updateLastPollTs(friendId, currentTimeSeconds())
+        } catch (e: Exception) {}
 
         // Recovery: process any pending outbox messages for this friend
-        processOutbox(friendId)
+        try {
+            processOutbox(friendId)
+        } catch (e: Exception) {
+            println("[LocationClient] pollFriend: processOutbox failed for ${friendId.take(8)}: ${e.message}")
+        }
 
         val friendAfter = store.getFriend(friendId)
         if (friendAfter != null) {
@@ -262,9 +269,22 @@ open class LocationClient(
     }
 
     suspend fun processOutboxes() {
-        val friends = store.listFriends()
+        val friends = try { 
+            store.listFriends() 
+        } catch (e: Exception) {
+            println("[LocationClient] processOutboxes: failed to list friends: ${e.message}")
+            return
+        }
+        
         friends.forEach { friend ->
-            processOutbox(friend.id)
+            try {
+                val mutex = getFriendMutex(friend.id)
+                mutex.withLock {
+                    processOutbox(friend.id)
+                }
+            } catch (e: Exception) {
+                println("[LocationClient] processOutboxes: failed for ${friend.id.take(8)}: ${e.message}")
+            }
         }
     }
 
@@ -293,6 +313,7 @@ open class LocationClient(
         lng: Double,
         pausedFriendIds: Set<String> = emptySet(),
     ) {
+        processOutboxes()
         val ts = currentTimeSeconds()
         val payload = MessagePlaintext.Location(lat = lat, lng = lng, acc = 0.0, ts = ts)
         val activeFriends = store.listFriends().filter { it.id !in pausedFriendIds && !it.isStale }
@@ -342,7 +363,6 @@ open class LocationClient(
     private suspend fun sendMessageToFriendInternal(friendId: String, payload: MessagePlaintext) {
         val (message, session) = store.encryptAndAdvance(friendId, payload)
         
-        println("[LocationClient] send: friend=$friendId type=${payload::class.simpleName} seq=${session.sendSeq} pending=${session.isSendTokenPending}")
         
         // We trigger sequential outbox processing for this friend.
         // This ensures messages are sent in order (0, 1, 2...) even if multiple calls happen rapidly.

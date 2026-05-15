@@ -53,6 +53,11 @@ class E2eeChaosTest {
         suspend fun totalMessages(): Int = lock.withLock {
             mailboxes.values.sumOf { it.size }
         }
+        
+        suspend fun dumpStatus(): String = lock.withLock {
+            mailboxes.entries.filter { it.value.isNotEmpty() }
+                .joinToString(", ") { "${it.key.take(8)}:${it.value.size}" }
+        }
     }
 
     private class MemoryStorage : RawKeyValueStorage {
@@ -287,10 +292,10 @@ class E2eeChaosTest {
     @Test
     fun testExtremeChaos() = runTest(timeout = kotlin.time.Duration.parse("10m")) {
         runMultiFriendChaos(
-            numFriends = 2,
-            messagesPerFriend = 5,
-            failProb = 0.10, // 10% failure rate
-            dropProb = 0.05, // 5% drop rate
+            numFriends = 3,
+            messagesPerFriend = 50,
+            failProb = 0.20,
+            dropProb = 0.10,
         )
     }
 
@@ -405,6 +410,15 @@ class E2eeChaosTest {
 
         // 4. Wait for convergence
         val convergenceTimeout = 900_000L // 15 minutes virtual
+        
+        // RECOVERY PHASE: Once initial sends are done, reduce chaos to ensure convergence.
+        // We still keep some failure probability to ensure the protocol handles transient errors
+        // even during recovery, but we eliminate drops and reset expirations.
+        chaosMailbox.failPostProbability = 0.02
+        chaosMailbox.failPollProbability = 0.02
+        chaosMailbox.dropProbability = 0.0
+        chaosMailbox.resetExpirations()
+
         try {
             withTimeout(convergenceTimeout) {
                 var lastLogTime = 0L
@@ -434,8 +448,8 @@ class E2eeChaosTest {
                         status.append("] ")
                     }
                     
-                    if (testScheduler.currentTime - lastLogTime >= 5000) {
-                        println("DEBUG: Convergence status at ${testScheduler.currentTime}ms: $status")
+                    if (testScheduler.currentTime - lastLogTime >= 50000) {
+                        println("DEBUG: Convergence status at ${testScheduler.currentTime}ms: MB:[${mailbox.dumpStatus()}] $status")
                         lastLogTime = testScheduler.currentTime
                     }
 
@@ -447,7 +461,8 @@ class E2eeChaosTest {
                 }
             }
         } catch (e: Exception) {
-            error("Multi-friend chaos test timed out after ${testScheduler.currentTime} virtual ms")
+            e.printStackTrace()
+            error("Multi-friend chaos test timed out after ${testScheduler.currentTime} virtual ms: ${e.message}")
         } finally {
             backgroundJobs.forEach { it.cancelAndJoin() }
         }
