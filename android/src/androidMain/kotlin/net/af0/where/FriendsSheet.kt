@@ -231,10 +231,8 @@ fun FriendsSheet(
                                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                                     )
                                     val ratchet = if (friend.session.needsRatchet) "YES" else "no"
-                                    val pending = "no"
                                     Text(
-                                        "needsRatchet: $ratchet  sendPending: $pending",
-                                        style = MaterialTheme.typography.labelSmall,
+                                        "needsRatchet: $ratchet",                                        style = MaterialTheme.typography.labelSmall,
                                         fontFamily = FontFamily.Monospace,
                                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                                     )

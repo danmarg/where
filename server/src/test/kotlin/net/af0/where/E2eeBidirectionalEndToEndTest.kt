@@ -411,6 +411,85 @@ class E2eeBidirectionalEndToEndTest {
         }
     }
 
+    @Test
+    fun `outbox retry recovers on next send`() {
+        initializeLibsodium()
+        val port = 18086
+        val baseUrl = "http://localhost:$port"
+        val server = embeddedServer(Netty, port = port) { module(ServerState()) }
+        server.start(wait = false)
+        try {
+            runBlocking {
+                val aStore = E2eeManager(createTestSqlDriver())
+                val bStore = E2eeManager(createTestSqlDriver())
+                val qr = aStore.createInvite("Alice")
+
+                var failCount = 2
+                val failingClient =
+                    object : MailboxClient {
+                        override suspend fun post(
+                            baseUrl: String,
+                            token: String,
+                            payload: MailboxPayload,
+                        ) {
+                            if (failCount > 0) {
+                                failCount--
+                                throw RuntimeException("Simulated network failure")
+                            }
+                            KtorMailboxClient.post(baseUrl, token, payload)
+                        }
+
+                        override suspend fun poll(
+                            baseUrl: String,
+                            token: String,
+                        ) = KtorMailboxClient.poll(baseUrl, token)
+                    }
+
+                val bClient = LocationClient(baseUrl, bStore, failingClient)
+                bStore.processScannedQr(qr, "Bob")
+
+                // 1. Initial exchange should fail 2 times, then succeed via processOutboxes
+                while (failCount > 0) {
+                    try {
+                        bClient.processOutboxes()
+                    } catch (e: Exception) {
+                    }
+                    delay(10)
+                }
+                bClient.processOutboxes() // This one should succeed
+
+                val aClient = LocationClient(baseUrl, aStore)
+                drainStability(aClient to aStore, bClient to bStore)
+
+                val idAforB = aStore.listFriends().first { it.name == "Bob" }.id
+                val idBforA = bStore.listFriends().first { it.name == "Alice" }.id
+
+                // 2. Simulate failure during location send
+                failCount = 1
+                try {
+                    bClient.sendLocation(1.1, 1.1)
+                } catch (e: Exception) {
+                }
+
+                assertTrue(bStore.getOutbox(idBforA).isNotEmpty(), "Outbox should contain failed location")
+
+                // 3. Second sendLocation should retry outbox then send new location
+                bClient.sendLocation(2.2, 2.2)
+                assertTrue(bStore.getOutbox(idBforA).isEmpty(), "Outbox should be empty after recovery")
+
+                // 4. Alice should receive both updates
+                drainStability(aClient to aStore, bClient to bStore)
+                val friend = aStore.getFriend(idAforB)!!
+                assertEquals(2.2, friend.lastLat)
+                // We don't easily track history in FriendEntry, but the fact that 2.2 was reached
+                // and the session tokens match implies 1.1 was also processed.
+                assertTokensMatch(friend.session, bStore.getFriend(idBforA)!!.session, "Post-recovery sync")
+            }
+        } finally {
+            server.stop(0, 0)
+        }
+    }
+
     private class MemoryRawKeyValueStorage : RawKeyValueStorage {
         private val data = mutableMapOf<String, String>()
 

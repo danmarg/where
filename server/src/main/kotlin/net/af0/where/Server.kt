@@ -125,6 +125,15 @@ class InMemoryMailboxState : MailboxStore {
 
     private fun getLock(token: String) = locks.getOrPut(token) { Any() }
 
+    override fun checkIpRateLimit(ip: String): Boolean {
+        val now = System.currentTimeMillis()
+        val times = ipPostTimes.getOrPut(ip) { ConcurrentLinkedQueue() }
+        times.removeIf { it < now - RATE_LIMIT_WINDOW_MS }
+        if (times.size >= 2000) return false
+        times.add(now)
+        return true
+    }
+
     override fun post(
         token: String,
         payload: JsonElement,
@@ -292,7 +301,14 @@ class RedisMailboxState(redisUrl: String) : MailboxStore {
         if #ids == 0 then return {} end
 
         -- Fetch payloads from Hash. Note: some might be nil if deleted between ZRANGE and HMGET
-        return redis.call('HMGET', dataKey, unpack(ids))
+        local payloads = redis.call('HMGET', dataKey, unpack(ids))
+        for i, payload in ipairs(payloads) do
+            if not payload then
+                -- Cleanup: remove orphaned ID from the ZSET if the data hash field is missing
+                redis.call('ZREM', inboxKey, ids[i])
+            end
+        end
+        return payloads
         """.trimIndent()
 
     override fun post(
@@ -373,10 +389,11 @@ class RedisMailboxState(redisUrl: String) : MailboxStore {
         return (result as Long).toInt()
     }
 
-    override fun checkIpRateLimit(ip: String): Boolean {        val rlKey = "ratelimit-ip:$ip"
+    override fun checkIpRateLimit(ip: String): Boolean {
+        val rlKey = "ratelimit-ip:$ip"
         val count = jedis.incr(rlKey)
         if (count == 1L) jedis.expire(rlKey, RATE_LIMIT_WINDOW_MS / 1000)
-        return count <= 100 // 100 posts per min per IP
+        return count <= 2000 // 2000 posts per min per IP (allows WAL bursts + NAT sharing)
     }
 
     override fun close() = jedis.close()
