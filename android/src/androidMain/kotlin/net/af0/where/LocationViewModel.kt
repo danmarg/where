@@ -245,6 +245,7 @@ class LocationViewModel(
         // If we were showing our own invite sheet, dismiss it immediately to make room for the naming dialog.
         inviteJob?.cancel()
         _inviteState.value = InviteState.None
+        uiStateStore.setInviteSheetShowing(false)
 
         uiStateStore.onPendingQrForNaming(qr)
         triggerRapidPoll()
@@ -267,6 +268,7 @@ class LocationViewModel(
         // Reset our own invite state immediately.
         inviteJob?.cancel()
         _inviteState.value = InviteState.None
+        uiStateStore.setInviteSheetShowing(false)
 
         val qrWithName = qr.copy(suggestedName = friendName)
         val currentInvite = _inviteState.value
@@ -335,6 +337,7 @@ class LocationViewModel(
 
         inviteJob?.cancel()
         _inviteState.value = InviteState.None
+        uiStateStore.setInviteSheetShowing(false)
 
         _isExchanging.value = true
         viewModelScope.launch {

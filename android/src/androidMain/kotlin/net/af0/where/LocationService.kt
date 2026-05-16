@@ -423,6 +423,7 @@ class LocationService : Service() {
                 )
                 withContext(Dispatchers.Main) {
                     uiStateStore.setMultipleScansDetected(result.multipleScansDetected)
+                    uiStateStore.setInviteSheetShowing(false)
                     locationSource.onPendingInit(initPayload, result.inviteEkPub) // THE FIX: Pass our own EK
                     updateStatus(null)
                 }

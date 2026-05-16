@@ -79,7 +79,7 @@ final class LocationSyncService: ObservableObject {
     @Published var isExchanging: Bool = false
     private var inviteTask: Task<Void, Never>? = nil
     @Published var visibleUsers: [Shared.UserLocation] = []
-    var isInviteActive: Bool { inviteState is Shared.InviteState.Pending }
+    var isInviteActive: Bool { isInviteSheetShowing }
     var skipUpdateVisibleUsers: Bool = false
 
     var lastRapidPollTrigger: Date = Date(timeIntervalSince1970: 0)  // internal for testing
