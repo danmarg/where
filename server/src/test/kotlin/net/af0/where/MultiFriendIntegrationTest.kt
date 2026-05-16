@@ -1,11 +1,13 @@
 package net.af0.where
 
+import app.cash.sqldelight.db.SqlDriver
+import app.cash.sqldelight.driver.jdbc.sqlite.JdbcSqliteDriver
 import com.ionspin.kotlin.crypto.LibsodiumInitializer
 import io.ktor.client.HttpClient
 import io.ktor.client.call.body
 import io.ktor.client.plugins.contentnegotiation.ContentNegotiation
 import io.ktor.client.request.get
-import io.ktor.client.request.post
+import io.ktor.client.request.put
 import io.ktor.client.request.setBody
 import io.ktor.http.ContentType
 import io.ktor.http.HttpStatusCode
@@ -13,10 +15,8 @@ import io.ktor.http.contentType
 import io.ktor.serialization.kotlinx.json.json
 import io.ktor.server.testing.*
 import kotlinx.serialization.json.Json
-import net.af0.where.e2ee.*
-import app.cash.sqldelight.db.SqlDriver
-import app.cash.sqldelight.driver.jdbc.sqlite.JdbcSqliteDriver
 import net.af0.where.db.WhereDatabase
+import net.af0.where.e2ee.*
 import kotlin.test.*
 
 class MultiFriendIntegrationTest {
@@ -59,7 +59,7 @@ class MultiFriendIntegrationTest {
             payload: MailboxPayload,
         ) {
             val resp =
-                client.post("/inbox/$token") {
+                client.put("/inbox/$token/${payload.msgId}") {
                     contentType(ContentType.Application.Json)
                     setBody(payload)
                 }

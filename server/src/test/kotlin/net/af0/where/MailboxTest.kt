@@ -18,16 +18,16 @@ class MailboxTest {
     private fun isLocalhost(): Boolean = System.getenv("WHERE_TEST_SERVER_URL")?.contains("localhost") != false
 
     // ---------------------------------------------------------------------------
-    // POST /inbox/{token}
+    // PUT /inbox/{token}/{msgId}
     // ---------------------------------------------------------------------------
 
     @Test
-    fun `POST inbox returns 204`() {
+    fun `PUT inbox returns 204`() {
         if (!isLocalhost()) return // Skip when running against production
         testApplication {
             application { module(ServerState()) }
             val response =
-                client.post("/inbox/aabbccddeeff0011") {
+                client.put("/inbox/aabbccddeeff0011/msg1") {
                     contentType(ContentType.Application.Json)
                     setBody("""{"type":"EncryptedLocation","seq":"1","ct":"AAEC"}""")
                 }
@@ -36,12 +36,12 @@ class MailboxTest {
     }
 
     @Test
-    fun `POST inbox with empty body returns 400`() {
+    fun `PUT inbox with empty body returns 400`() {
         if (!isLocalhost()) return
         testApplication {
             application { module(ServerState()) }
             val response =
-                client.post("/inbox/aabbccddeeff0011") {
+                client.put("/inbox/aabbccddeeff0011/msg1") {
                     contentType(ContentType.Application.Json)
                     setBody("")
                 }
@@ -50,12 +50,12 @@ class MailboxTest {
     }
 
     @Test
-    fun `POST inbox with non-JSON body returns 400`() {
+    fun `PUT inbox with non-JSON body returns 400`() {
         if (!isLocalhost()) return
         testApplication {
             application { module(ServerState()) }
             val response =
-                client.post("/inbox/sometoken") {
+                client.put("/inbox/sometoken/msg1") {
                     contentType(ContentType.Application.Json)
                     setBody("not json")
                 }
@@ -90,11 +90,11 @@ class MailboxTest {
             val payload1 = """{"type":"EncryptedLocation","seq":"1","ct":"AA=="}"""
             val payload2 = """{"type":"EncryptedLocation","seq":"2","ct":"BB=="}"""
 
-            client.post("/inbox/$token") {
+            client.put("/inbox/$token/msg1") {
                 contentType(ContentType.Application.Json)
                 setBody(payload1)
             }
-            client.post("/inbox/$token") {
+            client.put("/inbox/$token/msg2") {
                 contentType(ContentType.Application.Json)
                 setBody(payload2)
             }
@@ -112,7 +112,7 @@ class MailboxTest {
         testApplication {
             application { module(ServerState()) }
             val token = "cafebabe12345678"
-            client.post("/inbox/$token") {
+            client.put("/inbox/$token/msg1") {
                 contentType(ContentType.Application.Json)
                 setBody("""{"type":"EncryptedLocation","seq":"1","ct":"AA=="}""")
             }
@@ -187,7 +187,7 @@ class MailboxTest {
             val tokenA = "aaaaaaaaaaaaaaaa"
             val tokenB = "bbbbbbbbbbbbbbbb"
 
-            client.post("/inbox/$tokenA") {
+            client.put("/inbox/$tokenA/msg1") {
                 contentType(ContentType.Application.Json)
                 setBody("""{"type":"EncryptedLocation","seq":"1","ct":"AA=="}""")
             }
@@ -219,15 +219,15 @@ class MailboxTest {
     }
 
     @Test
-    fun `POST inbox returns 429 when rate-limited`() {
+    fun `PUT inbox returns 429 when rate-limited`() {
         if (!isLocalhost()) return
         testApplication {
             application { module(ServerState(debug = true)) }
-            val token = "ratelimit-post-token"
+            val token = "ratelimit-put-token"
 
             // Exhaust the rate limit
-            repeat(RATE_LIMIT_MAX_POSTS) {
-                client.post("/inbox/$token") {
+            repeat(RATE_LIMIT_MAX_POSTS) { i ->
+                client.put("/inbox/$token/msg-$i") {
                     contentType(ContentType.Application.Json)
                     setBody("""{"msg":"test"}""")
                 }
@@ -235,7 +235,7 @@ class MailboxTest {
 
             // Next one should be 429
             val response =
-                client.post("/inbox/$token") {
+                client.put("/inbox/$token/msg-overflow") {
                     contentType(ContentType.Application.Json)
                     setBody("""{"msg":"test"}""")
                 }
@@ -244,7 +244,7 @@ class MailboxTest {
     }
 
     @Test
-    fun `POST inbox returns 429 when queue depth reached`() {
+    fun `PUT inbox returns 429 when queue depth reached`() {
         if (!isLocalhost()) return
         testApplication {
             val state = InMemoryMailboxState()
@@ -254,12 +254,12 @@ class MailboxTest {
             // We need to bypass rate-limiting to test queue depth.
             // We'll fill the queue manually in the state object (since it's internal to the test app).
             repeat(1000) { i ->
-                state.post(token, JsonPrimitive(i))
+                state.post(token, JsonPrimitive(i), "msg-$i")
             }
 
             // The 1001st message should be rejected (returns false from state.post, leading to 429 in route).
             val response =
-                client.post("/inbox/$token") {
+                client.put("/inbox/$token/overflow") {
                     contentType(ContentType.Application.Json)
                     setBody("""{"msg":"overflow"}""")
                 }
@@ -316,7 +316,7 @@ class MailboxTest {
 
         assertEquals(1, state.drain("live")!!.size, "live message should survive eviction")
     }
-    
+
     @Test
     fun `GET inbox response is identical for unknown and empty tokens`() {
         if (!isLocalhost()) return
@@ -352,7 +352,7 @@ class MailboxTest {
             val elapsed1 = System.currentTimeMillis() - start1
             assertTrue(elapsed1 >= 45, "Poll for nonexistent token took $elapsed1 ms, expected >= 50ms")
 
-            client.post("/inbox/$token") {
+            client.put("/inbox/$token/msg1") {
                 contentType(ContentType.Application.Json)
                 setBody("""{"msg":"test"}""")
             }

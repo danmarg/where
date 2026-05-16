@@ -1,12 +1,12 @@
 package net.af0.where
 
+import app.cash.sqldelight.db.SqlDriver
+import app.cash.sqldelight.driver.jdbc.sqlite.JdbcSqliteDriver
 import io.ktor.server.engine.*
 import io.ktor.server.netty.*
 import kotlinx.coroutines.*
-import net.af0.where.e2ee.*
-import app.cash.sqldelight.db.SqlDriver
-import app.cash.sqldelight.driver.jdbc.sqlite.JdbcSqliteDriver
 import net.af0.where.db.WhereDatabase
+import net.af0.where.e2ee.*
 import kotlin.random.Random
 import kotlin.test.*
 
@@ -59,11 +59,12 @@ class E2eeBidirectionalEndToEndTest {
             val qr = aliceManager.createInvite("Alice")
             val (initPayload, _) = bobManager.processScannedQr(qr, "Bob")
             KtorMailboxClient.post(baseUrl, qr.discoveryToken().toHex(), initPayload)
-            val aliceEntry = aliceManager.processKeyExchangeInit(
-                KtorMailboxClient.poll(baseUrl, qr.discoveryToken().toHex()).filterIsInstance<KeyExchangeInitPayload>().first(),
-                "Bob",
-                qr.ekPub
-            )!!
+            val aliceEntry =
+                aliceManager.processKeyExchangeInit(
+                    KtorMailboxClient.poll(baseUrl, qr.discoveryToken().toHex()).filterIsInstance<KeyExchangeInitPayload>().first(),
+                    "Bob",
+                    qr.ekPub,
+                )!!
             val idBforA = bobManager.listFriends().first().id
             val idAforB = aliceEntry.id
 
@@ -78,20 +79,26 @@ class E2eeBidirectionalEndToEndTest {
             // Final state check
             val finalAlice = aliceManager.getFriend(idAforB)!!.session
             val finalBob = bobManager.getFriend(idBforA)!!.session
-            
+
             assertTokensMatch(finalAlice, finalBob, "Alice → Bob token sync")
             assertTokensMatch(finalBob, finalAlice, "Bob → Alice token sync")
         }
     }
 
-    private fun assertTokensMatch(sender: SessionState, receiver: SessionState, message: String) {
+    private fun assertTokensMatch(
+        sender: SessionState,
+        receiver: SessionState,
+        message: String,
+    ) {
         val receiverPolled = mutableSetOf<String>()
         receiverPolled.add(receiver.recvToken.toHex())
-        
+
         // After drainStability, tokens SHOULD match perfectly.
         // We check current sendToken and prevSendToken (just in case)
-        assertTrue(receiverPolled.contains(sender.sendToken.toHex()) || receiverPolled.contains(sender.prevSendToken.toHex()), 
-            "$message: active send ${sender.sendToken.toHex()} not in receiver polled set $receiverPolled")
+        assertTrue(
+            receiverPolled.contains(sender.sendToken.toHex()) || receiverPolled.contains(sender.prevSendToken.toHex()),
+            "$message: active send ${sender.sendToken.toHex()} not in receiver polled set $receiverPolled",
+        )
     }
 
     private fun ByteArray.toHex(): String = joinToString("") { (it.toInt() and 0xFF).toString(16).padStart(2, '0') }
@@ -154,7 +161,12 @@ class E2eeBidirectionalEndToEndTest {
             val qrAB = aStore.createInvite("A")
             val (initAB, _) = bStore.processScannedQr(qrAB, "B")
             KtorMailboxClient.post(baseUrl, qrAB.discoveryToken().toHex(), initAB)
-            val aEntryB = aStore.processKeyExchangeInit(KtorMailboxClient.poll(baseUrl, qrAB.discoveryToken().toHex()).filterIsInstance<KeyExchangeInitPayload>().first(), "B", qrAB.ekPub)!!
+            val aEntryB =
+                aStore.processKeyExchangeInit(
+                    KtorMailboxClient.poll(baseUrl, qrAB.discoveryToken().toHex()).filterIsInstance<KeyExchangeInitPayload>().first(),
+                    "B",
+                    qrAB.ekPub,
+                )!!
             val idBforA = bStore.listFriends().first().id
             val idAforB = aEntryB.id
 
@@ -162,7 +174,12 @@ class E2eeBidirectionalEndToEndTest {
             val qrAC = aStore.createInvite("A")
             val (initAC, _) = cStore.processScannedQr(qrAC, "C")
             KtorMailboxClient.post(baseUrl, qrAC.discoveryToken().toHex(), initAC)
-            val aEntryC = aStore.processKeyExchangeInit(KtorMailboxClient.poll(baseUrl, qrAC.discoveryToken().toHex()).filterIsInstance<KeyExchangeInitPayload>().first(), "C", qrAC.ekPub)!!
+            val aEntryC =
+                aStore.processKeyExchangeInit(
+                    KtorMailboxClient.poll(baseUrl, qrAC.discoveryToken().toHex()).filterIsInstance<KeyExchangeInitPayload>().first(),
+                    "C",
+                    qrAC.ekPub,
+                )!!
             val idCforA = cStore.listFriends().first().id
             val idAforC = aEntryC.id
 
@@ -213,7 +230,12 @@ class E2eeBidirectionalEndToEndTest {
                 val qr = aStore.createInvite("A")
                 val (init, _) = bStore.processScannedQr(qr, "B")
                 KtorMailboxClient.post(baseUrl, qr.discoveryToken().toHex(), init)
-                val aEntry = aStore.processKeyExchangeInit(KtorMailboxClient.poll(baseUrl, qr.discoveryToken().toHex()).filterIsInstance<KeyExchangeInitPayload>().first(), "B", qr.ekPub)!!
+                val aEntry =
+                    aStore.processKeyExchangeInit(
+                        KtorMailboxClient.poll(baseUrl, qr.discoveryToken().toHex()).filterIsInstance<KeyExchangeInitPayload>().first(),
+                        "B",
+                        qr.ekPub,
+                    )!!
                 val idBforA = bStore.listFriends().first().id
                 val idAforB = aEntry.id
 
@@ -222,12 +244,33 @@ class E2eeBidirectionalEndToEndTest {
 
                 val random = Random(currentTimeMillis())
                 withContext(Dispatchers.IO) {
-                    val jobs = listOf(
-                        launch { repeat(5) { aClient.sendLocation(random.nextDouble(), random.nextDouble()); delay(random.nextLong(5, 15)) } },
-                        launch { repeat(10) { aClient.poll(); delay(random.nextLong(5, 15)) } },
-                        launch { repeat(5) { bClient.sendLocation(random.nextDouble(), random.nextDouble()); delay(random.nextLong(5, 15)) } },
-                        launch { repeat(10) { bClient.poll(); delay(random.nextLong(5, 15)) } }
-                    )
+                    val jobs =
+                        listOf(
+                            launch {
+                                repeat(5) {
+                                    aClient.sendLocation(random.nextDouble(), random.nextDouble())
+                                    delay(random.nextLong(5, 15))
+                                }
+                            },
+                            launch {
+                                repeat(10) {
+                                    aClient.poll()
+                                    delay(random.nextLong(5, 15))
+                                }
+                            },
+                            launch {
+                                repeat(5) {
+                                    bClient.sendLocation(random.nextDouble(), random.nextDouble())
+                                    delay(random.nextLong(5, 15))
+                                }
+                            },
+                            launch {
+                                repeat(10) {
+                                    bClient.poll()
+                                    delay(random.nextLong(5, 15))
+                                }
+                            },
+                        )
                     jobs.joinAll()
                 }
 
@@ -242,8 +285,6 @@ class E2eeBidirectionalEndToEndTest {
         }
     }
 
-
-
     @Test
     fun `mailbox POST failure during Bob exchange test`() {
         initializeLibsodium()
@@ -256,29 +297,42 @@ class E2eeBidirectionalEndToEndTest {
                 val aStore = E2eeManager(createTestSqlDriver())
                 val bStore = E2eeManager(createTestSqlDriver())
                 val qr = aStore.createInvite("Alice")
-                
-                val failingClient = object : MailboxClient {
-                    var failCount = 2
-                    override suspend fun post(baseUrl: String, token: String, payload: MailboxPayload) {
-                        if (failCount > 0) {
-                            failCount--
-                            throw RuntimeException("Fail")
+
+                val failingClient =
+                    object : MailboxClient {
+                        var failCount = 2
+
+                        override suspend fun post(
+                            baseUrl: String,
+                            token: String,
+                            payload: MailboxPayload,
+                        ) {
+                            if (failCount > 0) {
+                                failCount--
+                                throw RuntimeException("Fail")
+                            }
+                            KtorMailboxClient.post(baseUrl, token, payload)
                         }
-                        KtorMailboxClient.post(baseUrl, token, payload)
+
+                        override suspend fun poll(
+                            baseUrl: String,
+                            token: String,
+                        ) = KtorMailboxClient.poll(baseUrl, token)
                     }
-                    override suspend fun poll(baseUrl: String, token: String) = KtorMailboxClient.poll(baseUrl, token)
-                }
-                
+
                 val bClient = LocationClient(baseUrl, bStore, failingClient)
                 val (init, _) = bStore.processScannedQr(qr, "Bob")
-                
+
                 // Should fail a few times but eventually succeed via processOutboxes
                 repeat(3) {
-                    try { bClient.postKeyExchangeInit(qr, init) } catch (e: Exception) {}
+                    try {
+                        bClient.postKeyExchangeInit(qr, init)
+                    } catch (e: Exception) {
+                    }
                     bClient.processOutboxes()
                     delay(50)
                 }
-                
+
                 // Alice should eventually get it
                 val aClient = LocationClient(baseUrl, aStore)
                 val results = aClient.pollPendingInvites()
@@ -288,8 +342,6 @@ class E2eeBidirectionalEndToEndTest {
             server.stop(0, 0)
         }
     }
-
-
 
     @Test
     fun `poll does not ACK when all messages fail decryption`() {
@@ -307,27 +359,50 @@ class E2eeBidirectionalEndToEndTest {
                 val bStore = E2eeManager(createTestSqlDriver())
                 val (init, _) = bStore.processScannedQr(qr, "B")
                 KtorMailboxClient.post(baseUrl, qr.discoveryToken().toHex(), init)
-                val aEntry = aStore.processKeyExchangeInit(KtorMailboxClient.poll(baseUrl, qr.discoveryToken().toHex()).filterIsInstance<KeyExchangeInitPayload>().first(), "B", qr.ekPub)!!
+                val aEntry =
+                    aStore.processKeyExchangeInit(
+                        KtorMailboxClient.poll(baseUrl, qr.discoveryToken().toHex()).filterIsInstance<KeyExchangeInitPayload>().first(),
+                        "B",
+                        qr.ekPub,
+                    )!!
                 val idAforB = aEntry.id
-                
+
                 aClient.sendLocation(0.0, 0.0)
                 val bClient = LocationClient(baseUrl, bStore)
                 drainStability(aClient to aStore, bClient to bStore)
 
                 val aRecvToken = aStore.getFriend(idAforB)!!.session.recvToken.toHex()
-                
+
                 // Post garbage
-                KtorMailboxClient.post(baseUrl, aRecvToken, EncryptedMessagePayload(v=PROTOCOL_VERSION, envelope=ByteArray(80), ct=ByteArray(64)))
-                
+                KtorMailboxClient.post(
+                    baseUrl,
+                    aRecvToken,
+                    EncryptedMessagePayload(v = PROTOCOL_VERSION, envelope = ByteArray(80), ct = ByteArray(64)),
+                )
+
                 var garbageTokenAcked = false
-                val trackingClient = object : MailboxClient {
-                    override suspend fun post(baseUrl: String, token: String, payload: MailboxPayload) = KtorMailboxClient.post(baseUrl, token, payload)
-                    override suspend fun poll(baseUrl: String, token: String) = KtorMailboxClient.poll(baseUrl, token)
-                    override suspend fun ackIds(baseUrl: String, token: String, msgIds: List<String>) {
-                        if (token == aRecvToken) garbageTokenAcked = true
-                        KtorMailboxClient.ackIds(baseUrl, token, msgIds)
+                val trackingClient =
+                    object : MailboxClient {
+                        override suspend fun post(
+                            baseUrl: String,
+                            token: String,
+                            payload: MailboxPayload,
+                        ) = KtorMailboxClient.post(baseUrl, token, payload)
+
+                        override suspend fun poll(
+                            baseUrl: String,
+                            token: String,
+                        ) = KtorMailboxClient.poll(baseUrl, token)
+
+                        override suspend fun ackIds(
+                            baseUrl: String,
+                            token: String,
+                            msgIds: List<String>,
+                        ) {
+                            if (token == aRecvToken) garbageTokenAcked = true
+                            KtorMailboxClient.ackIds(baseUrl, token, msgIds)
+                        }
                     }
-                }
                 LocationClient(baseUrl, aStore, trackingClient).poll()
                 assertFalse(garbageTokenAcked, "Should not ACK garbage")
             }
@@ -338,7 +413,14 @@ class E2eeBidirectionalEndToEndTest {
 
     private class MemoryRawKeyValueStorage : RawKeyValueStorage {
         private val data = mutableMapOf<String, String>()
+
         override fun getString(key: String): String? = data[key]
-        override fun putString(key: String, value: String) { data[key] = value }
+
+        override fun putString(
+            key: String,
+            value: String,
+        ) {
+            data[key] = value
+        }
     }
 }

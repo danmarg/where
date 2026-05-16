@@ -96,7 +96,7 @@ class E2eeIntegrationTest {
 
             // Alice posts the ciphertext to Bob's mailbox
             val postResp =
-                client.post("/inbox/$token") {
+                client.put("/inbox/$token/${message.msgId}") {
                     contentType(ContentType.Application.Json)
                     setBody(json.encodeToString<MailboxPayload>(message))
                 }
@@ -144,7 +144,7 @@ class E2eeIntegrationTest {
             for (loc in locations) {
                 val (nextState, message) = Session.encryptMessage(aliceState, loc)
                 aliceState = nextState
-                client.post("/inbox/$token") {
+                client.put("/inbox/$token/${message.msgId}") {
                     contentType(ContentType.Application.Json)
                     setBody(json.encodeToString<MailboxPayload>(message))
                 }
@@ -185,7 +185,7 @@ class E2eeIntegrationTest {
             tamperedCt[tamperedCt.size - 1] = (tamperedCt[tamperedCt.size - 1].toInt() xor 1).toByte()
             val tamperedMsg = message.copy(ct = tamperedCt)
 
-            client.post("/inbox/$token") {
+            client.put("/inbox/$token/${tamperedMsg.msgId}") {
                 contentType(ContentType.Application.Json)
                 setBody(json.encodeToString<MailboxPayload>(tamperedMsg))
             }
@@ -225,7 +225,7 @@ class E2eeIntegrationTest {
             val locA1 = MessagePlaintext.Location(lat = 51.5, lng = -0.1, acc = 5.0, ts = 1000L)
             val (aliceState1, messageA1) = Session.encryptMessage(aliceState, locA1)
             aliceState = aliceState1
-            client.post("/inbox/$oldToken") {
+            client.put("/inbox/$oldToken/${messageA1.msgId}") {
                 contentType(ContentType.Application.Json)
                 setBody(json.encodeToString<MailboxPayload>(messageA1))
             }
@@ -250,7 +250,7 @@ class E2eeIntegrationTest {
             assertNotEquals(oldToken, newToken, "Routing token must change after rotation")
 
             // Alice posts msgA3 to the OLD token because it's the FIRST message in a new epoch.
-            client.post("/inbox/$oldToken") {
+            client.put("/inbox/$oldToken/${msgA3.msgId}") {
                 contentType(ContentType.Application.Json)
                 setBody(json.encodeToString<MailboxPayload>(msgA3))
             }
@@ -262,7 +262,7 @@ class E2eeIntegrationTest {
 
             // Alice now sends M4 (A1) to the NEW token.
             val (aliceS4, msgA4) = Session.encryptMessage(aliceS3, locA1)
-            client.post("/inbox/$newToken") {
+            client.put("/inbox/$newToken/${msgA4.msgId}") {
                 contentType(ContentType.Application.Json)
                 setBody(json.encodeToString<MailboxPayload>(msgA4))
             }
@@ -301,7 +301,7 @@ class E2eeIntegrationTest {
         // This triggers Bob to skip seq 2.
         val (bobState2, decrypted3) = Session.decryptMessage(bobState1, message3)
         assertIs<MessagePlaintext.Location>(decrypted3)
-        
+
         // Bob can still decrypt message 2 if it arrives later (seq 2 was skipped)
         val (_, decrypted2) = Session.decryptMessage(bobState2, message2)
         assertIs<MessagePlaintext.Location>(decrypted2)
@@ -322,7 +322,7 @@ class E2eeIntegrationTest {
             val correctToken = aliceSession.sendToken.toHex()
             val wrongToken = "ffffffffffffffffffffffffffffffff"
 
-            client.post("/inbox/$correctToken") {
+            client.put("/inbox/$correctToken/${message.msgId}") {
                 contentType(ContentType.Application.Json)
                 setBody(json.encodeToString<MailboxPayload>(message))
             }
