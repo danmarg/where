@@ -23,11 +23,7 @@ protocol LocationClientProtocol: AnyObject, Sendable {
     func syncNow() async throws
 }
 
-extension Shared.LocationClient: @unchecked Sendable, LocationClientProtocol {
-    func postKeyExchangeInit(friendId: String, qr: Shared.QrPayload, initPayload: Shared.KeyExchangeInitPayload) async throws {
-        try await self.postKeyExchangeInit(friendId: friendId, qr: qr, initPayload: initPayload)
-    }
-}
+extension Shared.LocationClient: @unchecked Sendable, LocationClientProtocol {}
 
 @inline(__always)
 private func debugLog(_ msg: () -> String) {
