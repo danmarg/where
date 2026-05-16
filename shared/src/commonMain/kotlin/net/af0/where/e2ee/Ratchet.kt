@@ -72,7 +72,8 @@ internal fun deriveRoutingToken(
     recipientFp: ByteArray,
 ): ByteArray {
     val info = INFO_ROUTING_TOKEN.encodeToByteArray() + senderFp + recipientFp
-    return hkdfSha256(ikm = rootKey, salt = null, info = info, length = 16)
+    val token = hkdfSha256(ikm = rootKey, salt = null, info = info, length = 16)
+    return token
 }
 
 // ---------------------------------------------------------------------------

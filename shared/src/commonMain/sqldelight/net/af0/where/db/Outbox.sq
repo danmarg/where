@@ -14,6 +14,9 @@ VALUES (?, ?, ?, ?, ?);
 deleteOutboxByMsgId:
 DELETE FROM Outbox WHERE msgId = ?;
 
+deleteOutboxByMsgIdAndFriendId:
+DELETE FROM Outbox WHERE msgId = ? AND friendId = ?;
+
 deleteOutboxByFriendId:
 DELETE FROM Outbox WHERE friendId = ?;
 

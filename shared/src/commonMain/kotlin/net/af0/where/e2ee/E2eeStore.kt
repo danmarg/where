@@ -85,14 +85,27 @@ internal class E2eeStore(
             val scope = MetadataScopeImpl()
             val (action, result) = block(entry, scope)
             
-            when (action) {
-                is PersistenceAction.Update -> {
-                    saveFriendInternal(friendId, action.entry)
+            database.transaction {
+                when (action) {
+                    is PersistenceAction.Update -> {
+                        saveFriendInternal(friendId, action.entry)
+                    }
+                    is PersistenceAction.Delete -> {
+                        deleteFriendInternal(friendId)
+                    }
+                    is PersistenceAction.None -> {}
                 }
-                is PersistenceAction.Delete -> {
-                    deleteFriendInternal(friendId)
+                
+                // Process queued outbox inserts
+                scope.getQueuedOutboxInserts().forEach { outbox ->
+                    database.outboxQueries.insertOutbox(
+                        msgId = outbox.msgId,
+                        friendId = outbox.friendId,
+                        token = outbox.token,
+                        payloadBlob = outbox.payloadBlob,
+                        createdAt = outbox.createdAt
+                    )
                 }
-                is PersistenceAction.None -> {}
             }
             result
         }
@@ -115,18 +128,17 @@ internal class E2eeStore(
             // since it was read from the cache. This guards against race conditions
             // if someone uses an old FriendEntry snapshot to attempt an update.
             if (entry.version != current.version) {
-                val msg = "STALE UPDATE: friendId=$friendId version mismatch! current=${current.version}, updating=${entry.version}"
-                println(msg)
-                throw IllegalStateException(msg)
+                throw IllegalStateException("STALE UPDATE: friendId=$friendId version mismatch! current=${current.version}, updating=${entry.version}")
             }
-
+ 
             // Double Ratchet safety: ensure receiving sequence doesn't regress (§5.5)
-            if (entry.session.recvSeq < current.session.recvSeq) {
-                val msg = "CRITICAL: recvSeq regression! friendId=$friendId, current=${current.session.recvSeq}, new=${entry.session.recvSeq}"
-                println(msg)
-                throw IllegalStateException(msg)
+            // Only applicable within the same DH epoch (same remote DH key).
+            if (entry.session.remoteDhPub.contentEquals(current.session.remoteDhPub) &&
+                entry.session.recvSeq < current.session.recvSeq) {
+                throw IllegalStateException("CRITICAL: recvSeq regression! friendId=$friendId, current=${current.session.recvSeq}, new=${entry.session.recvSeq}")
             }
         }
+
 
         val nextVersion = entry.version + 1
         val finalEntry = entry.copy(version = nextVersion)
@@ -176,14 +188,12 @@ internal class E2eeStore(
         database.outboxQueries.insertOutbox(msgId, friendId, token, payloadBlob, createdAt)
     }
 
-    suspend fun deleteOutboxByMsgId(msgId: String) = storeLock.withLock {
-        deleteOutboxByMsgIdInternal(msgId)
+    suspend fun deleteOutboxByMsgId(friendId: String, msgId: String) = storeLock.withLock {
+        deleteOutboxByMsgIdInternal(friendId, msgId)
     }
 
-    internal fun deleteOutboxByMsgIdInternal(msgId: String) {
-        val affected = database.outboxQueries.deleteOutboxByMsgId(msgId)
-        // println("DEBUG: Deleted msgId $msgId, affected rows?") 
-        // SQLDelight doesn't return affected rows easily for DELETE?
+    internal fun deleteOutboxByMsgIdInternal(friendId: String, msgId: String) {
+        database.outboxQueries.deleteOutboxByMsgIdAndFriendId(msgId, friendId)
     }
 
     suspend fun deleteOutboxByFriendId(friendId: String) = storeLock.withLock {
@@ -241,11 +251,40 @@ internal class E2eeStore(
         val friends: List<FriendEntry>
         var pendingInvites: List<PendingInvite>
         var diagnosticLog: List<String>
+        
+        fun insertOutbox(
+            msgId: String,
+            friendId: String,
+            token: String,
+            payloadBlob: ByteArray,
+            createdAt: Long,
+        )
     }
+
+    private data class OutboxInsert(
+        val msgId: String,
+        val friendId: String,
+        val token: String,
+        val payloadBlob: ByteArray,
+        val createdAt: Long,
+    )
 
     private inner class MetadataScopeImpl : MetadataScope {
         override val friends: List<FriendEntry> get() = this@E2eeStore.friends.values.toList()
         
+        private val queuedOutboxInserts = mutableListOf<OutboxInsert>()
+        fun getQueuedOutboxInserts(): List<OutboxInsert> = queuedOutboxInserts
+
+        override fun insertOutbox(
+            msgId: String,
+            friendId: String,
+            token: String,
+            payloadBlob: ByteArray,
+            createdAt: Long,
+        ) {
+            queuedOutboxInserts.add(OutboxInsert(msgId, friendId, token, payloadBlob, createdAt))
+        }
+
         override var pendingInvites: List<PendingInvite> = this@E2eeStore.pendingInvites
             set(value) {
                 // Detect additions/deletions and update DB

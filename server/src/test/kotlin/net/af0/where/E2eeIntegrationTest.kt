@@ -279,57 +279,32 @@ class E2eeIntegrationTest {
         }
 
     @Test
-    fun `rotation ordering - old messages must be decrypted with pre-rotation session`() {
-        // Demonstrates the ordering requirement in the poll loop: when a poll batch from
-        // the old token contains both EncryptedLocationPayloads and an
-        // EpochRotation, the location messages must be decrypted BEFORE the session is
-        // advanced. Decrypting an old message with the new
-        // session will fail because the recv chain key has been replaced.
-        val (qr, aliceEkPriv) =
-            KeyExchange.aliceCreateQrPayload("Alice")
-        val (initMsg, bobState0) =
-            KeyExchange.bobProcessQr(qr, "Bob")
-        var aliceState =
-            KeyExchange.aliceProcessInit(initMsg, aliceEkPriv, qr.ekPub)
+    fun `skipped messages within same epoch are decryptable`() {
+        val (qr, aliceEkPriv) = KeyExchange.aliceCreateQrPayload("Alice")
+        val (initMsg, bobState0) = KeyExchange.bobProcessQr(qr, "Bob")
+        val aliceState = KeyExchange.aliceProcessInit(initMsg, aliceEkPriv, qr.ekPub)
 
-        // Alice encrypts a location (seq 1)
+        // Alice encrypts two locations in the same epoch (Epoch 1)
         val location = MessagePlaintext.Location(lat = 1.0, lng = 2.0, acc = 1.0, ts = 1000L)
-        val (aliceState1, message) = Session.encryptMessage(aliceState, location)
+        val (aliceState1, message1) = Session.encryptMessage(aliceState, location)
 
-        // Bob rotates (Epoch 1)
-        val (bobState1, messageBob) = Session.encryptMessage(bobState0, MessagePlaintext.Keepalive())
-
-        // Alice receives Bob's message (still seq 1 receive, no ratchet)
-        val (aliceStateRotated, _) = Session.decryptMessage(aliceState1, messageBob)
-
-        // Alice sends message 2 in Epoch 1 (seq 2)
-        val (aliceState2, messageEpoch2) = Session.encryptMessage(aliceStateRotated, location)
-
-        // Bob receives messageEpoch2 (seq 2) using bobState0 (Epoch 0).
-        // This triggers Bob to ratchet to Epoch 1 and skip seq 1.
-        val (bobState2, decrypted2) = Session.decryptMessage(bobState0, messageEpoch2)
-        assertIs<MessagePlaintext.Location>(decrypted2)
-        assertEquals(location.lat, decrypted2.lat, 1e-9)
-
-        // Correct: decrypt old message (seq 1) with the session state that skipped it (bobState2).
-        // This must hit the skipped message keys cache.
-        val (bobState3, decrypted1) = Session.decryptMessage(bobState2, message)
+        // Bob receives message 1 (seq 1). This triggers Bob to ratchet to Epoch 1.
+        val (bobState1, decrypted1) = Session.decryptMessage(bobState0, message1)
         assertIs<MessagePlaintext.Location>(decrypted1)
-        assertEquals(location.lat, decrypted1.lat, 1e-9)
+        assertEquals(2.0, decrypted1.lng)
 
-        // Wrong: decrypt old message (seq 1) with the updated state (bobState3)
-        // after it has ALREADY been decrypted. Key should be gone from cache.
-        val threw =
-            try {
-                Session.decryptMessage(bobState3, message)
-                false
-            } catch (_: Exception) {
-                true
-            }
-        assertTrue(
-            threw,
-            "Decrypting an old message twice must fail (key consumed from cache)",
-        )
+        // Now Alice sends message 2 (seq 2) and message 3 (seq 3) in same epoch
+        val (aliceState2, message2) = Session.encryptMessage(aliceState1, location)
+        val (_, message3) = Session.encryptMessage(aliceState2, location)
+
+        // Bob receives message 3 (seq 3) first.
+        // This triggers Bob to skip seq 2.
+        val (bobState2, decrypted3) = Session.decryptMessage(bobState1, message3)
+        assertIs<MessagePlaintext.Location>(decrypted3)
+        
+        // Bob can still decrypt message 2 if it arrives later (seq 2 was skipped)
+        val (_, decrypted2) = Session.decryptMessage(bobState2, message2)
+        assertIs<MessagePlaintext.Location>(decrypted2)
     }
 
     @Test

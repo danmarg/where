@@ -28,17 +28,19 @@ internal object E2eeProtocol {
         session: SessionState,
         messages: List<EncryptedMessagePayload>,
     ): List<Pair<Session.DecryptedHeader, EncryptedMessagePayload>> {
-        val sortedMessagesWithHeaders =
-            messages.mapNotNull { msg ->
-                try {
-                    val header = tryDecryptHeader(session, msg.envelope)
-                    header to msg
-                } catch (_: Exception) {
-                    null // Un-decryptable header
-                }
+        // Group into buckets by DH key to handle epoch transitions correctly.
+        // We preserve the delivery order within each bucket and across buckets
+        // unless they are clearly out of sequence.
+        val ordered = messages.mapNotNull { msg ->
+            try {
+                val header = tryDecryptHeader(session, msg.envelope)
+                header to msg
+            } catch (e: Exception) {
+                null
             }
-
-        return sortedMessagesWithHeaders.sortedWith { (h1, _), (h2, _) ->
+        }
+        
+        return ordered.sortedWith { (h1, _), (h2, _) ->
             val b1 = bucketForHeader(session, h1)
             val b2 = bucketForHeader(session, h2)
 
@@ -120,6 +122,7 @@ internal object E2eeProtocol {
         )
     }
 
+
     private fun tryDecryptHeader(
         session: SessionState,
         envelope: ByteArray,
@@ -130,16 +133,7 @@ internal object E2eeProtocol {
             try {
                 Session.decryptHeader(session.nextHeaderKey, envelope)
             } catch (e1: Exception) {
-                // Last resort: try skipped epoch header keys (#212-followup)
-                var found: Session.DecryptedHeader? = null
-                for ((epoch, hk) in session.skippedEpochHeaderKeys) {
-                    try {
-                        found = Session.decryptHeader(hk, envelope)
-                        break
-                    } catch (_: Exception) {
-                    }
-                }
-                found ?: throw Exception("All header keys failed")
+                throw Exception("All header keys failed")
             }
         }
     }
@@ -149,10 +143,8 @@ internal object E2eeProtocol {
         h: Session.DecryptedHeader,
     ): Int {
         return when {
-            h.dhPub.contentEquals(session.remoteDhPub) -> 1
-            h.dhPub.contentEquals(session.lastRemoteDhPub) -> 0
-            session.retiredDhPubs.contains(h.dhPub.toHex()) -> 3 // Ancient epoch (already superseded)
-            else -> 2 // Unknown NEW epoch
+            h.dhPub.contentEquals(session.remoteDhPub) -> 1      // Current
+            else -> 2 // Unknown NEW epoch (Newest)
         }
     }
 }

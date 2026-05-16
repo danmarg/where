@@ -180,9 +180,9 @@ final class LocationSyncService: ObservableObject {
             guard let self = self else { return }
             if path.status == .satisfied {
                 logger.debug("Network path satisfied, triggering syncNow()")
-                Task { @MainActor in
+                Task.detached {
                     do {
-                        try await self.locationClient.syncNow()
+                        try await self?.locationClient.syncNow()
                     } catch {
                         logger.error("syncNow failed on path update: \(error.localizedDescription)")
                     }
