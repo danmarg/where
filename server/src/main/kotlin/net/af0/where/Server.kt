@@ -213,7 +213,10 @@ class InMemoryMailboxState : MailboxStore {
         }
         receivedIds.forEach { (token, _) ->
             receivedIds.computeIfPresent(token) { _, set ->
-                if (mailboxes[token] == null && postTimes[token] == null) null else set
+                if (mailboxes[token] == null && postTimes[token] == null) {
+                    receivedIdsOrder.remove(token)
+                    null 
+                } else set
             }
         }
         mailboxes.forEach { (token, _) ->
@@ -476,6 +479,12 @@ fun Application.module(state: ServerState = ServerState()) {
         delete("/inbox/{token}/{msgId}") {
             val token = call.parameters["token"] ?: return@delete call.respond(HttpStatusCode.BadRequest)
             val msgId = call.parameters["msgId"] ?: return@delete call.respond(HttpStatusCode.BadRequest)
+            state.mailbox.deleteById(token, msgId)
+            call.respond(HttpStatusCode.NoContent)
+        }
+    }
+}
+msgId = call.parameters["msgId"] ?: return@delete call.respond(HttpStatusCode.BadRequest)
             state.mailbox.deleteById(token, msgId)
             call.respond(HttpStatusCode.NoContent)
         }

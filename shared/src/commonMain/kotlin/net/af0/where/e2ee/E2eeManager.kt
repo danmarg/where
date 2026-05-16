@@ -422,7 +422,7 @@ class E2eeManager(
             )
             
             if (result.finalSession != entry.session) {
-                // addDiagnosticEvent("State transition for ${friendId.take(8)}: recvSeq ${entry.session.recvSeq} -> ${result.finalSession.recvSeq}")
+                // State transition occurred
             }
 
             // Calculate which IDs to ACK
