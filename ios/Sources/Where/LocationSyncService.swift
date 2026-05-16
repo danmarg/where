@@ -182,7 +182,7 @@ final class LocationSyncService: ObservableObject {
                 logger.debug("Network path satisfied, triggering syncNow()")
                 Task.detached {
                     do {
-                        try await self?.locationClient.syncNow()
+                        try await self.locationClient.syncNow()
                     } catch {
                         logger.error("syncNow failed on path update: \(error.localizedDescription)")
                     }
