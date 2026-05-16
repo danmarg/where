@@ -249,7 +249,7 @@ suspend fun poll(
     for (result in pendingResults) {
         println("Received KeyExchangeInit from ${result.payload.suggestedName}")
         try {
-            val entry = store.processKeyExchangeInit(result.payload, result.payload.suggestedName, result.aliceEkPub)
+            val entry = store.processKeyExchangeInit(result.payload, result.payload.suggestedName, result.inviteEkPub)
             val friend = store.getFriend(entry?.id ?: "")
             val sendToken = friend?.session?.sendToken?.toHex() ?: "?"
             println("Established session with ${entry?.name}, sendToken=$sendToken")
