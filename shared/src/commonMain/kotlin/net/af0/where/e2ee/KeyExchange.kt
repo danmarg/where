@@ -73,7 +73,8 @@ object KeyExchange {
 
         val keyConfirmation = buildKeyConfirmation(sk, qr.ekPub, ekB.pub)
 
-        // Initial token Bob sends to Alice for discovery is T_AB_0.
+        // Initial token Bob sends to Alice for discovery is T_AB_0 (Alice -> Bob).
+        // Bob is the scanner, so this token uses (AliceFp, BobFp).
         val tokenAliceToBob = deriveRoutingToken(sk, aliceFp, bobFp)
 
         // MEMORY HYGIENE NOTE (§5.5): Bob's initial ephemeral key (ekB.priv) is copied into
@@ -121,6 +122,7 @@ object KeyExchange {
         val bobFp = fingerprint(msg.ekPub)
 
         // VERIFY TOKEN (#168): Alice MUST verify that Bob computed the same initial routing token.
+        // Alice is the initiator, so her SEND token (Alice->Bob) uses (AliceFp, BobFp).
         val expectedToken = deriveRoutingToken(sk, aliceFp, bobFp)
         if (!expectedToken.contentEquals(msg.token)) {
             val expectedHex = expectedToken.toHex()
@@ -159,6 +161,7 @@ object KeyExchange {
 
         // Tokens also rotate when the rootKey changes.
         val newSendToken = deriveRoutingToken(rkStep.newRootKey, aliceFp, bobFp)
+
         val nextAliceSession =
             session.copy(
                 rootKey = rkStep.newRootKey.copyOf(),
@@ -169,12 +172,13 @@ object KeyExchange {
                 sendHeaderKey = session.nextHeaderKey.copyOf(),
                 nextHeaderKey = rkStep.newHeaderKey.copyOf(),
                 sendToken = newSendToken,
+                recvToken = session.recvToken.copyOf(),
+                prevSendChainKey = session.sendChainKey.copyOf(),
+                prevSendHeaderKey = session.sendHeaderKey.copyOf(),
                 localDhPriv = newLocalDh.priv.copyOf(),
                 localDhPub = newLocalDh.pub.copyOf(),
                 prevLocalDhPub = session.localDhPub.copyOf(),
-                prevSendToken = session.sendToken.copyOf(),
-                isSendTokenPending = true,
-                pn = session.sendSeq,
+                prevSendToken = session.sendToken,
                 pr = session.recvSeq,
             )
 
@@ -234,18 +238,11 @@ object KeyExchange {
         val recvHeaderKey = if (isAlice) headerKey1 else headerKey0
 
         // Initial tokens are also derived from SK.
-        val sendToken =
-            if (isAlice) {
-                deriveRoutingToken(sk, aliceFp, bobFp)
-            } else {
-                deriveRoutingToken(sk, bobFp, aliceFp)
-            }
-        val recvToken =
-            if (isAlice) {
-                deriveRoutingToken(sk, bobFp, aliceFp)
-            } else {
-                deriveRoutingToken(sk, aliceFp, bobFp)
-            }
+        val localFp = if (isAlice) aliceFp else bobFp
+        val remoteFp = if (isAlice) bobFp else aliceFp
+
+        val sendToken = deriveRoutingToken(sk, localFp, remoteFp)
+        val recvToken = deriveRoutingToken(sk, remoteFp, localFp)
 
         expanded.zeroize()
 
@@ -265,16 +262,17 @@ object KeyExchange {
             bobEkPub = (if (isAlice) theirDhPub else myDhPub).copyOf(),
             aliceFp = aliceFp.copyOf(),
             bobFp = bobFp.copyOf(),
-            prevSendToken = sendToken.copyOf(),
-            prevRecvToken = ByteArray(0),
-            isSendTokenPending = false,
+            localFp = (if (isAlice) aliceFp else bobFp).copyOf(),
+            remoteFp = (if (isAlice) bobFp else aliceFp).copyOf(),
+            prevSendToken = sendToken,
+            prevSendChainKey = sendChainKey.copyOf(),
+            prevSendHeaderKey = sendHeaderKey.copyOf(),
             isAlice = isAlice,
             pn = 0L,
             pr = 0L,
             headerKey = recvHeaderKey,
             sendHeaderKey = sendHeaderKey,
             nextHeaderKey = nextHeaderKey,
-            retiredDhPubs = emptySet()
         )
     }
 

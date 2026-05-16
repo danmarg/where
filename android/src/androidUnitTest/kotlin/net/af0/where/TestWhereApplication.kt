@@ -2,9 +2,20 @@ package net.af0.where
 
 import android.content.Context
 import android.content.SharedPreferences
-import net.af0.where.e2ee.RawKeyValueStorage
+import app.cash.sqldelight.db.SqlDriver
+import app.cash.sqldelight.driver.android.AndroidSqliteDriver
+import net.af0.where.db.WhereDatabase
 import net.af0.where.e2ee.E2eeManager
+import net.af0.where.e2ee.RawKeyValueStorage
 import net.af0.where.e2ee.UserStore
+
+private fun createTestSqlDriver(context: android.content.Context, name: String? = null): SqlDriver {
+    return AndroidSqliteDriver(
+        WhereDatabase.Schema,
+        context,
+        name,
+    )
+}
 
 /** In-memory RawKeyValueStorage for unit tests (Android Keystore is unavailable in Robolectric). */
 private class InMemoryRawKeyValueStorage : RawKeyValueStorage {
@@ -27,6 +38,12 @@ class TestWhereApplication : WhereApplication() {
         getSharedPreferences("test_encrypted_prefs", Context.MODE_PRIVATE)
     }
 
-    override val e2eeManager: E2eeManager by lazy { E2eeManager(inMemoryStorage) }
+    override val e2eeManager: E2eeManager by lazy { E2eeManager(createTestSqlDriver(this)) }
+
+    /**
+     * UserStore still uses in-memory storage here because it stores simple global settings
+     * and doesn't require the complex transactional safety or WAL that E2eeManager needs.
+     * In-memory is sufficient for unit testing the higher-level logic.
+     */
     override val userStore: UserStore by lazy { UserStore(inMemoryStorage) }
 }

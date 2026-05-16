@@ -1,11 +1,13 @@
 package net.af0.where
 
+import app.cash.sqldelight.db.SqlDriver
+import app.cash.sqldelight.driver.jdbc.sqlite.JdbcSqliteDriver
 import com.ionspin.kotlin.crypto.LibsodiumInitializer
 import io.ktor.client.HttpClient
 import io.ktor.client.call.body
 import io.ktor.client.plugins.contentnegotiation.ContentNegotiation
 import io.ktor.client.request.get
-import io.ktor.client.request.post
+import io.ktor.client.request.put
 import io.ktor.client.request.setBody
 import io.ktor.http.ContentType
 import io.ktor.http.HttpStatusCode
@@ -13,6 +15,7 @@ import io.ktor.http.contentType
 import io.ktor.serialization.kotlinx.json.json
 import io.ktor.server.testing.*
 import kotlinx.serialization.json.Json
+import net.af0.where.db.WhereDatabase
 import net.af0.where.e2ee.*
 import kotlin.test.*
 
@@ -43,6 +46,19 @@ class MultiFriendIntegrationTest {
         }
     }
 
+    private fun createTestSqlDriver(file: java.io.File? = null): SqlDriver {
+        val driver =
+            if (file == null) {
+                JdbcSqliteDriver(JdbcSqliteDriver.IN_MEMORY)
+            } else {
+                JdbcSqliteDriver("jdbc:sqlite:${file.absolutePath}")
+            }
+        if (file == null || file.length() == 0L) {
+            WhereDatabase.Schema.create(driver)
+        }
+        return driver
+    }
+
     class KtorTestMailboxClient(private val client: HttpClient) : MailboxClient {
         override suspend fun post(
             baseUrl: String,
@@ -50,7 +66,7 @@ class MultiFriendIntegrationTest {
             payload: MailboxPayload,
         ) {
             val resp =
-                client.post("/inbox/$token") {
+                client.put("/inbox/$token/${payload.msgId}") {
                     contentType(ContentType.Application.Json)
                     setBody(payload)
                 }
@@ -85,15 +101,15 @@ class MultiFriendIntegrationTest {
             val mailboxClient = KtorTestMailboxClient(testClient)
 
             // 1. Setup Alice (iPhone)
-            val aliceManager = E2eeManager(MemoryStorage())
+            val aliceManager = E2eeManager(createTestSqlDriver())
             val aliceClient = LocationClient("", aliceManager, mailboxClient)
 
             // 2. Setup Bob (Android 1)
-            val bobManager = E2eeManager(MemoryStorage())
+            val bobManager = E2eeManager(createTestSqlDriver())
             val bobClient = LocationClient("", bobManager, mailboxClient)
 
             // 3. Setup Charlie (Android 2)
-            val charlieStore = E2eeManager(MemoryStorage())
+            val charlieStore = E2eeManager(createTestSqlDriver())
             val charlieClient = LocationClient("", charlieStore, mailboxClient)
 
             // --- PAIR ALICE AND BOB ---
@@ -153,11 +169,11 @@ class MultiFriendIntegrationTest {
                 }
             val mailboxClient = KtorTestMailboxClient(testClient)
 
-            val aliceManager = E2eeManager(MemoryStorage())
+            val aliceManager = E2eeManager(createTestSqlDriver())
             val aliceClient = LocationClient("", aliceManager, mailboxClient)
 
-            val bobManager = E2eeManager(MemoryStorage())
-            val charlieStore = E2eeManager(MemoryStorage())
+            val bobManager = E2eeManager(createTestSqlDriver())
+            val charlieStore = E2eeManager(createTestSqlDriver())
 
             // 1. Alice creates two invites
             val qrBob = aliceManager.createInvite("Alice")
@@ -206,11 +222,14 @@ class MultiFriendIntegrationTest {
                 }
             val mailboxClient = KtorTestMailboxClient(testClient)
 
-            val storage = MemoryStorage()
-            val aliceManager = E2eeManager(storage)
+            val dbFile = java.io.File.createTempFile("alice", ".db")
+            dbFile.deleteOnExit()
+
+            val aliceDriver = createTestSqlDriver(dbFile)
+            val aliceManager = E2eeManager(aliceDriver)
             val aliceClient = LocationClient("", aliceManager, mailboxClient)
 
-            val bobManager = E2eeManager(MemoryStorage())
+            val bobManager = E2eeManager(createTestSqlDriver())
             val bobClient = LocationClient("", bobManager, mailboxClient)
 
             // Pair A-B
@@ -226,12 +245,14 @@ class MultiFriendIntegrationTest {
             aliceClient.poll()
 
             // --- SIMULATE RESTART ---
-            // Create a NEW store instance using the SAME storage
-            val aliceManagerRestarted = E2eeManager(storage)
+            // Close the old driver to ensure everything is flushed to disk
+            aliceDriver.close()
+
+            // Create a NEW driver and NEW store instance pointing to the same file
+            val aliceDriverRestarted = createTestSqlDriver(dbFile)
+            val aliceManagerRestarted = E2eeManager(aliceDriverRestarted)
             val bobAfterRestart = aliceManagerRestarted.getFriend(bobId)!!
 
-            // THIS IS THE BUG: Currently, this will be NULL because poll()
-            // didn't update the FriendEntry in the store!
             assertNotNull(bobAfterRestart.lastTs, "Bob's location should persist after poll and restart")
             assertEquals(50.0, bobAfterRestart.lastLat)
         }
@@ -249,13 +270,13 @@ class MultiFriendIntegrationTest {
                 }
             val mailboxClient = KtorTestMailboxClient(testClient)
 
-            val aliceManager = E2eeManager(MemoryStorage())
+            val aliceManager = E2eeManager(createTestSqlDriver())
             val aliceClient = LocationClient("", aliceManager, mailboxClient)
 
-            val bobManager = E2eeManager(MemoryStorage())
+            val bobManager = E2eeManager(createTestSqlDriver())
             val bobClient = LocationClient("", bobManager, mailboxClient)
 
-            val charlieStore = E2eeManager(MemoryStorage())
+            val charlieStore = E2eeManager(createTestSqlDriver())
             val charlieClient = LocationClient("", charlieStore, mailboxClient)
 
             // Pair A-B and A-C

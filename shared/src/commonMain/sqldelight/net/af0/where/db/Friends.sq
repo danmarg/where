@@ -1,0 +1,33 @@
+CREATE TABLE Friends (
+    id TEXT NOT NULL PRIMARY KEY,
+    name TEXT NOT NULL,
+    sessionBlob BLOB NOT NULL,
+    isInitiator INTEGER NOT NULL DEFAULT 0,
+    lastLat REAL,
+    lastLng REAL,
+    lastTs INTEGER,
+    lastRecvTs INTEGER NOT NULL,
+    isConfirmed INTEGER NOT NULL DEFAULT 0,
+    lastSentTs INTEGER NOT NULL DEFAULT 0,
+    lastPollTs INTEGER NOT NULL DEFAULT 0,
+    sharingEnabled INTEGER NOT NULL DEFAULT 1,
+    lastDecryptFailed INTEGER NOT NULL DEFAULT 0,
+    version INTEGER NOT NULL DEFAULT 0
+);
+
+-- Friends Queries
+insertFriend:
+INSERT OR REPLACE INTO Friends(id, name, sessionBlob, isInitiator, lastLat, lastLng, lastTs, lastRecvTs, isConfirmed, lastSentTs, lastPollTs, sharingEnabled, lastDecryptFailed, version)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+
+deleteFriend:
+DELETE FROM Friends WHERE id = ?;
+
+getAllFriends:
+SELECT * FROM Friends;
+
+getFriend:
+SELECT * FROM Friends WHERE id = ?;
+
+deleteAll:
+DELETE FROM Friends;

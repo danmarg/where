@@ -22,4 +22,5 @@ dependencies {
     implementation(libs.ktor.serialization.kotlinx.json)
     implementation(libs.logback.classic)
     implementation(libs.zxing.core)
+    implementation(libs.sqldelight.sqlite)
 }

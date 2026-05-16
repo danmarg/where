@@ -16,99 +16,53 @@ internal data class PendingInvite(
     val exportedAt: Long? = null,
 )
 
-@Serializable
-internal data class SerializedFriendEntry(
-    val friendId: String,
-    val name: String,
-    val session: SessionState,
-    val isInitiator: Boolean = false,
-    val lastLat: Double? = null,
-    val lastLng: Double? = null,
-    val lastTs: Long? = null,
-    val lastRecvTs: Long = 0L,
-    val isConfirmed: Boolean = false,
-    val lastSentTs: Long = 0L,
-    val lastPollTs: Long = 0L,
-    val sharingEnabled: Boolean = true,
-    val outbox: EncryptedOutboxMessage? = null,
-    val lastDecryptFailed: Boolean = false,
-    val outbox429Count: Int = 0,
-    val consecutiveSilentDrops: Int = 0,
-    val lastSavedTs: Long = 0L,
-)
-
-@Serializable
-internal data class GlobalMetadata(
-    val friendIds: List<String> = emptyList(),
-    val pendingInvites: List<PendingInvite> = emptyList(),
-    val diagnosticLog: List<String> = emptyList(),
-    val lastSavedTs: Long = 0L,
-)
-
 internal sealed class PersistenceAction {
     data class Update(val entry: FriendEntry) : PersistenceAction()
+
     object Delete : PersistenceAction()
+
     object None : PersistenceAction()
 }
 
 /**
  * Handles all persistent storage and concurrency control for the E2EE module.
- * Enforces the strict lock hierarchy: 1. friendLock, 2. metadataLock.
+ * Backed entirely by SQLite.
  */
 internal class E2eeStore(
-    private val storage: RawKeyValueStorage,
+    private val database: net.af0.where.db.WhereDatabase,
 ) {
-    private val json = Json {
-        ignoreUnknownKeys = true
-        encodeDefaults = true
+    internal companion object {
+        val json =
+            Json {
+                ignoreUnknownKeys = true
+                encodeDefaults = true
+            }
+        private const val MAX_DIAGNOSTIC_EVENTS = 100
     }
 
-    private val globalDb = DoubleBufferedStorage(
-        storage = storage,
-        serializer = GlobalMetadata.serializer(),
-        json = json,
-        timestampSelector = { it.lastSavedTs },
-    )
-
-    private val friendDb = DoubleBufferedStorage(
-        storage = storage,
-        serializer = SerializedFriendEntry.serializer(),
-        json = json,
-        timestampSelector = { it.lastSavedTs },
-    )
-
-    // In-memory state
-    private var friends = mutableMapOf<String, FriendEntry>()
-    private var pendingInvites = mutableListOf<PendingInvite>()
+    // In-memory cache for fast access and reactivity
+    private val friends = mutableMapOf<String, FriendEntry>()
+    private val pendingInvites = mutableListOf<PendingInvite>()
     private val _diagnosticLog = MutableStateFlow<List<String>>(emptyList())
     val diagnosticLog: StateFlow<List<String>> = _diagnosticLog.asStateFlow()
 
     private var lastUsedTs: Long = 0L
 
-    // Locks
-    private val metadataLock = Mutex()
-    private val friendLocks = mutableMapOf<String, Mutex>()
-    private val locksLock = Mutex()
+    // Single lock for all store operations.
+    private val storeLock = Mutex()
 
     init {
-        load()
+        loadFromDb()
     }
 
-    private fun load() {
-        val global = globalDb.load(STORAGE_KEY_GLOBAL)
-        if (global != null) {
-            lastUsedTs = maxOf(lastUsedTs, global.lastSavedTs)
-            pendingInvites = global.pendingInvites.toMutableList()
-            _diagnosticLog.value = global.diagnosticLog
-
-            friends.clear()
-            global.friendIds.forEach { id ->
-                val s = friendDb.load(friendKey(id))
-                if (s != null) {
-                    friends[id] = s.toEntry()
-                    lastUsedTs = maxOf(lastUsedTs, s.lastSavedTs)
-                }
-            }
+    private fun loadFromDb() {
+        database.friendsQueries.getAllFriends().executeAsList().forEach { f ->
+            val entry = f.toEntry()
+            friends[f.id] = entry
+            lastUsedTs = maxOf(lastUsedTs, f.lastTs ?: 0L, f.lastRecvTs, f.lastSentTs, f.lastPollTs)
+        }
+        database.invitesQueries.getAllPendingInvites().executeAsList().forEach { p ->
+            pendingInvites.add(p.toInvite())
         }
     }
 
@@ -118,166 +72,276 @@ internal class E2eeStore(
         return lastUsedTs
     }
 
-    private suspend fun getFriendLock(id: String): Mutex {
-        locksLock.withLock {
-            return friendLocks.getOrPut(id) { Mutex() }
-        }
-    }
-
     suspend fun <T> withMetadataLock(block: suspend MetadataScope.() -> T): T {
-        return metadataLock.withLock {
+        return storeLock.withLock {
             val scope = MetadataScopeImpl()
-            val result = block(scope)
-            if (scope.dirty) {
-                saveGlobalInternal(
-                    nextInvites = scope.pendingInvites,
-                    nextLog = scope.diagnosticLog
-                )
-            }
-            result
+            block(scope)
         }
     }
 
     suspend fun <T> withFriendAndMetadataLock(
         friendId: String,
-        block: suspend (FriendEntry?, MetadataScope) -> Pair<PersistenceAction, T>
+        block: suspend (FriendEntry?, MetadataScope) -> Pair<PersistenceAction, T>,
     ): T {
-        val lock = getFriendLock(friendId)
-        return lock.withLock {
-            metadataLock.withLock {
-                val entry = friends[friendId]
-                val scope = MetadataScopeImpl()
-                val (action, result) = block(entry, scope)
-                
-                var globalDirty = scope.dirty
+        return storeLock.withLock {
+            val entry = friends[friendId]
+            val scope = MetadataScopeImpl()
+            val (action, result) = block(entry, scope)
+
+            database.transaction {
                 when (action) {
                     is PersistenceAction.Update -> {
-                        if (!friends.containsKey(friendId)) {
-                            globalDirty = true
-                        }
                         saveFriendInternal(friendId, action.entry)
                     }
                     is PersistenceAction.Delete -> {
-                        if (friends.containsKey(friendId)) {
-                            globalDirty = true
-                            deleteFriendInternal(friendId)
-                        }
+                        deleteFriendInternal(friendId)
                     }
                     is PersistenceAction.None -> {}
                 }
 
-                if (globalDirty) {
-                    saveGlobalInternal(
-                        nextInvites = scope.pendingInvites,
-                        nextLog = scope.diagnosticLog
+                // Process queued outbox inserts
+                scope.getQueuedOutboxInserts().forEach { outbox ->
+                    database.outboxQueries.insertOutbox(
+                        msgId = outbox.msgId,
+                        friendId = outbox.friendId,
+                        token = outbox.token,
+                        payloadBlob = outbox.payloadBlob,
+                        createdAt = outbox.createdAt,
                     )
                 }
-                result
             }
+            result
         }
     }
 
-    suspend fun getFriend(id: String): FriendEntry? = metadataLock.withLock { friends[id] }
-    suspend fun listFriends(): List<FriendEntry> = metadataLock.withLock { friends.values.toList() }
+    suspend fun getFriend(id: String): FriendEntry? = storeLock.withLock { friends[id] }
+
+    suspend fun listFriends(): List<FriendEntry> = storeLock.withLock { friends.values.toList() }
 
     fun addDiagnosticEvent(message: String) {
         val t = currentTimeSeconds()
         val s = (t % 86400).toInt()
-        val entry = "${(s / 3600).toString().padStart(2, '0')}:${((s % 3600) / 60).toString().padStart(2, '0')}:${(s % 60).toString().padStart(2, '0')} $message"
+        val entry = "${(s / 3600).toString().padStart(
+            2,
+            '0',
+        )}:${((s % 3600) / 60).toString().padStart(2, '0')}:${(s % 60).toString().padStart(2, '0')} $message"
         _diagnosticLog.value = (listOf(entry) + _diagnosticLog.value).take(MAX_DIAGNOSTIC_EVENTS)
     }
 
-    private fun saveGlobalInternal(
-        nextFriendIds: List<String>? = null,
-        nextInvites: List<PendingInvite>? = null,
-        nextLog: List<String>? = null,
+    private fun saveFriendInternal(
+        friendId: String,
+        entry: FriendEntry,
     ) {
-        val saveTs = nextTs()
-        val metadata = GlobalMetadata(
-            friendIds = nextFriendIds ?: friends.keys.toList(),
-            pendingInvites = nextInvites ?: pendingInvites,
-            diagnosticLog = nextLog ?: _diagnosticLog.value,
-            lastSavedTs = saveTs,
-        )
-        globalDb.save(STORAGE_KEY_GLOBAL, metadata)
-        if (nextInvites != null) pendingInvites = nextInvites.toMutableList()
-        if (nextLog != null) _diagnosticLog.value = nextLog
-    }
+        val current = friends[friendId]
+        if (current != null) {
+            // Optimistic concurrency check: ensure we haven't modified the state
+            // since it was read from the cache. This guards against race conditions
+            // if someone uses an old FriendEntry snapshot to attempt an update.
+            if (entry.version != current.version) {
+                throw IllegalStateException(
+                    "STALE UPDATE: friendId=$friendId version mismatch! current=${current.version}, updating=${entry.version}",
+                )
+            }
 
-    private fun saveFriendInternal(friendId: String, entry: FriendEntry) {
-        val ts = nextTs()
-        friendDb.save(friendKey(friendId), entry.toSerialized(ts))
-        friends[friendId] = entry
+            // Double Ratchet safety: ensure receiving sequence doesn't regress (§5.5)
+            // Only applicable within the same DH epoch (same remote DH key).
+            if (entry.session.remoteDhPub.contentEquals(current.session.remoteDhPub) &&
+                entry.session.recvSeq < current.session.recvSeq
+            ) {
+                throw IllegalStateException(
+                    "CRITICAL: recvSeq regression! friendId=$friendId, current=${current.session.recvSeq}, new=${entry.session.recvSeq}",
+                )
+            }
+        }
+
+        val nextVersion = entry.version + 1
+        val finalEntry = entry.copy(version = nextVersion)
+
+        database.friendsQueries.insertFriend(
+            id = friendId,
+            name = finalEntry.name,
+            sessionBlob = json.encodeToString(SessionState.serializer(), finalEntry.session).encodeToByteArray(),
+            isInitiator = if (finalEntry.isInitiator) 1L else 0L,
+            lastLat = finalEntry.lastLat,
+            lastLng = finalEntry.lastLng,
+            lastTs = finalEntry.lastTs,
+            lastRecvTs = finalEntry.lastRecvTs,
+            isConfirmed = if (finalEntry.isConfirmed) 1L else 0L,
+            lastSentTs = finalEntry.lastSentTs,
+            lastPollTs = finalEntry.lastPollTs,
+            sharingEnabled = if (finalEntry.sharingEnabled) 1L else 0L,
+            lastDecryptFailed = if (finalEntry.lastDecryptFailed) 1L else 0L,
+            version = nextVersion.toLong(),
+        )
+        friends[friendId] = finalEntry
     }
 
     private fun deleteFriendInternal(friendId: String) {
-        storage.putString("${friendKey(friendId)}_a", "")
-        storage.putString("${friendKey(friendId)}_b", "")
+        database.friendsQueries.deleteFriend(friendId)
+        database.outboxQueries.deleteOutboxByFriendId(friendId)
         friends.remove(friendId)
     }
 
-    private fun SerializedFriendEntry.toEntry() = FriendEntry(
-        name = name,
-        session = session,
-        isInitiator = isInitiator,
-        lastLat = lastLat,
-        lastLng = lastLng,
-        lastTs = lastTs,
-        lastRecvTs = if (lastRecvTs == 0L) currentTimeSeconds() else lastRecvTs,
-        isConfirmed = isConfirmed,
-        lastSentTs = lastSentTs,
-        lastPollTs = lastPollTs,
-        sharingEnabled = sharingEnabled,
-        outbox = outbox,
-        lastDecryptFailed = lastDecryptFailed,
-        outbox429Count = outbox429Count,
-        consecutiveSilentDrops = consecutiveSilentDrops,
-    )
+    suspend fun insertOutbox(
+        msgId: String,
+        friendId: String,
+        token: String,
+        payloadBlob: ByteArray,
+        createdAt: Long,
+    ) = storeLock.withLock {
+        insertOutboxInternal(msgId, friendId, token, payloadBlob, createdAt)
+    }
 
-    private fun FriendEntry.toSerialized(ts: Long) = SerializedFriendEntry(
-        friendId = id,
-        name = name,
-        session = session,
-        isInitiator = isInitiator,
-        lastLat = lastLat,
-        lastLng = lastLng,
-        lastTs = lastTs,
-        lastRecvTs = lastRecvTs,
-        isConfirmed = isConfirmed,
-        lastSentTs = lastSentTs,
-        lastPollTs = lastPollTs,
-        sharingEnabled = sharingEnabled,
-        outbox = outbox,
-        lastDecryptFailed = lastDecryptFailed,
-        outbox429Count = outbox429Count,
-        consecutiveSilentDrops = consecutiveSilentDrops,
-        lastSavedTs = ts,
-    )
+    internal fun insertOutboxInternal(
+        msgId: String,
+        friendId: String,
+        token: String,
+        payloadBlob: ByteArray,
+        createdAt: Long,
+    ) {
+        database.outboxQueries.insertOutbox(msgId, friendId, token, payloadBlob, createdAt)
+    }
 
-    private fun friendKey(id: String) = "e2ee_friend_$id"
+    suspend fun deleteOutboxByMsgId(
+        friendId: String,
+        msgId: String,
+    ) = storeLock.withLock {
+        deleteOutboxByMsgIdInternal(friendId, msgId)
+    }
+
+    internal fun deleteOutboxByMsgIdInternal(
+        friendId: String,
+        msgId: String,
+    ) {
+        database.outboxQueries.deleteOutboxByMsgIdAndFriendId(msgId, friendId)
+    }
+
+    suspend fun deleteOutboxByFriendId(friendId: String) =
+        storeLock.withLock {
+            deleteOutboxByFriendIdInternal(friendId)
+        }
+
+    internal fun deleteOutboxByFriendIdInternal(friendId: String) {
+        database.outboxQueries.deleteOutboxByFriendId(friendId)
+    }
+
+    suspend fun getOutbox(friendId: String): List<EncryptedOutboxMessage> =
+        storeLock.withLock {
+            getOutboxInternal(friendId)
+        }
+
+    internal fun getOutboxInternal(friendId: String): List<EncryptedOutboxMessage> {
+        return database.outboxQueries.getOutboxForFriend(friendId).executeAsList().map { row ->
+            EncryptedOutboxMessage(
+                msgId = row.msgId,
+                token = row.token,
+                payload = json.decodeFromString(MailboxPayload.serializer(), row.payloadBlob.decodeToString()),
+                createdAt = row.createdAt,
+            )
+        }
+    }
+
+    private fun net.af0.where.db.Friends.toEntry() =
+        FriendEntry(
+            name = name,
+            session = json.decodeFromString(SessionState.serializer(), sessionBlob.decodeToString()),
+            isInitiator = isInitiator == 1L,
+            lastLat = lastLat,
+            lastLng = lastLng,
+            lastTs = lastTs,
+            lastRecvTs = lastRecvTs,
+            isConfirmed = isConfirmed == 1L,
+            lastSentTs = lastSentTs,
+            lastPollTs = lastPollTs,
+            sharingEnabled = sharingEnabled == 1L,
+            lastDecryptFailed = lastDecryptFailed == 1L,
+            version = version.toInt(),
+        )
+
+    private fun net.af0.where.db.PendingInvites.toInvite() =
+        PendingInvite(
+            qrPayload =
+                QrPayload(
+                    suggestedName = suggestedName,
+                    ekPub = ekPub,
+                    fingerprint = fingerprint,
+                    discoverySecret = discoverySecret,
+                ),
+            aliceEkPriv = privKeyBlob,
+            createdAt = createdAt,
+            exportedAt = exportedAt,
+        )
 
     interface MetadataScope {
         val friends: List<FriendEntry>
         var pendingInvites: List<PendingInvite>
         var diagnosticLog: List<String>
+
+        fun insertOutbox(
+            msgId: String,
+            friendId: String,
+            token: String,
+            payloadBlob: ByteArray,
+            createdAt: Long,
+        )
     }
+
+    private data class OutboxInsert(
+        val msgId: String,
+        val friendId: String,
+        val token: String,
+        val payloadBlob: ByteArray,
+        val createdAt: Long,
+    )
 
     private inner class MetadataScopeImpl : MetadataScope {
-        var dirty = false
         override val friends: List<FriendEntry> get() = this@E2eeStore.friends.values.toList()
+
+        private val queuedOutboxInserts = mutableListOf<OutboxInsert>()
+
+        fun getQueuedOutboxInserts(): List<OutboxInsert> = queuedOutboxInserts
+
+        override fun insertOutbox(
+            msgId: String,
+            friendId: String,
+            token: String,
+            payloadBlob: ByteArray,
+            createdAt: Long,
+        ) {
+            queuedOutboxInserts.add(OutboxInsert(msgId, friendId, token, payloadBlob, createdAt))
+        }
+
         override var pendingInvites: List<PendingInvite> = this@E2eeStore.pendingInvites
             set(value) {
+                // Detect additions/deletions and update DB
+                val current = this@E2eeStore.pendingInvites
+                value.forEach { invite ->
+                    if (current.none { it.qrPayload.ekPub.contentEquals(invite.qrPayload.ekPub) }) {
+                        database.invitesQueries.insertPendingInvite(
+                            ekPub = invite.qrPayload.ekPub,
+                            suggestedName = invite.qrPayload.suggestedName,
+                            fingerprint = invite.qrPayload.fingerprint,
+                            discoverySecret = invite.qrPayload.discoverySecret,
+                            privKeyBlob = invite.aliceEkPriv,
+                            createdAt = invite.createdAt,
+                            exportedAt = invite.exportedAt,
+                        )
+                    }
+                }
+                current.forEach { invite ->
+                    if (value.none { it.qrPayload.ekPub.contentEquals(invite.qrPayload.ekPub) }) {
+                        database.invitesQueries.deletePendingInvite(invite.qrPayload.ekPub)
+                    }
+                }
+                this@E2eeStore.pendingInvites.clear()
+                this@E2eeStore.pendingInvites.addAll(value)
                 field = value
-                dirty = true
             }
+
         override var diagnosticLog: List<String> = this@E2eeStore._diagnosticLog.value
             set(value) {
+                this@E2eeStore._diagnosticLog.value = value
                 field = value
-                dirty = true
             }
-    }
-
-    companion object {
-        private const val STORAGE_KEY_GLOBAL = "e2ee_global"
     }
 }

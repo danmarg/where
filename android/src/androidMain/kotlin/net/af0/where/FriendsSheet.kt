@@ -224,15 +224,6 @@ fun FriendsSheet(
                                         fontFamily = FontFamily.Monospace,
                                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                                     )
-                                    if (friend.session.isSendTokenPending) {
-                                        val prevSendToken = friend.session.prevSendToken.toHex().take(8)
-                                        Text(
-                                            "prevSendTok: $prevSendToken",
-                                            style = MaterialTheme.typography.labelSmall,
-                                            fontFamily = FontFamily.Monospace,
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                        )
-                                    }
                                     Text(
                                         "poll: ${timeAgoStringFromSeconds(friend.lastPollTs)}",
                                         style = MaterialTheme.typography.labelSmall,
@@ -240,9 +231,8 @@ fun FriendsSheet(
                                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                                     )
                                     val ratchet = if (friend.session.needsRatchet) "YES" else "no"
-                                    val pending = if (friend.session.isSendTokenPending) "YES" else "no"
                                     Text(
-                                        "needsRatchet: $ratchet  sendPending: $pending",
+                                        "needsRatchet: $ratchet",
                                         style = MaterialTheme.typography.labelSmall,
                                         fontFamily = FontFamily.Monospace,
                                         color = MaterialTheme.colorScheme.onSurfaceVariant,

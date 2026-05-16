@@ -10,19 +10,20 @@ import net.af0.where.model.UserLocation
 /**
  * Orchestrates the end-to-end encrypted location sharing protocol.
  * Unifies polling, decryption, ratchet rotation, and sending for all platforms.
- *
- * @param baseUrl Server base URL (e.g. "http://localhost:8080").
- * @param store   Persistent E2EE state storage.
  */
 open class LocationClient(
-    private val baseUrl: String,
+    baseUrl: String,
     private val store: E2eeManager,
-    private val mailboxClient: MailboxClient = KtorMailboxClient,
+    val mailbox: MailboxClient = KtorMailboxClient,
+    var enableAutomatedKeepalives: Boolean = true,
 ) {
-    /** Secondary constructor for Swift/native compatibility (§9). */
+    /** Secondary constructor for Swift/native compatibility. */
     constructor(baseUrl: String, store: E2eeManager) : this(baseUrl, store, KtorMailboxClient)
 
+    private val service = MailboxService(baseUrl, mailbox)
+
     private val friendMutexes = mutableMapOf<String, Mutex>()
+    private val silentDropRetries = mutableMapOf<String, Int>()
     private val mutexLock = Mutex()
 
     private suspend fun getFriendMutex(id: String): Mutex {
@@ -44,82 +45,110 @@ open class LocationClient(
         pausedFriendIds: Set<String> = emptySet(),
     ): List<UserLocation> =
         coroutineScope {
-            processOutboxes()
+            try {
+                processOutboxes()
+            } catch (e: Exception) {
+                // Ignore
+            }
+
             val now = currentTimeSeconds()
             if (now - lastCleanupTime > 3600) {
                 try {
                     store.cleanupExpiredInvites()
                     lastCleanupTime = now
                 } catch (e: Exception) {
-                    println("[LocationClient] cleanup expired invites failed: ${e.message}")
+                    // Ignore
                 }
             }
 
-            val friends = store.listFriends().shuffled()
+            val friends =
+                try {
+                    store.listFriends()
+                } catch (e: Exception) {
+                    emptyList()
+                }
+
             val deferreds =
                 friends.map { friend ->
                     async {
-                        val mutex = getFriendMutex(friend.id)
-                        mutex.withLock {
-                            val alreadyPolling =
-                                inFlightMutex.withLock {
-                                    if (inFlightPolls.contains(friend.id)) {
-                                        true
-                                    } else {
-                                        inFlightPolls.add(friend.id)
-                                        false
+                        try {
+                            val mutex = getFriendMutex(friend.id)
+                            mutex.withLock {
+                                val alreadyPolling =
+                                    inFlightMutex.withLock {
+                                        if (inFlightPolls.contains(friend.id)) {
+                                            true
+                                        } else {
+                                            inFlightPolls.add(friend.id)
+                                            false
+                                        }
+                                    }
+                                if (alreadyPolling) return@async Pair(emptyList<UserLocation>(), null)
+
+                                try {
+                                    val updates = pollFriend(friend.id, friend.id in pausedFriendIds)
+                                    Pair(updates, null)
+                                } catch (e: Exception) {
+                                    Pair(emptyList<UserLocation>(), e)
+                                } finally {
+                                    inFlightMutex.withLock {
+                                        inFlightPolls.remove(friend.id)
                                     }
                                 }
-                            if (alreadyPolling) return@async Pair(emptyList<UserLocation>(), null)
-
-                            try {
-                                val updates = pollFriend(friend.id, friend.id in pausedFriendIds)
-                                Pair(updates, null)
-                            } catch (e: Exception) {
-                                println("[LocationClient] poll: failed for ${friend.id.take(8)}: ${e.message}")
-                                Pair(emptyList<UserLocation>(), e)
-                            } finally {
-                                inFlightMutex.withLock {
-                                    inFlightPolls.remove(friend.id)
-                                }
                             }
+                        } catch (e: Exception) {
+                            Pair(emptyList<UserLocation>(), e)
                         }
                     }
                 }
 
             val results = deferreds.awaitAll()
             val allUpdates = mutableListOf<UserLocation>()
-            var successCount = 0
-            var failCount = 0
-            var lastError: Exception? = null
 
-            for ((updates, error) in results) {
-                if (error == null) {
-                    allUpdates.addAll(updates)
-                    successCount++
-                } else {
-                    failCount++
-                    lastError = error
-                }
+            for ((updates, _) in results) {
+                allUpdates.addAll(updates)
             }
 
-            if (successCount == 0 && failCount > 0) {
-                lastError?.let { throw it }
+            // --- Handshake Processing ---
+            // Automatically process any pending handshakes discovered in this cycle
+            try {
+                val pendingHandshakes = pollPendingInvites()
+                if (pendingHandshakes.isNotEmpty()) {
+                    for (result in pendingHandshakes) {
+                        try {
+                            val entry =
+                                store.processKeyExchangeInit(
+                                    result.payload,
+                                    result.payload.suggestedName.ifEmpty { "New Friend" },
+                                    result.aliceEkPub,
+                                )
+                        } catch (e: Exception) {
+                            // Ignore
+                        }
+                    }
+                }
+            } catch (e: Exception) {
+                // Ignore
+            }
+
+            // Ensure outboxes are processed even if some polls failed
+            try {
+                processOutboxes()
+            } catch (e: Exception) {
+                // Ignore
             }
 
             allUpdates
         }
 
-    suspend fun pollPendingInvites(): List<PendingInviteResult> = pollPendingInvitesInternal()
-
-    internal suspend fun pollPendingInvitesInternal(): List<PendingInviteResult> =
+    suspend fun pollPendingInvites(): List<PendingInviteResult> =
         coroutineScope {
-            val pending = store.listPendingInvites().shuffled()
+            val pending = store.listPendingInvites()
             pending.map { invite ->
                 async {
                     try {
                         val discoveryHex = invite.qrPayload.discoveryToken().toHex()
-                        val messages = mailboxClient.poll(baseUrl, discoveryHex)
+                        val messages = service.poll(discoveryHex)
                         val inits = messages.filterIsInstance<KeyExchangeInitPayload>()
                         val last = inits.lastOrNull()
                         if (last != null) {
@@ -128,11 +157,6 @@ open class LocationClient(
                             null
                         }
                     } catch (e: Exception) {
-                        println(
-                            "[LocationClient] pollPendingInvite failed for token=${invite.qrPayload.discoveryToken().toHex().take(
-                                8,
-                            )}: ${e.message}",
-                        )
                         null
                     }
                 }
@@ -144,139 +168,187 @@ open class LocationClient(
         initPayload: KeyExchangeInitPayload,
     ) {
         val discoveryHex = qr.discoveryToken().toHex()
-        mailboxClient.post(baseUrl, discoveryHex, initPayload)
+        service.post(discoveryHex, initPayload)
+
+        // WAL: Cleanup the outbox for the newly created friendship
+        val friendId = sha256(qr.ekPub).toHex()
+        store.removeFromOutbox(friendId, initPayload.msgId)
     }
 
     internal suspend fun pollFriend(
         friendId: String,
         isPaused: Boolean = false,
-    ): List<UserLocation> {
-        val resultLocations = mutableListOf<UserLocation>()
-        val friendBefore = store.getFriend(friendId) ?: return emptyList()
+    ): List<UserLocation> =
+        coroutineScope {
+            val resultLocations = mutableListOf<UserLocation>()
+            val friendBefore = store.getFriend(friendId) ?: return@coroutineScope emptyList()
 
-        // Multi-Token Polling (§5.3): if a transition is pending, we must poll BOTH the
-        // current recvToken and the previous one, as the peer might still be sending to
-        // the old epoch until they receive our first message from the new epoch.
-        val pollQueue = mutableListOf<String>()
-        pollQueue.add(friendBefore.session.recvToken.toHex())
-        val prev = friendBefore.session.prevRecvToken.toHex()
-        if (prev.isNotEmpty() && prev != friendBefore.session.recvToken.toHex()) {
-            pollQueue.add(prev)
-        }
+            // --- Strict Single-Token Polling ---
+            // We only poll the current recvToken. The WAL ensures that transition messages
+            // are delivered to the old token before subsequent messages are sent to the new one.
+            val currentToken = friendBefore.session.recvToken.toHex()
 
-        // Also poll retired tokens to catch up peers that are multiple epochs behind
-        friendBefore.session.retiredRecvTokens.forEach { tokenBytes ->
-            val token = tokenBytes.toHex()
-            if (!pollQueue.contains(token)) {
-                pollQueue.add(token)
+            val messages =
+                try {
+                    service.poll(currentToken)
+                } catch (e: Exception) {
+                    emptyList()
+                }
+
+            if (messages.isNotEmpty()) {
+                try {
+                    val result = store.processBatch(friendId, currentToken, messages)
+                    if (result != null) {
+                        var idsToAck = result.processedIds
+                        if (idsToAck.isEmpty() && messages.isNotEmpty()) {
+                            val retryKey = "$friendId:$currentToken"
+                            val currentRetries = (silentDropRetries[retryKey] ?: 0) + 1
+                            silentDropRetries[retryKey] = currentRetries
+
+                            if (currentRetries >= MAX_SILENT_DROP_RETRIES) {
+                                idsToAck = messages.map { it.msgId }
+                                silentDropRetries.remove(retryKey)
+                            }
+                        } else {
+                            silentDropRetries.remove("$friendId:$currentToken")
+                        }
+
+                        if (idsToAck.isNotEmpty()) {
+                            try {
+                                service.ackIds(currentToken, idsToAck)
+                            } catch (e: Exception) {
+                                // Ignore
+                            }
+                        }
+
+                        resultLocations.addAll(
+                            result.decryptedLocations.map { loc ->
+                                UserLocation(userId = friendId, lat = loc.lat, lng = loc.lng, timestamp = loc.ts)
+                            },
+                        )
+
+                        // If a state update occurred (e.g. token transition), poll again immediately
+                        // to catch any messages sent to the new token.
+                        if (result.hadStateUpdate) {
+                            val friendAfterUpdate = store.getFriend(friendId)
+                            if (friendAfterUpdate != null) {
+                                val nextToken = friendAfterUpdate.session.recvToken.toHex()
+                                if (nextToken != currentToken) {
+                                    val extraMessages =
+                                        try {
+                                            service.poll(nextToken)
+                                        } catch (e: Exception) {
+                                            emptyList()
+                                        }
+                                    if (extraMessages.isNotEmpty()) {
+                                        val extraResult = store.processBatch(friendId, nextToken, extraMessages)
+                                        if (extraResult != null) {
+                                            if (extraResult.processedIds.isNotEmpty()) {
+                                                service.ackIds(nextToken, extraResult.processedIds)
+                                            }
+                                            resultLocations.addAll(
+                                                extraResult.decryptedLocations.map { loc ->
+                                                    UserLocation(userId = friendId, lat = loc.lat, lng = loc.lng, timestamp = loc.ts)
+                                                },
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                } catch (e: Exception) {
+                    // Ignore
+                }
             }
-        }
-        pollQueue.shuffle()
-
-        val polledTokens = mutableSetOf<String>()
-        var hasIncrementedFailure = false
-        var follows = 0
-
-        while (pollQueue.isNotEmpty()) {
-            val currentTokenToPoll = pollQueue.removeAt(0)
-            if (polledTokens.contains(currentTokenToPoll)) continue
-            polledTokens.add(currentTokenToPoll)
-            follows++
-
-            val messages = mailboxClient.poll(baseUrl, currentTokenToPoll)
-            println("[LocationClient] pollFriend: friend=${friendId.take(8)} token=${currentTokenToPoll.take(8)} msgs=${messages.size}")
-            if (messages.isEmpty()) continue
 
             try {
-                val result = store.processBatch(friendId, currentTokenToPoll, messages) ?: continue
+                store.updateLastPollTs(friendId, currentTimeSeconds())
+            } catch (e: Exception) {
+            }
 
-                // Update failure counters
-                val hasFailures = (result.failCount > 0 || result.hadSilentDrops) && !result.anySuccess && !result.hadStateUpdate
-                val currentDropCount = if (hasFailures) {
-                    if (!hasIncrementedFailure) {
-                        hasIncrementedFailure = true
-                        val nextCount = store.incrementConsecutiveSilentDrops(friendId)
-                        store.addDiagnosticEvent(
-                            "POLL FAILURES: ${friendId.take(8)} token=${currentTokenToPoll.take(8)} (retry $nextCount/$MAX_SILENT_DROP_RETRIES)",
-                        )
-                        nextCount
-                    } else {
-                        store.getFriend(friendId)?.consecutiveSilentDrops ?: 0
-                    }
-                } else {
-                    store.resetConsecutiveSilentDrops(friendId)
-                    0
-                }
+            // Recovery: process any pending outbox messages for this friend
+            try {
+                processOutbox(friendId)
+            } catch (e: Exception) {
+                // Ignore
+            }
 
-                val forceAck = currentDropCount >= MAX_SILENT_DROP_RETRIES || follows >= MAX_TOKEN_FOLLOWS_PER_POLL
-                if (forceAck) {
-                    if (follows >= MAX_TOKEN_FOLLOWS_PER_POLL) {
-                        println("[LocationClient] pollFriend: force-ACKing due to TOKEN FOLLOW CAP for ${friendId.take(8)}")
-                        store.addDiagnosticEvent("TOKEN FOLLOW CAP: ${friendId.take(8)}")
-                    } else {
-                        println(
-                            "[LocationClient] pollFriend: force-ACKing after $MAX_SILENT_DROP_RETRIES consecutive failures for ${friendId.take(8)}",
-                        )
-                        store.addDiagnosticEvent("FORCE ACK: ${friendId.take(8)} — unrecoverable failures, re-pair if desynced")
-                    }
-                    store.resetConsecutiveSilentDrops(friendId)
-                }
+            val friendAfter = store.getFriend(friendId)
+            if (friendAfter != null) {
+                val now = currentTimeSeconds()
 
-                // ACK logic: progress (success/replay/state) or unrecoverable failure (forceAck)
-                val safeToAck = (result.anySuccess && !result.hadSilentDrops) ||
-                    (result.anyReplay && result.failCount == 0) ||
-                    result.hadStateUpdate ||
-                    forceAck
+                // Automated Keepalive Rules:
+                // 1. We haven't heard from them (lastRecvTs) for more than 30 seconds.
+                // Safety: only send if we have nothing else pending for them (outbox is empty).
+                val threshold = 30
+                val isFriendSilent = (now - friendAfter.lastRecvTs >= threshold)
 
-                if (safeToAck) {
-                    try {
-                        mailboxClient.ack(baseUrl, currentTokenToPoll, messages.size)
-                    } catch (e: Exception) {
-                        println("[LocationClient] pollFriend: ACK failed for ${friendId.take(8)}: ${e.message}")
+                if (enableAutomatedKeepalives && isFriendSilent) {
+                    if (!friendAfter.isStale && friendAfter.isConfirmed) {
+                        // Check outbox to avoid redundant keepalives
+                        val outbox = store.getOutbox(friendId)
+                        if (outbox.isEmpty()) {
+                            try {
+                                sendMessageToFriendInternal(friendId, MessagePlaintext.Keepalive())
+                            } catch (e: Exception) {
+                                // Ignore
+                            }
+                        }
                     }
                 }
+            }
 
-                resultLocations.addAll(
-                    result.decryptedLocations.map { loc ->
-                        UserLocation(userId = friendId, lat = loc.lat, lng = loc.lng, timestamp = loc.ts)
-                    },
-                )
+            resultLocations
+        }
 
-                if (follows >= MAX_TOKEN_FOLLOWS_PER_POLL) {
-                    break
+    suspend fun syncNow() {
+        val friends = store.listFriends()
+        friends.forEach { friend ->
+            val mutex = getFriendMutex(friend.id)
+            mutex.withLock {
+                processOutbox(friend.id)
+                try {
+                    pollFriend(friend.id)
+                } catch (e: Exception) {
+                    // Ignore
                 }
+            }
+        }
+    }
 
-                // Follow rotation
-                val updatedFriend = store.getFriend(friendId) ?: break
-                val newToken = updatedFriend.session.recvToken.toHex()
-                if (newToken != currentTokenToPoll) {
-                    pollQueue.add(newToken)
+    suspend fun processOutboxes() {
+        val friends =
+            try {
+                store.listFriends()
+            } catch (e: Exception) {
+                return
+            }
+
+        friends.forEach { friend ->
+            try {
+                val mutex = getFriendMutex(friend.id)
+                mutex.withLock {
+                    processOutbox(friend.id)
                 }
             } catch (e: Exception) {
-                println("[LocationClient] pollFriend: processBatch failed for ${friendId.take(8)}: ${e.message}")
-                throw e
+                // Ignore
             }
         }
+    }
 
-        store.updateLastPollTs(friendId, currentTimeSeconds())
+    private suspend fun processOutbox(friendId: String) {
+        val outbox = store.getOutbox(friendId)
+        if (outbox.isEmpty()) return
 
-        val friendAfter = store.getFriend(friendId)
-        if (friendAfter != null) {
-            val remoteDhChanged = !friendBefore.session.remoteDhPub.contentEquals(friendAfter.session.remoteDhPub)
-            if (friendAfter.session.needsRatchet || remoteDhChanged) {
-                if (!friendAfter.isStale && (!friendAfter.sharingEnabled || isPaused)) {
-                    println("[LocationClient] pollFriend: needsRatchet/new DH for ${friendId.take(8)}, sending automated keepalive")
-                    try {
-                        sendMessageToFriendInternal(friendId, MessagePlaintext.Keepalive())
-                    } catch (e: Exception) {
-                        println("[LocationClient] pollFriend: keepalive failed for ${friendId.take(8)}: ${e.message}")
-                        store.addDiagnosticEvent("KEEPALIVE FAIL: ${friendId.take(8)}: ${e.message?.take(40)}")
-                    }
-                }
+        for (outboxMsg in outbox) {
+            try {
+                service.post(outboxMsg.token, outboxMsg.payload)
+                store.removeFromOutbox(friendId, outboxMsg.msgId)
+            } catch (e: Exception) {
+                break // Stop on first failure to preserve order
             }
         }
-
-        return resultLocations
     }
 
     open suspend fun sendLocation(
@@ -284,10 +356,9 @@ open class LocationClient(
         lng: Double,
         pausedFriendIds: Set<String> = emptySet(),
     ) {
-        processOutboxes()
         val ts = currentTimeSeconds()
         val payload = MessagePlaintext.Location(lat = lat, lng = lng, acc = 0.0, ts = ts)
-        val activeFriends = store.listFriends().filter { it.id !in pausedFriendIds && !it.isStale }.shuffled()
+        val activeFriends = store.listFriends().filter { it.id !in pausedFriendIds && !it.isStale }
 
         var successCount = 0
         var failCount = 0
@@ -334,125 +405,26 @@ open class LocationClient(
         friendId: String,
         payload: MessagePlaintext,
     ) {
-        // RECOVERY (§5.4): detect stale transition flag after crash
-        val friendBefore = store.getFriend(friendId) ?: return
-        if (friendBefore.outbox == null && friendBefore.session.isSendTokenPending && friendBefore.session.sendSeq > 1) {
-            println("[LocationClient] send: detected stale transition flag for ${friendId.take(8)}, finalizing now")
-            finalizeTokenTransition(friendId)
-        }
-
-        val friendCheck = store.getFriend(friendId) ?: return
-        if (friendCheck.outbox != null) {
-            println("[LocationClient] send: skipping send for ${friendId.take(8)} — outbox still pending")
-            store.addDiagnosticEvent("OUTBOX BLOCK: skipped send for ${friendId.take(8)}, pending outbox")
-            return
-        }
-
-        val message =
+        // WAL Safety: If the outbox is not empty, we MUST NOT generate a new message.
+        // We instead retry the existing outbox. This bounds the queue and prevents nonce reuse.
+        var currentOutbox = store.getOutbox(friendId)
+        if (currentOutbox.isNotEmpty()) {
             try {
-                store.encryptAndStore(friendId, payload)
-            } catch (e: IllegalStateException) {
-                println("[LocationClient] send: outbox race for ${friendId.take(8)}, skipping")
-                store.addDiagnosticEvent("OUTBOX BLOCK (race): ${friendId.take(8)}")
+                processOutbox(friendId)
+            } catch (e: Exception) {
+                // Ignore
+            }
+
+            // Re-check: if still not empty (e.g. network fail), THEN we must stop to maintain order.
+            if (store.getOutbox(friendId).isNotEmpty()) {
                 return
             }
-
-        val friendAfter = store.getFriend(friendId) ?: return
-        val outbox = friendAfter.outbox ?: throw Exception("Outbox missing after store")
-        val tokenToUse = outbox.token
-        val isPending = friendAfter.session.isSendTokenPending
-
-        println(
-            "[LocationClient] send: friend=${friendId.take(8)} token=${tokenToUse.take(8)} " +
-                "seq=${friendAfter.session.sendSeq} type=${payload::class.simpleName} " +
-                "pending=$isPending" + (if (isPending) " (using prevSendToken)" else ""),
-        )
-        mailboxClient.post(baseUrl, tokenToUse, message)
-        store.clearOutbox(friendId)
-
-        if (payload is MessagePlaintext.Location) {
-            store.updateLastSentTs(friendId, currentTimeSeconds())
         }
 
-        finalizeTokenTransition(friendId, clearingToken = tokenToUse)
-    }
+        val (message, session) = store.encryptAndAdvance(friendId, payload)
 
-    private suspend fun finalizeTokenTransition(
-        friendId: String,
-        clearingToken: String? = null,
-    ) {
-        if (store.clearSendTokenPending(friendId, clearingToken)) {
-            println("[LocationClient] finalizeTokenTransition: clearing pending flag for ${friendId.take(8)}")
-
-            val updatedFriend = store.getFriend(friendId) ?: return
-            val session = updatedFriend.session
-
-            val tokensRotated = !session.sendToken.contentEquals(session.prevSendToken)
-            if (tokensRotated) {
-                println(
-                    "[LocationClient] finalizeTokenTransition: triggering fresh keepalive for ${friendId.take(8)} " +
-                        "on new token ${session.sendToken.toHex().take(8)}",
-                )
-                try {
-                    sendMessageToFriendInternal(friendId, MessagePlaintext.Keepalive())
-                } catch (e: Exception) {
-                    println("[LocationClient] finalizeTokenTransition: keepalive failed for ${friendId.take(8)}: ${e.message}")
-                    store.addDiagnosticEvent("KEEPALIVE FAIL: ${friendId.take(8)}: ${e.message?.take(40)}")
-                }
-            }
-        }
-    }
-
-    private suspend fun processOutboxes() = coroutineScope {
-        val friends = store.listFriends().shuffled()
-        friends.map { friend ->
-            async {
-                val mutex = getFriendMutex(friend.id)
-                mutex.withLock {
-                    if (friend.session.isSendTokenPending) {
-                        val staleSince = friend.session.sendTokenPendingSinceMs
-                        val isStale = staleSince != null && (currentTimeMillis() - staleSince) > PENDING_TRANSITION_TIMEOUT_MS
-                        if (isStale) {
-                            println("[LocationClient] pending transition stale for ${friend.id.take(8)}")
-                            store.abandonPendingTransition(friend.id)
-                            return@async
-                        }
-                    }
-
-                    val outbox = friend.outbox
-                    if (outbox == null) {
-                        return@async
-                    }
-
-                    try {
-                        println("[LocationClient] recovery: retrying outbox for ${friend.id.take(8)} token=${outbox.token.take(8)}")
-                        mailboxClient.post(baseUrl, outbox.token, outbox.payload)
-                        store.clearOutbox(friend.id)
-                        finalizeTokenTransition(friend.id, clearingToken = outbox.token)
-                    } catch (e: Exception) {
-                        if (e is ProtocolGapException) {
-                            println("[LocationClient] recovery: permanent cryptodesync for ${friend.id.take(8)}")
-                            store.clearOutbox(friend.id)
-                            return@async
-                        }
-                        val statusCode = (e as? ServerException)?.statusCode
-                        if (statusCode == 404 || statusCode == 410) {
-                            val isTransitionToken = friend.session.isSendTokenPending && 
-                                outbox.token == friend.session.prevSendToken.toHex()
-                            
-                            if (isTransitionToken) {
-                                println("[LocationClient] recovery: mailbox gone (404/410) for ${friend.id.take(8)} during outbox retry. Clearing outbox and pending transition.")
-                                store.clearOutbox(friend.id)
-                                finalizeTokenTransition(friend.id, clearingToken = outbox.token)
-                            } else {
-                                store.clearOutbox(friend.id)
-                            }
-                        } else if (statusCode == 429) {
-                            store.incrementOutbox429Count(friend.id)
-                        }
-                    }
-                }
-            }
-        }.awaitAll()
+        // We trigger sequential outbox processing for this friend.
+        // This ensures messages are sent in order (0, 1, 2...) even if multiple calls happen rapidly.
+        processOutbox(friendId)
     }
 }

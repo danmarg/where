@@ -6,6 +6,7 @@ agp = "8.9.0"
 ktor = "3.1.2"
 kotlinx-coroutines = "1.10.1"
 kotlinx-serialization = "1.8.0"
+sqldelight = "2.0.2"
 compose-bom = "2025.03.00"
 activity-compose = "1.10.1"
 androidx-fragment = "1.8.1"
@@ -82,6 +83,12 @@ jedis = { module = "redis.clients:jedis", version.ref = "jedis" }
 # Logging
 logback-classic = { module = "ch.qos.logback:logback-classic", version.ref = "logback" }
 
+# SQLDelight
+sqldelight-android = { module = "app.cash.sqldelight:android-driver", version.ref = "sqldelight" }
+sqldelight-native = { module = "app.cash.sqldelight:native-driver", version.ref = "sqldelight" }
+sqldelight-sqlite = { module = "app.cash.sqldelight:sqlite-driver", version.ref = "sqldelight" }
+sqldelight-coroutines = { module = "app.cash.sqldelight:coroutines-extensions", version.ref = "sqldelight" }
+
 [plugins]
 kotlin-multiplatform = { id = "org.jetbrains.kotlin.multiplatform", version.ref = "kmp-plugin" }
 kotlin-jvm = { id = "org.jetbrains.kotlin.jvm", version.ref = "kotlin" }
@@ -91,3 +98,4 @@ android-library = { id = "com.android.library", version.ref = "agp" }
 compose-compiler = { id = "org.jetbrains.kotlin.plugin.compose", version.ref = "kotlin" }
 ktlint = { id = "org.jlleitschuh.gradle.ktlint", version = "12.2.0" }
 moko-resources = { id = "dev.icerock.mobile.multiplatform-resources", version.ref = "moko-resources" }
+sqldelight = { id = "app.cash.sqldelight", version.ref = "sqldelight" }

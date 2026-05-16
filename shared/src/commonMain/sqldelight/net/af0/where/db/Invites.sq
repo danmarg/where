@@ -1,0 +1,23 @@
+CREATE TABLE PendingInvites (
+    ekPub BLOB NOT NULL PRIMARY KEY,
+    suggestedName TEXT NOT NULL,
+    fingerprint TEXT NOT NULL,
+    discoverySecret BLOB NOT NULL,
+    privKeyBlob BLOB NOT NULL,
+    createdAt INTEGER NOT NULL,
+    exportedAt INTEGER
+);
+
+-- PendingInvites Queries
+insertPendingInvite:
+INSERT OR REPLACE INTO PendingInvites(ekPub, suggestedName, fingerprint, discoverySecret, privKeyBlob, createdAt, exportedAt)
+VALUES (?, ?, ?, ?, ?, ?, ?);
+
+deletePendingInvite:
+DELETE FROM PendingInvites WHERE ekPub = ?;
+
+getAllPendingInvites:
+SELECT * FROM PendingInvites;
+
+deleteAll:
+DELETE FROM PendingInvites;

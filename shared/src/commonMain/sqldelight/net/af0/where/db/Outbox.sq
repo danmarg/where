@@ -1,0 +1,28 @@
+CREATE TABLE Outbox (
+    msgId TEXT NOT NULL PRIMARY KEY,
+    friendId TEXT NOT NULL,
+    token TEXT NOT NULL,
+    payloadBlob BLOB NOT NULL,
+    createdAt INTEGER NOT NULL
+);
+
+-- Outbox Queries
+insertOutbox:
+INSERT OR REPLACE INTO Outbox(msgId, friendId, token, payloadBlob, createdAt)
+VALUES (?, ?, ?, ?, ?);
+
+deleteOutboxByMsgId:
+DELETE FROM Outbox WHERE msgId = ?;
+
+deleteOutboxByMsgIdAndFriendId:
+DELETE FROM Outbox WHERE msgId = ? AND friendId = ?;
+
+deleteOutboxByFriendId:
+DELETE FROM Outbox WHERE friendId = ?;
+
+getOutboxForFriend:
+SELECT * FROM Outbox WHERE friendId = ? ORDER BY createdAt ASC;
+
+-- Cleanup
+deleteAll:
+DELETE FROM Outbox;

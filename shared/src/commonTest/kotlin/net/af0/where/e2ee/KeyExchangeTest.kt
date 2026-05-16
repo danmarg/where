@@ -89,9 +89,8 @@ class KeyExchangeTest {
         assertContentEquals(alice1.sendToken, bob1.recvToken, "Alice sendToken (E1) = Bob recvToken (E1)")
         // Alice has NOT ratcheted her recv chain yet (waiting for B1).
         // Bob has ALREADY ratcheted his send chain (to B1).
-        // But Bob's sendToken should be pending, so comunicaction still works.
-        assertTrue(bob1.isSendTokenPending)
-        assertContentEquals(alice1.recvToken, bob1.prevSendToken, "Alice recvToken (E0) = Bob prevSendToken (E0)")
+        // Bob's prevSendToken (E1) matches Alice's current recvToken (E0).
+        assertContentEquals(alice1.recvToken, bob1.prevSendToken, "Alice recvToken (E0) = Bob prevSendToken (E1)")
     }
 
     @Test
@@ -123,8 +122,6 @@ class KeyExchangeTest {
         // Alice's session was ratcheted IMMEDIATELY in aliceProcessInit.
         // Her current sendToken is derived from RK1.
         // But her prevSendToken is derived from SK.
-        // isSendTokenPending should be true.
-        assertTrue(aliceSession.isSendTokenPending)
 
         // Alice sends her first location.
         // Protocol states she must use prevSendToken for the first message of a new epoch.

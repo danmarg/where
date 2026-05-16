@@ -10,6 +10,7 @@ import androidx.annotation.MainThread
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import app.cash.sqldelight.driver.android.AndroidSqliteDriver
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -54,7 +55,9 @@ class LocationViewModel(
     private val e2eeManager: E2eeManager =
         e2eeManagerParam
             ?: (app as? WhereApplication)?.e2eeManager
-            ?: E2eeManager(SharedPrefsRawKeyValueStorage(app))
+            ?: E2eeManager(
+                AndroidSqliteDriver(net.af0.where.db.WhereDatabase.Schema, app, "where.db"),
+            )
     private val userStore: UserStore =
         userStoreParam
             ?: (app as? WhereApplication)?.userStore
@@ -300,7 +303,7 @@ class LocationViewModel(
                     }
 
                     withContext(Dispatchers.Main.immediate) {
-                                }
+                    }
                     locationSource.markAwaitingFirstUpdate(bobEntry.id)
                     locationSource.triggerRapidPoll()
                     locationSource.wakePoll()
@@ -440,7 +443,7 @@ class LocationViewModel(
         if (current is InviteState.Pending && locationSource.pendingInitPayload.value == null) {
             viewModelScope.launch {
                 e2eeManager.clearInvite(current.qr.ekPub)
-                }
+            }
         }
     }
 

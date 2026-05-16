@@ -10,7 +10,7 @@ import io.ktor.client.plugins.contentnegotiation.ContentNegotiation
 import io.ktor.client.request.delete
 import io.ktor.client.request.get
 import io.ktor.client.request.parameter
-import io.ktor.client.request.post
+import io.ktor.client.request.put
 import io.ktor.client.request.setBody
 import io.ktor.http.ContentType
 import io.ktor.http.HttpStatusCode
@@ -37,13 +37,21 @@ interface MailboxClient {
     ): List<MailboxPayload>
 
     /**
-     * Confirm receipt of [count] messages from [token], allowing the server to delete them.
-     * Called after session state has been durably saved. Failures are non-fatal.
+     * Confirm receipt of a specific message by [msgId].
      */
-    suspend fun ack(
+    suspend fun ackId(
         baseUrl: String,
         token: String,
-        count: Int,
+        msgId: String,
+    ) {}
+
+    /**
+     * Confirm receipt of specific messages by [msgIds].
+     */
+    suspend fun ackIds(
+        baseUrl: String,
+        token: String,
+        msgIds: List<String>,
     ) {}
 }
 
@@ -79,8 +87,9 @@ object KtorMailboxClient : MailboxClient {
         payload: MailboxPayload,
     ) {
         try {
+            val url = "$baseUrl/inbox/$token/${payload.msgId}"
             val response =
-                client.post("$baseUrl/inbox/$token") {
+                client.put(url) {
                     contentType(ContentType.Application.Json)
                     setBody(payload)
                 }
@@ -113,19 +122,34 @@ object KtorMailboxClient : MailboxClient {
         }
     }
 
-    override suspend fun ack(
+    override suspend fun ackId(
         baseUrl: String,
         token: String,
-        count: Int,
+        msgId: String,
     ) {
-        if (count <= 0) return
+        try {
+            val response = client.delete("$baseUrl/inbox/$token/$msgId")
+            if (!response.status.isSuccess()) {
+                throw ServerException(response.status.value, "ACK failed for msgId $msgId")
+            }
+        } catch (e: Exception) {
+            throw mapException(e)
+        }
+    }
+
+    override suspend fun ackIds(
+        baseUrl: String,
+        token: String,
+        msgIds: List<String>,
+    ) {
+        if (msgIds.isEmpty()) return
         try {
             val response =
                 client.delete("$baseUrl/inbox/$token") {
-                    parameter("n", count)
+                    parameter("ids", msgIds.joinToString(","))
                 }
             if (!response.status.isSuccess()) {
-                throw ServerException(response.status.value, "ACK failed for token $token")
+                throw ServerException(response.status.value, "Batch ACK failed for token $token")
             }
         } catch (e: Exception) {
             throw mapException(e)

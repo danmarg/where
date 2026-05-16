@@ -37,6 +37,7 @@ kotlin {
             implementation(libs.kotlinx.coroutines.play.services)
             implementation(libs.security.crypto)
             implementation(libs.androidx.core.splashscreen)
+            implementation(libs.sqldelight.android)
         }
         androidUnitTest.dependencies {
             implementation(kotlin("test"))

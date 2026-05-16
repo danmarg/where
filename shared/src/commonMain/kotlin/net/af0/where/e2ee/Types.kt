@@ -15,8 +15,7 @@ private val qrJson =
     }
 
 enum class RatchetPhase {
-    STABLE, // isSendTokenPending=false, needsRatchet=false — normal operating state
-    PENDING_SEND, // isSendTokenPending=true — DH ratchet advanced, awaiting first new-epoch post
+    STABLE, // needsRatchet=false — normal operating state
     NEEDS_KEEPALIVE, // needsRatchet=true — received new remoteDhPub, must send keepalive before next poll
 }
 
@@ -50,34 +49,19 @@ data class SessionState(
     @Serializable(with = ByteArrayBase64Serializer::class) val localDhPub: ByteArray,
     @Serializable(with = ByteArrayBase64Serializer::class) val prevLocalDhPub: ByteArray = ByteArray(0),
     @Serializable(with = ByteArrayBase64Serializer::class) val remoteDhPub: ByteArray,
-    // The DH public key from the epoch immediately preceding remoteDhPub. Used for
-    // bucketed out-of-order message processing to prevent epoch rotation from
-    // causing silent message loss if messages from prior epochs arrive late.
-    @Serializable(with = ByteArrayBase64Serializer::class) val lastRemoteDhPub: ByteArray = ByteArray(0),
     @Serializable(with = ByteArrayBase64Serializer::class) val aliceEkPub: ByteArray,
     @Serializable(with = ByteArrayBase64Serializer::class) val bobEkPub: ByteArray,
     @Serializable(with = ByteArrayBase64Serializer::class) val aliceFp: ByteArray,
     @Serializable(with = ByteArrayBase64Serializer::class) val bobFp: ByteArray,
+    @Serializable(with = ByteArrayBase64Serializer::class) val localFp: ByteArray = ByteArray(0),
+    @Serializable(with = ByteArrayBase64Serializer::class) val remoteFp: ByteArray = ByteArray(0),
     @Serializable(with = ByteArrayBase64Serializer::class) val prevSendToken: ByteArray,
-    @Serializable(with = ByteArrayBase64Serializer::class) val prevRecvToken: ByteArray = ByteArray(0),
-    val isSendTokenPending: Boolean,
+    @Serializable(with = ByteArrayBase64Serializer::class) val prevSendChainKey: ByteArray = ByteArray(0),
+    @Serializable(with = ByteArrayBase64Serializer::class) val prevSendHeaderKey: ByteArray = ByteArray(0),
     val isAlice: Boolean,
     // REPLAY PROTECTION & OUT-OF-ORDER SUPPORT
     // Map of (remoteDhPubHex + ":" + seq) to [MK (32) || Nonce (12) || PN (8) || Timestamp (8)]
     val skippedMessageKeys: Map<
-        String,
-        @Serializable(with = ByteArrayBase64Serializer::class)
-        ByteArray,
-        > = emptyMap(),
-    // Recent DH public keys seen (to reject replays from epochs older than lastRemoteDhPub)
-    // Stored as hex strings for O(1) lookup and clean serialization.
-    val retiredDhPubs: Set<String> = emptySet(),
-    // Recent receiving tokens seen (to catch up peers that are multiple epochs behind)
-    val retiredRecvTokens: List<@Serializable(with = ByteArrayBase64Serializer::class) ByteArray> = emptyList(),
-    // Header keys for prior epochs that still have skipped message keys in the cache.
-    // Keyed by remoteDhPub.toHex(); needed to decrypt the envelope of late-arriving
-    // messages from an epoch we have already ratcheted past.
-    val skippedEpochHeaderKeys: Map<
         String,
         @Serializable(with = ByteArrayBase64Serializer::class)
         ByteArray,
@@ -91,7 +75,6 @@ data class SessionState(
     @Serializable(with = ByteArrayBase64Serializer::class) val headerKey: ByteArray = ByteArray(0),
     @Serializable(with = ByteArrayBase64Serializer::class) val sendHeaderKey: ByteArray = ByteArray(0),
     @Serializable(with = ByteArrayBase64Serializer::class) val nextHeaderKey: ByteArray = ByteArray(0),
-    val sendTokenPendingSinceMs: Long? = null,
 ) {
     /**
      * Creates a deep copy of the session state, ensuring all sensitive ByteArray
@@ -106,19 +89,19 @@ data class SessionState(
             sendToken = sendToken.copyOf(),
             recvToken = recvToken.copyOf(),
             localDhPriv = localDhPriv.copyOf(),
+            prevSendChainKey = prevSendChainKey.copyOf(),
+            prevSendHeaderKey = prevSendHeaderKey.copyOf(),
             localDhPub = localDhPub.copyOf(),
             prevLocalDhPub = prevLocalDhPub.copyOf(),
             remoteDhPub = remoteDhPub.copyOf(),
-            lastRemoteDhPub = lastRemoteDhPub.copyOf(),
             aliceEkPub = aliceEkPub.copyOf(),
             bobEkPub = bobEkPub.copyOf(),
             aliceFp = aliceFp.copyOf(),
             bobFp = bobFp.copyOf(),
+            localFp = localFp.copyOf(),
+            remoteFp = remoteFp.copyOf(),
             prevSendToken = prevSendToken.copyOf(),
-            prevRecvToken = prevRecvToken.copyOf(),
-            retiredRecvTokens = retiredRecvTokens.map { it.copyOf() },
             skippedMessageKeys = skippedMessageKeys.mapValues { it.value.copyOf() },
-            skippedEpochHeaderKeys = skippedEpochHeaderKeys.mapValues { it.value.copyOf() },
             headerKey = headerKey.copyOf(),
             sendHeaderKey = sendHeaderKey.copyOf(),
             nextHeaderKey = nextHeaderKey.copyOf(),
@@ -137,26 +120,20 @@ data class SessionState(
             localDhPub.contentEquals(other.localDhPub) &&
             prevLocalDhPub.contentEquals(other.prevLocalDhPub) &&
             remoteDhPub.contentEquals(other.remoteDhPub) &&
-            lastRemoteDhPub.contentEquals(other.lastRemoteDhPub) &&
             aliceEkPub.contentEquals(other.aliceEkPub) &&
             bobEkPub.contentEquals(other.bobEkPub) &&
             aliceFp.contentEquals(other.aliceFp) &&
             bobFp.contentEquals(other.bobFp) &&
             prevSendToken.contentEquals(other.prevSendToken) &&
-            isSendTokenPending == other.isSendTokenPending &&
             isAlice == other.isAlice &&
             skippedMessageKeys.size == other.skippedMessageKeys.size &&
             skippedMessageKeys.all { (k, v) -> other.skippedMessageKeys[k]?.contentEquals(v) == true } &&
-            retiredDhPubs == other.retiredDhPubs &&
-            skippedEpochHeaderKeys.size == other.skippedEpochHeaderKeys.size &&
-            skippedEpochHeaderKeys.all { (k, v) -> other.skippedEpochHeaderKeys[k]?.contentEquals(v) == true } &&
             pn == other.pn &&
             pr == other.pr &&
             needsRatchet == other.needsRatchet &&
             headerKey.contentEquals(other.headerKey) &&
             sendHeaderKey.contentEquals(other.sendHeaderKey) &&
-            nextHeaderKey.contentEquals(other.nextHeaderKey) &&
-            sendTokenPendingSinceMs == other.sendTokenPendingSinceMs
+            nextHeaderKey.contentEquals(other.nextHeaderKey)
     }
 
     override fun hashCode(): Int {
@@ -171,29 +148,22 @@ data class SessionState(
         h = 31 * h + localDhPub.contentHashCode()
         h = 31 * h + prevLocalDhPub.contentHashCode()
         h = 31 * h + remoteDhPub.contentHashCode()
-        h = 31 * h + lastRemoteDhPub.contentHashCode()
         h = 31 * h + aliceEkPub.contentHashCode()
         h = 31 * h + bobEkPub.contentHashCode()
         h = 31 * h + aliceFp.contentHashCode()
         h = 31 * h + bobFp.contentHashCode()
         h = 31 * h + prevSendToken.contentHashCode()
-        h = 31 * h + isSendTokenPending.hashCode()
         h = 31 * h + isAlice.hashCode()
         // Content-based hash for collections containing ByteArrays
         var skipHash = 0
         skippedMessageKeys.forEach { (k, v) -> skipHash += 31 * k.hashCode() + v.contentHashCode() }
         h = 31 * h + skipHash
-        h = 31 * h + retiredDhPubs.hashCode()
-        var epochHkHash = 0
-        skippedEpochHeaderKeys.forEach { (k, v) -> epochHkHash += 31 * k.hashCode() + v.contentHashCode() }
-        h = 31 * h + epochHkHash
         h = 31 * h + pn.hashCode()
         h = 31 * h + pr.hashCode()
         h = 31 * h + needsRatchet.hashCode()
         h = 31 * h + headerKey.contentHashCode()
         h = 31 * h + sendHeaderKey.contentHashCode()
         h = 31 * h + nextHeaderKey.contentHashCode()
-        h = 31 * h + sendTokenPendingSinceMs.hashCode()
         return h
     }
 }
@@ -201,24 +171,12 @@ data class SessionState(
 fun SessionState.phase(): RatchetPhase =
     when {
         needsRatchet -> RatchetPhase.NEEDS_KEEPALIVE
-        isSendTokenPending -> RatchetPhase.PENDING_SEND
         else -> RatchetPhase.STABLE
     }
 
 fun SessionState.assertInvariants() {
     check(skippedMessageKeys.size <= MAX_SKIPPED_KEYS) {
         "skippedMessageKeys overflow: ${skippedMessageKeys.size} > $MAX_SKIPPED_KEYS"
-    }
-    check(skippedEpochHeaderKeys.size <= MAX_SKIPPED_EPOCHS) {
-        "skippedEpochHeaderKeys overflow: ${skippedEpochHeaderKeys.size} > $MAX_SKIPPED_EPOCHS"
-    }
-    check(retiredDhPubs.size <= MAX_SEEN_DH_PUBS) {
-        "retiredDhPubs overflow: ${retiredDhPubs.size} > $MAX_SEEN_DH_PUBS"
-    }
-    if (isSendTokenPending) {
-        check(!prevSendToken.contentEquals(sendToken) || sendSeq == 0L) {
-            "isSendTokenPending=true but sendToken==prevSendToken and sendSeq>0 — impossible after real DH ratchet"
-        }
     }
 }
 
@@ -380,9 +338,10 @@ data class PendingInviteResult(
  */
 @Serializable
 data class EncryptedOutboxMessage(
-    val v: Int = 1,
     val token: String,
     val payload: MailboxPayload,
+    val msgId: String = payload.msgId,
+    val createdAt: Long = currentTimeMillis(),
 )
 
 /** Output of a symmetric ratchet step (KDF_CK). */

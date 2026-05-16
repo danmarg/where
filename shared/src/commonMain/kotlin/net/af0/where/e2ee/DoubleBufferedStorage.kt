@@ -47,7 +47,7 @@ internal class DoubleBufferedStorage<T : Any>(
 
         val tsPrev = lastSeenTs[keyBase] ?: 0L
         if (tsNew < tsPrev) {
-            println("[DoubleBufferedStorage] WARNING: Monotonicity violation for $keyBase: $tsNew < $tsPrev. Overriding to $tsPrev + 1.")
+            // WARNING: Monotonicity violation
         }
         // Note: We don't force data to change here (it's immutable), but we use tsNew to pick the slot.
         // E2eeManager.nextTs() is the primary guarantor of monotonicity.
@@ -95,7 +95,6 @@ internal class DoubleBufferedStorage<T : Any>(
         return try {
             json.decodeFromString(serializer, jsonStr)
         } catch (e: Exception) {
-            println("[DoubleBufferedStorage] Failed to decode $label: ${e.message}")
             null
         }
     }

@@ -40,15 +40,18 @@ object ByteArrayBase64Serializer : KSerializer<ByteArray> {
 sealed class MailboxPayload {
     /** Protocol version (§9). Always 1 for this release. */
     abstract val v: Int
+
+    /** Unique message ID for idempotency (§9). */
+    abstract val msgId: String
 }
 
 /**
  * An encrypted message frame (Alice ↔ Bob, §9.1).
  *
  * @property v       Protocol version.
- * @property dhPub   Sender's current DH ratchet public key.
- * @property seq     Monotone counter as a decimal string.
+ * @property envelope Sender's current DH ratchet public key and metadata.
  * @property ct      ChaCha20-Poly1305 ciphertext + 16-byte tag.
+ * @property msgId   Unique ID (sha256(ct)) for server-side idempotency.
  */
 @Serializable
 @SerialName("EncryptedMessage")
@@ -56,6 +59,7 @@ data class EncryptedMessagePayload(
     override val v: Int = PROTOCOL_VERSION,
     @Serializable(with = ByteArrayBase64Serializer::class) val envelope: ByteArray,
     @Serializable(with = ByteArrayBase64Serializer::class) val ct: ByteArray,
+    override val msgId: String = sha256(ct).toHex(),
 ) : MailboxPayload()
 
 /**
@@ -66,6 +70,7 @@ data class EncryptedMessagePayload(
  * @property ekPub           Bob's X25519 ephemeral public key (32 bytes).
  * @property keyConfirmation HMAC-SHA-256(SK, "Where-v1-Confirm" || EK_A.pub || EK_B.pub).
  * @property suggestedName   Bob's suggested display name for Alice.
+ * @property msgId           Unique ID (sha256(ekPub)) for server-side idempotency.
  */
 @Serializable
 @SerialName("KeyExchangeInit")
@@ -77,6 +82,7 @@ data class KeyExchangeInitPayload(
     @SerialName("key_confirmation")
     @Serializable(with = ByteArrayBase64Serializer::class) val keyConfirmation: ByteArray,
     @SerialName("suggested_name") val suggestedName: String = "",
+    override val msgId: String = sha256(ekPub).toHex(),
 ) : MailboxPayload() {
     override fun equals(other: Any?): Boolean {
         if (other !is KeyExchangeInitPayload) return false

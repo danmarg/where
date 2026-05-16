@@ -1,5 +1,7 @@
 package net.af0.where.cli
 
+import app.cash.sqldelight.db.SqlDriver
+import app.cash.sqldelight.driver.jdbc.sqlite.JdbcSqliteDriver
 import com.google.zxing.BarcodeFormat
 import com.google.zxing.MultiFormatWriter
 import io.ktor.client.*
@@ -8,9 +10,11 @@ import io.ktor.serialization.kotlinx.json.*
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.*
 import kotlinx.serialization.json.Json
+import net.af0.where.db.WhereDatabase
 import net.af0.where.e2ee.*
 import net.af0.where.initializeLibsodium
 import java.io.File
+import java.util.Properties
 import kotlin.system.exitProcess
 
 class FileRawKeyValueStorage(private val file: File) : RawKeyValueStorage {
@@ -97,7 +101,13 @@ fun main(args: Array<String>) {
 
     val storageFile = File(statePath)
     val storage = FileRawKeyValueStorage(storageFile)
-    val store = E2eeManager(storage)
+
+    // WAL DB: derived from state file name (e.g. where_cli_state.db)
+    val dbBaseName = storageFile.nameWithoutExtension
+    val dbFile = File(storageFile.parentFile ?: File("."), "$dbBaseName.db")
+    val driver: SqlDriver = JdbcSqliteDriver("jdbc:sqlite:${dbFile.absolutePath}", Properties(), WhereDatabase.Schema)
+
+    val store = E2eeManager(driver)
 
     var host = "http://localhost:8080"
     val hostIdx = args.indexOf("--host")
@@ -114,11 +124,11 @@ fun main(args: Array<String>) {
                 if (friends.isEmpty()) {
                     println("No friends yet. Your ID will be your session fingerprint after pairing.")
                 } else {
-                    // Your ID is the other side's stored fingerprint for you (symmetrical)
+                    // Your ID is derived from your fingerprint in the peer's store.
+                    // Locally, we identify the friendship by the peer's fingerprint.
                     val friend = friends.first()
-                    val mySession = friend.session
-                    val myFp = if (friend.isInitiator) mySession.aliceFp else mySession.bobFp
-                    println("Your ID: ${myFp.toHex()}")
+                    val myFp = if (friend.session.isAlice) friend.session.aliceFp else friend.session.bobFp
+                    println("Your fingerprint: ${myFp.toHex()}")
                 }
             }
         "invite" ->
