@@ -241,12 +241,11 @@ class LocationViewModel(
                 return false
             }
         Log.d(TAG, "processQrUrl: parsed qr, suggestedName=${qr.suggestedName}")
-        
-        // If we were showing our own invite sheet, dismiss it to make room for the naming dialog.
-        if (_inviteState.value is InviteState.Pending) {
-            _inviteState.value = InviteState.None
-        }
-        
+
+        // If we were showing our own invite sheet, dismiss it immediately to make room for the naming dialog.
+        inviteJob?.cancel()
+        _inviteState.value = InviteState.None
+
         uiStateStore.onPendingQrForNaming(qr)
         triggerRapidPoll()
         return true
@@ -264,19 +263,21 @@ class LocationViewModel(
         Log.d(TAG, "confirmQrScan: friendName=$friendName")
         uiStateStore.onPendingQrForNaming(null)
         locationSource.confirmQrScan()
+
+        // Reset our own invite state immediately.
+        inviteJob?.cancel()
+        _inviteState.value = InviteState.None
+
         val qrWithName = qr.copy(suggestedName = friendName)
         val currentInvite = _inviteState.value
         _isExchanging.value = true
         viewModelScope.launch {
             try {
-                if (currentInvite != InviteState.None) {
-                    // Bob: clear his own outgoing invite state if he's currently showing one,
-                    // but keep other persistent invites.
-                    if (currentInvite is InviteState.Pending) {
-                        e2eeManager.clearInvite(currentInvite.qr.ekPub)
-                    }
-                    _inviteState.value = InviteState.None
+                // Bob: clear his own persistent outgoing invite from the store if he's currently showing one.
+                if (currentInvite is InviteState.Pending) {
+                    e2eeManager.clearInvite(currentInvite.qr.ekPub)
                 }
+
                 val (initPayload, bobEntry) = e2eeManager.processScannedQr(qrWithName, displayName.value)
                 val sendToken = bobEntry.session.sendToken.toHex()
                 Log.d(
@@ -331,7 +332,10 @@ class LocationViewModel(
         val aliceEkPub = locationSource.pendingInitAliceEkPub.value ?: return
         Log.d(TAG, "confirmPendingInit: name=$name")
         locationSource.onPendingInit(null)
+
+        inviteJob?.cancel()
         _inviteState.value = InviteState.None
+
         _isExchanging.value = true
         viewModelScope.launch {
             try {

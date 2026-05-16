@@ -101,6 +101,8 @@ fun FriendsSheet(
                     },
                     modifier = Modifier.weight(1f),
                 ) {
+
+                ) {
                     Icon(Icons.Default.QrCodeScanner, contentDescription = null, modifier = Modifier.size(16.dp))
                     Text(" " + stringResource(MR.strings.scan))
                 }

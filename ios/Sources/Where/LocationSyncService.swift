@@ -479,14 +479,18 @@ final class LocationSyncService: ObservableObject {
             updateStatus(NSError(domain: "Where", code: 400, userInfo: [NSLocalizedDescriptionKey: MR.strings().invalid_qr_code.localized()]))
             return false
         }
-        pendingQrForNaming = qr
+        inviteState = Shared.InviteState.None()
         isInviteSheetShowing = false
+        pendingQrForNaming = qr
         triggerRapidPoll()
         return true
     }
 
     func confirmQrScan(qr: Shared.QrPayload, friendName: String) async {
         pendingQrForNaming = nil
+        inviteState = Shared.InviteState.None()
+        isInviteSheetShowing = false
+
         let qrWithName = Shared.QrPayload(protocolVersion: Shared.ProtocolConstantsKt.PROTOCOL_VERSION, 
             ekPub: qr.ekPub,
             suggestedName: friendName,
@@ -551,11 +555,12 @@ final class LocationSyncService: ObservableObject {
 
     func confirmPendingInit(payload: Shared.KeyExchangeInitPayload, name: String) async {
         guard let aliceEkPub = pendingInitAliceEkPub else { return }
+        inviteState = Shared.InviteState.None()
+        isInviteSheetShowing = false
         isExchanging = true
         pendingInitPayload = nil
         pendingInitAliceEkPub = nil
         multipleScansDetected = false
-        isInviteSheetShowing = false
 
         defer { isExchanging = false }
         do {
