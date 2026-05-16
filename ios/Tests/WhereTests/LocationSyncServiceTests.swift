@@ -41,7 +41,8 @@ class LocationSyncServiceTests: XCTestCase {
     override func setUp() async throws {
         self.mockStorage = MockRawKeyValueStorage()
         self.mockLocationProvider = MockLocationProvider()
-        let e2eeManager = Shared.E2eeManager(sqlDriver: Shared.IosSqlDriverKt.createIosSqlDriver())
+        // Use an empty string for the database name to create a fresh in-memory database for each test
+        let e2eeManager = Shared.E2eeManager(sqlDriver: Shared.IosSqlDriverKt.createIosSqlDriver(name: ""))
         let userStore = Shared.UserStore(storage: mockStorage)
         self.service = LocationSyncService(e2eeManager: e2eeManager, userStore: userStore, locationClient: nil, locationProvider: mockLocationProvider)
         self.service.skipUpdateVisibleUsers = true
