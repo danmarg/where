@@ -32,5 +32,11 @@ class TestWhereApplication : WhereApplication() {
     }
 
     override val e2eeManager: E2eeManager by lazy { E2eeManager(createTestSqlDriver(this)) }
+
+    /**
+     * UserStore still uses in-memory storage here because it stores simple global settings
+     * and doesn't require the complex transactional safety or WAL that E2eeManager needs.
+     * In-memory is sufficient for unit testing the higher-level logic.
+     */
     override val userStore: UserStore by lazy { UserStore(inMemoryStorage) }
 }

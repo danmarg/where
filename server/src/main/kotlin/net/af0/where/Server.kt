@@ -241,34 +241,35 @@ class RedisMailboxState(redisUrl: String) : MailboxStore {
 
     private val postScript =
         """
-        local rlKey    = KEYS[1]
-        local inboxKey = KEYS[2]
-        local idsKey   = KEYS[3]
-        local maxPosts = tonumber(ARGV[1])
-        local maxDepth = tonumber(ARGV[2])
-        local payload  = ARGV[3]
-        local ttlSec   = tonumber(ARGV[4])
-        local rlTtlSec = tonumber(ARGV[5])
-        local msgId    = ARGV[6]
-        
+        local rlKey     = KEYS[1]
+        local inboxKey  = KEYS[2] -- ZSET (order)
+        local idsKey    = KEYS[3] -- SET (idempotency)
+        local dataKey   = KEYS[4] -- HASH (payload)
+        local maxPosts  = tonumber(ARGV[1])
+        local maxDepth  = tonumber(ARGV[2])
+        local payload   = ARGV[3]
+        local ttlSec    = tonumber(ARGV[4])
+        local rlTtlSec  = tonumber(ARGV[5])
+        local msgId     = ARGV[6]
+        local nowMs     = tonumber(ARGV[7])
+
         if msgId ~= "" then
             if redis.call('SISMEMBER', idsKey, msgId) == 1 then return 1 end
+        else
+            msgId = "auto:" .. redis.call('INCR', 'msgid_gen')
         end
 
         local count = redis.call('INCR', rlKey)
         if count == 1 then redis.call('EXPIRE', rlKey, rlTtlSec) end
         if count > maxPosts then return 0 end
-        if redis.call('LLEN', inboxKey) >= maxDepth then return 0 end
-        
-        local storedValue = payload
-        if msgId ~= "" then
-            storedValue = msgId .. "\0" .. payload
-        end
-        
-        redis.call('RPUSH', inboxKey, storedValue)
+        if redis.call('ZCARD', inboxKey) >= maxDepth then return 0 end
+
+        redis.call('ZADD', inboxKey, nowMs, msgId)
+        redis.call('HSET', dataKey, msgId, payload)
         redis.call('EXPIRE', inboxKey, ttlSec)
-        
-        if msgId ~= "" then
+        redis.call('EXPIRE', dataKey, ttlSec)
+
+        if ARGV[6] ~= "" then
             redis.call('SADD', idsKey, msgId)
             redis.call('EXPIRE', idsKey, ttlSec)
         end
@@ -277,12 +278,21 @@ class RedisMailboxState(redisUrl: String) : MailboxStore {
 
     private val drainScript =
         """
+        local rlKey    = KEYS[1]
+        local inboxKey = KEYS[2] -- ZSET
+        local dataKey  = KEYS[3] -- HASH
         local maxGets  = tonumber(ARGV[1])
         local rlTtlSec = tonumber(ARGV[2])
-        local count = redis.call('INCR', KEYS[1])
-        if count == 1 then redis.call('EXPIRE', KEYS[1], rlTtlSec) end
+
+        local count = redis.call('INCR', rlKey)
+        if count == 1 then redis.call('EXPIRE', rlKey, rlTtlSec) end
         if count > maxGets then return nil end
-        return redis.call('LRANGE', KEYS[2], 0, 49)
+
+        local ids = redis.call('ZRANGE', inboxKey, 0, 49)
+        if #ids == 0 then return {} end
+
+        -- Fetch payloads from Hash. Note: some might be nil if deleted between ZRANGE and HMGET
+        return redis.call('HMGET', dataKey, unpack(ids))
         """.trimIndent()
 
     override fun post(
@@ -293,7 +303,7 @@ class RedisMailboxState(redisUrl: String) : MailboxStore {
         val result =
             jedis.eval(
                 postScript,
-                listOf("ratelimit:$token", "inbox:$token", "receivedIds:$token"),
+                listOf("ratelimit:$token", "inbox:$token", "receivedIds:$token", "inbox-data:$token"),
                 listOf(
                     RATE_LIMIT_MAX_POSTS.toString(),
                     MAX_QUEUE_DEPTH.toString(),
@@ -301,6 +311,7 @@ class RedisMailboxState(redisUrl: String) : MailboxStore {
                     (MAILBOX_TTL_MS / 1000).toString(),
                     (RATE_LIMIT_WINDOW_MS / 1000).toString(),
                     msgId ?: "",
+                    System.currentTimeMillis().toString(),
                 ),
             )
         return result == 1L
@@ -311,21 +322,15 @@ class RedisMailboxState(redisUrl: String) : MailboxStore {
         val result =
             jedis.eval(
                 drainScript,
-                listOf("ratelimit-get:$token", "inbox:$token"),
+                listOf("ratelimit-get:$token", "inbox:$token", "inbox-data:$token"),
                 listOf(
                     RATE_LIMIT_MAX_GETS.toString(),
                     (RATE_LIMIT_WINDOW_MS / 1000).toString(),
                 ),
             ) ?: return null
-        return (result as List<*>).map { item ->
+        return (result as List<*>).filterNotNull().map { item ->
             val str = if (item is ByteArray) item.decodeToString() else item.toString()
-            val payloadStr =
-                if (str.contains('\u0000')) {
-                    str.substringAfter('\u0000')
-                } else {
-                    str
-                }
-            json.parseToJsonElement(payloadStr)
+            json.parseToJsonElement(str)
         }
     }
 
@@ -336,17 +341,14 @@ class RedisMailboxState(redisUrl: String) : MailboxStore {
         val deleteByIdScript =
             """
             local inboxKey = KEYS[1]
+            local dataKey  = KEYS[2]
             local msgId    = ARGV[1]
-            local list = redis.call('LRANGE', inboxKey, 0, -1)
-            for i, v in ipairs(list) do
-                if v:sub(1, #msgId + 1) == msgId .. "\0" then
-                    redis.call('LREM', inboxKey, 1, v)
-                    return 1
-                end
-            end
+            local r1 = redis.call('ZREM', inboxKey, msgId)
+            local r2 = redis.call('HDEL', dataKey, msgId)
+            if r1 == 1 or r2 == 1 then return 1 end
             return 0
             """.trimIndent()
-        val result = jedis.eval(deleteByIdScript, listOf("inbox:$token"), listOf(msgId))
+        val result = jedis.eval(deleteByIdScript, listOf("inbox:$token", "inbox-data:$token"), listOf(msgId))
         return result == 1L
     }
 
@@ -358,28 +360,20 @@ class RedisMailboxState(redisUrl: String) : MailboxStore {
         val deleteByIdsScript =
             """
             local inboxKey = KEYS[1]
-            local msgIds = {}
-            for _, id in ipairs(ARGV) do
-                msgIds[id .. "\0"] = true
-            end
-            
+            local dataKey  = KEYS[2]
             local count = 0
-            local list = redis.call('LRANGE', inboxKey, 0, -1)
-            for _, v in ipairs(list) do
-                local prefix = v:match("^([^%z]+%z)")
-                if prefix and msgIds[prefix] then
-                    redis.call('LREM', inboxKey, 1, v)
-                    count = count + 1
-                end
+            for _, id in ipairs(ARGV) do
+                local r1 = redis.call('ZREM', inboxKey, id)
+                local r2 = redis.call('HDEL', dataKey, id)
+                if r1 == 1 or r2 == 1 then count = count + 1 end
             end
             return count
             """.trimIndent()
-        val result = jedis.eval(deleteByIdsScript, listOf("inbox:$token"), msgIds)
+        val result = jedis.eval(deleteByIdsScript, listOf("inbox:$token", "inbox-data:$token"), msgIds)
         return (result as Long).toInt()
     }
 
-    override fun checkIpRateLimit(ip: String): Boolean {
-        val rlKey = "ratelimit-ip:$ip"
+    override fun checkIpRateLimit(ip: String): Boolean {        val rlKey = "ratelimit-ip:$ip"
         val count = jedis.incr(rlKey)
         if (count == 1L) jedis.expire(rlKey, RATE_LIMIT_WINDOW_MS / 1000)
         return count <= 100 // 100 posts per min per IP

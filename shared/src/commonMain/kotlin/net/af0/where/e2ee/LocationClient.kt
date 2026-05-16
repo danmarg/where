@@ -225,6 +225,35 @@ open class LocationClient(
                             UserLocation(userId = friendId, lat = loc.lat, lng = loc.lng, timestamp = loc.ts)
                         },
                     )
+
+                    // If a state update occurred (e.g. token transition), poll again immediately 
+                    // to catch any messages sent to the new token.
+                    if (result.hadStateUpdate) {
+                        val friendAfterUpdate = store.getFriend(friendId)
+                        if (friendAfterUpdate != null) {
+                            val nextToken = friendAfterUpdate.session.recvToken.toHex()
+                            if (nextToken != currentToken) {
+                                val extraMessages = try {
+                                    service.poll(nextToken)
+                                } catch (e: Exception) {
+                                    emptyList()
+                                }
+                                if (extraMessages.isNotEmpty()) {
+                                    val extraResult = store.processBatch(friendId, nextToken, extraMessages)
+                                    if (extraResult != null) {
+                                        if (extraResult.processedIds.isNotEmpty()) {
+                                            service.ackIds(nextToken, extraResult.processedIds)
+                                        }
+                                        resultLocations.addAll(
+                                            extraResult.decryptedLocations.map { loc ->
+                                                UserLocation(userId = friendId, lat = loc.lat, lng = loc.lng, timestamp = loc.ts)
+                                            }
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
             } catch (e: Exception) {
                 // Ignore
