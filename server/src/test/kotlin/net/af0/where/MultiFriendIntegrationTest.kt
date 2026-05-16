@@ -46,9 +46,16 @@ class MultiFriendIntegrationTest {
         }
     }
 
-    private fun createTestSqlDriver(): SqlDriver {
-        val driver = JdbcSqliteDriver(JdbcSqliteDriver.IN_MEMORY)
-        WhereDatabase.Schema.create(driver)
+    private fun createTestSqlDriver(file: java.io.File? = null): SqlDriver {
+        val driver =
+            if (file == null) {
+                JdbcSqliteDriver(JdbcSqliteDriver.IN_MEMORY)
+            } else {
+                JdbcSqliteDriver("jdbc:sqlite:${file.absolutePath}")
+            }
+        if (file == null || file.length() == 0L) {
+            WhereDatabase.Schema.create(driver)
+        }
         return driver
     }
 
@@ -215,7 +222,10 @@ class MultiFriendIntegrationTest {
                 }
             val mailboxClient = KtorTestMailboxClient(testClient)
 
-            val aliceDriver = createTestSqlDriver()
+            val dbFile = java.io.File.createTempFile("alice", ".db")
+            dbFile.deleteOnExit()
+
+            val aliceDriver = createTestSqlDriver(dbFile)
             val aliceManager = E2eeManager(aliceDriver)
             val aliceClient = LocationClient("", aliceManager, mailboxClient)
 
@@ -235,12 +245,14 @@ class MultiFriendIntegrationTest {
             aliceClient.poll()
 
             // --- SIMULATE RESTART ---
-            // Create a NEW store instance using the SAME driver
-            val aliceManagerRestarted = E2eeManager(aliceDriver)
+            // Close the old driver to ensure everything is flushed to disk
+            aliceDriver.close()
+
+            // Create a NEW driver and NEW store instance pointing to the same file
+            val aliceDriverRestarted = createTestSqlDriver(dbFile)
+            val aliceManagerRestarted = E2eeManager(aliceDriverRestarted)
             val bobAfterRestart = aliceManagerRestarted.getFriend(bobId)!!
 
-            // THIS IS THE BUG: Currently, this will be NULL because poll()
-            // didn't update the FriendEntry in the store!
             assertNotNull(bobAfterRestart.lastTs, "Bob's location should persist after poll and restart")
             assertEquals(50.0, bobAfterRestart.lastLat)
         }

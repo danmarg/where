@@ -24,9 +24,16 @@ class E2eeBidirectionalEndToEndTest {
 
     private fun isLocalhost(): Boolean = getServerUrl().contains("localhost")
 
-    private fun createTestSqlDriver(): SqlDriver {
-        val driver = JdbcSqliteDriver(JdbcSqliteDriver.IN_MEMORY)
-        WhereDatabase.Schema.create(driver)
+    private fun createTestSqlDriver(file: java.io.File? = null): SqlDriver {
+        val driver =
+            if (file == null) {
+                JdbcSqliteDriver(JdbcSqliteDriver.IN_MEMORY)
+            } else {
+                JdbcSqliteDriver("jdbc:sqlite:${file.absolutePath}")
+            }
+        if (file == null || file.length() == 0L) {
+            WhereDatabase.Schema.create(driver)
+        }
         return driver
     }
 

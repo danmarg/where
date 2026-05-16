@@ -4,6 +4,6 @@ import app.cash.sqldelight.db.SqlDriver
 import app.cash.sqldelight.driver.native.inMemoryDriver
 import net.af0.where.db.WhereDatabase
 
-actual fun createTestSqlDriver(): SqlDriver {
+actual fun createTestSqlDriver(name: String?): SqlDriver {
     return inMemoryDriver(WhereDatabase.Schema)
 }

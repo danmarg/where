@@ -9,11 +9,11 @@ import net.af0.where.e2ee.E2eeManager
 import net.af0.where.e2ee.RawKeyValueStorage
 import net.af0.where.e2ee.UserStore
 
-private fun createTestSqlDriver(context: android.content.Context): SqlDriver {
+private fun createTestSqlDriver(context: android.content.Context, name: String? = null): SqlDriver {
     return AndroidSqliteDriver(
         WhereDatabase.Schema,
         context,
-        null,
+        name,
     )
 }
 

@@ -50,11 +50,11 @@ import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
-private fun createTestSqlDriver(): SqlDriver {
+private fun createTestSqlDriver(name: String? = null): SqlDriver {
     return AndroidSqliteDriver(
         WhereDatabase.Schema,
         ApplicationProvider.getApplicationContext(),
-        null,
+        name,
     )
 }
 
