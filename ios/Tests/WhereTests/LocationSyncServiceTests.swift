@@ -16,7 +16,7 @@ class LocationSyncServiceTests: XCTestCase {
             lock.lock(); defer { lock.unlock() }
             return data[key]
         }
-        func putString(key: String, value: String) {
+        func putString(key: String, value: String) throws {
             lock.lock(); defer { lock.unlock() }
             data[key] = value
         }
@@ -33,6 +33,7 @@ class LocationSyncServiceTests: XCTestCase {
         func requestPermissionAndStart() {
             requestPermissionAndStartCalled = true
         }
+        func sharingStateChanged() {}
     }
 
     var mockStorage: MockRawKeyValueStorage!
@@ -41,8 +42,8 @@ class LocationSyncServiceTests: XCTestCase {
     override func setUp() async throws {
         self.mockStorage = MockRawKeyValueStorage()
         self.mockLocationProvider = MockLocationProvider()
-        // Use an empty string for the database name to create a fresh in-memory database for each test
-        let e2eeManager = Shared.E2eeManager(sqlDriver: Shared.IosSqlDriverKt.createIosSqlDriver(name: ""))
+        // Use :memory: to create a fresh in-memory database for each test
+        let e2eeManager = Shared.E2eeManager(sqlDriver: Shared.IosSqlDriverKt.createIosSqlDriver(name: ":memory:"))
         let userStore = Shared.UserStore(storage: mockStorage)
         self.service = LocationSyncService(e2eeManager: e2eeManager, userStore: userStore, locationClient: nil, locationProvider: mockLocationProvider)
         self.service.skipUpdateVisibleUsers = true
@@ -109,6 +110,7 @@ class LocationSyncServiceTests: XCTestCase {
         func postKeyExchangeInit(qr: Shared.QrPayload, initPayload: Shared.KeyExchangeInitPayload) async throws {
             // No-op
         }
+        func syncNow() async throws {}
     }
 
     // MARK: - firePoll foreground/background gating
@@ -215,7 +217,7 @@ class LocationSyncServiceTests: XCTestCase {
         let update1 = Shared.UserLocation(userId: existingFriendId, lat: 1.0, lng: 2.0, timestamp: 123)
         mockClient.pollResult = [update1]
 
-        await service.confirmPendingInit(payload: Shared.KeyExchangeInitPayload(v: 1, token: "t", ekPub: kotlinByteArray(from: Data([1])), keyConfirmation: kotlinByteArray(from: Data([2])), suggestedName: "n"), name: "n")
+        await service.confirmPendingInit(payload: Shared.KeyExchangeInitPayload(v: 1, token: "t", ekPub: kotlinByteArray(from: Data([1])), keyConfirmation: kotlinByteArray(from: Data([2])), suggestedName: "n", msgId: "m1"), name: "n")
 
         await service.pollAll(updateUi: true)
 

@@ -241,6 +241,12 @@ class LocationViewModel(
                 return false
             }
         Log.d(TAG, "processQrUrl: parsed qr, suggestedName=${qr.suggestedName}")
+        
+        // If we were showing our own invite sheet, dismiss it to make room for the naming dialog.
+        if (_inviteState.value is InviteState.Pending) {
+            _inviteState.value = InviteState.None
+        }
+        
         uiStateStore.onPendingQrForNaming(qr)
         triggerRapidPoll()
         return true

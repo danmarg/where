@@ -443,6 +443,7 @@ final class LocationSyncService: ObservableObject {
                 pendingInitAliceEkPub = toSwiftData(result.aliceEkPub)
                 multipleScansDetected = result.multipleScansDetected
                 inviteState = Shared.InviteState.None()
+                isInviteSheetShowing = false
                 triggerRapidPoll()
             }
         }
@@ -467,6 +468,7 @@ final class LocationSyncService: ObservableObject {
         }
         resetRapidPoll()
         inviteState = Shared.InviteState.None()
+        isInviteSheetShowing = false
         pendingInitAliceEkPub = nil
         pendingInitPayload = nil
     }
@@ -478,6 +480,7 @@ final class LocationSyncService: ObservableObject {
             return false
         }
         pendingQrForNaming = qr
+        isInviteSheetShowing = false
         triggerRapidPoll()
         return true
     }
@@ -552,6 +555,7 @@ final class LocationSyncService: ObservableObject {
         pendingInitPayload = nil
         pendingInitAliceEkPub = nil
         multipleScansDetected = false
+        isInviteSheetShowing = false
 
         defer { isExchanging = false }
         do {
