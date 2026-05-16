@@ -257,11 +257,12 @@ class RedisMailboxState(redisUrl: String) : MailboxStore {
         local maxPosts  = tonumber(ARGV[1])
         local maxDepth  = tonumber(ARGV[2])
         local payload   = ARGV[3]
-        local ttlSec    = tonumber(ARGV[4])
-        local rlTtlSec  = tonumber(ARGV[5])
-        local msgId     = ARGV[6]
-        local nowMs     = tonumber(ARGV[7])
+        local ttlSec     = tonumber(ARGV[4])
+        local rlTtlSec   = tonumber(ARGV[5])
+        local msgId_orig = ARGV[6]
+        local nowMs      = tonumber(ARGV[7])
 
+        local msgId = msgId_orig
         if msgId ~= "" then
             if redis.call('SISMEMBER', idsKey, msgId) == 1 then return 1 end
         else
@@ -278,7 +279,7 @@ class RedisMailboxState(redisUrl: String) : MailboxStore {
         redis.call('EXPIRE', inboxKey, ttlSec)
         redis.call('EXPIRE', dataKey, ttlSec)
 
-        if ARGV[6] ~= "" then
+        if msgId_orig ~= "" then
             redis.call('SADD', idsKey, msgId)
             redis.call('EXPIRE', idsKey, ttlSec)
         end
