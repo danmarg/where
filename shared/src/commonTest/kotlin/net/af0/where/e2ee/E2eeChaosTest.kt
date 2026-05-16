@@ -307,7 +307,7 @@ class E2eeChaosTest {
             while (true) {
                 try {
                     val results = aliceClient.pollPendingInvites()
-                    val matching = results.find { it.aliceEkPub.contentEquals(qr.ekPub) }
+                    val matching = results.find { it.inviteEkPub.contentEquals(qr.ekPub) }
                     if (matching != null) {
                         aliceManager.processKeyExchangeInit(matching.payload, "Bob", qr.ekPub)
                         break

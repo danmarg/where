@@ -411,21 +411,10 @@ class LocationService : Service() {
             val results = locationClient.pollPendingInvites()
             if (results.isEmpty()) return
 
-            val pendingInvites = e2eeManager.listPendingInvites()
-            val filteredResults =
-                results.filter { result ->
-                    pendingInvites.any { it.qrPayload.ekPub.contentEquals(result.aliceEkPub) }
-                }
-
-            if (filteredResults.isEmpty()) {
-                Log.d(TAG, "pollPendingInvites: received ${results.size} results, but none match active pending invites. Ignoring.")
-                return
-            }
-
             // If we already have a naming dialog up, don't overwrite it, but the UI
             // will now be able to see all pending invites via allPendingInvites.
             if (locationSource.pendingInitPayload.value == null) {
-                val result = filteredResults.first()
+                val result = results.first()
                 val initPayload = result.payload
                 Log.d(
                     TAG,
@@ -434,7 +423,7 @@ class LocationService : Service() {
                 )
                 withContext(Dispatchers.Main) {
                     uiStateStore.setMultipleScansDetected(result.multipleScansDetected)
-                    locationSource.onPendingInit(initPayload, result.aliceEkPub)
+                    locationSource.onPendingInit(initPayload, result.inviteEkPub) // THE FIX: Pass our own EK
                     updateStatus(null)
                 }
             }

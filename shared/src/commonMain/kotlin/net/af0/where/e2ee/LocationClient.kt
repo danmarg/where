@@ -120,7 +120,7 @@ open class LocationClient(
                                 store.processKeyExchangeInit(
                                     result.payload,
                                     result.payload.suggestedName.ifEmpty { "New Friend" },
-                                    result.aliceEkPub,
+                                    result.inviteEkPub,
                                 )
                         } catch (e: Exception) {
                             // Ignore
@@ -152,7 +152,12 @@ open class LocationClient(
                         val inits = messages.filterIsInstance<KeyExchangeInitPayload>()
                         val last = inits.lastOrNull()
                         if (last != null) {
-                            PendingInviteResult(last, inits.size > 1, invite.qrPayload.ekPub)
+                            PendingInviteResult(
+                                payload = last,
+                                scannerEkPub = last.ekPub,
+                                inviteEkPub = invite.qrPayload.ekPub,
+                                multipleScansDetected = inits.size > 1,
+                            )
                         } else {
                             null
                         }

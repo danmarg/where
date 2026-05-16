@@ -324,14 +324,32 @@ sealed class ConnectionStatus {
     data class Error(val message: StringDesc) : ConnectionStatus()
 }
 
-/** Result of Alice polling for a pending invite scan (#176). */
+/** Result of polling for incoming handshakes (KeyExchangeInit). */
 data class PendingInviteResult(
     val payload: KeyExchangeInitPayload,
-    /** True if multiple people (or multiple scans) were detected in the discovery mailbox. */
+    val scannerEkPub: ByteArray, // The public key of the person who scanned our QR
+    val inviteEkPub: ByteArray,  // The public key of the QR code they scanned (ours)
     val multipleScansDetected: Boolean,
-    /** Alice's ephemeral public key for this specific invite (used for local matching). */
-    val aliceEkPub: ByteArray,
-)
+) {
+    override fun equals(other: Any?): Boolean {
+        if (this === other) return true
+        if (other == null || this::class != other::class) return false
+        other as PendingInviteResult
+        if (payload != other.payload) return false
+        if (!scannerEkPub.contentEquals(other.scannerEkPub)) return false
+        if (!inviteEkPub.contentEquals(other.inviteEkPub)) return false
+        if (multipleScansDetected != other.multipleScansDetected) return false
+        return true
+    }
+
+    override fun hashCode(): Int {
+        var result = payload.hashCode()
+        result = 31 * result + scannerEkPub.contentHashCode()
+        result = 31 * result + inviteEkPub.contentHashCode()
+        result = 31 * result + multipleScansDetected.hashCode()
+        return result
+    }
+}
 
 /**
  * A message that is pending delivery (used for transactional safety and recovery).
