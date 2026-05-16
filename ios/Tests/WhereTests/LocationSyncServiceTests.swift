@@ -440,4 +440,36 @@ class LocationSyncServiceTests: XCTestCase {
             return count
         }
     }
+
+    func testUiStateSynchronization_DismissalFlows() async throws {
+        let qr = try await service.e2eeManager.createInvite(suggestedName: "Alice")
+
+        // Test 1: Scanning a QR code dismisses the invite sheet
+        service.isInviteSheetShowing = true
+        service.inviteState = Shared.InviteState.Pending(qr: qr)
+
+        let qrUrl = qr.toUrl()
+        service.processQrUrl(qrUrl)
+
+        XCTAssertFalse(service.isInviteSheetShowing, "processQrUrl should dismiss the invite sheet")
+        XCTAssertTrue(service.inviteState is Shared.InviteState.None, "processQrUrl should reset inviteState")
+
+        // Test 2: Confirming a QR scan dismisses the invite sheet
+        service.isInviteSheetShowing = true
+        service.inviteState = Shared.InviteState.Pending(qr: qr)
+
+        await service.confirmQrScan(qr: qr, friendName: "Alice")
+
+        XCTAssertFalse(service.isInviteSheetShowing, "confirmQrScan should dismiss the invite sheet")
+        XCTAssertTrue(service.inviteState is Shared.InviteState.None, "confirmQrScan should reset inviteState")
+
+        // Test 3: Canceling a QR scan dismisses the invite sheet
+        service.isInviteSheetShowing = true
+        service.inviteState = Shared.InviteState.Pending(qr: qr)
+
+        await service.clearInvite()
+
+        XCTAssertFalse(service.isInviteSheetShowing, "clearInvite should dismiss the invite sheet")
+        XCTAssertTrue(service.inviteState is Shared.InviteState.None, "clearInvite should reset inviteState")
+    }
 }

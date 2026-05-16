@@ -58,7 +58,7 @@ class LocationServiceReproductionTest {
             try {
                 val aliceEkPub = byteArrayOf(1, 2, 3)
                 val initPayload = mockk<KeyExchangeInitPayload>(relaxed = true)
-                val pollResult = PendingInviteResult(initPayload, false, aliceEkPub)
+                val pollResult = PendingInviteResult(initPayload, byteArrayOf(), aliceEkPub, false)
 
                 // pollPendingInvites returns a result, but the invite was cleared before we process it
                 coEvery { mockClient.pollPendingInvites() } returns listOf(pollResult)

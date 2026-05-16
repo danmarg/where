@@ -46,6 +46,7 @@ import org.robolectric.Shadows.shadowOf
 import org.robolectric.annotation.Config
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
@@ -633,5 +634,63 @@ class LocationViewModelTest {
 
             // 2. Should attempt a pollAll immediately after pairing
             io.mockk.coVerify(timeout = 5000) { client.postKeyExchangeInit(any(), any(), any()) }
+        }
+
+    @Test
+    fun testUiStateSynchronization_DismissalFlows() =
+        runTest {
+            val store = mockk<E2eeManager>(relaxed = true)
+            val client = mockk<LocationClient>(relaxed = true)
+            val source = TestFakeLocationSource()
+            val uiStateStore = FakeUiStateStore()
+            viewModel =
+                LocationViewModel(
+                    app,
+                    e2eeManagerParam = store,
+                    locationClientParam = client,
+                    startPolling = false,
+                    locationSourceParam = source,
+                    uiStateStoreParam = uiStateStore,
+                )
+            val vm = viewModel!!
+
+            val qr =
+                QrPayload(
+                    protocolVersion = PROTOCOL_VERSION,
+                    ekPub = byteArrayOf(1, 2, 3),
+                    suggestedName = "Alice",
+                    fingerprint = "fp",
+                    discoverySecret = ByteArray(32),
+                )
+
+            // Test 1: Scanning a QR code dismisses the invite sheet
+            uiStateStore.setInviteSheetShowing(true)
+            (vm.inviteState as MutableStateFlow).value = InviteState.Pending(qr)
+            
+            vm.processQrUrl(qr.toUrl())
+            advanceUntilIdle()
+            
+            assertFalse(uiStateStore.isInviteSheetShowing.value, "processQrUrl should dismiss the invite sheet")
+            assertEquals(InviteState.None, vm.inviteState.value, "processQrUrl should reset inviteState")
+
+            // Test 2: Confirming a QR scan dismisses the invite sheet
+            uiStateStore.setInviteSheetShowing(true)
+            (vm.inviteState as MutableStateFlow).value = InviteState.Pending(qr)
+            
+            vm.confirmQrScan(qr, "Alice")
+            advanceUntilIdle()
+            
+            assertFalse(uiStateStore.isInviteSheetShowing.value, "confirmQrScan should dismiss the invite sheet")
+            assertEquals(InviteState.None, vm.inviteState.value, "confirmQrScan should reset inviteState")
+
+            // Test 3: Canceling a QR scan dismisses the invite sheet
+            uiStateStore.setInviteSheetShowing(true)
+            (vm.inviteState as MutableStateFlow).value = InviteState.Pending(qr)
+            
+            vm.clearInvite()
+            advanceUntilIdle()
+            
+            assertFalse(uiStateStore.isInviteSheetShowing.value, "clearInvite should dismiss the invite sheet")
+            assertEquals(InviteState.None, vm.inviteState.value, "clearInvite should reset inviteState")
         }
 }

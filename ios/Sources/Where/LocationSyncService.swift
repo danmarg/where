@@ -425,9 +425,21 @@ final class LocationSyncService: ObservableObject {
         let results = try await locationClient.pollPendingInvites()
         if results.isEmpty { return [] }
 
+        let pendingInvites = try await e2eeManager.listPendingInvites()
+        let filteredResults = results.filter { result in
+            pendingInvites.contains { invite in
+                toSwiftData(invite.qrPayload.ekPub) == toSwiftData(result.inviteEkPub)
+            }
+        }
+
+        if filteredResults.isEmpty {
+            logger.debug("pollPendingInvites: received \(results.count) results, but none match active pending invites. Ignoring.")
+            return []
+        }
+
         // If we already have a naming dialog up, don't overwrite it.
         if pendingInitPayload == nil {
-            if let result = results.first {
+            if let result = filteredResults.first {
                 pendingInitPayload = result.payload
                 pendingInitAliceEkPub = toSwiftData(result.inviteEkPub) // THE FIX: Use our own EK from the invite
                 multipleScansDetected = result.multipleScansDetected
@@ -436,7 +448,7 @@ final class LocationSyncService: ObservableObject {
                 triggerRapidPoll()
             }
         }
-        return results
+        return filteredResults
     }
 
     func clearInvite(ekPub: Data? = nil) async {
@@ -553,7 +565,7 @@ final class LocationSyncService: ObservableObject {
 
         defer { isExchanging = false }
         do {
-            let result = try await e2eeManager.processKeyExchangeInit(payload: payload, bobName: name, aliceEkPub: kotlinByteArray(from: aliceEkPub))
+            let result = try await e2eeManager.processKeyExchangeInit(payload: payload, aliceSuggestedName: name, aliceEkPub: kotlinByteArray(from: aliceEkPub))
 
             if let entry = result ?? nil {
                 awaitingFirstUpdateIds.insert(entry.id)

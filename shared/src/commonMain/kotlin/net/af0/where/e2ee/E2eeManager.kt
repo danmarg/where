@@ -102,12 +102,13 @@ class E2eeManager(
             qr
         }
 
-    @Throws(IllegalArgumentException::class, CancellationException::class, SelfPairingException::class)
+    @Throws(Exception::class, SelfPairingException::class, AuthenticationException::class, IllegalArgumentException::class, CancellationException::class)
     suspend fun processKeyExchangeInit(
         payload: KeyExchangeInitPayload,
-        bobName: String,
+        aliceSuggestedName: String,
         aliceEkPub: ByteArray,
     ): FriendEntry? {
+
         val (pending, aliceEkPubBytes) =
             persistence.withMetadataLock {
                 val p = pendingInvites.find { it.qrPayload.ekPub.contentEquals(aliceEkPub) }
@@ -143,7 +144,7 @@ class E2eeManager(
 
         val entry =
             FriendEntry(
-                name = sanitizeName(bobName),
+                name = sanitizeName(aliceSuggestedName),
                 session = session,
                 isInitiator = true,
                 isConfirmed = true,
@@ -313,6 +314,7 @@ class E2eeManager(
         }
     }
 
+    @Throws(Exception::class, SelfPairingException::class, AuthenticationException::class)
     suspend fun processScannedQr(
         qr: QrPayload,
         bobSuggestedName: String = "",
