@@ -18,7 +18,9 @@ internal data class PendingInvite(
 
 internal sealed class PersistenceAction {
     data class Update(val entry: FriendEntry) : PersistenceAction()
+
     object Delete : PersistenceAction()
+
     object None : PersistenceAction()
 }
 
@@ -30,10 +32,11 @@ internal class E2eeStore(
     private val database: net.af0.where.db.WhereDatabase,
 ) {
     internal companion object {
-        val json = Json {
-            ignoreUnknownKeys = true
-            encodeDefaults = true
-        }
+        val json =
+            Json {
+                ignoreUnknownKeys = true
+                encodeDefaults = true
+            }
         private const val MAX_DIAGNOSTIC_EVENTS = 100
     }
 
@@ -78,13 +81,13 @@ internal class E2eeStore(
 
     suspend fun <T> withFriendAndMetadataLock(
         friendId: String,
-        block: suspend (FriendEntry?, MetadataScope) -> Pair<PersistenceAction, T>
+        block: suspend (FriendEntry?, MetadataScope) -> Pair<PersistenceAction, T>,
     ): T {
         return storeLock.withLock {
             val entry = friends[friendId]
             val scope = MetadataScopeImpl()
             val (action, result) = block(entry, scope)
-            
+
             database.transaction {
                 when (action) {
                     is PersistenceAction.Update -> {
@@ -95,7 +98,7 @@ internal class E2eeStore(
                     }
                     is PersistenceAction.None -> {}
                 }
-                
+
                 // Process queued outbox inserts
                 scope.getQueuedOutboxInserts().forEach { outbox ->
                     database.outboxQueries.insertOutbox(
@@ -103,7 +106,7 @@ internal class E2eeStore(
                         friendId = outbox.friendId,
                         token = outbox.token,
                         payloadBlob = outbox.payloadBlob,
-                        createdAt = outbox.createdAt
+                        createdAt = outbox.createdAt,
                     )
                 }
             }
@@ -112,33 +115,44 @@ internal class E2eeStore(
     }
 
     suspend fun getFriend(id: String): FriendEntry? = storeLock.withLock { friends[id] }
+
     suspend fun listFriends(): List<FriendEntry> = storeLock.withLock { friends.values.toList() }
 
     fun addDiagnosticEvent(message: String) {
         val t = currentTimeSeconds()
         val s = (t % 86400).toInt()
-        val entry = "${(s / 3600).toString().padStart(2, '0')}:${((s % 3600) / 60).toString().padStart(2, '0')}:${(s % 60).toString().padStart(2, '0')} $message"
+        val entry = "${(s / 3600).toString().padStart(
+            2,
+            '0',
+        )}:${((s % 3600) / 60).toString().padStart(2, '0')}:${(s % 60).toString().padStart(2, '0')} $message"
         _diagnosticLog.value = (listOf(entry) + _diagnosticLog.value).take(MAX_DIAGNOSTIC_EVENTS)
     }
 
-    private fun saveFriendInternal(friendId: String, entry: FriendEntry) {
+    private fun saveFriendInternal(
+        friendId: String,
+        entry: FriendEntry,
+    ) {
         val current = friends[friendId]
         if (current != null) {
             // Optimistic concurrency check: ensure we haven't modified the state
             // since it was read from the cache. This guards against race conditions
             // if someone uses an old FriendEntry snapshot to attempt an update.
             if (entry.version != current.version) {
-                throw IllegalStateException("STALE UPDATE: friendId=$friendId version mismatch! current=${current.version}, updating=${entry.version}")
+                throw IllegalStateException(
+                    "STALE UPDATE: friendId=$friendId version mismatch! current=${current.version}, updating=${entry.version}",
+                )
             }
- 
+
             // Double Ratchet safety: ensure receiving sequence doesn't regress (§5.5)
             // Only applicable within the same DH epoch (same remote DH key).
             if (entry.session.remoteDhPub.contentEquals(current.session.remoteDhPub) &&
-                entry.session.recvSeq < current.session.recvSeq) {
-                throw IllegalStateException("CRITICAL: recvSeq regression! friendId=$friendId, current=${current.session.recvSeq}, new=${entry.session.recvSeq}")
+                entry.session.recvSeq < current.session.recvSeq
+            ) {
+                throw IllegalStateException(
+                    "CRITICAL: recvSeq regression! friendId=$friendId, current=${current.session.recvSeq}, new=${entry.session.recvSeq}",
+                )
             }
         }
-
 
         val nextVersion = entry.version + 1
         val finalEntry = entry.copy(version = nextVersion)
@@ -188,25 +202,33 @@ internal class E2eeStore(
         database.outboxQueries.insertOutbox(msgId, friendId, token, payloadBlob, createdAt)
     }
 
-    suspend fun deleteOutboxByMsgId(friendId: String, msgId: String) = storeLock.withLock {
+    suspend fun deleteOutboxByMsgId(
+        friendId: String,
+        msgId: String,
+    ) = storeLock.withLock {
         deleteOutboxByMsgIdInternal(friendId, msgId)
     }
 
-    internal fun deleteOutboxByMsgIdInternal(friendId: String, msgId: String) {
+    internal fun deleteOutboxByMsgIdInternal(
+        friendId: String,
+        msgId: String,
+    ) {
         database.outboxQueries.deleteOutboxByMsgIdAndFriendId(msgId, friendId)
     }
 
-    suspend fun deleteOutboxByFriendId(friendId: String) = storeLock.withLock {
-        deleteOutboxByFriendIdInternal(friendId)
-    }
+    suspend fun deleteOutboxByFriendId(friendId: String) =
+        storeLock.withLock {
+            deleteOutboxByFriendIdInternal(friendId)
+        }
 
     internal fun deleteOutboxByFriendIdInternal(friendId: String) {
         database.outboxQueries.deleteOutboxByFriendId(friendId)
     }
 
-    suspend fun getOutbox(friendId: String): List<EncryptedOutboxMessage> = storeLock.withLock {
-        getOutboxInternal(friendId)
-    }
+    suspend fun getOutbox(friendId: String): List<EncryptedOutboxMessage> =
+        storeLock.withLock {
+            getOutboxInternal(friendId)
+        }
 
     internal fun getOutboxInternal(friendId: String): List<EncryptedOutboxMessage> {
         return database.outboxQueries.getOutboxForFriend(friendId).executeAsList().map { row ->
@@ -214,44 +236,47 @@ internal class E2eeStore(
                 msgId = row.msgId,
                 token = row.token,
                 payload = json.decodeFromString(MailboxPayload.serializer(), row.payloadBlob.decodeToString()),
-                createdAt = row.createdAt
+                createdAt = row.createdAt,
             )
         }
     }
 
-    private fun net.af0.where.db.Friends.toEntry() = FriendEntry(
-        name = name,
-        session = json.decodeFromString(SessionState.serializer(), sessionBlob.decodeToString()),
-        isInitiator = isInitiator == 1L,
-        lastLat = lastLat,
-        lastLng = lastLng,
-        lastTs = lastTs,
-        lastRecvTs = lastRecvTs,
-        isConfirmed = isConfirmed == 1L,
-        lastSentTs = lastSentTs,
-        lastPollTs = lastPollTs,
-        sharingEnabled = sharingEnabled == 1L,
-        lastDecryptFailed = lastDecryptFailed == 1L,
-        version = version.toInt(),
-    )
+    private fun net.af0.where.db.Friends.toEntry() =
+        FriendEntry(
+            name = name,
+            session = json.decodeFromString(SessionState.serializer(), sessionBlob.decodeToString()),
+            isInitiator = isInitiator == 1L,
+            lastLat = lastLat,
+            lastLng = lastLng,
+            lastTs = lastTs,
+            lastRecvTs = lastRecvTs,
+            isConfirmed = isConfirmed == 1L,
+            lastSentTs = lastSentTs,
+            lastPollTs = lastPollTs,
+            sharingEnabled = sharingEnabled == 1L,
+            lastDecryptFailed = lastDecryptFailed == 1L,
+            version = version.toInt(),
+        )
 
-    private fun net.af0.where.db.PendingInvites.toInvite() = PendingInvite(
-        qrPayload = QrPayload(
-            suggestedName = suggestedName,
-            ekPub = ekPub,
-            fingerprint = fingerprint,
-            discoverySecret = discoverySecret
-        ),
-        aliceEkPriv = privKeyBlob,
-        createdAt = createdAt,
-        exportedAt = exportedAt
-    )
+    private fun net.af0.where.db.PendingInvites.toInvite() =
+        PendingInvite(
+            qrPayload =
+                QrPayload(
+                    suggestedName = suggestedName,
+                    ekPub = ekPub,
+                    fingerprint = fingerprint,
+                    discoverySecret = discoverySecret,
+                ),
+            aliceEkPriv = privKeyBlob,
+            createdAt = createdAt,
+            exportedAt = exportedAt,
+        )
 
     interface MetadataScope {
         val friends: List<FriendEntry>
         var pendingInvites: List<PendingInvite>
         var diagnosticLog: List<String>
-        
+
         fun insertOutbox(
             msgId: String,
             friendId: String,
@@ -271,8 +296,9 @@ internal class E2eeStore(
 
     private inner class MetadataScopeImpl : MetadataScope {
         override val friends: List<FriendEntry> get() = this@E2eeStore.friends.values.toList()
-        
+
         private val queuedOutboxInserts = mutableListOf<OutboxInsert>()
+
         fun getQueuedOutboxInserts(): List<OutboxInsert> = queuedOutboxInserts
 
         override fun insertOutbox(
@@ -298,7 +324,7 @@ internal class E2eeStore(
                             discoverySecret = invite.qrPayload.discoverySecret,
                             privKeyBlob = invite.aliceEkPriv,
                             createdAt = invite.createdAt,
-                            exportedAt = invite.exportedAt
+                            exportedAt = invite.exportedAt,
                         )
                     }
                 }
@@ -311,7 +337,7 @@ internal class E2eeStore(
                 this@E2eeStore.pendingInvites.addAll(value)
                 field = value
             }
-            
+
         override var diagnosticLog: List<String> = this@E2eeStore._diagnosticLog.value
             set(value) {
                 this@E2eeStore._diagnosticLog.value = value

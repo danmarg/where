@@ -11,7 +11,6 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.ConnectivityManager
 import android.net.Network
-import android.os.Build
 import android.os.IBinder
 import android.os.SystemClock
 import android.util.Log
@@ -29,9 +28,9 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.tasks.await
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.tasks.await
 import kotlinx.coroutines.withContext
 import net.af0.where.e2ee.ConnectionStatus
 import net.af0.where.e2ee.E2eeManager
@@ -130,12 +129,13 @@ class LocationService : Service() {
         ensureLocationRegistration()
 
         val connectivityManager = getSystemService(ConnectivityManager::class.java)
-        networkCallback = object : ConnectivityManager.NetworkCallback() {
-            override fun onAvailable(network: Network) {
-                Log.d(TAG, "Network available, triggering syncNow()")
-                serviceScope.launch { locationClient.syncNow() }
+        networkCallback =
+            object : ConnectivityManager.NetworkCallback() {
+                override fun onAvailable(network: Network) {
+                    Log.d(TAG, "Network available, triggering syncNow()")
+                    serviceScope.launch { locationClient.syncNow() }
+                }
             }
-        }
         connectivityManager?.registerDefaultNetworkCallback(networkCallback!!)
 
         serviceScope.launch {
@@ -284,19 +284,21 @@ class LocationService : Service() {
             // Runs regardless of foreground state so background location stays alive.
             if (isSharing) {
                 val now = clock()
-                val loc = if (now - lastSentTime > STATIONARY_FORCE_UPDATE_THRESHOLD_MS) {
-                    Log.d(TAG, "Stationary threshold exceeded; forcing fresh location fix.")
-                    forceLocationUpdateAndGet()
-                } else {
-                    null
-                }
+                val loc =
+                    if (now - lastSentTime > STATIONARY_FORCE_UPDATE_THRESHOLD_MS) {
+                        Log.d(TAG, "Stationary threshold exceeded; forcing fresh location fix.")
+                        forceLocationUpdateAndGet()
+                    } else {
+                        null
+                    }
 
-                val lastLoc = if (loc != null) {
-                    locationSource.onLocation(loc.latitude, loc.longitude, if (loc.hasBearing()) loc.bearing.toDouble() else null)
-                    Triple(loc.latitude, loc.longitude, if (loc.hasBearing()) loc.bearing.toDouble() else null)
-                } else {
-                    locationSource.lastLocation.value
-                }
+                val lastLoc =
+                    if (loc != null) {
+                        locationSource.onLocation(loc.latitude, loc.longitude, if (loc.hasBearing()) loc.bearing.toDouble() else null)
+                        Triple(loc.latitude, loc.longitude, if (loc.hasBearing()) loc.bearing.toDouble() else null)
+                    } else {
+                        locationSource.lastLocation.value
+                    }
 
                 if (lastLoc != null) {
                     // Force the heartbeat send. The pollLoop timing (5 mins) is already

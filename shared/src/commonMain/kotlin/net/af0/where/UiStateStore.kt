@@ -15,8 +15,11 @@ interface UiStateSource {
     val multipleScansDetected: StateFlow<Boolean>
 
     fun setInviteSheetShowing(showing: Boolean)
+
     fun onPendingQrForNaming(qr: QrPayload?)
+
     fun setMultipleScansDetected(detected: Boolean)
+
     fun reset()
 }
 

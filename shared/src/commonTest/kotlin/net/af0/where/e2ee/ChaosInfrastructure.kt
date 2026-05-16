@@ -10,9 +10,10 @@ class ProcessKilledException : Exception("Simulated process kill mid-operation")
 class ChaosTimeProvider(private var offsetMillis: Long = 0) : TimeProvider {
     private val mutex = Mutex()
 
-    suspend fun addOffset(millis: Long) = mutex.withLock {
-        offsetMillis += millis
-    }
+    suspend fun addOffset(millis: Long) =
+        mutex.withLock {
+            offsetMillis += millis
+        }
 
     override fun currentTimeMillis(): Long = platformCurrentTimeMillis() + offsetMillis
 

@@ -1,19 +1,17 @@
 package net.af0.where.e2ee
 
 import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.map
-import kotlinx.coroutines.flow.stateIn
 import kotlinx.serialization.Serializable
-import kotlinx.serialization.json.Json
 
 /** Platform-specific Unicode normalization (NFKC) for homograph protection. */
 internal expect fun normalizeName(name: String): String
 
-internal fun canonicalId(aliceFp: ByteArray, bobFp: ByteArray): String {
+internal fun canonicalId(
+    aliceFp: ByteArray,
+    bobFp: ByteArray,
+): String {
     val a = aliceFp.toHex()
     val b = bobFp.toHex()
     return if (a < b) "$a:$b" else "$b:$a"
@@ -86,7 +84,6 @@ class E2eeManager(
 ) {
     private val persistence = E2eeStore(net.af0.where.db.WhereDatabase(sqlDriver))
 
-
     val diagnosticLog: StateFlow<List<String>> = persistence.diagnosticLog
 
     fun addDiagnosticEvent(message: String) {
@@ -111,10 +108,11 @@ class E2eeManager(
         bobName: String,
         aliceEkPub: ByteArray,
     ): FriendEntry? {
-        val (pending, aliceEkPubBytes) = persistence.withMetadataLock {
-            val p = pendingInvites.find { it.qrPayload.ekPub.contentEquals(aliceEkPub) }
-            p to (p?.qrPayload?.ekPub)
-        }
+        val (pending, aliceEkPubBytes) =
+            persistence.withMetadataLock {
+                val p = pendingInvites.find { it.qrPayload.ekPub.contentEquals(aliceEkPub) }
+                p to (p?.qrPayload?.ekPub)
+            }
         if (pending == null || aliceEkPubBytes == null) return null
 
         val tokenBytes = payload.token.hexToByteArray()
@@ -137,18 +135,19 @@ class E2eeManager(
             } finally {
                 pending.aliceEkPriv.zeroize()
             }
-            
-            // Handshake initiated, remove the pending invite (#186)
-            persistence.withMetadataLock {
-                pendingInvites = pendingInvites.filter { !it.qrPayload.ekPub.contentEquals(aliceEkPubBytes) }
-            }
 
-        val entry = FriendEntry(
-            name = sanitizeName(bobName),
-            session = session,
-            isInitiator = true,
-            isConfirmed = true,
-        )
+        // Handshake initiated, remove the pending invite (#186)
+        persistence.withMetadataLock {
+            pendingInvites = pendingInvites.filter { !it.qrPayload.ekPub.contentEquals(aliceEkPubBytes) }
+        }
+
+        val entry =
+            FriendEntry(
+                name = sanitizeName(bobName),
+                session = session,
+                isInitiator = true,
+                isConfirmed = true,
+            )
 
         persistence.withFriendAndMetadataLock(entry.id) { _, metadata ->
             metadata.pendingInvites = metadata.pendingInvites.filterNot { it.qrPayload.ekPub.contentEquals(aliceEkPubBytes) }
@@ -171,36 +170,41 @@ class E2eeManager(
 
     suspend fun markInviteExported(ekPub: ByteArray) {
         persistence.withMetadataLock {
-            pendingInvites = pendingInvites.map {
-                if (it.qrPayload.ekPub.contentEquals(ekPub)) {
-                    it.copy(exportedAt = currentTimeSeconds())
-                } else {
-                    it
+            pendingInvites =
+                pendingInvites.map {
+                    if (it.qrPayload.ekPub.contentEquals(ekPub)) {
+                        it.copy(exportedAt = currentTimeSeconds())
+                    } else {
+                        it
+                    }
                 }
-            }
         }
     }
 
     suspend fun cleanupExpiredInvites(expirySeconds: Long = 48 * 3600L) {
         val now = currentTimeSeconds()
-        val toRemove = persistence.withMetadataLock {
-            val expired = pendingInvites.filter { 
-                val baseTime = it.exportedAt ?: it.createdAt
-                now - baseTime > expirySeconds 
-            }
-            if (expired.isNotEmpty()) {
-                pendingInvites = pendingInvites.filter { 
-                    val baseTime = it.exportedAt ?: it.createdAt
-                    now - baseTime <= expirySeconds 
+        val toRemove =
+            persistence.withMetadataLock {
+                val expired =
+                    pendingInvites.filter {
+                        val baseTime = it.exportedAt ?: it.createdAt
+                        now - baseTime > expirySeconds
+                    }
+                if (expired.isNotEmpty()) {
+                    pendingInvites =
+                        pendingInvites.filter {
+                            val baseTime = it.exportedAt ?: it.createdAt
+                            now - baseTime <= expirySeconds
+                        }
                 }
+
+                // Also identify unconfirmed friends for cleanup
+                val unconfirmedExpired =
+                    friends.filter {
+                        !it.isConfirmed && (now - it.lastRecvTs > expirySeconds)
+                    }
+                expired to unconfirmedExpired
             }
-            
-            // Also identify unconfirmed friends for cleanup
-            val unconfirmedExpired = friends.filter { 
-                !it.isConfirmed && (now - it.lastRecvTs > expirySeconds) 
-            }
-            expired to unconfirmedExpired
-        }
 
         toRemove.second.forEach { friend ->
             persistence.withFriendAndMetadataLock(friend.id) { current, _ ->
@@ -217,7 +221,10 @@ class E2eeManager(
 
     suspend fun listFriends(): List<FriendEntry> = persistence.listFriends()
 
-    suspend fun renameFriend(id: String, newName: String) {
+    suspend fun renameFriend(
+        id: String,
+        newName: String,
+    ) {
         val sanitized = sanitizeName(newName)
         persistence.withFriendAndMetadataLock(id) { entry, _ ->
             if (entry != null) {
@@ -249,9 +256,10 @@ class E2eeManager(
             val (nextSession, message) = Session.encryptMessage(entry.session, payload)
 
             // Nonce safety check:
-            val seqAdvanced = nextSession.sendSeq > entry.session.sendSeq ||
-                nextSession.pn > entry.session.pn ||
-                !nextSession.rootKey.contentEquals(entry.session.rootKey)
+            val seqAdvanced =
+                nextSession.sendSeq > entry.session.sendSeq ||
+                    nextSession.pn > entry.session.pn ||
+                    !nextSession.rootKey.contentEquals(entry.session.rootKey)
             check(seqAdvanced) { "Nonce safety violation: sequence number did not advance" }
 
             // Determine which token to use for THIS message.
@@ -259,24 +267,26 @@ class E2eeManager(
             // Subsequent messages go to the new token.
             val tokenToUse = if (nextSession.sendSeq == 1L) nextSession.prevSendToken else nextSession.sendToken
 
-            val outboxMsg = EncryptedOutboxMessage(
-                token = tokenToUse.toHex(),
-                payload = message
-            )
+            val outboxMsg =
+                EncryptedOutboxMessage(
+                    token = tokenToUse.toHex(),
+                    payload = message,
+                )
 
-            val updatedEntry = entry.copy(
-                session = nextSession,
-                lastSentTs = currentTimeSeconds(),
-            )
-            
+            val updatedEntry =
+                entry.copy(
+                    session = nextSession,
+                    lastSentTs = currentTimeSeconds(),
+                )
+
             metadata.insertOutbox(
                 msgId = outboxMsg.msgId,
                 friendId = friendId,
                 token = outboxMsg.token,
                 payloadBlob = E2eeStore.json.encodeToString(MailboxPayload.serializer(), outboxMsg.payload).encodeToByteArray(),
-                createdAt = outboxMsg.createdAt
+                createdAt = outboxMsg.createdAt,
             )
-            
+
             PersistenceAction.Update(updatedEntry) to (message to nextSession)
         }
     }
@@ -291,17 +301,17 @@ class E2eeManager(
     ) {
         persistence.withFriendAndMetadataLock(id) { entry, _ ->
             if (entry != null) {
-                val updated = entry.copy(
-                    isConfirmed = isConfirmed ?: entry.isConfirmed,
-                    sharingEnabled = sharingEnabled ?: entry.sharingEnabled,
-                )
+                val updated =
+                    entry.copy(
+                        isConfirmed = isConfirmed ?: entry.isConfirmed,
+                        sharingEnabled = sharingEnabled ?: entry.sharingEnabled,
+                    )
                 PersistenceAction.Update(updated) to Unit
             } else {
                 PersistenceAction.None to Unit
             }
         }
     }
-
 
     suspend fun processScannedQr(
         qr: QrPayload,
@@ -310,21 +320,23 @@ class E2eeManager(
         val sanitizedRequestedName = sanitizeName(bobSuggestedName)
         val (initMsg, session) = KeyExchange.bobProcessQr(qr, sanitizedRequestedName)
 
-        val payload = KeyExchangeInitPayload(
-            v = initMsg.protocolVersion,
-            token = initMsg.token.toHex(),
-            ekPub = initMsg.ekPub,
-            keyConfirmation = initMsg.keyConfirmation,
-            suggestedName = sanitizedRequestedName,
-        )
+        val payload =
+            KeyExchangeInitPayload(
+                v = initMsg.protocolVersion,
+                token = initMsg.token.toHex(),
+                ekPub = initMsg.ekPub,
+                keyConfirmation = initMsg.keyConfirmation,
+                suggestedName = sanitizedRequestedName,
+            )
 
-        val entry = FriendEntry(
-            name = qr.suggestedName,
-            session = session,
-            isInitiator = false,
-            lastRecvTs = currentTimeSeconds(),
-            isConfirmed = false,
-        )
+        val entry =
+            FriendEntry(
+                name = qr.suggestedName,
+                session = session,
+                isInitiator = false,
+                lastRecvTs = currentTimeSeconds(),
+                isConfirmed = false,
+            )
 
         return persistence.withFriendAndMetadataLock(entry.id) { _, metadata ->
             metadata.insertOutbox(
@@ -332,7 +344,7 @@ class E2eeManager(
                 friendId = entry.id,
                 token = qr.discoveryToken().toHex(),
                 payloadBlob = E2eeStore.json.encodeToString(MailboxPayload.serializer(), payload).encodeToByteArray(),
-                createdAt = currentTimeMillis()
+                createdAt = currentTimeMillis(),
             )
             if (metadata.pendingInvites.any { it.qrPayload.ekPub.contentEquals(qr.ekPub) }) {
                 throw SelfPairingException()
@@ -341,7 +353,10 @@ class E2eeManager(
         }
     }
 
-    suspend fun removeFromOutbox(friendId: String, msgId: String) {
+    suspend fun removeFromOutbox(
+        friendId: String,
+        msgId: String,
+    ) {
         persistence.deleteOutboxByMsgId(friendId, msgId)
     }
 
@@ -357,7 +372,10 @@ class E2eeManager(
         }
     }
 
-    suspend fun setSharingEnabled(id: String, enabled: Boolean) {
+    suspend fun setSharingEnabled(
+        id: String,
+        enabled: Boolean,
+    ) {
         persistence.withFriendAndMetadataLock(id) { entry, _ ->
             if (entry != null) {
                 PersistenceAction.Update(entry.copy(sharingEnabled = enabled)) to Unit
@@ -366,8 +384,6 @@ class E2eeManager(
             }
         }
     }
-
-
 
     data class PollBatchResult(
         val decryptedLocations: List<LocationPlaintext>,
@@ -390,19 +406,19 @@ class E2eeManager(
             if (entry == null) return@withFriendAndMetadataLock PersistenceAction.None to null
 
             val encryptedMessages = messages.filterIsInstance<EncryptedMessagePayload>()
-            
+
             val orderedMessages = E2eeProtocol.decryptAndSort(entry.session, encryptedMessages)
             val result = E2eeProtocol.decryptBatch(entry.session, encryptedMessages.size, orderedMessages)
-            
+
             val failCount = result.softFailCount + result.hardFailCount
 
             val hadActivity = result.decryptedLocations.isNotEmpty() || (result.anySuccess && result.finalSession != entry.session)
             val lastLocation = result.decryptedLocations.lastOrNull()
 
+            val hadStateUpdate =
+                result.finalSession.recvSeq > entry.session.recvSeq ||
+                    !result.finalSession.rootKey.contentEquals(entry.session.rootKey)
 
-            val hadStateUpdate = result.finalSession.recvSeq > entry.session.recvSeq ||
-                !result.finalSession.rootKey.contentEquals(entry.session.rootKey)
-            
             // If the peer ratcheted forward, it proves they received our last transition.
             // We can safely clear our outbox to unblock further sends.
             if (!result.finalSession.rootKey.contentEquals(entry.session.rootKey)) {
@@ -411,16 +427,17 @@ class E2eeManager(
 
             val currentRecvToken = if (result.anySuccess || hadStateUpdate) result.finalSession.recvToken else entry.session.recvToken
 
-            val updatedEntry = entry.copy(
-                session = result.finalSession,
-                isConfirmed = entry.isConfirmed || result.anySuccess,
-                lastRecvTs = if (hadActivity) currentTimeSeconds() else entry.lastRecvTs,
-                lastLat = if (lastLocation != null && (lastLocation.ts >= (entry.lastTs ?: 0))) lastLocation.lat else entry.lastLat,
-                lastLng = if (lastLocation != null && (lastLocation.ts >= (entry.lastTs ?: 0))) lastLocation.lng else entry.lastLng,
-                lastTs = if (lastLocation != null && (lastLocation.ts >= (entry.lastTs ?: 0))) lastLocation.ts else entry.lastTs,
-                lastPollTs = currentTimeSeconds(),
-            )
-            
+            val updatedEntry =
+                entry.copy(
+                    session = result.finalSession,
+                    isConfirmed = entry.isConfirmed || result.anySuccess,
+                    lastRecvTs = if (hadActivity) currentTimeSeconds() else entry.lastRecvTs,
+                    lastLat = if (lastLocation != null && (lastLocation.ts >= (entry.lastTs ?: 0))) lastLocation.lat else entry.lastLat,
+                    lastLng = if (lastLocation != null && (lastLocation.ts >= (entry.lastTs ?: 0))) lastLocation.lng else entry.lastLng,
+                    lastTs = if (lastLocation != null && (lastLocation.ts >= (entry.lastTs ?: 0))) lastLocation.ts else entry.lastTs,
+                    lastPollTs = currentTimeSeconds(),
+                )
+
             if (result.finalSession != entry.session) {
                 // State transition occurred
             }
@@ -434,22 +451,27 @@ class E2eeManager(
 
             val hadDhRatchet = !result.finalSession.rootKey.contentEquals(entry.session.rootKey)
 
-            PersistenceAction.Update(updatedEntry) to PollBatchResult(
-                decryptedLocations = result.decryptedLocations,
-                anySuccess = result.anySuccess,
-                hadSilentDrops = result.silentDrops > 0 || (messages.size > (encryptedMessages.size + nonEncryptedIds.size)),
-                processedIds = idsToAck,
-                anyReplay = result.anyReplay,
-                failCount = failCount,
-                hadStateUpdate = hadStateUpdate,
-                hadDhRatchet = hadDhRatchet,
-                shouldAck = shouldAck
-            )
-
+            PersistenceAction.Update(updatedEntry) to
+                PollBatchResult(
+                    decryptedLocations = result.decryptedLocations,
+                    anySuccess = result.anySuccess,
+                    hadSilentDrops = result.silentDrops > 0 || (messages.size > (encryptedMessages.size + nonEncryptedIds.size)),
+                    processedIds = idsToAck,
+                    anyReplay = result.anyReplay,
+                    failCount = failCount,
+                    hadStateUpdate = hadStateUpdate,
+                    hadDhRatchet = hadDhRatchet,
+                    shouldAck = shouldAck,
+                )
         }
     }
 
-    suspend fun updateLastLocation(id: String, lat: Double, lng: Double, ts: Long) {
+    suspend fun updateLastLocation(
+        id: String,
+        lat: Double,
+        lng: Double,
+        ts: Long,
+    ) {
         persistence.withFriendAndMetadataLock(id) { entry, _ ->
             if (entry != null) {
                 PersistenceAction.Update(entry.copy(lastLat = lat, lastLng = lng, lastTs = ts)) to Unit
@@ -459,7 +481,10 @@ class E2eeManager(
         }
     }
 
-    suspend fun updateLastPollTs(id: String, ts: Long) {
+    suspend fun updateLastPollTs(
+        id: String,
+        ts: Long,
+    ) {
         persistence.withFriendAndMetadataLock(id) { entry, _ ->
             if (entry != null) {
                 PersistenceAction.Update(entry.copy(lastPollTs = ts)) to Unit
@@ -469,8 +494,11 @@ class E2eeManager(
         }
     }
 
-
-    suspend fun sendLocationToAllFriends(lat: Double, lng: Double, acc: Double) {
+    suspend fun sendLocationToAllFriends(
+        lat: Double,
+        lng: Double,
+        acc: Double,
+    ) {
         val friends = persistence.listFriends()
         friends.forEach { friend ->
             if (friend.sharingEnabled) {
@@ -482,7 +510,10 @@ class E2eeManager(
         }
     }
 
-    private suspend fun sendMessageToFriendInternal(friendId: String, payload: MessagePlaintext) {
+    private suspend fun sendMessageToFriendInternal(
+        friendId: String,
+        payload: MessagePlaintext,
+    ) {
         encryptAndAdvance(friendId, payload)
     }
 

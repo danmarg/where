@@ -5,7 +5,6 @@ package net.af0.where.e2ee
  * Handles the "Sealed Envelope" multi-key trial decryption and the core decryption loop.
  */
 internal object E2eeProtocol {
-
     data class DecryptionResult(
         val finalSession: SessionState,
         val decryptedLocations: List<LocationPlaintext>,
@@ -15,7 +14,7 @@ internal object E2eeProtocol {
         val replayedIds: List<String>,
         val softFailCount: Int,
         val hardFailCount: Int,
-        val silentDrops: Int
+        val silentDrops: Int,
     )
 
     /**
@@ -31,15 +30,16 @@ internal object E2eeProtocol {
         // Group into buckets by DH key to handle epoch transitions correctly.
         // We preserve the delivery order within each bucket and across buckets
         // unless they are clearly out of sequence.
-        val ordered = messages.mapNotNull { msg ->
-            try {
-                val header = tryDecryptHeader(session, msg.envelope)
-                header to msg
-            } catch (e: Exception) {
-                null
+        val ordered =
+            messages.mapNotNull { msg ->
+                try {
+                    val header = tryDecryptHeader(session, msg.envelope)
+                    header to msg
+                } catch (e: Exception) {
+                    null
+                }
             }
-        }
-        
+
         return ordered.sortedWith { (h1, _), (h2, _) ->
             val b1 = bucketForHeader(session, h1)
             val b2 = bucketForHeader(session, h2)
@@ -65,7 +65,7 @@ internal object E2eeProtocol {
     fun decryptBatch(
         initialSession: SessionState,
         totalEncryptedCount: Int,
-        orderedMessages: List<Pair<Session.DecryptedHeader, EncryptedMessagePayload>>
+        orderedMessages: List<Pair<Session.DecryptedHeader, EncryptedMessagePayload>>,
     ): DecryptionResult {
         var currentSession = initialSession
         val decryptedLocations = mutableListOf<LocationPlaintext>()
@@ -98,7 +98,7 @@ internal object E2eeProtocol {
                     anyReplay = true
                     replayedIds.add(msg.msgId)
                 } else if (e is DecryptionExceptionWithState) {
-                    // If header authenticated but payload failed, we MUST commit the 
+                    // If header authenticated but payload failed, we MUST commit the
                     // ratcheted session state to prevent permanent DH desync (§5.5).
                     currentSession = e.newState
                     softFailCount++
@@ -118,10 +118,9 @@ internal object E2eeProtocol {
             replayedIds = replayedIds,
             softFailCount = softFailCount,
             hardFailCount = hardFailCount,
-            silentDrops = totalEncryptedCount - orderedMessages.size
+            silentDrops = totalEncryptedCount - orderedMessages.size,
         )
     }
-
 
     private fun tryDecryptHeader(
         session: SessionState,
@@ -143,7 +142,7 @@ internal object E2eeProtocol {
         h: Session.DecryptedHeader,
     ): Int {
         return when {
-            h.dhPub.contentEquals(session.remoteDhPub) -> 1      // Current
+            h.dhPub.contentEquals(session.remoteDhPub) -> 1 // Current
             else -> 2 // Unknown NEW epoch (Newest)
         }
     }

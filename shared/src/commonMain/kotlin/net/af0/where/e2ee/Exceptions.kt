@@ -33,7 +33,6 @@ open class ProtocolException(message: String) : CryptoException(message)
 /** Thrown when a message is rejected as a duplicate (replay). */
 class ReplayException(message: String) : ProtocolException(message)
 
-
 /** Thrown when a ratchet gap is too large to process (§8.3.1). */
 class ProtocolGapException(message: String) : ProtocolException(message)
 
@@ -46,4 +45,7 @@ class SelfPairingException() : WhereException("Cannot pair with yourself")
  * carries the advanced [SessionState] so the caller can still persist the DH
  * rotation to prevent permanent desync (§5.5).
  */
-class DecryptionExceptionWithState(val newState: SessionState, cause: Throwable) : WhereException(cause.message ?: "payload decryption failed", cause)
+class DecryptionExceptionWithState(
+    val newState: SessionState,
+    cause: Throwable,
+) : WhereException(cause.message ?: "payload decryption failed", cause)

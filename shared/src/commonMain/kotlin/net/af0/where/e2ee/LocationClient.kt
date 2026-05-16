@@ -1,12 +1,10 @@
 package net.af0.where.e2ee
 
-import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
-import kotlinx.coroutines.yield
 import net.af0.where.model.UserLocation
 
 /**
@@ -17,7 +15,7 @@ open class LocationClient(
     baseUrl: String,
     private val store: E2eeManager,
     val mailbox: MailboxClient = KtorMailboxClient,
-    var enableAutomatedKeepalives: Boolean = true
+    var enableAutomatedKeepalives: Boolean = true,
 ) {
     /** Secondary constructor for Swift/native compatibility. */
     constructor(baseUrl: String, store: E2eeManager) : this(baseUrl, store, KtorMailboxClient)
@@ -63,11 +61,12 @@ open class LocationClient(
                 }
             }
 
-            val friends = try { 
-                store.listFriends() 
-            } catch (e: Exception) {
-                emptyList()
-            }
+            val friends =
+                try {
+                    store.listFriends()
+                } catch (e: Exception) {
+                    emptyList()
+                }
 
             val deferreds =
                 friends.map { friend ->
@@ -105,7 +104,7 @@ open class LocationClient(
 
             val results = deferreds.awaitAll()
             val allUpdates = mutableListOf<UserLocation>()
-            
+
             for ((updates, _) in results) {
                 allUpdates.addAll(updates)
             }
@@ -117,11 +116,12 @@ open class LocationClient(
                 if (pendingHandshakes.isNotEmpty()) {
                     for (result in pendingHandshakes) {
                         try {
-                            val entry = store.processKeyExchangeInit(
-                                result.payload,
-                                result.payload.suggestedName.ifEmpty { "New Friend" },
-                                result.aliceEkPub
-                            )
+                            val entry =
+                                store.processKeyExchangeInit(
+                                    result.payload,
+                                    result.payload.suggestedName.ifEmpty { "New Friend" },
+                                    result.aliceEkPub,
+                                )
                         } catch (e: Exception) {
                             // Ignore
                         }
@@ -169,7 +169,7 @@ open class LocationClient(
     ) {
         val discoveryHex = qr.discoveryToken().toHex()
         service.post(discoveryHex, initPayload)
-        
+
         // WAL: Cleanup the outbox for the newly created friendship
         val friendId = sha256(qr.ekPub).toHex()
         store.removeFromOutbox(friendId, initPayload.msgId)
@@ -178,126 +178,129 @@ open class LocationClient(
     internal suspend fun pollFriend(
         friendId: String,
         isPaused: Boolean = false,
-    ): List<UserLocation> = coroutineScope {
-        val resultLocations = mutableListOf<UserLocation>()
-        val friendBefore = store.getFriend(friendId) ?: return@coroutineScope emptyList()
-        
-        // --- Strict Single-Token Polling ---
-        // We only poll the current recvToken. The WAL ensures that transition messages
-        // are delivered to the old token before subsequent messages are sent to the new one.
-        val currentToken = friendBefore.session.recvToken.toHex()
-        
-        
-        val messages = try {
-            service.poll(currentToken)
-        } catch (e: Exception) {
-            emptyList()
-        }
+    ): List<UserLocation> =
+        coroutineScope {
+            val resultLocations = mutableListOf<UserLocation>()
+            val friendBefore = store.getFriend(friendId) ?: return@coroutineScope emptyList()
 
-        if (messages.isNotEmpty()) {
-            try {
-                val result = store.processBatch(friendId, currentToken, messages)
-                if (result != null) {
-                    var idsToAck = result.processedIds
-                    if (idsToAck.isEmpty() && messages.isNotEmpty()) {
-                        val retryKey = "$friendId:$currentToken"
-                        val currentRetries = (silentDropRetries[retryKey] ?: 0) + 1
-                        silentDropRetries[retryKey] = currentRetries
-                        
-                        if (currentRetries >= MAX_SILENT_DROP_RETRIES) {
-                            idsToAck = messages.map { it.msgId }
-                            silentDropRetries.remove(retryKey)
+            // --- Strict Single-Token Polling ---
+            // We only poll the current recvToken. The WAL ensures that transition messages
+            // are delivered to the old token before subsequent messages are sent to the new one.
+            val currentToken = friendBefore.session.recvToken.toHex()
+
+            val messages =
+                try {
+                    service.poll(currentToken)
+                } catch (e: Exception) {
+                    emptyList()
+                }
+
+            if (messages.isNotEmpty()) {
+                try {
+                    val result = store.processBatch(friendId, currentToken, messages)
+                    if (result != null) {
+                        var idsToAck = result.processedIds
+                        if (idsToAck.isEmpty() && messages.isNotEmpty()) {
+                            val retryKey = "$friendId:$currentToken"
+                            val currentRetries = (silentDropRetries[retryKey] ?: 0) + 1
+                            silentDropRetries[retryKey] = currentRetries
+
+                            if (currentRetries >= MAX_SILENT_DROP_RETRIES) {
+                                idsToAck = messages.map { it.msgId }
+                                silentDropRetries.remove(retryKey)
+                            }
+                        } else {
+                            silentDropRetries.remove("$friendId:$currentToken")
                         }
-                    } else {
-                        silentDropRetries.remove("$friendId:$currentToken")
-                    }
 
-                    if (idsToAck.isNotEmpty()) {
-                        try {
-                            service.ackIds(currentToken, idsToAck)
-                        } catch (e: Exception) {
-                            // Ignore
+                        if (idsToAck.isNotEmpty()) {
+                            try {
+                                service.ackIds(currentToken, idsToAck)
+                            } catch (e: Exception) {
+                                // Ignore
+                            }
                         }
-                    }
-                    
-                    resultLocations.addAll(
-                        result.decryptedLocations.map { loc ->
-                            UserLocation(userId = friendId, lat = loc.lat, lng = loc.lng, timestamp = loc.ts)
-                        },
-                    )
 
-                    // If a state update occurred (e.g. token transition), poll again immediately 
-                    // to catch any messages sent to the new token.
-                    if (result.hadStateUpdate) {
-                        val friendAfterUpdate = store.getFriend(friendId)
-                        if (friendAfterUpdate != null) {
-                            val nextToken = friendAfterUpdate.session.recvToken.toHex()
-                            if (nextToken != currentToken) {
-                                val extraMessages = try {
-                                    service.poll(nextToken)
-                                } catch (e: Exception) {
-                                    emptyList()
-                                }
-                                if (extraMessages.isNotEmpty()) {
-                                    val extraResult = store.processBatch(friendId, nextToken, extraMessages)
-                                    if (extraResult != null) {
-                                        if (extraResult.processedIds.isNotEmpty()) {
-                                            service.ackIds(nextToken, extraResult.processedIds)
+                        resultLocations.addAll(
+                            result.decryptedLocations.map { loc ->
+                                UserLocation(userId = friendId, lat = loc.lat, lng = loc.lng, timestamp = loc.ts)
+                            },
+                        )
+
+                        // If a state update occurred (e.g. token transition), poll again immediately
+                        // to catch any messages sent to the new token.
+                        if (result.hadStateUpdate) {
+                            val friendAfterUpdate = store.getFriend(friendId)
+                            if (friendAfterUpdate != null) {
+                                val nextToken = friendAfterUpdate.session.recvToken.toHex()
+                                if (nextToken != currentToken) {
+                                    val extraMessages =
+                                        try {
+                                            service.poll(nextToken)
+                                        } catch (e: Exception) {
+                                            emptyList()
                                         }
-                                        resultLocations.addAll(
-                                            extraResult.decryptedLocations.map { loc ->
-                                                UserLocation(userId = friendId, lat = loc.lat, lng = loc.lng, timestamp = loc.ts)
+                                    if (extraMessages.isNotEmpty()) {
+                                        val extraResult = store.processBatch(friendId, nextToken, extraMessages)
+                                        if (extraResult != null) {
+                                            if (extraResult.processedIds.isNotEmpty()) {
+                                                service.ackIds(nextToken, extraResult.processedIds)
                                             }
-                                        )
+                                            resultLocations.addAll(
+                                                extraResult.decryptedLocations.map { loc ->
+                                                    UserLocation(userId = friendId, lat = loc.lat, lng = loc.lng, timestamp = loc.ts)
+                                                },
+                                            )
+                                        }
                                     }
                                 }
                             }
                         }
                     }
+                } catch (e: Exception) {
+                    // Ignore
                 }
+            }
+
+            try {
+                store.updateLastPollTs(friendId, currentTimeSeconds())
+            } catch (e: Exception) {
+            }
+
+            // Recovery: process any pending outbox messages for this friend
+            try {
+                processOutbox(friendId)
             } catch (e: Exception) {
                 // Ignore
             }
-        }
 
-        try {
-            store.updateLastPollTs(friendId, currentTimeSeconds())
-        } catch (e: Exception) {}
+            val friendAfter = store.getFriend(friendId)
+            if (friendAfter != null) {
+                val now = currentTimeSeconds()
 
-        // Recovery: process any pending outbox messages for this friend
-        try {
-            processOutbox(friendId)
-        } catch (e: Exception) {
-            // Ignore
-        }
+                // Automated Keepalive Rules:
+                // 1. We haven't heard from them (lastRecvTs) for more than 30 seconds.
+                // Safety: only send if we have nothing else pending for them (outbox is empty).
+                val threshold = 30
+                val isFriendSilent = (now - friendAfter.lastRecvTs >= threshold)
 
-        val friendAfter = store.getFriend(friendId)
-        if (friendAfter != null) {
-            val now = currentTimeSeconds()
-            
-            // Automated Keepalive Rules:
-            // 1. We haven't heard from them (lastRecvTs) for more than 30 seconds.
-            // Safety: only send if we have nothing else pending for them (outbox is empty).
-            val threshold = 30
-            val isFriendSilent = (now - friendAfter.lastRecvTs >= threshold)
-            
-            if (enableAutomatedKeepalives && isFriendSilent) {
-                if (!friendAfter.isStale && friendAfter.isConfirmed) {
-                    // Check outbox to avoid redundant keepalives
-                    val outbox = store.getOutbox(friendId)
-                    if (outbox.isEmpty()) {
-                        try {
-                            sendMessageToFriendInternal(friendId, MessagePlaintext.Keepalive())
-                        } catch (e: Exception) {
-                            // Ignore
+                if (enableAutomatedKeepalives && isFriendSilent) {
+                    if (!friendAfter.isStale && friendAfter.isConfirmed) {
+                        // Check outbox to avoid redundant keepalives
+                        val outbox = store.getOutbox(friendId)
+                        if (outbox.isEmpty()) {
+                            try {
+                                sendMessageToFriendInternal(friendId, MessagePlaintext.Keepalive())
+                            } catch (e: Exception) {
+                                // Ignore
+                            }
                         }
                     }
                 }
             }
-        }
 
-        resultLocations
-    }
+            resultLocations
+        }
 
     suspend fun syncNow() {
         val friends = store.listFriends()
@@ -315,12 +318,13 @@ open class LocationClient(
     }
 
     suspend fun processOutboxes() {
-        val friends = try { 
-            store.listFriends() 
-        } catch (e: Exception) {
-            return
-        }
-        
+        val friends =
+            try {
+                store.listFriends()
+            } catch (e: Exception) {
+                return
+            }
+
         friends.forEach { friend ->
             try {
                 val mutex = getFriendMutex(friend.id)
@@ -337,7 +341,6 @@ open class LocationClient(
         val outbox = store.getOutbox(friendId)
         if (outbox.isEmpty()) return
 
-
         for (outboxMsg in outbox) {
             try {
                 service.post(outboxMsg.token, outboxMsg.payload)
@@ -347,6 +350,7 @@ open class LocationClient(
             }
         }
     }
+
     open suspend fun sendLocation(
         lat: Double,
         lng: Double,
@@ -397,9 +401,10 @@ open class LocationClient(
         }
     }
 
-
-    private suspend fun sendMessageToFriendInternal(friendId: String, payload: MessagePlaintext) {
-        
+    private suspend fun sendMessageToFriendInternal(
+        friendId: String,
+        payload: MessagePlaintext,
+    ) {
         // WAL Safety: If the outbox is not empty, we MUST NOT generate a new message.
         // We instead retry the existing outbox. This bounds the queue and prevents nonce reuse.
         var currentOutbox = store.getOutbox(friendId)
@@ -409,7 +414,7 @@ open class LocationClient(
             } catch (e: Exception) {
                 // Ignore
             }
-            
+
             // Re-check: if still not empty (e.g. network fail), THEN we must stop to maintain order.
             if (store.getOutbox(friendId).isNotEmpty()) {
                 return
@@ -417,10 +422,9 @@ open class LocationClient(
         }
 
         val (message, session) = store.encryptAndAdvance(friendId, payload)
-        
+
         // We trigger sequential outbox processing for this friend.
         // This ensures messages are sent in order (0, 1, 2...) even if multiple calls happen rapidly.
         processOutbox(friendId)
     }
-
 }

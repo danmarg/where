@@ -243,7 +243,7 @@ object KeyExchange {
 
         val sendToken = deriveRoutingToken(sk, localFp, remoteFp)
         val recvToken = deriveRoutingToken(sk, remoteFp, localFp)
-        
+
         expanded.zeroize()
 
         return SessionState(
@@ -272,7 +272,7 @@ object KeyExchange {
             pr = 0L,
             headerKey = recvHeaderKey,
             sendHeaderKey = sendHeaderKey,
-            nextHeaderKey = nextHeaderKey
+            nextHeaderKey = nextHeaderKey,
         )
     }
 

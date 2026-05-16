@@ -6,6 +6,8 @@ import android.content.Intent
 import android.content.SharedPreferences
 import android.text.TextUtils
 import androidx.test.core.app.ApplicationProvider
+import app.cash.sqldelight.db.SqlDriver
+import app.cash.sqldelight.driver.android.AndroidSqliteDriver
 import dev.icerock.moko.resources.desc.Raw
 import dev.icerock.moko.resources.desc.StringDesc
 import io.mockk.every
@@ -22,8 +24,8 @@ import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
+import net.af0.where.db.WhereDatabase
 import net.af0.where.e2ee.ConnectionStatus
-import net.af0.where.e2ee.RawKeyValueStorage
 import net.af0.where.e2ee.E2eeManager
 import net.af0.where.e2ee.FriendEntry
 import net.af0.where.e2ee.InviteState
@@ -32,11 +34,9 @@ import net.af0.where.e2ee.KtorMailboxClient
 import net.af0.where.e2ee.LocationClient
 import net.af0.where.e2ee.PROTOCOL_VERSION
 import net.af0.where.e2ee.QrPayload
+import net.af0.where.e2ee.RawKeyValueStorage
 import net.af0.where.e2ee.SessionState
 import net.af0.where.model.UserLocation
-import app.cash.sqldelight.db.SqlDriver
-import app.cash.sqldelight.driver.android.AndroidSqliteDriver
-import net.af0.where.db.WhereDatabase
 import org.junit.After
 import org.junit.Before
 import org.junit.Test
@@ -54,7 +54,7 @@ private fun createTestSqlDriver(): SqlDriver {
     return AndroidSqliteDriver(
         WhereDatabase.Schema,
         ApplicationProvider.getApplicationContext(),
-        null
+        null,
     )
 }
 

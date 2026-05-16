@@ -6,7 +6,6 @@ import android.content.Intent
 import android.location.Location
 import androidx.test.core.app.ApplicationProvider
 import com.google.android.gms.tasks.Task
-import kotlinx.coroutines.tasks.await
 import dev.icerock.moko.resources.desc.Raw
 import dev.icerock.moko.resources.desc.StringDesc
 import io.mockk.every
@@ -17,6 +16,7 @@ import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.tasks.await
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.resetMain
@@ -26,7 +26,6 @@ import net.af0.where.e2ee.ConnectionStatus
 import net.af0.where.e2ee.FriendEntry
 import net.af0.where.e2ee.KeyExchangeInitPayload
 import net.af0.where.e2ee.LocationClient
-import net.af0.where.e2ee.QrPayload
 import net.af0.where.model.UserLocation
 import org.junit.After
 import org.junit.Before

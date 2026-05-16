@@ -1,5 +1,7 @@
 package net.af0.where.cli
 
+import app.cash.sqldelight.db.SqlDriver
+import app.cash.sqldelight.driver.jdbc.sqlite.JdbcSqliteDriver
 import com.google.zxing.BarcodeFormat
 import com.google.zxing.MultiFormatWriter
 import io.ktor.client.*
@@ -8,11 +10,9 @@ import io.ktor.serialization.kotlinx.json.*
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.*
 import kotlinx.serialization.json.Json
+import net.af0.where.db.WhereDatabase
 import net.af0.where.e2ee.*
 import net.af0.where.initializeLibsodium
-import app.cash.sqldelight.db.SqlDriver
-import app.cash.sqldelight.driver.jdbc.sqlite.JdbcSqliteDriver
-import net.af0.where.db.WhereDatabase
 import java.io.File
 import java.util.Properties
 import kotlin.system.exitProcess
@@ -101,12 +101,12 @@ fun main(args: Array<String>) {
 
     val storageFile = File(statePath)
     val storage = FileRawKeyValueStorage(storageFile)
-    
+
     // WAL DB: derived from state file name (e.g. where_cli_state.db)
     val dbBaseName = storageFile.nameWithoutExtension
     val dbFile = File(storageFile.parentFile ?: File("."), "$dbBaseName.db")
     val driver: SqlDriver = JdbcSqliteDriver("jdbc:sqlite:${dbFile.absolutePath}", Properties(), WhereDatabase.Schema)
-    
+
     val store = E2eeManager(driver)
 
     var host = "http://localhost:8080"

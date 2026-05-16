@@ -11,7 +11,10 @@ class MailboxService(
     /**
      * Posts a message to a specific mailbox token.
      */
-    suspend fun post(token: String, payload: MailboxPayload) {
+    suspend fun post(
+        token: String,
+        payload: MailboxPayload,
+    ) {
         client.post(baseUrl, token, payload)
     }
 
@@ -25,14 +28,20 @@ class MailboxService(
     /**
      * Acknowledges receipt of a specific message by ID.
      */
-    suspend fun ackId(token: String, msgId: String) {
+    suspend fun ackId(
+        token: String,
+        msgId: String,
+    ) {
         client.ackId(baseUrl, token, msgId)
     }
 
     /**
      * Acknowledges receipt of multiple messages by IDs.
      */
-    suspend fun ackIds(token: String, msgIds: List<String>) {
+    suspend fun ackIds(
+        token: String,
+        msgIds: List<String>,
+    ) {
         client.ackIds(baseUrl, token, msgIds)
     }
 }

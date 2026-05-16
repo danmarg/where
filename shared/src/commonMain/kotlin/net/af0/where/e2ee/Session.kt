@@ -23,7 +23,7 @@ object Session {
         if (state.sendSeq == Long.MAX_VALUE) throw SessionBrickedException("sequence number overflow")
 
         var currentState = state
-        
+
         if (currentState.needsRatchet) {
             currentState = performDhRatchet(currentState, currentState.remoteDhPub)
         }
@@ -34,7 +34,7 @@ object Session {
         // to ensure the receiver (who is still polling the old token) can see it.
         val seqToUse = currentState.sendSeq + 1
         val usePrevForTransport = (seqToUse == 1L)
-        
+
         val chainKeyToUse = currentState.sendChainKey
         val headerKeyToUse = if (usePrevForTransport) currentState.prevSendHeaderKey else currentState.sendHeaderKey
         val dhPubToUse = currentState.localDhPub
@@ -46,11 +46,12 @@ object Session {
         val plaintext = padToFixedSize(encodeMessage(payload), PADDING_SIZE)
         val ct = aeadEncrypt(step.messageKey, step.messageNonce, plaintext, aad)
 
-        val newState = currentState.copy(
-            sendChainKey = step.newChainKey,
-            sendSeq = seqToUse,
-            needsRatchet = false,
-        )
+        val newState =
+            currentState.copy(
+                sendChainKey = step.newChainKey,
+                sendSeq = seqToUse,
+                needsRatchet = false,
+            )
 
         // Seal the metadata into an envelope (#186)
         val envelope = encryptHeader(headerKeyToUse, dhPubToUse, ackRemoteToUse, seqToUse, currentState.pn)
@@ -167,7 +168,7 @@ object Session {
         if (isNewDhEpoch) {
             // Unified error message to satisfy existing brittle test assertions (§9.2)
             if (cleanState.prevLocalDhPub.size > 0 && remoteDhPub.contentEquals(cleanState.prevLocalDhPub)) {
-                 throw ReplayException("replay: dhPub already superseded")
+                throw ReplayException("replay: dhPub already superseded")
             }
 
             // Ratchet state forward. Note: headerKey transition happens inside performDhRatchet.
@@ -178,7 +179,7 @@ object Session {
         if (seq <= speculativeState.recvSeq) {
             throw ReplayException("replay: seq $seq <= recvSeq ${speculativeState.recvSeq}")
         }
-        
+
         val stepsNeeded = seq - speculativeState.recvSeq
         if (stepsNeeded > MAX_GAP + 1) {
             throw ProtocolGapException("gap too large: stepsNeeded $stepsNeeded")
@@ -254,7 +255,7 @@ object Session {
                 } catch (e: Exception) {
                     // Decryption failure: We still want to persist the ratcheted state if the header
                     // authenticated, to prevent permanent DH desync (§5.5).
-                    
+
                     val failedState =
                         speculativeState.deepCopy().copy(
                             recvChainKey = chainKey.copyOf(),
