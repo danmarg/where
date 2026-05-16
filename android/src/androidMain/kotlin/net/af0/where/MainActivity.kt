@@ -131,6 +131,7 @@ class MainActivity : ComponentActivity() {
                 val isExchanging by viewModel.isExchanging.collectAsState()
                 val connectionStatus by viewModel.connectionStatus.collectAsState()
                 val diagnosticLog by viewModel.diagnosticLog.collectAsState()
+                val isInviteSheetShowing by viewModel.isInviteSheetShowing.collectAsState()
 
                 var showSimulatorScanner by remember { mutableStateOf(false) }
                 var showCameraRationale by remember { mutableStateOf(false) }
@@ -297,69 +298,73 @@ class MainActivity : ComponentActivity() {
                 }
 
                 pendingQrForNaming?.let { qr ->
-                    var name by remember(qr) { mutableStateOf(qr.suggestedName) }
-                    AlertDialog(
-                        onDismissRequest = { viewModel.cancelQrScan() },
-                        title = { Text(stringResource(MR.strings.name_this_contact)) },
-                        text = {
-                            OutlinedTextField(
-                                value = name,
-                                onValueChange = { name = it },
-                                label = { Text(stringResource(MR.strings.friend_name_label)) },
-                                singleLine = true,
-                            )
-                        },
-                        confirmButton = {
-                            val friendDefault = stringResource(MR.strings.friend)
-                            TextButton(onClick = { viewModel.confirmQrScan(qr, name.ifEmpty { friendDefault }) }) {
-                                Text(stringResource(MR.strings.add))
-                            }
-                        },
-                        dismissButton = {
-                            TextButton(onClick = { viewModel.cancelQrScan() }) {
-                                Text(stringResource(MR.strings.cancel))
-                            }
-                        },
-                    )
-                }
-
-                pendingInitPayload?.let { payload ->
-                    var name by remember(payload) { mutableStateOf(payload.suggestedName) }
-                    AlertDialog(
-                        onDismissRequest = { viewModel.cancelPendingInit() },
-                        title = { Text(stringResource(MR.strings.name_this_contact)) },
-                        text = {
-                            Column {
-                                Text(stringResource(MR.strings.new_friend_scanned_qr))
-                                if (multipleScansDetected) {
-                                    Spacer(Modifier.height(8.dp))
-                                    Text(
-                                        stringResource(MR.strings.multiple_scans_detected_warning),
-                                        color = MaterialTheme.colorScheme.error,
-                                        style = MaterialTheme.typography.bodySmall,
-                                    )
-                                }
-                                Spacer(Modifier.height(8.dp))
+                    if (!isInviteSheetShowing) {
+                        var name by remember(qr) { mutableStateOf(qr.suggestedName) }
+                        AlertDialog(
+                            onDismissRequest = { viewModel.cancelQrScan() },
+                            title = { Text(stringResource(MR.strings.name_this_contact)) },
+                            text = {
                                 OutlinedTextField(
                                     value = name,
                                     onValueChange = { name = it },
                                     label = { Text(stringResource(MR.strings.friend_name_label)) },
                                     singleLine = true,
                                 )
-                            }
-                        },
-                        confirmButton = {
-                            val friendDefault = stringResource(MR.strings.friend)
-                            TextButton(onClick = { viewModel.confirmPendingInit(name.ifEmpty { friendDefault }) }) {
-                                Text(stringResource(MR.strings.save))
-                            }
-                        },
-                        dismissButton = {
-                            TextButton(onClick = { viewModel.cancelPendingInit() }) {
-                                Text(stringResource(MR.strings.cancel))
-                            }
-                        },
-                    )
+                            },
+                            confirmButton = {
+                                val friendDefault = stringResource(MR.strings.friend)
+                                TextButton(onClick = { viewModel.confirmQrScan(qr, name.ifEmpty { friendDefault }) }) {
+                                    Text(stringResource(MR.strings.add))
+                                }
+                            },
+                            dismissButton = {
+                                TextButton(onClick = { viewModel.cancelQrScan() }) {
+                                    Text(stringResource(MR.strings.cancel))
+                                }
+                            },
+                        )
+                    }
+                }
+
+                pendingInitPayload?.let { payload ->
+                    if (!isInviteSheetShowing) {
+                        var name by remember(payload) { mutableStateOf(payload.suggestedName) }
+                        AlertDialog(
+                            onDismissRequest = { viewModel.cancelPendingInit() },
+                            title = { Text(stringResource(MR.strings.name_this_contact)) },
+                            text = {
+                                Column {
+                                    Text(stringResource(MR.strings.new_friend_scanned_qr))
+                                    if (multipleScansDetected) {
+                                        Spacer(Modifier.height(8.dp))
+                                        Text(
+                                            stringResource(MR.strings.multiple_scans_detected_warning),
+                                            color = MaterialTheme.colorScheme.error,
+                                            style = MaterialTheme.typography.bodySmall,
+                                        )
+                                    }
+                                    Spacer(Modifier.height(8.dp))
+                                    OutlinedTextField(
+                                        value = name,
+                                        onValueChange = { name = it },
+                                        label = { Text(stringResource(MR.strings.friend_name_label)) },
+                                        singleLine = true,
+                                    )
+                                }
+                            },
+                            confirmButton = {
+                                val friendDefault = stringResource(MR.strings.friend)
+                                TextButton(onClick = { viewModel.confirmPendingInit(name.ifEmpty { friendDefault }) }) {
+                                    Text(stringResource(MR.strings.save))
+                                }
+                            },
+                            dismissButton = {
+                                TextButton(onClick = { viewModel.cancelPendingInit() }) {
+                                    Text(stringResource(MR.strings.cancel))
+                                }
+                            },
+                        )
+                    }
                 }
             }
         }

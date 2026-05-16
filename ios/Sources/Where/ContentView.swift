@@ -67,14 +67,26 @@ struct ContentView: View {
             VStack {
                 Spacer()
                 bottomBar
-            }
-
-            if syncService.isExchanging {
-                Color.black.opacity(0.3)
-                    .ignoresSafeArea()
-                ProgressView()
-                    .progressViewStyle(CircularProgressViewStyle(tint: .white))
-                    .scaleEffect(1.5)
+                    .sheet(isPresented: Binding(
+                        get: { syncService.isInviteSheetShowing },
+                        set: { if !$0 {
+                            syncService.isInviteSheetShowing = false
+                            if syncService.pendingInitPayload == nil {
+                                Task { await syncService.clearInviteIfNotExported() }
+                            }
+                        } else {
+                            syncService.isInviteSheetShowing = true
+                        } }
+                    )) {
+                        if let pending = syncService.inviteState as? Shared.InviteState.Pending {
+                            InviteSheet(
+                                qrPayload: pending.qr,
+                                displayName: $syncService.displayName,
+                                onDismiss: { Task { await syncService.clearInviteIfNotExported() } },
+                                onExported: { Task { await syncService.markCurrentInviteExported() } }
+                            )
+                        }
+                    }
             }
         }
         .sheet(isPresented: $showFriends) {
@@ -125,28 +137,6 @@ struct ContentView: View {
                 onDismiss: { showScanner = false }
             )
             .ignoresSafeArea()
-        }
-        .sheet(isPresented: Binding(
-            get: { syncService.inviteState is Shared.InviteState.Pending },
-            set: { if !$0 {
-                syncService.isInviteSheetShowing = false
-                // If we're dismissing because a peer joined (pendingInitPayload is set),
-                // do NOT clear the store yet, as we need the ephemeral keys to derive the session.
-                if syncService.pendingInitPayload == nil {
-                    Task { await syncService.clearInviteIfNotExported() }
-                }
-            } else {
-                syncService.isInviteSheetShowing = true
-            } }
-        )) {
-            if let pending = syncService.inviteState as? Shared.InviteState.Pending {
-                InviteSheet(
-                    qrPayload: pending.qr,
-                    displayName: $syncService.displayName,
-                    onDismiss: { Task { await syncService.clearInviteIfNotExported() } },
-                    onExported: { Task { await syncService.markCurrentInviteExported() } }
-                )
-            }
         }
         .alert(MR.strings().name_this_contact.localized(), isPresented: Binding(
             get: { (syncService.pendingQrForNaming != nil || syncService.pendingInitPayload != nil) && !syncService.isInviteActive },

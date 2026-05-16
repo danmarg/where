@@ -216,6 +216,7 @@ final class LocationSyncService: ObservableObject {
         do {
             let qr = try await e2eeManager.createInvite(suggestedName: displayName)
             inviteState = Shared.InviteState.Pending(qr: qr)
+            isInviteSheetShowing = true
             triggerRapidPoll()
         } catch {
             logger.error("Failed to create invite: \(error.localizedDescription)")
