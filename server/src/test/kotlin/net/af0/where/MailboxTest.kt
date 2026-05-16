@@ -169,6 +169,42 @@ class MailboxTest {
     }
 
     @Test
+    fun `mixed batch and single DELETE routes work together`() {
+        if (!isLocalhost()) return
+        testApplication {
+            application { module(ServerState()) }
+            val token = "mixed-delete-test"
+            repeat(5) { i ->
+                client.put("/inbox/$token/msg-$i") {
+                    contentType(ContentType.Application.Json)
+                    setBody("""{"i":$i}""")
+                }
+            }
+
+            // 1. Delete msg-0 via single-message route
+            val deleteSingleResponse = client.delete("/inbox/$token/msg-0")
+            assertEquals(HttpStatusCode.NoContent, deleteSingleResponse.status)
+
+            // 2. Delete msg-1 and msg-2 via batch route
+            val deleteBatchResponse = client.delete("/inbox/$token?ids=msg-1,msg-2")
+            assertEquals(HttpStatusCode.NoContent, deleteBatchResponse.status)
+
+            // 3. Verify only msg-3 and msg-4 remain
+            val getResponse = client.get("/inbox/$token")
+            val arr = json.decodeFromString<JsonArray>(getResponse.bodyAsText())
+            assertEquals(2, arr.size)
+
+            // Verify expected content
+            val content = getResponse.bodyAsText()
+            assertTrue(content.contains("""{"i":3}"""))
+            assertTrue(content.contains("""{"i":4}"""))
+            assertTrue(!content.contains("""{"i":0}"""))
+            assertTrue(!content.contains("""{"i":1}"""))
+            assertTrue(!content.contains("""{"i":2}"""))
+        }
+    }
+
+    @Test
     fun `DELETE inbox with missing ids returns 400`() {
         if (!isLocalhost()) return
         testApplication {
