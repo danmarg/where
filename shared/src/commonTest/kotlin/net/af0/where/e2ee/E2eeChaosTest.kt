@@ -121,11 +121,12 @@ class E2eeChaosTest {
             val bobManager = E2eeManager(bobSqlDriver)
 
             val qr = aliceManager.createInvite("Alice")
-            val (initPayload, _) = bobManager.processScannedQr(qr, "Bob")
+            val (initPayload, bobEntry) = bobManager.processScannedQr(qr, "Bob")
 
             val aliceClient = LocationClient("http://localhost", aliceManager, chaosMailbox)
             aliceClient.enableAutomatedKeepalives = false
-            aliceClient.postKeyExchangeInit(qr, initPayload)
+            // Note: Alice calling postKeyExchangeInit for Bob is just for testing set up
+            aliceClient.postKeyExchangeInit(bobEntry.id, qr, initPayload)
 
             val results = aliceClient.pollPendingInvites()
             assertEquals(1, results.size)
@@ -295,7 +296,7 @@ class E2eeChaosTest {
             while (true) {
                 try {
                     val initAndEntry = bobManager.processScannedQr(qr, "Bob")
-                    bobClient.postKeyExchangeInit(qr, initAndEntry.first)
+                    bobClient.postKeyExchangeInit(initAndEntry.second.id, qr, initAndEntry.first)
                     break
                 } catch (e: Exception) {
                     delay(100)
@@ -427,11 +428,11 @@ class E2eeChaosTest {
                         delay(10)
                     }
                 }
-                val (init, _) = initAndEntry
+                val (init, entry) = initAndEntry
 
                 while (true) {
                     try {
-                        clients[j].postKeyExchangeInit(qr, init)
+                        clients[j].postKeyExchangeInit(entry.id, qr, init)
                         break
                     } catch (e: Exception) {
                         delay(20)

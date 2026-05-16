@@ -504,7 +504,7 @@ class LocationViewModelTest {
             advanceUntilIdle()
 
             io.mockk.coVerify(timeout = 5000) { store.processScannedQr(any(), any()) }
-            io.mockk.coVerify(timeout = 5000) { client.postKeyExchangeInit(any(), any()) }
+            io.mockk.coVerify(timeout = 5000) { client.postKeyExchangeInit(any(), any(), any()) }
         }
 
     @Test
@@ -632,6 +632,6 @@ class LocationViewModelTest {
             assertTrue(source.lastRapidPollTrigger.value > 0L)
 
             // 2. Should attempt a pollAll immediately after pairing
-            io.mockk.coVerify(timeout = 5000) { client.postKeyExchangeInit(any(), any()) }
+            io.mockk.coVerify(timeout = 5000) { client.postKeyExchangeInit(any(), any(), any()) }
         }
 }

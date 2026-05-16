@@ -293,7 +293,7 @@ class LocationViewModel(
                 try {
                     try {
                         Log.d(TAG, "confirmQrScan: posting KeyExchangeInit")
-                        locationClient.postKeyExchangeInit(qrWithName, initPayload)
+                        locationClient.postKeyExchangeInit(bobEntry.id, qrWithName, initPayload)
                         Log.d(TAG, "confirmQrScan: mailbox post succeeded")
                     } catch (e: Exception) {
                         Log.e(TAG, "confirmQrScan: mailbox post failed", e)

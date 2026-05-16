@@ -107,7 +107,7 @@ class LocationSyncServiceTests: XCTestCase {
         func pollPendingInvites() async throws -> [Shared.PendingInviteResult] {
             return []
         }
-        func postKeyExchangeInit(qr: Shared.QrPayload, initPayload: Shared.KeyExchangeInitPayload) async throws {
+        func postKeyExchangeInit(friendId: String, qr: Shared.QrPayload, initPayload: Shared.KeyExchangeInitPayload) async throws {
             // No-op
         }
         func syncNow() async throws {}

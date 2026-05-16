@@ -19,11 +19,15 @@ protocol LocationClientProtocol: AnyObject, Sendable {
     func sendLocationToFriend(friendId: String, lat: Double, lng: Double) async throws
     func poll(isForeground: Bool, pausedFriendIds: Set<String>) async throws -> [Shared.UserLocation]
     func pollPendingInvites() async throws -> [Shared.PendingInviteResult]
-    func postKeyExchangeInit(qr: Shared.QrPayload, initPayload: Shared.KeyExchangeInitPayload) async throws
+    func postKeyExchangeInit(friendId: String, qr: Shared.QrPayload, initPayload: Shared.KeyExchangeInitPayload) async throws
     func syncNow() async throws
 }
 
-extension Shared.LocationClient: @unchecked Sendable, LocationClientProtocol {}
+extension Shared.LocationClient: @unchecked Sendable, LocationClientProtocol {
+    func postKeyExchangeInit(friendId: String, qr: Shared.QrPayload, initPayload: Shared.KeyExchangeInitPayload) async throws {
+        try await self.postKeyExchangeInit(friendId: friendId, qr: qr, initPayload: initPayload)
+    }
+}
 
 @inline(__always)
 private func debugLog(_ msg: () -> String) {
@@ -521,7 +525,7 @@ final class LocationSyncService: ObservableObject {
 
             do {
                 debugLog { "Posting KeyExchangeInit" }
-                try await locationClient.postKeyExchangeInit(qr: qrWithName, initPayload: initPayload)
+                try await locationClient.postKeyExchangeInit(friendId: bobEntry.id, qr: qrWithName, initPayload: initPayload)
                 debugLog { "KeyExchangeInit posted successfully" }
 
                 if let last = locationProvider.lastLocation {

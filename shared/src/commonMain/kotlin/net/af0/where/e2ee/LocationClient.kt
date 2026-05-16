@@ -164,6 +164,7 @@ open class LocationClient(
         }
 
     suspend fun postKeyExchangeInit(
+        friendId: String,
         qr: QrPayload,
         initPayload: KeyExchangeInitPayload,
     ) {
@@ -171,7 +172,6 @@ open class LocationClient(
         service.post(discoveryHex, initPayload)
 
         // WAL: Cleanup the outbox for the newly created friendship
-        val friendId = sha256(qr.ekPub).toHex()
         store.removeFromOutbox(friendId, initPayload.msgId)
     }
 

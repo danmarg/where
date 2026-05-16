@@ -328,12 +328,12 @@ class E2eeBidirectionalEndToEndTest {
                     }
 
                 val bClient = LocationClient(baseUrl, bStore, failingClient)
-                val (init, _) = bStore.processScannedQr(qr, "Bob")
+                val (init, entry) = bStore.processScannedQr(qr, "Bob")
 
                 // Should fail a few times but eventually succeed via processOutboxes
                 repeat(3) {
                     try {
-                        bClient.postKeyExchangeInit(qr, init)
+                        bClient.postKeyExchangeInit(entry.id, qr, init)
                     } catch (e: Exception) {
                     }
                     bClient.processOutboxes()
