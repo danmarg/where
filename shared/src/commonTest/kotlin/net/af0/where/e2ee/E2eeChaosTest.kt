@@ -572,8 +572,7 @@ class E2eeChaosTest {
             val stateDump = managers.mapIndexed { i, m ->
                 val friends = m.listFriends()
                 val friendLines = friends.joinToString(", ") { f ->
-                    val outbox = m.getOutbox(f.id)
-                    "friend=${f.name} lastLng=${f.lastLng?.toInt() ?: -1} outbox=${outbox.size}"
+                    "friend=${f.name} lastLng=${f.lastLng?.toInt() ?: -1}"
                 }
                 "User $i: [$friendLines]"
             }.joinToString("\n")
