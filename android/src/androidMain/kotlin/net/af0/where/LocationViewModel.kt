@@ -225,6 +225,8 @@ class LocationViewModel(
                     val qr = e2eeManager.createInvite(displayName.value)
                     _inviteState.value = InviteState.Pending(qr)
                     triggerRapidPoll()
+                } catch (e: Exception) {
+                    Log.e(TAG, "Failed to create invite", e)
                 } finally {
                     if (inviteJob?.isCancelled == false) {
                         // We don't null it out because we might want to cancel it later

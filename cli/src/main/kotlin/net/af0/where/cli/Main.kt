@@ -134,11 +134,16 @@ fun main(args: Array<String>) {
         "invite" ->
             runBlocking {
                 val name = args.getOrNull(1) ?: "CLI User"
-                val qr = store.createInvite(name)
-                val url = qrPayloadToUrl(qr)
-                println("Invite URL: $url")
-                printQrCode(url)
-                println("Discovery Token: ${qr.discoveryToken().toHex()}")
+                try {
+                    val qr = store.createInvite(name)
+                    val url = qrPayloadToUrl(qr)
+                    println("Invite URL: $url")
+                    printQrCode(url)
+                    println("Discovery Token: ${qr.discoveryToken().toHex()}")
+                } catch (e: Exception) {
+                    System.err.println("Error: Failed to create invite: ${e.message}")
+                    return@runBlocking
+                }
                 if ("--no-wait" in args) return@runBlocking
                 println("\nPress Enter to start waiting for friend to join... (Ctrl+C to stop)")
                 readLine()

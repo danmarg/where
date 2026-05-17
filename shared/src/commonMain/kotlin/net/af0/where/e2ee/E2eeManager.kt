@@ -95,7 +95,7 @@ class E2eeManager(
     suspend fun createInvite(suggestedName: String): QrPayload =
         persistence.withMetadataLock {
             if (pendingInvites.size >= MAX_PENDING_INVITES) {
-                throw IllegalStateException("Too many pending invites")
+                pendingInvites = pendingInvites.sortedBy { it.createdAt }.drop(1)
             }
             val (qr, priv) = KeyExchange.aliceCreateQrPayload(suggestedName)
             pendingInvites = pendingInvites + PendingInvite(qr, priv)
