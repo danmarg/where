@@ -109,28 +109,6 @@ open class LocationClient(
                 allUpdates.addAll(updates)
             }
 
-            // --- Handshake Processing ---
-            // Automatically process any pending handshakes discovered in this cycle
-            try {
-                val pendingHandshakes = pollPendingInvites()
-                if (pendingHandshakes.isNotEmpty()) {
-                    for (result in pendingHandshakes) {
-                        try {
-                            val entry =
-                                store.processKeyExchangeInit(
-                                    result.payload,
-                                    result.payload.suggestedName.ifEmpty { "New Friend" },
-                                    result.inviteEkPub,
-                                )
-                        } catch (e: Exception) {
-                            // Ignore
-                        }
-                    }
-                }
-            } catch (e: Exception) {
-                // Ignore
-            }
-
             // Ensure outboxes are processed even if some polls failed
             try {
                 processOutboxes()

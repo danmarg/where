@@ -445,6 +445,7 @@ class LocationViewModel(
     }
 
     fun clearInvite() {
+        uiStateStore.setInviteSheetShowing(false)
         val current = _inviteState.value
 
         // Reset UI state immediately

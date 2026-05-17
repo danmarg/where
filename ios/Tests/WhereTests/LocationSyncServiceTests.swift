@@ -104,8 +104,9 @@ class LocationSyncServiceTests: XCTestCase {
             _pollCallCount += 1
             return pollResult
         }
+        var pendingInviteResults: [Shared.PendingInviteResult] = []
         func pollPendingInvites() async throws -> [Shared.PendingInviteResult] {
-            return []
+            return pendingInviteResults
         }
         func postKeyExchangeInit(friendId: String, qr: Shared.QrPayload, initPayload: Shared.KeyExchangeInitPayload) async throws {
             // No-op
@@ -471,5 +472,65 @@ class LocationSyncServiceTests: XCTestCase {
 
         XCTAssertFalse(service.isInviteSheetShowing, "clearInvite should dismiss the invite sheet")
         XCTAssertTrue(service.inviteState is Shared.InviteState.None, "clearInvite should reset inviteState")
+    }
+
+    // MARK: - QR sheet dismissal regression
+
+    /// Regression test for bug 1: the QR sheet must be dismissed when a scan arrives.
+    ///
+    /// Before the fix, LocationClient.poll() (KMM shared code) silently consumed the
+    /// pending invite internally. When LocationSyncService.pollPendingInvites() ran
+    /// afterwards, it found an empty list and never set isInviteSheetShowing = false.
+    /// This test verifies the full dismissal path via pollAll(updateUi:true).
+    func testPollAll_DismissesQrSheetWhenScanArrives() async throws {
+        // 1. Alice creates a real invite so the ekPub filter in pollPendingInvites() matches.
+        let qr = try await service.e2eeManager.createInvite(suggestedName: "Alice")
+
+        // 2. Build a fake PendingInviteResult whose inviteEkPub matches Alice's real ekPub.
+        //    The payload fields don't need to be cryptographically valid for this UI test.
+        let fakePayload = Shared.KeyExchangeInitPayload(
+            v: Shared.ProtocolConstantsKt.PROTOCOL_VERSION,
+            token: "deadbeef",
+            ekPub: kotlinByteArray(from: Data([1, 2, 3])),
+            keyConfirmation: kotlinByteArray(from: Data([4, 5, 6])),
+            suggestedName: "Bob",
+            msgId: "msg-001"
+        )
+        let pendingResult = Shared.PendingInviteResult(
+            payload: fakePayload,
+            scannerEkPub: kotlinByteArray(from: Data([1, 2, 3])),
+            inviteEkPub: qr.ekPub,
+            multipleScansDetected: false
+        )
+
+        // 3. Recreate the service with a mock client that returns the pending result.
+        let mockClient = MockLocationClient()
+        mockClient.pendingInviteResults = [pendingResult]
+        service = LocationSyncService(
+            e2eeManager: service.e2eeManager,
+            userStore: service.userStore,
+            locationClient: mockClient,
+            locationProvider: mockLocationProvider
+        )
+        service.skipUpdateVisibleUsers = true
+        service.beginBackgroundTask = { _, _ in .invalid }
+        service.endBackgroundTask = { _ in }
+
+        // 4. Simulate the QR sheet being open.
+        service.inviteState = Shared.InviteState.Pending(qr: qr)
+        service.isInviteSheetShowing = true
+
+        // 5. Foreground poll — this is the path that must dismiss the sheet.
+        await service.pollAll(updateUi: true)
+
+        // 6. Sheet must be dismissed and naming dialog must be offered.
+        XCTAssertFalse(
+            service.isInviteSheetShowing,
+            "QR sheet must be dismissed when a scan arrives during pollAll(updateUi:true)"
+        )
+        XCTAssertNotNil(
+            service.pendingInitPayload,
+            "pendingInitPayload must be set so the naming dialog appears after the sheet closes"
+        )
     }
 }

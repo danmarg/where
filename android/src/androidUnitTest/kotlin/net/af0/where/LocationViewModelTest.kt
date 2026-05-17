@@ -693,4 +693,70 @@ class LocationViewModelTest {
             assertFalse(uiStateStore.isInviteSheetShowing.value, "clearInvite should dismiss the invite sheet")
             assertEquals(InviteState.None, vm.inviteState.value, "clearInvite should reset inviteState")
         }
+
+    /**
+     * Regression test for bug 2: confirmPendingInit() must fire ACTION_FORCE_PUBLISH so that
+     * Alice proactively sends her location to Bob immediately after the handshake.
+     *
+     * Without the force-publish, Bob (the scanner) stays isConfirmed=false for up to 5 minutes
+     * waiting for Alice's regular heartbeat — displayed as "pending" with no location updates.
+     */
+    @Test
+    fun testConfirmPendingInit_ForcePublishesLocation() =
+        runTest {
+            // Drain any pending intents from prior tests.
+            while (shadowOf(app).peekNextStartedService() != null) {
+                shadowOf(app).nextStartedService
+            }
+
+            // Enable sharing so the force-publish branch executes.
+            (app as TestWhereApplication).userStore.setSharing(true)
+
+            val store = mockk<E2eeManager>(relaxed = true)
+            val client = mockk<LocationClient>(relaxed = true)
+            val source = TestFakeLocationSource()
+            viewModel =
+                LocationViewModel(
+                    app,
+                    e2eeManagerParam = store,
+                    locationClientParam = client,
+                    startPolling = false,
+                    locationSourceParam = source,
+                    uiStateStoreParam = FakeUiStateStore(),
+                )
+            val vm = viewModel!!
+
+            val mockFriend = mockk<FriendEntry>(relaxed = true)
+            every { mockFriend.id } returns "friend-alice-123"
+            io.mockk.coEvery { store.processKeyExchangeInit(any(), any(), any()) } returns mockFriend
+            io.mockk.coEvery { store.listFriends() } returns listOf(mockFriend)
+            io.mockk.coEvery { store.listPendingInvites() } returns emptyList()
+
+            val initPayload =
+                KeyExchangeInitPayload(
+                    v = PROTOCOL_VERSION,
+                    token = "token",
+                    ekPub = byteArrayOf(1, 2, 3),
+                    keyConfirmation = byteArrayOf(4, 5, 6),
+                    suggestedName = "Alice",
+                )
+            source.onPendingInit(initPayload, aliceEkPub = byteArrayOf(0))
+            advanceUntilIdle()
+
+            vm.confirmPendingInit("Alice")
+            advanceUntilIdle()
+
+            // The ViewModel must fire ACTION_FORCE_PUBLISH so Alice's location reaches Bob
+            // without waiting for the next 5-minute heartbeat.
+            val startedIntent: Intent? = shadowOf(app).nextStartedService
+            assertNotNull(startedIntent, "confirmPendingInit must fire a service intent to publish location")
+            assertEquals(
+                LocationService.ACTION_FORCE_PUBLISH, startedIntent!!.action,
+                "The intent must carry ACTION_FORCE_PUBLISH",
+            )
+            assertEquals(
+                "friend-alice-123", startedIntent.getStringExtra(LocationService.EXTRA_FRIEND_ID),
+                "The intent must target the newly confirmed friend ID",
+            )
+        }
 }
