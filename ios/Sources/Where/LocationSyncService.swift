@@ -111,6 +111,7 @@ final class LocationSyncService: ObservableObject {
     }
     var lastSentTime: Date = Date(timeIntervalSince1970: 0)  // internal for testing
     var pendingForcedSendAfterPairing: Bool = false
+    var pendingForcedSendFriendId: String? = nil
     private var currentSendTask: Task<Void, Never>? = nil
     private var awaitingFirstUpdateIds: Set<String> = []
     // Monotonically increasing counter used to prevent stale task cleanup from
@@ -390,7 +391,7 @@ final class LocationSyncService: ObservableObject {
             // Always update visibleUsers to ensure map is fresh when returning to foreground.
             updateVisibleUsers()
 
-            if updateUi {
+            if updateUi || isInviteSheetShowing {
                 _ = try await pollPendingInvites()
             }
 
@@ -536,6 +537,7 @@ final class LocationSyncService: ObservableObject {
                 } else {
                     logger.debug("confirmQrScan: lastLocation is nil, setting pendingForcedSendAfterPairing")
                     self.pendingForcedSendAfterPairing = true
+                    self.pendingForcedSendFriendId = bobEntry.id
                     locationProvider.requestPermissionAndStart()
                 }
                 await pollAll(updateUi: true)
@@ -582,6 +584,7 @@ final class LocationSyncService: ObservableObject {
                     self.lastSentTime = Date()
                 } else {
                     self.pendingForcedSendAfterPairing = true
+                    self.pendingForcedSendFriendId = entry.id
                     locationProvider.requestPermissionAndStart()
                 }
             }
@@ -640,6 +643,20 @@ final class LocationSyncService: ObservableObject {
     }
 
     func sendLocation(lat: Double, lng: Double, heading: Double? = nil, force: Bool = false) {
+        // If a friend-specific forced send is pending (set when location was unavailable at
+        // pairing time), fire it now before the throttle check so the newly-paired peer
+        // receives our location even if the throttle would otherwise suppress the broadcast.
+        if let friendId = pendingForcedSendFriendId {
+            pendingForcedSendFriendId = nil
+            Task {
+                do {
+                    try await locationClient.sendLocationToFriend(friendId: friendId, lat: lat, lng: lng)
+                } catch {
+                    logger.error("Failed forced pairing send to \(friendId): \(error.localizedDescription)")
+                }
+            }
+        }
+
         let now = Date()
         let timeSinceLast = now.timeIntervalSince(lastSentTime)
 

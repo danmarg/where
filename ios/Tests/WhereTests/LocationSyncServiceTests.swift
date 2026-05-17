@@ -89,6 +89,7 @@ class LocationSyncServiceTests: XCTestCase {
     @MainActor
     class MockLocationClient: LocationClientProtocol {
         var sendLocationCallback: (@Sendable () -> Void)?
+        var sendLocationToFriendCallback: (@Sendable (String) -> Void)?
         private var _pollCallCount = 0
         var pollResult: [Shared.UserLocation] = []
         var pollCallCount: Int {
@@ -98,6 +99,7 @@ class LocationSyncServiceTests: XCTestCase {
             sendLocationCallback?()
         }
         func sendLocationToFriend(friendId: String, lat: Double, lng: Double) async throws {
+            sendLocationToFriendCallback?(friendId)
             sendLocationCallback?()
         }
         func poll(isForeground: Bool, pausedFriendIds: Set<String>) async throws -> [Shared.UserLocation] {
@@ -532,5 +534,101 @@ class LocationSyncServiceTests: XCTestCase {
             service.pendingInitPayload,
             "pendingInitPayload must be set so the naming dialog appears after the sheet closes"
         )
+    }
+
+    /// Regression test for Fix 1: pollPendingInvites must run even when updateUi is false,
+    /// as long as isInviteSheetShowing is true.
+    ///
+    /// Background location wakeups call pollAll(updateUi: false). Without the fix, the QR sheet
+    /// would stay open indefinitely because pollPendingInvites() was guarded by `updateUi` alone.
+    func testPollAll_DismissesQrSheetOnBackgroundWakeupWhenSheetIsShowing() async throws {
+        let qr = try await service.e2eeManager.createInvite(suggestedName: "Alice")
+
+        let fakePayload = Shared.KeyExchangeInitPayload(
+            v: Shared.ProtocolConstantsKt.PROTOCOL_VERSION,
+            token: "deadbeef",
+            ekPub: kotlinByteArray(from: Data([1, 2, 3])),
+            keyConfirmation: kotlinByteArray(from: Data([4, 5, 6])),
+            suggestedName: "Bob",
+            msgId: "msg-002"
+        )
+        let pendingResult = Shared.PendingInviteResult(
+            payload: fakePayload,
+            scannerEkPub: kotlinByteArray(from: Data([1, 2, 3])),
+            inviteEkPub: qr.ekPub,
+            multipleScansDetected: false
+        )
+
+        let mockClient = MockLocationClient()
+        mockClient.pendingInviteResults = [pendingResult]
+        service = LocationSyncService(
+            e2eeManager: service.e2eeManager,
+            userStore: service.userStore,
+            locationClient: mockClient,
+            locationProvider: mockLocationProvider
+        )
+        service.skipUpdateVisibleUsers = true
+        service.beginBackgroundTask = { _, _ in .invalid }
+        service.endBackgroundTask = { _ in }
+
+        service.inviteState = Shared.InviteState.Pending(qr: qr)
+        service.isInviteSheetShowing = true
+
+        // Background wakeup path: updateUi is false, but isInviteSheetShowing is true.
+        await service.pollAll(updateUi: false)
+
+        XCTAssertFalse(
+            service.isInviteSheetShowing,
+            "QR sheet must be dismissed even when pollAll(updateUi:false) if isInviteSheetShowing is true"
+        )
+        XCTAssertNotNil(
+            service.pendingInitPayload,
+            "pendingInitPayload must be set so the naming dialog appears"
+        )
+    }
+
+    /// Regression test for Fix 2: when location was unavailable at pairing time,
+    /// the first subsequent location fix must be sent directly to the new friend
+    /// (bypassing the confirmed-only filter in the broadcast sendLocation).
+    ///
+    /// Without the fix, the new friend (Android peer) stays isConfirmed=false indefinitely
+    /// because no encrypted location message ever arrives to trigger confirmation.
+    func testSendLocation_FiresForcedSendToNewFriendWhenPendingFriendIdIsSet() async throws {
+        let mockClient = MockLocationClient()
+        service = LocationSyncService(
+            e2eeManager: service.e2eeManager,
+            userStore: service.userStore,
+            locationClient: mockClient,
+            locationProvider: mockLocationProvider
+        )
+        service.beginBackgroundTask = { _, _ in .invalid }
+        service.endBackgroundTask = { _ in }
+
+        let expectedFriendId = "friend-bob-456"
+        service.pendingForcedSendFriendId = expectedFriendId
+        service.pendingForcedSendAfterPairing = true
+        // Throttle must not block: set lastSentTime far in the past.
+        service.lastSentTime = Date(timeIntervalSinceNow: -60)
+
+        class StringBox: @unchecked Sendable {
+            private let lock = NSLock()
+            private var value: String? = nil
+            func set(_ v: String) { lock.lock(); defer { lock.unlock() }; value = v }
+            func get() -> String? { lock.lock(); defer { lock.unlock() }; return value }
+        }
+        let capturedFriendIdBox = StringBox()
+        let expectation = XCTestExpectation(description: "Friend-specific forced send")
+        mockClient.sendLocationToFriendCallback = { friendId in
+            capturedFriendIdBox.set(friendId)
+            expectation.fulfill()
+        }
+
+        service.sendLocation(lat: 37.0, lng: -122.0)
+        await fulfillment(of: [expectation], timeout: 1.0)
+
+        XCTAssertEqual(capturedFriendIdBox.get(), expectedFriendId,
+            "sendLocation must fire sendLocationToFriend for the pending friend ID set during pairing")
+        XCTAssertNil(service.pendingForcedSendFriendId,
+            "pendingForcedSendFriendId must be cleared after the forced send fires")
     }
 }
