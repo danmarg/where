@@ -189,6 +189,7 @@ open class LocationClient(
                             silentDropRetries[retryKey] = currentRetries
 
                             if (currentRetries >= MAX_SILENT_DROP_RETRIES) {
+                                store.addDiagnosticEvent("force-ACK $friendId after $currentRetries silent drops on $currentToken")
                                 idsToAck = messages.map { it.msgId }
                                 silentDropRetries.remove(retryKey)
                             }

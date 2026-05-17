@@ -126,11 +126,12 @@ internal object E2eeProtocol {
         session: SessionState,
         envelope: ByteArray,
     ): Session.DecryptedHeader {
+        val sessionAad = session.aliceFp + session.bobFp
         return try {
-            Session.decryptHeader(session.headerKey, envelope)
+            Session.decryptHeader(session.headerKey, envelope, sessionAad)
         } catch (e0: Exception) {
             try {
-                Session.decryptHeader(session.nextHeaderKey, envelope)
+                Session.decryptHeader(session.nextHeaderKey, envelope, sessionAad)
             } catch (e1: Exception) {
                 throw Exception("All header keys failed")
             }

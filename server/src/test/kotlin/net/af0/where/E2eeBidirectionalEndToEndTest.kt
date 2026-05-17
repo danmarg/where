@@ -466,6 +466,12 @@ class E2eeBidirectionalEndToEndTest {
                 bClient.processOutboxes() // This one should succeed
 
                 val aClient = LocationClient(baseUrl, aStore)
+
+                // Alice accepts Bob's pending invite from the discovery token
+                val pendingInvites = aClient.pollPendingInvites()
+                assertEquals(1, pendingInvites.size, "Alice should find Bob's pending invite")
+                aStore.processKeyExchangeInit(pendingInvites.first().payload, "Bob", qr.ekPub)
+
                 drainStability(aClient to aStore, bClient to bStore)
 
                 val idAforB = aStore.listFriends().first { it.name == "Bob" }.id

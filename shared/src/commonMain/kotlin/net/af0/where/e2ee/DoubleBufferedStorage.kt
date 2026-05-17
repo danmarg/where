@@ -12,6 +12,7 @@ internal class DoubleBufferedStorage<T : Any>(
     private val serializer: KSerializer<T>,
     private val json: Json,
     private val timestampSelector: (T) -> Long,
+    private val onMonotonicityViolation: ((keyBase: String, tsNew: Long, tsPrev: Long) -> Unit)? = null,
 ) {
     private val lastSeenTs = mutableMapOf<String, Long>()
 
@@ -47,7 +48,7 @@ internal class DoubleBufferedStorage<T : Any>(
 
         val tsPrev = lastSeenTs[keyBase] ?: 0L
         if (tsNew < tsPrev) {
-            // WARNING: Monotonicity violation
+            onMonotonicityViolation?.invoke(keyBase, tsNew, tsPrev)
         }
         // Note: We don't force data to change here (it's immutable), but we use tsNew to pick the slot.
         // E2eeManager.nextTs() is the primary guarantor of monotonicity.
