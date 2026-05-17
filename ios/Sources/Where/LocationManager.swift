@@ -7,6 +7,7 @@ protocol LocationProviding: AnyObject {
     var locationPublisher: AnyPublisher<CLLocation?, Never> { get }
     var lastLocation: CLLocation? { get }
     func requestPermissionAndStart()
+    func requestImmediateLocation()
     func sharingStateChanged()
 }
 
@@ -22,7 +23,7 @@ final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelega
     }
     @Published var authorizationStatus: CLAuthorizationStatus = .notDetermined
 
-    private let manager: CLLocationManager?
+    internal var manager: CLLocationManager?
 
     private static let lastLatKey = "location_last_lat"
     private static let lastLngKey = "location_last_lng"
@@ -80,6 +81,7 @@ final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelega
         guard let manager = manager else { return }
         manager.stopUpdatingLocation()
         manager.stopMonitoringSignificantLocationChanges()
+        manager.stopMonitoringVisits()
         manager.stopUpdatingHeading()
     }
 
@@ -90,17 +92,28 @@ final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelega
         }
     }
 
+    func requestImmediateLocation() {
+        guard let manager = manager else { return }
+        // requestLocation() performs a single high-accuracy location fix.
+        // It calls locationManager(_:didUpdateLocations:) when finished.
+        manager.requestLocation()
+    }
+
     private func startUpdating() {
         guard let manager = manager else { return }
         manager.allowsBackgroundLocationUpdates = (manager.authorizationStatus == .authorizedAlways)
         manager.pausesLocationUpdatesAutomatically = false
         manager.startUpdatingLocation()
         manager.startMonitoringSignificantLocationChanges()
+        manager.startMonitoringVisits()
         manager.startUpdatingHeading()
     }
 
     nonisolated func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
         guard let loc = locations.last else { return }
+        let coordinate = loc.coordinate
+        let speed = loc.speed
+
         Task { @MainActor in
             let identifier = UIApplication.shared.beginBackgroundTask(withName: "LocationUpdate") {
                 // Task expired
@@ -111,12 +124,44 @@ final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelega
                 }
             }
             self.location = loc
-            UserDefaults.standard.set(loc.coordinate.latitude, forKey: Self.lastLatKey)
-            UserDefaults.standard.set(loc.coordinate.longitude, forKey: Self.lastLngKey)
-            LocationSyncService.shared.sendLocation(lat: loc.coordinate.latitude, lng: loc.coordinate.longitude, heading: self.heading)
+            UserDefaults.standard.set(coordinate.latitude, forKey: Self.lastLatKey)
+            UserDefaults.standard.set(coordinate.longitude, forKey: Self.lastLngKey)
+
+            // MOTION-ADAPTIVE SETTINGS (§2.2): Adjust fidelity based on speed.
+            // speed < 0 means unavailable; treat as slow/stationary.
+            if speed > 5 {
+                // Moving fast: higher fidelity for smooth tracking.
+                self.manager?.distanceFilter = 20
+                self.manager?.activityType = .automotiveNavigation
+            } else {
+                // Stationary, walking, or speed unavailable: conserve battery.
+                self.manager?.distanceFilter = 50
+                self.manager?.activityType = .other
+            }
+
+            LocationSyncService.shared.sendLocation(lat: coordinate.latitude, lng: coordinate.longitude, heading: self.heading)
             // Ensure we also poll for updates when the OS wakes us for a location fix.
             await LocationSyncService.shared.pollAll(updateUi: false)
         }
+    }
+
+    nonisolated func locationManager(_ manager: CLLocationManager, didVisit visit: CLVisit) {
+        let coordinate = visit.coordinate
+        Task { @MainActor in
+            // VISIT MONITORING (§2.1): Trigger a broadcast on arrival/departure.
+            let identifier = UIApplication.shared.beginBackgroundTask(withName: "VisitUpdate") { }
+            defer {
+                if identifier != .invalid {
+                    UIApplication.shared.endBackgroundTask(identifier)
+                }
+            }
+            LocationSyncService.shared.sendLocation(lat: coordinate.latitude, lng: coordinate.longitude, heading: self.heading)
+            await LocationSyncService.shared.pollAll(updateUi: false)
+        }
+    }
+
+    nonisolated func locationManager(_ manager: CLLocationManager, didFailWithError error: Error) {
+        // Required for requestLocation()
     }
 
     nonisolated func locationManager(_ manager: CLLocationManager, didUpdateHeading newHeading: CLHeading) {
