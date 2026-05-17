@@ -225,6 +225,10 @@ internal class E2eeStore(
         database.outboxQueries.deleteOutboxByFriendId(friendId)
     }
 
+    internal fun deleteOutboxByFriendIdAndTokenInternal(friendId: String, token: String) {
+        database.outboxQueries.deleteOutboxByFriendIdAndToken(friendId, token)
+    }
+
     suspend fun getOutbox(friendId: String): List<EncryptedOutboxMessage> =
         storeLock.withLock {
             getOutboxInternal(friendId)

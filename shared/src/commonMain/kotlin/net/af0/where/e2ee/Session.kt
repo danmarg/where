@@ -54,7 +54,8 @@ object Session {
             )
 
         // Seal the metadata into an envelope (#186)
-        val envelope = encryptHeader(headerKeyToUse, dhPubToUse, ackRemoteToUse, seqToUse, currentState.pn)
+        val headerAad = currentState.aliceFp + currentState.bobFp
+        val envelope = encryptHeader(headerKeyToUse, dhPubToUse, ackRemoteToUse, seqToUse, currentState.pn, headerAad)
 
         // Memory Hygiene
         step.messageKey.zeroize()
@@ -97,12 +98,13 @@ object Session {
         // 1. Unwrap the envelope to reveal metadata (#186)
         val header: DecryptedHeader =
             preDecryptedHeader ?: run {
+                val sessionAad = cleanState.aliceFp + cleanState.bobFp
                 var decoded: DecryptedHeader? = null
                 try {
-                    decoded = decryptHeader(cleanState.headerKey, message.envelope)
+                    decoded = decryptHeader(cleanState.headerKey, message.envelope, sessionAad)
                 } catch (e: Exception) {
                     try {
-                        decoded = decryptHeader(cleanState.nextHeaderKey, message.envelope)
+                        decoded = decryptHeader(cleanState.nextHeaderKey, message.envelope, sessionAad)
                     } catch (e2: Exception) {
                     }
                 }
@@ -246,7 +248,6 @@ object Session {
 
             val finalStep = currentStep ?: throw ProtocolException("failed to derive message key")
             val sender = cleanState.remoteFp
-            val recipient = cleanFp(cleanState.localFp)
             val aad = buildMessageAad(sender, cleanState.localFp, seq, remoteDhPub, ackRemoteDhPub)
 
             val plaintext =
@@ -328,8 +329,6 @@ object Session {
         }
     }
 
-    private fun cleanFp(fp: ByteArray): ByteArray = fp // No-op helper
-
     /**
      * Perform the DH ratchet step (pure computation).
      * Returns a new SessionState with updated DH keys and tokens.
@@ -394,6 +393,7 @@ object Session {
         ackRemoteDhPub: ByteArray,
         seq: Long,
         pn: Long,
+        aad: ByteArray = ByteArray(0),
     ): ByteArray {
         val plaintext = ByteArray(1 + 32 + 32 + 8 + 8 + 1)
         plaintext[0] = PROTOCOL_VERSION.toByte()
@@ -404,7 +404,7 @@ object Session {
         plaintext[81] = 0 // flags
 
         val nonce = randomBytes(HEADER_NONCE_SIZE)
-        val ct = aeadEncrypt(key, nonce, plaintext, aad = ByteArray(0))
+        val ct = aeadEncrypt(key, nonce, plaintext, aad)
         return nonce + ct
     }
 
@@ -413,6 +413,7 @@ object Session {
     internal fun decryptHeader(
         key: ByteArray,
         envelope: ByteArray,
+        aad: ByteArray = ByteArray(0),
     ): DecryptedHeader {
         if (envelope.size < HEADER_NONCE_SIZE + HEADER_TAG_SIZE + 82) {
             throw ProtocolException("header envelope too small")
@@ -421,7 +422,7 @@ object Session {
         val ct = envelope.copyOfRange(HEADER_NONCE_SIZE, envelope.size)
         val plaintext =
             try {
-                aeadDecrypt(key, nonce, ct, aad = ByteArray(0))
+                aeadDecrypt(key, nonce, ct, aad)
             } catch (e: Exception) {
                 throw AuthenticationException("header decryption failed — signature mismatch or corrupted data", e)
             }
@@ -444,7 +445,7 @@ object Session {
         dhPub: ByteArray,
         ackRemoteDhPub: ByteArray,
     ): ByteArray {
-        val paddedAck = if (ackRemoteDhPub.isEmpty()) ByteArray(8) else ackRemoteDhPub
+        val paddedAck = if (ackRemoteDhPub.isEmpty()) ByteArray(32) else ackRemoteDhPub
         return AAD_PREFIX.encodeToByteArray() +
             intToBeBytes(PROTOCOL_VERSION) +
             senderFp +
@@ -470,20 +471,21 @@ object Session {
             }
         }.let { Json.encodeToString(it) }.encodeToByteArray()
 
-    private fun decodeMessage(bytes: ByteArray): MessagePlaintext {
-        val obj = Json.decodeFromString<JsonObject>(bytes.decodeToString())
-        return if (obj.containsKey("lat")) {
-            MessagePlaintext.Location(
-                lat = obj["lat"]!!.jsonPrimitive.double,
-                lng = obj["lng"]!!.jsonPrimitive.double,
-                acc = obj["acc"]!!.jsonPrimitive.double,
-                ts = obj["ts"]!!.jsonPrimitive.long,
-                precision = obj["precision"]?.jsonPrimitive?.content?.let { LocationPrecision.valueOf(it) } ?: LocationPrecision.FINE,
-            )
-        } else {
-            MessagePlaintext.Keepalive()
-        }
-    }
+    private fun decodeMessage(bytes: ByteArray): MessagePlaintext =
+        runCatching {
+            val obj = Json.decodeFromString<JsonObject>(bytes.decodeToString())
+            if (obj.containsKey("lat")) {
+                MessagePlaintext.Location(
+                    lat = obj["lat"]!!.jsonPrimitive.double,
+                    lng = obj["lng"]!!.jsonPrimitive.double,
+                    acc = obj["acc"]!!.jsonPrimitive.double,
+                    ts = obj["ts"]!!.jsonPrimitive.long,
+                    precision = obj["precision"]?.jsonPrimitive?.content?.let { LocationPrecision.valueOf(it) } ?: LocationPrecision.FINE,
+                )
+            } else {
+                MessagePlaintext.Keepalive()
+            }
+        }.getOrElse { e -> throw DecryptionException("malformed message plaintext", e) }
 
     internal fun padToFixedSize(
         data: ByteArray,

@@ -569,7 +569,21 @@ class E2eeChaosTest {
             }
         } catch (e: Exception) {
             e.printStackTrace()
-            error("Multi-friend chaos test timed out after ${testScheduler.currentTime} virtual ms: ${e.message}")
+            val stateDump = managers.mapIndexed { i, m ->
+                val friends = m.listFriends()
+                val friendLines = friends.joinToString(", ") { f ->
+                    "friend=${f.name} lastLng=${f.lastLng?.toInt() ?: -1}"
+                }
+                "User $i: [$friendLines]"
+            }.joinToString("\n")
+            val diagDump = managers.mapIndexed { i, m ->
+                "User $i: ${m.diagnosticLogSnapshot().joinToString(" | ").ifEmpty { "(no events)" }}"
+            }.joinToString("\n")
+            error(
+                "Multi-friend chaos test timed out after ${testScheduler.currentTime} virtual ms: ${e.message}\n" +
+                    "Convergence state:\n$stateDump\n" +
+                    "Diagnostic logs:\n$diagDump",
+            )
         } finally {
             backgroundJobs.forEach { it.cancelAndJoin() }
         }

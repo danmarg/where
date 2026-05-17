@@ -194,13 +194,13 @@ class MultiFriendIntegrationTest {
             assertEquals(2, results.size, "Alice should find both pending invites")
 
             // 5. Alice accepts Bob
-            val bobResult = results.find { it.aliceEkPub.contentEquals(qrBob.ekPub) }
+            val bobResult = results.find { it.inviteEkPub.contentEquals(qrBob.ekPub) }
             assertNotNull(bobResult)
             val bobEntry = aliceManager.processKeyExchangeInit(bobResult.payload, "Bob", qrBob.ekPub)
             assertNotNull(bobEntry)
 
             // 6. Alice accepts Charlie
-            val charlieResult = results.find { it.aliceEkPub.contentEquals(qrCharlie.ekPub) }
+            val charlieResult = results.find { it.inviteEkPub.contentEquals(qrCharlie.ekPub) }
             assertNotNull(charlieResult)
             val charlieEntry = aliceManager.processKeyExchangeInit(charlieResult.payload, "Charlie", qrCharlie.ekPub)
             assertNotNull(charlieEntry)

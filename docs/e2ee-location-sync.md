@@ -681,6 +681,12 @@ The `envelope` is a 110-byte binary blob consisting of:
 
 The header is encrypted using the current `header_key` derived from the DH ratchet.
 
+**AAD for Header:**
+- `alice_fp` (32 bytes): Alice's session fingerprint (constant for the lifetime of the session).
+- `bob_fp` (32 bytes): Bob's session fingerprint (constant for the lifetime of the session).
+
+This binds each header ciphertext to its session, preventing a party who has obtained a header key from detaching and re-attaching headers across sessions.
+
 #### 9.1.2 Ciphertext (ct)
 
 The `ct` field contains the ChaCha20-Poly1305 ciphertext of the location payload, plus a 16-byte authentication tag.

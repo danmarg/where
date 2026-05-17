@@ -20,6 +20,9 @@ DELETE FROM Outbox WHERE msgId = ? AND friendId = ?;
 deleteOutboxByFriendId:
 DELETE FROM Outbox WHERE friendId = ?;
 
+deleteOutboxByFriendIdAndToken:
+DELETE FROM Outbox WHERE friendId = ? AND token = ?;
+
 getOutboxForFriend:
 SELECT * FROM Outbox WHERE friendId = ? ORDER BY createdAt ASC;
 

@@ -302,9 +302,9 @@ object KeyExchange {
         expected: ByteArray,
     ): Boolean {
         val computed = buildKeyConfirmation(sk, ekAPub, ekBPub)
-        if (computed.size != expected.size) return false
-        var diff = 0
-        for (i in computed.indices) diff = diff or (computed[i].toInt() xor expected[i].toInt())
+        var diff = computed.size xor expected.size
+        val len = minOf(computed.size, expected.size)
+        for (i in 0 until len) diff = diff or (computed[i].toInt() xor expected[i].toInt())
         return diff == 0
     }
 }

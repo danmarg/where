@@ -421,10 +421,14 @@ class E2eeManager(
                 result.finalSession.recvSeq > entry.session.recvSeq ||
                     !result.finalSession.rootKey.contentEquals(entry.session.rootKey)
 
-            // If the peer ratcheted forward, it proves they received our last transition.
-            // We can safely clear our outbox to unblock further sends.
+            // If the peer ratcheted forward, it proves they received our transition message
+            // (sent to prevSendToken). Delete only that stale entry — not any pending message
+            // we may have queued for the current sendToken.
             if (!result.finalSession.rootKey.contentEquals(entry.session.rootKey)) {
-                persistence.deleteOutboxByFriendIdInternal(friendId)
+                persistence.deleteOutboxByFriendIdAndTokenInternal(
+                    friendId,
+                    entry.session.prevSendToken.toHex(),
+                )
             }
 
             val currentRecvToken = if (result.anySuccess || hadStateUpdate) result.finalSession.recvToken else entry.session.recvToken

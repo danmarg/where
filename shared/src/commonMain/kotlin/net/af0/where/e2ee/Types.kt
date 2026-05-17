@@ -124,7 +124,11 @@ data class SessionState(
             bobEkPub.contentEquals(other.bobEkPub) &&
             aliceFp.contentEquals(other.aliceFp) &&
             bobFp.contentEquals(other.bobFp) &&
+            localFp.contentEquals(other.localFp) &&
+            remoteFp.contentEquals(other.remoteFp) &&
             prevSendToken.contentEquals(other.prevSendToken) &&
+            prevSendChainKey.contentEquals(other.prevSendChainKey) &&
+            prevSendHeaderKey.contentEquals(other.prevSendHeaderKey) &&
             isAlice == other.isAlice &&
             skippedMessageKeys.size == other.skippedMessageKeys.size &&
             skippedMessageKeys.all { (k, v) -> other.skippedMessageKeys[k]?.contentEquals(v) == true } &&
@@ -152,7 +156,11 @@ data class SessionState(
         h = 31 * h + bobEkPub.contentHashCode()
         h = 31 * h + aliceFp.contentHashCode()
         h = 31 * h + bobFp.contentHashCode()
+        h = 31 * h + localFp.contentHashCode()
+        h = 31 * h + remoteFp.contentHashCode()
         h = 31 * h + prevSendToken.contentHashCode()
+        h = 31 * h + prevSendChainKey.contentHashCode()
+        h = 31 * h + prevSendHeaderKey.contentHashCode()
         h = 31 * h + isAlice.hashCode()
         // Content-based hash for collections containing ByteArrays
         var skipHash = 0

@@ -407,16 +407,31 @@ class RedisMailboxState(redisUrl: String) : MailboxStore {
 class ServerState(
     val debug: Boolean = false,
     val mailbox: MailboxStore = InMemoryMailboxState(),
+    val trustProxy: Boolean = false,
 )
+
+/**
+ * Returns the real client IP. When [trustProxy] is true, reads X-Forwarded-For / X-Real-IP
+ * (suitable for deployments behind a trusted reverse proxy). Otherwise uses the TCP peer address.
+ */
+private fun ApplicationCall.clientIp(trustProxy: Boolean): String =
+    if (trustProxy) {
+        request.headers["X-Forwarded-For"]?.split(",")?.firstOrNull()?.trim()
+            ?: request.headers["X-Real-IP"]?.trim()
+            ?: request.local.remoteHost
+    } else {
+        request.local.remoteHost
+    }
 
 fun main(args: Array<String>) {
     val port = System.getenv("PORT")?.toInt() ?: 8080
     val debug = args.contains("--debug") || System.getenv("WHERE_DEBUG") == "true"
+    val trustProxy = System.getenv("TRUST_PROXY") == "true"
     val redisUrl = System.getenv("REDIS_URL")
     val mailbox: MailboxStore =
         if (redisUrl != null) RedisMailboxState(redisUrl) else InMemoryMailboxState()
     embeddedServer(Netty, port = port, host = "0.0.0.0") {
-        module(ServerState(debug, mailbox))
+        module(ServerState(debug, mailbox, trustProxy))
     }.start(wait = true)
     mailbox.close()
 }
@@ -454,7 +469,7 @@ fun Application.module(state: ServerState = ServerState()) {
         put("/inbox/{token}/{msgId}") {
             val token = call.parameters["token"] ?: return@put call.respond(HttpStatusCode.BadRequest)
             val msgId = call.parameters["msgId"] ?: return@put call.respond(HttpStatusCode.BadRequest)
-            val ip = call.request.local.remoteHost
+            val ip = call.clientIp(state.trustProxy)
             if (!state.mailbox.checkIpRateLimit(ip)) return@put call.respond(HttpStatusCode.TooManyRequests)
 
             val body = call.receiveText()
