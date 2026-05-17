@@ -520,7 +520,7 @@ class E2eeManager(
     }
 
     private fun sanitizeName(name: String): String =
-        normalizeName(name).take(32).filter { it.isLetterOrDigit() || it.isWhitespace() }.trim()
+        normalizeName(name).take(32).filter { it.isLetterOrDigit() || it.isWhitespace() || it in "-_'." }.trim()
 
     companion object {
         const val MAX_PENDING_INVITES = 10
