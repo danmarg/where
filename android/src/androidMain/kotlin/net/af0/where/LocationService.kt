@@ -16,6 +16,11 @@ import android.os.SystemClock
 import android.util.Log
 import androidx.annotation.VisibleForTesting
 import androidx.core.content.ContextCompat
+import com.google.android.gms.location.ActivityRecognition
+import com.google.android.gms.location.ActivityRecognitionClient
+import com.google.android.gms.location.ActivityTransition
+import com.google.android.gms.location.ActivityTransitionRequest
+import com.google.android.gms.location.DetectedActivity
 import com.google.android.gms.location.LocationCallback
 import com.google.android.gms.location.LocationRequest
 import com.google.android.gms.location.LocationResult
@@ -49,6 +54,9 @@ class LocationService : Service() {
     internal var fusedClientOverride: com.google.android.gms.location.FusedLocationProviderClient? = null
 
     @VisibleForTesting
+    internal var activityRecognitionClientOverride: ActivityRecognitionClient? = null
+
+    @VisibleForTesting
     internal var e2eeManagerOverride: E2eeManager? = null
 
     @VisibleForTesting
@@ -62,10 +70,20 @@ class LocationService : Service() {
 
     private lateinit var alarmManager: AlarmManager
     private lateinit var fusedClient: com.google.android.gms.location.FusedLocationProviderClient
+    private lateinit var activityRecognitionClient: ActivityRecognitionClient
     private lateinit var locationCallback: LocationCallback
 
     @VisibleForTesting
     internal var isRegistered = false
+
+    @VisibleForTesting
+    internal var isActivityRegistered = false
+
+    @VisibleForTesting
+    internal var currentPriority = Priority.PRIORITY_BALANCED_POWER_ACCURACY
+
+    @VisibleForTesting
+    internal var currentInterval = 30_000L
 
     private val pendingFriendSends = Channel<String>(Channel.UNLIMITED)
 
@@ -82,6 +100,14 @@ class LocationService : Service() {
     private fun hasLocationPermission(): Boolean {
         return ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED ||
             ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED
+    }
+
+    private fun hasActivityPermission(): Boolean {
+        return if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
+            ContextCompat.checkSelfPermission(this, Manifest.permission.ACTIVITY_RECOGNITION) == PackageManager.PERMISSION_GRANTED
+        } else {
+            true
+        }
     }
 
     override fun onCreate() {
@@ -102,6 +128,7 @@ class LocationService : Service() {
         e2eeManager = e2eeManagerOverride ?: app.e2eeManager
         locationClient = locationClientOverride ?: app.locationClient
         fusedClient = fusedClientOverride ?: LocationServices.getFusedLocationProviderClient(this)
+        activityRecognitionClient = activityRecognitionClientOverride ?: ActivityRecognition.getClient(this)
 
         locationCallback =
             object : LocationCallback() {
@@ -179,6 +206,36 @@ class LocationService : Service() {
     ): Int {
         Log.d(TAG, "onStartCommand: isRegistered=$isRegistered")
         ensureLocationRegistration()
+        ensureActivityRecognitionRegistration()
+
+        if (intent?.action == ACTION_ACTIVITY_TRANSITION) {
+            val result = com.google.android.gms.location.ActivityTransitionResult.extractResult(intent)
+            if (result != null) {
+                for (event in result.transitionEvents) {
+                    Log.d(TAG, "Activity Transition: ${event.activityType} (${event.transitionType})")
+                    val newPriority =
+                        when (event.activityType) {
+                            DetectedActivity.STILL -> Priority.PRIORITY_BALANCED_POWER_ACCURACY
+                            else -> Priority.PRIORITY_HIGH_ACCURACY
+                        }
+                    val newInterval =
+                        when (event.activityType) {
+                            DetectedActivity.STILL -> 60_000L
+                            else -> 10_000L
+                        }
+
+                    if (newPriority != currentPriority || newInterval != currentInterval) {
+                        currentPriority = newPriority
+                        currentInterval = newInterval
+                        Log.i(TAG, "Updating location request: priority=$currentPriority, interval=$currentInterval")
+                        // Force re-registration with new settings.
+                        isRegistered = false
+                        ensureLocationRegistration()
+                    }
+                }
+            }
+        }
+
         if (intent?.action == ACTION_POLL_ALARM) {
             locationSource.wakePoll()
             serviceScope.launch { doPoll() }
@@ -233,8 +290,8 @@ class LocationService : Service() {
         if (isRegistered) return
 
         val request =
-            LocationRequest.Builder(Priority.PRIORITY_BALANCED_POWER_ACCURACY, 30_000L)
-                .setMinUpdateIntervalMillis(15_000L)
+            LocationRequest.Builder(currentPriority, currentInterval)
+                .setMinUpdateIntervalMillis(1_000L) // PASSIVE PIGGYBACKING (§1.1): Allow high-freq updates from other apps.
                 .setMinUpdateDistanceMeters(10f)
                 .setMaxUpdateDelayMillis(60_000L)
                 .build()
@@ -242,10 +299,67 @@ class LocationService : Service() {
         try {
             fusedClient.requestLocationUpdates(request, locationCallback, mainLooper)
             isRegistered = true
-            Log.i(TAG, "Location updates registered successfully.")
+            Log.i(TAG, "Location updates registered successfully with priority=$currentPriority.")
         } catch (e: SecurityException) {
             Log.w(TAG, "SecurityException while requesting location updates: ${e.message}")
         }
+    }
+
+    private fun ensureActivityRecognitionRegistration() {
+        val hasPermission = hasActivityPermission()
+        val isSharing = userStore.isSharingLocation.value
+
+        if (!hasPermission || !isSharing) {
+            if (isActivityRegistered) {
+                Log.i(TAG, "Activity recognition no longer needed; removing updates.")
+                activityRecognitionClient.removeActivityTransitionUpdates(getActivityTransitionPendingIntent())
+                isActivityRegistered = false
+            }
+            return
+        }
+
+        if (isActivityRegistered) return
+
+        val transitions = mutableListOf<ActivityTransition>()
+        val activities =
+            listOf(
+                DetectedActivity.STILL,
+                DetectedActivity.WALKING,
+                DetectedActivity.RUNNING,
+                DetectedActivity.ON_BICYCLE,
+                DetectedActivity.IN_VEHICLE,
+            )
+
+        for (activity in activities) {
+            transitions.add(
+                ActivityTransition.Builder()
+                    .setActivityType(activity)
+                    .setActivityTransition(ActivityTransition.ACTIVITY_TRANSITION_ENTER)
+                    .build(),
+            )
+            transitions.add(
+                ActivityTransition.Builder()
+                    .setActivityType(activity)
+                    .setActivityTransition(ActivityTransition.ACTIVITY_TRANSITION_EXIT)
+                    .build(),
+            )
+        }
+
+        val request = ActivityTransitionRequest(transitions)
+        try {
+            activityRecognitionClient.requestActivityTransitionUpdates(request, getActivityTransitionPendingIntent())
+            isActivityRegistered = true
+            Log.i(TAG, "Activity transition updates registered successfully.")
+        } catch (e: SecurityException) {
+            Log.w(TAG, "SecurityException while requesting activity transitions: ${e.message}")
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to register activity transitions: ${e.message}")
+        }
+    }
+
+    private fun getActivityTransitionPendingIntent(): PendingIntent {
+        val intent = Intent(this, LocationService::class.java).apply { action = ACTION_ACTIVITY_TRANSITION }
+        return PendingIntent.getService(this, PENDING_INTENT_REQUEST_CODE_ACTIVITY, intent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
     }
 
     override fun onDestroy() {
@@ -254,6 +368,13 @@ class LocationService : Service() {
             fusedClient.removeLocationUpdates(locationCallback)
         } catch (e: SecurityException) {
             Log.w(TAG, "SecurityException removing location updates in onDestroy", e)
+        }
+        if (isActivityRegistered) {
+            try {
+                activityRecognitionClient.removeActivityTransitionUpdates(getActivityTransitionPendingIntent())
+            } catch (_: Exception) {
+            }
+            isActivityRegistered = false
         }
         val connectivityManager = getSystemService(ConnectivityManager::class.java)
         networkCallback?.let { connectivityManager?.unregisterNetworkCallback(it) }
@@ -551,6 +672,8 @@ class LocationService : Service() {
     companion object {
         const val ACTION_POLL_ALARM = "net.af0.where.ACTION_POLL_ALARM"
         const val ACTION_FORCE_PUBLISH = "net.af0.where.ACTION_FORCE_PUBLISH"
+        const val ACTION_ACTIVITY_TRANSITION = "net.af0.where.ACTION_ACTIVITY_TRANSITION"
+        private const val PENDING_INTENT_REQUEST_CODE_ACTIVITY = 1
         const val EXTRA_FRIEND_ID = "friend_id"
 
         /**

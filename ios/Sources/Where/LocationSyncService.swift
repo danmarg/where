@@ -267,12 +267,9 @@ final class LocationSyncService: ObservableObject {
         if isSharingLocation {
             let heartbeatInterval: TimeInterval = 300.0 // 5 minutes
             if now.timeIntervalSince(lastSentTime) >= heartbeatInterval {
-                if let loc = bestAvailableLocation {
-                    logger.info("tick: stationary heartbeat — sending location")
-                    self.sendLocation(lat: loc.lat, lng: loc.lng, heading: loc.heading)
-                } else {
-                    logger.info("tick: heartbeat due but no location available")
-                }
+                logger.info("tick: stationary heartbeat — forcing fresh location fix")
+                // FORCED HEARTBEAT REFRESH (§2.3): Force GPS wake specifically for the heartbeat.
+                locationProvider.requestImmediateLocation()
             }
         }
     }
@@ -400,17 +397,13 @@ final class LocationSyncService: ObservableObject {
             // background-app-refresh, or any direct pollAll() call).
             let heartbeatInterval: TimeInterval = 300.0
             let elapsed = Date().timeIntervalSince(lastSentTime)
-            let hasLocation = locationProvider.lastLocation != nil
             let sharing = isSharingLocation
-            logger.info("pollAll: sharing=\(sharing) elapsed=\(Int(elapsed))s hasLocation=\(hasLocation)")
+            logger.info("pollAll: sharing=\(sharing) elapsed=\(Int(elapsed))s")
             if isSharingLocation {
                 if elapsed >= heartbeatInterval {
-                    if let loc = bestAvailableLocation {
-                        logger.info("pollAll: heartbeat due — sending location")
-                        sendLocation(lat: loc.lat, lng: loc.lng, heading: loc.heading)
-                    } else {
-                        logger.info("pollAll: heartbeat due but no location available — no GPS fix and no prior send")
-                    }
+                    logger.info("pollAll: heartbeat due — forcing fresh location fix")
+                    // FORCED HEARTBEAT REFRESH (§2.3): Force GPS wake specifically for the heartbeat.
+                    locationProvider.requestImmediateLocation()
                 }
             }
 

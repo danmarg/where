@@ -33,6 +33,10 @@ class LocationSyncServiceTests: XCTestCase {
         func requestPermissionAndStart() {
             requestPermissionAndStartCalled = true
         }
+        var requestImmediateLocationCalled = false
+        func requestImmediateLocation() {
+            requestImmediateLocationCalled = true
+        }
         func sharingStateChanged() {}
     }
 
@@ -247,29 +251,10 @@ class LocationSyncServiceTests: XCTestCase {
         service = LocationSyncService(e2eeManager: service.e2eeManager, userStore: service.userStore, locationClient: mockClient, locationProvider: mockLocationProvider)
         service.isSharingLocation = true
         service.lastSentTime = Date(timeIntervalSinceNow: -400) // > 300s ago — heartbeat due
-        mockLocationProvider.location = CLLocation(latitude: 37.7749, longitude: -122.4194)
-
-        let expectation = XCTestExpectation(description: "Heartbeat send")
-        mockClient.sendLocationCallback = { expectation.fulfill() }
 
         await service.pollAll(updateUi: false)
 
-        await fulfillment(of: [expectation], timeout: 1.0)
-    }
-
-    func testPollAllSkipsHeartbeatWhenNoLocationAvailable() async throws {
-        let mockClient = MockLocationClient()
-        service = LocationSyncService(e2eeManager: service.e2eeManager, userStore: service.userStore, locationClient: mockClient, locationProvider: mockLocationProvider)
-        service.isSharingLocation = true
-        service.lastSentTime = Date(timeIntervalSinceNow: -400) // > 300s — heartbeat due
-        // mockLocationProvider.location is nil (simulates first-ever launch before any GPS fix)
-
-        let expectation = XCTestExpectation(description: "No heartbeat send")
-        expectation.isInverted = true
-        mockClient.sendLocationCallback = { expectation.fulfill() }
-
-        await service.pollAll(updateUi: false)
-        await fulfillment(of: [expectation], timeout: 0.1)
+        XCTAssertTrue(mockLocationProvider.requestImmediateLocationCalled, "Should call requestImmediateLocation when heartbeat is due")
     }
 
     func testPollAllDoesNotTriggerHeartbeatWhenRecentlySent() async throws {
@@ -277,14 +262,10 @@ class LocationSyncServiceTests: XCTestCase {
         service = LocationSyncService(e2eeManager: service.e2eeManager, userStore: service.userStore, locationClient: mockClient, locationProvider: mockLocationProvider)
         service.isSharingLocation = true
         service.lastSentTime = Date(timeIntervalSinceNow: -10) // just 10s ago — no heartbeat due
-        mockLocationProvider.location = CLLocation(latitude: 37.7749, longitude: -122.4194)
-
-        let expectation = XCTestExpectation(description: "No heartbeat send")
-        expectation.isInverted = true
-        mockClient.sendLocationCallback = { expectation.fulfill() }
 
         await service.pollAll(updateUi: false)
-        await fulfillment(of: [expectation], timeout: 0.1)
+
+        XCTAssertFalse(mockLocationProvider.requestImmediateLocationCalled, "Should NOT call requestImmediateLocation when heartbeat is NOT due")
     }
 
     // MARK: - Persistent Storage Tests
@@ -381,25 +362,6 @@ class LocationSyncServiceTests: XCTestCase {
         mockClient.sendLocationCallback = { expectation.fulfill() }
 
         service.sendLocationOnBackground()
-
-        await fulfillment(of: [expectation], timeout: 1.0)
-    }
-
-    func testHeartbeatFallsBackToLastSentLocationWhenGpsUnavailable() async throws {
-        let mockClient = MockLocationClient()
-        service = LocationSyncService(e2eeManager: service.e2eeManager, userStore: service.userStore, locationClient: mockClient, locationProvider: mockLocationProvider)
-        service.isSharingLocation = true
-        service.beginBackgroundTask = { _, _ in .invalid }
-        service.endBackgroundTask = { _ in }
-        // No GPS fix, but we have a prior send
-        service.sendLocation(lat: 37.1, lng: -122.1)
-        // Make heartbeat due
-        service.lastSentTime = Date(timeIntervalSinceNow: -400)
-
-        let expectation = XCTestExpectation(description: "Heartbeat fallback send")
-        mockClient.sendLocationCallback = { expectation.fulfill() }
-
-        await service.pollAll(updateUi: false)
 
         await fulfillment(of: [expectation], timeout: 1.0)
     }
