@@ -3,7 +3,10 @@ package net.af0.where
 import android.Manifest
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.net.Uri
 import android.os.Bundle
+import android.os.PowerManager
+import android.provider.Settings
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -228,6 +231,30 @@ class MainActivity : ComponentActivity() {
                         dismissButton = {
                             TextButton(onClick = { showCameraSettingsRationale = false }) {
                                 Text(stringResource(MR.strings.cancel))
+                            }
+                        },
+                    )
+                }
+
+                val showBatteryOptimizationDialog by viewModel.showBatteryOptimizationDialog.collectAsState()
+                if (showBatteryOptimizationDialog) {
+                    AlertDialog(
+                        onDismissRequest = { viewModel.dismissBatteryOptimizationDialog() },
+                        title = { Text("Improve background updates") },
+                        text = { Text("For reliable location sharing when the screen is off, allow Where to run without battery restrictions.") },
+                        confirmButton = {
+                            TextButton(onClick = {
+                                viewModel.dismissBatteryOptimizationDialog()
+                                startActivity(
+                                    Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
+                                        data = Uri.parse("package:$packageName")
+                                    }
+                                )
+                            }) { Text("Allow") }
+                        },
+                        dismissButton = {
+                            TextButton(onClick = { viewModel.dismissBatteryOptimizationDialog() }) {
+                                Text("Skip")
                             }
                         },
                     )

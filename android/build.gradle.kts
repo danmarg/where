@@ -148,6 +148,7 @@ dependencies {
     implementation(libs.zxing.core)
     implementation(libs.zxing.android.embedded)
     implementation(libs.moko.resources.compose)
+    implementation(libs.work.runtime.ktx)
 
     debugImplementation(libs.compose.ui.test.manifest)
 }

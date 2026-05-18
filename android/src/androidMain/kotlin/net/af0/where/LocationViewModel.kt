@@ -2,26 +2,33 @@ package net.af0.where
 
 import android.Manifest
 import android.app.Application
+import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Looper
+import android.os.PowerManager
 import android.util.Log
 import androidx.annotation.MainThread
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import androidx.work.ExistingPeriodicWorkPolicy
+import androidx.work.PeriodicWorkRequestBuilder
+import androidx.work.WorkManager
 import app.cash.sqldelight.driver.android.AndroidSqliteDriver
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.util.concurrent.TimeUnit
 import net.af0.where.e2ee.ConnectionStatus
 import net.af0.where.e2ee.E2eeManager
 import net.af0.where.e2ee.FriendEntry
@@ -112,6 +119,9 @@ class LocationViewModel(
 
     val connectionStatus: StateFlow<ConnectionStatus> = locationSource.connectionStatus
     val diagnosticLog: StateFlow<List<String>> = e2eeManager.diagnosticLog
+
+    private val _showBatteryOptimizationDialog = MutableStateFlow(false)
+    val showBatteryOptimizationDialog: StateFlow<Boolean> = _showBatteryOptimizationDialog.asStateFlow()
 
     val ownLocation: StateFlow<UserLocation?> =
         combine(locationSource.lastLocation, isSharingLocation) { myLoc, sharing ->
@@ -471,6 +481,13 @@ class LocationViewModel(
         }
     }
 
+    fun dismissBatteryOptimizationDialog() {
+        _showBatteryOptimizationDialog.value = false
+        getApplication<Application>()
+            .getSharedPreferences("where_prefs", Context.MODE_PRIVATE)
+            .edit().putBoolean("battery_opt_asked", true).apply()
+    }
+
     @MainThread
     private fun manageForegroundService(
         sharing: Boolean,
@@ -485,6 +502,19 @@ class LocationViewModel(
                 PackageManager.PERMISSION_GRANTED
         if ((sharing && hasLocationPermission) || inForeground) {
             getApplication<Application>().startForegroundService(intent)
+            WorkManager.getInstance(getApplication()).enqueueUniquePeriodicWork(
+                LocationServiceRestartWorker.WORK_NAME,
+                ExistingPeriodicWorkPolicy.KEEP,
+                PeriodicWorkRequestBuilder<LocationServiceRestartWorker>(15, TimeUnit.MINUTES).build(),
+            )
+            if (sharing) {
+                val pm = getApplication<Application>().getSystemService(Context.POWER_SERVICE) as PowerManager
+                val pkg = getApplication<Application>().packageName
+                val prefs = getApplication<Application>().getSharedPreferences("where_prefs", Context.MODE_PRIVATE)
+                if (!pm.isIgnoringBatteryOptimizations(pkg) && !prefs.getBoolean("battery_opt_asked", false)) {
+                    _showBatteryOptimizationDialog.value = true
+                }
+            }
         }
         // Intentionally no stopService() here: when sharing is paused the service must remain
         // alive for maintenance polls (ratchet keepalives, token ACKs) so the Double Ratchet

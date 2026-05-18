@@ -21,6 +21,7 @@ jedis = "5.2.0"
 libsodium = "0.9.5"
 security-crypto = "1.1.0-alpha06"
 moko-resources = "0.24.5"
+work = "2.9.1"
 
 [libraries]
 # Moko Resources
@@ -76,6 +77,9 @@ security-crypto = { module = "androidx.security:security-crypto", version.ref = 
 
 # Splash Screen
 androidx-core-splashscreen = { module = "androidx.core:core-splashscreen", version = "1.0.1" }
+
+# WorkManager
+work-runtime-ktx = { module = "androidx.work:work-runtime-ktx", version.ref = "work" }
 
 # Redis
 jedis = { module = "redis.clients:jedis", version.ref = "jedis" }
