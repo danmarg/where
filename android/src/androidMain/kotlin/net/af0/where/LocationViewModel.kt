@@ -502,11 +502,15 @@ class LocationViewModel(
                 PackageManager.PERMISSION_GRANTED
         if ((sharing && hasLocationPermission) || inForeground) {
             getApplication<Application>().startForegroundService(intent)
-            WorkManager.getInstance(getApplication()).enqueueUniquePeriodicWork(
-                LocationServiceRestartWorker.WORK_NAME,
-                ExistingPeriodicWorkPolicy.KEEP,
-                PeriodicWorkRequestBuilder<LocationServiceRestartWorker>(15, TimeUnit.MINUTES).build(),
-            )
+            try {
+                WorkManager.getInstance(getApplication()).enqueueUniquePeriodicWork(
+                    LocationServiceRestartWorker.WORK_NAME,
+                    ExistingPeriodicWorkPolicy.KEEP,
+                    PeriodicWorkRequestBuilder<LocationServiceRestartWorker>(15, TimeUnit.MINUTES).build(),
+                )
+            } catch (_: IllegalStateException) {
+                Log.w(TAG, "WorkManager not available")
+            }
             if (sharing) {
                 val pm = getApplication<Application>().getSystemService(Context.POWER_SERVICE) as PowerManager
                 val pkg = getApplication<Application>().packageName

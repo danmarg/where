@@ -97,7 +97,7 @@ class LocationOptimizationsTests: XCTestCase {
         
         try await Task.sleep(nanoseconds: 100_000_000)
         
-        XCTAssertEqual(manager.distanceFilter, 50)
+        XCTAssertEqual(manager.distanceFilter, kCLDistanceFilterNone)
         XCTAssertEqual(manager.activityType, .other)
     }
 
