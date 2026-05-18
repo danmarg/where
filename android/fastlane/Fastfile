@@ -15,20 +15,28 @@ platform :android do
     )
   end
 
-  desc "Build a release AAB (requires signing env vars)"
+  desc "Build a release AAB without activity recognition (requires signing env vars)"
   lane :build_release do
     gradle(
       project_dir: "../",
       task: "bundle",
+      flavor: "Standard",
       build_type: "Release",
     )
   end
 
-  desc "Build a release AAB and upload to Google Play (internal track)"
-  lane :deploy do
-    gradle_file = "../build.gradle.kts"
-    today = Time.now.strftime("%Y.%m.%d")
+  desc "Build a release AAB with full activity recognition (requires signing env vars)"
+  lane :build_release_full do
+    gradle(
+      project_dir: "../",
+      task: "bundle",
+      flavor: "Full",
+      build_type: "Release",
+    )
+  end
 
+  def bump_version(gradle_file)
+    today = Time.now.strftime("%Y.%m.%d")
     content = File.read(gradle_file)
     current_name = content.match(/versionName\s*=\s*"([^"]+)"/)[1]
     new_version_name = if current_name.start_with?(today)
@@ -36,20 +44,33 @@ platform :android do
     else
       "#{today}.1"
     end
-
     current_code = content.match(/versionCode\s*=\s*(\d+)/)[1].to_i
     new_version_code = current_code + 1
-
     UI.message("Updating version name to #{new_version_name} and version code to #{new_version_code}")
-
     content.gsub!(/(versionName\s*=\s*)"[^"]+"/, "\\1\"#{new_version_name}\"")
     content.gsub!(/(versionCode\s*=\s*)\d+/, "\\1#{new_version_code}")
-
     File.write(gradle_file, content)
+  end
 
+  desc "Build standard AAB (no activity recognition) and upload to Google Play (internal track)"
+  lane :deploy do
+    bump_version("../build.gradle.kts")
     gradle(
       project_dir: "../",
       task: "bundle",
+      flavor: "Standard",
+      build_type: "Release",
+    )
+    upload_to_play_store(track: "internal", skip_upload_apk: true)
+  end
+
+  desc "Build full AAB (with activity recognition) and upload to Google Play (internal track)"
+  lane :deploy_full do
+    bump_version("../build.gradle.kts")
+    gradle(
+      project_dir: "../",
+      task: "bundle",
+      flavor: "Full",
       build_type: "Release",
     )
     upload_to_play_store(track: "internal", skip_upload_apk: true)
@@ -72,7 +93,7 @@ platform :android do
       skip_upload_aab: true,
       skip_upload_metadata: true,
       skip_upload_images: true,
-      skip_upload_screenshots: true
+      skip_upload_screenshots: true,
     )
   end
 end

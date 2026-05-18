@@ -61,8 +61,8 @@ android {
         applicationId = "net.af0.where"
         minSdk = 26
         targetSdk = 35
-        versionCode = 69
-        versionName = "2026.05.17.4"
+        versionCode = 72
+        versionName = "2026.05.18.1"
         manifestPlaceholders["MAPS_API_KEY"] = localProperties.getProperty("MAPS_API_KEY") ?: System.getenv("MAPS_API_KEY") ?: ""
     }
 
@@ -96,6 +96,19 @@ android {
                 keyAlias = "where"
                 keyPassword = kPassword
             }
+        }
+    }
+
+    flavorDimensions += "activityRecognition"
+
+    productFlavors {
+        create("standard") {
+            dimension = "activityRecognition"
+            buildConfigField("Boolean", "ACTIVITY_RECOGNITION_ENABLED", "false")
+        }
+        create("full") {
+            dimension = "activityRecognition"
+            buildConfigField("Boolean", "ACTIVITY_RECOGNITION_ENABLED", "true")
         }
     }
 

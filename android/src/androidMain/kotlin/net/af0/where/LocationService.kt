@@ -37,6 +37,7 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.tasks.await
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import net.af0.where.e2ee.ConnectionStatus
 import net.af0.where.e2ee.E2eeManager
 import net.af0.where.e2ee.LocationClient
@@ -72,9 +73,13 @@ class LocationService : Service() {
     private lateinit var fusedClient: com.google.android.gms.location.FusedLocationProviderClient
     private lateinit var activityRecognitionClient: ActivityRecognitionClient
     private lateinit var locationCallback: LocationCallback
+    private lateinit var passiveLocationCallback: LocationCallback
 
     @VisibleForTesting
     internal var isRegistered = false
+
+    @VisibleForTesting
+    internal var isPassiveRegistered = false
 
     @VisibleForTesting
     internal var isActivityRegistered = false
@@ -131,6 +136,14 @@ class LocationService : Service() {
         activityRecognitionClient = activityRecognitionClientOverride ?: ActivityRecognition.getClient(this)
 
         locationCallback =
+            object : LocationCallback() {
+                override fun onLocationResult(result: LocationResult) {
+                    val loc = result.lastLocation ?: return
+                    locationSource.onLocation(loc.latitude, loc.longitude, if (loc.hasBearing()) loc.bearing.toDouble() else null)
+                }
+            }
+
+        passiveLocationCallback =
             object : LocationCallback() {
                 override fun onLocationResult(result: LocationResult) {
                     val loc = result.lastLocation ?: return
@@ -206,9 +219,11 @@ class LocationService : Service() {
     ): Int {
         Log.d(TAG, "onStartCommand: isRegistered=$isRegistered")
         ensureLocationRegistration()
-        ensureActivityRecognitionRegistration()
+        if (BuildConfig.ACTIVITY_RECOGNITION_ENABLED) {
+            ensureActivityRecognitionRegistration()
+        }
 
-        if (intent?.action == ACTION_ACTIVITY_TRANSITION) {
+        if (BuildConfig.ACTIVITY_RECOGNITION_ENABLED && intent?.action == ACTION_ACTIVITY_TRANSITION) {
             val result = com.google.android.gms.location.ActivityTransitionResult.extractResult(intent)
             if (result != null) {
                 for (event in result.transitionEvents) {
@@ -277,6 +292,13 @@ class LocationService : Service() {
                 }
                 isRegistered = false
             }
+            if (isPassiveRegistered) {
+                try {
+                    fusedClient.removeLocationUpdates(passiveLocationCallback)
+                } catch (_: SecurityException) {
+                }
+                isPassiveRegistered = false
+            }
             // Note: We don't call stopSelf() here even if permissions are missing or sharing is paused.
             // This is intentional:
             // 1. To avoid ForegroundServiceDidNotStartInTimeException on startup.
@@ -288,6 +310,20 @@ class LocationService : Service() {
         }
 
         if (isRegistered) return
+
+        if (!isPassiveRegistered) {
+            val passiveRequest =
+                LocationRequest.Builder(Priority.PRIORITY_PASSIVE, 1_000L)
+                    .setMinUpdateDistanceMeters(0f)
+                    .build()
+            try {
+                fusedClient.requestLocationUpdates(passiveRequest, passiveLocationCallback, mainLooper)
+                isPassiveRegistered = true
+                Log.i(TAG, "Passive location updates registered.")
+            } catch (e: SecurityException) {
+                Log.w(TAG, "SecurityException while requesting passive location updates: ${e.message}")
+            }
+        }
 
         val request =
             LocationRequest.Builder(currentPriority, currentInterval)
@@ -369,7 +405,14 @@ class LocationService : Service() {
         } catch (e: SecurityException) {
             Log.w(TAG, "SecurityException removing location updates in onDestroy", e)
         }
-        if (isActivityRegistered) {
+        if (isPassiveRegistered) {
+            try {
+                fusedClient.removeLocationUpdates(passiveLocationCallback)
+            } catch (_: SecurityException) {
+            }
+            isPassiveRegistered = false
+        }
+        if (BuildConfig.ACTIVITY_RECOGNITION_ENABLED && isActivityRegistered) {
             try {
                 activityRecognitionClient.removeActivityTransitionUpdates(getActivityTransitionPendingIntent())
             } catch (_: Exception) {
@@ -454,9 +497,9 @@ class LocationService : Service() {
         val intent = Intent(this, LocationService::class.java).apply { action = ACTION_POLL_ALARM }
         val pi = PendingIntent.getService(this, 0, intent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
         val triggerAt = SystemClock.elapsedRealtime() + delayMs
-        // We use inexact alarms to comply with Play Store policies regarding USE_EXACT_ALARM.
-        // setAndAllowWhileIdle ensures the alarm fires even in Doze mode, albeit with some jitter.
-        alarmManager.setAndAllowWhileIdle(AlarmManager.ELAPSED_REALTIME_WAKEUP, triggerAt, pi)
+        // setExactAndAllowWhileIdle fires on a precise schedule within Doze maintenance windows.
+        // It does not require USE_EXACT_ALARM (that permission is only for setAlarmClock/setExact).
+        alarmManager.setExactAndAllowWhileIdle(AlarmManager.ELAPSED_REALTIME_WAKEUP, triggerAt, pi)
     }
 
     private fun cancelDozeAlarm() {
@@ -607,11 +650,15 @@ class LocationService : Service() {
     @VisibleForTesting
     internal suspend fun forceLocationUpdateAndGet(): android.location.Location? {
         return try {
-            val loc = fusedClient.getCurrentLocation(Priority.PRIORITY_HIGH_ACCURACY, null).await()
-            if (loc != null) {
-                Log.d(TAG, "Forced location fix successful: ${loc.latitude}, ${loc.longitude}")
-            } else {
-                Log.d(TAG, "Forced location fix returned null")
+            val loc = withTimeoutOrNull(10_000L) {
+                fusedClient.getCurrentLocation(Priority.PRIORITY_HIGH_ACCURACY, null).await()
+            }
+            when {
+                loc != null -> Log.d(TAG, "Forced location fix successful: ${loc.latitude}, ${loc.longitude}")
+                else -> {
+                    Log.d(TAG, "Forced location fix timed out or returned null; falling back to last known location")
+                    return fusedClient.lastLocation.await()
+                }
             }
             loc
         } catch (e: SecurityException) {
