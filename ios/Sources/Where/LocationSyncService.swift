@@ -23,7 +23,7 @@ protocol LocationClientProtocol: AnyObject, Sendable {
     func syncNow() async throws
 }
 
-extension Shared.LocationClient: @unchecked Sendable, LocationClientProtocol {}
+extension Shared.LocationClient: @unchecked @retroactive Sendable, LocationClientProtocol {}
 
 @inline(__always)
 private func debugLog(_ msg: () -> String) {
@@ -385,7 +385,7 @@ final class LocationSyncService: ObservableObject {
             }
 
             friends = try await e2eeManager.listFriends()
-            diagnosticLog = e2eeManager.diagnosticLogSnapshot() as? [String] ?? []
+            diagnosticLog = e2eeManager.diagnosticLogSnapshot()
             pendingInvites = try await e2eeManager.listPendingInvites()
             // Always update visibleUsers to ensure map is fresh when returning to foreground.
             updateVisibleUsers()
