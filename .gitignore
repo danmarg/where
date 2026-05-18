@@ -12,6 +12,7 @@ local.gradle.kts
 xcuserdata/
 *.xcworkspace/xcuserdata/
 DerivedData/
+*.xcresult/
 .build/
 *.log
 *.db

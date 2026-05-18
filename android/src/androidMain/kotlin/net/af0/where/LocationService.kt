@@ -7,11 +7,13 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
+import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.ConnectivityManager
 import android.net.Network
 import android.os.IBinder
+import android.os.PowerManager
 import android.os.SystemClock
 import android.util.Log
 import androidx.annotation.VisibleForTesting
@@ -70,6 +72,7 @@ class LocationService : Service() {
     internal var uiStateStoreOverride: UiStateSource? = null
 
     private lateinit var alarmManager: AlarmManager
+    private lateinit var pollWakeLock: PowerManager.WakeLock
     private lateinit var fusedClient: com.google.android.gms.location.FusedLocationProviderClient
     private lateinit var activityRecognitionClient: ActivityRecognitionClient
     private lateinit var locationCallback: LocationCallback
@@ -129,6 +132,10 @@ class LocationService : Service() {
         startForeground(NOTIFICATION_ID, buildNotification())
 
         alarmManager = getSystemService(AlarmManager::class.java)
+        pollWakeLock = (getSystemService(Context.POWER_SERVICE) as PowerManager)
+            .newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "where:poll_alarm").also {
+                it.setReferenceCounted(false)
+            }
 
         e2eeManager = e2eeManagerOverride ?: app.e2eeManager
         locationClient = locationClientOverride ?: app.locationClient
@@ -252,8 +259,11 @@ class LocationService : Service() {
         }
 
         if (intent?.action == ACTION_POLL_ALARM) {
+            // Acquire a wakelock so the CPU stays awake for the GPS fix + network send.
+            // setExactAndAllowWhileIdle wakes the CPU but doesn't hold it; without this
+            // the device can sleep again before forceLocationUpdateAndGet() completes.
+            if (!pollWakeLock.isHeld) pollWakeLock.acquire(60_000L)
             locationSource.wakePoll()
-            serviceScope.launch { doPoll() }
         }
         if (intent?.action == ACTION_FORCE_PUBLISH) {
             val friendId = intent.getStringExtra(EXTRA_FRIEND_ID)

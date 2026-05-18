@@ -45,7 +45,7 @@ final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelega
         super.init()
         m.delegate = self
         m.desiredAccuracy = kCLLocationAccuracyHundredMeters
-        m.distanceFilter = 50 // meters — heartbeat timer covers stationary case
+        m.distanceFilter = kCLDistanceFilterNone // deliver every fix so app stays awake in background
         m.headingFilter = 5 // degrees
     }
 
@@ -134,14 +134,15 @@ final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelega
                 self.manager?.distanceFilter = 20
                 self.manager?.activityType = .automotiveNavigation
             } else {
-                // Stationary, walking, or speed unavailable: conserve battery.
-                self.manager?.distanceFilter = 50
+                // Stationary or walking: deliver every fix so the heartbeat timer
+                // can fire in background even when position doesn't change much.
+                self.manager?.distanceFilter = kCLDistanceFilterNone
                 self.manager?.activityType = .other
             }
 
             LocationSyncService.shared.sendLocation(lat: coordinate.latitude, lng: coordinate.longitude, heading: self.heading)
-            // Ensure we also poll for updates when the OS wakes us for a location fix.
-            await LocationSyncService.shared.pollAll(updateUi: false)
+            // Don't call pollAll here — tick() fires within 1s and will poll if the
+            // interval has elapsed, without over-polling on every position jitter.
         }
     }
 
