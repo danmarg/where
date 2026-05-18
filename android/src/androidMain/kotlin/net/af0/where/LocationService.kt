@@ -509,9 +509,14 @@ class LocationService : Service() {
         val intent = Intent(this, LocationService::class.java).apply { action = ACTION_POLL_ALARM }
         val pi = PendingIntent.getService(this, 0, intent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
         val triggerAt = SystemClock.elapsedRealtime() + delayMs
-        // setExactAndAllowWhileIdle fires on a precise schedule within Doze maintenance windows.
-        // It does not require USE_EXACT_ALARM (that permission is only for setAlarmClock/setExact).
-        alarmManager.setExactAndAllowWhileIdle(AlarmManager.ELAPSED_REALTIME_WAKEUP, triggerAt, pi)
+        try {
+            alarmManager.setExactAndAllowWhileIdle(AlarmManager.ELAPSED_REALTIME_WAKEUP, triggerAt, pi)
+        } catch (e: SecurityException) {
+            // Some OEMs restrict setExactAndAllowWhileIdle despite it not formally requiring
+            // SCHEDULE_EXACT_ALARM. Fall back to inexact but still Doze-aware alarm.
+            Log.w(TAG, "setExactAndAllowWhileIdle denied; using inexact fallback: ${e.message}")
+            alarmManager.setAndAllowWhileIdle(AlarmManager.ELAPSED_REALTIME_WAKEUP, triggerAt, pi)
+        }
     }
 
     private fun cancelDozeAlarm() {
