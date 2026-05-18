@@ -24,6 +24,7 @@ import org.robolectric.RuntimeEnvironment
 import org.robolectric.Shadows.shadowOf
 import org.robolectric.annotation.Config
 import kotlin.test.assertEquals
+import org.junit.Assume.assumeTrue
 
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [33], application = TestWhereApplication::class)
@@ -44,6 +45,7 @@ class LocationServiceActivityTest {
 
     @Test
     fun testActivityTransition_UpdatesPriorityAndInterval() {
+        assumeTrue("Activity recognition only enabled in full flavor", BuildConfig.ACTIVITY_RECOGNITION_ENABLED)
         val controller = Robolectric.buildService(LocationService::class.java)
         val service = controller.get()
         service.locationSourceOverride = ServiceFakeLocationSource()
