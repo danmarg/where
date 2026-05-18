@@ -338,7 +338,7 @@ class LocationService : Service() {
         val request =
             LocationRequest.Builder(currentPriority, currentInterval)
                 .setMinUpdateIntervalMillis(1_000L) // PASSIVE PIGGYBACKING (§1.1): Allow high-freq updates from other apps.
-                .setMinUpdateDistanceMeters(10f)
+                .setMinUpdateDistanceMeters(0f)
                 .setMaxUpdateDelayMillis(60_000L)
                 .build()
 
@@ -497,7 +497,9 @@ class LocationService : Service() {
                 }
             }
             val interval = pollInterval(rapid, inForeground, isSharing)
-            if (interval >= 5 * 60 * 1000L) scheduleDozeAlarm(interval)
+            // Always schedule a doze alarm as a fallback wakeup, even during rapid polling.
+            // Without this, backgrounding during key exchange can silently stall the service.
+            scheduleDozeAlarm(maxOf(interval, STATIONARY_FORCE_UPDATE_THRESHOLD_MS))
             locationSource.awaitPollWake(interval)
             cancelDozeAlarm()
         }
@@ -632,8 +634,8 @@ class LocationService : Service() {
             sendLock.withLock {
                 val canSend =
                     force || lastSentTime == 0L ||
-                        !isHeartbeat ||
-                        (isHeartbeat && now - lastSentTime > 300_000L)
+                        (!isHeartbeat && now - lastSentTime > MIN_SEND_INTERVAL_MS) ||
+                        (isHeartbeat && now - lastSentTime > HEARTBEAT_INTERVAL_MS)
                 if (canSend) {
                     lastSentTime = now
                     true
@@ -739,6 +741,12 @@ class LocationService : Service() {
          * flow even when the OS throttles streaming updates in sleep mode.
          */
         const val STATIONARY_FORCE_UPDATE_THRESHOLD_MS = 5 * 60 * 1000L
+
+        /** Minimum interval between non-heartbeat (movement-triggered) location sends. */
+        const val MIN_SEND_INTERVAL_MS = 30_000L
+
+        /** Interval between heartbeat sends when stationary. */
+        const val HEARTBEAT_INTERVAL_MS = 300_000L
 
         /** Overridable in tests. */
         var clock: () -> Long = { System.currentTimeMillis() }

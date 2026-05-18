@@ -261,19 +261,9 @@ final class LocationSyncService: ObservableObject {
                 await pollAll()
             }
         }
-
-        // Heartbeat: Send location periodically if sharing.
-        // We use a 5-minute threshold for stationary updates, similar to Android.
-        if isSharingLocation {
-            let heartbeatInterval: TimeInterval = 300.0 // 5 minutes
-            if now.timeIntervalSince(lastSentTime) >= heartbeatInterval {
-                logger.info("tick: stationary heartbeat — sending best available location and requesting fresh fix")
-                if let loc = bestAvailableLocation {
-                    sendLocation(lat: loc.lat, lng: loc.lng, heading: loc.heading, force: true)
-                }
-                locationProvider.requestImmediateLocation()
-            }
-        }
+        // Heartbeat sends are handled inside pollAll() so they fire on every wakeup
+        // path (CLLocation callbacks, visit monitoring, background-app-refresh), not
+        // just on this 1-second timer tick.
     }
 
     @MainActor

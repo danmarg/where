@@ -114,10 +114,14 @@ final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelega
         let coordinate = loc.coordinate
         let speed = loc.speed
 
+        // Acquire the background task synchronously before yielding to MainActor.
+        // If we deferred this into the Task body, iOS could suspend the process in the
+        // gap between the delegate callback returning and the Task actually executing.
+        let identifier = MainActor.assumeIsolated {
+            UIApplication.shared.beginBackgroundTask(withName: "LocationUpdate") { }
+        }
+
         Task { @MainActor in
-            let identifier = UIApplication.shared.beginBackgroundTask(withName: "LocationUpdate") {
-                // Task expired
-            }
             defer {
                 if identifier != .invalid {
                     UIApplication.shared.endBackgroundTask(identifier)
@@ -162,7 +166,13 @@ final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelega
     }
 
     nonisolated func locationManager(_ manager: CLLocationManager, didFailWithError error: Error) {
-        // Required for requestLocation()
+        // kCLErrorLocationUnknown is transient; the system retries automatically.
+        // Any other error means requestLocation() gave up — schedule a fresh attempt.
+        if (error as? CLError)?.code != .locationUnknown {
+            Task { @MainActor in
+                self.requestImmediateLocation()
+            }
+        }
     }
 
     nonisolated func locationManager(_ manager: CLLocationManager, didUpdateHeading newHeading: CLHeading) {
