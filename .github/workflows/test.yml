@@ -36,7 +36,7 @@ jobs:
           ./gradlew :shared:jvmTest :server:test
 
       - name: Run Android unit tests
-        run: ./gradlew :android:testDebugUnitTest
+        run: ./gradlew :android:testStandardDebugUnitTest :android:testFullDebugUnitTest
 
       - name: Run E2E CLI test
         run: |
