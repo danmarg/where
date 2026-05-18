@@ -267,8 +267,10 @@ final class LocationSyncService: ObservableObject {
         if isSharingLocation {
             let heartbeatInterval: TimeInterval = 300.0 // 5 minutes
             if now.timeIntervalSince(lastSentTime) >= heartbeatInterval {
-                logger.info("tick: stationary heartbeat — forcing fresh location fix")
-                // FORCED HEARTBEAT REFRESH (§2.3): Force GPS wake specifically for the heartbeat.
+                logger.info("tick: stationary heartbeat — sending best available location and requesting fresh fix")
+                if let loc = bestAvailableLocation {
+                    sendLocation(lat: loc.lat, lng: loc.lng, heading: loc.heading, force: true)
+                }
                 locationProvider.requestImmediateLocation()
             }
         }
@@ -401,8 +403,10 @@ final class LocationSyncService: ObservableObject {
             logger.info("pollAll: sharing=\(sharing) elapsed=\(Int(elapsed))s")
             if isSharingLocation {
                 if elapsed >= heartbeatInterval {
-                    logger.info("pollAll: heartbeat due — forcing fresh location fix")
-                    // FORCED HEARTBEAT REFRESH (§2.3): Force GPS wake specifically for the heartbeat.
+                    logger.info("pollAll: heartbeat due — sending best available location and requesting fresh fix")
+                    if let loc = bestAvailableLocation {
+                        sendLocation(lat: loc.lat, lng: loc.lng, heading: loc.heading, force: true)
+                    }
                     locationProvider.requestImmediateLocation()
                 }
             }
