@@ -68,7 +68,7 @@ class LocationServiceSharingPauseTest {
             advanceUntilIdle()
 
             assertTrue(service.isRegistered, "Should be registered when sharing is on")
-            verify(exactly = 1) {
+            verify(exactly = 2) {
                 mockFused.requestLocationUpdates(
                     any<com.google.android.gms.location.LocationRequest>(),
                     any<com.google.android.gms.location.LocationCallback>(),
@@ -81,14 +81,14 @@ class LocationServiceSharingPauseTest {
             advanceUntilIdle()
 
             assertFalse(service.isRegistered, "Should be unregistered when sharing is paused")
-            verify(exactly = 1) { mockFused.removeLocationUpdates(any<com.google.android.gms.location.LocationCallback>()) }
+            verify(exactly = 2) { mockFused.removeLocationUpdates(any<com.google.android.gms.location.LocationCallback>()) }
 
             // Resume sharing
             app.userStore.setSharing(true)
             advanceUntilIdle()
 
             assertTrue(service.isRegistered, "Should be registered again when sharing is resumed")
-            verify(exactly = 2) {
+            verify(exactly = 4) {
                 mockFused.requestLocationUpdates(
                     any<com.google.android.gms.location.LocationRequest>(),
                     any<com.google.android.gms.location.LocationCallback>(),

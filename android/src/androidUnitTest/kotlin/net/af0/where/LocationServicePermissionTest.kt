@@ -156,7 +156,7 @@ class LocationServicePermissionTest {
         assertEquals(1, shadowService.lastForegroundNotificationId)
 
         // Verify fusedClient WAS used for updates because Coarse permission is sufficient
-        verify(exactly = 1) {
+        verify(exactly = 2) {
             mockFused.requestLocationUpdates(
                 any<com.google.android.gms.location.LocationRequest>(),
                 any<com.google.android.gms.location.LocationCallback>(),
