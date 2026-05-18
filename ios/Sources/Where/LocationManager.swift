@@ -166,13 +166,9 @@ final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelega
     }
 
     nonisolated func locationManager(_ manager: CLLocationManager, didFailWithError error: Error) {
-        // kCLErrorLocationUnknown is transient; the system retries automatically.
-        // Any other error means requestLocation() gave up — schedule a fresh attempt.
-        if (error as? CLError)?.code != .locationUnknown {
-            Task { @MainActor in
-                self.requestImmediateLocation()
-            }
-        }
+        // Required for requestLocation(). The system retries automatically on
+        // kCLErrorLocationUnknown; other errors mean the fix was permanently unavailable,
+        // and the heartbeat fallback will send lastSentLocation instead.
     }
 
     nonisolated func locationManager(_ manager: CLLocationManager, didUpdateHeading newHeading: CLHeading) {
