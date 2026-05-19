@@ -104,15 +104,20 @@ final class LocationSyncService: ObservableObject {
     private static let foregroundPollInterval: TimeInterval = 10.0
     private static let normalPollInterval: TimeInterval = 300.0 // 5 min (background sharing)
     private static let maintenancePollInterval: TimeInterval = 30 * 60  // ack-only when not sharing
+    /// Fixes with horizontalAccuracy above this threshold are cell/WiFi network fixes too noisy
+    /// to broadcast; only sub-200m GPS fixes are sent to friends or used for heartbeats.
+    static let minBroadcastAccuracyMeters: CLLocationAccuracy = 200
     private var visibleUsersCancellables = Set<AnyCancellable>()
     private let pathMonitor = NWPathMonitor()
     private let monitorQueue = DispatchQueue(label: "NWPathMonitorQueue")
 
     private var lastSentLocation: (lat: Double, lng: Double)? = nil
 
-    /// Best available location for heartbeat sends: live GPS first, then last sent.
+    /// Best available location for heartbeat sends: accurate GPS fix first, then last sent.
+    /// Low-accuracy network fixes (e.g. from stationary cell-tower positioning) are skipped
+    /// so a 3km drift doesn't overwrite a precise known location in friends' maps.
     private var bestAvailableLocation: (lat: Double, lng: Double, heading: Double?)? {
-        if let loc = locationProvider.lastLocation {
+        if let loc = locationProvider.lastLocation, loc.horizontalAccuracy >= 0, loc.horizontalAccuracy <= Self.minBroadcastAccuracyMeters {
             return (lat: loc.coordinate.latitude, lng: loc.coordinate.longitude, heading: (locationProvider as? LocationManager)?.heading)
         }
         if let last = lastSentLocation {
@@ -249,6 +254,24 @@ final class LocationSyncService: ObservableObject {
     func wakePoll() {
         if isPollInFlight { return }
         pollTimer?.fire()
+    }
+
+    func onForegroundEntry() {
+        // Reset lastPollTime to .distantPast so the next pollAll() call bypasses the
+        // interval check and — if a poll is stuck in-flight — triggers the 90s reset path.
+        lastPollTime = .distantPast
+        // Proactively send own location so friends see us immediately (subject to 30s throttle).
+        // sendLocation() updates lastSentTime synchronously, so pollAll()'s heartbeat guard
+        // (elapsed >= 300s) will not fire a second send even if a heartbeat was overdue.
+        if isSharingLocation, let loc = bestAvailableLocation {
+            sendLocation(lat: loc.lat, lng: loc.lng, heading: loc.heading, source: .manual)
+        }
+        // Request a fresh high-accuracy fix; result arrives via didUpdateLocations.
+        locationProvider.requestImmediateLocation()
+        // Fire a poll directly rather than through the timer to minimize foreground latency.
+        Task { @MainActor in
+            await pollAll(updateUi: true, source: .manual)
+        }
     }
 
     func startPolling() {

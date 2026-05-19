@@ -7,6 +7,11 @@ class MockTimeProvider(
 
     override fun currentTimeMillis(): Long = nowMs
 
+    override fun formatLocalTime(seconds: Long): String {
+        val s = (seconds % 86400).toInt()
+        return "${(s / 3600).toString().padStart(2, '0')}:${((s % 3600) / 60).toString().padStart(2, '0')}:${(s % 60).toString().padStart(2, '0')}"
+    }
+
     fun advanceSeconds(seconds: Long) {
         nowMs += seconds * 1000
     }

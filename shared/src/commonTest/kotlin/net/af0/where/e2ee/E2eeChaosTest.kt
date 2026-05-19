@@ -109,6 +109,8 @@ class E2eeChaosTest {
                     override fun currentTimeMillis() = baseTimeMs + testScheduler.currentTime
 
                     override fun currentTimeSeconds() = (baseTimeMs + testScheduler.currentTime) / 1000
+
+                    override fun formatLocalTime(seconds: Long): String = platformFormatLocalTime(seconds)
                 },
             )
             val mailbox = MemoryMailboxClient()
@@ -266,6 +268,8 @@ class E2eeChaosTest {
                     override fun currentTimeMillis() = testScheduler.currentTime
 
                     override fun currentTimeSeconds() = testScheduler.currentTime / 1000
+
+                    override fun formatLocalTime(seconds: Long): String = platformFormatLocalTime(seconds)
                 },
             )
 
@@ -382,6 +386,11 @@ class E2eeChaosTest {
                 override fun currentTimeMillis() = baseTimeMs + testScheduler.currentTime
 
                 override fun currentTimeSeconds() = (baseTimeMs + testScheduler.currentTime) / 1000
+
+                override fun formatLocalTime(seconds: Long): String {
+                    val s = (seconds % 86400).toInt()
+                    return "${(s / 3600).toString().padStart(2, '0')}:${((s % 3600) / 60).toString().padStart(2, '0')}:${(s % 60).toString().padStart(2, '0')}"
+                }
             },
         )
         val mailbox = MemoryMailboxClient()

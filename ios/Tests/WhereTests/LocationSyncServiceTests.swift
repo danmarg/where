@@ -366,6 +366,86 @@ class LocationSyncServiceTests: XCTestCase {
         await fulfillment(of: [expectation], timeout: 1.0)
     }
 
+    // MARK: - onForegroundEntry
+
+    func testOnForegroundEntry_RequestsImmediateLocation() async throws {
+        service.onForegroundEntry()
+        XCTAssertTrue(mockLocationProvider.requestImmediateLocationCalled,
+            "onForegroundEntry must request an immediate GPS fix")
+    }
+
+    func testOnForegroundEntry_SendsLocationWhenSharingAndAvailable() async throws {
+        let mockClient = MockLocationClient()
+        service = LocationSyncService(e2eeManager: service.e2eeManager, userStore: service.userStore, locationClient: mockClient, locationProvider: mockLocationProvider)
+        service.beginBackgroundTask = { _, _ in .invalid }
+        service.endBackgroundTask = { _ in }
+        service.isSharingLocation = true
+        service.lastSentTime = Date(timeIntervalSinceNow: -60)
+        // Specify horizontalAccuracy explicitly: CLLocation(latitude:longitude:) gives
+        // horizontalAccuracy = -1 (invalid), which bestAvailableLocation would reject.
+        mockLocationProvider.location = CLLocation(
+            coordinate: CLLocationCoordinate2D(latitude: 37.7, longitude: -122.4),
+            altitude: 0, horizontalAccuracy: 50, verticalAccuracy: 50, timestamp: Date()
+        )
+
+        let expectation = XCTestExpectation(description: "Location sent on foreground entry")
+        mockClient.sendLocationCallback = { expectation.fulfill() }
+
+        service.onForegroundEntry()
+        await fulfillment(of: [expectation], timeout: 1.0)
+    }
+
+    func testOnForegroundEntry_NodoubleSendWhenHeartbeatAlsoDue() async throws {
+        let mockClient = MockLocationClient()
+        service = LocationSyncService(e2eeManager: service.e2eeManager, userStore: service.userStore, locationClient: mockClient, locationProvider: mockLocationProvider)
+        service.beginBackgroundTask = { _, _ in .invalid }
+        service.endBackgroundTask = { _ in }
+        service.isSharingLocation = true
+        // lastSentTime > 300s ago so the pollAll heartbeat would also try to send.
+        service.lastSentTime = Date(timeIntervalSinceNow: -400)
+        mockLocationProvider.location = CLLocation(
+            coordinate: CLLocationCoordinate2D(latitude: 37.7, longitude: -122.4),
+            altitude: 0, horizontalAccuracy: 50, verticalAccuracy: 50, timestamp: Date()
+        )
+
+        let sendCount = SendCountBox()
+        mockClient.sendLocationCallback = { sendCount.increment() }
+
+        service.onForegroundEntry()
+        try await Task.sleep(nanoseconds: 300_000_000)
+
+        XCTAssertEqual(sendCount.getCount(), 1,
+            "sendLocation() updates lastSentTime synchronously, so pollAll's heartbeat must not fire a second send")
+    }
+
+    func testOnForegroundEntry_FiresImmediatePollBypassingInterval() async throws {
+        let mockClient = MockLocationClient()
+        service = LocationSyncService(e2eeManager: service.e2eeManager, userStore: service.userStore, locationClient: mockClient, locationProvider: mockLocationProvider)
+        service.beginBackgroundTask = { _, _ in .invalid }
+        service.endBackgroundTask = { _ in }
+        service.isInForeground = { true }
+        // Set lastPollTime to 5s ago — normally foreground interval (10s) would block a poll.
+        service.lastPollTime = Date(timeIntervalSinceNow: -5)
+        let before = mockClient.pollCallCount
+
+        service.onForegroundEntry()
+        try await Task.sleep(nanoseconds: 200_000_000)
+
+        XCTAssertGreaterThan(mockClient.pollCallCount, before,
+            "onForegroundEntry must poll immediately even if the foreground interval hasn't elapsed")
+    }
+
+    func testOnForegroundEntry_ResetsLastPollTimeToDistantPast() async throws {
+        // lastPollTime = .distantPast is what causes the 90s stuck-poll guard to trigger
+        // and lets a new poll proceed even if isPollInFlight was true.
+        service.lastPollTime = Date()
+
+        service.onForegroundEntry()
+
+        XCTAssertEqual(service.lastPollTime.timeIntervalSince1970, Date.distantPast.timeIntervalSince1970, accuracy: 1.0,
+            "onForegroundEntry must reset lastPollTime so the stuck-poll guard fires immediately")
+    }
+
     func testIsRapidPolling() async throws {
         service.lastRapidPollTrigger = Date(timeIntervalSinceNow: -10)
         let isRapid1 = await service.isRapidPolling()

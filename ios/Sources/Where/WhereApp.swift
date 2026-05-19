@@ -34,7 +34,7 @@ struct WhereApp: App {
         }
         .onChange(of: scenePhase) { _, newPhase in
             if newPhase == .active {
-                LocationSyncService.shared.wakePoll()
+                LocationSyncService.shared.onForegroundEntry()
             } else if newPhase == .background {
                 scheduleHeartbeatTask()
             }
