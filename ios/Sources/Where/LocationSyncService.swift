@@ -33,6 +33,17 @@ private func debugLog(_ msg: () -> String) {
     #endif
 }
 
+enum WakeSource: String {
+    case timer = "Timer"
+    case backgroundTask = "BGTask"
+    case locationUpdate = "GPS"
+    case visit = "Visit"
+    case manual = "Manual"
+    case backgroundEntry = "BGEntry"
+    case heartbeat = "Heartbeat"
+    case network = "Network"
+}
+
 @MainActor
 final class LocationSyncService: ObservableObject {
     static let shared = LocationSyncService()
@@ -323,7 +334,24 @@ final class LocationSyncService: ObservableObject {
         }
     }
 
-    func pollAll(updateUi: Bool = true) async {
+    private var lastSuccessfulSendTime: Date? = nil
+
+    private func logReliability(source: WakeSource, success: Bool, interval: TimeInterval? = nil) {
+        let status = success ? "OK" : "ERR"
+        var message = "Wake: \(source.rawValue) -> \(status)"
+        if let interval = interval {
+            let mins = Int(interval) / 60
+            let secs = Int(interval) % 60
+            if mins > 0 {
+                message += " (Interval: \(mins)m \(secs)s)"
+            } else {
+                message += " (Interval: \(secs)s)"
+            }
+        }
+        e2eeManager.addDiagnosticEvent(message: message)
+    }
+
+    func pollAll(updateUi: Bool = true, source: WakeSource = .timer) async {
         if isPollInFlight {
             // If a poll has been "in-flight" for longer than Ktor's max timeout + a generous
             // margin, the OS suspended us mid-coroutine (Kotlin withTimeout doesn't advance
@@ -339,7 +367,7 @@ final class LocationSyncService: ObservableObject {
         }
         isPollInFlight = true
         lastPollTime = Date()
-        logger.debug("Polling for location updates (updateUi=\(updateUi))")
+        logger.debug("Polling for location updates (updateUi=\(updateUi), source=\(source.rawValue))")
 
         if Date().timeIntervalSince(lastCleanupTime) > 3600 {
             do {
@@ -395,7 +423,7 @@ final class LocationSyncService: ObservableObject {
                 if elapsed >= heartbeatInterval {
                     logger.info("pollAll: heartbeat due — sending best available location and requesting fresh fix")
                     if let loc = bestAvailableLocation {
-                        sendLocation(lat: loc.lat, lng: loc.lng, heading: loc.heading, force: true)
+                        sendLocation(lat: loc.lat, lng: loc.lng, heading: loc.heading, force: true, source: .heartbeat)
                     }
                     locationProvider.requestImmediateLocation()
                 }
@@ -626,10 +654,10 @@ final class LocationSyncService: ObservableObject {
             return
         }
         logger.info("sendLocationOnBackground: sending location before app suspends")
-        sendLocation(lat: loc.lat, lng: loc.lng)
+        sendLocation(lat: loc.lat, lng: loc.lng, source: .backgroundEntry)
     }
 
-    func sendLocation(lat: Double, lng: Double, heading: Double? = nil, force: Bool = false) {
+    func sendLocation(lat: Double, lng: Double, heading: Double? = nil, force: Bool = false, source: WakeSource = .locationUpdate) {
         // If a friend-specific forced send is pending (set when location was unavailable at
         // pairing time), fire it now before the throttle check so the newly-paired peer
         // receives our location even if the throttle would otherwise suppress the broadcast.
@@ -654,6 +682,7 @@ final class LocationSyncService: ObservableObject {
             return
         }
 
+        let interval = lastSuccessfulSendTime.map { now.timeIntervalSince($0) }
         lastSentLocation = (lat: lat, lng: lng)
         ownHeading = heading
         lastSentTime = now
@@ -675,12 +704,15 @@ final class LocationSyncService: ObservableObject {
             do {
                 try await locationClient.sendLocation(lat: lat, lng: lng, pausedFriendIds: pausedFriendIds)
                 if !Task.isCancelled && gen == self.sendTaskGeneration {
-                    logger.info("sendLocation: succeeded (lat=\(lat), lng=\(lng))")
+                    logger.info("sendLocation: succeeded (lat=\(lat), lng=\(lng), source=\(source.rawValue))")
+                    logReliability(source: source, success: true, interval: interval)
+                    lastSuccessfulSendTime = now
                     updateStatus(nil)
                 }
             } catch {
                 if !Task.isCancelled && gen == self.sendTaskGeneration {
                     logger.error("Failed to send location: \(error.localizedDescription)")
+                    logReliability(source: source, success: false, interval: interval)
                     updateStatus(error)
                 }
             }

@@ -63,14 +63,14 @@ class LocationOptimizationsTests: XCTestCase {
         let manager = CLLocationManager()
         locationManager.manager = manager
         
-        // 1. Simulate fast movement
+        // 1. Simulate movement
         let fastLocation = CLLocation(
             coordinate: CLLocationCoordinate2D(latitude: 0, longitude: 0),
             altitude: 0,
             horizontalAccuracy: 0,
             verticalAccuracy: 0,
             course: 0,
-            speed: 10, // 10 m/s > 5 m/s
+            speed: 5, // 5 m/s > 1.0 m/s
             timestamp: Date()
         )
         
@@ -82,14 +82,14 @@ class LocationOptimizationsTests: XCTestCase {
         XCTAssertEqual(manager.distanceFilter, 20)
         XCTAssertEqual(manager.activityType, .automotiveNavigation)
         
-        // 2. Simulate slow movement
+        // 2. Simulate stationary
         let slowLocation = CLLocation(
             coordinate: CLLocationCoordinate2D(latitude: 0, longitude: 0),
             altitude: 0,
             horizontalAccuracy: 0,
             verticalAccuracy: 0,
             course: 0,
-            speed: 2, // 2 m/s < 5 m/s
+            speed: 0.2, // 0.2 m/s < 1.0 m/s
             timestamp: Date()
         )
         

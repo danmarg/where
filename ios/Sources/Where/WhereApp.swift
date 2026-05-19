@@ -6,6 +6,12 @@ struct WhereApp: App {
     @Environment(\.scenePhase) private var scenePhase
 
     init() {
+        // Force initialization of shared services immediately on launch.
+        // This ensures that CLLocationManager delegates are registered even if the app
+        // is launched in the background to handle a location or geofence event.
+        _ = LocationManager.shared
+        _ = LocationSyncService.shared
+
         BGTaskScheduler.shared.register(
             forTaskWithIdentifier: "net.af0.where.heartbeat",
             using: nil
@@ -14,7 +20,7 @@ struct WhereApp: App {
                 task.setTaskCompleted(success: false)
             }
             Task { @MainActor in
-                await LocationSyncService.shared.pollAll(updateUi: false)
+                await LocationSyncService.shared.pollAll(updateUi: false, source: .backgroundTask)
                 task.setTaskCompleted(success: true)
                 scheduleHeartbeatTask()
             }

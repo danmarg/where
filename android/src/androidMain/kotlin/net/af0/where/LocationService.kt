@@ -48,6 +48,16 @@ import net.af0.where.shared.MR
 
 private const val TAG = "LocationService"
 
+enum class WakeSource(val value: String) {
+    TIMER("Timer"),
+    ALARM("Alarm"),
+    LOCATION_UPDATE("GPS"),
+    ACTIVITY_TRANSITION("Activity"),
+    HEARTBEAT("Heartbeat"),
+    NETWORK("Network"),
+    MANUAL("Manual"),
+}
+
 /**
  * Foreground service that keeps the process alive and handles both GPS tracking
  * and the E2EE protocol work (polling, sending location).
@@ -75,6 +85,7 @@ class LocationService : Service() {
     private lateinit var pollWakeLock: PowerManager.WakeLock
     private lateinit var fusedClient: com.google.android.gms.location.FusedLocationProviderClient
     private lateinit var activityRecognitionClient: ActivityRecognitionClient
+    private lateinit var geofencingClient: com.google.android.gms.location.GeofencingClient
     private lateinit var locationCallback: LocationCallback
     private lateinit var passiveLocationCallback: LocationCallback
 
@@ -93,11 +104,28 @@ class LocationService : Service() {
     @VisibleForTesting
     internal var currentInterval = 30_000L
 
+    private var lastSuccessfulSendTime: Long? = null
+
     private val pendingFriendSends = Channel<String>(Channel.UNLIMITED)
 
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
 
     private lateinit var e2eeManager: E2eeManager
+
+    private fun logReliability(
+        source: WakeSource,
+        success: Boolean,
+        intervalMs: Long? = null,
+    ) {
+        val status = if (success) "OK" else "ERR"
+        var message = "Wake: ${source.value} -> $status"
+        if (intervalMs != null) {
+            val mins = intervalMs / 60000
+            val secs = (intervalMs % 60000) / 1000
+            message += if (mins > 0) " (Interval: ${mins}m ${secs}s)" else " (Interval: ${secs}s)"
+        }
+        e2eeManager.addDiagnosticEvent(message)
+    }
     private lateinit var userStore: UserStore
     private lateinit var locationClient: LocationClient
     private lateinit var locationSource: LocationSource
@@ -141,6 +169,7 @@ class LocationService : Service() {
         locationClient = locationClientOverride ?: app.locationClient
         fusedClient = fusedClientOverride ?: LocationServices.getFusedLocationProviderClient(this)
         activityRecognitionClient = activityRecognitionClientOverride ?: ActivityRecognition.getClient(this)
+        geofencingClient = LocationServices.getGeofencingClient(this)
 
         locationCallback =
             object : LocationCallback() {
@@ -180,7 +209,14 @@ class LocationService : Service() {
             object : ConnectivityManager.NetworkCallback() {
                 override fun onAvailable(network: Network) {
                     Log.d(TAG, "Network available, triggering syncNow()")
-                    serviceScope.launch { locationClient.syncNow() }
+                    serviceScope.launch {
+                        try {
+                            locationClient.syncNow()
+                            logReliability(WakeSource.NETWORK, true)
+                        } catch (_: Exception) {
+                            logReliability(WakeSource.NETWORK, false)
+                        }
+                    }
                 }
             }
         connectivityManager?.registerDefaultNetworkCallback(networkCallback!!)
@@ -197,7 +233,7 @@ class LocationService : Service() {
             locationSource.lastLocation.collect { loc ->
                 if (loc != null) {
                     if (userStore.isSharingLocation.value) {
-                        sendLocationIfNeeded(loc.first, loc.second, isHeartbeat = false)
+                        sendLocationIfNeeded(loc.first, loc.second, isHeartbeat = false, source = WakeSource.LOCATION_UPDATE)
                     }
 
                     while (true) {
@@ -218,6 +254,8 @@ class LocationService : Service() {
             }
         }
     }
+
+    private var isAlarmWakePending = false
 
     override fun onStartCommand(
         intent: Intent?,
@@ -250,6 +288,17 @@ class LocationService : Service() {
                         currentPriority = newPriority
                         currentInterval = newInterval
                         Log.i(TAG, "Updating location request: priority=$currentPriority, interval=$currentInterval")
+                        logReliability(WakeSource.ACTIVITY_TRANSITION, true)
+
+                        if (event.activityType == DetectedActivity.STILL) {
+                            val loc = locationSource.lastLocation.value
+                            if (loc != null) {
+                                setGeofenceAt(loc.first, loc.second)
+                            }
+                        } else {
+                            removeGeofence()
+                        }
+
                         // Force re-registration with new settings.
                         isRegistered = false
                         ensureLocationRegistration()
@@ -263,6 +312,18 @@ class LocationService : Service() {
             // setExactAndAllowWhileIdle wakes the CPU but doesn't hold it; without this
             // the device can sleep again before forceLocationUpdateAndGet() completes.
             if (!pollWakeLock.isHeld) pollWakeLock.acquire(60_000L)
+            isAlarmWakePending = true
+            locationSource.wakePoll()
+        }
+        if (intent?.action == ACTION_GEOFENCE_EVENT) {
+            Log.d(TAG, "onStartCommand: Received Geofence Exit event")
+            removeGeofence()
+            // Resume full tracking
+            currentPriority = Priority.PRIORITY_BALANCED_POWER_ACCURACY
+            currentInterval = 30_000L
+            isRegistered = false
+            ensureLocationRegistration()
+            logReliability(WakeSource.ALARM, true) // Geofence is a form of alarm wake
             locationSource.wakePoll()
         }
         if (intent?.action == ACTION_FORCE_PUBLISH) {
@@ -284,6 +345,51 @@ class LocationService : Service() {
         }
 
         return START_STICKY
+    }
+
+    private fun setGeofenceAt(
+        lat: Double,
+        lng: Double,
+    ) {
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED) return
+        val geofence =
+            com.google.android.gms.location.Geofence.Builder()
+                .setRequestId("stationary_fence")
+                .setCircularRegion(lat, lng, 100f)
+                .setExpirationDuration(com.google.android.gms.location.Geofence.NEVER_EXPIRE)
+                .setTransitionTypes(com.google.android.gms.location.Geofence.GEOFENCE_TRANSITION_EXIT)
+                .build()
+
+        val request =
+            com.google.android.gms.location.GeofencingRequest.Builder()
+                .setInitialTrigger(com.google.android.gms.location.GeofencingRequest.INITIAL_TRIGGER_EXIT)
+                .addGeofence(geofence)
+                .build()
+
+        try {
+            geofencingClient.addGeofences(request, getGeofencePendingIntent())
+            Log.i(TAG, "Stationary: Geofence set at $lat, $lng")
+            e2eeManager.addDiagnosticEvent("Stationary: Geofence set")
+            // Pulse GPS mode: very long interval
+            currentPriority = Priority.PRIORITY_PASSIVE
+        } catch (e: SecurityException) {
+            Log.w(TAG, "SecurityException setting geofence: ${e.message}")
+        }
+    }
+
+    private fun removeGeofence() {
+        geofencingClient.removeGeofences(getGeofencePendingIntent())
+        Log.i(TAG, "Moving: Geofence removed")
+    }
+
+    private fun getGeofencePendingIntent(): PendingIntent {
+        val intent = Intent(this, GeofenceReceiver::class.java)
+        return PendingIntent.getBroadcast(
+            this,
+            0,
+            intent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
     }
 
     private fun ensureLocationRegistration() {
@@ -450,10 +556,16 @@ class LocationService : Service() {
             val rapid = isRapidPolling()
             val inForeground = locationSource.isAppInForeground.value
             val isSharing = userStore.isSharingLocation.value
+            val source = if (isAlarmWakePending) {
+                isAlarmWakePending = false
+                WakeSource.ALARM
+            } else {
+                WakeSource.TIMER
+            }
             // Always poll — even when sharing is off we need to process incoming
             // EpochRotations and post Ratchet Acks so Alice's location doesn't get
             // stuck.  The interval is 30 min in that case (maintenance-only).
-            doPoll()
+            doPoll(source)
             // Heartbeat: ensure we send at least once every 5 minutes when stationary.
             // Runs regardless of foreground state so background location stays alive.
             if (isSharing) {
@@ -478,7 +590,7 @@ class LocationService : Service() {
                     // Force the heartbeat send. The pollLoop timing (5 mins) is already
                     // what we want for stationary updates, and 'force' ensures we bypass
                     // the internal 5-min de-duplication check which might be too tight.
-                    sendLocationIfNeeded(lastLoc.first, lastLoc.second, isHeartbeat = true, force = true)
+                    sendLocationIfNeeded(lastLoc.first, lastLoc.second, isHeartbeat = true, force = true, source = WakeSource.HEARTBEAT)
                 } else {
                     // RECOVERY (§5.3): If we have no GPS fix but are sharing, send a
                     // keepalive message to all active friends to keep the session alive
@@ -492,6 +604,7 @@ class LocationService : Service() {
                             locationClient.sendKeepalive(friend.id)
                         }
                         lastSentTime = now
+                        logReliability(WakeSource.HEARTBEAT, true)
                     } catch (_: Exception) {
                     }
                 }
@@ -552,9 +665,9 @@ class LocationService : Service() {
     @VisibleForTesting
     internal var lastCleanupTime: Long = 0L
 
-    internal suspend fun doPoll() {
+    internal suspend fun doPoll(source: WakeSource = WakeSource.TIMER) {
         try {
-            Log.d(TAG, "Polling for location updates")
+            Log.d(TAG, "Polling for location updates (source=${source.value})")
             val now = clock()
             if (now - lastCleanupTime > 3600_000L) {
                 e2eeManager.cleanupExpiredInvites(48 * 3600L)
@@ -632,9 +745,11 @@ class LocationService : Service() {
         lng: Double,
         isHeartbeat: Boolean,
         force: Boolean = false,
+        source: WakeSource = WakeSource.LOCATION_UPDATE,
     ) {
         if (!userStore.isSharingLocation.value) return
         val now = clock()
+        val interval = lastSuccessfulSendTime?.let { now - it }
         val shouldSend =
             sendLock.withLock {
                 val canSend =
@@ -651,6 +766,8 @@ class LocationService : Service() {
         if (!shouldSend) return
         try {
             locationClient.sendLocation(lat, lng, userStore.pausedFriendIds.value)
+            logReliability(source, true, interval)
+            lastSuccessfulSendTime = now
             updateStatus(null)
         } catch (e: CancellationException) {
             throw e
@@ -660,6 +777,7 @@ class LocationService : Service() {
                 lastSentTime = 0L
             }
             Log.e(TAG, "Failed to send location: ${e.message}")
+            logReliability(source, false, interval)
             updateStatus(e)
         }
     }
@@ -737,6 +855,7 @@ class LocationService : Service() {
         const val ACTION_POLL_ALARM = "net.af0.where.ACTION_POLL_ALARM"
         const val ACTION_FORCE_PUBLISH = "net.af0.where.ACTION_FORCE_PUBLISH"
         const val ACTION_ACTIVITY_TRANSITION = "net.af0.where.ACTION_ACTIVITY_TRANSITION"
+        const val ACTION_GEOFENCE_EVENT = "net.af0.where.ACTION_GEOFENCE_EVENT"
         private const val PENDING_INTENT_REQUEST_CODE_ACTIVITY = 1
         const val EXTRA_FRIEND_ID = "friend_id"
 
