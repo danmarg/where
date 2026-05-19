@@ -13,13 +13,13 @@ actual fun platformCurrentTimeSeconds(): Long = (CFAbsoluteTimeGetCurrent() + CF
 
 actual fun platformCurrentTimeMillis(): Long = ((CFAbsoluteTimeGetCurrent() + CF_TO_UNIX_OFFSET) * 1000).toLong()
 
-private val formatter =
-    NSDateFormatter().apply {
-        dateFormat = "HH:mm:ss"
-        timeZone = NSTimeZone.localTimeZone
-    }
-
 actual fun platformFormatLocalTime(seconds: Long): String {
+    // NSDateFormatter is not thread-safe; create a new instance per call.
+    val formatter =
+        NSDateFormatter().apply {
+            dateFormat = "HH:mm:ss"
+            timeZone = NSTimeZone.localTimeZone
+        }
     val date = NSDate(timeIntervalSinceReferenceDate = seconds.toDouble() - CF_TO_UNIX_OFFSET)
     return formatter.stringFromDate(date)
 }

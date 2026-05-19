@@ -26,6 +26,7 @@ final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelega
     internal var manager: CLLocationManager?
     private var stationaryStart: Date?
     private var geofenceRegion: CLCircularRegion?
+    private var preGeofenceAccuracy: CLLocationAccuracy = kCLLocationAccuracyHundredMeters
 
     private static let lastLatKey = "location_last_lat"
     private static let lastLngKey = "location_last_lng"
@@ -179,6 +180,7 @@ final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelega
         region.notifyOnEntry = false
         manager.startMonitoring(for: region)
         self.geofenceRegion = region
+        preGeofenceAccuracy = manager.desiredAccuracy
 
         // Switch to lowest-power accuracy instead of stopping GPS entirely.
         // Stopping startUpdatingLocation() would exit background-location mode and
@@ -195,7 +197,7 @@ final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelega
         manager.stopMonitoring(for: region)
         self.geofenceRegion = nil
         self.stationaryStart = nil
-        manager.desiredAccuracy = kCLLocationAccuracyHundredMeters
+        manager.desiredAccuracy = preGeofenceAccuracy
         LocationSyncService.shared.e2eeManager.addDiagnosticEvent(message: "Moving: Geofence removed, GPS restored")
     }
 

@@ -258,6 +258,8 @@ final class LocationSyncService: ObservableObject {
         // interval check and — if a poll is stuck in-flight — triggers the 90s reset path.
         lastPollTime = .distantPast
         // Proactively send own location so friends see us immediately (subject to 30s throttle).
+        // sendLocation() updates lastSentTime synchronously, so pollAll()'s heartbeat guard
+        // (elapsed >= 300s) will not fire a second send even if a heartbeat was overdue.
         if isSharingLocation, let loc = bestAvailableLocation {
             sendLocation(lat: loc.lat, lng: loc.lng, heading: loc.heading, source: .manual)
         }

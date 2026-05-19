@@ -381,13 +381,41 @@ class LocationSyncServiceTests: XCTestCase {
         service.endBackgroundTask = { _ in }
         service.isSharingLocation = true
         service.lastSentTime = Date(timeIntervalSinceNow: -60)
-        mockLocationProvider.location = CLLocation(latitude: 37.7, longitude: -122.4)
+        // Specify horizontalAccuracy explicitly: CLLocation(latitude:longitude:) gives
+        // horizontalAccuracy = -1 (invalid), which bestAvailableLocation would reject.
+        mockLocationProvider.location = CLLocation(
+            coordinate: CLLocationCoordinate2D(latitude: 37.7, longitude: -122.4),
+            altitude: 0, horizontalAccuracy: 50, verticalAccuracy: 50, timestamp: Date()
+        )
 
         let expectation = XCTestExpectation(description: "Location sent on foreground entry")
         mockClient.sendLocationCallback = { expectation.fulfill() }
 
         service.onForegroundEntry()
         await fulfillment(of: [expectation], timeout: 1.0)
+    }
+
+    func testOnForegroundEntry_NodoubleSendWhenHeartbeatAlsoDue() async throws {
+        let mockClient = MockLocationClient()
+        service = LocationSyncService(e2eeManager: service.e2eeManager, userStore: service.userStore, locationClient: mockClient, locationProvider: mockLocationProvider)
+        service.beginBackgroundTask = { _, _ in .invalid }
+        service.endBackgroundTask = { _ in }
+        service.isSharingLocation = true
+        // lastSentTime > 300s ago so the pollAll heartbeat would also try to send.
+        service.lastSentTime = Date(timeIntervalSinceNow: -400)
+        mockLocationProvider.location = CLLocation(
+            coordinate: CLLocationCoordinate2D(latitude: 37.7, longitude: -122.4),
+            altitude: 0, horizontalAccuracy: 50, verticalAccuracy: 50, timestamp: Date()
+        )
+
+        let sendCount = SendCountBox()
+        mockClient.sendLocationCallback = { sendCount.increment() }
+
+        service.onForegroundEntry()
+        try await Task.sleep(nanoseconds: 300_000_000)
+
+        XCTAssertEqual(sendCount.getCount(), 1,
+            "sendLocation() updates lastSentTime synchronously, so pollAll's heartbeat must not fire a second send")
     }
 
     func testOnForegroundEntry_FiresImmediatePollBypassingInterval() async throws {

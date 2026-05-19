@@ -1,15 +1,15 @@
 package net.af0.where.e2ee
 
-import java.text.SimpleDateFormat
-import java.util.Date
-import java.util.Locale
+import java.time.Instant
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
 
 actual fun platformCurrentTimeSeconds(): Long = System.currentTimeMillis() / 1000L
 
 actual fun platformCurrentTimeMillis(): Long = System.currentTimeMillis()
 
-private val formatter = SimpleDateFormat("HH:mm:ss", Locale.getDefault())
+// DateTimeFormatter is immutable and thread-safe; safe to share as a top-level val.
+private val formatter = DateTimeFormatter.ofPattern("HH:mm:ss").withZone(ZoneId.systemDefault())
 
-actual fun platformFormatLocalTime(seconds: Long): String {
-    return formatter.format(Date(seconds * 1000L))
-}
+actual fun platformFormatLocalTime(seconds: Long): String =
+    formatter.format(Instant.ofEpochSecond(seconds))
