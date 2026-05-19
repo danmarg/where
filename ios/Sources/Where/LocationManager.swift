@@ -161,7 +161,12 @@ final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelega
                 }
             }
 
-            LocationSyncService.shared.sendLocation(lat: coordinate.latitude, lng: coordinate.longitude, heading: self.heading, source: .locationUpdate)
+            // Skip sends from low-accuracy network fixes (e.g. while geofence is active and
+            // GPS is throttled to kCLLocationAccuracyThreeKilometers). These fixes keep the
+            // RunLoop alive but their coordinates are too noisy to broadcast to friends.
+            if loc.horizontalAccuracy <= 200 {
+                LocationSyncService.shared.sendLocation(lat: coordinate.latitude, lng: coordinate.longitude, heading: self.heading, source: .locationUpdate)
+            }
             // Don't call pollAll here — tick() fires within 1s and will poll if the
             // interval has elapsed, without over-polling on every position jitter.
         }

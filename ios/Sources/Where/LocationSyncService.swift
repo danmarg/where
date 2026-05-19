@@ -110,9 +110,11 @@ final class LocationSyncService: ObservableObject {
 
     private var lastSentLocation: (lat: Double, lng: Double)? = nil
 
-    /// Best available location for heartbeat sends: live GPS first, then last sent.
+    /// Best available location for heartbeat sends: accurate GPS fix first, then last sent.
+    /// Low-accuracy network fixes (e.g. from stationary cell-tower positioning) are skipped
+    /// so a 3km drift doesn't overwrite a precise known location in friends' maps.
     private var bestAvailableLocation: (lat: Double, lng: Double, heading: Double?)? {
-        if let loc = locationProvider.lastLocation {
+        if let loc = locationProvider.lastLocation, loc.horizontalAccuracy >= 0, loc.horizontalAccuracy <= 200 {
             return (lat: loc.coordinate.latitude, lng: loc.coordinate.longitude, heading: (locationProvider as? LocationManager)?.heading)
         }
         if let last = lastSentLocation {
