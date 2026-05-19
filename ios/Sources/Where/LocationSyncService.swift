@@ -104,6 +104,9 @@ final class LocationSyncService: ObservableObject {
     private static let foregroundPollInterval: TimeInterval = 10.0
     private static let normalPollInterval: TimeInterval = 300.0 // 5 min (background sharing)
     private static let maintenancePollInterval: TimeInterval = 30 * 60  // ack-only when not sharing
+    /// Fixes with horizontalAccuracy above this threshold are cell/WiFi network fixes too noisy
+    /// to broadcast; only sub-200m GPS fixes are sent to friends or used for heartbeats.
+    static let minBroadcastAccuracyMeters: CLLocationAccuracy = 200
     private var visibleUsersCancellables = Set<AnyCancellable>()
     private let pathMonitor = NWPathMonitor()
     private let monitorQueue = DispatchQueue(label: "NWPathMonitorQueue")
@@ -114,7 +117,7 @@ final class LocationSyncService: ObservableObject {
     /// Low-accuracy network fixes (e.g. from stationary cell-tower positioning) are skipped
     /// so a 3km drift doesn't overwrite a precise known location in friends' maps.
     private var bestAvailableLocation: (lat: Double, lng: Double, heading: Double?)? {
-        if let loc = locationProvider.lastLocation, loc.horizontalAccuracy >= 0, loc.horizontalAccuracy <= 200 {
+        if let loc = locationProvider.lastLocation, loc.horizontalAccuracy >= 0, loc.horizontalAccuracy <= Self.minBroadcastAccuracyMeters {
             return (lat: loc.coordinate.latitude, lng: loc.coordinate.longitude, heading: (locationProvider as? LocationManager)?.heading)
         }
         if let last = lastSentLocation {

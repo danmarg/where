@@ -165,7 +165,7 @@ final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelega
             // Skip sends from low-accuracy network fixes (e.g. while geofence is active and
             // GPS is throttled to kCLLocationAccuracyThreeKilometers). These fixes keep the
             // RunLoop alive but their coordinates are too noisy to broadcast to friends.
-            if loc.horizontalAccuracy <= 200 {
+            if loc.horizontalAccuracy <= LocationSyncService.minBroadcastAccuracyMeters {
                 LocationSyncService.shared.sendLocation(lat: coordinate.latitude, lng: coordinate.longitude, heading: self.heading, source: .locationUpdate)
             }
             // Don't call pollAll here — tick() fires within 1s and will poll if the
