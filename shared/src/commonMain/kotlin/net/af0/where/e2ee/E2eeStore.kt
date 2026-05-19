@@ -120,11 +120,7 @@ internal class E2eeStore(
 
     fun addDiagnosticEvent(message: String) {
         val t = currentTimeSeconds()
-        val s = (t % 86400).toInt()
-        val entry = "${(s / 3600).toString().padStart(
-            2,
-            '0',
-        )}:${((s % 3600) / 60).toString().padStart(2, '0')}:${(s % 60).toString().padStart(2, '0')} $message"
+        val entry = "${TimeSource.formatLocalTime(t)} $message"
         _diagnosticLog.value = (listOf(entry) + _diagnosticLog.value).take(MAX_DIAGNOSTIC_EVENTS)
     }
 

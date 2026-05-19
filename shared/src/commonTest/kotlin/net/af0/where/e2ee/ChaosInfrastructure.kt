@@ -18,6 +18,8 @@ class ChaosTimeProvider(private var offsetMillis: Long = 0) : TimeProvider {
     override fun currentTimeMillis(): Long = platformCurrentTimeMillis() + offsetMillis
 
     override fun currentTimeSeconds(): Long = (platformCurrentTimeMillis() + offsetMillis) / 1000
+
+    override fun formatLocalTime(seconds: Long): String = platformFormatLocalTime(seconds)
 }
 
 class ChaosStorage(private val storage: RawKeyValueStorage) : RawKeyValueStorage {

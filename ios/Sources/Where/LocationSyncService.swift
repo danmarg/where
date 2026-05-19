@@ -251,6 +251,22 @@ final class LocationSyncService: ObservableObject {
         pollTimer?.fire()
     }
 
+    func onForegroundEntry() {
+        // Reset lastPollTime to .distantPast so the next pollAll() call bypasses the
+        // interval check and — if a poll is stuck in-flight — triggers the 90s reset path.
+        lastPollTime = .distantPast
+        // Proactively send own location so friends see us immediately (subject to 30s throttle).
+        if isSharingLocation, let loc = bestAvailableLocation {
+            sendLocation(lat: loc.lat, lng: loc.lng, heading: loc.heading, source: .manual)
+        }
+        // Request a fresh high-accuracy fix; result arrives via didUpdateLocations.
+        locationProvider.requestImmediateLocation()
+        // Fire a poll directly rather than through the timer to minimize foreground latency.
+        Task { @MainActor in
+            await pollAll(updateUi: true, source: .manual)
+        }
+    }
+
     func startPolling() {
         pollTimer?.invalidate()
         pollTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in

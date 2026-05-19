@@ -175,11 +175,14 @@ final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelega
         manager.startMonitoring(for: region)
         self.geofenceRegion = region
 
-        // HYBRID HEARTBEAT (§3.3): Stop continuous GPS. The 5-minute timer in
-        // LocationSyncService will continue to call requestLocation() to
-        // provide heartbeats while stationary.
-        manager.stopUpdatingLocation()
-        LocationSyncService.shared.e2eeManager.addDiagnosticEvent(message: "Stationary: Geofence set, GPS throttled")
+        // Switch to lowest-power accuracy instead of stopping GPS entirely.
+        // Stopping startUpdatingLocation() would exit background-location mode and
+        // suspend the RunLoop, causing the 1-second pollTimer to stop firing and
+        // breaking heartbeat delivery until BGAppRefreshTask fires (iOS may delay
+        // this by 30+ min). kCLLocationAccuracyThreeKilometers uses cell/WiFi
+        // positioning at negligible battery cost and keeps the RunLoop alive.
+        manager.desiredAccuracy = kCLLocationAccuracyThreeKilometers
+        LocationSyncService.shared.e2eeManager.addDiagnosticEvent(message: "Stationary: Geofence set, GPS throttled to 3km accuracy")
     }
 
     private func removeGeofence() {
@@ -187,7 +190,8 @@ final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelega
         manager.stopMonitoring(for: region)
         self.geofenceRegion = nil
         self.stationaryStart = nil
-        LocationSyncService.shared.e2eeManager.addDiagnosticEvent(message: "Moving: Geofence removed")
+        manager.desiredAccuracy = kCLLocationAccuracyHundredMeters
+        LocationSyncService.shared.e2eeManager.addDiagnosticEvent(message: "Moving: Geofence removed, GPS restored")
     }
 
     nonisolated func locationManager(_ manager: CLLocationManager, didExitRegion region: CLRegion) {
