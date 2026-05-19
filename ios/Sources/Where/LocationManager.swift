@@ -24,6 +24,8 @@ final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelega
     @Published var authorizationStatus: CLAuthorizationStatus = .notDetermined
 
     internal var manager: CLLocationManager?
+    private var stationaryStart: Date?
+    private var geofenceRegion: CLCircularRegion?
 
     private static let lastLatKey = "location_last_lat"
     private static let lastLngKey = "location_last_lng"
@@ -133,20 +135,69 @@ final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelega
 
             // MOTION-ADAPTIVE SETTINGS (§2.2): Adjust fidelity based on speed.
             // speed < 0 means unavailable; treat as slow/stationary.
-            if speed > 5 {
-                // Moving fast: higher fidelity for smooth tracking.
+            if speed > 1.0 {
+                // Moving: ensure geofence is removed and tracking is active.
+                if self.geofenceRegion != nil {
+                    self.removeGeofence()
+                    self.manager?.startUpdatingLocation()
+                }
+                self.stationaryStart = nil
                 self.manager?.distanceFilter = 20
                 self.manager?.activityType = .automotiveNavigation
             } else {
-                // Stationary or walking: deliver every fix so the heartbeat timer
-                // can fire in background even when position doesn't change much.
+                // Stationary or walking.
                 self.manager?.distanceFilter = kCLDistanceFilterNone
                 self.manager?.activityType = .other
+
+                if speed >= 0 && speed < 0.5 {
+                    if self.stationaryStart == nil {
+                        self.stationaryStart = Date()
+                    } else if self.geofenceRegion == nil && Date().timeIntervalSince(self.stationaryStart!) > 300 {
+                        // Stationary for 5 minutes: set exit geofence and pulse GPS.
+                        self.setGeofence(at: coordinate)
+                    }
+                } else {
+                    self.stationaryStart = nil
+                }
             }
 
-            LocationSyncService.shared.sendLocation(lat: coordinate.latitude, lng: coordinate.longitude, heading: self.heading)
+            LocationSyncService.shared.sendLocation(lat: coordinate.latitude, lng: coordinate.longitude, heading: self.heading, source: .locationUpdate)
             // Don't call pollAll here — tick() fires within 1s and will poll if the
             // interval has elapsed, without over-polling on every position jitter.
+        }
+    }
+
+    private func setGeofence(at coordinate: CLLocationCoordinate2D) {
+        guard let manager = manager else { return }
+        let region = CLCircularRegion(center: coordinate, radius: 100, identifier: "stationary_fence")
+        region.notifyOnExit = true
+        region.notifyOnEntry = false
+        manager.startMonitoring(for: region)
+        self.geofenceRegion = region
+
+        // HYBRID HEARTBEAT (§3.3): Stop continuous GPS. The 5-minute timer in
+        // LocationSyncService will continue to call requestLocation() to
+        // provide heartbeats while stationary.
+        manager.stopUpdatingLocation()
+        LocationSyncService.shared.e2eeManager.addDiagnosticEvent(message: "Stationary: Geofence set, GPS throttled")
+    }
+
+    private func removeGeofence() {
+        guard let manager = manager, let region = geofenceRegion else { return }
+        manager.stopMonitoring(for: region)
+        self.geofenceRegion = nil
+        self.stationaryStart = nil
+        LocationSyncService.shared.e2eeManager.addDiagnosticEvent(message: "Moving: Geofence removed")
+    }
+
+    nonisolated func locationManager(_ manager: CLLocationManager, didExitRegion region: CLRegion) {
+        if region.identifier == "stationary_fence" {
+            Task { @MainActor in
+                self.removeGeofence()
+                self.manager?.startUpdatingLocation()
+                LocationSyncService.shared.e2eeManager.addDiagnosticEvent(message: "Wake: Geofence Exit")
+                LocationSyncService.shared.wakePoll()
+            }
         }
     }
 
@@ -160,8 +211,8 @@ final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelega
                     UIApplication.shared.endBackgroundTask(identifier)
                 }
             }
-            LocationSyncService.shared.sendLocation(lat: coordinate.latitude, lng: coordinate.longitude, heading: self.heading)
-            await LocationSyncService.shared.pollAll(updateUi: false)
+            LocationSyncService.shared.sendLocation(lat: coordinate.latitude, lng: coordinate.longitude, heading: self.heading, source: .visit)
+            await LocationSyncService.shared.pollAll(updateUi: false, source: .visit)
         }
     }
 
@@ -177,7 +228,7 @@ final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelega
         Task { @MainActor in
             self.heading = trueHeading >= 0 ? trueHeading : magneticHeading
             if let loc = self.location {
-                LocationSyncService.shared.sendLocation(lat: loc.coordinate.latitude, lng: loc.coordinate.longitude, heading: self.heading)
+                LocationSyncService.shared.sendLocation(lat: loc.coordinate.latitude, lng: loc.coordinate.longitude, heading: self.heading, source: .locationUpdate)
             }
         }
     }

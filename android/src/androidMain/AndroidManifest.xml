@@ -67,5 +67,10 @@
             </intent-filter>
         </receiver>
 
+        <receiver
+            android:name=".GeofenceReceiver"
+            android:enabled="true"
+            android:exported="false" />
+
     </application>
 </manifest>
