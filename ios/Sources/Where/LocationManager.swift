@@ -115,9 +115,14 @@ final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelega
         guard let manager = manager else { return }
 
         // Start background activity session to keep the app active for location updates.
-        backgroundActivity = CLBackgroundActivitySession()
-        manager.allowsBackgroundLocationUpdates = (manager.authorizationStatus == .authorizedAlways)
-        manager.showsBackgroundLocationIndicator = (manager.authorizationStatus == .authorizedAlways)
+        if backgroundActivity == nil {
+            backgroundActivity = CLBackgroundActivitySession()
+        }
+
+        let status = manager.authorizationStatus
+        let isAuthorized = (status == .authorizedAlways || status == .authorizedWhenInUse)
+        manager.allowsBackgroundLocationUpdates = isAuthorized
+        manager.showsBackgroundLocationIndicator = isAuthorized
 
         // Main location updates loop using the modern async API.
         updatesTask = Task { @MainActor in
@@ -148,15 +153,13 @@ final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelega
         }
 
         // Heartbeat task: ensures heartbeats are sent even when stationary and liveUpdates() is not yielding.
-        heartbeatTask = Task {
+        heartbeatTask = Task { @MainActor in
             while !Task.isCancelled {
                 // 5 minute interval for heartbeats.
                 try? await Task.sleep(nanoseconds: 300 * 1_000_000_000)
                 if Task.isCancelled { break }
 
-                await MainActor.run {
-                    LocationSyncService.shared.e2eeManager.addDiagnosticEvent(message: "Heartbeat (Modern)")
-                }
+                LocationSyncService.shared.e2eeManager.addDiagnosticEvent(message: "Heartbeat (Modern)")
                 await LocationSyncService.shared.pollAll(source: .heartbeat)
             }
         }
@@ -170,6 +173,11 @@ final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelega
         // Still called by requestLocation() or other legacy components.
         guard let loc = locations.last else { return }
         Task { @MainActor in
+            // Only broadcast if this fix was not already handled by liveUpdates.
+            // requestLocation() results often have a very recent timestamp.
+            if let lastLoc = self.location, loc.timestamp.timeIntervalSince(lastLoc.timestamp) <= 0 {
+                return
+            }
             self.location = loc
             let coordinate = loc.coordinate
             if loc.horizontalAccuracy <= LocationSyncService.minBroadcastAccuracyMeters {
@@ -203,6 +211,9 @@ final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelega
         let status = manager.authorizationStatus
         Task { @MainActor in
             self.authorizationStatus = status
+            let isAuthorized = (status == .authorizedAlways || status == .authorizedWhenInUse)
+            self.manager?.allowsBackgroundLocationUpdates = isAuthorized
+            self.manager?.showsBackgroundLocationIndicator = isAuthorized
             self.updateRegistration()
         }
     }
