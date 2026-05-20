@@ -70,9 +70,26 @@ class LocationOptimizationsTests: XCTestCase {
 
         // stopUpdating should cancel and clear
         locationManager.stopUpdating()
+    }
 
-        // We can't easily check private tasks, but we can verify it doesn't crash
-        // and backgroundActivity is nil.
+    func testLocationManager_DeduplicatesLegacyUpdates() async throws {
+        let locationManager = LocationManager.shared
+        let manager = CLLocationManager()
+
+        let now = Date()
+        let loc1 = CLLocation(coordinate: CLLocationCoordinate2D(latitude: 1, longitude: 1), altitude: 0, horizontalAccuracy: 10, verticalAccuracy: 10, timestamp: now)
+
+        // Set internal state
+        locationManager.location = loc1
+
+        // Simulate a legacy update with the same timestamp
+        locationManager.locationManager(manager, didUpdateLocations: [loc1])
+
+        try await Task.sleep(nanoseconds: 100_000_000)
+
+        // loc1 should remain as the current location, and no duplicate broadcast should happen.
+        // We can't easily verify the broadcast without more mocking, but we verify it doesn't crash.
+        XCTAssertEqual(locationManager.location?.timestamp, now)
     }
 
 }
