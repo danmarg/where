@@ -107,6 +107,7 @@ final class LocationSyncService: ObservableObject {
     private static let staleLocationThreshold: TimeInterval = 60.0
     private static let locationSendThrottle: TimeInterval = 30.0
     private static let rapidPollDuration: TimeInterval = 60.0
+    private static let locationFixTimeout: TimeInterval = 10.0
     /// Fixes with horizontalAccuracy above this threshold are cell/WiFi network fixes too noisy
     /// to broadcast; only sub-200m GPS fixes are sent to friends or used for heartbeats.
     static let minBroadcastAccuracyMeters: CLLocationAccuracy = 200
@@ -215,6 +216,16 @@ final class LocationSyncService: ObservableObject {
                             self.forceNextLocationUpdate = true
                             self.locationProvider.requestImmediateLocation()
                             // Skip sending the current stale location; wait for the fresh fix to arrive.
+                            // However, if the fix never arrives, fallback to sending the stale fix anyway.
+                            Task { @MainActor [weak self] in
+                                try? await Task.sleep(nanoseconds: UInt64(Self.locationFixTimeout * 1_000_000_000))
+                                guard let self = self, self.forceNextLocationUpdate else { return }
+                                logger.info("requestImmediateLocation timeout: sending stale fix as fallback")
+                                self.forceNextLocationUpdate = false
+                                if let loc = self.bestAvailableLocation {
+                                    self.sendLocation(lat: loc.lat, lng: loc.lng, heading: loc.heading, source: .network)
+                                }
+                            }
                         } else if let loc = self.bestAvailableLocation {
                             self.sendLocation(lat: loc.lat, lng: loc.lng, heading: loc.heading, source: .network)
                         }
@@ -697,6 +708,7 @@ final class LocationSyncService: ObservableObject {
         sendLocation(lat: loc.lat, lng: loc.lng, source: .backgroundEntry)
     }
 
+    @MainActor
     func sendLocation(lat: Double, lng: Double, heading: Double? = nil, force: Bool = false, source: WakeSource = .locationUpdate) {
         // If a friend-specific forced send is pending (set when location was unavailable at
         // pairing time), fire it now before the throttle check so the newly-paired peer
