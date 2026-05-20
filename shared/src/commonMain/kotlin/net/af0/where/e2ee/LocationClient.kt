@@ -236,13 +236,7 @@ open class LocationClient(
                                 stopPolling = true
                             }
                             // Continue to next loop iteration with new token
-                        } else if (messages.size < MAILBOX_PAGE_SIZE) {
-                            // No token change and page not full -> drained
-                            stopPolling = true
                         }
-                    } else if (messages.size < MAILBOX_PAGE_SIZE) {
-                        // No state update and page not full -> drained
-                        stopPolling = true
                     }
                 } catch (e: Exception) {
                     stopPolling = true
