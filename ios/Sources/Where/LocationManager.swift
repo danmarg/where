@@ -105,6 +105,7 @@ final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelega
     private func startUpdating() {
         guard let manager = manager else { return }
         manager.allowsBackgroundLocationUpdates = (manager.authorizationStatus == .authorizedAlways)
+        manager.showsBackgroundLocationIndicator = (manager.authorizationStatus == .authorizedAlways)
         manager.pausesLocationUpdatesAutomatically = false
         manager.startUpdatingLocation()
         manager.startMonitoringSignificantLocationChanges()
@@ -249,6 +250,7 @@ final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelega
         Task { @MainActor in
             self.authorizationStatus = status
             self.manager?.allowsBackgroundLocationUpdates = (status == .authorizedAlways)
+            self.manager?.showsBackgroundLocationIndicator = (status == .authorizedAlways)
             self.updateRegistration()
         }
     }
