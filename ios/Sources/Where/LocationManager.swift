@@ -112,7 +112,6 @@ final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelega
     }
 
     private func startUpdating() {
-        guard updatesTask == nil else { return }
         guard let manager = manager else { return }
 
         // Start background activity session to keep the app active for location updates.
@@ -123,6 +122,8 @@ final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelega
         let status = manager.authorizationStatus
         manager.allowsBackgroundLocationUpdates = (status == .authorizedAlways)
         manager.showsBackgroundLocationIndicator = (status == .authorizedAlways)
+
+        guard updatesTask == nil else { return }
 
         // Main location updates loop using the modern async API.
         updatesTask = Task { @MainActor in
@@ -141,7 +142,14 @@ final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelega
                             UserDefaults.standard.set(coordinate.latitude, forKey: Self.lastLatKey)
                             UserDefaults.standard.set(coordinate.longitude, forKey: Self.lastLngKey)
 
-                            if update.isStationary {
+                            let stationary: Bool
+                            if #available(iOS 18.0, *) {
+                                stationary = update.stationary
+                            } else {
+                                stationary = update.isStationary
+                            }
+
+                            if stationary {
                                 LocationSyncService.shared.e2eeManager.addDiagnosticEvent(message: "Stationary (System)")
                             } else {
                                 if loc.horizontalAccuracy <= LocationSyncService.minBroadcastAccuracyMeters {
@@ -228,7 +236,9 @@ final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelega
     }
 
     nonisolated func locationManager(_ manager: CLLocationManager, didFailWithError error: Error) {
-        LocationSyncService.shared.e2eeManager.addDiagnosticEvent(message: "Location manager error: \(error.localizedDescription)")
+        Task { @MainActor in
+            LocationSyncService.shared.e2eeManager.addDiagnosticEvent(message: "Location manager error: \(error.localizedDescription)")
+        }
     }
 
     nonisolated func locationManager(_ manager: CLLocationManager, didUpdateHeading newHeading: CLHeading) {
