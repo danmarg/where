@@ -266,7 +266,7 @@ final class LocationSyncService: ObservableObject {
         if isSharingLocation, let loc = bestAvailableLocation {
             sendLocation(lat: loc.lat, lng: loc.lng, heading: loc.heading, source: .manual)
         }
-        // Request a fresh high-accuracy fix; result arrives via didUpdateLocations.
+        // Request a fresh high-accuracy fix.
         locationProvider.requestImmediateLocation()
         // Fire a poll directly rather than through the timer to minimize foreground latency.
         Task { @MainActor in
