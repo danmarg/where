@@ -128,6 +128,7 @@ final class LocationSyncService: ObservableObject {
     var lastSentTime: Date = Date(timeIntervalSince1970: 0)  // internal for testing
     var pendingForcedSendAfterPairing: Bool = false
     var pendingForcedSendFriendId: String? = nil
+    private var forceNextLocationUpdate: Bool = false
     private var currentSendTask: Task<Void, Never>? = nil
     private var awaitingFirstUpdateIds: Set<String> = []
     // Monotonically increasing counter used to prevent stale task cleanup from
@@ -208,6 +209,7 @@ final class LocationSyncService: ObservableObject {
                         // If we don't have a recent fix (within 60s), request a fresh one.
                         let lastFixAge = self.locationProvider.lastLocation?.timestamp.timeIntervalSinceNow ?? -.infinity
                         if lastFixAge < -60.0 {
+                            self.forceNextLocationUpdate = true
                             self.locationProvider.requestImmediateLocation()
                         }
 
@@ -278,7 +280,8 @@ final class LocationSyncService: ObservableObject {
         if isSharingLocation, let loc = bestAvailableLocation {
             sendLocation(lat: loc.lat, lng: loc.lng, heading: loc.heading, source: .manual)
         }
-        // Request a fresh high-accuracy fix.
+        // Request a fresh high-accuracy fix; result arrives via didUpdateLocations.
+        forceNextLocationUpdate = true
         locationProvider.requestImmediateLocation()
         // Fire a poll directly rather than through the timer to minimize foreground latency.
         Task { @MainActor in
@@ -460,6 +463,7 @@ final class LocationSyncService: ObservableObject {
                     if let loc = bestAvailableLocation {
                         sendLocation(lat: loc.lat, lng: loc.lng, heading: loc.heading, force: true, source: .heartbeat)
                     }
+                    forceNextLocationUpdate = true
                     locationProvider.requestImmediateLocation()
                 }
             }
@@ -710,8 +714,14 @@ final class LocationSyncService: ObservableObject {
         let now = Date()
         let timeSinceLast = now.timeIntervalSince(lastSentTime)
 
+        var forceUpdate = force
+        if source == .locationUpdate && forceNextLocationUpdate {
+            forceUpdate = true
+            forceNextLocationUpdate = false
+        }
+
         // Throttle: 30s unless forced.
-        if !force && timeSinceLast < 30.0 {
+        if !forceUpdate && timeSinceLast < 30.0 {
             // Still update the local heading even if we don't send to the server.
             ownHeading = heading
             return
