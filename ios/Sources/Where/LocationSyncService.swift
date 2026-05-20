@@ -194,14 +194,26 @@ final class LocationSyncService: ObservableObject {
         // Subscribe to updates on friendLocations, isSharingLocation, and user location
         
         pathMonitor.pathUpdateHandler = { [weak self] path in
-            guard let self = self else { return }
             if path.status == .satisfied {
-                logger.debug("Network path satisfied, triggering syncNow()")
-                Task.detached {
+                logger.debug("Network path satisfied, triggering syncNow() and location send")
+                Task { @MainActor [weak self] in
+                    guard let self = self else { return }
                     do {
                         try await self.locationClient.syncNow()
                     } catch {
                         logger.error("syncNow failed on path update: \(error.localizedDescription)")
+                    }
+
+                    if self.isSharingLocation {
+                        // If we don't have a recent fix (within 60s), request a fresh one.
+                        let lastFixAge = self.locationProvider.lastLocation?.timestamp.timeIntervalSinceNow ?? -.infinity
+                        if lastFixAge < -60.0 {
+                            self.locationProvider.requestImmediateLocation()
+                        }
+
+                        if let loc = self.bestAvailableLocation {
+                            self.sendLocation(lat: loc.lat, lng: loc.lng, heading: loc.heading, source: .network)
+                        }
                     }
                 }
             }
