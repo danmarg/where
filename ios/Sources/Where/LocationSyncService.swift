@@ -128,7 +128,7 @@ final class LocationSyncService: ObservableObject {
     var lastSentTime: Date = Date(timeIntervalSince1970: 0)  // internal for testing
     var pendingForcedSendAfterPairing: Bool = false
     var pendingForcedSendFriendId: String? = nil
-    @MainActor private var forceNextLocationUpdate: Bool = false
+    @MainActor var forceNextLocationUpdate: Bool = false
     private var currentSendTask: Task<Void, Never>? = nil
     private var awaitingFirstUpdateIds: Set<String> = []
     // Monotonically increasing counter used to prevent stale task cleanup from

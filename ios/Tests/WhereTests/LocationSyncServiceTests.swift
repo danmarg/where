@@ -53,6 +53,8 @@ class LocationSyncServiceTests: XCTestCase {
         self.service.skipUpdateVisibleUsers = true
         self.service.beginBackgroundTask = { _, _ in .invalid }
         self.service.endBackgroundTask = { _ in }
+        // Kill the background poll timer so it doesn't fire heartbeats mid-test
+        self.service.pollTimer?.invalidate()
     }
 
     func testThrottleLogic() async throws {
@@ -68,7 +70,9 @@ class LocationSyncServiceTests: XCTestCase {
         // Re-init service with mock client and mock location provider
         service = LocationSyncService(e2eeManager: service.e2eeManager, userStore: service.userStore, locationClient: mockClient, locationProvider: mockLocationProvider)
 
-        // Initial send
+        // Initial send. Reset state to ensure clean start for throttle test.
+        service.forceNextLocationUpdate = false
+        service.lastSentTime = Date(timeIntervalSince1970: 0)
         service.sendLocation(lat: lat, lng: lng)
         await fulfillment(of: [expectation1], timeout: 1.0)
 
