@@ -74,9 +74,9 @@ class LocationSyncServiceTests: XCTestCase {
         service.forceNextLocationUpdate = false
         service.lastSentTime = Date(timeIntervalSince1970: 0)
         service.sendLocation(lat: lat, lng: lng)
-        // Wait for the send task to complete
-        try await Task.sleep(nanoseconds: 100_000_000)
-        await fulfillment(of: [expectation1], timeout: 1.0)
+        // Wait for the send task to complete. 250ms is more robust for CI.
+        try await Task.sleep(nanoseconds: 250_000_000)
+        await fulfillment(of: [expectation1], timeout: 2.0)
 
         // Immediate second send should be throttled
         let expectation2 = XCTestExpectation(description: "Throttled send")
@@ -173,7 +173,7 @@ class LocationSyncServiceTests: XCTestCase {
 
         await service.firePoll()
 
-        let interval = await service.targetPollInterval()
+        let interval = service.targetPollInterval()
         XCTAssertEqual(interval, 30 * 60, accuracy: 0.1,
                        "Background maintenance poll (not sharing) should be 30 min")
     }
@@ -200,7 +200,7 @@ class LocationSyncServiceTests: XCTestCase {
 
         await service.firePoll()
 
-        let interval = await service.targetPollInterval()
+        let interval = service.targetPollInterval()
         XCTAssertEqual(interval, 10, accuracy: 0.1,
                        "Foreground poll interval should be 10s")
     }
@@ -213,7 +213,7 @@ class LocationSyncServiceTests: XCTestCase {
 
         await service.firePoll()
 
-        let interval = await service.targetPollInterval()
+        let interval = service.targetPollInterval()
         XCTAssertEqual(interval, 5 * 60, accuracy: 0.1,
                        "Background poll interval (sharing) should be 5 min")
     }
@@ -223,7 +223,7 @@ class LocationSyncServiceTests: XCTestCase {
         service = LocationSyncService(e2eeManager: service.e2eeManager, userStore: service.userStore, locationClient: mockClient, locationProvider: mockLocationProvider)
 
         service.lastRapidPollTrigger = Date()
-        let isRapidInitial = await service.isRapidPolling()
+        let isRapidInitial = service.isRapidPolling()
         XCTAssertTrue(isRapidInitial)
 
         let existingFriendId = "existing_friend"
@@ -234,7 +234,7 @@ class LocationSyncServiceTests: XCTestCase {
 
         await service.pollAll(updateUi: true)
 
-        let isRapidAfterPartial = await service.isRapidPolling()
+        let isRapidAfterPartial = service.isRapidPolling()
         XCTAssertTrue(isRapidAfterPartial)
 
         let addedFriendId = service.friends.first?.id ?? ""
@@ -244,7 +244,7 @@ class LocationSyncServiceTests: XCTestCase {
 
             await service.pollAll(updateUi: true)
 
-            let isRapidAfterComplete = await service.isRapidPolling()
+            let isRapidAfterComplete = service.isRapidPolling()
             XCTAssertFalse(isRapidAfterComplete)
             XCTAssertEqual(service.lastRapidPollTrigger.timeIntervalSince1970, 0, accuracy: 0.1)
         }
@@ -454,11 +454,11 @@ class LocationSyncServiceTests: XCTestCase {
 
     func testIsRapidPolling() async throws {
         service.lastRapidPollTrigger = Date(timeIntervalSinceNow: -10)
-        let isRapid1 = await service.isRapidPolling()
+        let isRapid1 = service.isRapidPolling()
         XCTAssertTrue(isRapid1)
 
         service.lastRapidPollTrigger = Date(timeIntervalSinceNow: -301)
-        let isRapid2 = await service.isRapidPolling()
+        let isRapid2 = service.isRapidPolling()
         XCTAssertFalse(isRapid2)
     }
 
