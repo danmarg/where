@@ -211,9 +211,8 @@ final class LocationSyncService: ObservableObject {
                         if lastFixAge < -60.0 {
                             self.forceNextLocationUpdate = true
                             self.locationProvider.requestImmediateLocation()
-                        }
-
-                        if let loc = self.bestAvailableLocation {
+                            // Skip sending the current stale location; wait for the fresh fix to arrive.
+                        } else if let loc = self.bestAvailableLocation {
                             self.sendLocation(lat: loc.lat, lng: loc.lng, heading: loc.heading, source: .network)
                         }
                     }
