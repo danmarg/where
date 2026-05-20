@@ -164,85 +164,88 @@ open class LocationClient(
     ): List<UserLocation> =
         coroutineScope {
             val resultLocations = mutableListOf<UserLocation>()
-            val friendBefore = store.getFriend(friendId) ?: return@coroutineScope emptyList()
 
-            // --- Strict Single-Token Polling ---
-            // We only poll the current recvToken. The WAL ensures that transition messages
-            // are delivered to the old token before subsequent messages are sent to the new one.
-            val currentToken = friendBefore.session.recvToken.toHex()
+            var totalMessagesProcessed = 0
+            var tokenFollows = 0
+            var stopPolling = false
 
-            val messages =
-                try {
-                    service.poll(currentToken)
-                } catch (e: Exception) {
-                    emptyList()
+            while (!stopPolling && totalMessagesProcessed < MAX_MESSAGES_PER_POLL) {
+                val friend = store.getFriend(friendId) ?: break
+                val currentToken = friend.session.recvToken.toHex()
+
+                val messages =
+                    try {
+                        service.poll(currentToken)
+                    } catch (e: Exception) {
+                        emptyList()
+                    }
+
+                if (messages.isEmpty()) {
+                    stopPolling = true
+                    continue
                 }
 
-            if (messages.isNotEmpty()) {
                 try {
                     val result = store.processBatch(friendId, currentToken, messages)
-                    if (result != null) {
-                        var idsToAck = result.processedIds
-                        if (idsToAck.isEmpty() && messages.isNotEmpty()) {
-                            val retryKey = "$friendId:$currentToken"
-                            val currentRetries = (silentDropRetries[retryKey] ?: 0) + 1
-                            silentDropRetries[retryKey] = currentRetries
+                    if (result == null) {
+                        stopPolling = true
+                        continue
+                    }
 
-                            if (currentRetries >= MAX_SILENT_DROP_RETRIES) {
-                                store.addDiagnosticEvent("force-ACK $friendId after $currentRetries silent drops on $currentToken")
-                                idsToAck = messages.map { it.msgId }
-                                silentDropRetries.remove(retryKey)
-                            }
-                        } else {
-                            silentDropRetries.remove("$friendId:$currentToken")
+                    var idsToAck = result.processedIds
+                    if (idsToAck.isEmpty()) {
+                        val retryKey = "$friendId:$currentToken"
+                        val currentRetries = (silentDropRetries[retryKey] ?: 0) + 1
+                        silentDropRetries[retryKey] = currentRetries
+
+                        if (currentRetries >= MAX_SILENT_DROP_RETRIES) {
+                            store.addDiagnosticEvent("force-ACK $friendId after $currentRetries silent drops on $currentToken")
+                            idsToAck = messages.map { it.msgId }
+                            silentDropRetries.remove(retryKey)
                         }
-
-                        if (idsToAck.isNotEmpty()) {
-                            try {
-                                service.ackIds(currentToken, idsToAck)
-                            } catch (e: Exception) {
-                                // Ignore
-                            }
+                        // If we couldn't process any messages and it's not a force-ACK, stop to avoid looping.
+                        if (idsToAck.isEmpty()) {
+                            stopPolling = true
                         }
+                    } else {
+                        silentDropRetries.remove("$friendId:$currentToken")
+                    }
 
-                        resultLocations.addAll(
-                            result.decryptedLocations.map { loc ->
-                                UserLocation(userId = friendId, lat = loc.lat, lng = loc.lng, timestamp = loc.ts)
-                            },
-                        )
-
-                        // If a state update occurred (e.g. token transition), poll again immediately
-                        // to catch any messages sent to the new token.
-                        if (result.hadStateUpdate) {
-                            val friendAfterUpdate = store.getFriend(friendId)
-                            if (friendAfterUpdate != null) {
-                                val nextToken = friendAfterUpdate.session.recvToken.toHex()
-                                if (nextToken != currentToken) {
-                                    val extraMessages =
-                                        try {
-                                            service.poll(nextToken)
-                                        } catch (e: Exception) {
-                                            emptyList()
-                                        }
-                                    if (extraMessages.isNotEmpty()) {
-                                        val extraResult = store.processBatch(friendId, nextToken, extraMessages)
-                                        if (extraResult != null) {
-                                            if (extraResult.processedIds.isNotEmpty()) {
-                                                service.ackIds(nextToken, extraResult.processedIds)
-                                            }
-                                            resultLocations.addAll(
-                                                extraResult.decryptedLocations.map { loc ->
-                                                    UserLocation(userId = friendId, lat = loc.lat, lng = loc.lng, timestamp = loc.ts)
-                                                },
-                                            )
-                                        }
-                                    }
-                                }
-                            }
+                    if (idsToAck.isNotEmpty()) {
+                        try {
+                            service.ackIds(currentToken, idsToAck)
+                        } catch (e: Exception) {
+                            // Ignore
                         }
                     }
+
+                    resultLocations.addAll(
+                        result.decryptedLocations.map { loc ->
+                            UserLocation(userId = friendId, lat = loc.lat, lng = loc.lng, timestamp = loc.ts)
+                        },
+                    )
+
+                    totalMessagesProcessed += messages.size
+
+                    if (result.hadStateUpdate) {
+                        val friendAfterUpdate = store.getFriend(friendId) ?: break
+                        val nextToken = friendAfterUpdate.session.recvToken.toHex()
+                        if (nextToken != currentToken) {
+                            tokenFollows++
+                            if (tokenFollows >= MAX_TOKEN_FOLLOWS_PER_POLL) {
+                                stopPolling = true
+                            }
+                            // Continue to next loop iteration with new token
+                        } else if (messages.size < MAILBOX_PAGE_SIZE) {
+                            // No token change and page not full -> drained
+                            stopPolling = true
+                        }
+                    } else if (messages.size < MAILBOX_PAGE_SIZE) {
+                        // No state update and page not full -> drained
+                        stopPolling = true
+                    }
                 } catch (e: Exception) {
-                    // Ignore
+                    stopPolling = true
                 }
             }
 

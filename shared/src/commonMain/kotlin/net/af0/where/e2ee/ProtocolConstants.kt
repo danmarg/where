@@ -9,18 +9,22 @@ internal const val INFO_CONFIRM = "Where-v1-ConfirmKey"
 internal const val INFO_HEADER_KEY = "Where-v1-HeaderKey"
 
 // A legitimate DH ratchet produces at most 1 token rotation per message batch.
-// We allow up to 5 follows per poll to handle back-to-back ratchet epochs arriving
+// We allow up to 20 follows per poll to handle back-to-back ratchet epochs arriving
 // in the same server poll window (e.g. keepalive + location in rapid succession).
 // SECURITY NOTE: The follow condition requires a successful AEAD authentication,
 // so an adversary without the current chain key cannot force token advancement.
-internal const val MAX_TOKEN_FOLLOWS_PER_POLL = 5
+internal const val MAX_TOKEN_FOLLOWS_PER_POLL = 20
 internal const val MAX_DIAGNOSTIC_EVENTS = 30
+
+// Total maximum messages to drain in a single poll call to catch up with backlogs.
+internal const val MAX_MESSAGES_PER_POLL = 500
+internal const val MAILBOX_PAGE_SIZE = 50
 
 // After this many consecutive polls where header-parse failures blocked the ACK,
 // force-ACK the batch to break a permanent livelock. The dropped messages are
 // accepted as lost; the session may need re-pairing if they contained DH keys.
-// At a 30-second poll interval, 5 retries = ~2.5 minutes before force-ACK.
-internal const val MAX_SILENT_DROP_RETRIES = 5
+// At a 30-second poll interval, 50 retries = ~25 minutes before force-ACK.
+internal const val MAX_SILENT_DROP_RETRIES = 50
 internal const val MAX_GAP = 10000
 internal const val MAX_SKIPPED_KEYS = 10000
 internal const val MAX_SKIPPED_EPOCHS = 10
