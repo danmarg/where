@@ -104,6 +104,9 @@ final class LocationSyncService: ObservableObject {
     private static let foregroundPollInterval: TimeInterval = 10.0
     private static let normalPollInterval: TimeInterval = 300.0 // 5 min (background sharing)
     private static let maintenancePollInterval: TimeInterval = 30 * 60  // ack-only when not sharing
+    private static let staleLocationThreshold: TimeInterval = 60.0
+    private static let locationSendThrottle: TimeInterval = 30.0
+    private static let rapidPollDuration: TimeInterval = 60.0
     /// Fixes with horizontalAccuracy above this threshold are cell/WiFi network fixes too noisy
     /// to broadcast; only sub-200m GPS fixes are sent to friends or used for heartbeats.
     static let minBroadcastAccuracyMeters: CLLocationAccuracy = 200
@@ -206,9 +209,9 @@ final class LocationSyncService: ObservableObject {
                     }
 
                     if self.isSharingLocation {
-                        // If we don't have a recent fix (within 60s), request a fresh one.
+                        // If we don't have a recent fix, request a fresh one.
                         let lastFixAge = self.locationProvider.lastLocation?.timestamp.timeIntervalSinceNow ?? -.infinity
-                        if lastFixAge < -60.0 {
+                        if lastFixAge < -Self.staleLocationThreshold {
                             self.forceNextLocationUpdate = true
                             self.locationProvider.requestImmediateLocation()
                             // Skip sending the current stale location; wait for the fresh fix to arrive.
@@ -329,7 +332,7 @@ final class LocationSyncService: ObservableObject {
     func isRapidPolling() -> Bool {
         if !awaitingFirstUpdateIds.isEmpty { return true }
         if isInviteSheetShowing { return true }
-        return Date().timeIntervalSince(lastRapidPollTrigger) < 60.0
+        return Date().timeIntervalSince(lastRapidPollTrigger) < Self.rapidPollDuration
     }
 
     func firePoll() async {
@@ -452,17 +455,16 @@ final class LocationSyncService: ObservableObject {
             // Heartbeat: if we're awake enough to poll, also send location if one is due.
             // This covers wakeups that don't go through tick() (e.g. didUpdateLocations,
             // background-app-refresh, or any direct pollAll() call).
-            let heartbeatInterval: TimeInterval = 300.0
             let elapsed = Date().timeIntervalSince(lastSentTime)
             let sharing = isSharingLocation
             logger.info("pollAll: sharing=\(sharing) elapsed=\(Int(elapsed))s")
             if isSharingLocation {
-                if elapsed >= heartbeatInterval {
+                if elapsed >= Self.normalPollInterval {
                     logger.info("pollAll: heartbeat due — sending best available location and requesting fresh fix")
+                    forceNextLocationUpdate = true
                     if let loc = bestAvailableLocation {
                         sendLocation(lat: loc.lat, lng: loc.lng, heading: loc.heading, force: true, source: .heartbeat)
                     }
-                    forceNextLocationUpdate = true
                     locationProvider.requestImmediateLocation()
                 }
             }
@@ -719,8 +721,8 @@ final class LocationSyncService: ObservableObject {
             forceNextLocationUpdate = false
         }
 
-        // Throttle: 30s unless forced.
-        if !forceUpdate && timeSinceLast < 30.0 {
+        // Throttle: avoid excessive updates unless forced.
+        if !forceUpdate && timeSinceLast < Self.locationSendThrottle {
             // Still update the local heading even if we don't send to the server.
             ownHeading = heading
             return

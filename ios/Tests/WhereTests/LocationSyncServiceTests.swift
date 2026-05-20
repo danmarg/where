@@ -74,6 +74,8 @@ class LocationSyncServiceTests: XCTestCase {
         service.forceNextLocationUpdate = false
         service.lastSentTime = Date(timeIntervalSince1970: 0)
         service.sendLocation(lat: lat, lng: lng)
+        // Wait for the send task to complete
+        try await Task.sleep(nanoseconds: 100_000_000)
         await fulfillment(of: [expectation1], timeout: 1.0)
 
         // Immediate second send should be throttled
