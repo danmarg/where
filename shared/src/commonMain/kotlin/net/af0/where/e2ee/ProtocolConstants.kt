@@ -16,6 +16,9 @@ internal const val INFO_HEADER_KEY = "Where-v1-HeaderKey"
 internal const val MAX_TOKEN_FOLLOWS_PER_POLL = 5
 internal const val MAX_DIAGNOSTIC_EVENTS = 30
 
+// Total maximum messages to drain in a single poll call to catch up with backlogs.
+internal const val MAX_MESSAGES_PER_POLL = 500
+
 // After this many consecutive polls where header-parse failures blocked the ACK,
 // force-ACK the batch to break a permanent livelock. The dropped messages are
 // accepted as lost; the session may need re-pairing if they contained DH keys.
