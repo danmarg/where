@@ -283,46 +283,40 @@ open class LocationClient(
             resultLocations
         }
 
-    suspend fun syncNow() =
-        coroutineScope {
-            val friends = store.listFriends()
-            friends.map { friend ->
-                async {
-                    val mutex = getFriendMutex(friend.id)
-                    mutex.withLock {
-                        processOutbox(friend.id)
-                        try {
-                            pollFriend(friend.id)
-                        } catch (e: Exception) {
-                            // Ignore
-                        }
-                    }
-                }
-            }.awaitAll()
-        }
-
-    suspend fun processOutboxes() =
-        coroutineScope {
-            val friends =
+    suspend fun syncNow() {
+        val friends = store.listFriends()
+        friends.forEach { friend ->
+            val mutex = getFriendMutex(friend.id)
+            mutex.withLock {
+                processOutbox(friend.id)
                 try {
-                    store.listFriends()
+                    pollFriend(friend.id)
                 } catch (e: Exception) {
-                    return@coroutineScope
+                    // Ignore
                 }
-
-            friends.map { friend ->
-                async {
-                    try {
-                        val mutex = getFriendMutex(friend.id)
-                        mutex.withLock {
-                            processOutbox(friend.id)
-                        }
-                    } catch (e: Exception) {
-                        // Ignore
-                    }
-                }
-            }.awaitAll()
+            }
         }
+    }
+
+    suspend fun processOutboxes() {
+        val friends =
+            try {
+                store.listFriends()
+            } catch (e: Exception) {
+                return
+            }
+
+        friends.forEach { friend ->
+            try {
+                val mutex = getFriendMutex(friend.id)
+                mutex.withLock {
+                    processOutbox(friend.id)
+                }
+            } catch (e: Exception) {
+                // Ignore
+            }
+        }
+    }
 
     private suspend fun processOutbox(friendId: String) {
         val outbox = store.getOutbox(friendId)
@@ -342,30 +336,29 @@ open class LocationClient(
         lat: Double,
         lng: Double,
         pausedFriendIds: Set<String> = emptySet(),
-    ) = coroutineScope {
+    ) {
         val ts = currentTimeSeconds()
         val payload = MessagePlaintext.Location(lat = lat, lng = lng, acc = 0.0, ts = ts)
         val activeFriends = store.listFriends().filter { it.id !in pausedFriendIds && !it.isStale }
 
-        val results = activeFriends.map { friend ->
-            async {
-                try {
-                    val mutex = getFriendMutex(friend.id)
-                    mutex.withLock {
-                        sendMessageToFriendInternal(friend.id, payload)
-                    }
-                    true to null
-                } catch (e: Exception) {
-                    false to e
+        var successCount = 0
+        var failCount = 0
+        var lastError: Exception? = null
+        for (friend in activeFriends) {
+            try {
+                val mutex = getFriendMutex(friend.id)
+                mutex.withLock {
+                    sendMessageToFriendInternal(friend.id, payload)
                 }
+                successCount++
+            } catch (e: Exception) {
+                lastError = e
+                failCount++
             }
-        }.awaitAll()
+        }
 
-        val successCount = results.count { it.first }
-        val lastError = results.firstOrNull { !it.first }?.second
-
-        if (successCount == 0 && lastError != null) {
-            throw lastError
+        if (successCount == 0 && failCount > 0) {
+            lastError?.let { throw it }
         }
     }
 
