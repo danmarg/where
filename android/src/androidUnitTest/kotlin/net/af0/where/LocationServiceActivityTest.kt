@@ -54,7 +54,7 @@ class LocationServiceActivityTest {
 
         // 1. Initial state
         assertEquals(Priority.PRIORITY_BALANCED_POWER_ACCURACY, service.currentPriority)
-        assertEquals(30_000L, service.currentInterval)
+        assertEquals(60_000L, service.currentInterval)
 
         // 2. Simulate WALKING transition
         val walkingEvent = ActivityTransitionEvent(

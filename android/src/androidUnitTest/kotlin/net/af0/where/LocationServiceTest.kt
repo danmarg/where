@@ -417,7 +417,7 @@ class LocationServiceTest {
 
                 assertEquals(mockLocation, result)
                 io.mockk.verify(exactly = 1) {
-                    mockFused.getCurrentLocation(com.google.android.gms.location.Priority.PRIORITY_HIGH_ACCURACY, null)
+                    mockFused.getCurrentLocation(com.google.android.gms.location.Priority.PRIORITY_BALANCED_POWER_ACCURACY, null)
                 }
             } finally {
                 controller.destroy()

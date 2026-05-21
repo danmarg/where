@@ -102,7 +102,10 @@ class LocationService : Service() {
     internal var currentPriority = Priority.PRIORITY_BALANCED_POWER_ACCURACY
 
     @VisibleForTesting
-    internal var currentInterval = 30_000L
+    internal var currentInterval = 60_000L
+
+    @VisibleForTesting
+    internal var isStill = false
 
     private var lastSuccessfulSendTime: Long? = null
 
@@ -291,11 +294,13 @@ class LocationService : Service() {
                         logReliability(WakeSource.ACTIVITY_TRANSITION, true)
 
                         if (event.activityType == DetectedActivity.STILL) {
+                            isStill = true
                             val loc = locationSource.lastLocation.value
                             if (loc != null) {
                                 setGeofenceAt(loc.first, loc.second)
                             }
                         } else {
+                            isStill = false
                             removeGeofence()
                         }
 
@@ -319,8 +324,9 @@ class LocationService : Service() {
             Log.d(TAG, "onStartCommand: Received Geofence Exit event")
             removeGeofence()
             // Resume full tracking
-            currentPriority = Priority.PRIORITY_BALANCED_POWER_ACCURACY
-            currentInterval = 30_000L
+            currentPriority = Priority.PRIORITY_HIGH_ACCURACY
+            currentInterval = 10_000L
+            isStill = false
             isRegistered = false
             ensureLocationRegistration()
             logReliability(WakeSource.ALARM, true) // Geofence is a form of alarm wake
@@ -443,8 +449,8 @@ class LocationService : Service() {
 
         val request =
             LocationRequest.Builder(currentPriority, currentInterval)
-                .setMinUpdateIntervalMillis(1_000L) // PASSIVE PIGGYBACKING (§1.1): Allow high-freq updates from other apps.
-                .setMinUpdateDistanceMeters(0f)
+                .setMinUpdateIntervalMillis(10_000L) // Floor on active-registration delivery; passive piggybacking handled by PRIORITY_PASSIVE registration above.
+                .setMinUpdateDistanceMeters(50f)
                 .setMaxUpdateDelayMillis(60_000L)
                 .build()
 
@@ -572,8 +578,13 @@ class LocationService : Service() {
                 val now = clock()
                 val loc =
                     if (now - lastSentTime > STATIONARY_FORCE_UPDATE_THRESHOLD_MS) {
-                        Log.d(TAG, "Stationary threshold exceeded; forcing fresh location fix.")
-                        forceLocationUpdateAndGet()
+                        if (isStill) {
+                            Log.d(TAG, "Stationary and STILL; skipping forced GPS fix, will re-report cached location.")
+                            null
+                        } else {
+                            Log.d(TAG, "Stationary threshold exceeded; forcing fresh location fix.")
+                            forceLocationUpdateAndGet()
+                        }
                     } else {
                         null
                     }
@@ -786,7 +797,7 @@ class LocationService : Service() {
     internal suspend fun forceLocationUpdateAndGet(): android.location.Location? {
         return try {
             val loc = withTimeoutOrNull(10_000L) {
-                fusedClient.getCurrentLocation(Priority.PRIORITY_HIGH_ACCURACY, null).await()
+                fusedClient.getCurrentLocation(Priority.PRIORITY_BALANCED_POWER_ACCURACY, null).await()
             }
             when {
                 loc != null -> Log.d(TAG, "Forced location fix successful: ${loc.latitude}, ${loc.longitude}")
