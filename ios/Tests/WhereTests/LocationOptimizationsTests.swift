@@ -95,6 +95,7 @@ class LocationOptimizationsTests: XCTestCase {
         XCTAssertEqual(mockClient.sendLocationCallCount, 1, "Should filter 10m move")
 
         // 3. Send location 60m away -> Should be sent
+        service.lastSentTime = Date(timeIntervalSinceNow: -60) // reset throttle window
         service.sendLocation(lat: 37.0006, lng: -122.0) // ~66m North
         try await Task.sleep(nanoseconds: 100_000_000)
         XCTAssertEqual(mockClient.sendLocationCallCount, 2, "Should allow 60m move")
