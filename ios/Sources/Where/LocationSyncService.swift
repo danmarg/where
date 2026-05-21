@@ -442,7 +442,7 @@ final class LocationSyncService: ObservableObject {
             let now = Date()
             let sixtySecondsAgo = now.addingTimeInterval(-60)
 
-            self?.motionActivityManager.queryActivityStarting(from: sixtySecondsAgo, to: now, to: .main) { activities, error in
+            self?.motionActivityManager.queryActivityStarting(from: sixtySecondsAgo, to: now, to: self?.motionQueue ?? .main) { activities, error in
                 if let _ = error {
                     continuation.resume(returning: false)
                     return

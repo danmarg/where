@@ -24,8 +24,6 @@
 	<string>1</string>
 	<key>NSCameraUsageDescription</key>
 	<string>Where needs the camera to scan friend invite QR codes.</string>
-	<key>NSMotionUsageDescription</key>
-	<string>Where uses motion data to optimize battery usage by reducing GPS activity when you are stationary.</string>
 	<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
 	<string>Where needs your location in the background to keep sharing it.</string>
 	<key>NSLocationWhenInUseUsageDescription</key>
