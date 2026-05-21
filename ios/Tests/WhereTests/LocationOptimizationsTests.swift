@@ -58,20 +58,6 @@ class LocationOptimizationsTests: XCTestCase {
             "pollAll should call requestImmediateLocation if heartbeat is due")
     }
 
-    func testLocationManager_StopStartsTasksCorrectly() async throws {
-        let locationManager = LocationManager.shared
-
-        // Ensure clean state
-        locationManager.stopUpdating()
-
-        locationManager.requestPermissionAndStart()
-        // Wait for @MainActor task creation
-        try await Task.sleep(nanoseconds: 100_000_000)
-
-        // stopUpdating should cancel and clear
-        locationManager.stopUpdating()
-    }
-
     func testLocationManager_DeduplicatesLegacyUpdates() async throws {
         let locationManager = LocationManager.shared
         let manager = CLLocationManager()

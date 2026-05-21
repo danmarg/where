@@ -28,7 +28,6 @@ final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelega
     // Modern API state
     private var backgroundActivity: CLBackgroundActivitySession?
     private var updatesTask: Task<Void, Never>?
-    private var heartbeatTask: Task<Void, Never>?
 
     private static let lastLatKey = "location_last_lat"
     private static let lastLngKey = "location_last_lng"
@@ -86,12 +85,9 @@ final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelega
     func stopUpdating() {
         updatesTask?.cancel()
         updatesTask = nil
-        heartbeatTask?.cancel()
-        heartbeatTask = nil
         backgroundActivity?.invalidate()
         backgroundActivity = nil
 
-        // Stop legacy monitoring
         manager?.stopMonitoringVisits()
         manager?.stopUpdatingLocation()
         manager?.stopUpdatingHeading()
@@ -126,70 +122,52 @@ final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelega
         guard updatesTask == nil else { return }
 
         // Main location updates loop using the modern async API.
+        // Heartbeats are handled by LocationSyncService.pollAll() which is driven by
+        // the existing tick() timer, so no separate heartbeat task is needed here.
         updatesTask = Task { @MainActor in
+            var retryDelay: UInt64 = 5_000_000_000
             while !Task.isCancelled {
-                if #available(iOS 17.0, *) {
-                    do {
-                        // We use .default configuration. For more rapid updates when moving,
-                        // iOS 17+ manages this automatically based on the activity and system state.
-                        for try await update in CLLocationUpdate.liveUpdates() {
-                            if Task.isCancelled { break }
+                do {
+                    for try await update in CLLocationUpdate.liveUpdates() {
+                        if Task.isCancelled { break }
+                        retryDelay = 5_000_000_000  // reset on successful stream
 
-                            guard let loc = update.location else { continue }
-                            self.location = loc
+                        guard let loc = update.location else { continue }
+                        self.location = loc
 
-                            let coordinate = loc.coordinate
-                            UserDefaults.standard.set(coordinate.latitude, forKey: Self.lastLatKey)
-                            UserDefaults.standard.set(coordinate.longitude, forKey: Self.lastLngKey)
+                        let coordinate = loc.coordinate
+                        UserDefaults.standard.set(coordinate.latitude, forKey: Self.lastLatKey)
+                        UserDefaults.standard.set(coordinate.longitude, forKey: Self.lastLngKey)
 
-                            let stationary: Bool
-                            if #available(iOS 18.0, *) {
-                                stationary = update.stationary
-                            } else {
-                                stationary = update.isStationary
-                            }
+                        let stationary: Bool
+                        if #available(iOS 18.0, *) {
+                            stationary = update.stationary
+                        } else {
+                            stationary = update.isStationary
+                        }
 
-                            if stationary {
-                                LocationSyncService.shared.e2eeManager.addDiagnosticEvent(message: "Stationary (System)")
-                            } else {
-                                if loc.horizontalAccuracy <= LocationSyncService.minBroadcastAccuracyMeters {
-                                    LocationSyncService.shared.sendLocation(lat: coordinate.latitude, lng: coordinate.longitude, heading: self.heading, source: .locationUpdate)
-                                }
+                        if stationary {
+                            LocationSyncService.shared.e2eeManager.addDiagnosticEvent(message: "Stationary (System)")
+                        } else {
+                            if loc.horizontalAccuracy <= LocationSyncService.minBroadcastAccuracyMeters {
+                                LocationSyncService.shared.sendLocation(lat: coordinate.latitude, lng: coordinate.longitude, heading: self.heading, source: .locationUpdate)
                             }
                         }
-                    } catch {
-                        LocationSyncService.shared.e2eeManager.addDiagnosticEvent(message: "Live updates error: \(error.localizedDescription)")
                     }
-                } else {
-                    // Fallback for earlier versions if deployment target was lower,
-                    // though project targets 17.0+.
-                    manager.startUpdatingLocation()
+                } catch let error as CLError where error.code == .denied {
+                    // Authorization was revoked; no point retrying.
+                    LocationSyncService.shared.e2eeManager.addDiagnosticEvent(message: "Live updates stopped: authorization denied")
                     break
+                } catch {
+                    LocationSyncService.shared.e2eeManager.addDiagnosticEvent(message: "Live updates error: \(error.localizedDescription)")
                 }
 
                 if Task.isCancelled { break }
-                // Exponential backoff or simple delay before retry on error.
-                try? await Task.sleep(nanoseconds: 5 * 1_000_000_000)
+                try? await Task.sleep(nanoseconds: retryDelay)
+                retryDelay = min(retryDelay * 2, 60_000_000_000)  // cap at 60s
             }
         }
 
-        // Heartbeat task: ensures heartbeats are sent even when stationary and liveUpdates() is not yielding.
-        heartbeatTask = Task { @MainActor in
-            while !Task.isCancelled {
-                // 5 minute interval for heartbeats.
-                do {
-                    try await Task.sleep(nanoseconds: 300 * 1_000_000_000)
-                } catch {
-                    // Task was cancelled
-                    break
-                }
-
-                LocationSyncService.shared.e2eeManager.addDiagnosticEvent(message: "Heartbeat (Modern)")
-                await LocationSyncService.shared.pollAll(source: .heartbeat)
-            }
-        }
-
-        // Continue monitoring visits and heading (legacy delegate-based API).
         manager.startMonitoringVisits()
         manager.startUpdatingHeading()
     }
