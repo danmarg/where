@@ -438,21 +438,18 @@ final class LocationSyncService: ObservableObject {
             return false
         }
 
-        return await withCheckedContinuation { continuation in
+        return await withCheckedContinuation { [weak self] continuation in
             let now = Date()
             let sixtySecondsAgo = now.addingTimeInterval(-60)
 
-            motionActivityManager.queryActivityStarting(from: sixtySecondsAgo, to: now, to: .main) { activities, error in
-                if let error = error {
-                    logger.error("Motion activity query failed: \(error.localizedDescription)")
+            self?.motionActivityManager.queryActivityStarting(from: sixtySecondsAgo, to: now, to: .main) { activities, error in
+                if let _ = error {
                     continuation.resume(returning: false)
                     return
                 }
-                if let lastActivity = activities?.last(where: { $0.confidence != .low }) {
-                    continuation.resume(returning: lastActivity.stationary)
-                } else {
-                    continuation.resume(returning: false)
-                }
+
+                let stationary = activities?.last(where: { $0.confidence != .low })?.stationary ?? false
+                continuation.resume(returning: stationary)
             }
         }
     }
