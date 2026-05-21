@@ -3,6 +3,7 @@ import Foundation
 import os
 import UIKit
 import CoreLocation
+import CoreMotion
 import Combine
 import Network
 private let logger = Logger(subsystem: "net.af0.where", category: "LocationSync")
@@ -163,6 +164,7 @@ final class LocationSyncService: ObservableObject {
     let userStore: Shared.UserStore
     let locationClient: LocationClientProtocol
     let locationProvider: LocationProviding
+    private let motionActivityManager = CMMotionActivityManager()
 
     init(e2eeManager: Shared.E2eeManager? = nil, userStore: Shared.UserStore? = nil, locationClient: LocationClientProtocol? = nil, locationProvider: LocationProviding? = nil) {
         logger.debug("LocationSyncService init: serverUrl=\(ServerConfig.httpBaseUrl)")
@@ -419,6 +421,31 @@ final class LocationSyncService: ObservableObject {
         e2eeManager.addDiagnosticEvent(message: message)
     }
 
+    private func isStationary() async -> Bool {
+        guard CMMotionActivityManager.isActivityAvailable() else {
+            return false
+        }
+
+        return await withCheckedContinuation { continuation in
+            let now = Date()
+            let sixtySecondsAgo = now.addingTimeInterval(-60)
+            motionActivityManager.queryActivityStarting(from: sixtySecondsAgo, to: now, to: .main) { activities, error in
+                if let error = error {
+                    logger.error("Motion activity query failed: \(error.localizedDescription)")
+                    continuation.resume(returning: false)
+                    return
+                }
+
+                // If we have high/medium confidence that the user is stationary, return true.
+                if let lastActivity = activities?.last(where: { $0.confidence != .low }) {
+                    continuation.resume(returning: lastActivity.stationary)
+                } else {
+                    continuation.resume(returning: false)
+                }
+            }
+        }
+    }
+
     func pollAll(updateUi: Bool = true, source: WakeSource = .timer) async {
         if isPollInFlight {
             // If a poll has been "in-flight" for longer than Ktor's max timeout + a generous
@@ -488,12 +515,20 @@ final class LocationSyncService: ObservableObject {
             logger.info("pollAll: sharing=\(sharing) elapsed=\(Int(elapsed))s")
             if isSharingLocation {
                 if elapsed >= Self.normalPollInterval {
-                    logger.info("pollAll: heartbeat due — sending best available location and requesting fresh fix")
-                    forceNextLocationUpdate = true
-                    if let loc = bestAvailableLocation {
-                        sendLocation(lat: loc.lat, lng: loc.lng, heading: loc.heading, force: true, source: .heartbeat)
+                    let stationary = await isStationary()
+                    if stationary {
+                        logger.info("pollAll: heartbeat due — stationary, re-reporting cached location")
+                        if let loc = bestAvailableLocation {
+                            sendLocation(lat: loc.lat, lng: loc.lng, heading: loc.heading, force: true, source: .heartbeat)
+                        }
+                    } else {
+                        logger.info("pollAll: heartbeat due — moving, requesting fresh fix")
+                        forceNextLocationUpdate = true
+                        if let loc = bestAvailableLocation {
+                            sendLocation(lat: loc.lat, lng: loc.lng, heading: loc.heading, force: true, source: .heartbeat)
+                        }
+                        locationProvider.requestImmediateLocation()
                     }
-                    locationProvider.requestImmediateLocation()
                 }
             }
 
@@ -726,6 +761,20 @@ final class LocationSyncService: ObservableObject {
     }
 
     func sendLocation(lat: Double, lng: Double, heading: Double? = nil, force: Bool = false, source: WakeSource = .locationUpdate) {
+        let now = Date()
+
+        // Distance filter: avoid excessive updates if we haven't moved much,
+        // unless this is a forced update (heartbeat, manual, etc).
+        if !force, let last = lastSentLocation {
+            let lastLoc = CLLocation(latitude: last.lat, longitude: last.lng)
+            let newLoc = CLLocation(latitude: lat, longitude: lng)
+            if newLoc.distance(from: lastLoc) < 50.0 {
+                // Still update the local heading.
+                ownHeading = heading
+                return
+            }
+        }
+
         // If a friend-specific forced send is pending (set when location was unavailable at
         // pairing time), fire it now before the throttle check so the newly-paired peer
         // receives our location even if the throttle would otherwise suppress the broadcast.
@@ -740,7 +789,6 @@ final class LocationSyncService: ObservableObject {
             }
         }
 
-        let now = Date()
         let timeSinceLast = now.timeIntervalSince(lastSentTime)
 
         var forceUpdate = force

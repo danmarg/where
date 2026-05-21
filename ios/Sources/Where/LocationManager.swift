@@ -50,7 +50,7 @@ final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelega
         m.delegate = self
         self.authorizationStatus = m.authorizationStatus
         m.desiredAccuracy = kCLLocationAccuracyHundredMeters
-        m.distanceFilter = kCLDistanceFilterNone
+        m.distanceFilter = 50
         m.headingFilter = 5
     }
 
