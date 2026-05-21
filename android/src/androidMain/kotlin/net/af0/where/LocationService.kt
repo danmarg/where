@@ -449,7 +449,7 @@ class LocationService : Service() {
 
         val request =
             LocationRequest.Builder(currentPriority, currentInterval)
-                .setMinUpdateIntervalMillis(10_000L) // PASSIVE PIGGYBACKING (§1.1): Allow high-freq updates from other apps.
+                .setMinUpdateIntervalMillis(10_000L) // Floor on active-registration delivery; passive piggybacking handled by PRIORITY_PASSIVE registration above.
                 .setMinUpdateDistanceMeters(50f)
                 .setMaxUpdateDelayMillis(60_000L)
                 .build()
