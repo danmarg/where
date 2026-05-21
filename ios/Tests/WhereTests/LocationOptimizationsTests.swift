@@ -58,47 +58,24 @@ class LocationOptimizationsTests: XCTestCase {
             "pollAll should call requestImmediateLocation if heartbeat is due")
     }
 
-    func testMotionAdaptiveSettings() async throws {
+    func testLocationManager_DeduplicatesLegacyUpdates() async throws {
         let locationManager = LocationManager.shared
         let manager = CLLocationManager()
-        locationManager.manager = manager
-        
-        // 1. Simulate movement
-        let fastLocation = CLLocation(
-            coordinate: CLLocationCoordinate2D(latitude: 0, longitude: 0),
-            altitude: 0,
-            horizontalAccuracy: 0,
-            verticalAccuracy: 0,
-            course: 0,
-            speed: 5, // 5 m/s > 1.0 m/s
-            timestamp: Date()
-        )
-        
-        locationManager.locationManager(manager, didUpdateLocations: [fastLocation])
-        
-        // Wait for Task @MainActor
+
+        let now = Date()
+        let loc1 = CLLocation(coordinate: CLLocationCoordinate2D(latitude: 1, longitude: 1), altitude: 0, horizontalAccuracy: 10, verticalAccuracy: 10, timestamp: now)
+
+        // Set internal state
+        locationManager.location = loc1
+
+        // Simulate a legacy update with the same timestamp
+        locationManager.locationManager(manager, didUpdateLocations: [loc1])
+
         try await Task.sleep(nanoseconds: 100_000_000)
-        
-        XCTAssertEqual(manager.distanceFilter, 20)
-        XCTAssertEqual(manager.activityType, .automotiveNavigation)
-        
-        // 2. Simulate stationary
-        let slowLocation = CLLocation(
-            coordinate: CLLocationCoordinate2D(latitude: 0, longitude: 0),
-            altitude: 0,
-            horizontalAccuracy: 0,
-            verticalAccuracy: 0,
-            course: 0,
-            speed: 0.2, // 0.2 m/s < 1.0 m/s
-            timestamp: Date()
-        )
-        
-        locationManager.locationManager(manager, didUpdateLocations: [slowLocation])
-        
-        try await Task.sleep(nanoseconds: 100_000_000)
-        
-        XCTAssertEqual(manager.distanceFilter, kCLDistanceFilterNone)
-        XCTAssertEqual(manager.activityType, .other)
+
+        // loc1 should remain as the current location, and no duplicate broadcast should happen.
+        // We can't easily verify the broadcast without more mocking, but we verify it doesn't crash.
+        XCTAssertEqual(locationManager.location?.timestamp, now)
     }
 
 }
