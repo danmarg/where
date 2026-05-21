@@ -6,7 +6,9 @@ import com.ionspin.kotlin.crypto.LibsodiumInitializer
 import io.ktor.client.HttpClient
 import io.ktor.client.call.body
 import io.ktor.client.plugins.contentnegotiation.ContentNegotiation
+import io.ktor.client.request.delete
 import io.ktor.client.request.get
+import io.ktor.client.request.parameter
 import io.ktor.client.request.put
 import io.ktor.client.request.setBody
 import io.ktor.http.ContentType
@@ -84,6 +86,17 @@ class MultiFriendIntegrationTest {
                 throw ServerException(resp.status.value, "Poll failed")
             }
             return resp.body()
+        }
+
+        override suspend fun ackIds(
+            baseUrl: String,
+            token: String,
+            msgIds: List<String>,
+        ) {
+            if (msgIds.isEmpty()) return
+            client.delete("/inbox/$token") {
+                parameter("ids", msgIds.joinToString(","))
+            }
         }
     }
 
