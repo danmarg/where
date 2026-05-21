@@ -78,4 +78,31 @@ class LocationOptimizationsTests: XCTestCase {
         XCTAssertEqual(locationManager.location?.timestamp, now)
     }
 
+    func testSendLocation_SoftwareDistanceFilter() async throws {
+        let mockClient = MockLocationClient()
+        service = LocationSyncService(e2eeManager: service.e2eeManager, userStore: service.userStore, locationClient: mockClient, locationProvider: mockLocationProvider)
+        service.skipNetworkRestore = true
+        service.lastSentTime = Date(timeIntervalSinceNow: -60) // Not throttled by time
+
+        // 1. Initial send (no lastSentLocation yet)
+        service.sendLocation(lat: 37.0, lng: -122.0)
+        try await Task.sleep(nanoseconds: 100_000_000)
+        XCTAssertEqual(mockClient.sendLocationCallCount, 1)
+
+        // 2. Send location 10m away -> Should be filtered
+        service.sendLocation(lat: 37.00009, lng: -122.0) // ~10m North
+        try await Task.sleep(nanoseconds: 100_000_000)
+        XCTAssertEqual(mockClient.sendLocationCallCount, 1, "Should filter 10m move")
+
+        // 3. Send location 60m away -> Should be sent
+        service.sendLocation(lat: 37.0006, lng: -122.0) // ~66m North
+        try await Task.sleep(nanoseconds: 100_000_000)
+        XCTAssertEqual(mockClient.sendLocationCallCount, 2, "Should allow 60m move")
+
+        // 4. Forced heartbeat with 0m move -> Should be sent
+        service.sendLocation(lat: 37.0006, lng: -122.0, force: true)
+        try await Task.sleep(nanoseconds: 100_000_000)
+        XCTAssertEqual(mockClient.sendLocationCallCount, 3, "Should allow forced 0m move")
+    }
+
 }

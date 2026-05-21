@@ -165,6 +165,12 @@ final class LocationSyncService: ObservableObject {
     let locationClient: LocationClientProtocol
     let locationProvider: LocationProviding
     private let motionActivityManager = CMMotionActivityManager()
+    private let motionQueue: OperationQueue = {
+        let queue = OperationQueue()
+        queue.name = "net.af0.where.motion"
+        queue.maxConcurrentOperationCount = 1
+        return queue
+    }()
 
     init(e2eeManager: Shared.E2eeManager? = nil, userStore: Shared.UserStore? = nil, locationClient: LocationClientProtocol? = nil, locationProvider: LocationProviding? = nil) {
         logger.debug("LocationSyncService init: serverUrl=\(ServerConfig.httpBaseUrl)")
@@ -426,23 +432,34 @@ final class LocationSyncService: ObservableObject {
             return false
         }
 
-        return await withCheckedContinuation { continuation in
-            let now = Date()
-            let sixtySecondsAgo = now.addingTimeInterval(-60)
-            motionActivityManager.queryActivityStarting(from: sixtySecondsAgo, to: now, to: .main) { activities, error in
-                if let error = error {
-                    logger.error("Motion activity query failed: \(error.localizedDescription)")
-                    continuation.resume(returning: false)
-                    return
-                }
+        if CMMotionActivityManager.authorizationStatus() == .denied {
+            logger.warning("Motion activity permission denied; skipping stationarity check")
+            return false
+        }
 
-                // If we have high/medium confidence that the user is stationary, return true.
-                if let lastActivity = activities?.last(where: { $0.confidence != .low }) {
-                    continuation.resume(returning: lastActivity.stationary)
-                } else {
-                    continuation.resume(returning: false)
+        return await withTaskCancellationHandler {
+            await withCheckedContinuation { continuation in
+                let now = Date()
+                let sixtySecondsAgo = now.addingTimeInterval(-60)
+                motionActivityManager.queryActivityStarting(from: sixtySecondsAgo, to: now, to: motionQueue) { activities, error in
+                    if let error = error {
+                        // Log but default to not stationary (safe)
+                        logger.error("Motion activity query failed: \(error.localizedDescription)")
+                        continuation.resume(returning: false)
+                        return
+                    }
+
+                    // If we have high/medium confidence that the user is stationary, return true.
+                    if let lastActivity = activities?.last(where: { $0.confidence != .low }) {
+                        continuation.resume(returning: lastActivity.stationary)
+                    } else {
+                        continuation.resume(returning: false)
+                    }
                 }
             }
+        } onCancel: {
+            // We can't cancel the individual queryActivityStarting call easily, but
+            // withCheckedContinuation handles the task lifecycle.
         }
     }
 
@@ -763,13 +780,19 @@ final class LocationSyncService: ObservableObject {
     func sendLocation(lat: Double, lng: Double, heading: Double? = nil, force: Bool = false, source: WakeSource = .locationUpdate) {
         let now = Date()
 
-        // Distance filter: avoid excessive updates if we haven't moved much,
+        // Software Distance Filter: avoid excessive updates if we haven't moved much,
         // unless this is a forced update (heartbeat, manual, etc).
+        //
+        // Note: while LocationManager also sets a hardware distanceFilter=50, that only
+        // affects didUpdateLocations callbacks. This software check also covers other
+        // wake sources (network restore, visits, etc) and ensures we follow the
+        // "50m or 5-minute" reporting contract robustly.
         if !force, let last = lastSentLocation {
             let lastLoc = CLLocation(latitude: last.lat, longitude: last.lng)
             let newLoc = CLLocation(latitude: lat, longitude: lng)
             if newLoc.distance(from: lastLoc) < 50.0 {
-                // Still update the local heading.
+                // Still update the local heading even if we don't broadcast.
+                // Note: heading-only updates are suppressed when stationary to save radio.
                 ownHeading = heading
                 return
             }

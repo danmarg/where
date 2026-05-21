@@ -288,13 +288,11 @@ open class LocationClient(
             val friends = store.listFriends()
             friends.map { friend ->
                 async {
-                    val mutex = getFriendMutex(friend.id)
-                    mutex.withLock {
-                        processOutbox(friend.id)
-                        try {
+                    runCatching {
+                        val mutex = getFriendMutex(friend.id)
+                        mutex.withLock {
+                            processOutbox(friend.id)
                             pollFriend(friend.id)
-                        } catch (e: Exception) {
-                            // Ignore
                         }
                     }
                 }
@@ -305,21 +303,17 @@ open class LocationClient(
     suspend fun processOutboxes() {
         coroutineScope {
             val friends =
-                try {
+                runCatching {
                     store.listFriends()
-                } catch (e: Exception) {
-                    return@coroutineScope
-                }
+                }.getOrElse { return@coroutineScope }
 
             friends.map { friend ->
                 async {
-                    try {
+                    runCatching {
                         val mutex = getFriendMutex(friend.id)
                         mutex.withLock {
                             processOutbox(friend.id)
                         }
-                    } catch (e: Exception) {
-                        // Ignore
                     }
                 }
             }.awaitAll()
@@ -350,37 +344,27 @@ open class LocationClient(
             val payload = MessagePlaintext.Location(lat = lat, lng = lng, acc = 0.0, ts = ts)
             val activeFriends = store.listFriends().filter { it.id !in pausedFriendIds && !it.isStale }
 
+            // Parallel send to all active friends to minimize radio wake time.
+            // Exceptions are caught per-friend so one failure doesn't block updates to others.
             val deferreds =
                 activeFriends.map { friend ->
                     async {
-                        try {
+                        runCatching {
                             val mutex = getFriendMutex(friend.id)
                             mutex.withLock {
                                 sendMessageToFriendInternal(friend.id, payload)
                             }
-                            Pair(true, null)
-                        } catch (e: Exception) {
-                            Pair(false, e)
                         }
                     }
                 }
 
             val results = deferreds.awaitAll()
-            var successCount = 0
-            var failCount = 0
-            var lastError: Exception? = null
+            val successCount = results.count { it.isSuccess }
+            val failCount = results.count { it.isFailure }
 
-            for ((success, error) in results) {
-                if (success) {
-                    successCount++
-                } else {
-                    failCount++
-                    lastError = error
-                }
-            }
-
+            // If we failed to send to ANYONE but had at least one target, propagate the last error.
             if (successCount == 0 && failCount > 0) {
-                lastError?.let { throw it }
+                throw results.first { it.isFailure }.exceptionOrNull()!!
             }
         }
     }
