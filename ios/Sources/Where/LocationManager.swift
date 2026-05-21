@@ -140,15 +140,11 @@ final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelega
                         UserDefaults.standard.set(coordinate.longitude, forKey: Self.lastLngKey)
 
                         let stationary: Bool
-                        #if swift(>=6.0)
-                        stationary = update.stationary
-                        #else
                         if #available(iOS 18.0, *) {
                             stationary = update.stationary
                         } else {
                             stationary = update.isStationary
                         }
-                        #endif
 
                         if stationary {
                             LocationSyncService.shared.e2eeManager.addDiagnosticEvent(message: "Stationary (System)")

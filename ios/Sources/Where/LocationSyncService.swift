@@ -24,13 +24,13 @@ private final class AtomicBool: @unchecked Sendable {
 
 /// Thread-safe wrapper for CheckedContinuation to ensure it is resumed exactly once,
 /// handling potential races between completion and cancellation.
-private final class SafeContinuation<T: Sendable>: @unchecked Sendable {
+private final class SafeBoolContinuation: @unchecked Sendable {
     private let lock = NSLock()
-    private var continuation: CheckedContinuation<T, Never>?
-    private var valueIfResumedEarly: T?
+    private var continuation: CheckedContinuation<Bool, Never>?
+    private var valueIfResumedEarly: Bool?
     private var isResumed = false
 
-    func set(_ continuation: CheckedContinuation<T, Never>) {
+    func set(_ continuation: CheckedContinuation<Bool, Never>) {
         lock.lock()
         if isResumed, let value = valueIfResumedEarly {
             lock.unlock()
@@ -41,7 +41,7 @@ private final class SafeContinuation<T: Sendable>: @unchecked Sendable {
         lock.unlock()
     }
 
-    func resume(returning value: T) {
+    func resume(returning value: Bool) {
         lock.lock()
         if isResumed {
             lock.unlock()
@@ -488,7 +488,7 @@ final class LocationSyncService: ObservableObject {
             return false
         }
 
-        let safeContinuation = SafeContinuation<Bool>()
+        let safeContinuation = SafeBoolContinuation()
         return await withTaskCancellationHandler {
             await withCheckedContinuation { continuation in
                 safeContinuation.set(continuation)
