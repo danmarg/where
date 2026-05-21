@@ -433,16 +433,30 @@ final class LocationSyncService: ObservableObject {
             return false
         }
 
-        if CMMotionActivityManager.authorizationStatus() == .denied {
-            logger.warning("Motion activity permission denied; skipping stationarity check")
+        switch CMMotionActivityManager.authorizationStatus() {
+        case .denied, .restricted:
+            logger.warning("Motion activity permission denied/restricted; skipping stationarity check")
+            return false
+        case .notDetermined:
+            // Permission prompt has not been shown yet. Skip the query so we don't
+            // inadvertently trigger the system permission dialog during a background wake.
+            return false
+        case .authorized:
+            break
+        @unknown default:
             return false
         }
 
         return await withCheckedContinuation { [weak self] continuation in
+            guard let self = self else {
+                continuation.resume(returning: false)
+                return
+            }
+
             let now = Date()
             let sixtySecondsAgo = now.addingTimeInterval(-60)
 
-            self?.motionActivityManager.queryActivityStarting(from: sixtySecondsAgo, to: now, to: self?.motionQueue ?? .main) { activities, error in
+            self.motionActivityManager.queryActivityStarting(from: sixtySecondsAgo, to: now, to: self.motionQueue) { activities, error in
                 if let _ = error {
                     continuation.resume(returning: false)
                     return
