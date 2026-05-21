@@ -40,6 +40,8 @@ targets:
         embed: false
       - framework: CoreLocation
         embed: false
+      - framework: CoreMotion
+        embed: false
     info:
       path: Sources/Where/Info.plist
       useBaseInternationalization: true
@@ -48,6 +50,7 @@ targets:
         NSLocationWhenInUseUsageDescription: "Where needs your location to show it on the map."
         NSLocationAlwaysAndWhenInUseUsageDescription: "Where needs your location in the background to keep sharing it."
         NSCameraUsageDescription: "Where needs the camera to scan friend invite QR codes."
+        NSMotionUsageDescription: "Where uses motion data to optimize battery usage by reducing GPS activity when you are stationary."
         BGTaskSchedulerPermittedIdentifiers:
           - net.af0.where.heartbeat
         UIBackgroundModes:
