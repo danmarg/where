@@ -113,6 +113,7 @@ final class LocationSyncService: ObservableObject {
     private static let maintenancePollInterval: TimeInterval = 30 * 60  // ack-only when not sharing
     private static let staleLocationThreshold: TimeInterval = 60.0
     private static let locationSendThrottle: TimeInterval = 30.0
+    static let minimumReportingDistanceMeters: CLLocationDistance = 50
     private static let rapidPollDuration: TimeInterval = 60.0
     var locationFixTimeout: TimeInterval = 10.0  // internal for testing
     /// Fixes with horizontalAccuracy above this threshold are cell/WiFi network fixes too noisy
@@ -795,7 +796,7 @@ final class LocationSyncService: ObservableObject {
         if !force, let last = lastSentLocation {
             let lastLoc = CLLocation(latitude: last.lat, longitude: last.lng)
             let newLoc = CLLocation(latitude: lat, longitude: lng)
-            if newLoc.distance(from: lastLoc) < 50.0 {
+            if newLoc.distance(from: lastLoc) < Self.minimumReportingDistanceMeters {
                 // Still update the local heading even if we don't broadcast.
                 // Note: heading-only updates are suppressed when stationary to save radio.
                 ownHeading = heading
