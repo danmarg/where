@@ -3,9 +3,11 @@ import Foundation
 import os
 import UIKit
 import CoreLocation
+import CoreMotion
 import Combine
 import Network
 private let logger = Logger(subsystem: "net.af0.where", category: "LocationSync")
+
 
 private class RawStringDesc: NSObject, Shared.ResourcesStringDesc {
     private let value: String
@@ -111,6 +113,7 @@ final class LocationSyncService: ObservableObject {
     private static let maintenancePollInterval: TimeInterval = 30 * 60  // ack-only when not sharing
     private static let staleLocationThreshold: TimeInterval = 60.0
     private static let locationSendThrottle: TimeInterval = 30.0
+    static let minimumReportingDistanceMeters: CLLocationDistance = 50
     private static let rapidPollDuration: TimeInterval = 60.0
     var locationFixTimeout: TimeInterval = 10.0  // internal for testing
     /// Fixes with horizontalAccuracy above this threshold are cell/WiFi network fixes too noisy
@@ -163,6 +166,13 @@ final class LocationSyncService: ObservableObject {
     let userStore: Shared.UserStore
     let locationClient: LocationClientProtocol
     let locationProvider: LocationProviding
+    private let motionActivityManager = CMMotionActivityManager()
+    private let motionQueue: OperationQueue = {
+        let queue = OperationQueue()
+        queue.name = "net.af0.where.motion"
+        queue.maxConcurrentOperationCount = 1
+        return queue
+    }()
 
     init(e2eeManager: Shared.E2eeManager? = nil, userStore: Shared.UserStore? = nil, locationClient: LocationClientProtocol? = nil, locationProvider: LocationProviding? = nil) {
         logger.debug("LocationSyncService init: serverUrl=\(ServerConfig.httpBaseUrl)")
@@ -419,6 +429,46 @@ final class LocationSyncService: ObservableObject {
         e2eeManager.addDiagnosticEvent(message: message)
     }
 
+    private func isStationary() async -> Bool {
+        guard CMMotionActivityManager.isActivityAvailable() else {
+            return false
+        }
+
+        switch CMMotionActivityManager.authorizationStatus() {
+        case .denied, .restricted:
+            logger.warning("Motion activity permission denied/restricted; skipping stationarity check")
+            return false
+        case .notDetermined:
+            // Permission prompt has not been shown yet. Skip the query so we don't
+            // inadvertently trigger the system permission dialog during a background wake.
+            return false
+        case .authorized:
+            break
+        @unknown default:
+            return false
+        }
+
+        return await withCheckedContinuation { [weak self] continuation in
+            guard let self = self else {
+                continuation.resume(returning: false)
+                return
+            }
+
+            let now = Date()
+            let sixtySecondsAgo = now.addingTimeInterval(-60)
+
+            self.motionActivityManager.queryActivityStarting(from: sixtySecondsAgo, to: now, to: self.motionQueue) { activities, error in
+                if let _ = error {
+                    continuation.resume(returning: false)
+                    return
+                }
+
+                let stationary = activities?.last(where: { $0.confidence != .low })?.stationary ?? false
+                continuation.resume(returning: stationary)
+            }
+        }
+    }
+
     func pollAll(updateUi: Bool = true, source: WakeSource = .timer) async {
         if isPollInFlight {
             // If a poll has been "in-flight" for longer than Ktor's max timeout + a generous
@@ -488,12 +538,20 @@ final class LocationSyncService: ObservableObject {
             logger.info("pollAll: sharing=\(sharing) elapsed=\(Int(elapsed))s")
             if isSharingLocation {
                 if elapsed >= Self.normalPollInterval {
-                    logger.info("pollAll: heartbeat due — sending best available location and requesting fresh fix")
-                    forceNextLocationUpdate = true
-                    if let loc = bestAvailableLocation {
-                        sendLocation(lat: loc.lat, lng: loc.lng, heading: loc.heading, force: true, source: .heartbeat)
+                    let stationary = await isStationary()
+                    if stationary {
+                        logger.info("pollAll: heartbeat due — stationary, re-reporting cached location")
+                        if let loc = bestAvailableLocation {
+                            sendLocation(lat: loc.lat, lng: loc.lng, heading: loc.heading, force: true, source: .heartbeat)
+                        }
+                    } else {
+                        logger.info("pollAll: heartbeat due — moving, requesting fresh fix")
+                        forceNextLocationUpdate = true
+                        if let loc = bestAvailableLocation {
+                            sendLocation(lat: loc.lat, lng: loc.lng, heading: loc.heading, force: true, source: .heartbeat)
+                        }
+                        locationProvider.requestImmediateLocation()
                     }
-                    locationProvider.requestImmediateLocation()
                 }
             }
 
@@ -726,6 +784,26 @@ final class LocationSyncService: ObservableObject {
     }
 
     func sendLocation(lat: Double, lng: Double, heading: Double? = nil, force: Bool = false, source: WakeSource = .locationUpdate) {
+        let now = Date()
+
+        // Software Distance Filter: avoid excessive updates if we haven't moved much,
+        // unless this is a forced update (heartbeat, manual, etc).
+        //
+        // Note: while LocationManager also sets a hardware distanceFilter=50, that only
+        // affects didUpdateLocations callbacks. This software check also covers other
+        // wake sources (network restore, visits, etc) and ensures we follow the
+        // "50m or 5-minute" reporting contract robustly.
+        if !force, let last = lastSentLocation {
+            let lastLoc = CLLocation(latitude: last.lat, longitude: last.lng)
+            let newLoc = CLLocation(latitude: lat, longitude: lng)
+            if newLoc.distance(from: lastLoc) < Self.minimumReportingDistanceMeters {
+                // Still update the local heading even if we don't broadcast.
+                // Note: heading-only updates are suppressed when stationary to save radio.
+                ownHeading = heading
+                return
+            }
+        }
+
         // If a friend-specific forced send is pending (set when location was unavailable at
         // pairing time), fire it now before the throttle check so the newly-paired peer
         // receives our location even if the throttle would otherwise suppress the broadcast.
@@ -740,7 +818,6 @@ final class LocationSyncService: ObservableObject {
             }
         }
 
-        let now = Date()
         let timeSinceLast = now.timeIntervalSince(lastSentTime)
 
         var forceUpdate = force
@@ -757,7 +834,6 @@ final class LocationSyncService: ObservableObject {
         }
 
         let interval = lastSuccessfulSendTime.map { now.timeIntervalSince($0) }
-        lastSentLocation = (lat: lat, lng: lng)
         ownHeading = heading
         lastSentTime = now
         pendingForcedSendAfterPairing = false
@@ -781,6 +857,11 @@ final class LocationSyncService: ObservableObject {
                     logger.info("sendLocation: succeeded (lat=\(lat), lng=\(lng), source=\(source.rawValue))")
                     logReliability(source: source, success: true, interval: interval)
                     lastSuccessfulSendTime = now
+                    // Software Distance Filter Baseline: only update the baseline when a send
+                    // successfully completes. This ensures that if a transmission fails, the
+                    // next update (even if it's <50m from this failed one) will still be
+                    // eligible for broadcast.
+                    self.lastSentLocation = (lat: lat, lng: lng)
                     updateStatus(nil)
                 }
             } catch {

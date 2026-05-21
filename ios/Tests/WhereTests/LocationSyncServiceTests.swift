@@ -794,14 +794,19 @@ class LocationSyncServiceTests: XCTestCase {
         mockLocationProvider.location = staleLocation
 
         let sendCount = SendCountBox()
-        mockClient.sendLocationCallback = { sendCount.increment() }
+        let firstSend = XCTestExpectation(description: "First send from timeout fallback")
+        mockClient.sendLocationCallback = {
+            sendCount.increment()
+            if sendCount.getCount() == 1 { firstSend.fulfill() }
+        }
 
         // Simulate rapid network flap: first restore arms a timeout, second cancels it and arms a fresh one
         await service.handleNetworkRestored()
         await service.handleNetworkRestored()
 
-        // Wait long enough for any timeout tasks to fire
-        try await Task.sleep(nanoseconds: 500_000_000)
+        // Wait until the timeout fallback fires (up to 2s), then check for duplicates
+        await fulfillment(of: [firstSend], timeout: 2.0)
+        try await Task.sleep(nanoseconds: 100_000_000)
 
         XCTAssertEqual(sendCount.getCount(), 1, "Rapid network flap should not produce duplicate sends")
     }

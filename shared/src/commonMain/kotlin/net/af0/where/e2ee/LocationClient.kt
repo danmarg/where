@@ -284,37 +284,39 @@ open class LocationClient(
         }
 
     suspend fun syncNow() {
-        val friends = store.listFriends()
-        friends.forEach { friend ->
-            val mutex = getFriendMutex(friend.id)
-            mutex.withLock {
-                processOutbox(friend.id)
-                try {
-                    pollFriend(friend.id)
-                } catch (e: Exception) {
-                    // Ignore
+        coroutineScope {
+            val friends = store.listFriends()
+            friends.map { friend ->
+                async {
+                    runCatching {
+                        val mutex = getFriendMutex(friend.id)
+                        mutex.withLock {
+                            processOutbox(friend.id)
+                            pollFriend(friend.id)
+                        }
+                    }
                 }
-            }
+            }.awaitAll()
         }
     }
 
     suspend fun processOutboxes() {
-        val friends =
-            try {
-                store.listFriends()
-            } catch (e: Exception) {
-                return
-            }
+        coroutineScope {
+            val friends =
+                runCatching {
+                    store.listFriends()
+                }.getOrElse { return@coroutineScope }
 
-        friends.forEach { friend ->
-            try {
-                val mutex = getFriendMutex(friend.id)
-                mutex.withLock {
-                    processOutbox(friend.id)
+            friends.map { friend ->
+                async {
+                    runCatching {
+                        val mutex = getFriendMutex(friend.id)
+                        mutex.withLock {
+                            processOutbox(friend.id)
+                        }
+                    }
                 }
-            } catch (e: Exception) {
-                // Ignore
-            }
+            }.awaitAll()
         }
     }
 
@@ -337,28 +339,33 @@ open class LocationClient(
         lng: Double,
         pausedFriendIds: Set<String> = emptySet(),
     ) {
-        val ts = currentTimeSeconds()
-        val payload = MessagePlaintext.Location(lat = lat, lng = lng, acc = 0.0, ts = ts)
-        val activeFriends = store.listFriends().filter { it.id !in pausedFriendIds && !it.isStale }
+        coroutineScope {
+            val ts = currentTimeSeconds()
+            val payload = MessagePlaintext.Location(lat = lat, lng = lng, acc = 0.0, ts = ts)
+            val activeFriends = store.listFriends().filter { it.id !in pausedFriendIds && !it.isStale }
 
-        var successCount = 0
-        var failCount = 0
-        var lastError: Exception? = null
-        for (friend in activeFriends) {
-            try {
-                val mutex = getFriendMutex(friend.id)
-                mutex.withLock {
-                    sendMessageToFriendInternal(friend.id, payload)
+            // Parallel send to all active friends to minimize radio wake time.
+            // Exceptions are caught per-friend so one failure doesn't block updates to others.
+            val deferreds =
+                activeFriends.map { friend ->
+                    async {
+                        runCatching {
+                            val mutex = getFriendMutex(friend.id)
+                            mutex.withLock {
+                                sendMessageToFriendInternal(friend.id, payload)
+                            }
+                        }
+                    }
                 }
-                successCount++
-            } catch (e: Exception) {
-                lastError = e
-                failCount++
-            }
-        }
 
-        if (successCount == 0 && failCount > 0) {
-            lastError?.let { throw it }
+            val results = deferreds.awaitAll()
+            val successCount = results.count { it.isSuccess }
+            val failCount = results.count { it.isFailure }
+
+            // If we failed to send to ANYONE but had at least one target, propagate the last error.
+            if (successCount == 0 && failCount > 0) {
+                throw results.first { it.isFailure }.exceptionOrNull()!!
+            }
         }
     }
 
