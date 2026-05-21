@@ -8,56 +8,6 @@ import Combine
 import Network
 private let logger = Logger(subsystem: "net.af0.where", category: "LocationSync")
 
-private final class AtomicBool: @unchecked Sendable {
-    private let lock = NSLock()
-    private var value: Bool
-    init(_ value: Bool) { self.value = value }
-    func compareAndExchange(expected: Bool, newValue: Bool) -> Bool {
-        lock.lock(); defer { lock.unlock() }
-        if value == expected {
-            value = newValue
-            return true
-        }
-        return false
-    }
-}
-
-/// Thread-safe wrapper for CheckedContinuation to ensure it is resumed exactly once,
-/// handling potential races between completion and cancellation.
-private final class SafeBoolContinuation: @unchecked Sendable {
-    private let lock = NSLock()
-    private var continuation: CheckedContinuation<Bool, Never>?
-    private var valueIfResumedEarly: Bool?
-    private var isResumed = false
-
-    func set(_ continuation: CheckedContinuation<Bool, Never>) {
-        lock.lock()
-        if isResumed, let value = valueIfResumedEarly {
-            lock.unlock()
-            continuation.resume(returning: value)
-            return
-        }
-        self.continuation = continuation
-        lock.unlock()
-    }
-
-    func resume(returning value: Bool) {
-        lock.lock()
-        if isResumed {
-            lock.unlock()
-            return
-        }
-        isResumed = true
-        if let c = continuation {
-            continuation = nil
-            lock.unlock()
-            c.resume(returning: value)
-        } else {
-            valueIfResumedEarly = value
-            lock.unlock()
-        }
-    }
-}
 
 private class RawStringDesc: NSObject, Shared.ResourcesStringDesc {
     private let value: String
@@ -488,28 +438,22 @@ final class LocationSyncService: ObservableObject {
             return false
         }
 
-        let safeContinuation = SafeBoolContinuation()
-        return await withTaskCancellationHandler {
-            await withCheckedContinuation { continuation in
-                safeContinuation.set(continuation)
-                let now = Date()
-                let sixtySecondsAgo = now.addingTimeInterval(-60)
+        return await withCheckedContinuation { continuation in
+            let now = Date()
+            let sixtySecondsAgo = now.addingTimeInterval(-60)
 
-                motionActivityManager.queryActivityStarting(from: sixtySecondsAgo, to: now, to: motionQueue) { activities, error in
-                    if let error = error {
-                        logger.error("Motion activity query failed: \(error.localizedDescription)")
-                        safeContinuation.resume(returning: false)
-                        return
-                    }
-                    if let lastActivity = activities?.last(where: { $0.confidence != .low }) {
-                        safeContinuation.resume(returning: lastActivity.stationary)
-                    } else {
-                        safeContinuation.resume(returning: false)
-                    }
+            motionActivityManager.queryActivityStarting(from: sixtySecondsAgo, to: now, to: .main) { activities, error in
+                if let error = error {
+                    logger.error("Motion activity query failed: \(error.localizedDescription)")
+                    continuation.resume(returning: false)
+                    return
+                }
+                if let lastActivity = activities?.last(where: { $0.confidence != .low }) {
+                    continuation.resume(returning: lastActivity.stationary)
+                } else {
+                    continuation.resume(returning: false)
                 }
             }
-        } onCancel: {
-            safeContinuation.resume(returning: false)
         }
     }
 
