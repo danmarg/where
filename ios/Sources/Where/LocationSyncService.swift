@@ -61,6 +61,8 @@ final class LocationSyncService: ObservableObject {
             locationProvider.sharingStateChanged()
             if !isSharingLocation {
                 forceNextLocationUpdate = false
+                locationFixTimeoutTask?.cancel()
+                locationFixTimeoutTask = nil
             }
         }
     }
@@ -110,12 +112,12 @@ final class LocationSyncService: ObservableObject {
     private static let staleLocationThreshold: TimeInterval = 60.0
     private static let locationSendThrottle: TimeInterval = 30.0
     private static let rapidPollDuration: TimeInterval = 60.0
-    private static let locationFixTimeout: TimeInterval = 10.0
+    var locationFixTimeout: TimeInterval = 10.0  // internal for testing
     /// Fixes with horizontalAccuracy above this threshold are cell/WiFi network fixes too noisy
     /// to broadcast; only sub-200m GPS fixes are sent to friends or used for heartbeats.
     static let minBroadcastAccuracyMeters: CLLocationAccuracy = 200
     private var visibleUsersCancellables = Set<AnyCancellable>()
-    private let pathMonitor = NWPathMonitor()
+    let pathMonitor = NWPathMonitor()  // internal for testing
     private let monitorQueue = DispatchQueue(label: "NWPathMonitorQueue")
 
     private var lastSentLocation: (lat: Double, lng: Double)? = nil
@@ -135,7 +137,9 @@ final class LocationSyncService: ObservableObject {
     var lastSentTime: Date = Date(timeIntervalSince1970: 0)  // internal for testing
     var pendingForcedSendAfterPairing: Bool = false
     var pendingForcedSendFriendId: String? = nil
-    @MainActor var forceNextLocationUpdate: Bool = false
+    var forceNextLocationUpdate: Bool = false
+    var skipNetworkRestore: Bool = false  // internal for testing
+    private var locationFixTimeoutTask: Task<Void, Never>? = nil
     private var currentSendTask: Task<Void, Never>? = nil
     private var awaitingFirstUpdateIds: Set<String> = []
     // Monotonically increasing counter used to prevent stale task cleanup from
@@ -205,39 +209,8 @@ final class LocationSyncService: ObservableObject {
             if path.status == .satisfied {
                 logger.debug("Network path satisfied, triggering syncNow() and location send")
                 Task { @MainActor [weak self] in
-                    guard let self = self else { return }
-                    do {
-                        try await self.locationClient.syncNow()
-                    } catch {
-                        logger.error("syncNow failed on path update: \(error.localizedDescription)")
-                    }
-
-                    if self.isSharingLocation {
-                        // If we don't have a recent fix, request a fresh one.
-                        let locationIsStale = (self.locationProvider.lastLocation?.timestamp.timeIntervalSinceNow ?? -.infinity) < -Self.staleLocationThreshold
-                        if locationIsStale {
-                            self.forceNextLocationUpdate = true
-                            self.locationProvider.requestImmediateLocation()
-                            // Skip sending the current stale location; wait for the fresh fix to arrive.
-                            // However, if the fix never arrives, fallback to sending the stale fix anyway.
-                            Task { @MainActor [weak self] in
-                                do {
-                                    try await Task.sleep(nanoseconds: UInt64(Self.locationFixTimeout * 1_000_000_000))
-                                } catch {
-                                    logger.debug("locationFixTimeout task cancelled")
-                                    return
-                                }
-                                guard let self = self, self.forceNextLocationUpdate else { return }
-                                logger.info("requestImmediateLocation timeout: sending stale fix as fallback")
-                                self.forceNextLocationUpdate = false
-                                if let loc = self.bestAvailableLocation {
-                                    self.sendLocation(lat: loc.lat, lng: loc.lng, heading: loc.heading, source: .network)
-                                }
-                            }
-                        } else if let loc = self.bestAvailableLocation {
-                            self.sendLocation(lat: loc.lat, lng: loc.lng, heading: loc.heading, source: .network)
-                        }
-                    }
+                    guard let self = self, !self.skipNetworkRestore else { return }
+                    await self.handleNetworkRestored()
                 }
             }
         }
@@ -281,19 +254,52 @@ final class LocationSyncService: ObservableObject {
         awaitingFirstUpdateIds.removeAll()
     }
 
-    @MainActor
+    // Extracted for testability. Called from pathMonitor handler and directly in tests.
+    func handleNetworkRestored() async {
+        do {
+            try await locationClient.syncNow()
+        } catch {
+            logger.error("syncNow failed on path update: \(error.localizedDescription)")
+        }
+
+        guard isSharingLocation else { return }
+
+        let locationIsStale = (locationProvider.lastLocation?.timestamp.timeIntervalSinceNow ?? -.infinity) < -Self.staleLocationThreshold
+        if locationIsStale {
+            forceNextLocationUpdate = true
+            locationProvider.requestImmediateLocation()
+            // Cancel any previous fallback timeout before starting a new one.
+            locationFixTimeoutTask?.cancel()
+            locationFixTimeoutTask = Task { [weak self] in
+                do {
+                    guard let timeout = self?.locationFixTimeout else { return }
+                    try await Task.sleep(nanoseconds: UInt64(timeout * 1_000_000_000))
+                } catch {
+                    logger.debug("locationFixTimeout task cancelled")
+                    return
+                }
+                guard let self = self, self.forceNextLocationUpdate else { return }
+                logger.info("requestImmediateLocation timeout: sending stale fix as fallback")
+                self.forceNextLocationUpdate = false
+                if let loc = self.bestAvailableLocation {
+                    self.sendLocation(lat: loc.lat, lng: loc.lng, heading: loc.heading, source: .network)
+                }
+            }
+        } else if let loc = bestAvailableLocation {
+            sendLocation(lat: loc.lat, lng: loc.lng, heading: loc.heading, source: .network)
+        }
+    }
+
     func triggerRapidPoll() {
         lastRapidPollTrigger = Date()
         wakePoll()
     }
 
-    @MainActor
     func wakePoll() {
         if isPollInFlight { return }
         pollTimer?.fire()
     }
 
-    @MainActor
     func onForegroundEntry() {
         // Reset lastPollTime to .distantPast so the next pollAll() call bypasses the
         // interval check and — if a poll is stuck in-flight — triggers the 90s reset path.
@@ -357,12 +363,10 @@ final class LocationSyncService: ObservableObject {
         return Date().timeIntervalSince(lastRapidPollTrigger) < Self.rapidPollDuration
     }
 
-    @MainActor
     func firePoll() async {
         await pollAll()
     }
 
-    @MainActor
     func markCurrentInviteExported() async {
         guard let qr = (inviteState as? Shared.InviteState.Pending)?.qr else { return }
         do {
@@ -373,7 +377,6 @@ final class LocationSyncService: ObservableObject {
         }
     }
 
-    @MainActor
     func clearInviteIfNotExported() async {
         guard let pending = inviteState as? Shared.InviteState.Pending else { return }
         
@@ -416,7 +419,6 @@ final class LocationSyncService: ObservableObject {
         e2eeManager.addDiagnosticEvent(message: message)
     }
 
-    @MainActor
     func pollAll(updateUi: Bool = true, source: WakeSource = .timer) async {
         if isPollInFlight {
             // If a poll has been "in-flight" for longer than Ktor's max timeout + a generous
@@ -533,7 +535,6 @@ final class LocationSyncService: ObservableObject {
         return filteredResults
     }
 
-    @MainActor
     func clearInvite(ekPub: Data? = nil) async {
         do {
             let ekPubToClear = ekPub ?? pendingInitAliceEkPub
@@ -570,7 +571,6 @@ final class LocationSyncService: ObservableObject {
         return true
     }
 
-    @MainActor
     func confirmQrScan(qr: Shared.QrPayload, friendName: String) async {
         pendingQrForNaming = nil
         inviteState = Shared.InviteState.None()
@@ -639,7 +639,6 @@ final class LocationSyncService: ObservableObject {
         }
     }
 
-    @MainActor
     func confirmPendingInit(payload: Shared.KeyExchangeInitPayload, name: String) async {
         guard let aliceEkPub = pendingInitAliceEkPub else { return }
         inviteState = Shared.InviteState.None()
@@ -681,7 +680,6 @@ final class LocationSyncService: ObservableObject {
         }
     }
 
-    @MainActor
     func cancelPendingInit() async {
         let hasInviteState = !(inviteState is Shared.InviteState.None)
         guard pendingInitPayload != nil || hasInviteState || pendingInitAliceEkPub != nil else { return }
@@ -694,7 +692,6 @@ final class LocationSyncService: ObservableObject {
         await clearInvite(ekPub: ekPubToClear)
     }
 
-    @MainActor
     func renameFriend(id: String, newName: String) async {
         do {
             try await e2eeManager.renameFriend(id: id, newName: newName)
@@ -705,7 +702,6 @@ final class LocationSyncService: ObservableObject {
         }
     }
 
-    @MainActor
     func removeFriend(id: String) async {
         do {
             try await e2eeManager.deleteFriend(id: id)
@@ -719,7 +715,6 @@ final class LocationSyncService: ObservableObject {
         }
     }
 
-    @MainActor
     func sendLocationOnBackground() {
         guard isSharingLocation else { return }
         guard let loc = bestAvailableLocation else {
@@ -730,7 +725,6 @@ final class LocationSyncService: ObservableObject {
         sendLocation(lat: loc.lat, lng: loc.lng, source: .backgroundEntry)
     }
 
-    @MainActor
     func sendLocation(lat: Double, lng: Double, heading: Double? = nil, force: Bool = false, source: WakeSource = .locationUpdate) {
         // If a friend-specific forced send is pending (set when location was unavailable at
         // pairing time), fire it now before the throttle check so the newly-paired peer

@@ -53,8 +53,9 @@ class LocationSyncServiceTests: XCTestCase {
         self.service.skipUpdateVisibleUsers = true
         self.service.beginBackgroundTask = { _, _ in .invalid }
         self.service.endBackgroundTask = { _ in }
-        // Kill the background poll timer so it doesn't fire heartbeats mid-test
+        // Kill the background poll timer and suppress network-restore Tasks mid-test
         self.service.pollTimer?.invalidate()
+        self.service.skipNetworkRestore = true
     }
 
     func testThrottleLogic() async throws {
@@ -69,13 +70,13 @@ class LocationSyncServiceTests: XCTestCase {
 
         // Re-init service with mock client and mock location provider
         service = LocationSyncService(e2eeManager: service.e2eeManager, userStore: service.userStore, locationClient: mockClient, locationProvider: mockLocationProvider)
+        service.skipNetworkRestore = true
+        service.skipNetworkRestore = true
 
         // Initial send. Reset state to ensure clean start for throttle test.
         service.forceNextLocationUpdate = false
         service.lastSentTime = Date(timeIntervalSince1970: 0)
         service.sendLocation(lat: lat, lng: lng)
-        // Wait for the send task to complete. 250ms is more robust for CI.
-        try await Task.sleep(nanoseconds: 250_000_000)
         await fulfillment(of: [expectation1], timeout: 2.0)
 
         // Immediate second send should be throttled
@@ -131,6 +132,7 @@ class LocationSyncServiceTests: XCTestCase {
     func testFirePoll_ForegroundDoesPollFriends() async throws {
         let mockClient = MockLocationClient()
         service = LocationSyncService(e2eeManager: service.e2eeManager, userStore: service.userStore, locationClient: mockClient, locationProvider: mockLocationProvider)
+        service.skipNetworkRestore = true
         service.isInForeground = { true }
         service.startPolling()
 
@@ -142,6 +144,7 @@ class LocationSyncServiceTests: XCTestCase {
     func testFirePoll_BackgroundStillPollsFriends() async throws {
         let mockClient = MockLocationClient()
         service = LocationSyncService(e2eeManager: service.e2eeManager, userStore: service.userStore, locationClient: mockClient, locationProvider: mockLocationProvider)
+        service.skipNetworkRestore = true
         service.isInForeground = { false }
         service.startPolling()
 
@@ -154,6 +157,7 @@ class LocationSyncServiceTests: XCTestCase {
     func testFirePoll_BackgroundPollsEvenWhenNotSharing() async throws {
         let mockClient = MockLocationClient()
         service = LocationSyncService(e2eeManager: service.e2eeManager, userStore: service.userStore, locationClient: mockClient, locationProvider: mockLocationProvider)
+        service.skipNetworkRestore = true
         service.isInForeground = { false }
         service.isSharingLocation = false
         service.startPolling()
@@ -167,6 +171,7 @@ class LocationSyncServiceTests: XCTestCase {
     func testTimerInterval_BackgroundNotSharing_Is30min() async throws {
         let mockClient = MockLocationClient()
         service = LocationSyncService(e2eeManager: service.e2eeManager, userStore: service.userStore, locationClient: mockClient, locationProvider: mockLocationProvider)
+        service.skipNetworkRestore = true
         service.isInForeground = { false }
         service.isSharingLocation = false
         service.startPolling()
@@ -181,6 +186,7 @@ class LocationSyncServiceTests: XCTestCase {
     func testFirePoll_RapidPollsEvenInBackground() async throws {
         let mockClient = MockLocationClient()
         service = LocationSyncService(e2eeManager: service.e2eeManager, userStore: service.userStore, locationClient: mockClient, locationProvider: mockLocationProvider)
+        service.skipNetworkRestore = true
         service.isInForeground = { false }
         service.startPolling()
         service.lastRapidPollTrigger = Date()
@@ -195,6 +201,7 @@ class LocationSyncServiceTests: XCTestCase {
     func testTimerInterval_Foreground_Is10s() async throws {
         let mockClient = MockLocationClient()
         service = LocationSyncService(e2eeManager: service.e2eeManager, userStore: service.userStore, locationClient: mockClient, locationProvider: mockLocationProvider)
+        service.skipNetworkRestore = true
         service.isInForeground = { true }
         service.startPolling()
 
@@ -208,6 +215,7 @@ class LocationSyncServiceTests: XCTestCase {
     func testTimerInterval_Background_Is5min() async throws {
         let mockClient = MockLocationClient()
         service = LocationSyncService(e2eeManager: service.e2eeManager, userStore: service.userStore, locationClient: mockClient, locationProvider: mockLocationProvider)
+        service.skipNetworkRestore = true
         service.isInForeground = { false }
         service.startPolling()
 
@@ -221,6 +229,7 @@ class LocationSyncServiceTests: XCTestCase {
     func testRapidPollResetAfterFirstLocationUpdate() async throws {
         let mockClient = MockLocationClient()
         service = LocationSyncService(e2eeManager: service.e2eeManager, userStore: service.userStore, locationClient: mockClient, locationProvider: mockLocationProvider)
+        service.skipNetworkRestore = true
 
         service.lastRapidPollTrigger = Date()
         let isRapidInitial = service.isRapidPolling()
@@ -255,6 +264,7 @@ class LocationSyncServiceTests: XCTestCase {
     func testPollAllTriggersHeartbeatWhenOverdue() async throws {
         let mockClient = MockLocationClient()
         service = LocationSyncService(e2eeManager: service.e2eeManager, userStore: service.userStore, locationClient: mockClient, locationProvider: mockLocationProvider)
+        service.skipNetworkRestore = true
         service.isSharingLocation = true
         service.lastSentTime = Date(timeIntervalSinceNow: -400) // > 300s ago — heartbeat due
 
@@ -266,6 +276,8 @@ class LocationSyncServiceTests: XCTestCase {
     func testPollAllDoesNotTriggerHeartbeatWhenRecentlySent() async throws {
         let mockClient = MockLocationClient()
         service = LocationSyncService(e2eeManager: service.e2eeManager, userStore: service.userStore, locationClient: mockClient, locationProvider: mockLocationProvider)
+        service.skipNetworkRestore = true
+        service.skipNetworkRestore = true
         service.isSharingLocation = true
         service.lastSentTime = Date(timeIntervalSinceNow: -10) // just 10s ago — no heartbeat due
 
@@ -306,6 +318,7 @@ class LocationSyncServiceTests: XCTestCase {
     func testSendLocationOnBackground_SendsWhenSharingAndLocationAvailable() async throws {
         let mockClient = MockLocationClient()
         service = LocationSyncService(e2eeManager: service.e2eeManager, userStore: service.userStore, locationClient: mockClient, locationProvider: mockLocationProvider)
+        service.skipNetworkRestore = true
         service.isSharingLocation = true
         service.beginBackgroundTask = { _, _ in .invalid }
         service.endBackgroundTask = { _ in }
@@ -323,6 +336,7 @@ class LocationSyncServiceTests: XCTestCase {
     func testSendLocationOnBackground_SkipsWhenNotSharing() async throws {
         let mockClient = MockLocationClient()
         service = LocationSyncService(e2eeManager: service.e2eeManager, userStore: service.userStore, locationClient: mockClient, locationProvider: mockLocationProvider)
+        service.skipNetworkRestore = true
         service.isSharingLocation = false
         service.beginBackgroundTask = { _, _ in .invalid }
         service.endBackgroundTask = { _ in }
@@ -339,6 +353,7 @@ class LocationSyncServiceTests: XCTestCase {
     func testSendLocationOnBackground_SkipsWhenNoLocation() async throws {
         let mockClient = MockLocationClient()
         service = LocationSyncService(e2eeManager: service.e2eeManager, userStore: service.userStore, locationClient: mockClient, locationProvider: mockLocationProvider)
+        service.skipNetworkRestore = true
         service.isSharingLocation = true
         service.beginBackgroundTask = { _, _ in .invalid }
         service.endBackgroundTask = { _ in }
@@ -355,6 +370,7 @@ class LocationSyncServiceTests: XCTestCase {
     func testSendLocationOnBackground_UsesLastSentLocationWhenGpsUnavailable() async throws {
         let mockClient = MockLocationClient()
         service = LocationSyncService(e2eeManager: service.e2eeManager, userStore: service.userStore, locationClient: mockClient, locationProvider: mockLocationProvider)
+        service.skipNetworkRestore = true
         service.isSharingLocation = true
         service.beginBackgroundTask = { _, _ in .invalid }
         service.endBackgroundTask = { _ in }
@@ -383,6 +399,7 @@ class LocationSyncServiceTests: XCTestCase {
     func testOnForegroundEntry_SendsLocationWhenSharingAndAvailable() async throws {
         let mockClient = MockLocationClient()
         service = LocationSyncService(e2eeManager: service.e2eeManager, userStore: service.userStore, locationClient: mockClient, locationProvider: mockLocationProvider)
+        service.skipNetworkRestore = true
         service.beginBackgroundTask = { _, _ in .invalid }
         service.endBackgroundTask = { _ in }
         service.isSharingLocation = true
@@ -404,6 +421,7 @@ class LocationSyncServiceTests: XCTestCase {
     func testOnForegroundEntry_NodoubleSendWhenHeartbeatAlsoDue() async throws {
         let mockClient = MockLocationClient()
         service = LocationSyncService(e2eeManager: service.e2eeManager, userStore: service.userStore, locationClient: mockClient, locationProvider: mockLocationProvider)
+        service.skipNetworkRestore = true
         service.beginBackgroundTask = { _, _ in .invalid }
         service.endBackgroundTask = { _ in }
         service.isSharingLocation = true
@@ -427,6 +445,7 @@ class LocationSyncServiceTests: XCTestCase {
     func testOnForegroundEntry_FiresImmediatePollBypassingInterval() async throws {
         let mockClient = MockLocationClient()
         service = LocationSyncService(e2eeManager: service.e2eeManager, userStore: service.userStore, locationClient: mockClient, locationProvider: mockLocationProvider)
+        service.skipNetworkRestore = true
         service.beginBackgroundTask = { _, _ in .invalid }
         service.endBackgroundTask = { _ in }
         service.isInForeground = { true }
@@ -562,6 +581,7 @@ class LocationSyncServiceTests: XCTestCase {
             locationClient: mockClient,
             locationProvider: mockLocationProvider
         )
+        service.skipNetworkRestore = true
         service.skipUpdateVisibleUsers = true
         service.beginBackgroundTask = { _, _ in .invalid }
         service.endBackgroundTask = { _ in }
@@ -615,6 +635,7 @@ class LocationSyncServiceTests: XCTestCase {
             locationClient: mockClient,
             locationProvider: mockLocationProvider
         )
+        service.skipNetworkRestore = true
         service.skipUpdateVisibleUsers = true
         service.beginBackgroundTask = { _, _ in .invalid }
         service.endBackgroundTask = { _ in }
@@ -649,6 +670,7 @@ class LocationSyncServiceTests: XCTestCase {
             locationClient: mockClient,
             locationProvider: mockLocationProvider
         )
+        service.skipNetworkRestore = true
         service.beginBackgroundTask = { _, _ in .invalid }
         service.endBackgroundTask = { _ in }
 
@@ -678,5 +700,109 @@ class LocationSyncServiceTests: XCTestCase {
             "sendLocation must fire sendLocationToFriend for the pending friend ID set during pairing")
         XCTAssertNil(service.pendingForcedSendFriendId,
             "pendingForcedSendFriendId must be cleared after the forced send fires")
+    }
+
+    // MARK: - handleNetworkRestored
+
+    func testNetworkRestore_FreshLocation_SendsImmediately() async throws {
+        let mockClient = MockLocationClient()
+        service = LocationSyncService(e2eeManager: service.e2eeManager, userStore: service.userStore, locationClient: mockClient, locationProvider: mockLocationProvider)
+        service.skipNetworkRestore = true
+        service.skipNetworkRestore = true
+        service.isSharingLocation = true
+        service.lastSentTime = Date(timeIntervalSince1970: 0)
+
+        // Fresh location (less than 60s old)
+        mockLocationProvider.location = CLLocation(latitude: 37.0, longitude: -122.0)
+
+        let expectation = XCTestExpectation(description: "Sends location on network restore with fresh fix")
+        mockClient.sendLocationCallback = { expectation.fulfill() }
+
+        await service.handleNetworkRestored()
+
+        await fulfillment(of: [expectation], timeout: 1.0)
+        XCTAssertFalse(service.forceNextLocationUpdate, "forceNextLocationUpdate should not be set when fix is fresh")
+    }
+
+    func testNetworkRestore_StaleLocation_RequestsFreshFix() async throws {
+        let mockClient = MockLocationClient()
+        service = LocationSyncService(e2eeManager: service.e2eeManager, userStore: service.userStore, locationClient: mockClient, locationProvider: mockLocationProvider)
+        service.skipNetworkRestore = true
+        service.skipNetworkRestore = true
+        service.isSharingLocation = true
+        service.locationFixTimeout = 60.0  // prevent timeout from firing during this test
+
+        // Stale location (90s old)
+        let staleLocation = CLLocation(
+            coordinate: CLLocationCoordinate2D(latitude: 37.0, longitude: -122.0),
+            altitude: 0, horizontalAccuracy: 10, verticalAccuracy: 10,
+            timestamp: Date(timeIntervalSinceNow: -90)
+        )
+        mockLocationProvider.location = staleLocation
+
+        let notSent = XCTestExpectation(description: "Should not send immediately on stale fix")
+        notSent.isInverted = true
+        mockClient.sendLocationCallback = { notSent.fulfill() }
+
+        await service.handleNetworkRestored()
+        await fulfillment(of: [notSent], timeout: 0.2)
+
+        XCTAssertTrue(service.forceNextLocationUpdate, "Should arm forceNextLocationUpdate so the next GPS fix bypasses throttle")
+        XCTAssertTrue(mockLocationProvider.requestImmediateLocationCalled, "Should request a fresh GPS fix")
+    }
+
+    func testNetworkRestore_StaleLocation_TimeoutFallback() async throws {
+        let mockClient = MockLocationClient()
+        service = LocationSyncService(e2eeManager: service.e2eeManager, userStore: service.userStore, locationClient: mockClient, locationProvider: mockLocationProvider)
+        service.skipNetworkRestore = true
+        service.skipNetworkRestore = true
+        service.isSharingLocation = true
+        service.locationFixTimeout = 0.05  // short timeout so test doesn't take 10s
+        service.lastSentTime = Date(timeIntervalSince1970: 0)
+
+        // Stale location that will be used as the fallback
+        let staleLocation = CLLocation(
+            coordinate: CLLocationCoordinate2D(latitude: 37.0, longitude: -122.0),
+            altitude: 0, horizontalAccuracy: 10, verticalAccuracy: 10,
+            timestamp: Date(timeIntervalSinceNow: -90)
+        )
+        mockLocationProvider.location = staleLocation
+
+        let expectation = XCTestExpectation(description: "Fallback sends stale location after GPS timeout")
+        mockClient.sendLocationCallback = { expectation.fulfill() }
+
+        await service.handleNetworkRestored()
+        await fulfillment(of: [expectation], timeout: 1.0)
+
+        XCTAssertFalse(service.forceNextLocationUpdate, "forceNextLocationUpdate should be cleared after fallback send")
+    }
+
+    func testNetworkRestore_RapidFlap_OnlyOneSend() async throws {
+        let mockClient = MockLocationClient()
+        service = LocationSyncService(e2eeManager: service.e2eeManager, userStore: service.userStore, locationClient: mockClient, locationProvider: mockLocationProvider)
+        service.skipNetworkRestore = true
+        service.skipNetworkRestore = true
+        service.isSharingLocation = true
+        service.locationFixTimeout = 0.1
+        service.lastSentTime = Date(timeIntervalSince1970: 0)
+
+        let staleLocation = CLLocation(
+            coordinate: CLLocationCoordinate2D(latitude: 37.0, longitude: -122.0),
+            altitude: 0, horizontalAccuracy: 10, verticalAccuracy: 10,
+            timestamp: Date(timeIntervalSinceNow: -90)
+        )
+        mockLocationProvider.location = staleLocation
+
+        let sendCount = SendCountBox()
+        mockClient.sendLocationCallback = { sendCount.increment() }
+
+        // Simulate rapid network flap: first restore arms a timeout, second cancels it and arms a fresh one
+        await service.handleNetworkRestored()
+        await service.handleNetworkRestored()
+
+        // Wait long enough for any timeout tasks to fire
+        try await Task.sleep(nanoseconds: 500_000_000)
+
+        XCTAssertEqual(sendCount.getCount(), 1, "Rapid network flap should not produce duplicate sends")
     }
 }
