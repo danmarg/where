@@ -284,37 +284,45 @@ open class LocationClient(
         }
 
     suspend fun syncNow() {
-        val friends = store.listFriends()
-        friends.forEach { friend ->
-            val mutex = getFriendMutex(friend.id)
-            mutex.withLock {
-                processOutbox(friend.id)
-                try {
-                    pollFriend(friend.id)
-                } catch (e: Exception) {
-                    // Ignore
+        coroutineScope {
+            val friends = store.listFriends()
+            friends.map { friend ->
+                async {
+                    val mutex = getFriendMutex(friend.id)
+                    mutex.withLock {
+                        processOutbox(friend.id)
+                        try {
+                            pollFriend(friend.id)
+                        } catch (e: Exception) {
+                            // Ignore
+                        }
+                    }
                 }
-            }
+            }.awaitAll()
         }
     }
 
     suspend fun processOutboxes() {
-        val friends =
-            try {
-                store.listFriends()
-            } catch (e: Exception) {
-                return
-            }
-
-        friends.forEach { friend ->
-            try {
-                val mutex = getFriendMutex(friend.id)
-                mutex.withLock {
-                    processOutbox(friend.id)
+        coroutineScope {
+            val friends =
+                try {
+                    store.listFriends()
+                } catch (e: Exception) {
+                    return@coroutineScope
                 }
-            } catch (e: Exception) {
-                // Ignore
-            }
+
+            friends.map { friend ->
+                async {
+                    try {
+                        val mutex = getFriendMutex(friend.id)
+                        mutex.withLock {
+                            processOutbox(friend.id)
+                        }
+                    } catch (e: Exception) {
+                        // Ignore
+                    }
+                }
+            }.awaitAll()
         }
     }
 
@@ -337,28 +345,43 @@ open class LocationClient(
         lng: Double,
         pausedFriendIds: Set<String> = emptySet(),
     ) {
-        val ts = currentTimeSeconds()
-        val payload = MessagePlaintext.Location(lat = lat, lng = lng, acc = 0.0, ts = ts)
-        val activeFriends = store.listFriends().filter { it.id !in pausedFriendIds && !it.isStale }
+        coroutineScope {
+            val ts = currentTimeSeconds()
+            val payload = MessagePlaintext.Location(lat = lat, lng = lng, acc = 0.0, ts = ts)
+            val activeFriends = store.listFriends().filter { it.id !in pausedFriendIds && !it.isStale }
 
-        var successCount = 0
-        var failCount = 0
-        var lastError: Exception? = null
-        for (friend in activeFriends) {
-            try {
-                val mutex = getFriendMutex(friend.id)
-                mutex.withLock {
-                    sendMessageToFriendInternal(friend.id, payload)
+            val deferreds =
+                activeFriends.map { friend ->
+                    async {
+                        try {
+                            val mutex = getFriendMutex(friend.id)
+                            mutex.withLock {
+                                sendMessageToFriendInternal(friend.id, payload)
+                            }
+                            Pair(true, null)
+                        } catch (e: Exception) {
+                            Pair(false, e)
+                        }
+                    }
                 }
-                successCount++
-            } catch (e: Exception) {
-                lastError = e
-                failCount++
-            }
-        }
 
-        if (successCount == 0 && failCount > 0) {
-            lastError?.let { throw it }
+            val results = deferreds.awaitAll()
+            var successCount = 0
+            var failCount = 0
+            var lastError: Exception? = null
+
+            for ((success, error) in results) {
+                if (success) {
+                    successCount++
+                } else {
+                    failCount++
+                    lastError = error
+                }
+            }
+
+            if (successCount == 0 && failCount > 0) {
+                lastError?.let { throw it }
+            }
         }
     }
 

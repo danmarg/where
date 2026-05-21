@@ -805,7 +805,6 @@ final class LocationSyncService: ObservableObject {
         }
 
         let interval = lastSuccessfulSendTime.map { now.timeIntervalSince($0) }
-        lastSentLocation = (lat: lat, lng: lng)
         ownHeading = heading
         lastSentTime = now
         pendingForcedSendAfterPairing = false
@@ -829,6 +828,7 @@ final class LocationSyncService: ObservableObject {
                     logger.info("sendLocation: succeeded (lat=\(lat), lng=\(lng), source=\(source.rawValue))")
                     logReliability(source: source, success: true, interval: interval)
                     lastSuccessfulSendTime = now
+                    self.lastSentLocation = (lat: lat, lng: lng)
                     updateStatus(nil)
                 }
             } catch {
