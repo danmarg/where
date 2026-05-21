@@ -24,7 +24,7 @@ private final class AtomicBool: @unchecked Sendable {
 
 /// Thread-safe wrapper for CheckedContinuation to ensure it is resumed exactly once,
 /// handling potential races between completion and cancellation.
-private final class SafeContinuation<T>: @unchecked Sendable {
+private final class SafeContinuation<T: Sendable>: @unchecked Sendable {
     private let lock = NSLock()
     private var continuation: CheckedContinuation<T, Never>?
     private var valueIfResumedEarly: T?
