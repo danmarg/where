@@ -8,6 +8,57 @@ import Combine
 import Network
 private let logger = Logger(subsystem: "net.af0.where", category: "LocationSync")
 
+private final class AtomicBool: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value: Bool
+    init(_ value: Bool) { self.value = value }
+    func compareAndExchange(expected: Bool, newValue: Bool) -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        if value == expected {
+            value = newValue
+            return true
+        }
+        return false
+    }
+}
+
+/// Thread-safe wrapper for CheckedContinuation to ensure it is resumed exactly once,
+/// handling potential races between completion and cancellation.
+private final class SafeContinuation<T>: @unchecked Sendable {
+    private let lock = NSLock()
+    private var continuation: CheckedContinuation<T, Never>?
+    private var valueIfResumedEarly: T?
+    private var isResumed = false
+
+    func set(_ continuation: CheckedContinuation<T, Never>) {
+        lock.lock()
+        if isResumed, let value = valueIfResumedEarly {
+            lock.unlock()
+            continuation.resume(returning: value)
+            return
+        }
+        self.continuation = continuation
+        lock.unlock()
+    }
+
+    func resume(returning value: T) {
+        lock.lock()
+        if isResumed {
+            lock.unlock()
+            return
+        }
+        isResumed = true
+        if let c = continuation {
+            continuation = nil
+            lock.unlock()
+            c.resume(returning: value)
+        } else {
+            valueIfResumedEarly = value
+            lock.unlock()
+        }
+    }
+}
+
 private class RawStringDesc: NSObject, Shared.ResourcesStringDesc {
     private let value: String
     init(_ value: String) { self.value = value }
@@ -437,29 +488,28 @@ final class LocationSyncService: ObservableObject {
             return false
         }
 
+        let safeContinuation = SafeContinuation<Bool>()
         return await withTaskCancellationHandler {
             await withCheckedContinuation { continuation in
+                safeContinuation.set(continuation)
                 let now = Date()
                 let sixtySecondsAgo = now.addingTimeInterval(-60)
+
                 motionActivityManager.queryActivityStarting(from: sixtySecondsAgo, to: now, to: motionQueue) { activities, error in
                     if let error = error {
-                        // Log but default to not stationary (safe)
                         logger.error("Motion activity query failed: \(error.localizedDescription)")
-                        continuation.resume(returning: false)
+                        safeContinuation.resume(returning: false)
                         return
                     }
-
-                    // If we have high/medium confidence that the user is stationary, return true.
                     if let lastActivity = activities?.last(where: { $0.confidence != .low }) {
-                        continuation.resume(returning: lastActivity.stationary)
+                        safeContinuation.resume(returning: lastActivity.stationary)
                     } else {
-                        continuation.resume(returning: false)
+                        safeContinuation.resume(returning: false)
                     }
                 }
             }
         } onCancel: {
-            // We can't cancel the individual queryActivityStarting call easily, but
-            // withCheckedContinuation handles the task lifecycle.
+            safeContinuation.resume(returning: false)
         }
     }
 
@@ -851,6 +901,10 @@ final class LocationSyncService: ObservableObject {
                     logger.info("sendLocation: succeeded (lat=\(lat), lng=\(lng), source=\(source.rawValue))")
                     logReliability(source: source, success: true, interval: interval)
                     lastSuccessfulSendTime = now
+                    // Software Distance Filter Baseline: only update the baseline when a send
+                    // successfully completes. This ensures that if a transmission fails, the
+                    // next update (even if it's <50m from this failed one) will still be
+                    // eligible for broadcast.
                     self.lastSentLocation = (lat: lat, lng: lng)
                     updateStatus(nil)
                 }
