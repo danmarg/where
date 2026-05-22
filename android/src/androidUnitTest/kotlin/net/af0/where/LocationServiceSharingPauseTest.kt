@@ -36,6 +36,7 @@ class LocationServiceSharingPauseTest {
         shadowOf(context).grantPermissions(Manifest.permission.ACCESS_FINE_LOCATION)
 
         fakeLocationSource = ServiceFakeLocationSource()
+        fakeLocationSource.onFriendsUpdated(listOf(io.mockk.mockk<net.af0.where.e2ee.FriendEntry>(relaxed = true)))
         LocationService.clock = { System.currentTimeMillis() }
 
         mockFused = mockk(relaxed = true)
@@ -59,9 +60,12 @@ class LocationServiceSharingPauseTest {
 
             val controller = Robolectric.buildService(LocationService::class.java)
             val service = controller.get()
+            val mockFriend = io.mockk.mockk<net.af0.where.e2ee.FriendEntry>(relaxed = true)
+            val mockE2ee = mockk<net.af0.where.e2ee.E2eeManager>(relaxed = true)
+            io.mockk.coEvery { mockE2ee.listFriends() } returns listOf(mockFriend)
             service.fusedClientOverride = mockFused
             service.locationClientOverride = mockk(relaxed = true)
-            service.e2eeManagerOverride = mockk(relaxed = true)
+            service.e2eeManagerOverride = mockE2ee
             service.locationSourceOverride = fakeLocationSource
 
             controller.create()

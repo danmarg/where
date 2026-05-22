@@ -230,6 +230,12 @@ class LocationService : Service() {
                 ensureLocationRegistration()
             }
         }
+        serviceScope.launch {
+            locationSource.friends.collect { ensureLocationRegistration() }
+        }
+        serviceScope.launch {
+            locationSource.allPendingInvites.collect { ensureLocationRegistration() }
+        }
 
         serviceScope.launch { pollLoop() }
         serviceScope.launch {
@@ -361,7 +367,7 @@ class LocationService : Service() {
         val geofence =
             com.google.android.gms.location.Geofence.Builder()
                 .setRequestId("stationary_fence")
-                .setCircularRegion(lat, lng, 100f)
+                .setCircularRegion(lat, lng, MOVEMENT_RADIUS_THRESHOLD_METERS)
                 .setExpirationDuration(com.google.android.gms.location.Geofence.NEVER_EXPIRE)
                 .setTransitionTypes(com.google.android.gms.location.Geofence.GEOFENCE_TRANSITION_EXIT)
                 .build()
@@ -431,6 +437,18 @@ class LocationService : Service() {
             return
         }
 
+        if (locationSource.friends.value.isEmpty() && locationSource.allPendingInvites.value.isEmpty()) {
+            if (isRegistered) {
+                try { fusedClient.removeLocationUpdates(locationCallback) } catch (_: SecurityException) {}
+                isRegistered = false
+            }
+            if (isPassiveRegistered) {
+                try { fusedClient.removeLocationUpdates(passiveLocationCallback) } catch (_: SecurityException) {}
+                isPassiveRegistered = false
+            }
+            return
+        }
+
         if (isRegistered) return
 
         if (!isPassiveRegistered) {
@@ -450,7 +468,7 @@ class LocationService : Service() {
         val request =
             LocationRequest.Builder(currentPriority, currentInterval)
                 .setMinUpdateIntervalMillis(10_000L) // Floor on active-registration delivery; passive piggybacking handled by PRIORITY_PASSIVE registration above.
-                .setMinUpdateDistanceMeters(50f)
+                .setMinUpdateDistanceMeters(MOVEMENT_RADIUS_THRESHOLD_METERS)
                 .setMaxUpdateDelayMillis(60_000L)
                 .build()
 
@@ -567,6 +585,11 @@ class LocationService : Service() {
                 WakeSource.ALARM
             } else {
                 WakeSource.TIMER
+            }
+            if (locationSource.friends.value.isEmpty() && locationSource.allPendingInvites.value.isEmpty()) {
+                Log.i(TAG, "No friends or pending invites; stopping service.")
+                stopSelf()
+                return
             }
             // Always poll — even when sharing is off we need to process incoming
             // EpochRotations and post Ratchet Acks so Alice's location doesn't get
@@ -869,6 +892,12 @@ class LocationService : Service() {
         const val ACTION_GEOFENCE_EVENT = "net.af0.where.ACTION_GEOFENCE_EVENT"
         private const val PENDING_INTENT_REQUEST_CODE_ACTIVITY = 1
         const val EXTRA_FRIEND_ID = "friend_id"
+
+        /**
+         * Minimum distance in meters before a location update is considered movement
+         * and broadcast to friends.
+         */
+        const val MOVEMENT_RADIUS_THRESHOLD_METERS = 200f
 
         /**
          * Interval to wait before forcing a fresh GPS fix if stationary (§5.3).

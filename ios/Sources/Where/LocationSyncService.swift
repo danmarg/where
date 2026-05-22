@@ -107,13 +107,13 @@ final class LocationSyncService: ObservableObject {
     private var isPollInFlight = false
     /// Overridable in tests to simulate foreground/background without UIKit.
     var isInForeground: () -> Bool = { UIApplication.shared.applicationState == .active }
-    private static let rapidPollInterval: TimeInterval = 1.0
+    private static let rapidPollInterval: TimeInterval = 2.0
     private static let foregroundPollInterval: TimeInterval = 10.0
     private static let normalPollInterval: TimeInterval = 300.0 // 5 min (background sharing)
     private static let maintenancePollInterval: TimeInterval = 30 * 60  // ack-only when not sharing
     private static let staleLocationThreshold: TimeInterval = 60.0
     private static let locationSendThrottle: TimeInterval = 30.0
-    static let minimumReportingDistanceMeters: CLLocationDistance = 50
+    static let minimumReportingDistanceMeters: CLLocationDistance = 200
     private static let rapidPollDuration: TimeInterval = 60.0
     var locationFixTimeout: TimeInterval = 10.0  // internal for testing
     /// Fixes with horizontalAccuracy above this threshold are cell/WiFi network fixes too noisy
@@ -292,7 +292,7 @@ final class LocationSyncService: ObservableObject {
                 logger.info("requestImmediateLocation timeout: sending stale fix as fallback")
                 self.forceNextLocationUpdate = false
                 if let loc = self.bestAvailableLocation {
-                    self.sendLocation(lat: loc.lat, lng: loc.lng, heading: loc.heading, source: .network)
+                    self.sendLocation(lat: loc.lat, lng: loc.lng, heading: loc.heading, force: true, source: .network)
                 }
             }
         } else if let loc = bestAvailableLocation {
@@ -357,12 +357,9 @@ final class LocationSyncService: ObservableObject {
 
     @MainActor
     func targetPollInterval() -> TimeInterval {
-        if isRapidPolling() {
-            return Self.rapidPollInterval
-        }
-        if isInForeground() {
-            return Self.foregroundPollInterval
-        }
+        if isRapidPolling() { return Self.rapidPollInterval }
+        if isInForeground() { return Self.foregroundPollInterval }
+        if friends.isEmpty && pendingInvites.isEmpty { return Self.maintenancePollInterval }
         return isSharingLocation ? Self.normalPollInterval : Self.maintenancePollInterval
     }
 
@@ -614,6 +611,7 @@ final class LocationSyncService: ObservableObject {
         isInviteSheetShowing = false
         pendingInitAliceEkPub = nil
         pendingInitPayload = nil
+        locationProvider.sharingStateChanged()
     }
 
     @discardableResult
@@ -730,6 +728,7 @@ final class LocationSyncService: ObservableObject {
                 }
             }
             triggerRapidPoll()
+            locationProvider.sharingStateChanged()
             friends = try await e2eeManager.listFriends()
             updateVisibleUsers()
         } catch {
@@ -768,6 +767,7 @@ final class LocationSyncService: ObservableObject {
             friendLocations.removeValue(forKey: id)
             friendLastPing.removeValue(forKey: id)
             updateVisibleUsers()
+            locationProvider.sharingStateChanged()
         } catch {
             logger.error("Failed to remove friend: \(error.localizedDescription)")
         }
