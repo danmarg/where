@@ -292,7 +292,7 @@ final class LocationSyncService: ObservableObject {
                 logger.info("requestImmediateLocation timeout: sending stale fix as fallback")
                 self.forceNextLocationUpdate = false
                 if let loc = self.bestAvailableLocation {
-                    self.sendLocation(lat: loc.lat, lng: loc.lng, heading: loc.heading, source: .network)
+                    self.sendLocation(lat: loc.lat, lng: loc.lng, heading: loc.heading, force: true, source: .network)
                 }
             }
         } else if let loc = bestAvailableLocation {
