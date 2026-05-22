@@ -500,7 +500,8 @@ class LocationViewModel(
                 PackageManager.PERMISSION_GRANTED ||
                 ContextCompat.checkSelfPermission(getApplication(), Manifest.permission.ACCESS_COARSE_LOCATION) ==
                 PackageManager.PERMISSION_GRANTED
-        if ((sharing && hasLocationPermission) || inForeground) {
+        val hasRelationships = friends.value.isNotEmpty() || locationSource.allPendingInvites.value.isNotEmpty()
+        if ((sharing && hasLocationPermission && hasRelationships) || inForeground) {
             getApplication<Application>().startForegroundService(intent)
             try {
                 WorkManager.getInstance(getApplication()).enqueueUniquePeriodicWork(
@@ -519,6 +520,9 @@ class LocationViewModel(
                     _showBatteryOptimizationDialog.value = true
                 }
             }
+        } else if (!hasRelationships) {
+            try { WorkManager.getInstance(getApplication()).cancelUniqueWork(LocationServiceRestartWorker.WORK_NAME) }
+            catch (_: IllegalStateException) {}
         }
         // Intentionally no stopService() here: when sharing is paused the service must remain
         // alive for maintenance polls (ratchet keepalives, token ACKs) so the Double Ratchet

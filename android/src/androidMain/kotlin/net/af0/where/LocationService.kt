@@ -230,6 +230,12 @@ class LocationService : Service() {
                 ensureLocationRegistration()
             }
         }
+        serviceScope.launch {
+            locationSource.friends.collect { ensureLocationRegistration() }
+        }
+        serviceScope.launch {
+            locationSource.allPendingInvites.collect { ensureLocationRegistration() }
+        }
 
         serviceScope.launch { pollLoop() }
         serviceScope.launch {
@@ -431,6 +437,18 @@ class LocationService : Service() {
             return
         }
 
+        if (locationSource.friends.value.isEmpty() && locationSource.allPendingInvites.value.isEmpty()) {
+            if (isRegistered) {
+                try { fusedClient.removeLocationUpdates(locationCallback) } catch (_: SecurityException) {}
+                isRegistered = false
+            }
+            if (isPassiveRegistered) {
+                try { fusedClient.removeLocationUpdates(passiveLocationCallback) } catch (_: SecurityException) {}
+                isPassiveRegistered = false
+            }
+            return
+        }
+
         if (isRegistered) return
 
         if (!isPassiveRegistered) {
@@ -450,7 +468,7 @@ class LocationService : Service() {
         val request =
             LocationRequest.Builder(currentPriority, currentInterval)
                 .setMinUpdateIntervalMillis(10_000L) // Floor on active-registration delivery; passive piggybacking handled by PRIORITY_PASSIVE registration above.
-                .setMinUpdateDistanceMeters(50f)
+                .setMinUpdateDistanceMeters(100f)
                 .setMaxUpdateDelayMillis(60_000L)
                 .build()
 
@@ -572,6 +590,11 @@ class LocationService : Service() {
             // EpochRotations and post Ratchet Acks so Alice's location doesn't get
             // stuck.  The interval is 30 min in that case (maintenance-only).
             doPoll(source)
+            if (locationSource.friends.value.isEmpty() && locationSource.allPendingInvites.value.isEmpty()) {
+                Log.i(TAG, "No friends or pending invites; stopping service.")
+                stopSelf()
+                return
+            }
             // Heartbeat: ensure we send at least once every 5 minutes when stationary.
             // Runs regardless of foreground state so background location stays alive.
             if (isSharing) {

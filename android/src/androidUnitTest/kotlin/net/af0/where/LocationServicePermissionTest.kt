@@ -43,6 +43,7 @@ class LocationServicePermissionTest {
         shadowOf(context).denyPermissions(Manifest.permission.ACCESS_COARSE_LOCATION)
 
         fakeLocationSource = ServiceFakeLocationSource()
+        fakeLocationSource.onFriendsUpdated(listOf(io.mockk.mockk<net.af0.where.e2ee.FriendEntry>(relaxed = true)))
         LocationService.clock = { System.currentTimeMillis() }
 
         mockFused = mockk(relaxed = true)
