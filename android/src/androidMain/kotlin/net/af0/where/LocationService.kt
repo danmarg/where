@@ -586,15 +586,15 @@ class LocationService : Service() {
             } else {
                 WakeSource.TIMER
             }
-            // Always poll — even when sharing is off we need to process incoming
-            // EpochRotations and post Ratchet Acks so Alice's location doesn't get
-            // stuck.  The interval is 30 min in that case (maintenance-only).
-            doPoll(source)
             if (locationSource.friends.value.isEmpty() && locationSource.allPendingInvites.value.isEmpty()) {
                 Log.i(TAG, "No friends or pending invites; stopping service.")
                 stopSelf()
                 return
             }
+            // Always poll — even when sharing is off we need to process incoming
+            // EpochRotations and post Ratchet Acks so Alice's location doesn't get
+            // stuck.  The interval is 30 min in that case (maintenance-only).
+            doPoll(source)
             // Heartbeat: ensure we send at least once every 5 minutes when stationary.
             // Runs regardless of foreground state so background location stays alive.
             if (isSharing) {
