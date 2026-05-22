@@ -910,5 +910,3 @@ private extension UIBackgroundTaskIdentifier {
         }
     }
 }
-}
-}
