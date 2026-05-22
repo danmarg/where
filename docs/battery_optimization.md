@@ -9,9 +9,9 @@ This document details the design, optimization strategies, and battery tradeoffs
 Where uses a **zero-knowledge, end-to-end encrypted (E2EE)** model. This architecture introduces specific constraints for background operations and synchronization:
 1. **Zero-Knowledge Routing:** The server does not know who is friends with whom, nor does it store a social graph. Data is sent to and retrieved from anonymous mailboxes.
 2. **Polling-Based Model:** Because the server cannot associate users without metadata leakage, the app relies on client-side polling to retrieve updates from mailboxes. 
-3. **No-Push Default:** Push notification mechanisms (like Firebase Cloud Messaging / APNs) are intentionally avoided or minimized in the core sync engine to preserve the zero-knowledge design and avoid client-token metadata correlation on central servers.
+3. **No-Push Default:** Push notification mechanisms (like Firebase Cloud Messaging / APNs) are intentionally avoided in the core sync engine to preserve the zero-knowledge design and avoid client-token metadata correlation on central servers.
 
-This polling-and-GPS combination is inherently resource-intensive. Battery optimization requires balancing real-time UI responsiveness for active users with aggressive power-saving measures when the app is backgrounded or stationary.
+This polling-and-GPS combination is inherently resource-intensive. Battery optimization requires balancing real-time responsiveness for active users with aggressive power-saving measures when the app is backgrounded or stationary.
 
 ---
 
