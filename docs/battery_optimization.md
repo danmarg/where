@@ -62,19 +62,19 @@ To optimize these hardware limits, Where uses a structured approach to location 
        [Location Sensor Fix]
                  │
                  ▼
-     [Movement Radius Filter]  ───(Distance < 100m)───► [Discard Fix]
+     [Movement Radius Filter]  ───(Distance < 200m)───► [Discard Fix]
                  │
-                 ▼ (Distance >= 100m)
+                 ▼ (Distance >= 200m)
       [Software Send Throttle] ───(Time < 30s)────────► [Cache Fix for Next Send]
                  │
                  ▼ (Time >= 30s)
       [Encrypt & POST to Server]
 ```
 
-### 3.1 Movement Radius Filter (100 meters)
-We enforce a **100-meter movement threshold** on both iOS and Android before considering a device to be "moving."
-* **Drift Suppression:** A 100m threshold filters out typical GPS drift when a user is indoors, preventing false "moving" triggers.
-* **Battery Conservation:** By ignoring movements less than 100m, we avoid waking up the E2EE encryption engine and the cellular radio for negligible position changes.
+### 3.1 Movement Radius Filter (200 meters)
+We enforce a **200-meter movement threshold** on both iOS and Android before considering a device to be "moving."
+* **Drift Suppression:** A 200m threshold filters out typical GPS drift when a user is indoors, preventing false "moving" triggers.
+* **Battery Conservation:** By ignoring movements less than 200m, we avoid waking up the E2EE encryption engine and the cellular radio for negligible position changes.
 
 ### 3.2 Software Send Throttle (30 seconds)
 Even if the operating system delivers location updates at high frequencies (e.g., during driving), the app limits outbound network transmissions to **once every 30 seconds** (`MIN_SEND_INTERVAL_MS`).
@@ -100,16 +100,16 @@ Android utilizes Google Play Services Activity Recognition and Geofencing:
 
 * **Still Detection:** Using the `ActivityRecognitionClient`, the app detects when the user enters the `STILL` state (stationary for >60s).
 * **Passive Mode & Geofencing:** Upon entering the `STILL` state:
-  1. The app registers a circular **100m Geofence** centered at the current location.
+  1. The app registers a circular **200m Geofence** centered at the current location.
   2. The active GPS request priority is downgraded to `Priority.PRIORITY_PASSIVE` (meaning GPS is turned off unless another app on the system requests a fix).
 * **Heartbeat Send:** Every 5 minutes, the background poll loop wakes up. Instead of querying the GPS hardware (which would wake the satellite receiver), it **reuses the last cached location** to send a heartbeat update to the server.
-* **Geofence Exit:** When the user moves beyond the 100m geofence, the OS triggers a geofence exit transition. The app immediately removes the geofence, restores `Priority.PRIORITY_HIGH_ACCURACY`, and increases GPS requests to the active moving rate (10s foreground / 30s background).
+* **Geofence Exit:** When the user moves beyond the 200m geofence, the OS triggers a geofence exit transition. The app immediately removes the geofence, restores `Priority.PRIORITY_HIGH_ACCURACY`, and increases GPS requests to the active moving rate (10s foreground / 30s background).
 
 ### 4.2 iOS: Motion Activity, Distance Filters, and BGAppRefreshTask
 iOS leverages CoreLocation's native power management combined with CoreMotion and BackgroundTasks:
 
 * **Stationary Detection:** The app queries `CMMotionActivityManager` to check if the user has been stationary for the last 60 seconds.
-* **Distance Filters:** The core location manager uses a `distanceFilter` of **100m**. In the background, iOS automatically keeps the GPS hardware in a low-power passive monitoring mode, waking up the app only when cellular tower triangulation or Wi-Fi signals indicate the user has crossed the 100m boundary.
+* **Distance Filters:** The core location manager uses a `distanceFilter` of **200m**. In the background, iOS automatically keeps the GPS hardware in a low-power passive monitoring mode, waking up the app only when cellular tower triangulation or Wi-Fi signals indicate the user has crossed the 200m boundary.
 * **Heartbeat & Location Reuse:** Similar to Android, if the device is marked stationary by CoreMotion, the 5-minute background synchronization loop reuses the cached coordinates, avoiding active GPS satellite searches.
 * **Background App Refresh Task (BGAppRefreshTask):** While `CLBackgroundActivitySession` keeps the app active when moving, the iOS system can still suspend or terminate the app under memory pressure or prolonged inactivity. To ensure the 5-minute background poll doesn't stall indefinitely, the app registers a `BGAppRefreshTaskRequest` (`net.af0.where.heartbeat`) to trigger system-scheduled fallback wakes (every 15–30 minutes).
 * **0 Friends Optimization for BGTask:** If the user has 0 friends and 0 pending invites, scheduling the next `BGAppRefreshTask` is skipped. This prevents unnecessary CPU and radio wake-ups when the app is completely idle. The task scheduling resumes immediately once the user adds a friend or creates/joins an invite.
@@ -155,7 +155,7 @@ To maintain parity and predictability across platforms, the following parameters
 | `BACKGROUND_POLL_INTERVAL` | **300.0 seconds (5m)** | Normal background polling and heartbeat rate. |
 | `MAINTENANCE_POLL_INTERVAL` | **1800.0 seconds (30m)** | Polling rate when sharing is paused or no friends exist. |
 | `PUSH_THROTTLE_INTERVAL` | **30.0 seconds** | Software limit for sending location updates. |
-| `MOVEMENT_RADIUS_THRESHOLD` | **100.0 meters** | Distance filter to trigger a movement update. |
-| `STATIONARY_GEOFENCE_RADIUS` | **100.0 meters** | Android geofence size to detect stationary exit. |
+| `MOVEMENT_RADIUS_THRESHOLD` | **200.0 meters** | Distance filter to trigger a movement update. |
+| `STATIONARY_GEOFENCE_RADIUS` | **200.0 meters** | Android geofence size to detect stationary exit. |
 | `GPS_INTERVAL_FOREGROUND` | **10.0 seconds** | GPS request interval on Android in foreground. |
 | `GPS_INTERVAL_BACKGROUND` | **30.0 seconds** | GPS request interval on Android in background. |

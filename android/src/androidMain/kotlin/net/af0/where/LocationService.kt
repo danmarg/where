@@ -367,7 +367,7 @@ class LocationService : Service() {
         val geofence =
             com.google.android.gms.location.Geofence.Builder()
                 .setRequestId("stationary_fence")
-                .setCircularRegion(lat, lng, 100f)
+                .setCircularRegion(lat, lng, MOVEMENT_RADIUS_THRESHOLD_METERS)
                 .setExpirationDuration(com.google.android.gms.location.Geofence.NEVER_EXPIRE)
                 .setTransitionTypes(com.google.android.gms.location.Geofence.GEOFENCE_TRANSITION_EXIT)
                 .build()
@@ -468,7 +468,7 @@ class LocationService : Service() {
         val request =
             LocationRequest.Builder(currentPriority, currentInterval)
                 .setMinUpdateIntervalMillis(10_000L) // Floor on active-registration delivery; passive piggybacking handled by PRIORITY_PASSIVE registration above.
-                .setMinUpdateDistanceMeters(100f)
+                .setMinUpdateDistanceMeters(MOVEMENT_RADIUS_THRESHOLD_METERS)
                 .setMaxUpdateDelayMillis(60_000L)
                 .build()
 
@@ -892,6 +892,12 @@ class LocationService : Service() {
         const val ACTION_GEOFENCE_EVENT = "net.af0.where.ACTION_GEOFENCE_EVENT"
         private const val PENDING_INTENT_REQUEST_CODE_ACTIVITY = 1
         const val EXTRA_FRIEND_ID = "friend_id"
+
+        /**
+         * Minimum distance in meters before a location update is considered movement
+         * and broadcast to friends.
+         */
+        const val MOVEMENT_RADIUS_THRESHOLD_METERS = 200f
 
         /**
          * Interval to wait before forcing a fresh GPS fix if stationary (§5.3).

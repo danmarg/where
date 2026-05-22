@@ -113,7 +113,7 @@ final class LocationSyncService: ObservableObject {
     private static let maintenancePollInterval: TimeInterval = 30 * 60  // ack-only when not sharing
     private static let staleLocationThreshold: TimeInterval = 60.0
     private static let locationSendThrottle: TimeInterval = 30.0
-    static let minimumReportingDistanceMeters: CLLocationDistance = 100
+    static let minimumReportingDistanceMeters: CLLocationDistance = 200
     private static let rapidPollDuration: TimeInterval = 60.0
     var locationFixTimeout: TimeInterval = 10.0  // internal for testing
     /// Fixes with horizontalAccuracy above this threshold are cell/WiFi network fixes too noisy
@@ -728,6 +728,7 @@ final class LocationSyncService: ObservableObject {
                 }
             }
             triggerRapidPoll()
+            locationProvider.sharingStateChanged()
             friends = try await e2eeManager.listFriends()
             updateVisibleUsers()
         } catch {
@@ -908,4 +909,6 @@ private extension UIBackgroundTaskIdentifier {
             }
         }
     }
+}
+}
 }
