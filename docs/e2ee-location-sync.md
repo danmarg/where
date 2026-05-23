@@ -37,11 +37,11 @@ Without E2EE, each client connects to a Ktor server. When a client sends a locat
 
 The goal of this protocol is to make the server cryptographically unable to read location payloads and unable to reconstruct the social graph, even if it is fully compromised.
 
-### 1.2 Location Precision Control (Disabled)
+### 1.2 Location Precision Control (client unimplemented)
 
 As a core privacy feature, the protocol supports client-side precision degradation. Before encryption, the sender may apply a configurable rounding function to their coordinates (e.g., snapping to a coarser grid or rounding to N decimal places). This allows users to share "neighbourhood" or "city" level precision with specific friends. Because degradation happens before encryption, the recipient only ever receives the degraded coordinates, and the server cannot recover the original precision.
 
-**Note:** While supported by the wire protocol, this feature is currently disabled in the application UI and all location updates are sent with full precision.
+**Note:** While supported by the wire protocol, this feature is currently unimplemented in the iOS and Android clients and all location updates are sent with full precision.
 
 ### 1.3 Scope
 
@@ -53,8 +53,22 @@ This document covers:
 
 This document does **not** cover:
 - Post-quantum cryptography (deferred; see Section 12)
-- Multi-device support (deferred)
-- Server-side persistence encryption
+
+The following potential features are not planned and are out of scope of this project:
+- Persistent user identities
+- Multidevice support (i.e., allowing Alice to share her location with Bob from *n* devices without *n* separate pairings with Bob)
+- Device backup/upgrade/transfer
+
+This decision significantly simplifies the protocol (no persistent identities!) and the UX (no "which device am I sharing from?" or cross-device backup/transfer) while improving security, but it comes at a cost: if Alice loses or resets her phone, she must repair with Bob and Charlie. Similarly, if Bob deletes his connection with Alice, it is indistinguishable to Alice from Bob's phone being powered off; should they wish to resume sharing, they will have to re-pair their phones.
+
+An additional out-of-scope feature is cloud-to-device push-notification-based latency optimization. Two possible implementations exist for this:
+
+1. Alice could notify the server when she is actively looking at Bob's location (i.e. her app is foregrounded), and the server could ping Bob's phone to update Bob's location.
+2. Alice could notify the server when she is actively moving, and the server could ping Bob's phone to update Alice's location.
+
+Option 2 is likely a pointless optimization, since at this point Alice's device has already spent the battery on GPS and cell radio; furthermore, the UX improvement is minimal unless Bob's app is in the foreground (in which case it can probably just afford to do rapid polling). 
+
+Option 1 would probably yield significant battery improvements (by reducing the need for Bob to send high latency pings when moving except when Alice is actively using the app), but it requires fairly complex A->server->B communication that would link transient mailbox tokens with persistent long-term device identifiers (needed by push notification infra), creating a meaningful metadata leak.
 
 ---
 
