@@ -1,8 +1,8 @@
 # End-to-End Encrypted Location Sync — Design Document
 
-**Status:** Draft
-**Authors:** Engineering
-**Date:** 2026-03-26
+**Status:** Implemented
+**Authors:** Daniel Margolis
+**Date:** 2026-05-24
 
 ---
 
@@ -104,27 +104,26 @@ For threat models that include a metadata-analyzing server, the mitigations in �
 - **Passive eavesdropping.** All location payloads are encrypted with ephemeral symmetric keys derived from a per-friend ratchet. A passive observer with access to ciphertext learns nothing about coordinates.
 - **Replay attacks.** Each message carries a monotonically increasing message number `msg_num` which is also authenticated (as AEAD additional data for the body, and encrypted within the header envelope). The recipient rejects any frame with a counter it has already seen within the same DH epoch. 
 
+Across-epoch replay protection utilizes a sliding window of the most recent 10 DH public keys; replays from older epochs will trigger a speculative ratchet but always fail final AEAD authentication.
+- **Ciphertext forgery.** ChaCha20-Poly1305 authentication tags cover both the ciphertext and associated data. Metadata (DH public key and sequence number) is sealed within an encrypted envelope, preventing a malicious server from reading or correlating them across token rotations.
+- **Ratchet hijacking.** All messages are AEAD-encrypted under keys derived from the current session root key and symmetric chains. An attacker without session state or header keys cannot forge or inject valid messages.
+- **Key mismatch at bootstrap.** The `key_confirmation` field in `KeyExchangeInit` (§4.2) detects corruption or bit-flips in `EK_B.pub` in transit. It does NOT authenticate the origin of the QR code or defeat an active MITM who can intercept and substitute the initial ephemeral key material. Trust establishment relies on TOFU + Safety Number verification (§3.4).
+
 To ensure robustness against network failures, the protocol employs **Server-side Idempotency** and **Client-side Write Ahead Logging (WAL)**:
 - **Unique Message IDs:** Every message (encrypted frame or handshake) includes a unique `msg_id` (derived from the ciphertext or public key).
 - **Idempotent POST:** Clients use `PUT /inbox/{token}/{msgId}` to post messages. The server tracks received IDs and treats duplicate attempts for the same `msgId` as a no-op success.
 - **Outbox WAL:** Clients durably persist outgoing messages in a per-friend **outbox** before any network attempt. Messages are only removed from the outbox after the server returns a success code. This allows for reliable recovery and retry after app crashes or network timeouts.
 
-Across-epoch replay protection utilizes a sliding window of the most recent 10 DH public keys; replays from older epochs will trigger a speculative ratchet but always fail final AEAD authentication.
-- **Ciphertext forgery.** ChaCha20-Poly1305 authentication tags cover both the ciphertext and associated data. In version 1, metadata (DH public key and sequence number) is sealed within an encrypted envelope, preventing a malicious server from reading or correlating them across token rotations.
-- **Ratchet hijacking.** All messages are AEAD-encrypted under keys derived from the current session root key and symmetric chains. An attacker without session state or header keys cannot forge or inject valid messages.
-- **Key mismatch at bootstrap.** The `key_confirmation` field in `KeyExchangeInit` (§4.2) detects corruption or bit-flips in `EK_B.pub` in transit. It does NOT authenticate the origin of the QR code or defeat an active MITM who can intercept and substitute the initial ephemeral key material. Trust establishment relies on TOFU + Safety Number verification (§3.4).
-
 ### 2.3 What This Protocol Does NOT Protect Against
 
-- **Traffic analysis.** The server sees packet timing, packet sizes, and connection metadata regardless of payload encryption. For a location app, timing is nearly as sensitive as content: update intervals increasing from 30 s (moving) to 5 min (stationary) reveal movement state; silence reveals offline/stopped status; synchronized update timing across multiple users suggests co-location. A metadata-analyzing server can infer movement patterns from timing alone, independent of content. Mitigations (cover traffic, padding) are discussed in §7.4; they add overhead and battery cost and are not a panacea. This is elevated here as a top-level limitation for threat models that include a compromised or curious server.
-- **Initial TOFU impersonation.** The first key exchange (§4) uses an ephemeral key delivered out-of-band (QR or link). If an attacker intercepts or replaces Alice's QR before Bob scans it, Bob will establish a session with the attacker rather than Alice. The `key_confirmation` in `KeyExchangeInit` (§4.2) ensures Bob derived the correct `SK` from the `EK_A.pub` he scanned — but it does not authenticate Alice's QR as originating from Alice rather than an attacker who substituted a different key. Safety number verification (§3.4) is the primary mitigation for this residual TOFU risk.
+- **Traffic analysis.** The server sees packet timing, packet sizes, and connection metadata regardless of payload encryption. For a location app, timing is nearly as sensitive as content: update intervals increasing from 30 seconds (moving) to 5 minutes (stationary) reveal movement state; silence reveals offline/stopped status; synchronized update timing across multiple users suggests co-location. A metadata-analyzing server can infer movement patterns from timing alone, independent of content. Mitigations (cover traffic, padding) are discussed in §7.4; they add overhead and battery cost and are not a panacea. This is elevated here as a top-level limitation for threat models that include a compromised or curious server or persistent passive network attacker.
+- **Initial TOFU impersonation.** The first key exchange (§4) uses an ephemeral key delivered out-of-band (QR or link). If an attacker intercepts or replaces Alice's QR before Bob scans it, Bob will establish a session with the attacker rather than Alice. The `key_confirmation` in `KeyExchangeInit` (§4.2) ensures Bob derived the correct `SK` from the `EK_A.pub` he scanned, but it does not authenticate Alice's QR as originating from Alice rather than an attacker who substituted a different key. Safety number verification (§3.4) is the primary mitigation for this residual TOFU risk.
 - **A malicious friend.** If Bob is Alice's friend, Bob receives Alice's plaintext location after decryption on his device. Bob can log it, forward it, or otherwise misuse it. The protocol provides no cryptographic protection against a legitimate-but-adversarial recipient.
 - **Device seizure or compromise.** If an attacker has physical access to Alice's device, they can read decrypted locations from memory or reconstruct keys from the device's persistent state. This is a device-security problem, not a protocol problem.
-- **Metadata about the social graph.** The server never sees user IDs or UUIDs — routing tokens are opaque and random-looking. However, the server observes which IP addresses `POST` to and `GET` from each token. If Alice's IP consistently posts to token T and Bob's IP consistently polls T, the server can infer they share a friendship, even without decrypting any payload. Timing correlation reinforces this: correlated activity (Alice posts, Bob polls seconds later) on the same token is a strong signal. See §7 for partial mitigations (constant-rate polling, dummy tokens).
-- **Compromised backups revealing future epochs.** Because the current implementation persists the active ratchet private key (`localDhPriv`) to ensure session stability across app restarts (§5.5), an attacker who recovers a device backup (e.g., iCloud, Google Play Cloud Backup) can perform all future DH ratchet steps until the session is rotated out-of-band. See §5.6 for a detailed analysis of compromise consequences and self-healing (PCS).
+- **Metadata about the social graph.** The server never sees user IDs or UUIDs — routing tokens are opaque and pseudorandom. However, the server observes which IP addresses `POST` to and `GET` from each token. If Alice's IP consistently posts to token T and Bob's IP consistently polls T, the server (or a passive network attacker) can infer they share a friendship, even without decrypting any payload. See §7 for partial mitigations (constant-rate polling, dummy tokens).
+- **Compromised backups revealing future epochs.** Because the current implementation persists the active ratchet private key (`localDhPriv`) to ensure session stability across app restarts (§5.5), an attacker who recovers a device backup gains access to the current `localDhPriv` and header keys. They can decrypt headers of future messages to observe the peer's new DH public keys, and use `localDhPriv` to advance the root key through each subsequent peer DH epoch — tracking all future message keys until the compromised device generates a fresh DH keypair and the peer ratchets against it. In practice, the exposure window is bounded by the peer's message cadence: the ratchet self-heals after the next complete DH exchange (roughly one location-update interval if both parties are active), but stalls if the peer is offline. Historical messages remain protected by forward secrecy: deleted chain keys cannot be recovered from the backup snapshot. See §5.6 for a detailed analysis of compromise consequences and self-healing (PCS). As mitigation, the `localDhPriv` key is excluded from cloud backups (see §5.5).
 - **Map tile server leakage.** When a recipient views a friend's location on a map, the map provider (e.g., Google Maps, Apple Maps, Mapbox) may infer the friend's location from which tiles the recipient's device requests. This can be mitigated at the application layer via tile pre-fetching or caching, but is outside the scope of this protocol.
 - **Denial of service.** This protocol does not protect against a server that drops or delays messages.
-- **Clock manipulation.** The protocol does not use wall-clock timestamps for message validity decisions, so clock-skew attacks have no cryptographic impact. Timestamps in location payloads are purely informational and are not authenticated as part of the AEAD AAD.
 - **Quantum adversaries.** All DH operations here use X25519 (256-bit elliptic curve). A cryptographically relevant quantum computer running Shor's algorithm could break these. See §12.
 
 ---
@@ -135,28 +134,28 @@ Across-epoch replay protection utilizes a sliding window of the most recent 10 D
 
 This protocol uses **no long-term identity keys**. There is no `IK`, no `SigIK`, and no central registry. Identity is scoped entirely to a single friendship session, anchored by the ephemeral keys exchanged at bootstrap.
 
-This design decision is motivated by the device management policy (§3.3): when a device is lost or the app is reinstalled, all contacts must be manually re-added regardless. Dropping long-term keys eliminates the exposure of a stable device identifier to the server (§4.4) and removes the risk that a long-term key compromise retroactively breaks all historical epoch keys.
+This design decision is dependent upon the device management policy (§3.3): when a device is lost or the app is reinstalled, all contacts must be manually re-added. Dropping long-term keys eliminates the exposure of a stable device identifier to the server (§4.4), risking social graph leakage, and considerably simplifies the protocol.
 
 Each friendship session is identified by the pair `(EK_A.pub, EK_B.pub)` — the initial bootstrap ephemeral public keys from Alice and Bob respectively. These keys are used to derive the Safety Number (§3.4) and session fingerprints (§8.3). The session's root key `SK` is derived from a single X25519 operation over these keys; both private keys are deleted immediately after derivation.
 
 ### 3.2 Naming and Local Aliases
 
-To avoid requiring users to manage public keys in the UI, the protocol implements local aliases:
+To avoid requiring users to manage session keys in the UI, the protocol implements local aliases:
 
 1. **Invite Payload:** An invite contains `{ek_pub, suggested_name: "Alice", fingerprint}`. Alice's suggested name is pre-filled in Bob's naming dialog.
 2. **KeyExchangeInit:** Bob includes his own `suggested_name` when responding to Alice's QR. Alice's app pre-fills her naming dialog with Bob's suggested name.
 3. **Local Import:** The receiving party sees the other's suggested name but may rename it locally before confirming.
-4. **Local Storage:** The name is a purely local alias. It is never sent to the server.
+4. **Local Storage:** The name is a purely local alias. It is never sent to the server. *It's important to note that these names are merely human-friendly aliases*; they are not globally unique or authoritative in any way.
 
-Both sides can therefore assign human-readable names to each other at the time of first exchange, with no extra protocol round-trips.
+This mechanism allows sides to asign human-readable names to each other at the time of first exchange, with no extra protocol round-trips.
 
 ### 3.3 Device Management
 
-1. **One Primary Device per Person:** Identity is scoped to a single primary device (typically a phone).
-2. **Lost Device / Device Replacement:** When a user gets a new phone or loses their device, they generate a new ephemeral key pair per new invite. This is a manual "session reset":
+1. **One Primary Device per Person:** Sessions are scoped to a single primary device (typically a phone).
+2. **Lost Device / Device Replacement:** When a user gets a new phone or loses their device, they re-pair with each friend, generating a new ephemeral key pair per new invite. This is a manual "session reset":
    - The user reinstalls the app and re-adds all contacts via new invite links.
    - Each new pairing produces a new Safety Number.
-3. **No Cloud Backup:** Encrypted cloud backup of session state is explicitly excluded, as it reintroduces a third-party trust dependency.
+3. **No Cloud Backup:** Encrypted cloud backup of session state is explicitly excluded, as it introduces a third-party trust dependency.
 
 ### 3.4 Trust Establishment and Safety Numbers
 
@@ -166,7 +165,6 @@ This protocol uses **Trust-on-First-Use (TOFU)** with local session pinning.
 - **Calculation:** `HKDF-SHA-256(ikm=SHA-256(lower_EK.pub || higher_EK.pub), salt=null, info="Where-v1-SafetyNumber", length=60)`.
 - The result is displayed as 12 groups of 5 decimal digits (consistent with §8.3 format).
 - This is **session-scoped**: the Safety Number is unique to the specific pairing event, not to a device. Every re-pairing after a device reset produces a new Safety Number.
-- **Key-Change Detection:** If Alice receives a new `KeyExchangeInit` for a contact she already has an active session with (identified by local name), the app MUST display a "Session Reset" warning before replacing the old session. The user should compare the new Safety Number out-of-band before confirming. This can indicate: (1) the friend reinstalled and re-paired — expected; (2) a MITM substituted a key — suspicious.
 
 **Risk:** If the invite link (Option B, §4.3) is intercepted over an unauthenticated channel (e.g., SMS), an attacker can substitute their own key. Fingerprint verification is the primary countermeasure.
 
@@ -204,8 +202,8 @@ After Alice generates her QR, she derives the discovery token from `discovery_se
 
 ```
 discovery_token_A = HKDF-SHA-256(IKM  = Alice.discovery_secret,   // 32-byte random secret
-                                  salt = 0x00...00,                // 32 zero bytes
-                                  info = "Where-v1-Discovery")[0:16]
+                                 salt = 0x00...00,                // 32 zero bytes
+                                 info = "Where-v1-Discovery")[0:16]
 ```
 
 Using a random secret (rather than `EK_A.pub`) as HKDF IKM ensures that only someone who received the QR out-of-band can compute `discovery_token_A`. A network observer who later sees `EK_A.pub` in Bob's `KeyExchangeInit` message cannot retroactively map it to the discovery-phase mailbox.
@@ -226,6 +224,8 @@ The payload is identical to the QR content defined in §4.2. Alice shares this s
 - **Web Link (App Linking):** A dedicated website URL that can trigger app linking (e.g., `https://where.af0.net/invite#<encoded-payload>`).
 
 The `<encoded-payload>` is a URL-safe Base64 representation of the JSON setup payload. Bob clicks the link or manually imports the URL, and the process continues exactly as it would for a QR scan (polling the discovery mailbox).
+
+(The use of a web URL is a small security compromise: if a recipient does not have the application installed, or if deep linking fails for some reason, the URL can leak the session initialization parameters to a compromised or malicious web server. It is, however, a great user convenience: the "fallback" web destination can be used to instruct users on how to install the app.)
 
 ### 4.4 Key Agreement (Universal)
 
@@ -252,7 +252,7 @@ Bob MUST include a key confirmation MAC in his `KeyExchangeInit` to prove he der
 K_confirm = HKDF-SHA-256(ikm=SK, salt=null, info="Where-v1-ConfirmKey", length=32)
 
 key_confirmation = HMAC-SHA-256(key  = K_confirm,
-                                 data = "Where-v1-Confirm" || EK_A.pub || EK_B.pub)
+                                data = "Where-v1-Confirm" || EK_A.pub || EK_B.pub)
 ```
 
 Both parties initialize their Double Ratchet state (§8.2) seeded with a root key derived from `SK`. Alice and Bob expand `SK` over 192 bytes to obtain initial chain keys, the starting root key, and the initial header keys:
@@ -525,7 +525,7 @@ The server's role is strictly limited to acting as a stateless message router fo
 
 ### 7.2 Invariant: Indistinguishable Responses
 
-To prevent the server from learning whether a routing token corresponds to a real relationship, the following invariant is mandatory:
+To prevent a network attacker from learning whether a routing token corresponds to a real relationship, the following invariant is mandatory:
 
 **The server MUST return an identical response body for all token queries where no messages are pending, regardless of whether the token has ever been used.**
 
@@ -533,7 +533,7 @@ There is no "create mailbox" or "register token" step. Mailboxes exist implicitl
 
 ### 7.3 Metadata Exposure and Traffic Analysis
 
-The server can still observe the timing and frequency of `POST` and `GET` requests for specific tokens. IP correlation can be used to infer relationships over time.
+The server (or a network attacker) can still observe the timing and frequency of `POST` and `GET` requests for specific tokens. IP correlation can be used to infer relationships over time.
 
 ### 7.4 Mitigations
 
@@ -794,13 +794,7 @@ The server maintains a persistent map of **mailboxes** indexed by 16-byte routin
 
 The server exposes the mailbox API: `PUT /inbox/{token}/{msgId}`, `GET /inbox/{token}`, and `DELETE /inbox/{token}/{msgId}`.
 
-### 10.3 What Stays the Same
-
-- TLS termination (HTTPS).
-- Best-effort delivery model.
-- Horizontal scalability.
-
-### 10.4 Server Cannot Decrypt or Link
+### 10.3 Server Cannot Decrypt or Link
 
 With this design, and assuming only the advertised mailbox API and payload encryption:
 - The server has no knowledge of any session keys or identity keys.
@@ -876,3 +870,4 @@ While this protocol shares the core **Double Ratchet** design with Signal, it ma
 3. **Multi-Device Support.** Full session synchronization across multiple devices (e.g., phone and tablet) is a complex challenge planned for future work.
 
 4. **Session Expiry and Staleness Handling.** If Alice stops sharing (app uninstalled, account deleted, extended offline period), Bob's client continues polling indefinitely against a token that will never receive new messages. To provide UX signals, `FriendEntry.isStale` is a heuristic that returns true if no messages have been received for more than 7 days (`ACK_TIMEOUT_SECONDS`). Clients SHOULD surface a "no recent location" warning to the user based on this flag. This is a UX heuristic, not a protocol retirement rule.
+
