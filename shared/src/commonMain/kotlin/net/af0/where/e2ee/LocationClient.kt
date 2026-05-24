@@ -136,8 +136,11 @@ open class LocationClient(
                                 encryptedName = last.encryptedName
                             )
                             if (decryptedName == null) {
+                                store.addDiagnosticEvent("Failed to decrypt suggested_name for invite from discovery=$discoveryHex")
                                 null
                             } else {
+                                // Populate the transient suggestedName field for UI consumption.
+                                // Alice will use this to pre-fill her naming dialog.
                                 last.suggestedName = decryptedName
                                 PendingInviteResult(
                                     payload = last,

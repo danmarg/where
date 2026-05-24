@@ -156,7 +156,6 @@ object KeyExchange {
             )
         } catch (e: Exception) {
             sk.zeroize()
-            kName.zeroize()
             throw AuthenticationException("Failed to decrypt encrypted_name — aborting key exchange: ${e.message}")
         } finally {
             kName.zeroize()

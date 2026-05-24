@@ -98,6 +98,7 @@ data class KeyExchangeInitPayload(
     override fun hashCode(): Int {
         var h = token.hashCode()
         h = 31 * h + encryptedName.contentHashCode()
+        h = 31 * h + suggestedName.hashCode()
         return h
     }
 }
