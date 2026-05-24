@@ -168,6 +168,7 @@ open class LocationClient(
             var totalMessagesProcessed = 0
             var tokenFollows = 0
             var stopPolling = false
+            var caughtUp = false
 
             while (!stopPolling && totalMessagesProcessed < MAX_MESSAGES_PER_POLL) {
                 val friend = store.getFriend(friendId) ?: break
@@ -182,6 +183,7 @@ open class LocationClient(
 
                 if (messages.isEmpty()) {
                     stopPolling = true
+                    caughtUp = true
                     continue
                 }
 
@@ -245,6 +247,7 @@ open class LocationClient(
 
             try {
                 store.updateLastPollTs(friendId, currentTimeSeconds())
+                store.updateIsCaughtUp(friendId, caughtUp)
             } catch (e: Exception) {
             }
 

@@ -193,7 +193,7 @@ private struct FriendDebugView: View {
             let sendToken = toHex(friend.session.sendToken).prefix(8)
             Text("recv: \(timeAgoStringFromSeconds(recvTs))  sent: \(timeAgoStringFromSeconds(sentTs))  poll: \(timeAgoStringFromSeconds(friend.lastPollTs))")
             Text("recvTok: \(recvToken)  sendTok: \(sendToken)")
-            Text("needsRatchet: \(friend.session.needsRatchet ? "YES" : "no")")
+            Text("needsRatchet: \(friend.session.needsRatchet ? "YES" : "no")  caughtUp: \(friend.isCaughtUp ? "YES" : "no")")
         }
         .font(.caption2)
         .fontDesign(.monospaced)
