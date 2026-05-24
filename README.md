@@ -122,8 +122,7 @@ Machine-specific paths go in gitignored local files — never in checked-in conf
 
 ## Protocol documentation
 
-- [E2EE location sync design](docs/e2ee-location-sync.md) — threat model, key exchange, Double Ratchet adaptation, wire format
-- [State machine](docs/state_machine.md) — pairing and session lifecycle
+See [E2EE location sync design](docs/e2ee-location-sync.md)
 
 ## License
 
