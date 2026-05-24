@@ -242,6 +242,7 @@ object KeyExchange {
         ekBPub: ByteArray,
         encryptedName: ByteArray,
     ): String {
+        if (encryptedName.isEmpty()) return ""
         if (encryptedName.size < 28) { // 12-byte nonce + 16-byte tag
             throw AuthenticationException("encryptedName payload is too short")
         }

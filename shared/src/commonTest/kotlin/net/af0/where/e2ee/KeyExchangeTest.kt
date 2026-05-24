@@ -172,6 +172,17 @@ class KeyExchangeTest {
     }
 
     @Test
+    fun `decryptSuggestedName handles empty name for legacy compatibility`() {
+        val sk = randomBytes(32)
+        val ekA = randomBytes(32)
+        val ekB = randomBytes(32)
+        
+        val decrypted = KeyExchange.decryptSuggestedName(sk, ekA, ekB, byteArrayOf())
+        assertEquals("", decrypted)
+        sk.zeroize()
+    }
+
+    @Test
     fun `decryptSuggestedName fails with mismatched AAD`() {
         val (qr, aliceEkPriv) = KeyExchange.aliceCreateQrPayload("Alice")
         val (msg, _) = KeyExchange.bobProcessQr(qr, "Bob")
