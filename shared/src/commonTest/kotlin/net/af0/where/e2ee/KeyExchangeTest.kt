@@ -6,6 +6,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertNotEquals
+import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 
 class KeyExchangeTest {
@@ -50,7 +51,8 @@ class KeyExchangeTest {
         assertEquals(16, msg.token.size)
         assertEquals(32, msg.ekPub.size)
         assertEquals(32, msg.keyConfirmation.size)
-        assertEquals("Bob", msg.suggestedName)
+        // nonce(12) + tag(16) + nameLength(3) = 31
+        assertEquals(31, msg.encryptedName.size)
     }
 
     @Test
@@ -170,6 +172,31 @@ class KeyExchangeTest {
     }
 
     @Test
+    fun `decryptSuggestedName handles empty name for legacy compatibility`() {
+        val sk = randomBytes(32)
+        val ekA = randomBytes(32)
+        val ekB = randomBytes(32)
+        
+        val decrypted = KeyExchange.decryptSuggestedName(sk, ekA, ekB, byteArrayOf())
+        assertEquals("", decrypted)
+        sk.zeroize()
+    }
+
+    @Test
+    fun `decryptSuggestedName fails with mismatched AAD`() {
+        val (qr, aliceEkPriv) = KeyExchange.aliceCreateQrPayload("Alice")
+        val (msg, _) = KeyExchange.bobProcessQr(qr, "Bob")
+        val sk = x25519(aliceEkPriv, msg.ekPub)
+
+        // Try decrypting with a different Alice public key in AAD
+        val wrongAliceEkPub = randomBytes(32)
+        assertFailsWith<AuthenticationException> {
+            KeyExchange.decryptSuggestedName(sk, wrongAliceEkPub, msg.ekPub, msg.encryptedName)
+        }
+        sk.zeroize()
+    }
+
+    @Test
     fun `bobProcessQr rejects tampered fingerprint`() {
         val (qr, _) = KeyExchange.aliceCreateQrPayload("Alice")
         val badQr = qr.copy(fingerprint = "0".repeat(40)) // Tampered fingerprint
@@ -182,6 +209,25 @@ class KeyExchangeTest {
                 true
             }
         assertTrue(threw, "Expected AuthenticationException for tampered fingerprint")
+    }
+
+    @Test
+    fun `name encryption and decryption works correctly`() {
+        val (qr, aliceEkPriv) = KeyExchange.aliceCreateQrPayload("Alice")
+        val (msg, _) = KeyExchange.bobProcessQr(qr, "Bob")
+
+        // Alice processes init and implicitly verifies name decryption
+        val aliceSession = KeyExchange.aliceProcessInit(msg, aliceEkPriv, qr.ekPub)
+        assertNotNull(aliceSession)
+
+        // Verify that tampered encrypted name fails decryption
+        val tamperedEncryptedName = msg.encryptedName.copyOf()
+        tamperedEncryptedName[tamperedEncryptedName.size - 1] = (tamperedEncryptedName.last().toInt() xor 0xFF).toByte()
+        val badMsg = msg.copy(encryptedName = tamperedEncryptedName)
+
+        assertFailsWith<AuthenticationException> {
+            KeyExchange.aliceProcessInit(badMsg, aliceEkPriv, qr.ekPub)
+        }
     }
 
     // ---------------------------------------------------------------------------
@@ -376,12 +422,18 @@ class KeyExchangeTest {
         // Attacker must also compute the "correct" tampered token to pass verification.
         val aliceFp = fingerprint(qr.ekPub)
         val attackerFp = fingerprint(ekM.pub)
+
+        // Encrypt name under SK_AM
+        val kName = hkdfSha256(skAM, null, "Where-v1-SuggestedName".encodeToByteArray(), 32)
+        val nonce = randomBytes(12)
+        val ct = aeadEncrypt(kName, nonce, "Attacker".encodeToByteArray(), qr.ekPub + ekM.pub)
+
         val tamperedMsg =
             KeyExchangeInitMessage(
                 token = deriveRoutingToken(skAM, aliceFp, attackerFp),
                 ekPub = ekM.pub.copyOf(),
                 keyConfirmation = KeyExchange.buildKeyConfirmation(skAM, qr.ekPub, ekM.pub),
-                suggestedName = "Attacker",
+                encryptedName = nonce + ct,
             )
 
         // Alice processes the tampered message using KeyExchange.aliceProcessInit and derives a session.

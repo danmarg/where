@@ -124,7 +124,7 @@ class E2eeManager(
                 token = tokenBytes,
                 ekPub = payload.ekPub,
                 keyConfirmation = payload.keyConfirmation,
-                suggestedName = payload.suggestedName,
+                encryptedName = payload.encryptedName,
             )
 
         val session =
@@ -329,6 +329,7 @@ class E2eeManager(
                 token = initMsg.token.toHex(),
                 ekPub = initMsg.ekPub,
                 keyConfirmation = initMsg.keyConfirmation,
+                encryptedName = initMsg.encryptedName,
                 suggestedName = sanitizedRequestedName,
             )
 
@@ -535,6 +536,26 @@ class E2eeManager(
         payload: MessagePlaintext,
     ) {
         encryptAndAdvance(friendId, payload)
+    }
+
+    suspend fun decryptSuggestedName(
+        aliceEkPub: ByteArray,
+        bobEkPub: ByteArray,
+        encryptedName: ByteArray
+    ): String? {
+        return persistence.withMetadataLock {
+            val pending = pendingInvites.find { it.qrPayload.ekPub.contentEquals(aliceEkPub) }
+            if (pending == null) return@withMetadataLock null
+            val sk = x25519(pending.aliceEkPriv, bobEkPub)
+            try {
+                KeyExchange.decryptSuggestedName(sk, aliceEkPub, bobEkPub, encryptedName)
+            } catch (e: Exception) {
+                persistence.addDiagnosticEvent("decryptSuggestedName failed: ${e.message}")
+                null
+            } finally {
+                sk.zeroize()
+            }
+        }
     }
 
     private fun sanitizeName(name: String): String =

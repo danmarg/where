@@ -754,6 +754,13 @@ class LocationService : Service() {
             // will now be able to see all pending invites via allPendingInvites.
             if (locationSource.pendingInitPayload.value == null) {
                 val result = filteredResults.first()
+                if (result.pairingError != null) {
+                    withContext(Dispatchers.Main) {
+                        uiStateStore.setInviteSheetShowing(false)
+                        updateStatus(Exception(result.pairingError))
+                    }
+                    return
+                }
                 val initPayload = result.payload
                 Log.d(
                     TAG,

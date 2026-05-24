@@ -130,12 +130,31 @@ open class LocationClient(
                         val inits = messages.filterIsInstance<KeyExchangeInitPayload>()
                         val last = inits.lastOrNull()
                         if (last != null) {
-                            PendingInviteResult(
-                                payload = last,
-                                scannerEkPub = last.ekPub,
-                                inviteEkPub = invite.qrPayload.ekPub,
-                                multipleScansDetected = inits.size > 1,
+                            val decryptedName = store.decryptSuggestedName(
+                                aliceEkPub = invite.qrPayload.ekPub,
+                                bobEkPub = last.ekPub,
+                                encryptedName = last.encryptedName
                             )
+                            if (decryptedName == null) {
+                                store.addDiagnosticEvent("Failed to decrypt suggested_name for invite from discovery=$discoveryHex")
+                                PendingInviteResult(
+                                    payload = last,
+                                    scannerEkPub = last.ekPub,
+                                    inviteEkPub = invite.qrPayload.ekPub,
+                                    multipleScansDetected = inits.size > 1,
+                                    pairingError = "Handshake failed: Cryptographic verification error."
+                                )
+                            } else {
+                                // Return a copy of the payload with the transient suggestedName field populated for UI consumption.
+                                // Alice will use this to pre-fill her naming dialog.
+                                val populatedPayload = last.copy(suggestedName = decryptedName)
+                                PendingInviteResult(
+                                    payload = populatedPayload,
+                                    scannerEkPub = last.ekPub,
+                                    inviteEkPub = invite.qrPayload.ekPub,
+                                    multipleScansDetected = inits.size > 1,
+                                )
+                            }
                         } else {
                             null
                         }

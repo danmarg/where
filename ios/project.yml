@@ -30,7 +30,8 @@ targets:
           if [ -f .envrc ]; then
             source .envrc
           fi
-          ./gradlew :shared:assembleShared${CONFIGURATION}XCFramework
+          # Build BOTH to avoid switching issues
+          ./gradlew :shared:assembleSharedDebugXCFramework :shared:assembleSharedReleaseXCFramework
     dependencies:
       - framework: ../shared/build/XCFrameworks/$(CONFIGURATION:lower)/Shared.xcframework
         embed: true

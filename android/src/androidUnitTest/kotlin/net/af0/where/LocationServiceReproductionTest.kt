@@ -61,7 +61,7 @@ class LocationServiceReproductionTest {
             try {
                 val aliceEkPub = byteArrayOf(1, 2, 3)
                 val initPayload = mockk<KeyExchangeInitPayload>(relaxed = true)
-                val pollResult = PendingInviteResult(initPayload, byteArrayOf(), aliceEkPub, false)
+                val pollResult = PendingInviteResult(initPayload, byteArrayOf(), aliceEkPub, false, null)
 
                 // pollPendingInvites returns a result, but the invite was cleared before we process it
                 coEvery { mockClient.pollPendingInvites() } returns listOf(pollResult)
@@ -103,7 +103,7 @@ class LocationServiceReproductionTest {
             try {
                 val aliceEkPub = byteArrayOf(1, 2, 3)
                 val initPayload = mockk<KeyExchangeInitPayload>(relaxed = true)
-                val pollResult = PendingInviteResult(initPayload, byteArrayOf(), aliceEkPub, false)
+                val pollResult = PendingInviteResult(initPayload, byteArrayOf(), aliceEkPub, false, null)
 
                 // The matching invite exists, so the filter in pollPendingInvites() passes.
                 val mockQr = mockk<QrPayload>(relaxed = true)

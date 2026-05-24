@@ -239,7 +239,7 @@ class LocationSyncServiceTests: XCTestCase {
         let update1 = Shared.UserLocation(userId: existingFriendId, lat: 1.0, lng: 2.0, timestamp: 123)
         mockClient.pollResult = [update1]
 
-        await service.confirmPendingInit(payload: Shared.KeyExchangeInitPayload(v: 1, token: "t", ekPub: kotlinByteArray(from: Data([1])), keyConfirmation: kotlinByteArray(from: Data([2])), suggestedName: "n", msgId: "m1"), name: "n")
+        await service.confirmPendingInit(payload: Shared.KeyExchangeInitPayload(v: 1, token: "t", ekPub: kotlinByteArray(from: Data([1])), keyConfirmation: kotlinByteArray(from: Data([2])), encryptedName: kotlinByteArray(from: Data(repeating: 0, count: 31)), suggestedName: "n", msgId: "m1"), name: "n")
 
         await service.pollAll(updateUi: true)
 
@@ -562,6 +562,7 @@ class LocationSyncServiceTests: XCTestCase {
             token: "deadbeef",
             ekPub: kotlinByteArray(from: Data([1, 2, 3])),
             keyConfirmation: kotlinByteArray(from: Data([4, 5, 6])),
+            encryptedName: kotlinByteArray(from: Data(repeating: 0, count: 31)),
             suggestedName: "Bob",
             msgId: "msg-001"
         )
@@ -569,7 +570,8 @@ class LocationSyncServiceTests: XCTestCase {
             payload: fakePayload,
             scannerEkPub: kotlinByteArray(from: Data([1, 2, 3])),
             inviteEkPub: qr.ekPub,
-            multipleScansDetected: false
+            multipleScansDetected: false,
+            pairingError: nil
         )
 
         // 3. Recreate the service with a mock client that returns the pending result.
@@ -617,6 +619,7 @@ class LocationSyncServiceTests: XCTestCase {
             token: "deadbeef",
             ekPub: kotlinByteArray(from: Data([1, 2, 3])),
             keyConfirmation: kotlinByteArray(from: Data([4, 5, 6])),
+            encryptedName: kotlinByteArray(from: Data(repeating: 0, count: 31)),
             suggestedName: "Bob",
             msgId: "msg-002"
         )
@@ -624,7 +627,8 @@ class LocationSyncServiceTests: XCTestCase {
             payload: fakePayload,
             scannerEkPub: kotlinByteArray(from: Data([1, 2, 3])),
             inviteEkPub: qr.ekPub,
-            multipleScansDetected: false
+            multipleScansDetected: false,
+            pairingError: nil
         )
 
         let mockClient = MockLocationClient()
