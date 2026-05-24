@@ -570,7 +570,8 @@ class LocationSyncServiceTests: XCTestCase {
             payload: fakePayload,
             scannerEkPub: kotlinByteArray(from: Data([1, 2, 3])),
             inviteEkPub: qr.ekPub,
-            multipleScansDetected: false
+            multipleScansDetected: false,
+            pairingError: nil
         )
 
         // 3. Recreate the service with a mock client that returns the pending result.
@@ -626,7 +627,8 @@ class LocationSyncServiceTests: XCTestCase {
             payload: fakePayload,
             scannerEkPub: kotlinByteArray(from: Data([1, 2, 3])),
             inviteEkPub: qr.ekPub,
-            multipleScansDetected: false
+            multipleScansDetected: false,
+            pairingError: nil
         )
 
         let mockClient = MockLocationClient()
