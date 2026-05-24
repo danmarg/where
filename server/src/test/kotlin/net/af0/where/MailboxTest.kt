@@ -135,7 +135,7 @@ class MailboxTest {
             repeat(5) { i ->
                 client.put("/inbox/$token/msg-$i") {
                     contentType(ContentType.Application.Json)
-                    setBody("""{"i":$i}""")
+                    setBody("""{"type":"test","i":$i}""")
                 }
             }
 
@@ -156,7 +156,7 @@ class MailboxTest {
             val token = "delete-test-nonexistent"
             client.put("/inbox/$token/msg-a") {
                 contentType(ContentType.Application.Json)
-                setBody("""{"msg":"a"}""")
+                setBody("""{"type":"test","msg":"a"}""")
             }
 
             val deleteResponse = client.delete("/inbox/$token?ids=msg-unknown")
@@ -177,7 +177,7 @@ class MailboxTest {
             repeat(5) { i ->
                 client.put("/inbox/$token/msg-$i") {
                     contentType(ContentType.Application.Json)
-                    setBody("""{"i":$i}""")
+                    setBody("""{"type":"test","i":$i}""")
                 }
             }
 
@@ -196,11 +196,11 @@ class MailboxTest {
 
             // Verify expected content
             val content = getResponse.bodyAsText()
-            assertTrue(content.contains("""{"i":3}"""))
-            assertTrue(content.contains("""{"i":4}"""))
-            assertTrue(!content.contains("""{"i":0}"""))
-            assertTrue(!content.contains("""{"i":1}"""))
-            assertTrue(!content.contains("""{"i":2}"""))
+            assertTrue(content.contains("""{"type":"test","i":3}"""))
+            assertTrue(content.contains("""{"type":"test","i":4}"""))
+            assertTrue(!content.contains("""{"type":"test","i":0}"""))
+            assertTrue(!content.contains("""{"type":"test","i":1}"""))
+            assertTrue(!content.contains("""{"type":"test","i":2}"""))
         }
     }
 
@@ -265,7 +265,7 @@ class MailboxTest {
             repeat(RATE_LIMIT_MAX_POSTS) { i ->
                 client.put("/inbox/$token/msg-$i") {
                     contentType(ContentType.Application.Json)
-                    setBody("""{"msg":"test"}""")
+                    setBody("""{"type":"test","msg":"test"}""")
                 }
             }
 
@@ -273,7 +273,7 @@ class MailboxTest {
             val response =
                 client.put("/inbox/$token/msg-overflow") {
                     contentType(ContentType.Application.Json)
-                    setBody("""{"msg":"test"}""")
+                    setBody("""{"type":"test","msg":"test"}""")
                 }
             assertEquals(HttpStatusCode.TooManyRequests, response.status)
         }
@@ -297,7 +297,7 @@ class MailboxTest {
             val response =
                 client.put("/inbox/$token/overflow") {
                     contentType(ContentType.Application.Json)
-                    setBody("""{"msg":"overflow"}""")
+                    setBody("""{"type":"test","msg":"overflow"}""")
                 }
             assertEquals(HttpStatusCode.TooManyRequests, response.status)
         }
@@ -371,6 +371,11 @@ class MailboxTest {
             val unknownResponse = client.get("/inbox/$neverUsed").bodyAsText()
             val emptyResponse = client.get("/inbox/$posted").bodyAsText()
 
+            if (unknownResponse != emptyResponse) {
+                println("DEBUG: unknownResponse='$unknownResponse'")
+                println("DEBUG: emptyResponse='$emptyResponse'")
+            }
+
             assertEquals(unknownResponse, emptyResponse, "Unknown and empty-inbox responses must be identical")
         }
     }
@@ -390,7 +395,7 @@ class MailboxTest {
 
             client.put("/inbox/$token/msg1") {
                 contentType(ContentType.Application.Json)
-                setBody("""{"msg":"test"}""")
+                setBody("""{"type":"test","msg":"test"}""")
             }
             val start2 = System.currentTimeMillis()
             client.get("/inbox/$token")
