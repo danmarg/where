@@ -231,8 +231,9 @@ fun FriendsSheet(
                                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                                     )
                                     val ratchet = if (friend.session.needsRatchet) "YES" else "no"
+                                    val caughtUp = if (friend.isCaughtUp) "YES" else "no"
                                     Text(
-                                        "needsRatchet: $ratchet",
+                                        "needsRatchet: $ratchet  caughtUp: $caughtUp",
                                         style = MaterialTheme.typography.labelSmall,
                                         fontFamily = FontFamily.Monospace,
                                         color = MaterialTheme.colorScheme.onSurfaceVariant,

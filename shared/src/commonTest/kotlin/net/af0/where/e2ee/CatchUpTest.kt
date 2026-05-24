@@ -191,4 +191,49 @@ class CatchUpTest {
         aliceClient.poll()
         assertNull(mailbox.mailboxes[currentAliceRecvToken]?.find { it.msgId == "bad-msg" }, "Should have force-ACKed")
     }
+
+    @Test
+    fun testIsCaughtUpState() = runTest {
+        val aliceDriver = createTestSqlDriver()
+        val aliceManager = E2eeManager(aliceDriver)
+        val aliceClient = LocationClient("http://localhost", aliceManager, mailbox)
+        val qr = aliceManager.createInvite("Alice")
+
+        val bobDriver = createTestSqlDriver()
+        val bobManager = E2eeManager(bobDriver)
+        val bobClient = LocationClient("http://localhost", bobManager, mailbox)
+
+        // Handshake
+        val (initPayload, bobEntry) = bobManager.processScannedQr(qr, "Bob")
+        bobClient.postKeyExchangeInit(bobEntry.id, qr, initPayload)
+        val pending = aliceClient.pollPendingInvites()
+        aliceManager.processKeyExchangeInit(pending[0].payload, "Bob", pending[0].inviteEkPub)
+
+        val aliceFriend = aliceManager.getFriend(bobEntry.id)!!
+        assertFalse(aliceFriend.isCaughtUp, "Should not be caught up initially")
+
+        val aliceRecvToken = aliceFriend.session.recvToken.toHex()
+
+        // 1. Send messages
+        for (i in 1..10) {
+            val (msg, _) = bobManager.encryptAndAdvance(bobEntry.id, MessagePlaintext.Location(37.0 + i, -122.0, 0.0, 1000L + i))
+            mailbox.post("http://localhost", aliceRecvToken, msg)
+        }
+
+        // 2. Poll. It should drain and set isCaughtUp to true.
+        aliceClient.poll()
+        val aliceFriendAfter = aliceManager.getFriend(bobEntry.id)!!
+        assertTrue(aliceFriendAfter.isCaughtUp, "Should be caught up after draining mailbox")
+
+        // 3. Send more messages. Alice is still marked as caughtUp=true from the LAST poll.
+        for (i in 1..10) {
+            val (msg, _) = bobManager.encryptAndAdvance(bobEntry.id, MessagePlaintext.Location(37.0 + i, -122.0, 0.0, 1000L + i))
+            mailbox.post("http://localhost", aliceRecvToken, msg)
+        }
+        assertTrue(aliceManager.getFriend(bobEntry.id)!!.isCaughtUp, "Should still be true until next poll finishes")
+
+        // 4. Poll again.
+        aliceClient.poll()
+        assertTrue(aliceManager.getFriend(bobEntry.id)!!.isCaughtUp, "Should still be caught up after second poll")
+    }
 }

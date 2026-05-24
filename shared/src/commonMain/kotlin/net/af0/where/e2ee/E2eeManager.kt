@@ -48,6 +48,7 @@ data class FriendEntry(
     val sharingEnabled: Boolean = true,
     val lastDecryptFailed: Boolean = false,
     val version: Int = 0,
+    val isCaughtUp: Boolean = false,
 ) {
     companion object {
         const val ACK_TIMEOUT_SECONDS = 7 * 24 * 3600L
@@ -494,6 +495,19 @@ class E2eeManager(
         persistence.withFriendAndMetadataLock(id) { entry, _ ->
             if (entry != null) {
                 PersistenceAction.Update(entry.copy(lastPollTs = ts)) to Unit
+            } else {
+                PersistenceAction.None to Unit
+            }
+        }
+    }
+
+    suspend fun updateIsCaughtUp(
+        id: String,
+        isCaughtUp: Boolean,
+    ) {
+        persistence.withFriendAndMetadataLock(id) { entry, _ ->
+            if (entry != null && entry.isCaughtUp != isCaughtUp) {
+                PersistenceAction.Update(entry.copy(isCaughtUp = isCaughtUp)) to Unit
             } else {
                 PersistenceAction.None to Unit
             }
