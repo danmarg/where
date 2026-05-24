@@ -579,6 +579,11 @@ final class LocationSyncService: ObservableObject {
         // If we already have a naming dialog up, don't overwrite it.
         if pendingInitPayload == nil {
             if let result = filteredResults.first {
+                if let error = result.pairingError {
+                    updateStatus(NSError(domain: "net.af0.where", code: 1, userInfo: [NSLocalizedDescriptionKey: error]))
+                    isInviteSheetShowing = false
+                    return filteredResults
+                }
                 pendingInitPayload = result.payload
                 pendingInitAliceEkPub = toSwiftData(result.inviteEkPub) // THE FIX: Use our own EK from the invite
                 multipleScansDetected = result.multipleScansDetected

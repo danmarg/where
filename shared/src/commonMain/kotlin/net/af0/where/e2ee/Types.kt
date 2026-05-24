@@ -338,6 +338,7 @@ data class PendingInviteResult(
     val scannerEkPub: ByteArray, // The public key of the person who scanned our QR
     val inviteEkPub: ByteArray,  // The public key of the QR code they scanned (ours)
     val multipleScansDetected: Boolean,
+    val pairingError: String? = null,
 ) {
     override fun equals(other: Any?): Boolean {
         if (this === other) return true
@@ -347,6 +348,7 @@ data class PendingInviteResult(
         if (!scannerEkPub.contentEquals(other.scannerEkPub)) return false
         if (!inviteEkPub.contentEquals(other.inviteEkPub)) return false
         if (multipleScansDetected != other.multipleScansDetected) return false
+        if (pairingError != other.pairingError) return false
         return true
     }
 
@@ -355,6 +357,7 @@ data class PendingInviteResult(
         result = 31 * result + scannerEkPub.contentHashCode()
         result = 31 * result + inviteEkPub.contentHashCode()
         result = 31 * result + multipleScansDetected.hashCode()
+        result = 31 * result + (pairingError?.hashCode() ?: 0)
         return result
     }
 }

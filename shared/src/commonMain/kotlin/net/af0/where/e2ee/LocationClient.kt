@@ -137,7 +137,18 @@ open class LocationClient(
                             )
                             if (decryptedName == null) {
                                 store.addDiagnosticEvent("Failed to decrypt suggested_name for invite from discovery=$discoveryHex")
-                                null
+                                val errorMsg = if (last.encryptedName.isEmpty()) {
+                                    "Handshake failed: The scanner is using an outdated version of Where."
+                                } else {
+                                    "Handshake failed: Cryptographic verification error."
+                                }
+                                PendingInviteResult(
+                                    payload = last,
+                                    scannerEkPub = last.ekPub,
+                                    inviteEkPub = invite.qrPayload.ekPub,
+                                    multipleScansDetected = inits.size > 1,
+                                    pairingError = errorMsg
+                                )
                             } else {
                                 // Return a copy of the payload with the transient suggestedName field populated for UI consumption.
                                 // Alice will use this to pre-fill her naming dialog.
