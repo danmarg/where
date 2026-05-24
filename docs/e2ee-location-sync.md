@@ -37,13 +37,7 @@ Without E2EE, each client connects to a Ktor server. When a client sends a locat
 
 The goal of this protocol is to make the server cryptographically unable to read location payloads and unable to reconstruct the social graph, even if it is fully compromised.
 
-### 1.2 Location Precision Control (client unimplemented)
-
-As a core privacy feature, the protocol supports client-side precision degradation. Before encryption, the sender may apply a configurable rounding function to their coordinates (e.g., snapping to a coarser grid or rounding to N decimal places). This allows users to share "neighbourhood" or "city" level precision with specific friends. Because degradation happens before encryption, the recipient only ever receives the degraded coordinates, and the server cannot recover the original precision.
-
-**Note:** While supported by the wire protocol, this feature is currently unimplemented in the iOS and Android clients and all location updates are sent with full precision.
-
-### 1.3 Scope
+### 1.2 Scope
 
 This document covers:
 - Key establishment between peers with no central identity server
