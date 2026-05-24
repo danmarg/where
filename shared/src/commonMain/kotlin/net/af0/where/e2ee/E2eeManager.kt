@@ -124,7 +124,7 @@ class E2eeManager(
                 token = tokenBytes,
                 ekPub = payload.ekPub,
                 keyConfirmation = payload.keyConfirmation,
-                suggestedName = payload.suggestedName,
+                encryptedName = payload.encryptedName,
             )
 
         val session =
@@ -329,6 +329,7 @@ class E2eeManager(
                 token = initMsg.token.toHex(),
                 ekPub = initMsg.ekPub,
                 keyConfirmation = initMsg.keyConfirmation,
+                encryptedName = initMsg.encryptedName,
                 suggestedName = sanitizedRequestedName,
             )
 
@@ -535,6 +536,42 @@ class E2eeManager(
         payload: MessagePlaintext,
     ) {
         encryptAndAdvance(friendId, payload)
+    }
+
+    suspend fun decryptSuggestedName(
+        aliceEkPub: ByteArray,
+        bobEkPub: ByteArray,
+        encryptedName: ByteArray
+    ): String? {
+        return persistence.withMetadataLock {
+            val pending = pendingInvites.find { it.qrPayload.ekPub.contentEquals(aliceEkPub) }
+            if (pending == null) return@withMetadataLock null
+            val sk = x25519(pending.aliceEkPriv, bobEkPub)
+            try {
+                if (encryptedName.size < 28) {
+                    return@withMetadataLock null
+                }
+                val kName = hkdfSha256(
+                    ikm = sk,
+                    salt = null,
+                    info = "Where-v1-SuggestedName".encodeToByteArray(),
+                    length = 32
+                )
+                val nonce = encryptedName.copyOfRange(0, 12)
+                val ct = encryptedName.copyOfRange(12, encryptedName.size)
+                val plaintext = aeadDecrypt(
+                    key = kName,
+                    nonce = nonce,
+                    ciphertext = ct,
+                    aad = aliceEkPub + bobEkPub
+                )
+                plaintext.decodeToString()
+            } catch (e: Exception) {
+                null
+            } finally {
+                sk.zeroize()
+            }
+        }
     }
 
     private fun sanitizeName(name: String): String =

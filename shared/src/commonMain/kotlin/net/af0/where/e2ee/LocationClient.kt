@@ -130,12 +130,22 @@ open class LocationClient(
                         val inits = messages.filterIsInstance<KeyExchangeInitPayload>()
                         val last = inits.lastOrNull()
                         if (last != null) {
-                            PendingInviteResult(
-                                payload = last,
-                                scannerEkPub = last.ekPub,
-                                inviteEkPub = invite.qrPayload.ekPub,
-                                multipleScansDetected = inits.size > 1,
+                            val decryptedName = store.decryptSuggestedName(
+                                aliceEkPub = invite.qrPayload.ekPub,
+                                bobEkPub = last.ekPub,
+                                encryptedName = last.encryptedName
                             )
+                            if (decryptedName == null) {
+                                null
+                            } else {
+                                last.suggestedName = decryptedName
+                                PendingInviteResult(
+                                    payload = last,
+                                    scannerEkPub = last.ekPub,
+                                    inviteEkPub = invite.qrPayload.ekPub,
+                                    multipleScansDetected = inits.size > 1,
+                                )
+                            }
                         } else {
                             null
                         }

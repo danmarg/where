@@ -143,9 +143,9 @@ Each friendship session is identified by the pair `(EK_A.pub, EK_B.pub)` — the
 To avoid requiring users to manage session keys in the UI, the protocol implements local aliases:
 
 1. **Invite Payload:** An invite contains `{ek_pub, suggested_name: "Alice", fingerprint}`. Alice's suggested name is pre-filled in Bob's naming dialog.
-2. **KeyExchangeInit:** Bob includes his own `suggested_name` when responding to Alice's QR. Alice's app pre-fills her naming dialog with Bob's suggested name.
+2. **KeyExchangeInit:** Bob includes his own `suggested_name` encrypted under `K_name` (derived from `SK`) when responding to Alice's QR. Alice decrypts it after verifying `key_confirmation` and pre-fills her naming dialog.
 3. **Local Import:** The receiving party sees the other's suggested name but may rename it locally before confirming.
-4. **Local Storage:** The name is a purely local alias. It is never sent to the server. *It's important to note that these names are merely human-friendly aliases*; they are not globally unique or authoritative in any way.
+4. **Local Storage:** The name is a purely local alias. It is never sent to the server in plaintext. *It's important to note that these names are merely human-friendly aliases*; they are not globally unique or authoritative in any way.
 
 This mechanism allows sides to asign human-readable names to each other at the time of first exchange, with no extra protocol round-trips.
 
@@ -278,13 +278,34 @@ T_AB_0 = HKDF-SHA-256(ikm=SK, salt=null, info="Where-v1-RoutingToken" || alice_f
 T_BA_0 = HKDF-SHA-256(ikm=SK, salt=null, info="Where-v1-RoutingToken" || bob_fp || alice_fp, length=16)
 ```
 
+To prevent leaking Bob's suggested name to the server, Bob encrypts it under a one-shot key derived from `SK`:
+```
+K_name = HKDF-SHA-256(
+    ikm  = SK,
+    salt = null,
+    info = "Where-v1-SuggestedName",
+    length = 32
+)
+```
+```
+name_nonce        = random_bytes(12)
+name_ct           = ChaCha20-Poly1305-Encrypt(
+                        key       = K_name,
+                        nonce     = name_nonce,
+                        plaintext = UTF-8(suggested_name),   // <= 64 bytes recommended
+                        aad       = EK_A.pub || EK_B.pub     // binds ciphertext to this session
+                    )
+encrypted_name    = name_nonce || name_ct
+```
+
 Bob transmits:
 ```json
 {
+  "v": 1,
   "type":             "KeyExchangeInit",
   "token":            "<hex, T_AB_0>",
   "ek_pub":           "<base64, Bob's X25519 ephemeral public key>",
-  "suggested_name":   "Bob",
+  "encrypted_name":   "<base64, 12-byte nonce || ChaCha20-Poly1305 ciphertext>",
   "key_confirmation": "<base64, key_confirmation>"
 }
 ```
@@ -298,12 +319,14 @@ Alice receives the `KeyExchangeInit` and:
 1. Derives `SK = X25519(Alice.EK_A.priv, Bob.EK_B.pub)`.
 2. Recomputes the expected `key_confirmation`.
 3. **Aborts and discards** if the MAC does not match — this indicates `EK_B.pub` was corrupted or substituted in transit.
-4. Derives `alice_fp`, `bob_fp`, `T_AB_0`, `T_BA_0` using the same formulas above.
-5. **Alice MUST verify** that the `token` in `KeyExchangeInit` matches her independently derived `T_AB_0`. If they do not match, she MUST abort and discard the session.
-6. **Deletes `EK_A.priv` immediately.**
-7. Prompts user to name Bob (pre-filled with `suggested_name` from `KeyExchangeInit`).
-8. **Eager Ratchet (Deadlock Breaker):** To prevent the session from being stuck in the initial symmetric chain (Epoch 0), Alice immediately generates a new DH keypair (`A1`) and performs one DH ratchet step using `EK_B.pub` before returning the session. This ensures her very first location message is sent in Epoch 1. When Bob receives this message, he will observe the new `A1` and perform his own DH ratchet step, completing the transition to a fully ratcheted state. This eager approach is a deliberate deadlock breaker; while a Keepalive mechanism (§5.3) provides an alternative path for rotation, the implementation chooses this eager transition to ensure post-compromise security from the first message.
-9. Stores the session.
+4. Derives `K_name = HKDF-SHA-256(ikm=SK, salt=null, info="Where-v1-SuggestedName", length=32)`.
+5. Decrypts `encrypted_name` using `ChaCha20-Poly1305-Decrypt` with key `K_name`, nonce `name_nonce` (the first 12 bytes), ciphertext `name_ct` (the remaining bytes), and AAD `EK_A.pub || EK_B.pub`. If decryption fails, Alice **MUST abort and discard** the session.
+6. Derives `alice_fp`, `bob_fp`, `T_AB_0`, `T_BA_0` using the same formulas above.
+7. **Alice MUST verify** that the `token` in `KeyExchangeInit` matches her independently derived `T_AB_0`. If they do not match, she MUST abort and discard the session.
+8. **Deletes `EK_A.priv` immediately.**
+9. Prompts user to name Bob (pre-filled with the decrypted `suggested_name` from `KeyExchangeInit`).
+10. **Eager Ratchet (Deadlock Breaker):** To prevent the session from being stuck in the initial symmetric chain (Epoch 0), Alice immediately generates a new DH keypair (`A1`) and performs one DH ratchet step using `EK_B.pub` before returning the session. This ensures her very first location message is sent in Epoch 1. When Bob receives this message, he will observe the new `A1` and perform his own DH ratchet step, completing the transition to a fully ratcheted state. This eager approach is a deliberate deadlock breaker; while a Keepalive mechanism (§5.3) provides an alternative path for rotation, the implementation chooses this eager transition to ensure post-compromise security from the first message.
+11. Stores the session.
 
 Bob **deletes `EK_B.priv` immediately** after posting the `KeyExchangeInit`.
 
@@ -755,12 +778,12 @@ The server returns a JSON array of `MailboxPayload` objects, or an empty array `
   "type": "KeyExchangeInit",
   "token":            "<hex, T_AB_0>",
   "ek_pub":           "<base64, Bob's X25519 ephemeral public key>",
-  "suggested_name":   "Bob",
+  "encrypted_name":   "<base64, 12-byte nonce || ChaCha20-Poly1305 ciphertext>",
   "key_confirmation": "<base64, key_confirmation>"
 }
 ```
 
-Alice MUST verify `key_confirmation` before accepting the session. Abort and discard if verification fails.
+Alice MUST verify `key_confirmation` and decrypt/verify `encrypted_name` before accepting the session. Abort and discard if either fails.
 
 ---
 
@@ -812,6 +835,8 @@ With this design, and assuming only the advertised mailbox API and payload encry
 | Symmetric encryption | ChaCha20-Poly1305 (IETF) | Encrypt location payloads and control messages (AEAD) | libsodium |
 | Key derivation (KDF_RK) | HKDF-SHA-256 | Derive new root key and chain key from DH output | libsodium |
 | Chain KDF (KDF_CK) | HKDF-SHA-256 | Advance symmetric ratchet; derive message key (32 B) and nonce (12 B) via single 76-byte HKDF expand | libsodium |
+| Suggested name KDF | HKDF-SHA-256 | Derive name encryption key `K_name` from shared secret `SK` | libsodium |
+| Suggested name encryption | ChaCha20-Poly1305 (IETF) | Encrypt/decrypt suggested name during key exchange | libsodium |
 | Session auth | HMAC-SHA-256 | Authenticate `KeyExchangeInit` key confirmation | libsodium |
 | Hash / fingerprint | SHA-256 | Session fingerprints (`alice_fp`, `bob_fp`), safety number, discovery token | libsodium |
 | Random number generation | OS CSPRNG | Ephemeral key generation | `SecureRandom` (Android) / `SecRandomCopyBytes` (iOS) |

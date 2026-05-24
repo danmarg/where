@@ -51,12 +51,42 @@ class MailboxMessageTest {
         val payloads: List<MailboxPayload> =
             listOf(
                 EncryptedMessagePayload(envelope = ByteArray(77), ct = ByteArray(32)),
-                KeyExchangeInitPayload(token = "deadbeef", ekPub = ByteArray(32), keyConfirmation = ByteArray(32), suggestedName = "Alice"),
+                KeyExchangeInitPayload(
+                    token = "deadbeef",
+                    ekPub = ByteArray(32),
+                    keyConfirmation = ByteArray(32),
+                    encryptedName = ByteArray(31) { 0xFF.toByte() },
+                    suggestedName = "Alice"
+                ),
             )
         for (payload in payloads) {
             val encoded = json.encodeToString(MailboxPayload.serializer(), payload)
             val decoded = json.decodeFromString<MailboxPayload>(encoded)
             assertEquals(payload::class, decoded::class)
         }
+    }
+
+    @Test
+    fun `KeyExchangeInitPayload suggestedName is transient`() {
+        val payload = KeyExchangeInitPayload(
+            token = "deadbeef",
+            ekPub = ByteArray(32),
+            keyConfirmation = ByteArray(32),
+            encryptedName = ByteArray(31) { 0xAA.toByte() },
+            suggestedName = "SecretName"
+        )
+        val jsonStr = json.encodeToString(MailboxPayload.serializer(), payload)
+        
+        // Should NOT contain suggestedName
+        assertFalse(jsonStr.contains("suggested_name"), "JSON should not contain transient suggested_name")
+        assertFalse(jsonStr.contains("SecretName"), "JSON should not contain the secret name value")
+        
+        // Should contain encrypted_name
+        assertTrue(jsonStr.contains("encrypted_name"), "JSON should contain encrypted_name")
+        
+        // Round-trip should lose suggestedName but keep encryptedName
+        val decoded = json.decodeFromString<MailboxPayload>(jsonStr) as KeyExchangeInitPayload
+        assertEquals("", decoded.suggestedName)
+        assertContentEquals(payload.encryptedName, decoded.encryptedName)
     }
 }

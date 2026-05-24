@@ -77,6 +77,23 @@ object KeyExchange {
         // Bob is the scanner, so this token uses (AliceFp, BobFp).
         val tokenAliceToBob = deriveRoutingToken(sk, aliceFp, bobFp)
 
+        // Derive K_name and encrypt suggestedName
+        val kName = hkdfSha256(
+            ikm = sk,
+            salt = null,
+            info = "Where-v1-SuggestedName".encodeToByteArray(),
+            length = 32
+        )
+        val nameNonce = randomBytes(12)
+        val nameCt = aeadEncrypt(
+            key = kName,
+            nonce = nameNonce,
+            plaintext = suggestedName.encodeToByteArray(),
+            aad = qr.ekPub + ekB.pub
+        )
+        val encryptedName = nameNonce + nameCt
+        kName.zeroize()
+
         // MEMORY HYGIENE NOTE (§5.5): Bob's initial ephemeral key (ekB.priv) is copied into
         // the session.localDhPriv buffer within initSession. We zero the local ephemeral
         // buffer here, but the copy in SessionState intentionally persists to enable
@@ -89,7 +106,7 @@ object KeyExchange {
                 token = tokenAliceToBob,
                 ekPub = ekB.pub.copyOf(),
                 keyConfirmation = keyConfirmation,
-                suggestedName = suggestedName,
+                encryptedName = encryptedName,
             )
         return msg to session
     }
@@ -116,6 +133,33 @@ object KeyExchange {
             val actualFp = qrFingerprint(aliceEkPub)
             sk.zeroize()
             throw AuthenticationException("KeyExchangeInit key_confirmation failed (expectedAliceFp=$actualFp) — aborting key exchange")
+        }
+
+        // Derive K_name and decrypt/verify the suggested name to bind it cryptographically
+        val kName = hkdfSha256(
+            ikm = sk,
+            salt = null,
+            info = "Where-v1-SuggestedName".encodeToByteArray(),
+            length = 32
+        )
+        try {
+            if (msg.encryptedName.size < 28) { // 12-byte nonce + 16-byte tag
+                throw AuthenticationException("encryptedName payload is too short")
+            }
+            val nonce = msg.encryptedName.copyOfRange(0, 12)
+            val ct = msg.encryptedName.copyOfRange(12, msg.encryptedName.size)
+            aeadDecrypt(
+                key = kName,
+                nonce = nonce,
+                ciphertext = ct,
+                aad = aliceEkPub + msg.ekPub
+            )
+        } catch (e: Exception) {
+            sk.zeroize()
+            kName.zeroize()
+            throw AuthenticationException("Failed to decrypt encrypted_name — aborting key exchange: ${e.message}")
+        } finally {
+            kName.zeroize()
         }
 
         val aliceFp = fingerprint(aliceEkPub)

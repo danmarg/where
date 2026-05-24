@@ -69,7 +69,8 @@ data class EncryptedMessagePayload(
  * @property token           Hex-encoded T_AB_0 (16 bytes) — the pairwise routing token Bob computed.
  * @property ekPub           Bob's X25519 ephemeral public key (32 bytes).
  * @property keyConfirmation HMAC-SHA-256(SK, "Where-v1-Confirm" || EK_A.pub || EK_B.pub).
- * @property suggestedName   Bob's suggested display name for Alice.
+ * @property encryptedName   Bob's suggested display name for Alice, encrypted under K_name.
+ * @property suggestedName   Bob's suggested display name for Alice (transient/decrypted).
  * @property msgId           Unique ID (sha256(ekPub)) for server-side idempotency.
  */
 @Serializable
@@ -81,14 +82,22 @@ data class KeyExchangeInitPayload(
     @Serializable(with = ByteArrayBase64Serializer::class) val ekPub: ByteArray,
     @SerialName("key_confirmation")
     @Serializable(with = ByteArrayBase64Serializer::class) val keyConfirmation: ByteArray,
-    @SerialName("suggested_name") val suggestedName: String = "",
+    @SerialName("encrypted_name")
+    @Serializable(with = ByteArrayBase64Serializer::class) val encryptedName: ByteArray = ByteArray(0),
+    @kotlinx.serialization.Transient var suggestedName: String = "",
     override val msgId: String = sha256(ekPub).toHex(),
 ) : MailboxPayload() {
     override fun equals(other: Any?): Boolean {
         if (other !is KeyExchangeInitPayload) return false
         return token == other.token && ekPub.contentEquals(other.ekPub) &&
-            keyConfirmation.contentEquals(other.keyConfirmation) && suggestedName == other.suggestedName
+            keyConfirmation.contentEquals(other.keyConfirmation) &&
+            encryptedName.contentEquals(other.encryptedName) &&
+            suggestedName == other.suggestedName
     }
 
-    override fun hashCode(): Int = token.hashCode()
+    override fun hashCode(): Int {
+        var h = token.hashCode()
+        h = 31 * h + encryptedName.contentHashCode()
+        return h
+    }
 }

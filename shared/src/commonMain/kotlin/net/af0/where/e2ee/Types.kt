@@ -302,12 +302,12 @@ data class KeyExchangeInitMessage(
     @Serializable(with = ByteArrayBase64Serializer::class) val ekPub: ByteArray,
     // HMAC-SHA-256(SK, "Where-v1-Confirm" || EK_A.pub || EK_B.pub)
     @Serializable(with = ByteArrayBase64Serializer::class) val keyConfirmation: ByteArray,
-    val suggestedName: String,
+    @Serializable(with = ByteArrayBase64Serializer::class) val encryptedName: ByteArray,
 ) {
     override fun equals(other: Any?): Boolean {
         if (other !is KeyExchangeInitMessage) return false
         return protocolVersion == other.protocolVersion && token.contentEquals(other.token) && ekPub.contentEquals(other.ekPub) &&
-            keyConfirmation.contentEquals(other.keyConfirmation) && suggestedName == other.suggestedName
+            keyConfirmation.contentEquals(other.keyConfirmation) && encryptedName.contentEquals(other.encryptedName)
     }
 
     override fun hashCode(): Int {
