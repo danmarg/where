@@ -20,10 +20,15 @@ import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonNull
+import kotlinx.serialization.json.JsonObject
 import redis.clients.jedis.JedisPooled
 import java.net.URI
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.ConcurrentLinkedQueue
+
+// ---------------------------------------------------------------------------
+// Server module
+// ---------------------------------------------------------------------------
 
 private val json =
     Json {
@@ -31,43 +36,30 @@ private val json =
         ignoreUnknownKeys = true
     }
 
-/** TTL for mailbox messages: 7 days, matching the session staleness threshold. */
+private const val RATE_LIMIT_WINDOW_MS = 60 * 1000L
+private const val POLL_BASELINE_LATENCY_MS = 50L
 private const val MAILBOX_TTL_MS = 7 * 24 * 60 * 60 * 1000L
 
 /** Maximum messages retained per token. Prevents unbounded memory growth from floods. */
 private const val MAX_QUEUE_DEPTH = 10000
+
+/** Maximum messages returned in a single poll request. */
+private const val MAX_MESSAGES_PER_POLL = 50
 
 /** Maximum POST requests per token within the rate-limit window.
  * Increased 10x to accommodate WAL retry bursts during reconnects (e.g. 20 friends x 50 retries).
  */
 internal const val RATE_LIMIT_MAX_POSTS = 1000
 
-/** Maximum GET (poll) requests per token within the rate-limit window.
- * Increased 10x to prevent polling lockouts during rapid state recovery.
- */
+/** Maximum GET requests per token within the rate-limit window. */
 internal const val RATE_LIMIT_MAX_GETS = 2000
 
-/** Rate-limit window duration in milliseconds (1 minute). */
-private const val RATE_LIMIT_WINDOW_MS = 60_000L
+interface MailboxStore : AutoCloseable {
+    fun checkIpRateLimit(ip: String): Boolean = true
 
-/** Baseline latency for mailbox poll requests to mitigate timing side-channel (§10.2). */
-private const val POLL_BASELINE_LATENCY_MS = 50L
-
-/** How often the background eviction job sweeps stale map entries (in-memory only). */
-private const val EVICTION_INTERVAL_MS = 5 * 60_000L
-
-// ---------------------------------------------------------------------------
-// MailboxStore interface
-// ---------------------------------------------------------------------------
-
-/**
- * Backing store for the anonymous mailbox routing table.
- */
-interface MailboxStore {
     /**
-     * Store [payload] under [token]. Returns false if the token is rate-limited
-     * or has reached [MAX_QUEUE_DEPTH].
-     * If [msgId] is provided, implementation should ensure idempotency.
+     * Posts a [payload] to the inbox for [token].
+     * Returns true if successful, false if rate-limited or mailbox full.
      */
     fun post(
         token: String,
@@ -76,12 +68,13 @@ interface MailboxStore {
     ): Boolean
 
     /**
-     * Non-destructively read all non-expired messages for [token].
+     * Drains up to 50 messages from the inbox for [token].
+     * Returns null if rate-limited.
      */
     fun drain(token: String): List<JsonElement>?
 
     /**
-     * Remove a specific message by [msgId]. Idempotent.
+     * Deletes a specific message by [msgId]. Idempotent.
      */
     fun deleteById(
         token: String,
@@ -89,7 +82,7 @@ interface MailboxStore {
     ): Boolean
 
     /**
-     * Remove multiple specific messages by [msgIds]. Idempotent.
+     * Deletes multiple messages by [msgIds]. Idempotent.
      */
     fun deleteByIds(
         token: String,
@@ -99,11 +92,14 @@ interface MailboxStore {
     /** Reclaim stale entries. No-op for implementations where the store handles expiry. */
     fun evict() {}
 
-    /** Release any external resources (connections, pools). */
-    fun close() {}
+    override fun close() {}
+}
 
-    /** Check if the source IP is rate-limited. */
-    fun checkIpRateLimit(ip: String): Boolean = true
+/** Utility to help with testing eviction logic. */
+fun MailboxStore.evictForTest(rateLimitWindowMs: Long) {
+    if (this is InMemoryMailboxState) {
+        evictWithParams(rateLimitWindowMs)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -145,13 +141,6 @@ class InMemoryMailboxState : MailboxStore {
             if (msgId != null) {
                 val ids = receivedIds.getOrPut(token) { ConcurrentHashMap.newKeySet() }
                 if (ids.contains(msgId)) return true
-
-                // Limit size of receivedIds to prevent unbounded growth
-                val order = receivedIdsOrder.getOrPut(token) { ConcurrentLinkedQueue() }
-                if (ids.size >= MAX_QUEUE_DEPTH * 2) {
-                    val oldest = order.poll()
-                    if (oldest != null) ids.remove(oldest)
-                }
             }
 
             val times = postTimes.getOrPut(token) { ConcurrentLinkedQueue() }
@@ -162,7 +151,6 @@ class InMemoryMailboxState : MailboxStore {
             val queue = mailboxes.getOrPut(token) { ConcurrentLinkedQueue() }
             queue.removeIf { it.expiresAt <= now }
             if (queue.size >= MAX_QUEUE_DEPTH) return false
-
             queue.add(MailboxEntry(payload, now + MAILBOX_TTL_MS, msgId))
             if (msgId != null) {
                 receivedIds.getOrPut(token) { ConcurrentHashMap.newKeySet() }.add(msgId)
@@ -182,7 +170,7 @@ class InMemoryMailboxState : MailboxStore {
         return queue.asSequence()
             .filter { it.expiresAt > now }
             .map { it.payload }
-            .take(50)
+            .take(MAX_MESSAGES_PER_POLL)
             .toList()
     }
 
@@ -204,101 +192,104 @@ class InMemoryMailboxState : MailboxStore {
         return initialSize - queue.size
     }
 
-    override fun evict() = evictWithParams(rateLimitWindowMs = RATE_LIMIT_WINDOW_MS)
+    override fun evict() = evictWithParams(RATE_LIMIT_WINDOW_MS)
 
-    internal fun evictForTest(rateLimitWindowMs: Long) = evictWithParams(rateLimitWindowMs)
-
-    private fun evictWithParams(rateLimitWindowMs: Long) {
+    internal fun evictWithParams(rateLimitWindowMs: Long) {
         val now = System.currentTimeMillis()
-        postTimes.forEach { (token, _) ->
-            postTimes.computeIfPresent(token) { _, q ->
-                q.removeIf { it <= now - rateLimitWindowMs }
-                if (q.isEmpty()) null else q
-            }
-        }
-        drainTimes.forEach { (token, _) ->
-            drainTimes.computeIfPresent(token) { _, q ->
-                q.removeIf { it <= now - rateLimitWindowMs }
-                if (q.isEmpty()) null else q
-            }
-        }
-        receivedIds.forEach { (token, _) ->
-            receivedIds.computeIfPresent(token) { _, set ->
-                if (mailboxes[token] == null && postTimes[token] == null) {
-                    receivedIdsOrder.remove(token)
-                    null
-                } else {
-                    set
-                }
-            }
-        }
+        postTimes.forEach { (_, times) -> times.removeIf { it < now - rateLimitWindowMs } }
+        drainTimes.forEach { (_, times) -> times.removeIf { it < now - rateLimitWindowMs } }
+        ipPostTimes.forEach { (_, times) -> times.removeIf { it < now - rateLimitWindowMs } }
+
         mailboxes.forEach { (token, _) ->
             mailboxes.computeIfPresent(token) { _, q ->
                 q.removeIf { it.expiresAt <= now }
                 if (q.isEmpty()) null else q
             }
         }
+
+        // receivedIds can grow quite large, so we also need to cap them per token.
+        // For simplicity in this in-memory implementation, we just clear the oldest if it exceeds MAX_QUEUE_DEPTH.
+        receivedIds.forEach { (token, set) ->
+            if (set.size > MAX_QUEUE_DEPTH) {
+                val order = receivedIdsOrder[token]
+                while (set.size > MAX_QUEUE_DEPTH && order != null) {
+                    val oldest = order.poll() ?: break
+                    set.remove(oldest)
+                }
+            }
+        }
     }
 }
 
 // ---------------------------------------------------------------------------
-// Redis implementation (production)
+// Redis implementation
 // ---------------------------------------------------------------------------
 
-class RedisMailboxState(redisUrl: String) : MailboxStore {
-    private val jedis = JedisPooled(URI(redisUrl))
-
+class RedisMailboxState(val jedis: JedisPooled) : MailboxStore {
     private val postScript =
         """
-        local rlKey     = KEYS[1]
-        local inboxKey  = KEYS[2] -- ZSET (order)
-        local idsKey    = KEYS[3] -- SET (idempotency)
-        local dataKey   = KEYS[4] -- HASH (payload)
-        local maxPosts  = tonumber(ARGV[1])
-        local maxDepth  = tonumber(ARGV[2])
-        local payload   = ARGV[3]
-        local ttlSec     = tonumber(ARGV[4])
-        local rlTtlSec   = tonumber(ARGV[5])
-        local msgId_orig = ARGV[6]
-        local nowMs      = tonumber(ARGV[7])
+        local rlKey = KEYS[1]
+        local inboxKey = KEYS[2]
+        local receivedIdsKey = KEYS[3]
+        local dataKey = KEYS[4]
 
-        local msgId = msgId_orig
+        local maxPosts = tonumber(ARGV[1])
+        local maxQueueDepth = tonumber(ARGV[2])
+        local payload = ARGV[3]
+        local ttlSec = tonumber(ARGV[4])
+        local rlTtlSec = tonumber(ARGV[5])
+        local msgId = ARGV[6]
+        local score = tonumber(ARGV[7])
+
+        -- Check msgId for idempotency
         if msgId ~= "" then
-            if redis.call('SISMEMBER', idsKey, msgId) == 1 then return 1 end
-        else
-            msgId = "auto:" .. redis.call('INCR', 'msgid_gen')
+            if redis.call('SISMEMBER', receivedIdsKey, msgId) == 1 then
+                return 1
+            end
         end
 
+        -- Rate limit check
         local count = redis.call('INCR', rlKey)
         if count == 1 then redis.call('EXPIRE', rlKey, rlTtlSec) end
         if count > maxPosts then return 0 end
-        if redis.call('ZCARD', inboxKey) >= maxDepth then return 0 end
 
-        redis.call('ZADD', inboxKey, nowMs, msgId)
+        -- Queue depth check (optional but recommended)
+        if redis.call('ZCARD', inboxKey) >= maxQueueDepth then
+            return 0
+        end
+
+        -- Store payload
+        if msgId == "" then
+            msgId = redis.call('INCR', 'msgid-seq')
+        end
         redis.call('HSET', dataKey, msgId, payload)
+        redis.call('ZADD', inboxKey, score, msgId)
         redis.call('EXPIRE', inboxKey, ttlSec)
         redis.call('EXPIRE', dataKey, ttlSec)
 
-        if msgId_orig ~= "" then
-            redis.call('SADD', idsKey, msgId)
-            redis.call('EXPIRE', idsKey, ttlSec)
+        if msgId ~= "" then
+            redis.call('SADD', receivedIdsKey, msgId)
+            redis.call('EXPIRE', receivedIdsKey, ttlSec)
         end
+
         return 1
         """.trimIndent()
 
     private val drainScript =
         """
-        local rlKey    = KEYS[1]
-        local inboxKey = KEYS[2] -- ZSET
-        local dataKey  = KEYS[3] -- HASH
-        local maxGets  = tonumber(ARGV[1])
+        local rlKey = KEYS[1]
+        local inboxKey = KEYS[2]
+        local dataKey = KEYS[3]
+
+        local maxGets = tonumber(ARGV[1])
         local rlTtlSec = tonumber(ARGV[2])
 
+        -- Rate limit check
         local count = redis.call('INCR', rlKey)
         if count == 1 then redis.call('EXPIRE', rlKey, rlTtlSec) end
         if count > maxGets then return nil end
 
-        local ids = redis.call('ZRANGE', inboxKey, 0, 49)
+        local ids = redis.call('ZRANGE', inboxKey, 0, tonumber(ARGV[3]) - 1)
         if #ids == 0 then return {} end
 
         -- Fetch payloads from Hash. Note: some might be nil if deleted between ZRANGE and HMGET
@@ -343,6 +334,7 @@ class RedisMailboxState(redisUrl: String) : MailboxStore {
                 listOf(
                     RATE_LIMIT_MAX_GETS.toString(),
                     (RATE_LIMIT_WINDOW_MS / 1000).toString(),
+                    MAX_MESSAGES_PER_POLL.toString(),
                 ),
             ) ?: return null
         return (result as List<*>).filterNotNull().map { item ->
@@ -355,18 +347,9 @@ class RedisMailboxState(redisUrl: String) : MailboxStore {
         token: String,
         msgId: String,
     ): Boolean {
-        val deleteByIdScript =
-            """
-            local inboxKey = KEYS[1]
-            local dataKey  = KEYS[2]
-            local msgId    = ARGV[1]
-            local r1 = redis.call('ZREM', inboxKey, msgId)
-            local r2 = redis.call('HDEL', dataKey, msgId)
-            if r1 == 1 or r2 == 1 then return 1 end
-            return 0
-            """.trimIndent()
-        val result = jedis.eval(deleteByIdScript, listOf("inbox:$token", "inbox-data:$token"), listOf(msgId))
-        return result == 1L
+        jedis.zrem("inbox:$token", msgId)
+        jedis.hdel("inbox-data:$token", msgId)
+        return true
     }
 
     override fun deleteByIds(
@@ -374,66 +357,41 @@ class RedisMailboxState(redisUrl: String) : MailboxStore {
         msgIds: List<String>,
     ): Int {
         if (msgIds.isEmpty()) return 0
-        val deleteByIdsScript =
-            """
-            local inboxKey = KEYS[1]
-            local dataKey  = KEYS[2]
-            local count = 0
-            for _, id in ipairs(ARGV) do
-                local r1 = redis.call('ZREM', inboxKey, id)
-                local r2 = redis.call('HDEL', dataKey, id)
-                if r1 == 1 or r2 == 1 then count = count + 1 end
-            end
-            return count
-            """.trimIndent()
-        val result = jedis.eval(deleteByIdsScript, listOf("inbox:$token", "inbox-data:$token"), msgIds)
-        return (result as Long).toInt()
+        jedis.zrem("inbox:$token", *msgIds.toTypedArray())
+        jedis.hdel("inbox-data:$token", *msgIds.toTypedArray())
+        return msgIds.size
     }
 
-    override fun checkIpRateLimit(ip: String): Boolean {
-        val rlKey = "ratelimit-ip:$ip"
-        val count = jedis.incr(rlKey)
-        if (count == 1L) jedis.expire(rlKey, RATE_LIMIT_WINDOW_MS / 1000)
-        return count <= 2000 // 2000 posts per min per IP (allows WAL bursts + NAT sharing)
+    override fun close() {
+        jedis.close()
     }
-
-    override fun close() = jedis.close()
 }
 
 // ---------------------------------------------------------------------------
-// ServerState
+// Main
 // ---------------------------------------------------------------------------
 
-class ServerState(
-    val debug: Boolean = false,
+data class ServerState(
     val mailbox: MailboxStore = InMemoryMailboxState(),
-    val trustProxy: Boolean = false,
+    val trustProxy: Boolean = System.getenv("TRUST_PROXY")?.toBoolean() ?: false,
+    val debug: Boolean = false,
 )
 
-/**
- * Returns the real client IP. When [trustProxy] is true, reads X-Forwarded-For / X-Real-IP
- * (suitable for deployments behind a trusted reverse proxy). Otherwise uses the TCP peer address.
- */
-private fun ApplicationCall.clientIp(trustProxy: Boolean): String =
-    if (trustProxy) {
-        request.headers["X-Forwarded-For"]?.split(",")?.firstOrNull()?.trim()
-            ?: request.headers["X-Real-IP"]?.trim()
-            ?: request.local.remoteHost
-    } else {
-        request.local.remoteHost
-    }
-
-fun main(args: Array<String>) {
-    val port = System.getenv("PORT")?.toInt() ?: 8080
-    val debug = args.contains("--debug") || System.getenv("WHERE_DEBUG") == "true"
-    val trustProxy = System.getenv("TRUST_PROXY") == "true"
+fun main() {
+    val port = System.getenv("PORT")?.toInt() ?: 18082
     val redisUrl = System.getenv("REDIS_URL")
-    val mailbox: MailboxStore =
-        if (redisUrl != null) RedisMailboxState(redisUrl) else InMemoryMailboxState()
+    val state =
+        if (redisUrl != null) {
+            println("Using Redis at ${URI(redisUrl).host}")
+            ServerState(mailbox = RedisMailboxState(JedisPooled(redisUrl)))
+        } else {
+            println("Using in-memory store")
+            ServerState()
+        }
+
     embeddedServer(Netty, port = port, host = "0.0.0.0") {
-        module(ServerState(debug, mailbox, trustProxy))
+        module(state)
     }.start(wait = true)
-    mailbox.close()
 }
 
 fun Application.module(state: ServerState = ServerState()) {
@@ -443,23 +401,8 @@ fun Application.module(state: ServerState = ServerState()) {
 
     launch(Dispatchers.Default) {
         while (isActive) {
-            delay(EVICTION_INTERVAL_MS)
+            delay(RATE_LIMIT_WINDOW_MS)
             state.mailbox.evict()
-        }
-    }
-
-    if (state.debug) {
-        intercept(ApplicationCallPipeline.Monitoring) {
-            application.log.info(
-                "DEBUG: [Connect] ${call.request.local.remoteHost} -> ${call.request.httpMethod.value} ${call.request.uri}",
-            )
-            try {
-                proceed()
-            } finally {
-                application.log.info(
-                    "DEBUG: [Disconnect] ${call.request.local.remoteHost} -> ${call.request.httpMethod.value} ${call.request.uri}",
-                )
-            }
         }
     }
 
@@ -469,18 +412,36 @@ fun Application.module(state: ServerState = ServerState()) {
         put("/inbox/{token}/{msgId}") {
             val token = call.parameters["token"] ?: return@put call.respond(HttpStatusCode.BadRequest)
             val msgId = call.parameters["msgId"] ?: return@put call.respond(HttpStatusCode.BadRequest)
+
+            if (token.length > 64 || msgId.length > 64) {
+                return@put call.respond(HttpStatusCode.BadRequest)
+            }
+
             val ip = call.clientIp(state.trustProxy)
             if (!state.mailbox.checkIpRateLimit(ip)) return@put call.respond(HttpStatusCode.TooManyRequests)
 
+            // Manual size check to prevent OOM from large bodies
+            val contentLength = call.request.contentLength()
+            if (contentLength != null && contentLength > 4 * 1024) {
+                return@put call.respond(HttpStatusCode.PayloadTooLarge)
+            }
+
             val body = call.receiveText()
+            if (body.length > 4 * 1024) {
+                return@put call.respond(HttpStatusCode.PayloadTooLarge)
+            }
+
             val payload = runCatching { json.parseToJsonElement(body) }.getOrNull()
-            if (payload == null || payload == JsonNull) return@put call.respond(HttpStatusCode.BadRequest)
+            if (payload !is JsonObject || !payload.containsKey("type")) {
+                return@put call.respond(HttpStatusCode.BadRequest)
+            }
             if (!state.mailbox.post(token, payload, msgId)) return@put call.respond(HttpStatusCode.TooManyRequests)
             call.respond(HttpStatusCode.NoContent)
         }
 
         get("/inbox/{token}") {
             val token = call.parameters["token"] ?: return@get call.respond(HttpStatusCode.BadRequest)
+            if (token.length > 64) return@get call.respond(HttpStatusCode.BadRequest)
             val startTime = System.currentTimeMillis()
             val messages = state.mailbox.drain(token) ?: return@get call.respond(HttpStatusCode.TooManyRequests)
             val responseString = json.encodeToString(messages)
@@ -491,8 +452,9 @@ fun Application.module(state: ServerState = ServerState()) {
 
         delete("/inbox/{token}") {
             val token = call.parameters["token"] ?: return@delete call.respond(HttpStatusCode.BadRequest)
+            if (token.length > 64) return@delete call.respond(HttpStatusCode.BadRequest)
             val ids = call.request.queryParameters["ids"]?.split(",")?.filter { it.isNotEmpty() }
-            if (ids == null) {
+            if (ids == null || ids.size > MAX_MESSAGES_PER_POLL) {
                 call.respond(HttpStatusCode.BadRequest)
                 return@delete
             }
@@ -503,8 +465,19 @@ fun Application.module(state: ServerState = ServerState()) {
         delete("/inbox/{token}/{msgId}") {
             val token = call.parameters["token"] ?: return@delete call.respond(HttpStatusCode.BadRequest)
             val msgId = call.parameters["msgId"] ?: return@delete call.respond(HttpStatusCode.BadRequest)
+            if (token.length > 64 || msgId.length > 64) {
+                return@delete call.respond(HttpStatusCode.BadRequest)
+            }
             state.mailbox.deleteById(token, msgId)
             call.respond(HttpStatusCode.NoContent)
         }
     }
 }
+
+private fun ApplicationCall.clientIp(trustProxy: Boolean): String =
+    if (trustProxy) {
+        request.header("X-Forwarded-For")?.split(",")?.firstOrNull()?.trim()
+            ?: request.local.remoteHost
+    } else {
+        request.local.remoteHost
+    }
