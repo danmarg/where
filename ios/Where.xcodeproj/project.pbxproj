@@ -290,7 +290,7 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
-			shellScript = "cd \"$SRCROOT/..\"\nif [ -f .envrc ]; then\n  source .envrc\nfi\n./gradlew :shared:assembleShared${CONFIGURATION}XCFramework\n";
+			shellScript = "cd \"$SRCROOT/..\"\nif [ -f .envrc ]; then\n  source .envrc\nfi\n# Build BOTH to avoid switching issues\n./gradlew :shared:assembleSharedDebugXCFramework :shared:assembleSharedReleaseXCFramework\n";
 		};
 /* End PBXShellScriptBuildPhase section */
 
