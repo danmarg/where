@@ -567,6 +567,7 @@ class E2eeManager(
                 )
                 plaintext.decodeToString()
             } catch (e: Exception) {
+                persistence.addDiagnosticEvent("decryptSuggestedName failed: ${e.message}")
                 null
             } finally {
                 sk.zeroize()

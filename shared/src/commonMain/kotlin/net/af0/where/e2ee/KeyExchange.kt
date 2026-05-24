@@ -127,116 +127,116 @@ object KeyExchange {
         }
 
         val sk = x25519(aliceEkPriv, msg.ekPub)
-
-        // Verify key confirmation before proceeding.
-        if (!verifyKeyConfirmation(sk, aliceEkPub, msg.ekPub, msg.keyConfirmation)) {
-            val actualFp = qrFingerprint(aliceEkPub)
-            sk.zeroize()
-            throw AuthenticationException("KeyExchangeInit key_confirmation failed (expectedAliceFp=$actualFp) — aborting key exchange")
-        }
-
-        // Derive K_name and decrypt/verify the suggested name to bind it cryptographically
-        val kName = hkdfSha256(
-            ikm = sk,
-            salt = null,
-            info = "Where-v1-SuggestedName".encodeToByteArray(),
-            length = 32
-        )
         try {
-            if (msg.encryptedName.size < 28) { // 12-byte nonce + 16-byte tag
-                throw AuthenticationException("encryptedName payload is too short")
+            // Verify key confirmation before proceeding.
+            if (!verifyKeyConfirmation(sk, aliceEkPub, msg.ekPub, msg.keyConfirmation)) {
+                val actualFp = qrFingerprint(aliceEkPub)
+                throw AuthenticationException("KeyExchangeInit key_confirmation failed (expectedAliceFp=$actualFp) — aborting key exchange")
             }
-            val nonce = msg.encryptedName.copyOfRange(0, 12)
-            val ct = msg.encryptedName.copyOfRange(12, msg.encryptedName.size)
-            aeadDecrypt(
-                key = kName,
-                nonce = nonce,
-                ciphertext = ct,
-                aad = aliceEkPub + msg.ekPub
+
+            // Derive K_name and decrypt/verify the suggested name to bind it cryptographically
+            val kName = hkdfSha256(
+                ikm = sk,
+                salt = null,
+                info = "Where-v1-SuggestedName".encodeToByteArray(),
+                length = 32
             )
-        } catch (e: Exception) {
-            sk.zeroize()
-            throw AuthenticationException("Failed to decrypt encrypted_name — aborting key exchange: ${e.message}")
-        } finally {
-            kName.zeroize()
-        }
-
-        val aliceFp = fingerprint(aliceEkPub)
-        val bobFp = fingerprint(msg.ekPub)
-
-        // VERIFY TOKEN (#168): Alice MUST verify that Bob computed the same initial routing token.
-        // Alice is the initiator, so her SEND token (Alice->Bob) uses (AliceFp, BobFp).
-        val expectedToken = deriveRoutingToken(sk, aliceFp, bobFp)
-        if (!expectedToken.contentEquals(msg.token)) {
-            val expectedHex = expectedToken.toHex()
-            val providedHex = msg.token.toHex()
-            sk.zeroize()
-            throw AuthenticationException(
-                "KeyExchangeInit token mismatch (expected=$expectedHex, provided=$providedHex) — possible tampering or protocol error",
-            )
-        }
-
-        val session =
-            initSession(
-                sk = sk,
-                isAlice = true,
-                myDhPriv = aliceEkPriv,
-                myDhPub = aliceEkPub,
-                theirDhPub = msg.ekPub,
-                aliceFp = aliceFp,
-                bobFp = bobFp,
-            )
-        sk.zeroize()
-
-        // To break the Double Ratchet deadlock and ensure we don't just stay in the
-        // bootstrap symmetric chain forever, Alice (the initiator) performs the FIRST
-        // DH ratchet step immediately after receiving Bob's bootstrap key (B0).
-        // This generates A1, which Alice will send in her first location message.
-        // Bob will see A1 != A0 and ratchet his own side.
-        val newLocalDh = generateX25519KeyPair()
-        val dhOut = x25519(newLocalDh.priv, msg.ekPub)
-        val rkStep =
             try {
-                kdfRk(session.rootKey, dhOut)
+                if (msg.encryptedName.size < 28) { // 12-byte nonce + 16-byte tag
+                    throw AuthenticationException("encryptedName payload is too short")
+                }
+                val nonce = msg.encryptedName.copyOfRange(0, 12)
+                val ct = msg.encryptedName.copyOfRange(12, msg.encryptedName.size)
+                aeadDecrypt(
+                    key = kName,
+                    nonce = nonce,
+                    ciphertext = ct,
+                    aad = aliceEkPub + msg.ekPub
+                )
+            } catch (e: Exception) {
+                if (e is AuthenticationException) throw e
+                throw AuthenticationException("Failed to decrypt encrypted_name — aborting key exchange: ${e.message}")
             } finally {
-                dhOut.zeroize()
+                kName.zeroize()
             }
 
-        // Tokens also rotate when the rootKey changes.
-        val newSendToken = deriveRoutingToken(rkStep.newRootKey, aliceFp, bobFp)
+            val aliceFp = fingerprint(aliceEkPub)
+            val bobFp = fingerprint(msg.ekPub)
 
-        val nextAliceSession =
-            session.copy(
-                rootKey = rkStep.newRootKey.copyOf(),
-                sendChainKey = rkStep.newChainKey.copyOf(),
-                // CRITICAL: Alice MUST keep the Epoch 0 headerKey for receiving Bob's
-                // initial messages (B0). She only advances HER send side to Epoch 1.
-                headerKey = session.headerKey.copyOf(),
-                sendHeaderKey = session.nextHeaderKey.copyOf(),
-                nextHeaderKey = rkStep.newHeaderKey.copyOf(),
-                sendToken = newSendToken,
-                recvToken = session.recvToken.copyOf(),
-                prevSendChainKey = session.sendChainKey.copyOf(),
-                prevSendHeaderKey = session.sendHeaderKey.copyOf(),
-                localDhPriv = newLocalDh.priv.copyOf(),
-                localDhPub = newLocalDh.pub.copyOf(),
-                prevLocalDhPub = session.localDhPub.copyOf(),
-                prevSendToken = session.sendToken,
-                pr = session.recvSeq,
-            )
+            // VERIFY TOKEN (#168): Alice MUST verify that Bob computed the same initial routing token.
+            // Alice is the initiator, so her SEND token (Alice->Bob) uses (AliceFp, BobFp).
+            val expectedToken = deriveRoutingToken(sk, aliceFp, bobFp)
+            if (!expectedToken.contentEquals(msg.token)) {
+                val expectedHex = expectedToken.toHex()
+                val providedHex = msg.token.toHex()
+                throw AuthenticationException(
+                    "KeyExchangeInit token mismatch (expected=$expectedHex, provided=$providedHex) — possible tampering or protocol error",
+                )
+            }
 
-        // Memory Hygiene: Wipe the bootstrap session's keys now that they are superseded by Epoch 1.
-        // nextAliceSession preserves recvChainKey (Epoch 0 receiver) until Bob ratchets.
-        // We MUST NOT wipe recvChainKey here because nextAliceSession is a shallow copy of session!
-        session.rootKey.zeroize()
-        session.sendChainKey.zeroize()
-        session.localDhPriv.zeroize()
-        // session.recvChainKey is shared with nextAliceSession via shallow copy. DO NOT FILL(0).
+            val session =
+                initSession(
+                    sk = sk,
+                    isAlice = true,
+                    myDhPriv = aliceEkPriv,
+                    myDhPub = aliceEkPub,
+                    theirDhPub = msg.ekPub,
+                    aliceFp = aliceFp,
+                    bobFp = bobFp,
+                )
 
-        newLocalDh.priv.zeroize()
-        rkStep.newRootKey.zeroize()
-        rkStep.newChainKey.zeroize()
-        return nextAliceSession
+            // To break the Double Ratchet deadlock and ensure we don't just stay in the
+            // bootstrap symmetric chain forever, Alice (the initiator) performs the FIRST
+            // DH ratchet step immediately after receiving Bob's bootstrap key (B0).
+            // This generates A1, which Alice will send in her first location message.
+            // Bob will see A1 != A0 and ratchet his own side.
+            val newLocalDh = generateX25519KeyPair()
+            val dhOut = x25519(newLocalDh.priv, msg.ekPub)
+            val rkStep =
+                try {
+                    kdfRk(session.rootKey, dhOut)
+                } finally {
+                    dhOut.zeroize()
+                }
+
+            // Tokens also rotate when the rootKey changes.
+            val newSendToken = deriveRoutingToken(rkStep.newRootKey, aliceFp, bobFp)
+
+            val nextAliceSession =
+                session.copy(
+                    rootKey = rkStep.newRootKey.copyOf(),
+                    sendChainKey = rkStep.newChainKey.copyOf(),
+                    // CRITICAL: Alice MUST keep the Epoch 0 headerKey for receiving Bob's
+                    // initial messages (B0). She only advances HER send side to Epoch 1.
+                    headerKey = session.headerKey.copyOf(),
+                    sendHeaderKey = session.nextHeaderKey.copyOf(),
+                    nextHeaderKey = rkStep.newHeaderKey.copyOf(),
+                    sendToken = newSendToken,
+                    recvToken = session.recvToken.copyOf(),
+                    prevSendChainKey = session.sendChainKey.copyOf(),
+                    prevSendHeaderKey = session.sendHeaderKey.copyOf(),
+                    localDhPriv = newLocalDh.priv.copyOf(),
+                    localDhPub = newLocalDh.pub.copyOf(),
+                    prevLocalDhPub = session.localDhPub.copyOf(),
+                    prevSendToken = session.sendToken,
+                    pr = session.recvSeq,
+                )
+
+            // Memory Hygiene: Wipe the bootstrap session's keys now that they are superseded by Epoch 1.
+            // nextAliceSession preserves recvChainKey (Epoch 0 receiver) until Bob ratchets.
+            // We MUST NOT wipe recvChainKey here because nextAliceSession is a shallow copy of session!
+            session.rootKey.zeroize()
+            session.sendChainKey.zeroize()
+            session.localDhPriv.zeroize()
+            // session.recvChainKey is shared with nextAliceSession via shallow copy. DO NOT FILL(0).
+
+            newLocalDh.priv.zeroize()
+            rkStep.newRootKey.zeroize()
+            rkStep.newChainKey.zeroize()
+            return nextAliceSession
+        } finally {
+            sk.zeroize()
+        }
     }
 
     // ---------------------------------------------------------------------------
