@@ -548,24 +548,7 @@ class E2eeManager(
             if (pending == null) return@withMetadataLock null
             val sk = x25519(pending.aliceEkPriv, bobEkPub)
             try {
-                if (encryptedName.size < 28) {
-                    return@withMetadataLock null
-                }
-                val kName = hkdfSha256(
-                    ikm = sk,
-                    salt = null,
-                    info = "Where-v1-SuggestedName".encodeToByteArray(),
-                    length = 32
-                )
-                val nonce = encryptedName.copyOfRange(0, 12)
-                val ct = encryptedName.copyOfRange(12, encryptedName.size)
-                val plaintext = aeadDecrypt(
-                    key = kName,
-                    nonce = nonce,
-                    ciphertext = ct,
-                    aad = aliceEkPub + bobEkPub
-                )
-                plaintext.decodeToString()
+                KeyExchange.decryptSuggestedName(sk, aliceEkPub, bobEkPub, encryptedName)
             } catch (e: Exception) {
                 persistence.addDiagnosticEvent("decryptSuggestedName failed: ${e.message}")
                 null

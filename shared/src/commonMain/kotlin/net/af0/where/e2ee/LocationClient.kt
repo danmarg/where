@@ -139,11 +139,11 @@ open class LocationClient(
                                 store.addDiagnosticEvent("Failed to decrypt suggested_name for invite from discovery=$discoveryHex")
                                 null
                             } else {
-                                // Populate the transient suggestedName field for UI consumption.
+                                // Return a copy of the payload with the transient suggestedName field populated for UI consumption.
                                 // Alice will use this to pre-fill her naming dialog.
-                                last.suggestedName = decryptedName
+                                val populatedPayload = last.copy(suggestedName = decryptedName)
                                 PendingInviteResult(
-                                    payload = last,
+                                    payload = populatedPayload,
                                     scannerEkPub = last.ekPub,
                                     inviteEkPub = invite.qrPayload.ekPub,
                                     multipleScansDetected = inits.size > 1,

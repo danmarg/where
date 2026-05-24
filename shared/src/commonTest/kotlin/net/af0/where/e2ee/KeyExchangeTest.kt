@@ -172,6 +172,20 @@ class KeyExchangeTest {
     }
 
     @Test
+    fun `decryptSuggestedName fails with mismatched AAD`() {
+        val (qr, aliceEkPriv) = KeyExchange.aliceCreateQrPayload("Alice")
+        val (msg, _) = KeyExchange.bobProcessQr(qr, "Bob")
+        val sk = x25519(aliceEkPriv, msg.ekPub)
+
+        // Try decrypting with a different Alice public key in AAD
+        val wrongAliceEkPub = randomBytes(32)
+        assertFailsWith<AuthenticationException> {
+            KeyExchange.decryptSuggestedName(sk, wrongAliceEkPub, msg.ekPub, msg.encryptedName)
+        }
+        sk.zeroize()
+    }
+
+    @Test
     fun `bobProcessQr rejects tampered fingerprint`() {
         val (qr, _) = KeyExchange.aliceCreateQrPayload("Alice")
         val badQr = qr.copy(fingerprint = "0".repeat(40)) // Tampered fingerprint
