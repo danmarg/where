@@ -378,7 +378,7 @@ data class ServerState(
 )
 
 fun main() {
-    val port = System.getenv("PORT")?.toInt() ?: 18082
+    val port = System.getenv("PORT")?.toInt() ?: 8080
     val redisUrl = System.getenv("REDIS_URL")
     val state =
         if (redisUrl != null) {
