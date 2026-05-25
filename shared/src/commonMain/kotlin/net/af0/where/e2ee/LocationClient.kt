@@ -188,7 +188,7 @@ open class LocationClient(
             var tokenFollows = 0
             var stopPolling = false
             var caughtUp = false
-            var hadAnyDhRatchet = false
+            var hadDataDrivenDhRatchet = false
 
             while (!stopPolling && totalMessagesProcessed < MAX_MESSAGES_PER_POLL) {
                 val friend = store.getFriend(friendId) ?: break
@@ -249,7 +249,7 @@ open class LocationClient(
 
                     totalMessagesProcessed += messages.size
 
-                    if (result.hadDhRatchet) hadAnyDhRatchet = true
+                    if (result.hadDhRatchet && result.decryptedLocations.isNotEmpty()) hadDataDrivenDhRatchet = true
 
                     if (result.hadStateUpdate) {
                         val friendAfterUpdate = store.getFriend(friendId) ?: break
@@ -286,16 +286,19 @@ open class LocationClient(
 
                 // Automated Keepalive Rules:
                 // 1. We haven't heard from them (lastRecvTs) for more than 30 seconds.
-                // 2. A DH ratchet occurred this poll — we must immediately deliver our new
-                //    DH pub (B1) so the peer can ratchet their recv chain. Without this,
-                //    the peer stays on our old sendToken even while we receive their messages
-                //    fine (one-directional desync). The 30s silence gate is wrong here because
-                //    the peer may keep sending (refreshing lastRecvTs) indefinitely.
+                // 2. A DH ratchet was triggered by real data (location) from the peer — we must
+                //    immediately deliver our new DH pub so the peer can ratchet their recv chain.
+                //    Without this, the peer stays on our old sendToken while we receive their
+                //    messages fine (one-directional desync). The 30s silence gate is wrong here
+                //    because the peer may keep sending location data (refreshing lastRecvTs)
+                //    indefinitely. Keepalive-driven ratchets are deliberately excluded: responding
+                //    to a keepalive with a keepalive creates an infinite ratchet chain; the 30s
+                //    gate handles that case instead.
                 // Safety: only send if we have nothing else pending for them (outbox is empty).
                 val threshold = 30
                 val isFriendSilent = (now - friendAfter.lastRecvTs >= threshold)
 
-                if (enableAutomatedKeepalives && (isFriendSilent || hadAnyDhRatchet)) {
+                if (enableAutomatedKeepalives && (isFriendSilent || hadDataDrivenDhRatchet)) {
                     if (!friendAfter.isStale && friendAfter.isConfirmed) {
                         // Check outbox to avoid redundant keepalives
                         val outbox = store.getOutbox(friendId)
