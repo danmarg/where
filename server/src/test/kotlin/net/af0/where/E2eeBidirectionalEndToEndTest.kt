@@ -503,6 +503,74 @@ class E2eeBidirectionalEndToEndTest {
         }
     }
 
+    @Test
+    fun `DH ratchet triggers immediate keepalive even when peer keeps sending`() {
+        initializeLibsodium()
+        val port = 18087
+        val baseUrl = "http://localhost:$port"
+        val server = embeddedServer(Netty, port = port) { module(ServerState()) }
+        server.start(wait = false)
+        try {
+            runBlocking {
+                val aliceStore = E2eeManager(createTestSqlDriver())
+                val bobStore = E2eeManager(createTestSqlDriver())
+                val aliceClient = LocationClient(baseUrl, aliceStore)
+                val bobClient = LocationClient(baseUrl, bobStore)
+
+                // Standard pairing: Alice creates QR, Bob scans, Alice confirms.
+                val qr = aliceStore.createInvite("Alice")
+                val (init, _) = bobStore.processScannedQr(qr, "Bob")
+                KtorMailboxClient.post(baseUrl, qr.discoveryToken().toHex(), init)
+                val aliceEntry = aliceStore.processKeyExchangeInit(
+                    KtorMailboxClient.poll(baseUrl, qr.discoveryToken().toHex())
+                        .filterIsInstance<KeyExchangeInitPayload>().first(),
+                    "Bob", qr.ekPub,
+                )!!
+                val friendIdBforA = bobStore.listFriends().first().id
+
+                // Alice sends 3 locations back-to-back.
+                // Msg 1 (seq=1) is the DH transition message to T_A0 carrying A1.pub.
+                // Msgs 2–3 (seq=2,3) flow to T_A1, keeping Bob's lastRecvTs fresh after
+                // he ratchets — so isFriendSilent stays false.
+                aliceClient.sendLocation(1.0, 1.0)
+                aliceClient.sendLocation(2.0, 2.0)
+                aliceClient.sendLocation(3.0, 3.0)
+
+                // Bob polls: DH-ratchets on msg 1 (hadAnyDhRatchet=true), then processes
+                // msgs 2–3. lastRecvTs is fresh, so isFriendSilent=false. The fix adds
+                // hadAnyDhRatchet to the keepalive condition, causing Bob to immediately
+                // deliver his transition (seq=1, T_B0, carrying B1.pub) to the server.
+                bobClient.poll()
+
+                // Alice polls T_B0 (her current recvToken): receives Bob's transition
+                // keepalive, DH-ratchets, and advances to recvToken=T_B1.
+                // Without the fix, T_B0 is empty and Alice stays stuck on T_B0 indefinitely
+                // while Bob has already advanced to sending on T_B1.
+                aliceClient.poll()
+
+                // Bob sends a location — encrypted and routed to T_B1.
+                bobClient.sendLocation(10.0, 20.0)
+
+                // Alice must be on T_B1 to receive this. Without the fix she is still
+                // polling T_B0 and receives nothing here.
+                val updates = aliceClient.poll()
+                assertTrue(
+                    updates.any { it.userId == friendIdBforA && it.lat == 10.0 },
+                    "Alice must receive Bob's location; without the fix Bob's transition " +
+                        "keepalive is never sent because isFriendSilent stays false",
+                )
+
+                drainStability(aliceClient to aliceStore, bobClient to bobStore)
+                val finalAlice = aliceStore.getFriend(aliceEntry.id)!!.session
+                val finalBob = bobStore.getFriend(friendIdBforA)!!.session
+                assertTokensMatch(finalAlice, finalBob, "Alice→Bob token sync")
+                assertTokensMatch(finalBob, finalAlice, "Bob→Alice token sync")
+            }
+        } finally {
+            server.stop(0, 0)
+        }
+    }
+
     private class MemoryRawKeyValueStorage : RawKeyValueStorage {
         private val data = mutableMapOf<String, String>()
 
