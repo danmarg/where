@@ -65,6 +65,8 @@ targets:
           - UIInterfaceOrientationPortrait
           - UIInterfaceOrientationLandscapeLeft
           - UIInterfaceOrientationLandscapeRight
+        CFBundleShortVersionString: "$(MARKETING_VERSION)"
+        CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
         "UISupportedInterfaceOrientations~ipad":
           - UIInterfaceOrientationPortrait
           - UIInterfaceOrientationPortraitUpsideDown
@@ -72,11 +74,16 @@ targets:
           - UIInterfaceOrientationLandscapeRight
     entitlements:
       path: Sources/Where/Where.entitlements
+      properties:
+        com.apple.developer.associated-domains:
+          - applinks:where.af0.net?mode=developer
     settings:
       PRODUCT_BUNDLE_IDENTIFIER: net.af0.WhereApp
       FRAMEWORK_SEARCH_PATHS: $(inherited) $(SRCROOT)/../shared/build/XCFrameworks/$(CONFIGURATION:lower)
       CODE_SIGN_IDENTITY: Apple Development
       CODE_SIGN_STYLE: Automatic
+      MARKETING_VERSION: "1.8"
+      CURRENT_PROJECT_VERSION: 1.8
 
   WhereTests:
     type: bundle.unit-test
