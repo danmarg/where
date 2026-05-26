@@ -76,6 +76,7 @@ targets:
       path: Sources/Where/Where.entitlements
       properties:
         com.apple.developer.associated-domains:
+          - applinks:where.af0.net
           - applinks:where.af0.net?mode=developer
     settings:
       PRODUCT_BUNDLE_IDENTIFIER: net.af0.WhereApp

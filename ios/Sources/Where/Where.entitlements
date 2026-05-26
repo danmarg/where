@@ -4,6 +4,7 @@
 <dict>
 	<key>com.apple.developer.associated-domains</key>
 	<array>
+		<string>applinks:where.af0.net</string>
 		<string>applinks:where.af0.net?mode=developer</string>
 	</array>
 </dict>
