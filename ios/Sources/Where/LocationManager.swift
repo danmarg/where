@@ -2,6 +2,8 @@ import CoreLocation
 import Combine
 import UIKit
 
+private let stationaryGeofenceId = "stationary_fence"
+
 @MainActor
 protocol LocationProviding: AnyObject {
     var locationPublisher: AnyPublisher<CLLocation?, Never> { get }
@@ -32,8 +34,6 @@ final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelega
     // Reliability loop state
     private var isLowPowerMode = false
     private var stationaryTask: Task<Void, Never>?
-    private static let stationaryGeofenceId = "stationary_fence"
-
     private static let lastLatKey = "location_last_lat"
     private static let lastLngKey = "location_last_lng"
 
@@ -101,7 +101,7 @@ final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelega
         if let manager = manager {
             manager.stopMonitoringSignificantLocationChanges()
             for region in manager.monitoredRegions {
-                if region.identifier == Self.stationaryGeofenceId {
+                if region.identifier == stationaryGeofenceId {
                     manager.stopMonitoring(for: region)
                 }
             }
@@ -134,7 +134,7 @@ final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelega
         stationaryTask?.cancel()
         stationaryTask = nil
         for region in manager.monitoredRegions {
-            if region.identifier == Self.stationaryGeofenceId {
+            if region.identifier == stationaryGeofenceId {
                 manager.stopMonitoring(for: region)
             }
         }
@@ -223,7 +223,7 @@ final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelega
         LocationSyncService.shared.e2eeManager.addDiagnosticEvent(message: "Entering low-power mode (stationary > 5m)")
         
         if let manager = manager {
-            let region = CLCircularRegion(center: location.coordinate, radius: 200, identifier: Self.stationaryGeofenceId)
+            let region = CLCircularRegion(center: location.coordinate, radius: 200, identifier: stationaryGeofenceId)
             region.notifyOnEntry = false
             region.notifyOnExit = true
             manager.startMonitoring(for: region)
@@ -274,7 +274,7 @@ final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelega
     }
 
     nonisolated func locationManager(_ manager: CLLocationManager, didExitRegion region: CLRegion) {
-        if region.identifier == Self.stationaryGeofenceId {
+        if region.identifier == stationaryGeofenceId {
             let identifier = MainActor.assumeIsolated {
                 UIApplication.shared.beginBackgroundTask(withName: "GeofenceExit") { }
             }
