@@ -229,10 +229,12 @@ final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelega
             manager.startMonitoring(for: region)
         }
         
+        stationaryTask = nil
         updatesTask?.cancel()
         updatesTask = nil
         backgroundActivity?.invalidate()
         backgroundActivity = nil
+        manager?.stopMonitoringSignificantLocationChanges()
     }
 
     private func resumeHighFidelityTracking() {
@@ -272,7 +274,7 @@ final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelega
     }
 
     nonisolated func locationManager(_ manager: CLLocationManager, didExitRegion region: CLRegion) {
-        if region.identifier == "stationary_fence" {
+        if region.identifier == Self.stationaryGeofenceId {
             let identifier = MainActor.assumeIsolated {
                 UIApplication.shared.beginBackgroundTask(withName: "GeofenceExit") { }
             }
@@ -283,11 +285,7 @@ final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelega
                     }
                 }
                 LocationSyncService.shared.e2eeManager.addDiagnosticEvent(message: "Exited stationary geofence")
-                if self.isLowPowerMode {
-                    self.resumeHighFidelityTracking()
-                } else {
-                    self.startUpdating()
-                }
+                self.resumeHighFidelityTracking()
             }
         }
     }
