@@ -550,7 +550,7 @@ class E2eeManager(
             try {
                 KeyExchange.decryptSuggestedName(sk, aliceEkPub, bobEkPub, encryptedName)
             } catch (e: Exception) {
-                persistence.addDiagnosticEvent("decryptSuggestedName failed: ${e.message}")
+                addDiagnosticEvent("decryptSuggestedName failed: ${e.message}")
                 null
             } finally {
                 sk.zeroize()
