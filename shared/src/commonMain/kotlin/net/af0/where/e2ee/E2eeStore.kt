@@ -115,39 +115,19 @@ internal class E2eeStore(
             try {
                 val (action, blockResult) = block(entry, scope)
                 result = blockResult
-                
-                var newEntry: FriendEntry? = null
-                var deleted = false
 
                 database.transaction {
                     when (action) {
                         is PersistenceAction.Update -> {
-                            newEntry = saveFriendInternal(friendId, action.entry)
+                            scope.stageFriendUpdate(friendId, saveFriendInternal(friendId, action.entry))
                         }
                         is PersistenceAction.Delete -> {
                             deleteFriendInternal(friendId)
-                            deleted = true
+                            scope.stageFriendDeletion(friendId)
                         }
                         is PersistenceAction.None -> {}
                     }
-
-                    // Process queued outbox inserts
-                    scope.getQueuedOutboxInserts().forEach { outbox ->
-                        database.outboxQueries.insertOutbox(
-                            msgId = outbox.msgId,
-                            friendId = outbox.friendId,
-                            token = outbox.token,
-                            payloadBlob = outbox.payloadBlob,
-                            createdAt = outbox.createdAt,
-                        )
-                    }
                     scope.applyToDb()
-                }
-                
-                if (newEntry != null) {
-                    friends[friendId] = newEntry
-                } else if (deleted) {
-                    friends.remove(friendId)
                 }
                 scope.applyToMemory()
 
@@ -348,8 +328,6 @@ internal class E2eeStore(
 
         private val queuedOutboxInserts = mutableListOf<OutboxInsert>()
 
-        fun getQueuedOutboxInserts(): List<OutboxInsert> = queuedOutboxInserts
-
         override fun insertOutbox(
             msgId: String,
             friendId: String,
@@ -370,11 +348,30 @@ internal class E2eeStore(
                 newPendingInvites = value
             }
 
+        private var friendMemoryUpdate: (() -> Unit)? = null
+
+        fun stageFriendUpdate(friendId: String, entry: FriendEntry) {
+            friendMemoryUpdate = { this@E2eeStore.friends[friendId] = entry }
+        }
+
+        fun stageFriendDeletion(friendId: String) {
+            friendMemoryUpdate = { this@E2eeStore.friends.remove(friendId) }
+        }
+
         override fun addDiagnosticEvent(message: String) {
             this@E2eeStore.addDiagnosticEvent(message)
         }
 
         fun applyToDb() {
+            queuedOutboxInserts.forEach { outbox ->
+                database.outboxQueries.insertOutbox(
+                    msgId = outbox.msgId,
+                    friendId = outbox.friendId,
+                    token = outbox.token,
+                    payloadBlob = outbox.payloadBlob,
+                    createdAt = outbox.createdAt,
+                )
+            }
             if (pendingInvitesChanged) {
                 val value = newPendingInvites
                 val current = this@E2eeStore.pendingInvites
@@ -400,6 +397,7 @@ internal class E2eeStore(
         }
 
         fun applyToMemory() {
+            friendMemoryUpdate?.invoke()
             if (pendingInvitesChanged) {
                 this@E2eeStore.pendingInvites.clear()
                 this@E2eeStore.pendingInvites.addAll(newPendingInvites)
