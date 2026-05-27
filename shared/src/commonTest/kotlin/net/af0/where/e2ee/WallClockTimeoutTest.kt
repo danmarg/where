@@ -15,7 +15,7 @@ class WallClockTimeoutTest {
         val mockTime = MockTimeProvider(1000L)
         TimeSource.setProvider(mockTime)
 
-        assertFailsWith<CancellationException> {
+        assertFailsWith<WallClockTimeoutCancellationException> {
             withWallClockTimeout(5000L) {
                 // Advance the wall-clock time by 6000ms to simulate app suspension
                 mockTime.advanceMillis(6000L)

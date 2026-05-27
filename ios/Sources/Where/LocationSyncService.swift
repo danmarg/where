@@ -311,8 +311,8 @@ final class LocationSyncService: ObservableObject {
     }
 
     func onForegroundEntry() {
-        // Reset lastPollTime to .distantPast so the next pollAll() call bypasses the
-        // interval check and — if a poll is stuck in-flight — triggers the 90s reset path.
+        // Reset lastPollTime to .distantPast so tick() bypasses its interval guard and fires
+        // a poll immediately. A stuck isPollInFlight is handled by pollAll()'s watchdog task.
         lastPollTime = .distantPast
         // Proactively send own location so friends see us immediately (subject to 30s throttle).
         // sendLocation() updates lastSentTime synchronously, so pollAll()'s heartbeat guard
@@ -470,6 +470,16 @@ final class LocationSyncService: ObservableObject {
         if isPollInFlight { return }
         isPollInFlight = true
         lastPollTime = Date()
+
+        // Watchdog: if the KMP coroutine hangs without returning or throwing (e.g. stalled
+        // socket that never reaches a cancellation checkpoint), the defer block never fires and
+        // isPollInFlight would stick permanently. Reset it after 90s regardless.
+        let watchdog = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 90_000_000_000)
+            guard let self, self.isPollInFlight else { return }
+            self.logger.warning("pollAll: watchdog resetting stuck isPollInFlight")
+            self.isPollInFlight = false
+        }
         logger.debug("Polling for location updates (updateUi=\(updateUi), source=\(source.rawValue))")
 
         if Date().timeIntervalSince(lastCleanupTime) > 3600 {
@@ -486,6 +496,7 @@ final class LocationSyncService: ObservableObject {
         }
 
         defer {
+            watchdog.cancel()
             isPollInFlight = false
             if identifier != .invalid {
                 self.endBackgroundTask(identifier)

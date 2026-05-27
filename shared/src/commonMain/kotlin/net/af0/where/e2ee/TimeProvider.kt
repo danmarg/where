@@ -12,6 +12,9 @@ fun currentTimeSeconds(): Long = TimeSource.currentTimeSeconds()
 /** Returns the current Unix time in milliseconds. Platform-provided. */
 fun currentTimeMillis(): Long = TimeSource.currentTimeMillis()
 
+internal class WallClockTimeoutCancellationException :
+    CancellationException("Wall-clock timeout exceeded")
+
 /**
  * A suspension-aware timeout that calculates expiration based on absolute wall-clock time
  * rather than coroutine-local ticks. This ensures that if the process is suspended and resumes
@@ -26,7 +29,7 @@ suspend fun <T> withWallClockTimeout(timeoutMillis: Long, block: suspend () -> T
                 if (remaining <= 0) break
                 delay(minOf(100L, remaining))
             }
-            this@coroutineScope.cancel(CancellationException("Wall-clock timeout exceeded"))
+            this@coroutineScope.cancel(WallClockTimeoutCancellationException())
         }
         try {
             block()
@@ -40,12 +43,8 @@ suspend fun <T> withWallClockTimeout(timeoutMillis: Long, block: suspend () -> T
 suspend fun <T> withWallClockTimeoutOrNull(timeoutMillis: Long, block: suspend () -> T): T? {
     return try {
         withWallClockTimeout(timeoutMillis, block)
-    } catch (e: CancellationException) {
-        if (e.message == "Wall-clock timeout exceeded") {
-            null
-        } else {
-            throw e
-        }
+    } catch (e: WallClockTimeoutCancellationException) {
+        null
     }
 }
 
