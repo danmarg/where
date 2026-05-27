@@ -1,8 +1,10 @@
 package net.af0.where.e2ee
 
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.Serializable
@@ -64,6 +66,16 @@ internal class E2eeStore(
         database.invitesQueries.getAllPendingInvites().executeAsList().forEach { p ->
             pendingInvites.add(p.toInvite())
         }
+        _diagnosticLog.value = database.diagnosticEventsQueries
+            .getRecentEvents(MAX_DIAGNOSTIC_EVENTS.toLong())
+            .executeAsList()
+            .map { "${TimeSource.formatLocalTime(it.ts)} ${it.message}" }
+    }
+
+    private fun reloadFromDb() {
+        friends.clear()
+        pendingInvites.clear()
+        loadFromDb()
     }
 
     private fun nextTs(): Long {
@@ -75,7 +87,20 @@ internal class E2eeStore(
     suspend fun <T> withMetadataLock(block: suspend MetadataScope.() -> T): T {
         return storeLock.withLock {
             val scope = MetadataScopeImpl()
-            block(scope)
+            val result: T
+            try {
+                result = block(scope)
+                database.transaction {
+                    scope.applyToDb()
+                }
+                scope.applyToMemory()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                reloadFromDb()
+                throw e
+            }
+            result
         }
     }
 
@@ -86,29 +111,32 @@ internal class E2eeStore(
         return storeLock.withLock {
             val entry = friends[friendId]
             val scope = MetadataScopeImpl()
-            val (action, result) = block(entry, scope)
+            val result: T
 
-            database.transaction {
-                when (action) {
-                    is PersistenceAction.Update -> {
-                        saveFriendInternal(friendId, action.entry)
-                    }
-                    is PersistenceAction.Delete -> {
-                        deleteFriendInternal(friendId)
-                    }
-                    is PersistenceAction.None -> {}
-                }
+            try {
+                val (action, blockResult) = block(entry, scope)
+                result = blockResult
 
-                // Process queued outbox inserts
-                scope.getQueuedOutboxInserts().forEach { outbox ->
-                    database.outboxQueries.insertOutbox(
-                        msgId = outbox.msgId,
-                        friendId = outbox.friendId,
-                        token = outbox.token,
-                        payloadBlob = outbox.payloadBlob,
-                        createdAt = outbox.createdAt,
-                    )
+                database.transaction {
+                    when (action) {
+                        is PersistenceAction.Update -> {
+                            scope.stageFriendUpdate(friendId, saveFriendInternal(friendId, action.entry))
+                        }
+                        is PersistenceAction.Delete -> {
+                            deleteFriendInternal(friendId)
+                            scope.stageFriendDeletion(friendId)
+                        }
+                        is PersistenceAction.None -> {}
+                    }
+                    scope.applyToDb()
                 }
+                scope.applyToMemory()
+
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                reloadFromDb()
+                throw e
             }
             result
         }
@@ -120,14 +148,16 @@ internal class E2eeStore(
 
     fun addDiagnosticEvent(message: String) {
         val t = currentTimeSeconds()
-        val entry = "${TimeSource.formatLocalTime(t)} $message"
-        _diagnosticLog.value = (listOf(entry) + _diagnosticLog.value).take(MAX_DIAGNOSTIC_EVENTS)
+        database.diagnosticEventsQueries.insertEvent(ts = t, message = message)
+        database.diagnosticEventsQueries.pruneOldEvents(MAX_DIAGNOSTIC_EVENTS.toLong())
+        val formatted = "${TimeSource.formatLocalTime(t)} $message"
+        _diagnosticLog.update { current -> (listOf(formatted) + current).take(MAX_DIAGNOSTIC_EVENTS) }
     }
 
     private fun saveFriendInternal(
         friendId: String,
         entry: FriendEntry,
-    ) {
+    ): FriendEntry {
         val current = friends[friendId]
         if (current != null) {
             // Optimistic concurrency check: ensure we haven't modified the state
@@ -169,13 +199,12 @@ internal class E2eeStore(
             lastDecryptFailed = if (finalEntry.lastDecryptFailed) 1L else 0L,
             version = nextVersion.toLong(),
         )
-        friends[friendId] = finalEntry
+        return finalEntry
     }
 
     private fun deleteFriendInternal(friendId: String) {
         database.friendsQueries.deleteFriend(friendId)
         database.outboxQueries.deleteOutboxByFriendId(friendId)
-        friends.remove(friendId)
     }
 
     suspend fun insertOutbox(
@@ -275,7 +304,8 @@ internal class E2eeStore(
     interface MetadataScope {
         val friends: List<FriendEntry>
         var pendingInvites: List<PendingInvite>
-        var diagnosticLog: List<String>
+
+        fun addDiagnosticEvent(message: String)
 
         fun insertOutbox(
             msgId: String,
@@ -299,8 +329,6 @@ internal class E2eeStore(
 
         private val queuedOutboxInserts = mutableListOf<OutboxInsert>()
 
-        fun getQueuedOutboxInserts(): List<OutboxInsert> = queuedOutboxInserts
-
         override fun insertOutbox(
             msgId: String,
             friendId: String,
@@ -311,9 +339,42 @@ internal class E2eeStore(
             queuedOutboxInserts.add(OutboxInsert(msgId, friendId, token, payloadBlob, createdAt))
         }
 
-        override var pendingInvites: List<PendingInvite> = this@E2eeStore.pendingInvites
+        private var pendingInvitesChanged = false
+        private var newPendingInvites: List<PendingInvite> = this@E2eeStore.pendingInvites
+
+        override var pendingInvites: List<PendingInvite>
+            get() = if (pendingInvitesChanged) newPendingInvites else this@E2eeStore.pendingInvites
             set(value) {
-                // Detect additions/deletions and update DB
+                pendingInvitesChanged = true
+                newPendingInvites = value
+            }
+
+        private var friendMemoryUpdate: (() -> Unit)? = null
+
+        fun stageFriendUpdate(friendId: String, entry: FriendEntry) {
+            friendMemoryUpdate = { this@E2eeStore.friends[friendId] = entry }
+        }
+
+        fun stageFriendDeletion(friendId: String) {
+            friendMemoryUpdate = { this@E2eeStore.friends.remove(friendId) }
+        }
+
+        override fun addDiagnosticEvent(message: String) {
+            this@E2eeStore.addDiagnosticEvent(message)
+        }
+
+        fun applyToDb() {
+            queuedOutboxInserts.forEach { outbox ->
+                database.outboxQueries.insertOutbox(
+                    msgId = outbox.msgId,
+                    friendId = outbox.friendId,
+                    token = outbox.token,
+                    payloadBlob = outbox.payloadBlob,
+                    createdAt = outbox.createdAt,
+                )
+            }
+            if (pendingInvitesChanged) {
+                val value = newPendingInvites
                 val current = this@E2eeStore.pendingInvites
                 value.forEach { invite ->
                     if (current.none { it.qrPayload.ekPub.contentEquals(invite.qrPayload.ekPub) }) {
@@ -333,15 +394,15 @@ internal class E2eeStore(
                         database.invitesQueries.deletePendingInvite(invite.qrPayload.ekPub)
                     }
                 }
-                this@E2eeStore.pendingInvites.clear()
-                this@E2eeStore.pendingInvites.addAll(value)
-                field = value
             }
+        }
 
-        override var diagnosticLog: List<String> = this@E2eeStore._diagnosticLog.value
-            set(value) {
-                this@E2eeStore._diagnosticLog.value = value
-                field = value
+        fun applyToMemory() {
+            friendMemoryUpdate?.invoke()
+            if (pendingInvitesChanged) {
+                this@E2eeStore.pendingInvites.clear()
+                this@E2eeStore.pendingInvites.addAll(newPendingInvites)
             }
+        }
     }
 }
