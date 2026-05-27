@@ -1,0 +1,5 @@
+CREATE TABLE DiagnosticEvents (
+    id      INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts      INTEGER NOT NULL,
+    message TEXT NOT NULL
+);

@@ -1,5 +1,6 @@
 package net.af0.where.e2ee
 
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -64,6 +65,10 @@ internal class E2eeStore(
         database.invitesQueries.getAllPendingInvites().executeAsList().forEach { p ->
             pendingInvites.add(p.toInvite())
         }
+        _diagnosticLog.value = database.diagnosticEventsQueries
+            .getRecentEvents(MAX_DIAGNOSTIC_EVENTS.toLong())
+            .executeAsList()
+            .map { "${TimeSource.formatLocalTime(it.ts)} ${it.message}" }
     }
 
     private fun reloadFromDb() {
@@ -88,6 +93,8 @@ internal class E2eeStore(
                     scope.applyToDb()
                 }
                 scope.applyToMemory()
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 reloadFromDb()
                 throw e
@@ -138,12 +145,14 @@ internal class E2eeStore(
                 }
                 
                 if (newEntry != null) {
-                    friends[friendId] = newEntry!!
+                    friends[friendId] = newEntry
                 } else if (deleted) {
                     friends.remove(friendId)
                 }
                 scope.applyToMemory()
 
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 reloadFromDb()
                 throw e
@@ -158,8 +167,10 @@ internal class E2eeStore(
 
     fun addDiagnosticEvent(message: String) {
         val t = currentTimeSeconds()
-        val entry = "${TimeSource.formatLocalTime(t)} $message"
-        _diagnosticLog.value = (listOf(entry) + _diagnosticLog.value).take(MAX_DIAGNOSTIC_EVENTS)
+        database.diagnosticEventsQueries.insertEvent(ts = t, message = message)
+        database.diagnosticEventsQueries.pruneOldEvents(MAX_DIAGNOSTIC_EVENTS.toLong())
+        val formatted = "${TimeSource.formatLocalTime(t)} $message"
+        _diagnosticLog.value = (listOf(formatted) + _diagnosticLog.value).take(MAX_DIAGNOSTIC_EVENTS)
     }
 
     private fun saveFriendInternal(
@@ -312,13 +323,8 @@ internal class E2eeStore(
     interface MetadataScope {
         val friends: List<FriendEntry>
         var pendingInvites: List<PendingInvite>
-        var diagnosticLog: List<String>
 
-        fun addDiagnosticEvent(message: String) {
-            val t = currentTimeSeconds()
-            val entry = "${TimeSource.formatLocalTime(t)} $message"
-            diagnosticLog = (listOf(entry) + diagnosticLog).take(MAX_DIAGNOSTIC_EVENTS)
-        }
+        fun addDiagnosticEvent(message: String)
 
         fun insertOutbox(
             msgId: String,
@@ -364,16 +370,10 @@ internal class E2eeStore(
                 newPendingInvites = value
             }
 
-        private var diagnosticLogChanged = false
-        private var newDiagnosticLog: List<String> = this@E2eeStore._diagnosticLog.value
+        override fun addDiagnosticEvent(message: String) {
+            this@E2eeStore.addDiagnosticEvent(message)
+        }
 
-        override var diagnosticLog: List<String>
-            get() = if (diagnosticLogChanged) newDiagnosticLog else this@E2eeStore._diagnosticLog.value
-            set(value) {
-                diagnosticLogChanged = true
-                newDiagnosticLog = value
-            }
-            
         fun applyToDb() {
             if (pendingInvitesChanged) {
                 val value = newPendingInvites
@@ -403,9 +403,6 @@ internal class E2eeStore(
             if (pendingInvitesChanged) {
                 this@E2eeStore.pendingInvites.clear()
                 this@E2eeStore.pendingInvites.addAll(newPendingInvites)
-            }
-            if (diagnosticLogChanged) {
-                this@E2eeStore._diagnosticLog.value = newDiagnosticLog
             }
         }
     }

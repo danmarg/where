@@ -1,0 +1,19 @@
+CREATE TABLE DiagnosticEvents (
+    id      INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts      INTEGER NOT NULL,
+    message TEXT NOT NULL
+);
+
+insertEvent:
+INSERT INTO DiagnosticEvents(ts, message) VALUES (?, ?);
+
+getRecentEvents:
+SELECT * FROM DiagnosticEvents ORDER BY id DESC LIMIT ?;
+
+pruneOldEvents:
+DELETE FROM DiagnosticEvents WHERE id NOT IN (
+    SELECT id FROM DiagnosticEvents ORDER BY id DESC LIMIT ?
+);
+
+deleteAll:
+DELETE FROM DiagnosticEvents;
