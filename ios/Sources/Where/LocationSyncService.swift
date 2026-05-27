@@ -477,7 +477,7 @@ final class LocationSyncService: ObservableObject {
         let watchdog = Task { @MainActor [weak self] in
             try? await Task.sleep(nanoseconds: 90_000_000_000)
             guard let self, self.isPollInFlight else { return }
-            self.logger.warning("pollAll: watchdog resetting stuck isPollInFlight")
+            logger.warning("pollAll: watchdog resetting stuck isPollInFlight")
             self.isPollInFlight = false
         }
         logger.debug("Polling for location updates (updateUi=\(updateUi), source=\(source.rawValue))")
