@@ -2,6 +2,8 @@ import CoreLocation
 import Combine
 import UIKit
 
+private let stationaryGeofenceId = "stationary_fence"
+
 @MainActor
 protocol LocationProviding: AnyObject {
     var locationPublisher: AnyPublisher<CLLocation?, Never> { get }
@@ -29,6 +31,9 @@ final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelega
     private var backgroundActivity: CLBackgroundActivitySession?
     private var updatesTask: Task<Void, Never>?
 
+    // Reliability loop state
+    private var isLowPowerMode = false
+    private var stationaryTask: Task<Void, Never>?
     private static let lastLatKey = "location_last_lat"
     private static let lastLngKey = "location_last_lng"
 
@@ -84,10 +89,23 @@ final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelega
     }
 
     func stopUpdating() {
+        stationaryTask?.cancel()
+        stationaryTask = nil
+        isLowPowerMode = false
+
         updatesTask?.cancel()
         updatesTask = nil
         backgroundActivity?.invalidate()
         backgroundActivity = nil
+
+        if let manager = manager {
+            manager.stopMonitoringSignificantLocationChanges()
+            for region in manager.monitoredRegions {
+                if region.identifier == stationaryGeofenceId {
+                    manager.stopMonitoring(for: region)
+                }
+            }
+        }
 
         manager?.stopMonitoringVisits()
         manager?.stopUpdatingLocation()
@@ -110,6 +128,16 @@ final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelega
 
     private func startUpdating() {
         guard let manager = manager else { return }
+
+        // Clean up reliability loop state before starting high-fidelity tracking
+        isLowPowerMode = false
+        stationaryTask?.cancel()
+        stationaryTask = nil
+        for region in manager.monitoredRegions {
+            if region.identifier == stationaryGeofenceId {
+                manager.stopMonitoring(for: region)
+            }
+        }
 
         // Start background activity session to keep the app active for location updates.
         if #available(iOS 17.0, *), backgroundActivity == nil {
@@ -148,8 +176,23 @@ final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelega
                         }
 
                         if stationary {
+                            if self.stationaryTask == nil {
+                                self.stationaryTask = Task { @MainActor in
+                                    do {
+                                        try await Task.sleep(nanoseconds: 5 * 60 * 1_000_000_000)
+                                        if !Task.isCancelled {
+                                            self.enterLowPowerMode(at: loc)
+                                        }
+                                    } catch {
+                                        // Cancelled
+                                    }
+                                }
+                            }
                             LocationSyncService.shared.e2eeManager.addDiagnosticEvent(message: "Stationary (System)")
                         } else {
+                            self.stationaryTask?.cancel()
+                            self.stationaryTask = nil
+                            
                             if loc.horizontalAccuracy <= LocationSyncService.minBroadcastAccuracyMeters {
                                 LocationSyncService.shared.sendLocation(lat: coordinate.latitude, lng: coordinate.longitude, heading: self.heading, source: .locationUpdate)
                             }
@@ -169,8 +212,35 @@ final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelega
             }
         }
 
+        manager.startMonitoringSignificantLocationChanges()
         manager.startMonitoringVisits()
         manager.startUpdatingHeading()
+    }
+
+    private func enterLowPowerMode(at location: CLLocation) {
+        guard !isLowPowerMode else { return }
+        isLowPowerMode = true
+        LocationSyncService.shared.e2eeManager.addDiagnosticEvent(message: "Entering low-power mode (stationary > 5m)")
+        
+        if let manager = manager {
+            let region = CLCircularRegion(center: location.coordinate, radius: 200, identifier: stationaryGeofenceId)
+            region.notifyOnEntry = false
+            region.notifyOnExit = true
+            manager.startMonitoring(for: region)
+        }
+        
+        stationaryTask = nil
+        updatesTask?.cancel()
+        updatesTask = nil
+        backgroundActivity?.invalidate()
+        backgroundActivity = nil
+        manager?.stopMonitoringSignificantLocationChanges()
+    }
+
+    private func resumeHighFidelityTracking() {
+        guard isLowPowerMode else { return }
+        LocationSyncService.shared.e2eeManager.addDiagnosticEvent(message: "Resuming high-fidelity tracking")
+        startUpdating()
     }
 
     nonisolated func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
@@ -185,6 +255,11 @@ final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelega
                     UIApplication.shared.endBackgroundTask(identifier)
                 }
             }
+            if self.isLowPowerMode {
+                self.resumeHighFidelityTracking()
+            } else {
+                self.startUpdating()
+            }
             // Only broadcast if this fix was not already handled by liveUpdates.
             // requestLocation() results often have a very recent timestamp.
             if let lastLoc = self.location, loc.timestamp.timeIntervalSince(lastLoc.timestamp) <= 0 {
@@ -194,6 +269,23 @@ final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelega
             let coordinate = loc.coordinate
             if loc.horizontalAccuracy <= LocationSyncService.minBroadcastAccuracyMeters {
                 LocationSyncService.shared.sendLocation(lat: coordinate.latitude, lng: coordinate.longitude, heading: self.heading, source: .locationUpdate)
+            }
+        }
+    }
+
+    nonisolated func locationManager(_ manager: CLLocationManager, didExitRegion region: CLRegion) {
+        if region.identifier == stationaryGeofenceId {
+            let identifier = MainActor.assumeIsolated {
+                UIApplication.shared.beginBackgroundTask(withName: "GeofenceExit") { }
+            }
+            Task { @MainActor in
+                defer {
+                    if identifier != .invalid {
+                        UIApplication.shared.endBackgroundTask(identifier)
+                    }
+                }
+                LocationSyncService.shared.e2eeManager.addDiagnosticEvent(message: "Exited stationary geofence")
+                self.resumeHighFidelityTracking()
             }
         }
     }
