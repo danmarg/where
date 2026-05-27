@@ -4,6 +4,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.Serializable
@@ -150,7 +151,7 @@ internal class E2eeStore(
         database.diagnosticEventsQueries.insertEvent(ts = t, message = message)
         database.diagnosticEventsQueries.pruneOldEvents(MAX_DIAGNOSTIC_EVENTS.toLong())
         val formatted = "${TimeSource.formatLocalTime(t)} $message"
-        _diagnosticLog.value = (listOf(formatted) + _diagnosticLog.value).take(MAX_DIAGNOSTIC_EVENTS)
+        _diagnosticLog.update { current -> (listOf(formatted) + current).take(MAX_DIAGNOSTIC_EVENTS) }
     }
 
     private fun saveFriendInternal(
