@@ -713,6 +713,8 @@ class LocationSyncServiceTests: XCTestCase {
         service = LocationSyncService(e2eeManager: service.e2eeManager, userStore: service.userStore, locationClient: mockClient, locationProvider: mockLocationProvider)
         service.skipNetworkRestore = true
         service.skipNetworkRestore = true
+        service.beginBackgroundTask = { _, _ in .invalid }
+        service.endBackgroundTask = { _ in }
         service.isSharingLocation = true
         service.lastSentTime = Date(timeIntervalSince1970: 0)
 
@@ -733,6 +735,8 @@ class LocationSyncServiceTests: XCTestCase {
         service = LocationSyncService(e2eeManager: service.e2eeManager, userStore: service.userStore, locationClient: mockClient, locationProvider: mockLocationProvider)
         service.skipNetworkRestore = true
         service.skipNetworkRestore = true
+        service.beginBackgroundTask = { _, _ in .invalid }
+        service.endBackgroundTask = { _ in }
         service.isSharingLocation = true
         service.locationFixTimeout = 60.0  // prevent timeout from firing during this test
 
@@ -760,6 +764,8 @@ class LocationSyncServiceTests: XCTestCase {
         service = LocationSyncService(e2eeManager: service.e2eeManager, userStore: service.userStore, locationClient: mockClient, locationProvider: mockLocationProvider)
         service.skipNetworkRestore = true
         service.skipNetworkRestore = true
+        service.beginBackgroundTask = { _, _ in .invalid }
+        service.endBackgroundTask = { _ in }
         service.isSharingLocation = true
         service.locationFixTimeout = 0.05  // short timeout so test doesn't take 10s
         service.lastSentTime = Date(timeIntervalSince1970: 0)
@@ -786,6 +792,8 @@ class LocationSyncServiceTests: XCTestCase {
         service = LocationSyncService(e2eeManager: service.e2eeManager, userStore: service.userStore, locationClient: mockClient, locationProvider: mockLocationProvider)
         service.skipNetworkRestore = true
         service.skipNetworkRestore = true
+        service.beginBackgroundTask = { _, _ in .invalid }
+        service.endBackgroundTask = { _ in }
         service.isSharingLocation = true
         service.locationFixTimeout = 0.1
         service.lastSentTime = Date(timeIntervalSince1970: 0)
