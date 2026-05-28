@@ -215,13 +215,18 @@ final class LocationSyncService: ObservableObject {
             self.startPolling()
         }
 
-        // Subscribe to updates on friendLocations, isSharingLocation, and user location
-        Publishers.CombineLatest3($friends, $pendingInvites, $isDataLoaded)
+        // Fire sharingStateChanged() once when the initial DB load completes, so a background
+        // wake-up that arrived before hydration finished can start GPS updates.
+        $isDataLoaded
+            .filter { $0 }
+            .first()
             .sink { [weak self] _ in
                 self?.locationProvider.sharingStateChanged()
             }
             .store(in: &visibleUsersCancellables)
-        
+
+        // Subscribe to updates on friendLocations, isSharingLocation, and user location
+
         pathMonitor.pathUpdateHandler = { [weak self] path in
             if path.status == .satisfied {
                 logger.debug("Network path satisfied, triggering syncNow() and location send")
