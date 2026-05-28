@@ -56,6 +56,7 @@ final class LocationSyncService: ObservableObject {
     @Published var friends: [Shared.FriendEntry] = []
     @Published var diagnosticLog: [String] = []
     @Published var pendingInvites: [Shared.PendingInviteView] = []
+    @Published var isDataLoaded: Bool = false
     @Published var inviteState: Shared.InviteState = Shared.InviteState.None()
     @Published var isSharingLocation: Bool {
         didSet {
@@ -209,12 +210,23 @@ final class LocationSyncService: ObservableObject {
             } catch {
                 logger.error("Failed to load initial friends: \(error.localizedDescription)")
             }
+            self.isDataLoaded = true
             // Start polling AFTER friends/invites are loaded to ensure targetPollInterval is correct.
             self.startPolling()
         }
 
+        // Fire sharingStateChanged() once when the initial DB load completes, so a background
+        // wake-up that arrived before hydration finished can start GPS updates.
+        $isDataLoaded
+            .filter { $0 }
+            .first()
+            .sink { [weak self] _ in
+                self?.locationProvider.sharingStateChanged()
+            }
+            .store(in: &visibleUsersCancellables)
+
         // Subscribe to updates on friendLocations, isSharingLocation, and user location
-        
+
         pathMonitor.pathUpdateHandler = { [weak self] path in
             if path.status == .satisfied {
                 logger.debug("Network path satisfied, triggering syncNow() and location send")
