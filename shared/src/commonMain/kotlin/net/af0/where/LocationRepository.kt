@@ -230,7 +230,7 @@ class LocationRepository(
     }
 
     override suspend fun awaitPollWake(timeoutMillis: Long) {
-        kotlinx.coroutines.withTimeoutOrNull(timeoutMillis) {
+        net.af0.where.e2ee.withWallClockTimeoutOrNull(timeoutMillis) {
             pollWakeSignal.receive()
         }
     }

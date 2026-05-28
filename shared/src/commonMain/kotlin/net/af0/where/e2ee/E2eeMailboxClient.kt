@@ -63,17 +63,7 @@ object KtorMailboxClient : MailboxClient {
             encodeDefaults = true
         }
 
-    private val client =
-        HttpClient {
-            install(ContentNegotiation) {
-                json(json)
-            }
-            install(HttpTimeout) {
-                connectTimeoutMillis = 10_000
-                requestTimeoutMillis = 30_000
-                socketTimeoutMillis = 30_000
-            }
-        }
+    private val client = createHttpClient(json)
 
     /**
      * POST a message to a mailbox address.
@@ -87,14 +77,16 @@ object KtorMailboxClient : MailboxClient {
         payload: MailboxPayload,
     ) {
         try {
-            val url = "$baseUrl/inbox/$token/${payload.msgId}"
-            val response =
-                client.put(url) {
-                    contentType(ContentType.Application.Json)
-                    setBody(payload)
+            withWallClockTimeout(30_000) {
+                val url = "$baseUrl/inbox/$token/${payload.msgId}"
+                val response =
+                    client.put(url) {
+                        contentType(ContentType.Application.Json)
+                        setBody(payload)
+                    }
+                if (response.status != HttpStatusCode.NoContent && response.status != HttpStatusCode.OK) {
+                    throw ServerException(response.status.value, "Failed to post to mailbox")
                 }
-            if (response.status != HttpStatusCode.NoContent && response.status != HttpStatusCode.OK) {
-                throw ServerException(response.status.value, "Failed to post to mailbox")
             }
         } catch (e: Exception) {
             throw mapException(e)
@@ -112,11 +104,13 @@ object KtorMailboxClient : MailboxClient {
         token: String,
     ): List<MailboxPayload> {
         try {
-            val response = client.get("$baseUrl/inbox/$token")
-            if (response.status != HttpStatusCode.OK) {
-                throw ServerException(response.status.value, "Failed to poll mailbox")
+            return withWallClockTimeout(30_000) {
+                val response = client.get("$baseUrl/inbox/$token")
+                if (response.status != HttpStatusCode.OK) {
+                    throw ServerException(response.status.value, "Failed to poll mailbox")
+                }
+                response.body()
             }
-            return response.body()
         } catch (e: Exception) {
             throw mapException(e)
         }
@@ -128,9 +122,11 @@ object KtorMailboxClient : MailboxClient {
         msgId: String,
     ) {
         try {
-            val response = client.delete("$baseUrl/inbox/$token/$msgId")
-            if (!response.status.isSuccess()) {
-                throw ServerException(response.status.value, "ACK failed for msgId $msgId")
+            withWallClockTimeout(30_000) {
+                val response = client.delete("$baseUrl/inbox/$token/$msgId")
+                if (!response.status.isSuccess()) {
+                    throw ServerException(response.status.value, "ACK failed for msgId $msgId")
+                }
             }
         } catch (e: Exception) {
             throw mapException(e)
@@ -144,12 +140,14 @@ object KtorMailboxClient : MailboxClient {
     ) {
         if (msgIds.isEmpty()) return
         try {
-            val response =
-                client.delete("$baseUrl/inbox/$token") {
-                    parameter("ids", msgIds.joinToString(","))
+            withWallClockTimeout(30_000) {
+                val response =
+                    client.delete("$baseUrl/inbox/$token") {
+                        parameter("ids", msgIds.joinToString(","))
+                    }
+                if (!response.status.isSuccess()) {
+                    throw ServerException(response.status.value, "Batch ACK failed for token $token")
                 }
-            if (!response.status.isSuccess()) {
-                throw ServerException(response.status.value, "Batch ACK failed for token $token")
             }
         } catch (e: Exception) {
             throw mapException(e)
@@ -167,3 +165,6 @@ object KtorMailboxClient : MailboxClient {
         }
     }
 }
+
+internal expect fun createHttpClient(json: Json): HttpClient
+

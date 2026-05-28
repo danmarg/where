@@ -311,8 +311,8 @@ final class LocationSyncService: ObservableObject {
     }
 
     func onForegroundEntry() {
-        // Reset lastPollTime to .distantPast so the next pollAll() call bypasses the
-        // interval check and — if a poll is stuck in-flight — triggers the 90s reset path.
+        // Reset lastPollTime to .distantPast so tick() bypasses its interval guard and fires
+        // a poll immediately. A stuck isPollInFlight is handled by pollAll()'s watchdog task.
         lastPollTime = .distantPast
         // Proactively send own location so friends see us immediately (subject to 30s throttle).
         // sendLocation() updates lastSentTime synchronously, so pollAll()'s heartbeat guard
@@ -467,21 +467,19 @@ final class LocationSyncService: ObservableObject {
     }
 
     func pollAll(updateUi: Bool = true, source: WakeSource = .timer) async {
-        if isPollInFlight {
-            // If a poll has been "in-flight" for longer than Ktor's max timeout + a generous
-            // margin, the OS suspended us mid-coroutine (Kotlin withTimeout doesn't advance
-            // while the process is suspended). Reset and proceed — the stale coroutine will
-            // eventually get an empty mailbox when it resumes, so no data is lost.
-            if Date().timeIntervalSince(lastPollTime) < 90.0 { return }
-            // Safe to clear the local in-flight flag here: this only allows a new Swift-side
-            // poll attempt to be scheduled. Actual poll/send session mutations are still
-            // serialized in shared Kotlin by LocationClient.pollMutex, so the resumed old poll
-            // and the new poll cannot concurrently mutate ratchet state.
-            logger.warning("pollAll: resetting stuck isPollInFlight (in-flight for \(Int(Date().timeIntervalSince(self.lastPollTime)))s)")
-            isPollInFlight = false
-        }
+        if isPollInFlight { return }
         isPollInFlight = true
         lastPollTime = Date()
+
+        // Watchdog: if the KMP coroutine hangs without returning or throwing (e.g. stalled
+        // socket that never reaches a cancellation checkpoint), the defer block never fires and
+        // isPollInFlight would stick permanently. Reset it after 90s regardless.
+        let watchdog = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 90_000_000_000)
+            guard let self, self.isPollInFlight else { return }
+            logger.warning("pollAll: watchdog resetting stuck isPollInFlight")
+            self.isPollInFlight = false
+        }
         logger.debug("Polling for location updates (updateUi=\(updateUi), source=\(source.rawValue))")
 
         if Date().timeIntervalSince(lastCleanupTime) > 3600 {
@@ -498,6 +496,7 @@ final class LocationSyncService: ObservableObject {
         }
 
         defer {
+            watchdog.cancel()
             isPollInFlight = false
             if identifier != .invalid {
                 self.endBackgroundTask(identifier)
