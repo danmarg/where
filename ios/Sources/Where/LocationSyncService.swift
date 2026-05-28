@@ -56,6 +56,7 @@ final class LocationSyncService: ObservableObject {
     @Published var friends: [Shared.FriendEntry] = []
     @Published var diagnosticLog: [String] = []
     @Published var pendingInvites: [Shared.PendingInviteView] = []
+    @Published var isDataLoaded: Bool = false
     @Published var inviteState: Shared.InviteState = Shared.InviteState.None()
     @Published var isSharingLocation: Bool {
         didSet {
@@ -209,11 +210,17 @@ final class LocationSyncService: ObservableObject {
             } catch {
                 logger.error("Failed to load initial friends: \(error.localizedDescription)")
             }
+            self.isDataLoaded = true
             // Start polling AFTER friends/invites are loaded to ensure targetPollInterval is correct.
             self.startPolling()
         }
 
         // Subscribe to updates on friendLocations, isSharingLocation, and user location
+        Publishers.CombineLatest3($friends, $pendingInvites, $isDataLoaded)
+            .sink { [weak self] _ in
+                self?.locationProvider.sharingStateChanged()
+            }
+            .store(in: &visibleUsersCancellables)
         
         pathMonitor.pathUpdateHandler = { [weak self] path in
             if path.status == .satisfied {
