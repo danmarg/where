@@ -1,0 +1,147 @@
+default_platform(:ios)
+
+# All signing assets and the App Store Connect API key live here (gitignored).
+SIGNING_DIR     = File.expand_path("signing", __dir__)
+KEYCHAIN_NAME   = "where-fastlane.keychain-db"
+KEYCHAIN_PASS   = ENV["FASTLANE_KEYCHAIN_PASSWORD"] || "where-fastlane"
+PROFILE_NAME    = "Where AppStore"
+SCHEME          = "Where"
+BUNDLE_ID       = "net.af0.WhereApp"
+TEAM_ID         = "5PM2V9LTHC"
+
+# App Store Connect API key file. Create one at
+# https://appstoreconnect.apple.com/access/integrations/api and drop the
+# downloaded AuthKey_XXXXXXXXXX.p8 into ios/fastlane/signing/.
+# Set FASTLANE_ASC_KEY_ID and FASTLANE_ASC_ISSUER_ID in your shell (or .envrc).
+def asc_api_key
+  key_id    = ENV.fetch("FASTLANE_ASC_KEY_ID")
+  issuer_id = ENV.fetch("FASTLANE_ASC_ISSUER_ID")
+  key_path  = Dir[File.join(SIGNING_DIR, "AuthKey_*.p8")].first
+  UI.user_error!("No AuthKey_*.p8 found in #{SIGNING_DIR}") unless key_path
+  app_store_connect_api_key(
+    key_id: key_id,
+    issuer_id: issuer_id,
+    key_filepath: key_path,
+    in_house: false,
+  )
+end
+
+platform :ios do
+  desc "One-time: create Distribution certificate + App Store provisioning profile and store them locally"
+  lane :bootstrap_signing do
+    FileUtils.mkdir_p(SIGNING_DIR)
+    api_key = asc_api_key
+
+    # Distribution certificate -> .cer + .p12 written into SIGNING_DIR.
+    get_certificates(
+      development: false,
+      output_path: SIGNING_DIR,
+      api_key: api_key,
+      generate_apple_certs: true,
+    )
+
+    # App Store provisioning profile -> .mobileprovision written into SIGNING_DIR.
+    get_provisioning_profile(
+      app_identifier: BUNDLE_ID,
+      api_key: api_key,
+      output_path: SIGNING_DIR,
+      provisioning_name: PROFILE_NAME,
+      filename: "WhereAppStore.mobileprovision",
+      force: true,
+    )
+
+    UI.success("Signing assets written to #{SIGNING_DIR}")
+    UI.important("Back this directory up somewhere safe — it holds your private signing key.")
+  end
+
+  desc "Build and upload to TestFlight"
+  lane :beta do
+    api_key = asc_api_key
+    prepare_signing
+    increment_build_number_in_xcodeproj
+    build_release_ipa
+    upload_to_testflight(
+      api_key: api_key,
+      skip_waiting_for_build_processing: true,
+    )
+  end
+
+  desc "Build and upload to App Store (for review)"
+  lane :release do
+    api_key = asc_api_key
+    prepare_signing
+    build_release_ipa
+    upload_to_app_store(
+      api_key: api_key,
+      skip_metadata: true,
+      skip_screenshots: true,
+      submit_for_review: false,
+      precheck_include_in_app_purchases: false,
+    )
+  end
+
+  # --- helpers -------------------------------------------------------------
+
+  private_lane :prepare_signing do
+    p12 = Dir[File.join(SIGNING_DIR, "*.p12")].first
+    profile = Dir[File.join(SIGNING_DIR, "*.mobileprovision")].first
+    UI.user_error!("No .p12 in #{SIGNING_DIR} — run `fastlane bootstrap_signing` first.") unless p12
+    UI.user_error!("No .mobileprovision in #{SIGNING_DIR} — run `fastlane bootstrap_signing` first.") unless profile
+
+    create_keychain(
+      name: KEYCHAIN_NAME,
+      password: KEYCHAIN_PASS,
+      default_keychain: false,
+      unlock: true,
+      timeout: 3600,
+      lock_when_sleeps: false,
+    )
+
+    import_certificate(
+      certificate_path: p12,
+      certificate_password: ENV["FASTLANE_P12_PASSWORD"] || "",
+      keychain_name: KEYCHAIN_NAME,
+      keychain_password: KEYCHAIN_PASS,
+    )
+
+    install_provisioning_profile(path: profile)
+
+    update_code_signing_settings(
+      use_automatic_signing: false,
+      path: "Where.xcodeproj",
+      targets: ["Where"],
+      build_configurations: ["Release"],
+      team_id: TEAM_ID,
+      bundle_identifier: BUNDLE_ID,
+      profile_name: lane_context[SharedValues::SIGH_NAME] || PROFILE_NAME,
+      code_sign_identity: "Apple Distribution",
+    )
+  end
+
+  private_lane :build_release_ipa do
+    build_app(
+      project: "Where.xcodeproj",
+      scheme: SCHEME,
+      configuration: "Release",
+      export_method: "app-store",
+      output_directory: "build/fastlane",
+      clean: true,
+      export_options: {
+        method: "app-store",
+        signingStyle: "manual",
+        teamID: TEAM_ID,
+        provisioningProfiles: {
+          BUNDLE_ID => (lane_context[SharedValues::SIGH_NAME] || PROFILE_NAME),
+        },
+      },
+    )
+  end
+
+  after_all do
+    delete_keychain(name: KEYCHAIN_NAME) if File.exist?(File.expand_path("~/Library/Keychains/#{KEYCHAIN_NAME}"))
+  end
+
+  error do
+    delete_keychain(name: KEYCHAIN_NAME) if File.exist?(File.expand_path("~/Library/Keychains/#{KEYCHAIN_NAME}"))
+  end
+end

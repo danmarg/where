@@ -1,0 +1,6 @@
+app_identifier("net.af0.WhereApp")
+team_id("5PM2V9LTHC")
+
+# Apple ID is only used as a fallback if the App Store Connect API key is not
+# present. Prefer the API key — see Fastfile.
+# apple_id("you@example.com")

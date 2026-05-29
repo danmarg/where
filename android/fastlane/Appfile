@@ -1,6 +1,6 @@
 # Path to the Google Play service account JSON key.
 # Generate at: Play Console → Setup → API access → Service accounts
-# Store outside the repo (e.g. ~/.config/where/play-store-key.json) and set here.
-json_key_file(ENV["PLAY_STORE_JSON_KEY"] || File.expand_path("~/.config/where/play-store-key.json"))
+# Stored in android/fastlane/signing/ (gitignored). Override with PLAY_STORE_JSON_KEY env var.
+json_key_file(ENV["PLAY_STORE_JSON_KEY"] || File.expand_path("signing/where_play_store_api_key.json", __dir__))
 
 package_name("net.af0.where")

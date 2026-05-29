@@ -20,6 +20,8 @@ DO_INSTALL=false
 IOS_TARGET="device"  # device or simulator
 SKIP_IOS=false
 SKIP_ANDROID=false
+DEPLOY_IOS=""        # "" | "beta" | "release"
+DEPLOY_ANDROID=""    # "" | "internal" | "internal-full" | "promote-alpha"
 while [[ $# -gt 0 ]]; do
   case $1 in
     --server-url)
@@ -62,12 +64,64 @@ while [[ $# -gt 0 ]]; do
       SKIP_IOS=true
       shift
       ;;
+    --deploy-ios-testflight)
+      DEPLOY_IOS="beta"
+      shift
+      ;;
+    --deploy-ios-appstore)
+      DEPLOY_IOS="release"
+      shift
+      ;;
+    --deploy-android-internal)
+      DEPLOY_ANDROID="internal"
+      shift
+      ;;
+    --deploy-android-internal-full)
+      DEPLOY_ANDROID="internal-full"
+      shift
+      ;;
+    --deploy-android-promote-alpha)
+      DEPLOY_ANDROID="promote-alpha"
+      shift
+      ;;
     *)
       echo "Unknown option: $1"
       exit 1
       ;;
   esac
 done
+
+# Deploy mode: hand off to fastlane and skip the manual build pipeline below.
+# fastlane runs its own gradle/xcodebuild invocations and handles signing.
+if [[ -n "$DEPLOY_IOS" || -n "$DEPLOY_ANDROID" ]]; then
+  if [[ -n "$DEPLOY_ANDROID" ]]; then
+    case "$DEPLOY_ANDROID" in
+      internal)        ANDROID_LANE="deploy" ;;
+      internal-full)   ANDROID_LANE="deploy_full" ;;
+      promote-alpha)   ANDROID_LANE="promote_to_closed" ;;
+    esac
+    echo "=== Deploying Android via fastlane (lane: $ANDROID_LANE) ==="
+    if [[ "$DEPLOY_ANDROID" != "promote-alpha" ]]; then
+      read -sp "Enter keystore password: " KEYSTORE_PASSWORD
+      echo ""
+      export KEYSTORE_FILE="${KEYSTORE_FILE:-$PWD/android/fastlane/signing/where_play_store_signing_key.jks}"
+      export KEYSTORE_PASSWORD
+      export KEY_PASSWORD=$KEYSTORE_PASSWORD
+    fi
+    (cd android && bundle exec fastlane "$ANDROID_LANE")
+    echo "✓ Android deploy complete"
+    echo ""
+  fi
+
+  if [[ -n "$DEPLOY_IOS" ]]; then
+    echo "=== Deploying iOS via fastlane (lane: $DEPLOY_IOS) ==="
+    (cd ios && bundle exec fastlane "$DEPLOY_IOS")
+    echo "✓ iOS deploy complete"
+    echo ""
+  fi
+
+  exit 0
+fi
 
 run() {
   "$@"
@@ -124,7 +178,7 @@ if ! $SKIP_ANDROID; then
     echo "=== Release Build Signing ==="
     read -sp "Enter keystore password: " KEYSTORE_PASSWORD
     echo ""
-    export KEYSTORE_FILE=~/where-release-key.jks
+    export KEYSTORE_FILE="${KEYSTORE_FILE:-$PWD/android/fastlane/signing/where_play_store_signing_key.jks}"
     export KEYSTORE_PASSWORD
     export KEY_PASSWORD=$KEYSTORE_PASSWORD  # Same as keystore password
   fi
