@@ -283,13 +283,19 @@ class LocationService : Service() {
                 for (event in result.transitionEvents) {
                     Log.d(TAG, "Activity Transition: ${event.activityType} (${event.transitionType})")
                     val newPriority =
-                        when (event.activityType) {
-                            DetectedActivity.STILL -> Priority.PRIORITY_BALANCED_POWER_ACCURACY
+                        when {
+                            event.activityType == DetectedActivity.STILL && deepSleepWhenStationary ->
+                                Priority.PRIORITY_PASSIVE
+                            event.activityType == DetectedActivity.STILL ->
+                                Priority.PRIORITY_LOW_POWER
                             else -> Priority.PRIORITY_HIGH_ACCURACY
                         }
                     val newInterval =
-                        when (event.activityType) {
-                            DetectedActivity.STILL -> 60_000L
+                        when {
+                            event.activityType == DetectedActivity.STILL && deepSleepWhenStationary ->
+                                60_000L
+                            event.activityType == DetectedActivity.STILL ->
+                                HEARTBEAT_INTERVAL_MS
                             else -> 10_000L
                         }
 
@@ -382,8 +388,6 @@ class LocationService : Service() {
             geofencingClient.addGeofences(request, getGeofencePendingIntent())
             Log.i(TAG, "Stationary: Geofence set at $lat, $lng")
             e2eeManager.addDiagnosticEvent("Stationary: Geofence set")
-            // Pulse GPS mode: very long interval
-            currentPriority = Priority.PRIORITY_PASSIVE
         } catch (e: SecurityException) {
             Log.w(TAG, "SecurityException setting geofence: ${e.message}")
         }
@@ -918,6 +922,22 @@ class LocationService : Service() {
 
         /** Interval between heartbeat sends when stationary. */
         const val HEARTBEAT_INTERVAL_MS = 300_000L
+
+        /**
+         * When true, on STILL transitions demote the FLP request to PRIORITY_PASSIVE
+         * (i.e. the GPS subsystem only piggybacks on other apps' fixes) and rely
+         * solely on the doze alarm + WorkManager periodic restart for heartbeat
+         * wakeups. Battery drops to near zero, but in deep Doze the alarm can be
+         * deferred to the next maintenance window (often >1h), so the heartbeat
+         * cadence collapses overnight.
+         *
+         * When false (default), on STILL transitions keep the FLP request alive
+         * at PRIORITY_LOW_POWER + 5-min interval. FLP satisfies these callbacks
+         * from wifi/cell/cached fixes without powering the GNSS chip, and — since
+         * the foreground service is `location` typed — the callbacks are exempt
+         * from Doze, giving us a deterministic ~5-min heartbeat wake source.
+         */
+        var deepSleepWhenStationary = false
 
         /** Overridable in tests. */
         var clock: () -> Long = { System.currentTimeMillis() }

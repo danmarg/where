@@ -264,9 +264,10 @@ fun MapScreen(
             friendData.forEach { (user, friend, name) ->
                 val timeAgo = timeAgoStringFromMs(friendLastPing[user.userId])
                 val isSelected = selectedUserId == user.userId
-                key(user.userId, isSelected, name) {
+                key(user.userId) {
                     val markerState = rememberUpdatedMarkerState(position = LatLng(user.lat, user.lng))
                     MarkerComposable(
+                        keys = arrayOf<Any>(name, isSelected, timeAgo),
                         state = markerState,
                         anchor = Offset(0.5f, 1f),
                         onClick = {

@@ -34,6 +34,20 @@ final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelega
     // Reliability loop state
     private var isLowPowerMode = false
     private var stationaryTask: Task<Void, Never>?
+
+    /// When true, fully tear down the background activity session and live-updates
+    /// stream once the user has been stationary for 5+ minutes. The app then relies
+    /// solely on geofence-exit, visit monitoring, and BGAppRefreshTask to wake up —
+    /// minimal battery, but heartbeat cadence becomes whatever iOS decides (often
+    /// nothing overnight).
+    ///
+    /// When false (default), keep `CLBackgroundActivitySession` and the
+    /// `CLLocationUpdate.liveUpdates()` stream alive while stationary so the
+    /// in-process 1Hz Timer keeps firing and `pollAll()` can send the 5-minute
+    /// heartbeat. The radio cost is modest because liveUpdates throttles itself
+    /// while the device is stationary, and stationary users are frequently
+    /// plugged in.
+    static var deepSleepWhenStationary = false
     private static let lastLatKey = "location_last_lat"
     private static let lastLngKey = "location_last_lng"
 
@@ -196,7 +210,10 @@ final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelega
                         } else {
                             self.stationaryTask?.cancel()
                             self.stationaryTask = nil
-                            
+                            if self.isLowPowerMode {
+                                self.resumeHighFidelityTracking()
+                            }
+
                             if loc.horizontalAccuracy <= LocationSyncService.minBroadcastAccuracyMeters {
                                 LocationSyncService.shared.sendLocation(lat: coordinate.latitude, lng: coordinate.longitude, heading: self.heading, source: .locationUpdate)
                             }
@@ -224,21 +241,31 @@ final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelega
     private func enterLowPowerMode(at location: CLLocation) {
         guard !isLowPowerMode else { return }
         isLowPowerMode = true
-        LocationSyncService.shared.e2eeManager.addDiagnosticEvent(message: "Entering low-power mode (stationary > 5m)")
-        
+
         if let manager = manager {
             let region = CLCircularRegion(center: location.coordinate, radius: 200, identifier: stationaryGeofenceId)
             region.notifyOnEntry = false
             region.notifyOnExit = true
             manager.startMonitoring(for: region)
         }
-        
+
         stationaryTask = nil
-        updatesTask?.cancel()
-        updatesTask = nil
-        backgroundActivity?.invalidate()
-        backgroundActivity = nil
-        manager?.stopMonitoringSignificantLocationChanges()
+
+        if Self.deepSleepWhenStationary {
+            LocationSyncService.shared.e2eeManager.addDiagnosticEvent(message: "Entering low-power mode (stationary > 5m, deep sleep)")
+            updatesTask?.cancel()
+            updatesTask = nil
+            backgroundActivity?.invalidate()
+            backgroundActivity = nil
+            manager?.stopMonitoringSignificantLocationChanges()
+        } else {
+            // Keep CLBackgroundActivitySession and the liveUpdates stream alive so
+            // the in-process Timer keeps ticking and pollAll() can fire the 5-minute
+            // heartbeat. The geofence above is redundant for movement detection in
+            // this mode but is retained as a fallback in case the OS suspends us
+            // anyway under memory pressure.
+            LocationSyncService.shared.e2eeManager.addDiagnosticEvent(message: "Entering low-power mode (stationary > 5m, keepalive)")
+        }
     }
 
     private func resumeHighFidelityTracking() {

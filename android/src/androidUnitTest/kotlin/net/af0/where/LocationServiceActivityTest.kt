@@ -90,8 +90,8 @@ class LocationServiceActivityTest {
         controller.withIntent(intent).startCommand(0, 2)
 
         // 5. Verify priority and interval updated for STILL
-        assertEquals(Priority.PRIORITY_BALANCED_POWER_ACCURACY, service.currentPriority)
-        assertEquals(60_000L, service.currentInterval)
+        assertEquals(Priority.PRIORITY_LOW_POWER, service.currentPriority)
+        assertEquals(LocationService.HEARTBEAT_INTERVAL_MS, service.currentInterval)
         
         unmockkStatic(ActivityTransitionResult::class)
     }
