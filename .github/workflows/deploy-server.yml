@@ -2,8 +2,18 @@ name: Deploy Server
 
 on:
   push:
+    branches: [ main ]
+    paths:
+      - 'server/**'
+      - 'shared/**'
+      - 'gradle/**'
+      - 'build.gradle.kts'
+      - 'settings.gradle.kts'
+      - 'gradle.properties'
+      - '.github/workflows/deploy-server.yml'
     tags:
       - 'v*'
+  workflow_dispatch:
 
 permissions:
   contents: read
