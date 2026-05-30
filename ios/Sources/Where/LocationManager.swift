@@ -206,7 +206,7 @@ final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelega
                                     }
                                 }
                             }
-                            LocationSyncService.shared.e2eeManager.addDiagnosticEvent(message: "Stationary (System)")
+                            LocationSyncService.shared.e2eeManager.addDiagnosticEvent(message: "Stationary (System)", coalesceKey: nil)
                         } else {
                             self.stationaryTask?.cancel()
                             self.stationaryTask = nil
@@ -221,10 +221,10 @@ final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelega
                     }
                 } catch let error as CLError where error.code == .denied {
                     // Authorization was revoked; no point retrying.
-                    LocationSyncService.shared.e2eeManager.addDiagnosticEvent(message: "Live updates stopped: authorization denied")
+                    LocationSyncService.shared.e2eeManager.addDiagnosticEvent(message: "Live updates stopped: authorization denied", coalesceKey: nil)
                     break
                 } catch {
-                    LocationSyncService.shared.e2eeManager.addDiagnosticEvent(message: "Live updates error: \(error.localizedDescription)")
+                    LocationSyncService.shared.e2eeManager.addDiagnosticEvent(message: "Live updates error: \(error.localizedDescription)", coalesceKey: nil)
                 }
 
                 if Task.isCancelled { break }
@@ -252,7 +252,7 @@ final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelega
         stationaryTask = nil
 
         if Self.deepSleepWhenStationary {
-            LocationSyncService.shared.e2eeManager.addDiagnosticEvent(message: "Entering low-power mode (stationary > 5m, deep sleep)")
+            LocationSyncService.shared.e2eeManager.addDiagnosticEvent(message: "Entering low-power mode (stationary > 5m, deep sleep)", coalesceKey: nil)
             updatesTask?.cancel()
             updatesTask = nil
             backgroundActivity?.invalidate()
@@ -264,13 +264,13 @@ final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelega
             // heartbeat. The geofence above is redundant for movement detection in
             // this mode but is retained as a fallback in case the OS suspends us
             // anyway under memory pressure.
-            LocationSyncService.shared.e2eeManager.addDiagnosticEvent(message: "Entering low-power mode (stationary > 5m, keepalive)")
+            LocationSyncService.shared.e2eeManager.addDiagnosticEvent(message: "Entering low-power mode (stationary > 5m, keepalive)", coalesceKey: nil)
         }
     }
 
     private func resumeHighFidelityTracking() {
         guard isLowPowerMode else { return }
-        LocationSyncService.shared.e2eeManager.addDiagnosticEvent(message: "Resuming high-fidelity tracking")
+        LocationSyncService.shared.e2eeManager.addDiagnosticEvent(message: "Resuming high-fidelity tracking", coalesceKey: nil)
         startUpdating()
     }
 
@@ -315,7 +315,7 @@ final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelega
                         UIApplication.shared.endBackgroundTask(identifier)
                     }
                 }
-                LocationSyncService.shared.e2eeManager.addDiagnosticEvent(message: "Exited stationary geofence")
+                LocationSyncService.shared.e2eeManager.addDiagnosticEvent(message: "Exited stationary geofence", coalesceKey: nil)
                 self.resumeHighFidelityTracking()
             }
         }
@@ -339,7 +339,7 @@ final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelega
 
     nonisolated func locationManager(_ manager: CLLocationManager, didFailWithError error: Error) {
         Task { @MainActor in
-            LocationSyncService.shared.e2eeManager.addDiagnosticEvent(message: "Location manager error: \(error.localizedDescription)")
+            LocationSyncService.shared.e2eeManager.addDiagnosticEvent(message: "Location manager error: \(error.localizedDescription)", coalesceKey: nil)
         }
     }
 
