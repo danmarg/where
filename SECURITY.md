@@ -32,34 +32,42 @@ fixed turnaround (see "Project status" above). Severe issues affecting
 confidentiality of user location data or breaking E2EE guarantees are
 prioritized over everything else.
 
-## Scope
+## Scope and threat model
 
-In scope:
+The cryptographic protocol and its **threat model** are documented in
+[`docs/e2ee-location-sync.md`](docs/e2ee-location-sync.md). That document
+is the authoritative definition of what Where attempts to defend against
+and what it does not. Please read it before filing a report.
 
-- The Ktor server (`server/`) and its mailbox API
-- The shared KMP module (`shared/`), including the Double Ratchet
-  implementation and session/pairing logic
-- The Android and iOS clients (`android/`, `ios/`)
-- The CLI (`cli/`)
-- Build and release tooling that ships code to end users
-  (GitHub Actions workflows, fastlane lanes)
+**In scope** — we prioritize, in this order:
 
-Out of scope:
+1. Attacks that violate the documented threat model (e.g. breaking
+   confidentiality, integrity, forward secrecy, or post-compromise
+   security of established sessions; deviations of the implementation
+   from the spec).
+2. Vulnerabilities in the server, clients, CLI, or release tooling
+   (`server/`, `shared/`, `android/`, `ios/`, `cli/`, GitHub Actions
+   workflows, fastlane lanes) that compromise users or their data.
+3. Unsafe use of third-party dependencies on our part.
 
-- Vulnerabilities in third-party dependencies, unless we are using them in
-  an unsafe way — please report those upstream
+**Out of scope** — we will generally not act on:
+
+- **Attacks the threat model already accepts.** The protocol spec
+  enumerates these explicitly. The most prominent is Trust-On-First-Use
+  during initial pairing: an active attacker who can MITM the
+  out-of-band invite channel can substitute keys, and Where does not
+  defend against this by design. Reports that re-describe accepted
+  trade-offs without new information will be closed.
+- Vulnerabilities in third-party dependencies when we are using them
+  correctly — please report those upstream.
 - Issues that require a compromised device, root/jailbreak, or physical
-  access to a user's unlocked phone
-- Trust-On-First-Use of session fingerprints. This is an accepted design
-  trade-off; see `docs/e2ee-location-sync.md`
-- Findings from automated scanners with no demonstrated impact
+  access to a user's unlocked phone.
+- Findings from automated scanners with no demonstrated impact.
 
-## Cryptographic protocol
-
-The full E2EE protocol is documented in
-[`docs/e2ee-location-sync.md`](docs/e2ee-location-sync.md). Reports that
-identify deviations from that spec, or weaknesses in the spec itself, are
-especially welcome.
+If you believe the threat model itself is wrong — i.e. that an attack we
+treat as accepted should not be accepted, or that a stated guarantee is
+unachievable as specified — that is in scope and we want to hear about
+it. Frame the report as a critique of the spec, not just the code.
 
 ## Safe harbor
 
