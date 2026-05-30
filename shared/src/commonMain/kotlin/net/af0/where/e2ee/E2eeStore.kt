@@ -146,12 +146,30 @@ internal class E2eeStore(
 
     suspend fun listFriends(): List<FriendEntry> = storeLock.withLock { friends.values.toList() }
 
-    fun addDiagnosticEvent(message: String) {
+    fun addDiagnosticEvent(message: String, coalesceKey: String? = null) {
         val t = currentTimeSeconds()
-        database.diagnosticEventsQueries.insertEvent(ts = t, message = message)
-        database.diagnosticEventsQueries.pruneOldEvents(MAX_DIAGNOSTIC_EVENTS.toLong())
-        val formatted = "${TimeSource.formatLocalTime(t)} $message"
-        _diagnosticLog.update { current -> (listOf(formatted) + current).take(MAX_DIAGNOSTIC_EVENTS) }
+        val latest = if (coalesceKey != null) database.diagnosticEventsQueries.getLatestEvent().executeAsOneOrNull() else null
+        if (coalesceKey != null && latest != null && latest.message.startsWith(coalesceKey)) {
+            val coalesced = coalesceMessage(latest.message, message, coalesceKey)
+            database.diagnosticEventsQueries.updateEvent(ts = t, message = coalesced, id = latest.id)
+            val formatted = "${TimeSource.formatLocalTime(t)} $coalesced"
+            _diagnosticLog.update { current ->
+                if (current.isEmpty()) listOf(formatted) else listOf(formatted) + current.drop(1)
+            }
+        } else {
+            database.diagnosticEventsQueries.insertEvent(ts = t, message = message)
+            database.diagnosticEventsQueries.pruneOldEvents(MAX_DIAGNOSTIC_EVENTS.toLong())
+            val formatted = "${TimeSource.formatLocalTime(t)} $message"
+            _diagnosticLog.update { current -> (listOf(formatted) + current).take(MAX_DIAGNOSTIC_EVENTS) }
+        }
+    }
+
+    private fun coalesceMessage(previous: String, incoming: String, coalesceKey: String): String {
+        val prevSuffix = previous.removePrefix(coalesceKey)
+        val countMatch = Regex("""^ ×(\d+)""").find(prevSuffix)
+        val prevCount = countMatch?.groupValues?.get(1)?.toIntOrNull() ?: 1
+        val incomingSuffix = incoming.removePrefix(coalesceKey)
+        return "$coalesceKey ×${prevCount + 1}$incomingSuffix"
     }
 
     private fun saveFriendInternal(

@@ -121,13 +121,18 @@ class LocationService : Service() {
         intervalMs: Long? = null,
     ) {
         val status = if (success) "OK" else "ERR"
-        var message = "Wake: ${source.value} -> $status"
+        val prefix = "Wake: ${source.value} -> $status"
+        var message = prefix
         if (intervalMs != null) {
             val mins = intervalMs / 60000
             val secs = (intervalMs % 60000) / 1000
             message += if (mins > 0) " (Interval: ${mins}m ${secs}s)" else " (Interval: ${secs}s)"
         }
-        e2eeManager.addDiagnosticEvent(message)
+        // Coalesce consecutive successes from the same source so frequent heartbeats
+        // don't push more interesting events out of the bounded diagnostic buffer.
+        // Errors are never coalesced.
+        val coalesceKey = if (success) prefix else null
+        e2eeManager.addDiagnosticEvent(message, coalesceKey)
     }
     private lateinit var userStore: UserStore
     private lateinit var locationClient: LocationClient

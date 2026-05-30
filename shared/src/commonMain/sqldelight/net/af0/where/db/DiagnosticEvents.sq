@@ -7,6 +7,12 @@ CREATE TABLE DiagnosticEvents (
 insertEvent:
 INSERT INTO DiagnosticEvents(ts, message) VALUES (?, ?);
 
+getLatestEvent:
+SELECT * FROM DiagnosticEvents ORDER BY id DESC LIMIT 1;
+
+updateEvent:
+UPDATE DiagnosticEvents SET ts = ?, message = ? WHERE id = ?;
+
 getRecentEvents:
 SELECT * FROM DiagnosticEvents ORDER BY id DESC LIMIT ?;
 

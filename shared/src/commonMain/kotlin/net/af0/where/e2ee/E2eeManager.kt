@@ -87,8 +87,8 @@ class E2eeManager(
 
     val diagnosticLog: StateFlow<List<String>> = persistence.diagnosticLog
 
-    fun addDiagnosticEvent(message: String) {
-        persistence.addDiagnosticEvent(message)
+    fun addDiagnosticEvent(message: String, coalesceKey: String? = null) {
+        persistence.addDiagnosticEvent(message, coalesceKey)
     }
 
     fun diagnosticLogSnapshot(): List<String> = diagnosticLog.value
