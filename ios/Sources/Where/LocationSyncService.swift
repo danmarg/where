@@ -143,8 +143,13 @@ final class LocationSyncService: ObservableObject {
     var pendingForcedSendFriendId: String? = nil
     var forceNextLocationUpdate: Bool = false
     var skipNetworkRestore: Bool = false  // internal for testing
-    private var locationFixTimeoutTask: Task<Void, Never>? = nil
-    private var currentSendTask: Task<Void, Never>? = nil
+    var locationFixTimeoutTask: Task<Void, Never>? = nil  // internal for testing
+    var currentSendTask: Task<Void, Never>? = nil  // internal for testing
+    // Injectable sleep used for the GPS-fix fallback timeout. Tests replace this
+    // with an instant or controllable variant so they don't wait real walltime.
+    var sleepForFixTimeout: @Sendable (TimeInterval) async throws -> Void = { seconds in
+        try await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+    }
     private var awaitingFirstUpdateIds: Set<String> = []
     // Monotonically increasing counter used to prevent stale task cleanup from
     // clearing a newer task's state. Incremented each time a new send task is created.
@@ -292,10 +297,11 @@ final class LocationSyncService: ObservableObject {
             locationProvider.requestImmediateLocation()
             // Cancel any previous fallback timeout before starting a new one.
             locationFixTimeoutTask?.cancel()
+            let sleep = sleepForFixTimeout
             locationFixTimeoutTask = Task { [weak self] in
                 do {
                     guard let timeout = self?.locationFixTimeout else { return }
-                    try await Task.sleep(nanoseconds: UInt64(timeout * 1_000_000_000))
+                    try await sleep(timeout)
                 } catch {
                     logger.debug("locationFixTimeout task cancelled")
                     return
@@ -336,10 +342,13 @@ final class LocationSyncService: ObservableObject {
         forceNextLocationUpdate = true
         locationProvider.requestImmediateLocation()
         // Fire a poll directly rather than through the timer to minimize foreground latency.
-        Task { @MainActor in
+        // Tracked so tests can await the poll completion without sleeping.
+        foregroundPollTask = Task { @MainActor in
             await pollAll(updateUi: true, source: .manual)
         }
     }
+
+    var foregroundPollTask: Task<Void, Never>? = nil  // internal for testing
 
     func startPolling() {
         pollTimer?.invalidate()

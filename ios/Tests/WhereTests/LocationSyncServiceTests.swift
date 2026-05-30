@@ -436,7 +436,9 @@ class LocationSyncServiceTests: XCTestCase {
         mockClient.sendLocationCallback = { sendCount.increment() }
 
         service.onForegroundEntry()
-        try await Task.sleep(nanoseconds: 300_000_000)
+        await service.currentSendTask?.value
+        await service.foregroundPollTask?.value
+        await service.currentSendTask?.value  // pollAll may enqueue a heartbeat send
 
         XCTAssertEqual(sendCount.getCount(), 1,
             "sendLocation() updates lastSentTime synchronously, so pollAll's heartbeat must not fire a second send")
@@ -454,7 +456,7 @@ class LocationSyncServiceTests: XCTestCase {
         let before = mockClient.pollCallCount
 
         service.onForegroundEntry()
-        try await Task.sleep(nanoseconds: 200_000_000)
+        await service.foregroundPollTask?.value
 
         XCTAssertGreaterThan(mockClient.pollCallCount, before,
             "onForegroundEntry must poll immediately even if the foreground interval hasn't elapsed")
@@ -763,11 +765,10 @@ class LocationSyncServiceTests: XCTestCase {
         let mockClient = MockLocationClient()
         service = LocationSyncService(e2eeManager: service.e2eeManager, userStore: service.userStore, locationClient: mockClient, locationProvider: mockLocationProvider)
         service.skipNetworkRestore = true
-        service.skipNetworkRestore = true
         service.beginBackgroundTask = { _, _ in .invalid }
         service.endBackgroundTask = { _ in }
+        service.sleepForFixTimeout = { _ in }  // fire timeout instantly, no walltime
         service.isSharingLocation = true
-        service.locationFixTimeout = 0.05  // short timeout so test doesn't take 10s
         service.lastSentTime = Date(timeIntervalSince1970: 0)
 
         // Stale location that will be used as the fallback
@@ -778,12 +779,14 @@ class LocationSyncServiceTests: XCTestCase {
         )
         mockLocationProvider.location = staleLocation
 
-        let expectation = XCTestExpectation(description: "Fallback sends stale location after GPS timeout")
-        mockClient.sendLocationCallback = { expectation.fulfill() }
+        let sendCount = SendCountBox()
+        mockClient.sendLocationCallback = { sendCount.increment() }
 
         await service.handleNetworkRestored()
-        await fulfillment(of: [expectation], timeout: 2.0)
+        await service.locationFixTimeoutTask?.value  // wait for fallback to run
+        await service.currentSendTask?.value        // wait for the send to flush
 
+        XCTAssertEqual(sendCount.getCount(), 1, "Fallback should send stale location once")
         XCTAssertFalse(service.forceNextLocationUpdate, "forceNextLocationUpdate should be cleared after fallback send")
     }
 
@@ -791,10 +794,12 @@ class LocationSyncServiceTests: XCTestCase {
         let mockClient = MockLocationClient()
         service = LocationSyncService(e2eeManager: service.e2eeManager, userStore: service.userStore, locationClient: mockClient, locationProvider: mockLocationProvider)
         service.skipNetworkRestore = true
-        service.skipNetworkRestore = true
         service.beginBackgroundTask = { _, _ in .invalid }
         service.endBackgroundTask = { _ in }
         service.isSharingLocation = true
+        // This test deliberately uses a small real sleep: the behaviour under
+        // test IS cancellation of the parked sleep when a flap arrives, so we
+        // need both calls to land while the first sleep is still parked.
         service.locationFixTimeout = 0.1
         service.lastSentTime = Date(timeIntervalSince1970: 0)
 
@@ -806,19 +811,14 @@ class LocationSyncServiceTests: XCTestCase {
         mockLocationProvider.location = staleLocation
 
         let sendCount = SendCountBox()
-        let firstSend = XCTestExpectation(description: "First send from timeout fallback")
-        mockClient.sendLocationCallback = {
-            sendCount.increment()
-            if sendCount.getCount() == 1 { firstSend.fulfill() }
-        }
+        mockClient.sendLocationCallback = { sendCount.increment() }
 
-        // Simulate rapid network flap: first restore arms a timeout, second cancels it and arms a fresh one
+        // Simulate rapid network flap: first restore arms a timeout, second
+        // cancels it and arms a fresh one.
         await service.handleNetworkRestored()
         await service.handleNetworkRestored()
-
-        // Wait until the timeout fallback fires (up to 2s), then check for duplicates
-        await fulfillment(of: [firstSend], timeout: 2.0)
-        try await Task.sleep(nanoseconds: 100_000_000)
+        await service.locationFixTimeoutTask?.value  // fresh task finishes after its 100ms sleep
+        await service.currentSendTask?.value         // fallback send flushes
 
         XCTAssertEqual(sendCount.getCount(), 1, "Rapid network flap should not produce duplicate sends")
     }
