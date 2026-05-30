@@ -34,6 +34,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -109,6 +110,41 @@ class LocationService : Service() {
 
     private var lastSuccessfulSendTime: Long? = null
 
+    @VisibleForTesting
+    internal var consecutiveLateHeartbeats = 0
+
+    private data class RecentFix(val ts: Long, val lat: Double, val lng: Double)
+
+    private val recentFixes = ArrayDeque<RecentFix>()
+
+    private fun recordRecentFix(lat: Double, lng: Double) {
+        val now = clock()
+        recentFixes.addLast(RecentFix(now, lat, lng))
+        val cutoff = now - RECENT_FIX_WINDOW_MS
+        while (recentFixes.isNotEmpty() && recentFixes.first().ts < cutoff) {
+            recentFixes.removeFirst()
+        }
+    }
+
+    @VisibleForTesting
+    internal fun maxRecentDisplacementMeters(): Float {
+        if (recentFixes.size < 2) return 0f
+        val results = FloatArray(1)
+        var maxD = 0f
+        val list = recentFixes.toList()
+        for (i in list.indices) {
+            for (j in i + 1 until list.size) {
+                android.location.Location.distanceBetween(
+                    list[i].lat, list[i].lng,
+                    list[j].lat, list[j].lng,
+                    results,
+                )
+                if (results[0] > maxD) maxD = results[0]
+            }
+        }
+        return maxD
+    }
+
     private val pendingFriendSends = Channel<String>(Channel.UNLIMITED)
 
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
@@ -183,6 +219,7 @@ class LocationService : Service() {
             object : LocationCallback() {
                 override fun onLocationResult(result: LocationResult) {
                     val loc = result.lastLocation ?: return
+                    recordRecentFix(loc.latitude, loc.longitude)
                     locationSource.onLocation(loc.latitude, loc.longitude, if (loc.hasBearing()) loc.bearing.toDouble() else null)
                 }
             }
@@ -191,6 +228,7 @@ class LocationService : Service() {
             object : LocationCallback() {
                 override fun onLocationResult(result: LocationResult) {
                     val loc = result.lastLocation ?: return
+                    recordRecentFix(loc.latitude, loc.longitude)
                     locationSource.onLocation(loc.latitude, loc.longitude, if (loc.hasBearing()) loc.bearing.toDouble() else null)
                 }
             }
@@ -287,6 +325,19 @@ class LocationService : Service() {
             if (result != null) {
                 for (event in result.transitionEvents) {
                     Log.d(TAG, "Activity Transition: ${event.activityType} (${event.transitionType})")
+                    // Cross-check: if Activity Recognition reports STILL but we've actually
+                    // moved >100m in the last 2 minutes (e.g. phone-in-pocket while walking),
+                    // ignore the signal rather than demoting the location request.
+                    if (event.activityType == DetectedActivity.STILL &&
+                        event.transitionType == ActivityTransition.ACTIVITY_TRANSITION_ENTER
+                    ) {
+                        val displacement = maxRecentDisplacementMeters()
+                        if (displacement > STILL_DISPLACEMENT_IGNORE_METERS) {
+                            Log.i(TAG, "Ignoring STILL enter: moved ${displacement.toInt()}m in last 2 min")
+                            e2eeManager.addDiagnosticEvent("STILL ignored (moved ${displacement.toInt()}m)")
+                            continue
+                        }
+                    }
                     val newPriority =
                         when {
                             event.activityType == DetectedActivity.STILL && deepSleepWhenStationary ->
@@ -329,10 +380,12 @@ class LocationService : Service() {
             }
         }
 
-        if (intent?.action == ACTION_POLL_ALARM) {
+        if (intent?.action == ACTION_POLL_ALARM || intent?.action == ACTION_HEARTBEAT_TICK) {
             // Acquire a wakelock so the CPU stays awake for the GPS fix + network send.
             // setExactAndAllowWhileIdle wakes the CPU but doesn't hold it; without this
             // the device can sleep again before forceLocationUpdateAndGet() completes.
+            // ACTION_HEARTBEAT_TICK is sent by LocationServiceRestartWorker on its 15-min
+            // cadence — useful on Samsung where setExactAndAllowWhileIdle is throttled.
             if (!pollWakeLock.isHeld) pollWakeLock.acquire(60_000L)
             isAlarmWakePending = true
             locationSource.wakePoll()
@@ -474,11 +527,15 @@ class LocationService : Service() {
             }
         }
 
+        // When moving, keep max delivery delay tight (10s) so FLP doesn't batch up to a
+        // full minute of fixes before delivering — that batching can mask "moving"
+        // updates by up to 60s in marginal conditions. When STILL, batching is fine.
+        val maxDelay = if (isStill) 60_000L else 10_000L
         val request =
             LocationRequest.Builder(currentPriority, currentInterval)
                 .setMinUpdateIntervalMillis(10_000L) // Floor on active-registration delivery; passive piggybacking handled by PRIORITY_PASSIVE registration above.
                 .setMinUpdateDistanceMeters(MOVEMENT_RADIUS_THRESHOLD_METERS)
-                .setMaxUpdateDelayMillis(60_000L)
+                .setMaxUpdateDelayMillis(maxDelay)
                 .build()
 
         try {
@@ -814,21 +871,51 @@ class LocationService : Service() {
                 }
             }
         if (!shouldSend) return
-        try {
-            locationClient.sendLocation(lat, lng, userStore.pausedFriendIds.value)
-            logReliability(source, true, interval)
-            lastSuccessfulSendTime = now
-            updateStatus(null)
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            // Restore lastSentTime on failure so the next update can retry immediately.
-            sendLock.withLock {
-                lastSentTime = 0L
+
+        // Retry transient send failures within the same wake; otherwise a single
+        // network blip during a 5-min heartbeat tick costs us another full poll
+        // interval (5 min background) before the next attempt, stacking gaps fast.
+        var lastError: Exception? = null
+        val totalAttempts = 1 + SEND_RETRY_DELAYS_MS.size
+        for (attempt in 0 until totalAttempts) {
+            if (attempt > 0) {
+                delay(SEND_RETRY_DELAYS_MS[attempt - 1])
+                if (!userStore.isSharingLocation.value) return
             }
-            Log.e(TAG, "Failed to send location: ${e.message}")
-            logReliability(source, false, interval)
-            updateStatus(e)
+            try {
+                locationClient.sendLocation(lat, lng, userStore.pausedFriendIds.value)
+                val sendCompleteTime = clock()
+                logReliability(source, true, interval)
+                checkLateHeartbeat(interval)
+                lastSuccessfulSendTime = sendCompleteTime
+                updateStatus(null)
+                return
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                lastError = e
+                Log.w(TAG, "Send attempt ${attempt + 1}/$totalAttempts failed: ${e.message}")
+            }
+        }
+
+        // All retries exhausted — restore lastSentTime so the next wake can retry.
+        sendLock.withLock { lastSentTime = 0L }
+        Log.e(TAG, "Failed to send location after $totalAttempts attempts: ${lastError?.message}")
+        logReliability(source, false, interval)
+        updateStatus(lastError ?: Exception("send failed"))
+    }
+
+    private fun checkLateHeartbeat(intervalMs: Long?) {
+        if (intervalMs == null) return
+        if (intervalMs > 2 * HEARTBEAT_INTERVAL_MS) {
+            consecutiveLateHeartbeats += 1
+            val mins = intervalMs / 60_000
+            val secs = (intervalMs % 60_000) / 1000
+            e2eeManager.addDiagnosticEvent(
+                "Late heartbeat: ${mins}m ${secs}s gap (count=$consecutiveLateHeartbeats)",
+            )
+        } else {
+            consecutiveLateHeartbeats = 0
         }
     }
 
@@ -906,6 +993,7 @@ class LocationService : Service() {
         const val ACTION_FORCE_PUBLISH = "net.af0.where.ACTION_FORCE_PUBLISH"
         const val ACTION_ACTIVITY_TRANSITION = "net.af0.where.ACTION_ACTIVITY_TRANSITION"
         const val ACTION_GEOFENCE_EVENT = "net.af0.where.ACTION_GEOFENCE_EVENT"
+        const val ACTION_HEARTBEAT_TICK = "net.af0.where.ACTION_HEARTBEAT_TICK"
         private const val PENDING_INTENT_REQUEST_CODE_ACTIVITY = 1
         const val EXTRA_FRIEND_ID = "friend_id"
 
@@ -927,6 +1015,19 @@ class LocationService : Service() {
 
         /** Interval between heartbeat sends when stationary. */
         const val HEARTBEAT_INTERVAL_MS = 300_000L
+
+        /** Backoff delays for in-wake send retries on transient network failure. */
+        val SEND_RETRY_DELAYS_MS = longArrayOf(5_000L, 20_000L)
+
+        /** Window of recent GPS fixes consulted by the STILL cross-check. */
+        const val RECENT_FIX_WINDOW_MS = 2 * 60 * 1000L
+
+        /**
+         * If Activity Recognition reports STILL but we've actually moved more than this
+         * many meters in the last [RECENT_FIX_WINDOW_MS], ignore the signal — common
+         * mis-classification when the phone is in a steady pocket while walking.
+         */
+        const val STILL_DISPLACEMENT_IGNORE_METERS = 100f
 
         /**
          * When true, on STILL transitions demote the FLP request to PRIORITY_PASSIVE
