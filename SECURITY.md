@@ -3,6 +3,14 @@
 Where is a real-time location sharing app with end-to-end encryption. We take
 security and privacy reports seriously and appreciate responsible disclosure.
 
+## Project status
+
+Where is an open-source, non-commercial project maintained by volunteers in
+their spare time. There is no dedicated security team, no funding, and no
+formal SLA. We will do our best to triage and address reports, but response
+and remediation times depend on maintainer availability. Please calibrate
+expectations accordingly.
+
 ## Reporting a vulnerability
 
 Please report vulnerabilities **privately**, not in a public issue.
@@ -19,9 +27,10 @@ Include, where possible:
 - The commit hash or release the report applies to
 - Any suggested mitigation
 
-We aim to acknowledge new reports within 7 days and to provide a remediation
-timeline within 30 days. Severe issues affecting confidentiality of user
-location data or breaking E2EE guarantees are prioritized.
+We will try to acknowledge new reports promptly, but cannot commit to a
+fixed turnaround (see "Project status" above). Severe issues affecting
+confidentiality of user location data or breaking E2EE guarantees are
+prioritized over everything else.
 
 ## Scope
 
