@@ -19,8 +19,15 @@ class LocationServiceRestartWorker(
             Log.i(TAG, "No friends or pending invites; skipping service restart")
             return Result.success()
         }
-        Log.i(TAG, "WorkManager heartbeat: ensuring LocationService is running")
-        applicationContext.startForegroundService(Intent(applicationContext, LocationService::class.java))
+        Log.i(TAG, "WorkManager heartbeat: ensuring LocationService is running + forcing tick")
+        // Use ACTION_HEARTBEAT_TICK so an already-running but Doze-stalled service
+        // gets nudged into running its poll/heartbeat path — startForegroundService
+        // alone is a no-op when the service is already up.
+        applicationContext.startForegroundService(
+            Intent(applicationContext, LocationService::class.java).apply {
+                action = LocationService.ACTION_HEARTBEAT_TICK
+            },
+        )
         return Result.success()
     }
 

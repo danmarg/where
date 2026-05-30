@@ -444,7 +444,7 @@ final class LocationSyncService: ObservableObject {
                 message += " (Interval: \(secs)s)"
             }
         }
-        e2eeManager.addDiagnosticEvent(message: message)
+        e2eeManager.addDiagnosticEvent(message: message, coalesceKey: nil)
     }
 
     private func isStationary() async -> Bool {

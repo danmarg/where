@@ -379,6 +379,66 @@ class LocationServiceTest {
         }
 
     @Test
+    fun testSendLocationRetriesOnTransientFailure() =
+        runTest {
+            var currentTime = 1_000_000_000L
+            LocationService.clock = { currentTime }
+
+            val controller = Robolectric.buildService(LocationService::class.java)
+            val service = controller.get()
+
+            val mockClient = io.mockk.mockk<LocationClient>(relaxed = true)
+            // First call throws, second call succeeds.
+            var sendCalls = 0
+            io.mockk.coEvery { mockClient.sendLocation(any(), any(), any()) } answers {
+                sendCalls += 1
+                if (sendCalls == 1) throw RuntimeException("simulated transient failure")
+                Unit
+            }
+            service.locationClientOverride = mockClient
+            service.locationSourceOverride = fakeLocationSource
+            service.e2eeManagerOverride = io.mockk.mockk(relaxed = true)
+
+            val app = context as TestWhereApplication
+            app.userStore.setSharing(true)
+            controller.create()
+
+            try {
+                service.sendLocationIfNeeded(1.0, 2.0, isHeartbeat = false, force = true)
+                advanceUntilIdle()
+                assertEquals(2, sendCalls, "Send should retry once after transient failure")
+                assertTrue(service.lastSentTime > 0L, "lastSentTime should remain set after eventual success")
+            } finally {
+                controller.destroy()
+            }
+        }
+
+    @Test
+    fun testDisplacementHelperDetectsMovement() {
+        var currentTime = 1_000_000_000L
+        LocationService.clock = { currentTime }
+        val service = Robolectric.buildService(LocationService::class.java).get()
+
+        val recordRecentFix = LocationService::class.java
+            .getDeclaredMethod("recordRecentFix", java.lang.Double.TYPE, java.lang.Double.TYPE)
+            .apply { isAccessible = true }
+
+        // Stationary: same coordinate twice -> ~0m displacement.
+        recordRecentFix.invoke(service, 37.7749, -122.4194)
+        currentTime += 30_000L
+        recordRecentFix.invoke(service, 37.7749, -122.4194)
+        assertTrue(service.maxRecentDisplacementMeters() < 1f, "Stationary fixes should report ~0m displacement")
+
+        // Add a fix ~200m north -> displacement should exceed STILL threshold.
+        currentTime += 30_000L
+        recordRecentFix.invoke(service, 37.77670, -122.4194)
+        assertTrue(
+            service.maxRecentDisplacementMeters() > LocationService.STILL_DISPLACEMENT_IGNORE_METERS,
+            "Moving ~200m should exceed STILL_DISPLACEMENT_IGNORE_METERS",
+        )
+    }
+
+    @Test
     fun testForceLocationUpdate_Throttle() =
         runTest {
             var currentTime = 1_000_000_000L
