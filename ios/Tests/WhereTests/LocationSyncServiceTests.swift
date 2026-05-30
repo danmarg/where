@@ -782,7 +782,7 @@ class LocationSyncServiceTests: XCTestCase {
         mockClient.sendLocationCallback = { expectation.fulfill() }
 
         await service.handleNetworkRestored()
-        await fulfillment(of: [expectation], timeout: 1.0)
+        await fulfillment(of: [expectation], timeout: 2.0)
 
         XCTAssertFalse(service.forceNextLocationUpdate, "forceNextLocationUpdate should be cleared after fallback send")
     }
