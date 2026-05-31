@@ -227,12 +227,12 @@ struct ContentView: View {
                 Text(error.message.localized())
             }
         }
-        .confirmationDialog("Share location for…", isPresented: $showDurationPicker, titleVisibility: .visible) {
-            Button("30 minutes") { startSharing(durationSeconds: 30 * 60) }
-            Button("1 hour")     { startSharing(durationSeconds: 60 * 60) }
-            Button("4 hours")    { startSharing(durationSeconds: 4 * 60 * 60) }
-            Button("8 hours")    { startSharing(durationSeconds: 8 * 60 * 60) }
-            Button("Until I stop") { startSharing(durationSeconds: nil) }
+        .confirmationDialog(MR.strings().share_for_title.localized(), isPresented: $showDurationPicker, titleVisibility: .visible) {
+            Button(MR.strings().share_for_30m.localized()) { startSharing(durationSeconds: 30 * 60) }
+            Button(MR.strings().share_for_1h.localized())  { startSharing(durationSeconds: 60 * 60) }
+            Button(MR.strings().share_for_4h.localized())  { startSharing(durationSeconds: 4 * 60 * 60) }
+            Button(MR.strings().share_for_8h.localized())  { startSharing(durationSeconds: 8 * 60 * 60) }
+            Button(MR.strings().share_until_stop.localized()) { startSharing(durationSeconds: nil) }
             Button(MR.strings().cancel.localized(), role: .cancel) { }
         }
         .task {

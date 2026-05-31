@@ -11,15 +11,18 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import dev.icerock.moko.resources.StringResource
+import dev.icerock.moko.resources.compose.stringResource
+import net.af0.where.shared.MR
 
-private data class DurationOption(val label: String, val seconds: Long?)
+private data class DurationOption(val labelRes: StringResource, val seconds: Long?)
 
 private val DURATION_OPTIONS = listOf(
-    DurationOption("30 minutes", 30L * 60),
-    DurationOption("1 hour", 60L * 60),
-    DurationOption("4 hours", 4L * 60 * 60),
-    DurationOption("8 hours", 8L * 60 * 60),
-    DurationOption("Until I stop", null),
+    DurationOption(MR.strings.share_for_30m, 30L * 60),
+    DurationOption(MR.strings.share_for_1h, 60L * 60),
+    DurationOption(MR.strings.share_for_4h, 4L * 60 * 60),
+    DurationOption(MR.strings.share_for_8h, 8L * 60 * 60),
+    DurationOption(MR.strings.share_until_stop, null),
 )
 
 /**
@@ -33,7 +36,7 @@ fun SharingDurationPicker(
 ) {
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("Share location for…") },
+        title = { Text(stringResource(MR.strings.share_for_title)) },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                 DURATION_OPTIONS.forEach { opt ->
@@ -41,14 +44,14 @@ fun SharingDurationPicker(
                         onClick = { onSelected(opt.seconds) },
                         modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp),
                     ) {
-                        Text(opt.label, style = MaterialTheme.typography.bodyLarge)
+                        Text(stringResource(opt.labelRes), style = MaterialTheme.typography.bodyLarge)
                     }
                 }
             }
         },
         confirmButton = {},
         dismissButton = {
-            TextButton(onClick = onDismiss) { Text("Cancel") }
+            TextButton(onClick = onDismiss) { Text(stringResource(MR.strings.cancel)) }
         },
     )
 }
