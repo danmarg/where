@@ -436,6 +436,18 @@ open class LocationClient(
         }
     }
 
+    /**
+     * Enqueue a StoppedSharing message to a single friend (used by the per-friend expiry watcher).
+     * Same WAL-outbox semantics as [sendStoppedSharing]; Keepalives continue afterwards.
+     */
+    open suspend fun sendStoppedSharingToFriend(friendId: String) {
+        val payload = MessagePlaintext.StoppedSharing(ts = currentTimeSeconds())
+        val mutex = getFriendMutex(friendId)
+        mutex.withLock {
+            runCatching { sendMessageToFriendInternal(friendId, payload) }
+        }
+    }
+
     suspend fun sendKeepalive(friendId: String) {
         val mutex = getFriendMutex(friendId)
         mutex.withLock {

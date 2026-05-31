@@ -111,31 +111,53 @@ class UserStore(private val storage: RawKeyValueStorage) {
         storage.putString(KEY_CAMERA_REQUESTED, requested.toString())
     }
 
-    // ---- Time-limited share ---------------------------------------------------------------
-
-    /** Epoch-seconds at which the current share session should automatically stop. null = no expiry. */
-    private val _sharingExpiresAt =
-        MutableStateFlow(
-            storage.getString(KEY_SHARING_EXPIRES_AT)?.toLongOrNull(),
-        )
-    val sharingExpiresAt: StateFlow<Long?> = _sharingExpiresAt.asStateFlow()
-
-    fun setSharingExpiresAt(epochSeconds: Long?) {
-        _sharingExpiresAt.value = epochSeconds
-        storage.putString(KEY_SHARING_EXPIRES_AT, epochSeconds?.toString() ?: "")
-    }
+    // ---- Per-friend timed share ------------------------------------------------------------
 
     /**
-     * Source-of-truth check for whether a location message is allowed to ship right now.
-     * Combines the user's toggle and any active time-limited share expiry. Use this in
-     * every send-path gate — the expiry-watcher coroutine/Task is best-effort (it fires
-     * earliest in the happy path), but this method is the hard guarantee that no Location
-     * goes out after the expiry, even in the brief window before the watcher wakes.
+     * Per-friend epoch-seconds at which sharing with that friend auto-pauses.
+     * A friend not in the map shares indefinitely (subject to the global toggle and
+     * pausedFriendIds). Persisted as JSON in KV, like [pausedFriendIds].
      */
-    fun isSharingActive(nowSeconds: Long = currentTimeSeconds()): Boolean {
-        if (!_isSharingLocation.value) return false
-        val expiry = _sharingExpiresAt.value
-        return expiry == null || nowSeconds < expiry
+    private val _friendExpiresAt =
+        MutableStateFlow(loadFriendExpiresAt())
+    val friendExpiresAt: StateFlow<Map<String, Long>> = _friendExpiresAt.asStateFlow()
+
+    private fun loadFriendExpiresAt(): Map<String, Long> {
+        val str = storage.getString(KEY_FRIEND_EXPIRES_AT) ?: return emptyMap()
+        return try {
+            json.decodeFromString<Map<String, Long>>(str)
+        } catch (_: Exception) {
+            emptyMap()
+        }
+    }
+
+    private fun persistFriendExpiresAt(map: Map<String, Long>) {
+        storage.putString(KEY_FRIEND_EXPIRES_AT, json.encodeToString(map))
+    }
+
+    fun setFriendExpiry(friendId: String, epochSeconds: Long?) {
+        _friendExpiresAt.update { current ->
+            val new = if (epochSeconds == null) current - friendId else current + (friendId to epochSeconds)
+            persistFriendExpiresAt(new)
+            new
+        }
+    }
+
+    fun removeFriendExpiry(friendId: String) = setFriendExpiry(friendId, null)
+
+    /**
+     * Source-of-truth set of friends that must not receive Location messages right now,
+     * combining the user's explicit pause list with any per-friend timer that has elapsed.
+     * Every send-path gate uses this — the per-friend watcher is the fast path that
+     * propagates expiry → persisted pause + StoppedSharing, but this set is the hard
+     * guarantee that no Location slips through in the window before the watcher fires.
+     */
+    fun effectivelyPausedIds(nowSeconds: Long = currentTimeSeconds()): Set<String> {
+        val expired = _friendExpiresAt.value.entries.asSequence()
+            .filter { (_, expiry) -> nowSeconds >= expiry }
+            .map { it.key }
+            .toSet()
+        return if (expired.isEmpty()) _pausedFriendIds.value else _pausedFriendIds.value + expired
     }
 
     companion object {
@@ -146,6 +168,6 @@ class UserStore(private val storage: RawKeyValueStorage) {
         private const val KEY_LAST_LNG = "last_lng"
         private const val KEY_LAST_ZOOM = "last_zoom"
         private const val KEY_CAMERA_REQUESTED = "camera_requested"
-        private const val KEY_SHARING_EXPIRES_AT = "sharing_expires_at"
+        private const val KEY_FRIEND_EXPIRES_AT = "friend_expires_at"
     }
 }

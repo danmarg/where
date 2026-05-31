@@ -80,4 +80,7 @@
     <string name="share_for_4h">4 hours</string>
     <string name="share_for_8h">8 hours</string>
     <string name="share_until_stop">Until I stop</string>
+    <string name="share_indefinitely">Share indefinitely</string>
+    <string name="sharing_for_remaining">Sharing for %s</string>
+    <string name="more_options">More options</string>
 </resources>

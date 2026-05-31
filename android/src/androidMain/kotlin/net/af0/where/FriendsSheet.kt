@@ -14,13 +14,18 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.QrCode
 import androidx.compose.material.icons.filled.QrCodeScanner
+import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledTonalButton
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -52,6 +57,8 @@ fun FriendsSheet(
     onDisplayNameChange: (String) -> Unit,
     pausedFriendIds: Set<String>,
     friendLastPing: Map<String, Long>,
+    friendExpiresAt: Map<String, Long> = emptyMap(),
+    onSetFriendExpiry: (id: String, expiresAt: Long?) -> Unit = { _, _ -> },
     onTogglePause: (String) -> Unit,
     onCreateInvite: () -> Unit,
     onCancelInvite: (ByteArray) -> Unit,
@@ -178,38 +185,35 @@ fun FriendsSheet(
                                             color = MaterialTheme.colorScheme.error,
                                         )
                                     }
+                                    val expiresAt = friendExpiresAt[friend.id]
+                                    if (expiresAt != null) {
+                                        val rem = (expiresAt - nowSec).coerceAtLeast(0L)
+                                        val h = rem / 3600
+                                        val m = (rem % 3600) / 60
+                                        val left = if (h > 0) "${h}h ${m}m" else "${m}m"
+                                        Text(
+                                            stringResource(MR.strings.sharing_for_remaining, left),
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.primary,
+                                        )
+                                    }
                                 }
 
-                                IconButton(onClick = { renameFriend = friend }) {
-                                    Icon(
-                                        Icons.Default.Edit,
-                                        contentDescription = stringResource(MR.strings.rename),
-                                        modifier = Modifier.size(20.dp),
-                                    )
-                                }
-
-                                val isPaused = friend.id in pausedFriendIds
-                                IconButton(onClick = { onTogglePause(friend.id) }) {
-                                    Icon(
-                                        if (isPaused) Icons.Default.PlayArrow else Icons.Default.Pause,
-                                        contentDescription =
-                                            if (isPaused) {
-                                                stringResource(
-                                                    MR.strings.resume,
-                                                )
-                                            } else {
-                                                stringResource(MR.strings.pause)
-                                            },
-                                    )
-                                }
-
-                                IconButton(onClick = { confirmDeleteFriend = friend }) {
-                                    Icon(
-                                        Icons.Default.Delete,
-                                        contentDescription = stringResource(MR.strings.remove),
-                                        tint = MaterialTheme.colorScheme.error,
-                                    )
-                                }
+                                FriendOverflowMenu(
+                                    friend = friend,
+                                    isPaused = friend.id in pausedFriendIds,
+                                    hasTimer = friendExpiresAt[friend.id] != null,
+                                    onRename = { renameFriend = friend },
+                                    onTogglePause = { onTogglePause(friend.id) },
+                                    onRemove = { confirmDeleteFriend = friend },
+                                    onShareFor = { durationSec ->
+                                        if (durationSec == null) {
+                                            onSetFriendExpiry(friend.id, null)
+                                        } else {
+                                            onSetFriendExpiry(friend.id, (System.currentTimeMillis() / 1000L) + durationSec)
+                                        }
+                                    },
+                                )
                             }
                             if (debugExpandedFriendId == friend.id) {
                                 val recvToken = friend.session.recvToken.toHex().take(8)
@@ -347,6 +351,71 @@ fun FriendsSheet(
                     Text(stringResource(MR.strings.cancel))
                 }
             },
+        )
+    }
+}
+
+@Composable
+private fun FriendOverflowMenu(
+    friend: FriendEntry,
+    isPaused: Boolean,
+    hasTimer: Boolean,
+    onRename: () -> Unit,
+    onTogglePause: () -> Unit,
+    onRemove: () -> Unit,
+    onShareFor: (durationSec: Long?) -> Unit,
+) {
+    var expanded by remember { mutableStateOf(false) }
+    IconButton(onClick = { expanded = true }) {
+        Icon(Icons.Default.MoreVert, contentDescription = stringResource(MR.strings.more_options))
+    }
+    DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+        // Share-for entries (irrelevant when paused — a paused friend gets nothing regardless).
+        if (!isPaused) {
+            DropdownMenuItem(
+                text = { Text(stringResource(MR.strings.share_for_30m)) },
+                leadingIcon = { Icon(Icons.Default.Schedule, contentDescription = null) },
+                onClick = { expanded = false; onShareFor(30 * 60L) },
+            )
+            DropdownMenuItem(
+                text = { Text(stringResource(MR.strings.share_for_1h)) },
+                onClick = { expanded = false; onShareFor(60 * 60L) },
+            )
+            DropdownMenuItem(
+                text = { Text(stringResource(MR.strings.share_for_4h)) },
+                onClick = { expanded = false; onShareFor(4 * 60 * 60L) },
+            )
+            DropdownMenuItem(
+                text = { Text(stringResource(MR.strings.share_for_8h)) },
+                onClick = { expanded = false; onShareFor(8 * 60 * 60L) },
+            )
+            if (hasTimer) {
+                DropdownMenuItem(
+                    text = { Text(stringResource(MR.strings.share_indefinitely)) },
+                    onClick = { expanded = false; onShareFor(null) },
+                )
+            }
+            HorizontalDivider()
+        }
+        DropdownMenuItem(
+            text = { Text(if (isPaused) stringResource(MR.strings.resume) else stringResource(MR.strings.pause)) },
+            leadingIcon = {
+                Icon(
+                    if (isPaused) Icons.Default.PlayArrow else Icons.Default.Pause,
+                    contentDescription = null,
+                )
+            },
+            onClick = { expanded = false; onTogglePause() },
+        )
+        DropdownMenuItem(
+            text = { Text(stringResource(MR.strings.rename)) },
+            leadingIcon = { Icon(Icons.Default.Edit, contentDescription = null) },
+            onClick = { expanded = false; onRename() },
+        )
+        DropdownMenuItem(
+            text = { Text(stringResource(MR.strings.remove), color = MaterialTheme.colorScheme.error) },
+            leadingIcon = { Icon(Icons.Default.Delete, contentDescription = null, tint = MaterialTheme.colorScheme.error) },
+            onClick = { expanded = false; onRemove() },
         )
     }
 }

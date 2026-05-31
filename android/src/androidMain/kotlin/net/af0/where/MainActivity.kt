@@ -123,7 +123,7 @@ class MainActivity : ComponentActivity() {
                 val pausedFriendIds by viewModel.pausedFriendIds.collectAsState()
                 val friendLastPing by viewModel.friendLastPing.collectAsState()
                 val isSharing by viewModel.isSharingLocation.collectAsState()
-                val sharingExpiresAt by viewModel.sharingExpiresAt.collectAsState()
+                val friendExpiresAt by viewModel.friendExpiresAt.collectAsState()
                 val inviteState by viewModel.inviteState.collectAsState()
                 val isInviteActive = inviteState is InviteState.Pending
                 androidx.compose.runtime.LaunchedEffect(isInviteActive) {
@@ -155,8 +155,9 @@ class MainActivity : ComponentActivity() {
                     onTogglePause = { viewModel.togglePauseFriend(it) },
                     onCancelInvite = { viewModel.cancelPendingInvite(it) },
                     isSharing = isSharing,
-                    sharingExpiresAt = sharingExpiresAt,
-                    onSetSharing = { sharing, exp -> viewModel.setSharing(sharing, exp) },
+                    onSetSharing = { sharing -> viewModel.setSharing(sharing) },
+                    friendExpiresAt = friendExpiresAt,
+                    onSetFriendExpiry = { id, exp -> viewModel.setFriendExpiry(id, exp) },
                     connectionStatus = connectionStatus,
                     onCreateInvite = { viewModel.createInvite() },
                     onScanQr = {

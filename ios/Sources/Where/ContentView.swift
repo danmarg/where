@@ -15,8 +15,6 @@ struct ContentView: View {
     @State private var zoomTarget: CLLocationCoordinate2D? = nil
     @State private var showErrorAlert = false
     @State private var showLocationRationale = false
-    @State private var showDurationPicker = false
-    @State private var sharingCountdownTick = 0
 
     @State private var newFriendName: String = ""
 
@@ -34,15 +32,6 @@ struct ContentView: View {
             base = MR.strings().sharing.localized()
         @unknown default:
             base = MR.strings().sharing.localized()
-        }
-        // sharingCountdownTick is read so SwiftUI invalidates this view every minute.
-        _ = sharingCountdownTick
-        if let exp = syncService.sharingExpiresAt {
-            let remaining = max(0, exp - Int64(Date().timeIntervalSince1970))
-            let h = remaining / 3600
-            let m = (remaining % 3600) / 60
-            let left = h > 0 ? "\(h)h \(m)m" : "\(m)m"
-            return "\(base) · \(left) left"
         }
         return base
     }
@@ -109,6 +98,7 @@ struct ContentView: View {
                 pendingInvites: syncService.pendingInvites,
                 pausedFriendIds: syncService.pausedFriendIds,
                 lastPingTimes: syncService.friendLastPing,
+                friendExpiresAt: syncService.friendExpiresAt,
                 onTogglePause: { syncService.togglePauseFriend(id: $0) },
                 onCancelInvite: { invite in
                     Task { await syncService.clearInvite(ekPub: toSwiftData(invite.qrPayload.ekPub)) }
@@ -127,6 +117,7 @@ struct ContentView: View {
                     syncService.processQrUrl(url)
                 },
                 onRemove: { id in Task { await syncService.removeFriend(id: id) } },
+                onSetFriendExpiry: { id, exp in syncService.setFriendExpiry(friendId: id, epochSeconds: exp) },
                 onZoomTo: { friendId in
                     if let loc = syncService.friendLocations[friendId] {
                         zoomTarget = CLLocationCoordinate2D(latitude: loc.lat, longitude: loc.lng)
@@ -223,27 +214,6 @@ struct ContentView: View {
                 Text(error.message.localized())
             }
         }
-        .confirmationDialog(MR.strings().share_for_title.localized(), isPresented: $showDurationPicker, titleVisibility: .visible) {
-            Button(MR.strings().share_for_30m.localized()) { startSharing(durationSeconds: 30 * 60) }
-            Button(MR.strings().share_for_1h.localized())  { startSharing(durationSeconds: 60 * 60) }
-            Button(MR.strings().share_for_4h.localized())  { startSharing(durationSeconds: 4 * 60 * 60) }
-            Button(MR.strings().share_for_8h.localized())  { startSharing(durationSeconds: 8 * 60 * 60) }
-            Button(MR.strings().share_until_stop.localized()) { startSharing(durationSeconds: nil) }
-            Button(MR.strings().cancel.localized(), role: .cancel) { }
-        }
-        .task {
-            // Drive the countdown label so "1h 12m left" updates each minute.
-            while !Task.isCancelled {
-                try? await Task.sleep(nanoseconds: 60 * 1_000_000_000)
-                sharingCountdownTick &+= 1
-            }
-        }
-    }
-
-    private func startSharing(durationSeconds: Int64?) {
-        let expiresAt = durationSeconds.map { Int64(Date().timeIntervalSince1970) + $0 }
-        syncService.startSharing(expiresAt: expiresAt)
-        locationManager.requestPermissionAndStart()
     }
 
     @ViewBuilder
@@ -342,12 +312,13 @@ struct ContentView: View {
                 if let url = URL(string: UIApplication.openSettingsURLString) {
                     UIApplication.shared.open(url)
                 }
-                return // don't set isSharingLocation = true
+                return
+            case .notDetermined:
+                locationManager.requestPermissionAndStart()
             default:
                 break
             }
-            // Present the duration picker; selection turns sharing on with that expiry.
-            showDurationPicker = true
+            syncService.isSharingLocation = true
             return
         }
 
@@ -356,8 +327,6 @@ struct ContentView: View {
             locationManager.requestPermissionAndStart()
         case .authorizedWhenInUse:
             // If already sharing but only foreground, offer to upgrade to 'Always'.
-            // Note: We don't toggle isSharingLocation off here; if they 'Skip' the rationale,
-            // we continue sharing in foreground mode.
             showLocationRationale = true
         case .denied, .restricted:
             if let url = URL(string: UIApplication.openSettingsURLString) {

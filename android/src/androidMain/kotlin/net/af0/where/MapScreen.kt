@@ -55,8 +55,9 @@ fun MapScreen(
     onTogglePause: (String) -> Unit,
     onCancelInvite: (ByteArray) -> Unit,
     isSharing: Boolean,
-    sharingExpiresAt: Long?,
-    onSetSharing: (sharing: Boolean, expiresAt: Long?) -> Unit,
+    onSetSharing: (sharing: Boolean) -> Unit,
+    friendExpiresAt: Map<String, Long> = emptyMap(),
+    onSetFriendExpiry: (id: String, expiresAt: Long?) -> Unit = { _, _ -> },
     connectionStatus: ConnectionStatus,
     onCreateInvite: () -> Unit,
     onScanQr: () -> Unit,
@@ -337,38 +338,11 @@ fun MapScreen(
             horizontalArrangement = Arrangement.spacedBy(8.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            // Pause / resume sharing
-            var showDurationPicker by remember { mutableStateOf(false) }
-            // Recompose every minute while a countdown is showing so the label stays current.
-            var nowSec by remember { mutableStateOf(System.currentTimeMillis() / 1000L) }
-            LaunchedEffect(sharingExpiresAt, isSharing) {
-                while (isSharing && sharingExpiresAt != null) {
-                    nowSec = System.currentTimeMillis() / 1000L
-                    kotlinx.coroutines.delay(60_000L)
-                }
-            }
-            val sharingLabel = if (isSharing) {
-                if (sharingExpiresAt != null) {
-                    val rem = (sharingExpiresAt - nowSec).coerceAtLeast(0L)
-                    val h = rem / 3600
-                    val m = (rem % 3600) / 60
-                    val left = if (h > 0) "${h}h ${m}m" else "${m}m"
-                    "${stringResource(MR.strings.sharing)} · $left"
-                } else {
-                    stringResource(MR.strings.sharing)
-                }
-            } else {
-                stringResource(MR.strings.paused)
-            }
+            // Master sharing toggle. Per-friend timers live in FriendsSheet.
+            val sharingLabel = if (isSharing) stringResource(MR.strings.sharing) else stringResource(MR.strings.paused)
 
             FilledTonalButton(
-                onClick = {
-                    if (isSharing) {
-                        onSetSharing(false, null)
-                    } else {
-                        showDurationPicker = true
-                    }
-                },
+                onClick = { onSetSharing(!isSharing) },
                 colors =
                     ButtonDefaults.filledTonalButtonColors(
                         containerColor = if (isSharing) Color(0xFF1565C0) else Color(0xFF555555),
@@ -384,17 +358,6 @@ fun MapScreen(
                 Text(
                     sharingLabel,
                     style = MaterialTheme.typography.labelMedium,
-                )
-            }
-
-            if (showDurationPicker) {
-                SharingDurationPicker(
-                    onDismiss = { showDurationPicker = false },
-                    onSelected = { durationSec ->
-                        showDurationPicker = false
-                        val expiresAt = durationSec?.let { (System.currentTimeMillis() / 1000L) + it }
-                        onSetSharing(true, expiresAt)
-                    },
                 )
             }
 
@@ -476,6 +439,8 @@ fun MapScreen(
             onDisplayNameChange = onDisplayNameChange,
             pausedFriendIds = pausedFriendIds,
             friendLastPing = friendLastPing,
+            friendExpiresAt = friendExpiresAt,
+            onSetFriendExpiry = onSetFriendExpiry,
             onTogglePause = onTogglePause,
             onCancelInvite = onCancelInvite,
             onCreateInvite = onCreateInvite,

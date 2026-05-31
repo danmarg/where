@@ -114,6 +114,7 @@ class LocationSyncServiceTests: XCTestCase {
             sendLocationCallback?()
         }
         func sendStoppedSharing(pausedFriendIds: Set<String>) async throws {}
+        func sendStoppedSharingToFriend(friendId: String) async throws {}
         func poll(isForeground: Bool, pausedFriendIds: Set<String>) async throws -> [Shared.UserLocation] {
             _pollCallCount += 1
             return pollResult
