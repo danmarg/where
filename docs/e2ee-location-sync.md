@@ -493,9 +493,7 @@ After emitting `StoppedSharing`, the sender MUST continue its normal Keepalive c
 
 The plaintext JSON object carries an explicit `"type"` discriminator (`"loc"`, `"ka"`, `"stop"`). To preserve room for future variants without coordinated rollout, **receivers MUST treat any unknown `"type"` value as a Keepalive** — decode the message, advance the ratchet, ACK it, but produce no user-visible side effect. This makes new senders monotonically deployable: older receivers see future variants as keepalives (a safe no-op) rather than dropping them, which would otherwise stall the ratchet and corrupt session state.
 
-Receivers MUST also accept the legacy schemas predating the `"type"` field for backwards-compatibility: a plaintext object with a `"lat"` key but no `"type"` decodes as a `Location`; an empty object with neither decodes as a `Keepalive`. New senders SHOULD emit the explicit `"type"` form.
-
-The two compatibility rules together — explicit discriminators going forward and graceful fallthrough on unknown shapes — mean every future message variant added to this protocol must continue to round-trip safely through every prior client version. A new variant that older clients would mis-decode (or that would break the ratchet) is not a valid extension.
+Every future variant added to this protocol must therefore round-trip safely through every prior client version. A variant that older clients would mis-decode (or that would break the ratchet) is not a valid extension.
 
 ---
 
@@ -793,10 +791,7 @@ For a **Stopped-Sharing** notice (`"type": "stop"`):
 ```
 *   `ts` (int): Sender's wall-clock at the moment sharing was stopped. The recipient uses this to render the terminal state ("stopped sharing at HH:mm"). See §5.7.2 for sender obligations after emitting this message.
 
-**Legacy decoder fallback (receivers only):**
-For interoperability with pre-`"type"` senders, a plaintext object missing the `"type"` field is dispatched by structure: an object containing `"lat"` decodes as a `Location`; the literal `{}` decodes as a `Keepalive`. Any other `"type"` value MUST decode as a `Keepalive` (forward-compat, §5.7.3). This fallback exists only to bridge the rollout and may be removed once old senders are no longer in the field.
-
-New senders MUST emit the explicit `"type"` form for every variant they produce.
+Senders MUST emit the `"type"` field on every plaintext message. Receivers MUST dispatch on it, treating any unrecognized value as a Keepalive (§5.7.3).
 
 ### 9.2 Poll Request (Bob → Server)
 
