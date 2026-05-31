@@ -52,8 +52,6 @@ enum WakeSource: String {
 final class LocationSyncService: ObservableObject {
     static let shared = LocationSyncService()
 
-    @Published var friendLocations: [String: (lat: Double, lng: Double, ts: Int64)] = [:]
-    @Published var friendLastPing: [String: Date] = [:]
     /// Per-friend epoch-seconds at which sharing with that friend auto-pauses.
     /// Mirror of UserStore.friendExpiresAt for SwiftUI binding.
     @Published var friendExpiresAt: [String: Int64] = [:]
@@ -211,16 +209,6 @@ final class LocationSyncService: ObservableObject {
                 try await store.cleanupExpiredInvites(expirySeconds: 48 * 3600)
                 self.friends = try await store.listFriends()
                 self.pendingInvites = try await store.listPendingInvites()
-                var initialLocations: [String: (lat: Double, lng: Double, ts: Int64)] = [:]
-                var initialLastPing: [String: Date] = [:]
-                for friend in self.friends {
-                    if let lat = friend.lastLat?.doubleValue, let lng = friend.lastLng?.doubleValue, let ts = friend.lastTs?.int64Value {
-                        initialLocations[friend.id] = (lat: lat, lng: lng, ts: ts)
-                        initialLastPing[friend.id] = Date(timeIntervalSince1970: TimeInterval(ts))
-                    }
-                }
-                self.friendLocations = initialLocations
-                self.friendLastPing = initialLastPing
                 self.updateVisibleUsers()
             } catch {
                 logger.error("Failed to load initial friends: \(error.localizedDescription)")
@@ -242,7 +230,7 @@ final class LocationSyncService: ObservableObject {
             }
             .store(in: &visibleUsersCancellables)
 
-        // Subscribe to updates on friendLocations, isSharingLocation, and user location
+        // Subscribe to updates on isSharingLocation, and user location
 
         pathMonitor.pathUpdateHandler = { [weak self] path in
             if path.status == .satisfied {
@@ -648,11 +636,9 @@ final class LocationSyncService: ObservableObject {
                 } catch {
                     logger.error("Failed to update last location for \(update.userId): \(error.localizedDescription)")
                 }
-                friendLocations[update.userId] = (lat: update.lat, lng: update.lng, ts: update.timestamp)
-                friendLastPing[update.userId] = Date(timeIntervalSince1970: TimeInterval(update.timestamp))
-                // Stationary/stopped state lives on FriendEntry rows
-                // (persisted by E2eeManager.processBatch in the same transaction as lastLat/etc.).
-                // The refresh happens via the $friends sink in init.
+                // Location/stationary/stopped state lives on FriendEntry rows (persisted by
+                // E2eeManager.processBatch). The refresh below via listFriends() is the
+                // single source of truth — no parallel store to update here.
                 onFriendLocationReceived(friendId: update.userId)
             }
 
@@ -908,8 +894,6 @@ final class LocationSyncService: ObservableObject {
             try await e2eeManager.deleteFriend(id: id)
             pausedFriendIds.remove(id)
             friends = try await e2eeManager.listFriends()
-            friendLocations.removeValue(forKey: id)
-            friendLastPing.removeValue(forKey: id)
             updateVisibleUsers()
             locationProvider.sharingStateChanged()
         } catch {
@@ -1038,9 +1022,12 @@ final class LocationSyncService: ObservableObject {
         }
 
         var updates: [Shared.UserLocation] = []
-        for (id, loc) in friendLocations {
-            if pausedFriendIds.contains(id) { continue }
-            updates.append(Shared.UserLocation(userId: id, lat: loc.lat, lng: loc.lng, timestamp: loc.ts))
+        for friend in friends {
+            if pausedFriendIds.contains(friend.id) { continue }
+            guard let lat = friend.lastLat?.doubleValue,
+                  let lng = friend.lastLng?.doubleValue,
+                  let ts = friend.lastTs?.int64Value else { continue }
+            updates.append(Shared.UserLocation(userId: friend.id, lat: lat, lng: lng, timestamp: ts))
         }
         visibleUsers = updates
     }

@@ -47,7 +47,6 @@ struct ContentView: View {
             WhereMapView(
                 users: syncService.visibleUsers,
                 friends: syncService.friends,
-                friendLastPing: syncService.friendLastPing,
                 ownLocation: locationManager.location.map {
                     CLLocationCoordinate2D(latitude: $0.coordinate.latitude, longitude: $0.coordinate.longitude)
                 },
@@ -91,7 +90,6 @@ struct ContentView: View {
                 friends: syncService.friends,
                 pendingInvites: syncService.pendingInvites,
                 pausedFriendIds: syncService.pausedFriendIds,
-                lastPingTimes: syncService.friendLastPing,
                 friendExpiresAt: syncService.friendExpiresAt,
                 onTogglePause: { syncService.togglePauseFriend(id: $0) },
                 onCancelInvite: { invite in
@@ -113,8 +111,10 @@ struct ContentView: View {
                 onRemove: { id in Task { await syncService.removeFriend(id: id) } },
                 onSetFriendExpiry: { id, exp in syncService.setFriendExpiry(friendId: id, epochSeconds: exp) },
                 onZoomTo: { friendId in
-                    if let loc = syncService.friendLocations[friendId] {
-                        zoomTarget = CLLocationCoordinate2D(latitude: loc.lat, longitude: loc.lng)
+                    if let friend = syncService.friends.first(where: { $0.id == friendId }),
+                       let lat = friend.lastLat?.doubleValue,
+                       let lng = friend.lastLng?.doubleValue {
+                        zoomTarget = CLLocationCoordinate2D(latitude: lat, longitude: lng)
                     }
                     showFriends = false
                 },
