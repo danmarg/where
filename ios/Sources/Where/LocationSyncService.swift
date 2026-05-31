@@ -65,6 +65,11 @@ final class LocationSyncService: ObservableObject {
     @Published var pendingInvites: [Shared.PendingInviteView] = []
     @Published var isDataLoaded: Bool = false
     @Published var inviteState: Shared.InviteState = Shared.InviteState.None()
+    /// Mirror of `userStore.isSharingLocation` for SwiftUI binding. Treat this as a
+    /// read-from-anywhere / write-via-method property: callers that want to STOP sharing
+    /// must call `stopSharing()` (not `isSharingLocation = false`) so the StoppedSharing
+    /// message is enqueued and the time-limited expiry is cleared. didSet handles only
+    /// state mirroring concerns that apply to every transition.
     @Published var isSharingLocation: Bool {
         didSet {
             userStore.setSharing(sharing: isSharingLocation)
@@ -73,21 +78,6 @@ final class LocationSyncService: ObservableObject {
                 forceNextLocationUpdate = false
                 locationFixTimeoutTask?.cancel()
                 locationFixTimeoutTask = nil
-                sharingExpiresAt = nil
-                sharingExpiryTask?.cancel()
-                sharingExpiryTask = nil
-                userStore.setSharingExpiresAt(epochSeconds: nil)
-                // Enqueue a StoppedSharing message to every active friend so their UI
-                // gets a positive "stopped" signal. Keepalives continue afterwards so
-                // the session does not go stale.
-                let paused = pausedFriendIds
-                Task {
-                    do {
-                        try await locationClient.sendStoppedSharing(pausedFriendIds: paused)
-                    } catch {
-                        logger.warning("sendStoppedSharing failed: \(error.localizedDescription)")
-                    }
-                }
             }
         }
     }
@@ -292,7 +282,11 @@ final class LocationSyncService: ObservableObject {
     }
 
     func toggleSharing() {
-        isSharingLocation.toggle()
+        if isSharingLocation {
+            stopSharing()
+        } else {
+            startSharing(expiresAt: nil)
+        }
     }
 
     /// Turn sharing on with an optional automatic expiry (epoch-seconds, nil = no expiry).
@@ -305,6 +299,31 @@ final class LocationSyncService: ObservableObject {
         scheduleSharingExpiryTask()
     }
 
+    /// Canonical stop-sharing path: enqueue StoppedSharing to every active friend, clear
+    /// any pending time-limited expiry, then flip `isSharingLocation` (which fires didSet
+    /// for state mirroring). Mirrors Android's `LocationViewModel.setSharing(false, null)`.
+    /// Callers MUST use this instead of writing `isSharingLocation = false` directly;
+    /// otherwise the StoppedSharing message and expiry cleanup are silently skipped.
+    func stopSharing() {
+        sharingExpiresAt = nil
+        sharingExpiryTask?.cancel()
+        sharingExpiryTask = nil
+        userStore.setSharingExpiresAt(epochSeconds: nil)
+        // Enqueue StoppedSharing to every active friend so their UI gets a positive
+        // "stopped" signal. Keepalives continue afterwards so the session does not go stale.
+        let paused = pausedFriendIds
+        Task {
+            do {
+                try await locationClient.sendStoppedSharing(pausedFriendIds: paused)
+            } catch {
+                logger.warning("sendStoppedSharing failed: \(error.localizedDescription)")
+            }
+        }
+        if isSharingLocation {
+            isSharingLocation = false
+        }
+    }
+
     /// Apply the persisted sharing expiry on launch: if it's already past, stop immediately;
     /// otherwise schedule an automatic stop at expiry. Idempotent.
     func scheduleSharingExpiryTask() {
@@ -314,7 +333,7 @@ final class LocationSyncService: ObservableObject {
         let remaining = expiresAt - nowSec
         if remaining <= 0 {
             logger.info("scheduleSharingExpiryTask: already expired, stopping immediately")
-            isSharingLocation = false
+            stopSharing()
             return
         }
         sharingExpiryTask = Task { @MainActor [weak self] in
@@ -323,7 +342,7 @@ final class LocationSyncService: ObservableObject {
                 guard let self = self else { return }
                 if !Task.isCancelled && self.sharingExpiresAt == expiresAt && self.isSharingLocation {
                     logger.info("scheduleSharingExpiryTask: expiry reached, stopping sharing")
-                    self.isSharingLocation = false
+                    self.stopSharing()
                 }
             } catch {
                 // Cancelled

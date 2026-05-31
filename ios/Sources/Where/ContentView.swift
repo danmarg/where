@@ -368,9 +368,9 @@ struct ContentView: View {
                 UIApplication.shared.open(url)
             }
         case .authorizedAlways:
-            syncService.isSharingLocation = false
+            syncService.stopSharing()
         @unknown default:
-            syncService.isSharingLocation = false
+            syncService.stopSharing()
         }
     }
 }
