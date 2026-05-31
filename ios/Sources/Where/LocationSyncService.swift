@@ -327,8 +327,12 @@ final class LocationSyncService: ObservableObject {
     private func fireFriendExpiry(friendId: String) {
         userStore.setFriendExpiry(friendId: friendId, epochSeconds: nil)
         friendExpiresAt.removeValue(forKey: friendId)
+        // Route through the canonical pause toggle so this matches the Android path
+        // (LocationViewModel.fireFriendExpiry → userStore.togglePauseFriend). The
+        // @Published didSet handles persistence today, but going through the public
+        // method keeps the two platforms in lockstep against future refactors.
         if !pausedFriendIds.contains(friendId) {
-            pausedFriendIds.insert(friendId)
+            togglePauseFriend(id: friendId)
         }
         Task {
             do {
