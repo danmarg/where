@@ -40,15 +40,15 @@ private let shortDateFormatter: DateFormatter = {
 func peerSubtitleText(_ display: Shared.PeerDisplay) -> String {
     if let recent = display as? Shared.PeerDisplay.StoppedRecently {
         let d = Date(timeIntervalSince1970: TimeInterval(recent.timestampSeconds))
-        return "stopped sharing at \(shortTimeFormatter.string(from: d))"
+        return MR.strings().peer_stopped_at.localized(args: [shortTimeFormatter.string(from: d) as NSString])
     }
     if let longAgo = display as? Shared.PeerDisplay.StoppedLongAgo {
         let d = Date(timeIntervalSince1970: TimeInterval(longAgo.timestampSeconds))
-        return "stopped sharing on \(shortDateFormatter.string(from: d))"
+        return MR.strings().peer_stopped_on.localized(args: [shortDateFormatter.string(from: d) as NSString])
     }
     if let stationary = display as? Shared.PeerDisplay.StationarySince {
         let d = Date(timeIntervalSince1970: TimeInterval(stationary.timestampSeconds))
-        return "here since \(shortTimeFormatter.string(from: d))"
+        return MR.strings().peer_here_since.localized(args: [shortTimeFormatter.string(from: d) as NSString])
     }
     if let lastSeen = display as? Shared.PeerDisplay.LastSeen {
         if let ts = lastSeen.timestampSeconds?.int64Value {

@@ -20,7 +20,6 @@ open class LocationClient(
     /** Secondary constructor for Swift/native compatibility. */
     constructor(baseUrl: String, store: E2eeManager) : this(baseUrl, store, KtorMailboxClient)
 
-
     private val service = MailboxService(baseUrl, mailbox)
 
     private val friendMutexes = mutableMapOf<String, Mutex>()

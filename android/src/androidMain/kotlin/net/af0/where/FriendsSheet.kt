@@ -78,11 +78,13 @@ fun FriendsSheet(
 
     // Live countdown for any active per-friend timer. Recomposing rows that read
     // [nowSecTicker] re-evaluate their "Sharing for Xh Ym" labels each minute.
+    // Key on the whole map so adding a second timer refreshes the label immediately
+    // (otherwise the user waits up to 60s for the new entry to show real values).
     var nowSecTicker by remember { mutableStateOf(System.currentTimeMillis() / 1000L) }
-    androidx.compose.runtime.LaunchedEffect(friendExpiresAt.isEmpty()) {
+    androidx.compose.runtime.LaunchedEffect(friendExpiresAt) {
         while (friendExpiresAt.isNotEmpty()) {
-            kotlinx.coroutines.delay(60_000L)
             nowSecTicker = System.currentTimeMillis() / 1000L
+            kotlinx.coroutines.delay(60_000L)
         }
     }
 

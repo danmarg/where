@@ -22,18 +22,12 @@ struct ContentView: View {
         if !syncService.isSharingLocation {
             return MR.strings().paused.localized()
         }
-        let base: String
         switch locationManager.authorizationStatus {
-        case .notDetermined:
-            base = MR.strings().sharing.localized()
         case .denied, .restricted:
             return MR.strings().location_permission_missing.localized()
-        case .authorizedWhenInUse, .authorizedAlways:
-            base = MR.strings().sharing.localized()
-        @unknown default:
-            base = MR.strings().sharing.localized()
+        default:
+            return MR.strings().sharing.localized()
         }
-        return base
     }
 
     private var sharingStatusColor: Color {

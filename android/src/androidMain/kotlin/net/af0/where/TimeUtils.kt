@@ -32,8 +32,8 @@ private fun formatLocalDate(epochSeconds: Long): String =
 
 @Composable
 fun peerSubtitleText(display: PeerDisplay): String = when (display) {
-    is PeerDisplay.StoppedRecently -> "stopped sharing at ${formatLocalTime(display.timestampSeconds)}"
-    is PeerDisplay.StoppedLongAgo -> "stopped sharing on ${formatLocalDate(display.timestampSeconds)}"
-    is PeerDisplay.StationarySince -> "here since ${formatLocalTime(display.timestampSeconds)}"
+    is PeerDisplay.StoppedRecently -> stringResource(MR.strings.peer_stopped_at, formatLocalTime(display.timestampSeconds))
+    is PeerDisplay.StoppedLongAgo -> stringResource(MR.strings.peer_stopped_on, formatLocalDate(display.timestampSeconds))
+    is PeerDisplay.StationarySince -> stringResource(MR.strings.peer_here_since, formatLocalTime(display.timestampSeconds))
     is PeerDisplay.LastSeen -> timeAgoStringFromSeconds(display.timestampSeconds)
 }
