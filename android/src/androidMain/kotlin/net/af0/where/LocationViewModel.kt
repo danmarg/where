@@ -246,21 +246,30 @@ class LocationViewModel(
 
     private fun fireFriendExpiry(friendId: String) {
         userStore.setFriendExpiry(friendId, null)
+        // togglePauseFriend handles the StoppedSharing fan-out on a pause-transition.
+        // If the friend is already paused, Bob already got the message — no double-send.
         if (friendId !in userStore.pausedFriendIds.value) {
-            userStore.togglePauseFriend(friendId)
-        }
-        viewModelScope.launch {
-            try {
-                locationClient.sendStoppedSharingToFriend(friendId)
-            } catch (e: Exception) {
-                Log.w(TAG, "sendStoppedSharingToFriend($friendId) failed: ${e.message}")
-            }
+            togglePauseFriend(friendId)
         }
     }
 
     fun togglePauseFriend(id: String) {
         check(Looper.myLooper() == Looper.getMainLooper()) { "togglePauseFriend must be called on the main thread" }
+        val wasPaused = id in userStore.pausedFriendIds.value
         userStore.togglePauseFriend(id)
+        // On transition into paused, give the peer the same positive "stopped" signal
+        // that master-off and per-friend-timer-expiry produce. Un-pause has no wire
+        // message: the next outgoing Location is itself the implicit "I'm back" signal,
+        // and the recipient clears stoppedAtTs on receipt.
+        if (!wasPaused) {
+            viewModelScope.launch {
+                try {
+                    locationClient.sendStoppedSharingToFriend(id)
+                } catch (e: Exception) {
+                    Log.w(TAG, "sendStoppedSharingToFriend($id) failed: ${e.message}")
+                }
+            }
+        }
     }
 
     fun renameFriend(

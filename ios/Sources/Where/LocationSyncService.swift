@@ -323,19 +323,10 @@ final class LocationSyncService: ObservableObject {
     private func fireFriendExpiry(friendId: String) {
         userStore.setFriendExpiry(friendId: friendId, epochSeconds: nil)
         friendExpiresAt.removeValue(forKey: friendId)
-        // Route through the canonical pause toggle so this matches the Android path
-        // (LocationViewModel.fireFriendExpiry → userStore.togglePauseFriend). The
-        // @Published didSet handles persistence today, but going through the public
-        // method keeps the two platforms in lockstep against future refactors.
+        // togglePauseFriend handles the StoppedSharing fan-out on a pause-transition.
+        // If the friend is already paused, Bob already got the message — no double-send.
         if !pausedFriendIds.contains(friendId) {
             togglePauseFriend(id: friendId)
-        }
-        Task {
-            do {
-                try await locationClient.sendStoppedSharingToFriend(friendId: friendId)
-            } catch {
-                logger.warning("sendStoppedSharingToFriend(\(friendId)) failed: \(error.localizedDescription)")
-            }
         }
         rescheduleFriendExpiryTask()
     }
@@ -364,10 +355,24 @@ final class LocationSyncService: ObservableObject {
     }
 
     func togglePauseFriend(id: String) {
-        if pausedFriendIds.contains(id) {
+        let wasPaused = pausedFriendIds.contains(id)
+        if wasPaused {
             pausedFriendIds.remove(id)
         } else {
             pausedFriendIds.insert(id)
+        }
+        // On transition into paused, give the peer the same positive "stopped" signal
+        // that master-off and per-friend-timer-expiry produce. Un-pause has no wire
+        // message: the next outgoing Location is itself the implicit "I'm back" signal,
+        // and the recipient clears stoppedAtTs on receipt.
+        if !wasPaused {
+            Task {
+                do {
+                    try await locationClient.sendStoppedSharingToFriend(friendId: id)
+                } catch {
+                    logger.warning("sendStoppedSharingToFriend(\(id)) failed: \(error.localizedDescription)")
+                }
+            }
         }
     }
 
