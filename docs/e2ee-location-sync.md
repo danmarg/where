@@ -342,11 +342,12 @@ The Double Ratchet algorithm ([Signal spec](https://signal.org/docs/specificatio
 
 In this model, there is no distinction between "Alice sharing with Bob" and "Bob sharing with Alice" at the cryptographic layer. Every friendship is a single bidirectional communication channel.
 
-Each peer sends messages to the other's inbox. A message is either:
--   A **Location Update**: contains coordinates and accuracy.
+Each peer sends messages to the other's inbox. A message is one of:
+-   A **Location Update**: contains coordinates and accuracy, with an optional `stationary` flag.
 -   A **Keepalive**: contains an empty payload.
+-   A **Stopped-Sharing** notice: signals a deliberate end of the share session.
 
-Both message types use the same unified wire format and both carry the sender's current DH ratchet public key in the header.
+All three use the same unified wire format and all carry the sender's current DH ratchet public key in the header. The `stationary` flag and `StoppedSharing` variant are described in §9.1; their UI semantics, the rule that "stop sharing" continues emitting Keepalives, and the forward-compatibility behavior for unknown message types are described in §5.7.
 
 ### 5.3 Gap-Filling and Multi-Epoch Reliability
 
@@ -472,6 +473,29 @@ Mandatory mitigations:
 - **iOS:** Mark all session-state keychain items with `kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly`. This attribute excludes the item from iCloud Backup.
 - **Android:** Store session state in `EncryptedSharedPreferences` backed by a Keystore key created with `setIsStrongBoxBacked(true)` and `allowBackup=false` in the manifest.
 - **Both:** On detecting a fresh install or that session state is missing/invalid (e.g., root key absent), invalidate the session and initiate re-keying with all affected friends rather than accepting a potentially stale backup.
+
+### 5.7 Sharing-State Semantics and Forward-Compatibility
+
+The plaintext message space carries three distinguishable variants today (`Location`, `Keepalive`, `StoppedSharing`) plus an optional `stationary` flag on `Location`. These exist so the recipient can distinguish three otherwise-indistinguishable "silence" cases: peer parked and OS-suspended, peer deliberately stopped sharing, or peer crashed / lost connectivity.
+
+#### 5.7.1 Stationary Flag
+
+A `Location` carrying `stationary: true` is a signal that the sender does not expect to move and may go quiet (typically because the OS is about to suspend the app). The next `Location` without the flag implicitly clears the state on the recipient. The flag MUST be treated as advisory only — receivers without UI support for it MUST render the message as a normal `Location` update.
+
+#### 5.7.2 StoppedSharing — Semantics
+
+A `StoppedSharing` message signals the deliberate end of a share session (manual toggle-off, or expiry of a time-limited share — the protocol does not know which). Receivers SHOULD reflect a terminal state in their UI for some bounded window, then suppress the peer's pin entirely.
+
+**Critical sender rule: "stop sharing" means "stop sending Locations," not "stop talking."**
+After emitting `StoppedSharing`, the sender MUST continue its normal Keepalive cadence. The 7-day inactivity window (§7.2) tears down a peer's session entirely once `lastRecvTs` exceeds the timeout; if a sender both stopped Locations *and* stopped Keepalives, every recipient would silently expire the session within a week and lose all post-compromise security guarantees on the channel. Resuming sharing later would require fresh pairing. Keepalives also continue to drive the DH ratchet forward, preserving PCS during the quiet period.
+
+#### 5.7.3 Forward-Compatibility — Unknown Message Types
+
+The plaintext JSON object carries an explicit `"type"` discriminator (`"loc"`, `"ka"`, `"stop"`). To preserve room for future variants without coordinated rollout, **receivers MUST treat any unknown `"type"` value as a Keepalive** — decode the message, advance the ratchet, ACK it, but produce no user-visible side effect. This makes new senders monotonically deployable: older receivers see future variants as keepalives (a safe no-op) rather than dropping them, which would otherwise stall the ratchet and corrupt session state.
+
+Receivers MUST also accept the legacy schemas predating the `"type"` field for backwards-compatibility: a plaintext object with a `"lat"` key but no `"type"` decodes as a `Location`; an empty object with neither decodes as a `Keepalive`. New senders SHOULD emit the explicit `"type"` form.
+
+The two compatibility rules together — explicit discriminators going forward and graceful fallthrough on unknown shapes — mean every future message variant added to this protocol must continue to round-trip safely through every prior client version. A new variant that older clients would mis-decode (or that would break the ratchet) is not a valid extension.
 
 ---
 
@@ -738,22 +762,43 @@ Note that even though metadata is hidden from the server in the envelope, the cl
 **Plaintext (before encryption):**
 The plaintext is a JSON object. All plaintext payloads MUST be padded with 0x80 then 0x00 bytes to a fixed 512-byte length **before** encryption. The padding is included in the plaintext and authenticated by the AEAD tag.
 
-For a **Location Update**:
+Every plaintext object carries a string `"type"` discriminator identifying its variant. Receivers MUST dispatch on `"type"` and MUST treat any unknown value as a Keepalive (see §5.7.3 for the forward-compatibility contract). Receivers MUST also accept the legacy schemas defined below for backwards-compatibility.
+
+For a **Location Update** (`"type": "loc"`):
 ```json
 {
+  "type": "loc",
   "lat": 37.7749,
   "lng": -122.4194,
   "acc": 15.0,
   "ts":  1711152000,
-  "precision": "FINE"
+  "precision": "FINE",
+  "stationary": false
 }
 ```
 *   `precision` (string, optional): One of `"FINE"` (exact) or `"COARSE"` (rounded to ~1.1km). If absent, defaults to `"FINE"`.
+*   `stationary` (bool, optional): When `true`, signals that the sender is parked and may go quiet (see §5.7.1). Senders SHOULD omit the key entirely when `false` to minimize on-wire entropy. Absent ⇒ `false`.
 
-For a **Keepalive**:
+For a **Keepalive** (`"type": "ka"`):
 ```json
-{}
+{ "type": "ka" }
 ```
+
+For a **Stopped-Sharing** notice (`"type": "stop"`):
+```json
+{
+  "type": "stop",
+  "ts": 1711152000
+}
+```
+*   `ts` (int): Sender's wall-clock at the moment sharing was stopped. The recipient uses this to render the terminal state ("stopped sharing at HH:mm"). See §5.7.2 for sender obligations after emitting this message.
+
+**Legacy decoder fallback (receivers only):**
+*   A plaintext object containing `"lat"` but no `"type"` field MUST decode as a `Location` with `stationary = false`.
+*   The literal `{}` MUST decode as a `Keepalive`.
+*   Any other `"type"` value MUST decode as a `Keepalive` (forward-compat).
+
+New senders MUST emit the explicit `"type"` form for every variant they produce.
 
 ### 9.2 Poll Request (Bob → Server)
 

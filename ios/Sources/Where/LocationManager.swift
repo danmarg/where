@@ -242,6 +242,17 @@ final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelega
         guard !isLowPowerMode else { return }
         isLowPowerMode = true
 
+        // Emit one final "stationary" Location before tearing anything down so the
+        // recipient can render "here since HH:mm" rather than the ambiguous
+        // "last seen Xh ago" while we're suspended.
+        LocationSyncService.shared.sendLocation(
+            lat: location.coordinate.latitude,
+            lng: location.coordinate.longitude,
+            force: true,
+            source: .locationUpdate,
+            stationary: true,
+        )
+
         if let manager = manager {
             let region = CLCircularRegion(center: location.coordinate, radius: 200, identifier: stationaryGeofenceId)
             region.notifyOnEntry = false

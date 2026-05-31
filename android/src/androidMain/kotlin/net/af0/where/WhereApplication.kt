@@ -25,5 +25,9 @@ open class WhereApplication : Application() {
     override fun onCreate() {
         super.onCreate()
         initializeLibsodium()
+        // Route StoppedSharing receipts into the repository so the recipient UI updates.
+        locationClient.onStoppedSharing = { friendId, ts ->
+            locationSource.onFriendStoppedSharing(friendId, ts)
+        }
     }
 }

@@ -111,6 +111,57 @@ class UserStore(private val storage: RawKeyValueStorage) {
         storage.putString(KEY_CAMERA_REQUESTED, requested.toString())
     }
 
+    // ---- Time-limited share ---------------------------------------------------------------
+
+    /** Epoch-seconds at which the current share session should automatically stop. null = no expiry. */
+    private val _sharingExpiresAt =
+        MutableStateFlow(
+            storage.getString(KEY_SHARING_EXPIRES_AT)?.toLongOrNull(),
+        )
+    val sharingExpiresAt: StateFlow<Long?> = _sharingExpiresAt.asStateFlow()
+
+    fun setSharingExpiresAt(epochSeconds: Long?) {
+        _sharingExpiresAt.value = epochSeconds
+        storage.putString(KEY_SHARING_EXPIRES_AT, epochSeconds?.toString() ?: "")
+    }
+
+    // ---- Per-friend stopped-sharing state -------------------------------------------------
+
+    /** friendId → epoch-seconds at which they sent StoppedSharing. Persisted so the dimmed-pin
+     *  treatment survives process restarts. */
+    private val _friendStoppedAt = MutableStateFlow(loadFriendStoppedAt())
+    val friendStoppedAt: StateFlow<Map<String, Long>> = _friendStoppedAt.asStateFlow()
+
+    private fun loadFriendStoppedAt(): Map<String, Long> {
+        val str = storage.getString(KEY_FRIEND_STOPPED_AT) ?: return emptyMap()
+        return try {
+            json.decodeFromString<Map<String, Long>>(str)
+        } catch (_: Exception) {
+            emptyMap()
+        }
+    }
+
+    private fun persistFriendStoppedAt(map: Map<String, Long>) {
+        storage.putString(KEY_FRIEND_STOPPED_AT, json.encodeToString(map))
+    }
+
+    fun setFriendStopped(friendId: String, ts: Long) {
+        _friendStoppedAt.update { current ->
+            val new = current + (friendId to ts)
+            persistFriendStoppedAt(new)
+            new
+        }
+    }
+
+    fun clearFriendStopped(friendId: String) {
+        _friendStoppedAt.update { current ->
+            if (friendId !in current) return@update current
+            val new = current - friendId
+            persistFriendStoppedAt(new)
+            new
+        }
+    }
+
     companion object {
         private const val KEY_IS_SHARING = "is_sharing"
         private const val KEY_DISPLAY_NAME = "display_name"
@@ -119,5 +170,7 @@ class UserStore(private val storage: RawKeyValueStorage) {
         private const val KEY_LAST_LNG = "last_lng"
         private const val KEY_LAST_ZOOM = "last_zoom"
         private const val KEY_CAMERA_REQUESTED = "camera_requested"
+        private const val KEY_SHARING_EXPIRES_AT = "sharing_expires_at"
+        private const val KEY_FRIEND_STOPPED_AT = "friend_stopped_at"
     }
 }

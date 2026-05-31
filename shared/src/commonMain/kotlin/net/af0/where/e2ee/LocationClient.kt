@@ -20,6 +20,12 @@ open class LocationClient(
     /** Secondary constructor for Swift/native compatibility. */
     constructor(baseUrl: String, store: E2eeManager) : this(baseUrl, store, KtorMailboxClient)
 
+    /**
+     * Called when a StoppedSharing message is received from a friend. Platform layer
+     * surfaces this to the recipient UI (dimmed pin + "stopped sharing at X").
+     */
+    var onStoppedSharing: ((friendId: String, ts: Long) -> Unit)? = null
+
     private val service = MailboxService(baseUrl, mailbox)
 
     private val friendMutexes = mutableMapOf<String, Mutex>()
@@ -242,9 +248,23 @@ open class LocationClient(
 
                     resultLocations.addAll(
                         result.decryptedLocations.map { loc ->
-                            UserLocation(userId = friendId, lat = loc.lat, lng = loc.lng, timestamp = loc.ts)
+                            UserLocation(
+                                userId = friendId,
+                                lat = loc.lat,
+                                lng = loc.lng,
+                                timestamp = loc.ts,
+                                stationary = loc.stationary,
+                            )
                         },
                     )
+
+                    result.stoppedSharingTs?.let { ts ->
+                        try {
+                            onStoppedSharing?.invoke(friendId, ts)
+                        } catch (e: Exception) {
+                            // Ignore: callback failures must not break the poll loop.
+                        }
+                    }
 
                     totalMessagesProcessed += messages.size
 
@@ -360,10 +380,11 @@ open class LocationClient(
         lat: Double,
         lng: Double,
         pausedFriendIds: Set<String> = emptySet(),
+        stationary: Boolean = false,
     ) {
         coroutineScope {
             val ts = currentTimeSeconds()
-            val payload = MessagePlaintext.Location(lat = lat, lng = lng, acc = 0.0, ts = ts)
+            val payload = MessagePlaintext.Location(lat = lat, lng = lng, acc = 0.0, ts = ts, stationary = stationary)
             val activeFriends = store.listFriends().filter { it.id !in pausedFriendIds && !it.isStale }
 
             // Parallel send to all active friends to minimize radio wake time.
@@ -395,12 +416,37 @@ open class LocationClient(
         friendId: String,
         lat: Double,
         lng: Double,
+        stationary: Boolean = false,
     ) {
         val mutex = getFriendMutex(friendId)
         mutex.withLock {
             val ts = currentTimeSeconds()
-            val payload = MessagePlaintext.Location(lat = lat, lng = lng, acc = 0.0, ts = ts)
+            val payload = MessagePlaintext.Location(lat = lat, lng = lng, acc = 0.0, ts = ts, stationary = stationary)
             sendMessageToFriendInternal(friendId, payload)
+        }
+    }
+
+    /**
+     * Enqueue a StoppedSharing message to every active (non-paused, non-stale) friend.
+     * This only writes to the WAL outbox; the existing processOutboxes loop handles delivery.
+     * Keepalives continue afterwards so the peer's session doesn't go stale.
+     */
+    open suspend fun sendStoppedSharing(pausedFriendIds: Set<String> = emptySet()) {
+        coroutineScope {
+            val ts = currentTimeSeconds()
+            val payload = MessagePlaintext.StoppedSharing(ts = ts)
+            val activeFriends = store.listFriends().filter { it.id !in pausedFriendIds && !it.isStale }
+            val deferreds = activeFriends.map { friend ->
+                async {
+                    runCatching {
+                        val mutex = getFriendMutex(friend.id)
+                        mutex.withLock {
+                            sendMessageToFriendInternal(friend.id, payload)
+                        }
+                    }
+                }
+            }
+            deferreds.awaitAll()
         }
     }
 

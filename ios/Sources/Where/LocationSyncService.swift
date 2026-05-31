@@ -17,8 +17,9 @@ private class RawStringDesc: NSObject, Shared.ResourcesStringDesc {
 
 @MainActor
 protocol LocationClientProtocol: AnyObject, Sendable {
-    func sendLocation(lat: Double, lng: Double, pausedFriendIds: Set<String>) async throws
-    func sendLocationToFriend(friendId: String, lat: Double, lng: Double) async throws
+    func sendLocation(lat: Double, lng: Double, pausedFriendIds: Set<String>, stationary: Bool) async throws
+    func sendLocationToFriend(friendId: String, lat: Double, lng: Double, stationary: Bool) async throws
+    func sendStoppedSharing(pausedFriendIds: Set<String>) async throws
     func poll(isForeground: Bool, pausedFriendIds: Set<String>) async throws -> [Shared.UserLocation]
     func pollPendingInvites() async throws -> [Shared.PendingInviteResult]
     func postKeyExchangeInit(friendId: String, qr: Shared.QrPayload, initPayload: Shared.KeyExchangeInitPayload) async throws
@@ -52,6 +53,12 @@ final class LocationSyncService: ObservableObject {
 
     @Published var friendLocations: [String: (lat: Double, lng: Double, ts: Int64)] = [:]
     @Published var friendLastPing: [String: Date] = [:]
+    /// friendId → epoch-seconds the peer first reported stationary in the current run.
+    @Published var friendStationarySince: [String: Int64] = [:]
+    /// friendId → epoch-seconds the peer sent StoppedSharing. Persisted via UserStore.
+    @Published var friendStoppedAt: [String: Int64] = [:]
+    /// Epoch-seconds at which sharing should automatically stop, or nil for no expiry.
+    @Published var sharingExpiresAt: Int64? = nil
     @Published var connectionStatus: Shared.ConnectionStatus = Shared.ConnectionStatus.Ok()
     @Published var friends: [Shared.FriendEntry] = []
     @Published var diagnosticLog: [String] = []
@@ -66,6 +73,21 @@ final class LocationSyncService: ObservableObject {
                 forceNextLocationUpdate = false
                 locationFixTimeoutTask?.cancel()
                 locationFixTimeoutTask = nil
+                sharingExpiresAt = nil
+                sharingExpiryTask?.cancel()
+                sharingExpiryTask = nil
+                userStore.setSharingExpiresAt(epochSeconds: nil)
+                // Enqueue a StoppedSharing message to every active friend so their UI
+                // gets a positive "stopped" signal. Keepalives continue afterwards so
+                // the session does not go stale.
+                let paused = pausedFriendIds
+                Task {
+                    do {
+                        try await locationClient.sendStoppedSharing(pausedFriendIds: paused)
+                    } catch {
+                        logger.warning("sendStoppedSharing failed: \(error.localizedDescription)")
+                    }
+                }
             }
         }
     }
@@ -97,6 +119,7 @@ final class LocationSyncService: ObservableObject {
     @Published var multipleScansDetected: Bool = false
     @Published var isExchanging: Bool = false
     private var inviteTask: Task<Void, Never>? = nil
+    private var sharingExpiryTask: Task<Void, Never>? = nil
     @Published var visibleUsers: [Shared.UserLocation] = []
     var isInviteActive: Bool { isInviteSheetShowing }
     var skipUpdateVisibleUsers: Bool = false
@@ -195,6 +218,24 @@ final class LocationSyncService: ObservableObject {
         self.isSharingLocation = (userStoreValue.isSharingLocation.value as? Shared.KotlinBoolean)?.boolValue ?? true
         self.displayName = userStoreValue.displayName.value as? String ?? ""
         self.pausedFriendIds = Set(userStoreValue.pausedFriendIds.value as? Set<String> ?? [])
+        self.sharingExpiresAt = (userStoreValue.sharingExpiresAt.value as? Shared.KotlinLong)?.int64Value
+        if let stored = userStoreValue.friendStoppedAt.value as? [String: Shared.KotlinLong] {
+            self.friendStoppedAt = stored.mapValues { $0.int64Value }
+        }
+
+        // Route incoming StoppedSharing messages from the protocol into UI state + persistence.
+        // The callback only exists on the concrete Kotlin class — mocks in tests are no-ops.
+        if let real = self.locationClient as? Shared.LocationClient {
+            real.onStoppedSharing = { [weak self] friendId, ts in
+                Task { @MainActor [weak self] in
+                    guard let self = self else { return }
+                    let tsSec = ts.int64Value
+                    self.friendStoppedAt[friendId] = tsSec
+                    self.userStore.setFriendStopped(friendId: friendId, ts: tsSec)
+                    self.friendStationarySince.removeValue(forKey: friendId)
+                }
+            }
+        }
 
         Task { @MainActor in
             do {
@@ -216,6 +257,8 @@ final class LocationSyncService: ObservableObject {
                 logger.error("Failed to load initial friends: \(error.localizedDescription)")
             }
             self.isDataLoaded = true
+            // Apply any persisted time-limited share expiry (or stop now if past).
+            self.scheduleSharingExpiryTask()
             // Start polling AFTER friends/invites are loaded to ensure targetPollInterval is correct.
             self.startPolling()
         }
@@ -250,6 +293,42 @@ final class LocationSyncService: ObservableObject {
 
     func toggleSharing() {
         isSharingLocation.toggle()
+    }
+
+    /// Turn sharing on with an optional automatic expiry (epoch-seconds, nil = no expiry).
+    func startSharing(expiresAt: Int64?) {
+        sharingExpiresAt = expiresAt
+        userStore.setSharingExpiresAt(epochSeconds: expiresAt.map { KotlinLong(value: $0) })
+        if !isSharingLocation {
+            isSharingLocation = true
+        }
+        scheduleSharingExpiryTask()
+    }
+
+    /// Apply the persisted sharing expiry on launch: if it's already past, stop immediately;
+    /// otherwise schedule an automatic stop at expiry. Idempotent.
+    func scheduleSharingExpiryTask() {
+        sharingExpiryTask?.cancel()
+        guard let expiresAt = sharingExpiresAt, isSharingLocation else { return }
+        let nowSec = Int64(Date().timeIntervalSince1970)
+        let remaining = expiresAt - nowSec
+        if remaining <= 0 {
+            logger.info("scheduleSharingExpiryTask: already expired, stopping immediately")
+            isSharingLocation = false
+            return
+        }
+        sharingExpiryTask = Task { @MainActor [weak self] in
+            do {
+                try await Task.sleep(nanoseconds: UInt64(remaining) * 1_000_000_000)
+                guard let self = self else { return }
+                if !Task.isCancelled && self.sharingExpiresAt == expiresAt && self.isSharingLocation {
+                    logger.info("scheduleSharingExpiryTask: expiry reached, stopping sharing")
+                    self.isSharingLocation = false
+                }
+            } catch {
+                // Cancelled
+            }
+        }
     }
 
     func togglePauseFriend(id: String) {
@@ -534,6 +613,18 @@ final class LocationSyncService: ObservableObject {
                 }
                 friendLocations[update.userId] = (lat: update.lat, lng: update.lng, ts: update.timestamp)
                 friendLastPing[update.userId] = Date(timeIntervalSince1970: TimeInterval(update.timestamp))
+                // Any new Location implies the peer resumed sharing → clear stopped state.
+                if friendStoppedAt[update.userId] != nil {
+                    friendStoppedAt.removeValue(forKey: update.userId)
+                    userStore.clearFriendStopped(friendId: update.userId)
+                }
+                if update.stationary {
+                    if friendStationarySince[update.userId] == nil {
+                        friendStationarySince[update.userId] = update.timestamp
+                    }
+                } else {
+                    friendStationarySince.removeValue(forKey: update.userId)
+                }
                 onFriendLocationReceived(friendId: update.userId)
             }
 
@@ -693,7 +784,7 @@ final class LocationSyncService: ObservableObject {
                     // Proactively send our first location update to Alice to trigger confirmation on her side.
                     // We use sendLocationToFriend here to bypass the !isConfirmed check in sendLocation().
                     do {
-                        try await locationClient.sendLocationToFriend(friendId: bobEntry.id, lat: last.coordinate.latitude, lng: last.coordinate.longitude)
+                        try await locationClient.sendLocationToFriend(friendId: bobEntry.id, lat: last.coordinate.latitude, lng: last.coordinate.longitude, stationary: false)
                     } catch {
                         logger.error("Failed to send proactive location update to \(bobEntry.id): \(error.localizedDescription)")
                     }
@@ -741,7 +832,7 @@ final class LocationSyncService: ObservableObject {
                 if let last = locationProvider.lastLocation {
                     // Proactively send our first location update to Bob to trigger confirmation on his side.
                     do {
-                        try await locationClient.sendLocationToFriend(friendId: entry.id, lat: last.coordinate.latitude, lng: last.coordinate.longitude)
+                        try await locationClient.sendLocationToFriend(friendId: entry.id, lat: last.coordinate.latitude, lng: last.coordinate.longitude, stationary: false)
                     } catch {
                         logger.error("Failed to send reactive location update to \(entry.id): \(error.localizedDescription)")
                     }
@@ -808,7 +899,7 @@ final class LocationSyncService: ObservableObject {
         sendLocation(lat: loc.lat, lng: loc.lng, source: .backgroundEntry)
     }
 
-    func sendLocation(lat: Double, lng: Double, heading: Double? = nil, force: Bool = false, source: WakeSource = .locationUpdate) {
+    func sendLocation(lat: Double, lng: Double, heading: Double? = nil, force: Bool = false, source: WakeSource = .locationUpdate, stationary: Bool = false) {
         let now = Date()
 
         // Software Distance Filter: avoid excessive updates if we haven't moved much,
@@ -836,7 +927,7 @@ final class LocationSyncService: ObservableObject {
             pendingForcedSendFriendId = nil
             Task {
                 do {
-                    try await locationClient.sendLocationToFriend(friendId: friendId, lat: lat, lng: lng)
+                    try await locationClient.sendLocationToFriend(friendId: friendId, lat: lat, lng: lng, stationary: false)
                 } catch {
                     logger.error("Failed forced pairing send to \(friendId): \(error.localizedDescription)")
                 }
@@ -877,7 +968,7 @@ final class LocationSyncService: ObservableObject {
                 }
             }
             do {
-                try await locationClient.sendLocation(lat: lat, lng: lng, pausedFriendIds: pausedFriendIds)
+                try await locationClient.sendLocation(lat: lat, lng: lng, pausedFriendIds: pausedFriendIds, stationary: stationary)
                 if !Task.isCancelled && gen == self.sendTaskGeneration {
                     logger.info("sendLocation: succeeded (lat=\(lat), lng=\(lng), source=\(source.rawValue))")
                     logReliability(source: source, success: true, interval: interval)
@@ -920,7 +1011,8 @@ final class LocationSyncService: ObservableObject {
         var updates: [Shared.UserLocation] = []
         for (id, loc) in friendLocations {
             if pausedFriendIds.contains(id) { continue }
-            updates.append(Shared.UserLocation(userId: id, lat: loc.lat, lng: loc.lng, timestamp: loc.ts))
+            let stationary = friendStationarySince[id] != nil
+            updates.append(Shared.UserLocation(userId: id, lat: loc.lat, lng: loc.lng, timestamp: loc.ts, stationary: stationary))
         }
         visibleUsers = updates
     }

@@ -399,6 +399,8 @@ class E2eeManager(
         val hadStateUpdate: Boolean = false,
         val hadDhRatchet: Boolean = false,
         val shouldAck: Boolean = true,
+        /** Timestamp of the most recent StoppedSharing message seen in this batch, if any. */
+        val stoppedSharingTs: Long? = null,
     )
 
     suspend fun processBatch(
@@ -470,6 +472,7 @@ class E2eeManager(
                     hadStateUpdate = hadStateUpdate,
                     hadDhRatchet = hadDhRatchet,
                     shouldAck = shouldAck,
+                    stoppedSharingTs = result.stoppedSharingTs,
                 )
         }
     }

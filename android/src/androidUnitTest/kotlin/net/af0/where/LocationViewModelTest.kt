@@ -72,6 +72,16 @@ class TestFakeLocationSource : LocationSource {
     private val _friendLastPing = MutableStateFlow<Map<String, Long>>(emptyMap())
     override val friendLastPing: StateFlow<Map<String, Long>> = _friendLastPing
 
+    private val _friendStationarySince = MutableStateFlow<Map<String, Long>>(emptyMap())
+    override val friendStationarySince: StateFlow<Map<String, Long>> = _friendStationarySince
+
+    private val _friendStoppedAt = MutableStateFlow<Map<String, Long>>(emptyMap())
+    override val friendStoppedAt: StateFlow<Map<String, Long>> = _friendStoppedAt
+
+    override fun onFriendStoppedSharing(friendId: String, ts: Long) {
+        _friendStoppedAt.value = _friendStoppedAt.value + (friendId to ts)
+    }
+
     private val _connectionStatus = MutableStateFlow<ConnectionStatus>(ConnectionStatus.Ok)
     override val connectionStatus: StateFlow<ConnectionStatus> = _connectionStatus
 

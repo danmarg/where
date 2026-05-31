@@ -22,6 +22,10 @@ interface LocationSource {
     val lastLocation: StateFlow<Triple<Double, Double, Double?>?>
     val friendLocations: StateFlow<Map<String, UserLocation>>
     val friendLastPing: StateFlow<Map<String, Long>>
+    /** friendId → epoch-seconds the peer first reported stationary in the current run; null = moving. */
+    val friendStationarySince: StateFlow<Map<String, Long>>
+    /** friendId → epoch-seconds the peer sent StoppedSharing. Cleared when peer sends a new Location. */
+    val friendStoppedAt: StateFlow<Map<String, Long>>
     val connectionStatus: StateFlow<ConnectionStatus>
     val isAppInForeground: StateFlow<Boolean>
     val pendingInitPayload: StateFlow<KeyExchangeInitPayload?>
@@ -43,6 +47,9 @@ interface LocationSource {
         update: UserLocation,
         timestamp: Long = net.af0.where.e2ee.currentTimeMillis(),
     )
+
+    /** Called when a StoppedSharing message is received from [friendId]. */
+    fun onFriendStoppedSharing(friendId: String, ts: Long)
 
     fun onFriendRemoved(id: String)
 
@@ -97,6 +104,12 @@ class LocationRepository(
     private val _friendLastPing = MutableStateFlow<Map<String, Long>>(emptyMap())
     override val friendLastPing: StateFlow<Map<String, Long>> = _friendLastPing.asStateFlow()
 
+    private val _friendStationarySince = MutableStateFlow<Map<String, Long>>(emptyMap())
+    override val friendStationarySince: StateFlow<Map<String, Long>> = _friendStationarySince.asStateFlow()
+
+    /** Backed by UserStore so it persists across process restarts. */
+    override val friendStoppedAt: StateFlow<Map<String, Long>> = userStore.friendStoppedAt
+
     private val _connectionStatus = MutableStateFlow<ConnectionStatus>(ConnectionStatus.Ok)
     override val connectionStatus: StateFlow<ConnectionStatus> = _connectionStatus
 
@@ -136,11 +149,29 @@ class LocationRepository(
     ) {
         _friendLocations.update { it + (update.userId to update) }
         _friendLastPing.update { it + (update.userId to timestamp) }
+        // Any new Location implies the peer is sharing again — clear any stopped state.
+        userStore.clearFriendStopped(update.userId)
+        // Stationary state: set on first stationary message in a run, clear on movement.
+        _friendStationarySince.update { current ->
+            if (update.stationary) {
+                if (update.userId in current) current else current + (update.userId to update.timestamp)
+            } else {
+                if (update.userId in current) current - update.userId else current
+            }
+        }
+    }
+
+    override fun onFriendStoppedSharing(friendId: String, ts: Long) {
+        userStore.setFriendStopped(friendId, ts)
+        // A stop terminates any stationary run.
+        _friendStationarySince.update { if (friendId in it) it - friendId else it }
     }
 
     override fun onFriendRemoved(id: String) {
         _friendLocations.update { it - id }
         _friendLastPing.update { it - id }
+        _friendStationarySince.update { it - id }
+        userStore.clearFriendStopped(id)
     }
 
     override fun onConnectionStatus(status: ConnectionStatus) {
@@ -240,6 +271,7 @@ class LocationRepository(
         _lastLocation.value = null
         _friendLocations.value = emptyMap()
         _friendLastPing.value = emptyMap()
+        _friendStationarySince.value = emptyMap()
         _connectionStatus.value = ConnectionStatus.Ok
         _isAppInForeground.value = false
         _pendingInitPayload.value = null

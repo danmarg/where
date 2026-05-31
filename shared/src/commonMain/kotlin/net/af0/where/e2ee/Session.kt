@@ -3,6 +3,7 @@ package net.af0.where.e2ee
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.double
 import kotlinx.serialization.json.jsonPrimitive
@@ -455,37 +456,57 @@ object Session {
             paddedAck
     }
 
-    private fun encodeMessage(msg: MessagePlaintext): ByteArray =
+    internal fun encodeMessage(msg: MessagePlaintext): ByteArray =
         buildJsonObject {
             when (msg) {
                 is MessagePlaintext.Location -> {
+                    put("type", "loc")
                     put("lat", msg.lat)
                     put("lng", msg.lng)
                     put("acc", msg.acc)
                     put("ts", msg.ts)
                     put("precision", msg.precision.name)
+                    if (msg.stationary) put("stationary", true)
                 }
                 is MessagePlaintext.Keepalive -> {
-                    // empty object
+                    put("type", "ka")
+                }
+                is MessagePlaintext.StoppedSharing -> {
+                    put("type", "stop")
+                    put("ts", msg.ts)
                 }
             }
         }.let { Json.encodeToString(it) }.encodeToByteArray()
 
-    private fun decodeMessage(bytes: ByteArray): MessagePlaintext =
+    internal fun decodeMessage(bytes: ByteArray): MessagePlaintext =
         runCatching {
             val obj = Json.decodeFromString<JsonObject>(bytes.decodeToString())
-            if (obj.containsKey("lat")) {
-                MessagePlaintext.Location(
-                    lat = obj["lat"]!!.jsonPrimitive.double,
-                    lng = obj["lng"]!!.jsonPrimitive.double,
-                    acc = obj["acc"]!!.jsonPrimitive.double,
+            when (obj["type"]?.jsonPrimitive?.content) {
+                "loc" -> decodeLocation(obj)
+                "ka" -> MessagePlaintext.Keepalive()
+                "stop" -> MessagePlaintext.StoppedSharing(
                     ts = obj["ts"]!!.jsonPrimitive.long,
-                    precision = obj["precision"]?.jsonPrimitive?.content?.let { LocationPrecision.valueOf(it) } ?: LocationPrecision.FINE,
                 )
-            } else {
-                MessagePlaintext.Keepalive()
+                null -> {
+                    // Legacy emitter: sniff for "lat" → Location, else Keepalive.
+                    if (obj.containsKey("lat")) decodeLocation(obj) else MessagePlaintext.Keepalive()
+                }
+                else -> {
+                    // Unknown future variant — treat as Keepalive (safe no-op).
+                    MessagePlaintext.Keepalive()
+                }
             }
         }.getOrElse { e -> throw DecryptionException("malformed message plaintext", e) }
+
+    private fun decodeLocation(obj: JsonObject): MessagePlaintext.Location =
+        MessagePlaintext.Location(
+            lat = obj["lat"]!!.jsonPrimitive.double,
+            lng = obj["lng"]!!.jsonPrimitive.double,
+            acc = obj["acc"]!!.jsonPrimitive.double,
+            ts = obj["ts"]!!.jsonPrimitive.long,
+            precision = obj["precision"]?.jsonPrimitive?.content?.let { LocationPrecision.valueOf(it) } ?: LocationPrecision.FINE,
+            stationary = obj["stationary"]?.jsonPrimitive?.booleanOrNull ?: false,
+        )
 
     internal fun padToFixedSize(
         data: ByteArray,
@@ -527,6 +548,7 @@ sealed class MessagePlaintext {
         val acc: Double,
         val ts: Long,
         val precision: LocationPrecision = LocationPrecision.FINE,
+        val stationary: Boolean = false,
     ) : MessagePlaintext() {
         fun blur(): Location =
             if (precision == LocationPrecision.COARSE) {
@@ -541,6 +563,8 @@ sealed class MessagePlaintext {
     }
 
     class Keepalive : MessagePlaintext()
+
+    data class StoppedSharing(val ts: Long) : MessagePlaintext()
 }
 
 class SessionBrickedException(message: String) : WhereException(message)

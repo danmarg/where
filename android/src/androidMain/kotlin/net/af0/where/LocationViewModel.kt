@@ -22,6 +22,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
@@ -83,6 +84,12 @@ class LocationViewModel(
             ?: UiStateStore()
 
     val isSharingLocation: StateFlow<Boolean> = userStore.isSharingLocation
+
+    val sharingExpiresAt: StateFlow<Long?> = userStore.sharingExpiresAt
+
+    val friendStoppedAt: StateFlow<Map<String, Long>> = locationSource.friendStoppedAt
+
+    val friendStationarySince: StateFlow<Map<String, Long>> = locationSource.friendStationarySince
 
     val displayName: StateFlow<String> = userStore.displayName
 
@@ -167,6 +174,27 @@ class LocationViewModel(
             locationSource.setInitialFriendLocations(initialLocations, initialLastPing)
         }
 
+        // Time-limited share: enforce the persisted expiry.
+        // On launch, if already expired, immediately stop. Otherwise schedule a stop at expiry.
+        // collectLatest cancels the prior delay if the expiry changes (user re-picks duration).
+        viewModelScope.launch {
+            kotlinx.coroutines.flow.combine(sharingExpiresAt, isSharingLocation) { expiresAt, sharing ->
+                expiresAt to sharing
+            }.collectLatest { (expiresAt, sharing) ->
+                if (expiresAt == null || !sharing) return@collectLatest
+                val nowSec = clock() / 1000L
+                val remainingSec = expiresAt - nowSec
+                if (remainingSec <= 0L) {
+                    setSharing(false, null)
+                } else {
+                    kotlinx.coroutines.delay(remainingSec * 1000L)
+                    if (isSharingLocation.value && userStore.sharingExpiresAt.value == expiresAt) {
+                        setSharing(false, null)
+                    }
+                }
+            }
+        }
+
         // When a friend response (init payload) arrives from the service, flip the invite
         // state to None so the UI shows the naming dialog (dismissing the QR sheet).
         viewModelScope.launch {
@@ -194,7 +222,30 @@ class LocationViewModel(
 
     fun toggleSharing() {
         check(Looper.myLooper() == Looper.getMainLooper()) { "toggleSharing must be called on the main thread" }
-        userStore.setSharing(!isSharingLocation.value)
+        setSharing(!isSharingLocation.value, null)
+    }
+
+    /**
+     * Set the sharing state, optionally with an automatic expiry.
+     * - Turning sharing on: starts GPS; if [expiresAt] is non-null, schedules an automatic stop.
+     * - Turning sharing off: enqueues a StoppedSharing message to every active friend so their
+     *   UI gets a positive "stopped" signal (otherwise they'd see stale data for hours).
+     *   Keepalives continue afterwards so the peer session doesn't go stale.
+     */
+    fun setSharing(sharing: Boolean, expiresAt: Long?) {
+        check(Looper.myLooper() == Looper.getMainLooper()) { "setSharing must be called on the main thread" }
+        val wasSharing = isSharingLocation.value
+        userStore.setSharing(sharing)
+        userStore.setSharingExpiresAt(if (sharing) expiresAt else null)
+        if (wasSharing && !sharing) {
+            viewModelScope.launch {
+                try {
+                    locationClient.sendStoppedSharing(pausedFriendIds = pausedFriendIds.value)
+                } catch (e: Exception) {
+                    Log.w(TAG, "sendStoppedSharing failed: ${e.message}")
+                }
+            }
+        }
     }
 
     fun togglePauseFriend(id: String) {

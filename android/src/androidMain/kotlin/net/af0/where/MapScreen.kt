@@ -54,8 +54,11 @@ fun MapScreen(
     friendLastPing: Map<String, Long>,
     onTogglePause: (String) -> Unit,
     onCancelInvite: (ByteArray) -> Unit,
+    friendStoppedAt: Map<String, Long> = emptyMap(),
+    friendStationarySince: Map<String, Long> = emptyMap(),
     isSharing: Boolean,
-    onToggleSharing: () -> Unit,
+    sharingExpiresAt: Long?,
+    onSetSharing: (sharing: Boolean, expiresAt: Long?) -> Unit,
     connectionStatus: ConnectionStatus,
     onCreateInvite: () -> Unit,
     onScanQr: () -> Unit,
@@ -262,12 +265,21 @@ fun MapScreen(
                 }
 
             friendData.forEach { (user, friend, name) ->
-                val timeAgo = timeAgoStringFromMs(friendLastPing[user.userId])
+                val nowSec = System.currentTimeMillis() / 1000L
+                val display = peerDisplay(
+                    stoppedAtSeconds = friendStoppedAt[user.userId],
+                    stationarySinceSeconds = friendStationarySince[user.userId],
+                    lastPingSeconds = friendLastPing[user.userId]?.let { it / 1000L },
+                    nowSeconds = nowSec,
+                )
+                val style = display.pinStyle
+                if (style == PeerPinStyle.HIDDEN) return@forEach
+                val subtitle = peerSubtitleText(display)
                 val isSelected = selectedUserId == user.userId
                 key(user.userId) {
                     val markerState = rememberUpdatedMarkerState(position = LatLng(user.lat, user.lng))
                     MarkerComposable(
-                        keys = arrayOf<Any>(name, isSelected, timeAgo),
+                        keys = arrayOf<Any>(name, isSelected, subtitle, style),
                         state = markerState,
                         anchor = Offset(0.5f, 1f),
                         onClick = {
@@ -277,14 +289,15 @@ fun MapScreen(
                             true
                         },
                     ) {
+                        val pinAlpha = if (style == PeerPinStyle.DIMMED) 0.45f else 1f
                         Column(
                             horizontalAlignment = Alignment.CenterHorizontally,
                             verticalArrangement = Arrangement.spacedBy(2.dp),
                         ) {
                             Surface(
                                 shape = MaterialTheme.shapes.extraSmall,
-                                color = Color.Black.copy(alpha = 0.65f),
-                                contentColor = Color.White,
+                                color = Color.Black.copy(alpha = 0.65f * pinAlpha),
+                                contentColor = Color.White.copy(alpha = pinAlpha),
                             ) {
                                 Column(
                                     modifier = Modifier.padding(horizontal = 5.dp, vertical = 2.dp),
@@ -298,9 +311,9 @@ fun MapScreen(
                                     )
                                     if (isSelected) {
                                         Text(
-                                            text = timeAgo,
+                                            text = subtitle,
                                             style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp),
-                                            color = Color.White.copy(alpha = 0.7f),
+                                            color = Color.White.copy(alpha = 0.7f * pinAlpha),
                                         )
                                     }
                                 }
@@ -309,7 +322,7 @@ fun MapScreen(
                                 Icons.Default.Place,
                                 contentDescription = null,
                                 modifier = Modifier.size(36.dp),
-                                tint = MaterialTheme.colorScheme.error,
+                                tint = MaterialTheme.colorScheme.error.copy(alpha = pinAlpha),
                             )
                         }
                     }
@@ -329,8 +342,37 @@ fun MapScreen(
             verticalAlignment = Alignment.CenterVertically,
         ) {
             // Pause / resume sharing
+            var showDurationPicker by remember { mutableStateOf(false) }
+            // Recompose every minute while a countdown is showing so the label stays current.
+            var nowSec by remember { mutableStateOf(System.currentTimeMillis() / 1000L) }
+            LaunchedEffect(sharingExpiresAt, isSharing) {
+                while (isSharing && sharingExpiresAt != null) {
+                    nowSec = System.currentTimeMillis() / 1000L
+                    kotlinx.coroutines.delay(60_000L)
+                }
+            }
+            val sharingLabel = if (isSharing) {
+                if (sharingExpiresAt != null) {
+                    val rem = (sharingExpiresAt - nowSec).coerceAtLeast(0L)
+                    val h = rem / 3600
+                    val m = (rem % 3600) / 60
+                    val left = if (h > 0) "${h}h ${m}m" else "${m}m"
+                    "${stringResource(MR.strings.sharing)} · $left"
+                } else {
+                    stringResource(MR.strings.sharing)
+                }
+            } else {
+                stringResource(MR.strings.paused)
+            }
+
             FilledTonalButton(
-                onClick = onToggleSharing,
+                onClick = {
+                    if (isSharing) {
+                        onSetSharing(false, null)
+                    } else {
+                        showDurationPicker = true
+                    }
+                },
                 colors =
                     ButtonDefaults.filledTonalButtonColors(
                         containerColor = if (isSharing) Color(0xFF1565C0) else Color(0xFF555555),
@@ -344,8 +386,19 @@ fun MapScreen(
                 )
                 Spacer(Modifier.width(4.dp))
                 Text(
-                    if (isSharing) stringResource(MR.strings.sharing) else stringResource(MR.strings.paused),
+                    sharingLabel,
                     style = MaterialTheme.typography.labelMedium,
+                )
+            }
+
+            if (showDurationPicker) {
+                SharingDurationPicker(
+                    onDismiss = { showDurationPicker = false },
+                    onSelected = { durationSec ->
+                        showDurationPicker = false
+                        val expiresAt = durationSec?.let { (System.currentTimeMillis() / 1000L) + it }
+                        onSetSharing(true, expiresAt)
+                    },
                 )
             }
 
@@ -427,6 +480,8 @@ fun MapScreen(
             onDisplayNameChange = onDisplayNameChange,
             pausedFriendIds = pausedFriendIds,
             friendLastPing = friendLastPing,
+            friendStoppedAt = friendStoppedAt,
+            friendStationarySince = friendStationarySince,
             onTogglePause = onTogglePause,
             onCancelInvite = onCancelInvite,
             onCreateInvite = onCreateInvite,

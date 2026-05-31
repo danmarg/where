@@ -15,6 +15,8 @@ struct ContentView: View {
     @State private var zoomTarget: CLLocationCoordinate2D? = nil
     @State private var showErrorAlert = false
     @State private var showLocationRationale = false
+    @State private var showDurationPicker = false
+    @State private var sharingCountdownTick = 0
 
     @State private var newFriendName: String = ""
 
@@ -22,16 +24,27 @@ struct ContentView: View {
         if !syncService.isSharingLocation {
             return MR.strings().paused.localized()
         }
+        let base: String
         switch locationManager.authorizationStatus {
         case .notDetermined:
-            return MR.strings().sharing.localized()
+            base = MR.strings().sharing.localized()
         case .denied, .restricted:
             return MR.strings().location_permission_missing.localized()
         case .authorizedWhenInUse, .authorizedAlways:
-            return MR.strings().sharing.localized()
+            base = MR.strings().sharing.localized()
         @unknown default:
-            return MR.strings().sharing.localized()
+            base = MR.strings().sharing.localized()
         }
+        // sharingCountdownTick is read so SwiftUI invalidates this view every minute.
+        _ = sharingCountdownTick
+        if let exp = syncService.sharingExpiresAt {
+            let remaining = max(0, exp - Int64(Date().timeIntervalSince1970))
+            let h = remaining / 3600
+            let m = (remaining % 3600) / 60
+            let left = h > 0 ? "\(h)h \(m)m" : "\(m)m"
+            return "\(base) · \(left) left"
+        }
+        return base
     }
 
     private var sharingStatusColor: Color {
@@ -52,6 +65,8 @@ struct ContentView: View {
                 users: syncService.visibleUsers,
                 friends: syncService.friends,
                 friendLastPing: syncService.friendLastPing,
+                friendStoppedAt: syncService.friendStoppedAt,
+                friendStationarySince: syncService.friendStationarySince,
                 ownLocation: locationManager.location.map {
                     CLLocationCoordinate2D(latitude: $0.coordinate.latitude, longitude: $0.coordinate.longitude)
                 },
@@ -96,6 +111,8 @@ struct ContentView: View {
                 pendingInvites: syncService.pendingInvites,
                 pausedFriendIds: syncService.pausedFriendIds,
                 lastPingTimes: syncService.friendLastPing,
+                friendStoppedAt: syncService.friendStoppedAt,
+                friendStationarySince: syncService.friendStationarySince,
                 onTogglePause: { syncService.togglePauseFriend(id: $0) },
                 onCancelInvite: { invite in
                     Task { await syncService.clearInvite(ekPub: toSwiftData(invite.qrPayload.ekPub)) }
@@ -210,6 +227,27 @@ struct ContentView: View {
                 Text(error.message.localized())
             }
         }
+        .confirmationDialog("Share location for…", isPresented: $showDurationPicker, titleVisibility: .visible) {
+            Button("30 minutes") { startSharing(durationSeconds: 30 * 60) }
+            Button("1 hour")     { startSharing(durationSeconds: 60 * 60) }
+            Button("4 hours")    { startSharing(durationSeconds: 4 * 60 * 60) }
+            Button("8 hours")    { startSharing(durationSeconds: 8 * 60 * 60) }
+            Button("Until I stop") { startSharing(durationSeconds: nil) }
+            Button(MR.strings().cancel.localized(), role: .cancel) { }
+        }
+        .task {
+            // Drive the countdown label so "1h 12m left" updates each minute.
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 60 * 1_000_000_000)
+                sharingCountdownTick &+= 1
+            }
+        }
+    }
+
+    private func startSharing(durationSeconds: Int64?) {
+        let expiresAt = durationSeconds.map { Int64(Date().timeIntervalSince1970) + $0 }
+        syncService.startSharing(expiresAt: expiresAt)
+        locationManager.requestPermissionAndStart()
     }
 
     @ViewBuilder
@@ -312,8 +350,8 @@ struct ContentView: View {
             default:
                 break
             }
-            syncService.isSharingLocation = true
-            locationManager.requestPermissionAndStart()
+            // Present the duration picker; selection turns sharing on with that expiry.
+            showDurationPicker = true
             return
         }
 
