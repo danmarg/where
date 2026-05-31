@@ -217,7 +217,8 @@ private struct FriendInfoColumn: View {
                     .foregroundStyle(.red)
             }
             if let exp = expiresAt {
-                // Use nowTick in an .id() so SwiftUI re-renders this row each minute.
+                // nowTick is a property input; SwiftUI re-evaluates this body whenever
+                // the parent sheet bumps the ticker, so the remaining-time label stays current.
                 let nowSec = Int64(Date().timeIntervalSince1970)
                 let rem = max(0, exp - nowSec)
                 let h = rem / 3600
@@ -226,7 +227,6 @@ private struct FriendInfoColumn: View {
                 Text(MR.strings().sharing_for_remaining.localized(args: [left as NSString]))
                     .font(.caption)
                     .foregroundStyle(.blue)
-                    .id(nowTick)
             }
         }
     }

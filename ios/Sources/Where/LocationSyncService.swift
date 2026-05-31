@@ -63,13 +63,9 @@ final class LocationSyncService: ObservableObject {
     @Published var pendingInvites: [Shared.PendingInviteView] = []
     @Published var isDataLoaded: Bool = false
     @Published var inviteState: Shared.InviteState = Shared.InviteState.None()
-    /// Mirror of `userStore.isSharingLocation` for SwiftUI binding. Treat this as a
-    /// read-from-anywhere / write-via-method property: callers that want to STOP sharing
-    /// must call `stopSharing()` (not `isSharingLocation = false`) so the StoppedSharing
-    /// message is enqueued and the time-limited expiry is cleared. didSet handles only
-    /// state mirroring concerns that apply to every transition.
-    /// Mirror of `userStore.isSharingLocation`. To STOP sharing, callers must use
-    /// `stopSharing()` (not assignment) so the StoppedSharing fan-out is enqueued.
+    /// Mirror of `userStore.isSharingLocation` for SwiftUI binding. Read freely, but to
+    /// STOP sharing callers must use `stopSharing()` rather than assignment — that path
+    /// also enqueues the StoppedSharing fan-out. didSet handles only state mirroring.
     @Published var isSharingLocation: Bool {
         didSet {
             userStore.setSharing(sharing: isSharingLocation)
@@ -313,7 +309,7 @@ final class LocationSyncService: ObservableObject {
         sharingExpiryTask = Task { @MainActor [weak self] in
             do {
                 if remaining > 0 {
-                    try await Task.sleep(nanoseconds: UInt64(remaining) * 1_000_000_000)
+                    try await Task.sleep(for: .seconds(remaining))
                 }
                 guard let self = self, !Task.isCancelled else { return }
                 guard self.friendExpiresAt[friendId] == expiresAt else { return }

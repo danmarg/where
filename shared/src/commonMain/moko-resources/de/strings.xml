@@ -74,7 +74,6 @@
     <string name="error_protocol">Protokollfehler: Die Sitzung ist möglicherweise nicht synchron.</string>
     <string name="error_crypto">Sicherheitsfehler: Kryptografische Validierung fehlgeschlagen.</string>
     <string name="error_unexpected">Ein unerwarteter Fehler ist aufgetreten. Bitte versuche es erneut.</string>
-    <string name="share_for_title">Standort teilen für…</string>
     <string name="stop_sharing_after">Teilen beenden nach…</string>
     <string name="peer_stopped_at">Teilen beendet um %s</string>
     <string name="peer_stopped_on">Teilen beendet am %s</string>

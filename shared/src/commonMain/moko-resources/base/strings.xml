@@ -74,7 +74,6 @@
     <string name="error_protocol">Protocol error: Session may be out of sync.</string>
     <string name="error_crypto">Security error: Cryptographic validation failed.</string>
     <string name="error_unexpected">An unexpected error occurred. Please try again.</string>
-    <string name="share_for_title">Share location for…</string>
     <string name="stop_sharing_after">Stop sharing after…</string>
     <string name="peer_stopped_at">stopped sharing at %s</string>
     <string name="peer_stopped_on">stopped sharing on %s</string>
