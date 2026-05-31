@@ -214,9 +214,9 @@ final class LocationSyncService: ObservableObject {
         }
 
         // Route incoming StoppedSharing messages from the protocol into UI state + persistence.
-        // The callback only exists on the concrete Kotlin class — mocks in tests are no-ops.
+        // The setter only exists on the concrete Kotlin class — mocks in tests are no-ops.
         if let real = self.locationClient as? Shared.LocationClient {
-            real.onStoppedSharing = { [weak self] friendId, ts in
+            real.setOnStoppedSharingListener { [weak self] friendId, ts in
                 Task { @MainActor [weak self] in
                     guard let self = self else { return }
                     let tsSec = ts.int64Value

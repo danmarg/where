@@ -21,10 +21,28 @@ open class LocationClient(
     constructor(baseUrl: String, store: E2eeManager) : this(baseUrl, store, KtorMailboxClient)
 
     /**
-     * Called when a StoppedSharing message is received from a friend. Platform layer
-     * surfaces this to the recipient UI (dimmed pin + "stopped sharing at X").
+     * Invoked when a StoppedSharing message is received from a friend. Exactly one
+     * listener is expected — the platform's recipient-state holder
+     * (Android: LocationRepository via WhereApplication; iOS: LocationSyncService).
+     * Use [setOnStoppedSharingListener] rather than reassigning this field directly,
+     * so double-registration bugs surface in the diagnostic log instead of silently
+     * dropping the prior listener.
      */
-    var onStoppedSharing: ((friendId: String, ts: Long) -> Unit)? = null
+    private var stoppedSharingListener: ((friendId: String, ts: Long) -> Unit)? = null
+
+    /**
+     * Install or replace the StoppedSharing listener. Pass `null` to clear (e.g. in
+     * test teardown). A non-null listener replacing a non-null prior listener is
+     * almost always a bug; we log a diagnostic so it's visible.
+     */
+    fun setOnStoppedSharingListener(listener: ((friendId: String, ts: Long) -> Unit)?) {
+        if (stoppedSharingListener != null && listener != null) {
+            store.addDiagnosticEvent(
+                "LocationClient.setOnStoppedSharingListener replaced an existing listener — likely double-registration"
+            )
+        }
+        stoppedSharingListener = listener
+    }
 
     private val service = MailboxService(baseUrl, mailbox)
 
@@ -260,9 +278,9 @@ open class LocationClient(
 
                     result.stoppedSharingTs?.let { ts ->
                         try {
-                            onStoppedSharing?.invoke(friendId, ts)
+                            stoppedSharingListener?.invoke(friendId, ts)
                         } catch (e: Exception) {
-                            // Ignore: callback failures must not break the poll loop.
+                            // Ignore: listener failures must not break the poll loop.
                         }
                     }
 
