@@ -75,6 +75,7 @@
     <string name="error_crypto">Security error: Cryptographic validation failed.</string>
     <string name="error_unexpected">An unexpected error occurred. Please try again.</string>
     <string name="share_for_title">Share location for…</string>
+    <string name="stop_sharing_after">Stop sharing after…</string>
     <string name="share_for_30m">30 minutes</string>
     <string name="share_for_1h">1 hour</string>
     <string name="share_for_4h">4 hours</string>

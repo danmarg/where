@@ -75,6 +75,7 @@
     <string name="error_crypto">Sicherheitsfehler: Kryptografische Validierung fehlgeschlagen.</string>
     <string name="error_unexpected">Ein unerwarteter Fehler ist aufgetreten. Bitte versuche es erneut.</string>
     <string name="share_for_title">Standort teilen für…</string>
+    <string name="stop_sharing_after">Teilen beenden nach…</string>
     <string name="share_for_30m">30 Minuten</string>
     <string name="share_for_1h">1 Stunde</string>
     <string name="share_for_4h">4 Stunden</string>

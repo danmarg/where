@@ -209,12 +209,20 @@ fun FriendsSheet(
                                     }
                                 }
 
+                                val isPaused = friend.id in pausedFriendIds
+                                IconButton(onClick = { onTogglePause(friend.id) }) {
+                                    Icon(
+                                        if (isPaused) Icons.Default.PlayArrow else Icons.Default.Pause,
+                                        contentDescription =
+                                            if (isPaused) stringResource(MR.strings.resume) else stringResource(MR.strings.pause),
+                                    )
+                                }
+
                                 FriendOverflowMenu(
                                     friend = friend,
-                                    isPaused = friend.id in pausedFriendIds,
+                                    isPaused = isPaused,
                                     hasTimer = friendExpiresAt[friend.id] != null,
                                     onRename = { renameFriend = friend },
-                                    onTogglePause = { onTogglePause(friend.id) },
                                     onRemove = { confirmDeleteFriend = friend },
                                     onShareFor = { durationSec ->
                                         if (durationSec == null) {
@@ -371,7 +379,6 @@ private fun FriendOverflowMenu(
     isPaused: Boolean,
     hasTimer: Boolean,
     onRename: () -> Unit,
-    onTogglePause: () -> Unit,
     onRemove: () -> Unit,
     onShareFor: (durationSec: Long?) -> Unit,
 ) {
@@ -382,6 +389,12 @@ private fun FriendOverflowMenu(
     DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
         // Share-for entries (irrelevant when paused — a paused friend gets nothing regardless).
         if (!isPaused) {
+            Text(
+                stringResource(MR.strings.stop_sharing_after),
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+            )
             DropdownMenuItem(
                 text = { Text(stringResource(MR.strings.share_for_30m)) },
                 leadingIcon = { Icon(Icons.Default.Schedule, contentDescription = null) },
@@ -407,16 +420,6 @@ private fun FriendOverflowMenu(
             }
             HorizontalDivider()
         }
-        DropdownMenuItem(
-            text = { Text(if (isPaused) stringResource(MR.strings.resume) else stringResource(MR.strings.pause)) },
-            leadingIcon = {
-                Icon(
-                    if (isPaused) Icons.Default.PlayArrow else Icons.Default.Pause,
-                    contentDescription = null,
-                )
-            },
-            onClick = { expanded = false; onTogglePause() },
-        )
         DropdownMenuItem(
             text = { Text(stringResource(MR.strings.rename)) },
             leadingIcon = { Icon(Icons.Default.Edit, contentDescription = null) },

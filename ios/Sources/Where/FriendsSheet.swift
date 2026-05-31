@@ -69,15 +69,24 @@ struct FriendsSheet: View {
                                     )
                                     Spacer()
 
+                                    let isPaused = pausedFriendIds.contains(friend.id)
+                                    Button {
+                                        onTogglePause(friend.id)
+                                    } label: {
+                                        Image(systemName: isPaused ? "play.circle" : "pause.circle")
+                                            .font(.title3)
+                                            .foregroundStyle(isPaused ? .blue : .gray)
+                                    }
+                                    .buttonStyle(.plain)
+
                                     FriendOverflowMenu(
                                         friend: friend,
-                                        isPaused: pausedFriendIds.contains(friend.id),
+                                        isPaused: isPaused,
                                         hasTimer: friendExpiresAt[friend.id] != nil,
                                         onRename: {
                                             friendToRename = friend
                                             newFriendName = friend.name
                                         },
-                                        onTogglePause: { onTogglePause(friend.id) },
                                         onRemove: { friendToRemove = friend },
                                         onShareFor: { durationSec in
                                             if let d = durationSec {
@@ -214,7 +223,7 @@ private struct FriendInfoColumn: View {
                 let h = rem / 3600
                 let m = (rem % 3600) / 60
                 let left = h > 0 ? "\(h)h \(m)m" : "\(m)m"
-                Text(String(format: MR.strings().sharing_for_remaining.localized(), left))
+                Text(MR.strings().sharing_for_remaining.localized(args: [left as NSString]))
                     .font(.caption)
                     .foregroundStyle(.blue)
                     .id(nowTick)
@@ -228,25 +237,21 @@ private struct FriendOverflowMenu: View {
     let isPaused: Bool
     let hasTimer: Bool
     let onRename: () -> Void
-    let onTogglePause: () -> Void
     let onRemove: () -> Void
     let onShareFor: (Int64?) -> Void
 
     var body: some View {
         Menu {
             if !isPaused {
-                Button(MR.strings().share_for_30m.localized()) { onShareFor(30 * 60) }
-                Button(MR.strings().share_for_1h.localized())  { onShareFor(60 * 60) }
-                Button(MR.strings().share_for_4h.localized())  { onShareFor(4 * 60 * 60) }
-                Button(MR.strings().share_for_8h.localized())  { onShareFor(8 * 60 * 60) }
-                if hasTimer {
-                    Button(MR.strings().share_indefinitely.localized()) { onShareFor(nil) }
+                Section(MR.strings().stop_sharing_after.localized()) {
+                    Button(MR.strings().share_for_30m.localized()) { onShareFor(30 * 60) }
+                    Button(MR.strings().share_for_1h.localized())  { onShareFor(60 * 60) }
+                    Button(MR.strings().share_for_4h.localized())  { onShareFor(4 * 60 * 60) }
+                    Button(MR.strings().share_for_8h.localized())  { onShareFor(8 * 60 * 60) }
+                    if hasTimer {
+                        Button(MR.strings().share_indefinitely.localized()) { onShareFor(nil) }
+                    }
                 }
-                Divider()
-            }
-            Button(isPaused ? MR.strings().resume.localized() : MR.strings().pause.localized(),
-                   systemImage: isPaused ? "play.circle" : "pause.circle") {
-                onTogglePause()
             }
             Button(MR.strings().rename.localized(), systemImage: "pencil") { onRename() }
             Button(MR.strings().remove.localized(), systemImage: "trash", role: .destructive) { onRemove() }
