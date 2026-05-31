@@ -145,35 +145,6 @@ class LocationService : Service() {
         return maxD
     }
 
-    // ---- Stationary detector --------------------------------------------------------------
-    // The peer is "stationary" if recent fixes have stayed within STATIONARY_RADIUS_METERS
-    // for at least STATIONARY_DURATION_MS. Unlike iOS we keep sending at the normal cadence —
-    // the flag is purely informational so the recipient can render "here since HH:mm".
-    private var stationaryAnchorLat: Double? = null
-    private var stationaryAnchorLng: Double? = null
-    private var stationaryAnchorTs: Long = 0L
-
-    private fun updateStationaryAndCheck(lat: Double, lng: Double): Boolean {
-        val now = clock()
-        val anchorLat = stationaryAnchorLat
-        val anchorLng = stationaryAnchorLng
-        if (anchorLat == null || anchorLng == null) {
-            stationaryAnchorLat = lat
-            stationaryAnchorLng = lng
-            stationaryAnchorTs = now
-            return false
-        }
-        val results = FloatArray(1)
-        android.location.Location.distanceBetween(anchorLat, anchorLng, lat, lng, results)
-        if (results[0] > STATIONARY_RADIUS_METERS) {
-            stationaryAnchorLat = lat
-            stationaryAnchorLng = lng
-            stationaryAnchorTs = now
-            return false
-        }
-        return (now - stationaryAnchorTs) >= STATIONARY_DURATION_MS
-    }
-
     private val pendingFriendSends = Channel<String>(Channel.UNLIMITED)
 
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
@@ -912,8 +883,7 @@ class LocationService : Service() {
                 if (!userStore.isSharingLocation.value) return
             }
             try {
-                val stationary = updateStationaryAndCheck(lat, lng)
-                locationClient.sendLocation(lat, lng, userStore.pausedFriendIds.value, stationary = stationary)
+                locationClient.sendLocation(lat, lng, userStore.pausedFriendIds.value)
                 val sendCompleteTime = clock()
                 logReliability(source, true, interval)
                 checkLateHeartbeat(interval)
@@ -1051,13 +1021,6 @@ class LocationService : Service() {
 
         /** Window of recent GPS fixes consulted by the STILL cross-check. */
         const val RECENT_FIX_WINDOW_MS = 2 * 60 * 1000L
-
-        /** Radius (m) within which successive fixes count as "stationary" for the
-         *  stationary-flag detector. */
-        const val STATIONARY_RADIUS_METERS = 30f
-
-        /** Duration of consecutive in-radius fixes required to mark sends as stationary. */
-        const val STATIONARY_DURATION_MS = 5 * 60 * 1000L
 
         /**
          * If Activity Recognition reports STILL but we've actually moved more than this
