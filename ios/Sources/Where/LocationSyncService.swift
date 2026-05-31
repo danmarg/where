@@ -52,15 +52,11 @@ enum WakeSource: String {
 final class LocationSyncService: ObservableObject {
     static let shared = LocationSyncService()
 
-    /// Per-friend epoch-seconds at which sharing with that friend auto-pauses.
-    /// Mirror of UserStore.friendExpiresAt for SwiftUI binding.
-    @Published var friendExpiresAt: [String: Int64] = [:]
+    let repo: FriendSyncRepository
+    private var repoSink: AnyCancellable?
+
     @Published var connectionStatus: Shared.ConnectionStatus = Shared.ConnectionStatus.Ok()
-    @Published var friends: [Shared.FriendEntry] = []
-    @Published var diagnosticLog: [String] = []
-    @Published var pendingInvites: [Shared.PendingInviteView] = []
     @Published var isDataLoaded: Bool = false
-    @Published var inviteState: Shared.InviteState = Shared.InviteState.None()
     /// Mirror of `userStore.isSharingLocation` for SwiftUI binding. Read freely, but to
     /// STOP sharing callers must use `stopSharing()` rather than assignment — that path
     /// also enqueues the StoppedSharing fan-out. didSet handles only state mirroring.
@@ -90,18 +86,8 @@ final class LocationSyncService: ObservableObject {
             }
         }
     }
-    @Published var pausedFriendIds: Set<String> {
-        didSet {
-            userStore.setPausedFriends(ids: pausedFriendIds)
-        }
-    }
 
     @Published var ownHeading: Double? = nil
-    @Published var pendingQrForNaming: Shared.QrPayload? = nil
-    @Published var pendingInitPayload: Shared.KeyExchangeInitPayload? = nil
-    @Published var pendingInitAliceEkPub: Data? = nil
-    @Published var multipleScansDetected: Bool = false
-    @Published var isExchanging: Bool = false
     private var inviteTask: Task<Void, Never>? = nil
     private var sharingExpiryTask: Task<Void, Never>? = nil
     @Published var visibleUsers: [Shared.UserLocation] = []
@@ -198,25 +184,25 @@ final class LocationSyncService: ObservableObject {
         self.userStore = userStoreValue
         self.locationClient = locationClient ?? Shared.LocationClient(baseUrl: ServerConfig.httpBaseUrl, store: store)
         self.locationProvider = locationProvider ?? LocationManager.shared
+        let repoValue = FriendSyncRepository(e2eeManager: store, userStore: userStoreValue)
+        self.repo = repoValue
 
         self.isSharingLocation = (userStoreValue.isSharingLocation.value as? Shared.KotlinBoolean)?.boolValue ?? true
         self.displayName = userStoreValue.displayName.value as? String ?? ""
-        self.pausedFriendIds = Set(userStoreValue.pausedFriendIds.value as? Set<String> ?? [])
-        self.friendExpiresAt = Self.decodeFriendExpiresAt(userStoreValue.friendExpiresAt.value)
+
+        // Forward repo's @Published changes to our own observers so the existing
+        // `service.foo` forwarders continue to drive SwiftUI updates.
+        self.repoSink = repoValue.objectWillChange.sink { [weak self] _ in
+            self?.objectWillChange.send()
+        }
 
         Task { @MainActor in
-            do {
-                try await store.cleanupExpiredInvites(expirySeconds: 48 * 3600)
-                self.friends = try await store.listFriends()
-                self.pendingInvites = try await store.listPendingInvites()
-                self.updateVisibleUsers()
-            } catch {
-                logger.error("Failed to load initial friends: \(error.localizedDescription)")
-            }
+            await repoValue.loadInitialState()
+            self.updateVisibleUsers()
             self.isDataLoaded = true
             // Apply any persisted per-friend share timer (or fire if already past).
             self.rescheduleFriendExpiryTask()
-            // Start polling AFTER friends/invites are loaded to ensure targetPollInterval is correct.
+            // Start polling AFTER repo.friends/invites are loaded to ensure targetPollInterval is correct.
             self.startPolling()
         }
 
@@ -278,9 +264,9 @@ final class LocationSyncService: ObservableObject {
     func setFriendExpiry(friendId: String, epochSeconds: Int64?) {
         userStore.setFriendExpiry(friendId: friendId, epochSeconds: epochSeconds.map { KotlinLong(value: $0) })
         if let v = epochSeconds {
-            friendExpiresAt[friendId] = v
+            repo.friendExpiresAt[friendId] = v
         } else {
-            friendExpiresAt.removeValue(forKey: friendId)
+            repo.friendExpiresAt.removeValue(forKey: friendId)
         }
         rescheduleFriendExpiryTask()
     }
@@ -291,7 +277,7 @@ final class LocationSyncService: ObservableObject {
     /// which already factors in any elapsed expiry.
     func rescheduleFriendExpiryTask() {
         sharingExpiryTask?.cancel()
-        guard let (friendId, expiresAt) = friendExpiresAt.min(by: { $0.value < $1.value }) else { return }
+        guard let (friendId, expiresAt) = repo.friendExpiresAt.min(by: { $0.value < $1.value }) else { return }
         let nowSec = Int64(Date().timeIntervalSince1970)
         let remaining = max(0, expiresAt - nowSec)
         sharingExpiryTask = Task { @MainActor [weak self] in
@@ -300,7 +286,7 @@ final class LocationSyncService: ObservableObject {
                     try await Task.sleep(for: .seconds(remaining))
                 }
                 guard let self = self, !Task.isCancelled else { return }
-                guard self.friendExpiresAt[friendId] == expiresAt else { return }
+                guard self.repo.friendExpiresAt[friendId] == expiresAt else { return }
                 self.fireFriendExpiry(friendId: friendId)
             } catch {
                 // Cancelled
@@ -310,10 +296,10 @@ final class LocationSyncService: ObservableObject {
 
     private func fireFriendExpiry(friendId: String) {
         userStore.setFriendExpiry(friendId: friendId, epochSeconds: nil)
-        friendExpiresAt.removeValue(forKey: friendId)
+        repo.friendExpiresAt.removeValue(forKey: friendId)
         // togglePauseFriend handles the StoppedSharing fan-out on a pause-transition.
         // If the friend is already paused, Bob already got the message — no double-send.
-        if !pausedFriendIds.contains(friendId) {
+        if !repo.pausedFriendIds.contains(friendId) {
             togglePauseFriend(id: friendId)
         }
         rescheduleFriendExpiryTask()
@@ -322,32 +308,15 @@ final class LocationSyncService: ObservableObject {
     /// Source-of-truth set of friend ids that must not receive Location messages, combining
     /// the user's explicit pause list with any elapsed per-friend timer.
     func effectivelyPausedIds() -> Set<String> {
-        let nowSec = Int64(Date().timeIntervalSince1970)
-        let expired = friendExpiresAt.filter { nowSec >= $0.value }.map { $0.key }
-        return expired.isEmpty ? pausedFriendIds : pausedFriendIds.union(expired)
-    }
-
-    private static func decodeFriendExpiresAt(_ raw: Any?) -> [String: Int64] {
-        guard let dict = raw as? [String: Any] else { return [:] }
-        var out: [String: Int64] = [:]
-        for (k, v) in dict {
-            if let kl = v as? Shared.KotlinLong {
-                out[k] = kl.int64Value
-            } else if let n = v as? Int64 {
-                out[k] = n
-            } else if let n = v as? Int {
-                out[k] = Int64(n)
-            }
-        }
-        return out
+        repo.effectivelyPausedIds()
     }
 
     func togglePauseFriend(id: String) {
-        let wasPaused = pausedFriendIds.contains(id)
+        let wasPaused = repo.pausedFriendIds.contains(id)
         if wasPaused {
-            pausedFriendIds.remove(id)
+            repo.pausedFriendIds.remove(id)
         } else {
-            pausedFriendIds.insert(id)
+            repo.pausedFriendIds.insert(id)
         }
         // On transition into paused, give the peer the same positive "stopped" signal
         // that master-off and per-friend-timer-expiry produce. Un-pause has no wire
@@ -365,13 +334,13 @@ final class LocationSyncService: ObservableObject {
     }
 
     func createInvite() async {
-        guard pendingInitPayload == nil && pendingQrForNaming == nil else {
+        guard repo.pendingInitPayload == nil && repo.pendingQrForNaming == nil else {
             logger.debug("createInvite: pairing already in flight, skipping")
             return
         }
         do {
             let qr = try await e2eeManager.createInvite(suggestedName: displayName)
-            inviteState = Shared.InviteState.Pending(qr: qr)
+            repo.inviteState = Shared.InviteState.Pending(qr: qr)
             isInviteSheetShowing = true
             triggerRapidPoll()
         } catch {
@@ -436,7 +405,7 @@ final class LocationSyncService: ObservableObject {
         // Reset lastPollTime to .distantPast so tick() bypasses its interval guard and fires
         // a poll immediately. A stuck isPollInFlight is handled by pollAll()'s watchdog task.
         lastPollTime = .distantPast
-        // Proactively send own location so friends see us immediately (subject to 30s throttle).
+        // Proactively send own location so repo.friends see us immediately (subject to 30s throttle).
         // sendLocation() updates lastSentTime synchronously, so pollAll()'s heartbeat guard
         // (elapsed >= 300s) will not fire a second send even if a heartbeat was overdue.
         if isSharingLocation, let loc = bestAvailableLocation {
@@ -484,7 +453,7 @@ final class LocationSyncService: ObservableObject {
     func targetPollInterval() -> TimeInterval {
         if isRapidPolling() { return Self.rapidPollInterval }
         if isInForeground() { return Self.foregroundPollInterval }
-        if friends.isEmpty && pendingInvites.isEmpty { return Self.maintenancePollInterval }
+        if repo.friends.isEmpty && repo.pendingInvites.isEmpty { return Self.maintenancePollInterval }
         return isSharingLocation ? Self.normalPollInterval : Self.maintenancePollInterval
     }
 
@@ -500,19 +469,19 @@ final class LocationSyncService: ObservableObject {
     }
 
     func markCurrentInviteExported() async {
-        guard let qr = (inviteState as? Shared.InviteState.Pending)?.qr else { return }
+        guard let qr = (repo.inviteState as? Shared.InviteState.Pending)?.qr else { return }
         do {
             try await e2eeManager.markInviteExported(ekPub: qr.ekPub)
-            pendingInvites = try await e2eeManager.listPendingInvites()
+            repo.pendingInvites = try await e2eeManager.listPendingInvites()
         } catch {
             logger.error("Failed to mark invite exported: \(error.localizedDescription)")
         }
     }
 
     func clearInviteIfNotExported() async {
-        guard let pending = inviteState as? Shared.InviteState.Pending else { return }
+        guard let pending = repo.inviteState as? Shared.InviteState.Pending else { return }
         
-        // Refresh pendingInvites to get latest exportedAt state
+        // Refresh repo.pendingInvites to get latest exportedAt state
         do {
             let list = try await e2eeManager.listPendingInvites()
             if let current = list.first(where: { toSwiftData($0.qrPayload.ekPub) == toSwiftData(pending.qr.ekPub) }) {
@@ -523,7 +492,7 @@ final class LocationSyncService: ObservableObject {
         } catch {
             logger.error("Failed to check if invite was exported: \(error.localizedDescription)")
         }
-        inviteState = Shared.InviteState.None()
+        repo.inviteState = Shared.InviteState.None()
     }
 
     private func onFriendLocationReceived(friendId: String) {
@@ -642,9 +611,9 @@ final class LocationSyncService: ObservableObject {
                 onFriendLocationReceived(friendId: update.userId)
             }
 
-            friends = try await e2eeManager.listFriends()
-            diagnosticLog = e2eeManager.diagnosticLogSnapshot()
-            pendingInvites = try await e2eeManager.listPendingInvites()
+            repo.friends = try await e2eeManager.listFriends()
+            repo.diagnosticLog = e2eeManager.diagnosticLogSnapshot()
+            repo.pendingInvites = try await e2eeManager.listPendingInvites()
             // Always update visibleUsers to ensure map is fresh when returning to foreground.
             updateVisibleUsers()
 
@@ -689,9 +658,9 @@ final class LocationSyncService: ObservableObject {
         let results = try await locationClient.pollPendingInvites()
         if results.isEmpty { return [] }
 
-        let pendingInvites = try await e2eeManager.listPendingInvites()
+        let pendingInvitesSnapshot = try await e2eeManager.listPendingInvites()
         let filteredResults = results.filter { result in
-            pendingInvites.contains { invite in
+            pendingInvitesSnapshot.contains { invite in
                 toSwiftData(invite.qrPayload.ekPub) == toSwiftData(result.inviteEkPub)
             }
         }
@@ -702,17 +671,17 @@ final class LocationSyncService: ObservableObject {
         }
 
         // If we already have a naming dialog up, don't overwrite it.
-        if pendingInitPayload == nil {
+        if repo.pendingInitPayload == nil {
             if let result = filteredResults.first {
                 if let error = result.pairingError {
                     updateStatus(NSError(domain: "net.af0.where", code: 1, userInfo: [NSLocalizedDescriptionKey: error]))
                     isInviteSheetShowing = false
                     return filteredResults
                 }
-                pendingInitPayload = result.payload
-                pendingInitAliceEkPub = toSwiftData(result.inviteEkPub) // THE FIX: Use our own EK from the invite
-                multipleScansDetected = result.multipleScansDetected
-                inviteState = Shared.InviteState.None()
+                repo.pendingInitPayload = result.payload
+                repo.pendingInitAliceEkPub = toSwiftData(result.inviteEkPub) // THE FIX: Use our own EK from the invite
+                repo.multipleScansDetected = result.multipleScansDetected
+                repo.inviteState = Shared.InviteState.None()
                 isInviteSheetShowing = false
                 triggerRapidPoll()
             }
@@ -722,25 +691,25 @@ final class LocationSyncService: ObservableObject {
 
     func clearInvite(ekPub: Data? = nil) async {
         do {
-            let ekPubToClear = ekPub ?? pendingInitAliceEkPub
+            let ekPubToClear = ekPub ?? repo.pendingInitAliceEkPub
             if let ekPubToClear = ekPubToClear {
                 try await e2eeManager.clearInvite(ekPub: kotlinByteArray(from: ekPubToClear))
-            } else if inviteState is Shared.InviteState.Pending {
+            } else if repo.inviteState is Shared.InviteState.Pending {
                 // If we are currently showing a QR but no one has scanned it yet,
                 // clear that specific one.
-                if let qr = (inviteState as? Shared.InviteState.Pending)?.qr {
+                if let qr = (repo.inviteState as? Shared.InviteState.Pending)?.qr {
                     try await e2eeManager.clearInvite(ekPub: qr.ekPub)
                 }
             }
-            pendingInvites = try await e2eeManager.listPendingInvites()
+            repo.pendingInvites = try await e2eeManager.listPendingInvites()
         } catch {
             logger.error("Failed to clear invite: \(error.localizedDescription)")
         }
         resetRapidPoll()
-        inviteState = Shared.InviteState.None()
+        repo.inviteState = Shared.InviteState.None()
         isInviteSheetShowing = false
-        pendingInitAliceEkPub = nil
-        pendingInitPayload = nil
+        repo.pendingInitAliceEkPub = nil
+        repo.pendingInitPayload = nil
         locationProvider.sharingStateChanged()
     }
 
@@ -750,16 +719,16 @@ final class LocationSyncService: ObservableObject {
             updateStatus(NSError(domain: "Where", code: 400, userInfo: [NSLocalizedDescriptionKey: MR.strings().invalid_qr_code.localized()]))
             return false
         }
-        inviteState = Shared.InviteState.None()
+        repo.inviteState = Shared.InviteState.None()
         isInviteSheetShowing = false
-        pendingQrForNaming = qr
+        repo.pendingQrForNaming = qr
         triggerRapidPoll()
         return true
     }
 
     func confirmQrScan(qr: Shared.QrPayload, friendName: String) async {
-        pendingQrForNaming = nil
-        inviteState = Shared.InviteState.None()
+        repo.pendingQrForNaming = nil
+        repo.inviteState = Shared.InviteState.None()
         isInviteSheetShowing = false
 
         let qrWithName = Shared.QrPayload(protocolVersion: Shared.ProtocolConstantsKt.PROTOCOL_VERSION, 
@@ -770,10 +739,10 @@ final class LocationSyncService: ObservableObject {
         )
         debugLog { "Scanning QR: discovery=\(qrWithName.discoveryToken().toHex()), friendName=\(friendName)" }
         inviteTask?.cancel()
-        isExchanging = true
+        repo.isExchanging = true
         triggerRapidPoll()
 
-        defer { isExchanging = false }
+        defer { repo.isExchanging = false }
         do {
             let result = try await e2eeManager.processScannedQr(qr: qrWithName, bobSuggestedName: displayName)
             guard let initPayload = result.first, let bobEntry = result.second else {
@@ -786,7 +755,7 @@ final class LocationSyncService: ObservableObject {
             // Insert AFTER clearInvite: clearInvite calls resetRapidPoll which clears
             // awaitingFirstUpdateIds, so inserting before it is a no-op.
             awaitingFirstUpdateIds.insert(bobEntry.id)
-            friends = try await e2eeManager.listFriends()
+            repo.friends = try await e2eeManager.listFriends()
             updateVisibleUsers()
 
             do {
@@ -810,7 +779,7 @@ final class LocationSyncService: ObservableObject {
                     locationProvider.requestPermissionAndStart()
                 }
                 await pollAll(updateUi: true)
-                friends = try await e2eeManager.listFriends()
+                repo.friends = try await e2eeManager.listFriends()
                 updateVisibleUsers()
                 triggerRapidPoll()
 
@@ -826,21 +795,21 @@ final class LocationSyncService: ObservableObject {
     }
 
     func confirmPendingInit(payload: Shared.KeyExchangeInitPayload, name: String) async {
-        guard let aliceEkPub = pendingInitAliceEkPub else { return }
-        inviteState = Shared.InviteState.None()
+        guard let aliceEkPub = repo.pendingInitAliceEkPub else { return }
+        repo.inviteState = Shared.InviteState.None()
         isInviteSheetShowing = false
-        isExchanging = true
-        pendingInitPayload = nil
-        pendingInitAliceEkPub = nil
-        multipleScansDetected = false
+        repo.isExchanging = true
+        repo.pendingInitPayload = nil
+        repo.pendingInitAliceEkPub = nil
+        repo.multipleScansDetected = false
 
-        defer { isExchanging = false }
+        defer { repo.isExchanging = false }
         do {
             let result = try await e2eeManager.processKeyExchangeInit(payload: payload, aliceSuggestedName: name, aliceEkPub: kotlinByteArray(from: aliceEkPub))
 
             if let entry = result ?? nil {
                 awaitingFirstUpdateIds.insert(entry.id)
-                friends = try await e2eeManager.listFriends()
+                repo.friends = try await e2eeManager.listFriends()
                 updateVisibleUsers()
 
                 if let last = locationProvider.lastLocation, isSharingLocation {
@@ -859,7 +828,7 @@ final class LocationSyncService: ObservableObject {
             }
             triggerRapidPoll()
             locationProvider.sharingStateChanged()
-            friends = try await e2eeManager.listFriends()
+            repo.friends = try await e2eeManager.listFriends()
             updateVisibleUsers()
         } catch {
             logger.error("confirmPendingInit failed: \(error.localizedDescription)")
@@ -868,13 +837,13 @@ final class LocationSyncService: ObservableObject {
     }
 
     func cancelPendingInit() async {
-        let hasInviteState = !(inviteState is Shared.InviteState.None)
-        guard pendingInitPayload != nil || hasInviteState || pendingInitAliceEkPub != nil else { return }
+        let hasInviteState = !(repo.inviteState is Shared.InviteState.None)
+        guard repo.pendingInitPayload != nil || hasInviteState || repo.pendingInitAliceEkPub != nil else { return }
         
-        let ekPubToClear = pendingInitAliceEkPub
-        pendingInitPayload = nil
-        multipleScansDetected = false
-        pendingInitAliceEkPub = nil
+        let ekPubToClear = repo.pendingInitAliceEkPub
+        repo.pendingInitPayload = nil
+        repo.multipleScansDetected = false
+        repo.pendingInitAliceEkPub = nil
         
         await clearInvite(ekPub: ekPubToClear)
     }
@@ -882,7 +851,7 @@ final class LocationSyncService: ObservableObject {
     func renameFriend(id: String, newName: String) async {
         do {
             try await e2eeManager.renameFriend(id: id, newName: newName)
-            friends = try await e2eeManager.listFriends()
+            repo.friends = try await e2eeManager.listFriends()
             updateVisibleUsers()
         } catch {
             logger.error("Failed to rename friend: \(error.localizedDescription)")
@@ -892,8 +861,8 @@ final class LocationSyncService: ObservableObject {
     func removeFriend(id: String) async {
         do {
             try await e2eeManager.deleteFriend(id: id)
-            pausedFriendIds.remove(id)
-            friends = try await e2eeManager.listFriends()
+            repo.pausedFriendIds.remove(id)
+            repo.friends = try await e2eeManager.listFriends()
             updateVisibleUsers()
             locationProvider.sharingStateChanged()
         } catch {
@@ -1022,8 +991,8 @@ final class LocationSyncService: ObservableObject {
         }
 
         var updates: [Shared.UserLocation] = []
-        for friend in friends {
-            if pausedFriendIds.contains(friend.id) { continue }
+        for friend in repo.friends {
+            if repo.pausedFriendIds.contains(friend.id) { continue }
             guard let lat = friend.lastLat?.doubleValue,
                   let lng = friend.lastLng?.doubleValue,
                   let ts = friend.lastTs?.int64Value else { continue }
