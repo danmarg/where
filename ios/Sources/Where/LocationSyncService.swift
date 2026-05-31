@@ -797,7 +797,7 @@ final class LocationSyncService: ObservableObject {
                 try await locationClient.postKeyExchangeInit(friendId: bobEntry.id, qr: qrWithName, initPayload: initPayload)
                 debugLog { "KeyExchangeInit posted successfully" }
 
-                if let last = locationProvider.lastLocation {
+                if let last = locationProvider.lastLocation, isSharingActive() {
                     // Proactively send our first location update to Alice to trigger confirmation on her side.
                     // We use sendLocationToFriend here to bypass the !isConfirmed check in sendLocation().
                     do {
@@ -846,7 +846,7 @@ final class LocationSyncService: ObservableObject {
                 friends = try await e2eeManager.listFriends()
                 updateVisibleUsers()
 
-                if let last = locationProvider.lastLocation {
+                if let last = locationProvider.lastLocation, isSharingActive() {
                     // Proactively send our first location update to Bob to trigger confirmation on his side.
                     do {
                         try await locationClient.sendLocationToFriend(friendId: entry.id, lat: last.coordinate.latitude, lng: last.coordinate.longitude, stationary: false)
@@ -907,7 +907,7 @@ final class LocationSyncService: ObservableObject {
     }
 
     func sendLocationOnBackground() {
-        guard isSharingLocation else { return }
+        guard isSharingActive() else { return }
         guard let loc = bestAvailableLocation else {
             logger.info("sendLocationOnBackground: skipped — no location available")
             return
@@ -916,7 +916,19 @@ final class LocationSyncService: ObservableObject {
         sendLocation(lat: loc.lat, lng: loc.lng, source: .backgroundEntry)
     }
 
+    /// Source-of-truth gate for "may we ship a Location message right now". Combines the
+    /// user toggle with any active time-limited share expiry. Use this in every send
+    /// path — the expiry-watcher Task is best-effort (fires earliest in the happy path),
+    /// but this method is the hard guarantee that closes the race between the expiry
+    /// timestamp passing and the watcher waking up to call stopSharing().
+    func isSharingActive() -> Bool {
+        guard isSharingLocation else { return false }
+        guard let exp = sharingExpiresAt else { return true }
+        return Int64(Date().timeIntervalSince1970) < exp
+    }
+
     func sendLocation(lat: Double, lng: Double, heading: Double? = nil, force: Bool = false, source: WakeSource = .locationUpdate, stationary: Bool = false) {
+        guard isSharingActive() else { return }
         let now = Date()
 
         // Software Distance Filter: avoid excessive updates if we haven't moved much,

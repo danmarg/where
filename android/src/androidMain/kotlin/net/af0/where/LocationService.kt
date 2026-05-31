@@ -284,12 +284,13 @@ class LocationService : Service() {
         serviceScope.launch {
             locationSource.lastLocation.collect { loc ->
                 if (loc != null) {
-                    if (userStore.isSharingLocation.value) {
+                    if (userStore.isSharingActive()) {
                         sendLocationIfNeeded(loc.first, loc.second, isHeartbeat = false, source = WakeSource.LOCATION_UPDATE)
                     }
 
                     while (true) {
                         val friendId = pendingFriendSends.tryReceive().getOrNull() ?: break
+                        if (!userStore.isSharingActive()) break
                         launch {
                             try {
                                 locationClient.sendLocationToFriend(friendId, loc.first, loc.second)
@@ -404,7 +405,7 @@ class LocationService : Service() {
         }
         if (intent?.action == ACTION_FORCE_PUBLISH) {
             val friendId = intent.getStringExtra(EXTRA_FRIEND_ID)
-            if (friendId != null) {
+            if (friendId != null && userStore.isSharingActive()) {
                 val loc = locationSource.lastLocation.value
                 if (loc != null) {
                     serviceScope.launch {
@@ -854,7 +855,11 @@ class LocationService : Service() {
         force: Boolean = false,
         source: WakeSource = WakeSource.LOCATION_UPDATE,
     ) {
-        if (!userStore.isSharingLocation.value) return
+        // Source-of-truth gate: refuse to send if either the user has paused sharing
+        // OR a time-limited share's expiry has elapsed. This is the hard guarantee that
+        // closes the race between the expiry timestamp passing and the watcher coroutine
+        // in LocationViewModel waking up to call stopSharing().
+        if (!userStore.isSharingActive()) return
         val now = clock()
         val interval = lastSuccessfulSendTime?.let { now - it }
         val shouldSend =
@@ -880,7 +885,7 @@ class LocationService : Service() {
         for (attempt in 0 until totalAttempts) {
             if (attempt > 0) {
                 delay(SEND_RETRY_DELAYS_MS[attempt - 1])
-                if (!userStore.isSharingLocation.value) return
+                if (!userStore.isSharingActive()) return
             }
             try {
                 locationClient.sendLocation(lat, lng, userStore.pausedFriendIds.value)

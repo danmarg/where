@@ -125,6 +125,19 @@ class UserStore(private val storage: RawKeyValueStorage) {
         storage.putString(KEY_SHARING_EXPIRES_AT, epochSeconds?.toString() ?: "")
     }
 
+    /**
+     * Source-of-truth check for whether a location message is allowed to ship right now.
+     * Combines the user's toggle and any active time-limited share expiry. Use this in
+     * every send-path gate — the expiry-watcher coroutine/Task is best-effort (it fires
+     * earliest in the happy path), but this method is the hard guarantee that no Location
+     * goes out after the expiry, even in the brief window before the watcher wakes.
+     */
+    fun isSharingActive(nowSeconds: Long = currentTimeSeconds()): Boolean {
+        if (!_isSharingLocation.value) return false
+        val expiry = _sharingExpiresAt.value
+        return expiry == null || nowSeconds < expiry
+    }
+
     companion object {
         private const val KEY_IS_SHARING = "is_sharing"
         private const val KEY_DISPLAY_NAME = "display_name"
