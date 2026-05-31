@@ -6,8 +6,6 @@ struct WhereMapView: UIViewRepresentable {
     let users: [Shared.UserLocation]
     let friends: [Shared.FriendEntry]
     let friendLastPing: [String: Date]
-    var friendStoppedAt: [String: Int64] = [:]
-    var friendStationarySince: [String: Int64] = [:]
     var ownLocation: CLLocationCoordinate2D? = nil
     var ownHeading: Double? = nil
     var zoomTarget: CLLocationCoordinate2D? = nil
@@ -77,16 +75,21 @@ func updateUIView(_ mapView: MKMapView, context: Context) {
 
         // Update existing or add new friend annotations
         let nowSec = Int64(Date().timeIntervalSince1970)
+        let friendsById = Dictionary(uniqueKeysWithValues: friends.map { ($0.id, $0) })
         var hiddenUserIds = Set<String>()
         for (_, group) in locationGroups {
             for (index, user) in group.enumerated() {
-                let display = PeerDisplayKt.peerDisplay(
-                    stoppedAtSeconds: friendStoppedAt[user.userId].map { KotlinLong(value: $0) },
-                    stationarySinceSeconds: friendStationarySince[user.userId].map { KotlinLong(value: $0) },
-                    lastPingSeconds: friendLastPing[user.userId].map { KotlinLong(value: Int64($0.timeIntervalSince1970)) },
-                    nowSeconds: nowSec,
-                    dimWindowSeconds: PeerDisplayKt.STOPPED_PIN_DIM_WINDOW_SECONDS,
-                )
+                let lastPingSec: KotlinLong? = friendLastPing[user.userId].map { KotlinLong(value: Int64($0.timeIntervalSince1970)) }
+                let display: Shared.PeerDisplay
+                if let entry = friendsById[user.userId] {
+                    display = entry.displayState(
+                        nowSeconds: nowSec,
+                        lastPingSeconds: lastPingSec,
+                        dimWindowSeconds: PeerDisplayKt.STOPPED_PIN_DIM_WINDOW_SECONDS,
+                    )
+                } else {
+                    display = Shared.PeerDisplay.LastSeen(timestampSeconds: lastPingSec)
+                }
                 if display.pinStyle == .hidden {
                     hiddenUserIds.insert(user.userId)
                     continue

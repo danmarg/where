@@ -52,8 +52,6 @@ fun FriendsSheet(
     onDisplayNameChange: (String) -> Unit,
     pausedFriendIds: Set<String>,
     friendLastPing: Map<String, Long>,
-    friendStoppedAt: Map<String, Long> = emptyMap(),
-    friendStationarySince: Map<String, Long> = emptyMap(),
     onTogglePause: (String) -> Unit,
     onCreateInvite: () -> Unit,
     onCancelInvite: (ByteArray) -> Unit,
@@ -157,11 +155,9 @@ fun FriendsSheet(
                                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                                     )
                                     val nowSec = System.currentTimeMillis() / 1000L
-                                    val display = peerDisplay(
-                                        stoppedAtSeconds = friendStoppedAt[friend.id],
-                                        stationarySinceSeconds = friendStationarySince[friend.id],
-                                        lastPingSeconds = friendLastPing[friend.id]?.let { it / 1000L },
+                                    val display = friend.displayState(
                                         nowSeconds = nowSec,
+                                        lastPingSeconds = friendLastPing[friend.id]?.let { it / 1000L },
                                     )
                                     Text(
                                         peerSubtitleText(display),

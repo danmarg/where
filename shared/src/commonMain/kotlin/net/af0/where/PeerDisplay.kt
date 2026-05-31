@@ -1,5 +1,7 @@
 package net.af0.where
 
+import net.af0.where.e2ee.FriendEntry
+
 /**
  * Cross-platform rendering rule for a peer's pin and label.
  *
@@ -32,22 +34,24 @@ enum class PeerPinStyle { NORMAL, DIMMED, HIDDEN }
 
 const val STOPPED_PIN_DIM_WINDOW_SECONDS: Long = 6L * 3600L
 
-fun peerDisplay(
-    stoppedAtSeconds: Long?,
-    stationarySinceSeconds: Long?,
-    lastPingSeconds: Long?,
+/**
+ * Single source of truth for how a peer should render. The receive-time
+ * `lastPingSeconds` is passed in separately because it isn't on [FriendEntry]
+ * (FriendEntry.lastTs is the *sender's* GPS timestamp; for "last seen X ago"
+ * we want the wall clock when we received the message).
+ */
+fun FriendEntry.displayState(
     nowSeconds: Long,
+    lastPingSeconds: Long?,
     dimWindowSeconds: Long = STOPPED_PIN_DIM_WINDOW_SECONDS,
 ): PeerDisplay {
-    if (stoppedAtSeconds != null) {
-        return if (nowSeconds - stoppedAtSeconds < dimWindowSeconds) {
-            PeerDisplay.StoppedRecently(stoppedAtSeconds)
+    stoppedAtTs?.let { stopped ->
+        return if (nowSeconds - stopped < dimWindowSeconds) {
+            PeerDisplay.StoppedRecently(stopped)
         } else {
-            PeerDisplay.StoppedLongAgo(stoppedAtSeconds)
+            PeerDisplay.StoppedLongAgo(stopped)
         }
     }
-    if (stationarySinceSeconds != null) {
-        return PeerDisplay.StationarySince(stationarySinceSeconds)
-    }
+    stationarySinceTs?.let { return PeerDisplay.StationarySince(it) }
     return PeerDisplay.LastSeen(lastPingSeconds)
 }

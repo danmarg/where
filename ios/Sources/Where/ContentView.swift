@@ -65,8 +65,6 @@ struct ContentView: View {
                 users: syncService.visibleUsers,
                 friends: syncService.friends,
                 friendLastPing: syncService.friendLastPing,
-                friendStoppedAt: syncService.friendStoppedAt,
-                friendStationarySince: syncService.friendStationarySince,
                 ownLocation: locationManager.location.map {
                     CLLocationCoordinate2D(latitude: $0.coordinate.latitude, longitude: $0.coordinate.longitude)
                 },
@@ -111,8 +109,6 @@ struct ContentView: View {
                 pendingInvites: syncService.pendingInvites,
                 pausedFriendIds: syncService.pausedFriendIds,
                 lastPingTimes: syncService.friendLastPing,
-                friendStoppedAt: syncService.friendStoppedAt,
-                friendStationarySince: syncService.friendStationarySince,
                 onTogglePause: { syncService.togglePauseFriend(id: $0) },
                 onCancelInvite: { invite in
                     Task { await syncService.clearInvite(ekPub: toSwiftData(invite.qrPayload.ekPub)) }

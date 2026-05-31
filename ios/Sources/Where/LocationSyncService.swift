@@ -53,12 +53,6 @@ final class LocationSyncService: ObservableObject {
 
     @Published var friendLocations: [String: (lat: Double, lng: Double, ts: Int64)] = [:]
     @Published var friendLastPing: [String: Date] = [:]
-    /// friendId → epoch-seconds the peer first reported stationary in the current run.
-    /// Derived from `self.friends`; never written directly. Refreshed by `refreshSharingStateMaps()`.
-    @Published private(set) var friendStationarySince: [String: Int64] = [:]
-    /// friendId → epoch-seconds the peer sent StoppedSharing.
-    /// Derived from `self.friends`; never written directly. Refreshed by `refreshSharingStateMaps()`.
-    @Published private(set) var friendStoppedAt: [String: Int64] = [:]
     /// Epoch-seconds at which sharing should automatically stop, or nil for no expiry.
     @Published var sharingExpiresAt: Int64? = nil
     @Published var connectionStatus: Shared.ConnectionStatus = Shared.ConnectionStatus.Ok()
@@ -245,28 +239,6 @@ final class LocationSyncService: ObservableObject {
             .first()
             .sink { [weak self] _ in
                 self?.locationProvider.sharingStateChanged()
-            }
-            .store(in: &visibleUsersCancellables)
-
-        // Re-derive friendStoppedAt / friendStationarySince from the source of truth
-        // (FriendEntry rows) whenever `friends` changes. E2eeManager.processBatch
-        // persists both fields atomically with lastLat/lastLng/etc., so a refresh of
-        // `friends = try await e2eeManager.listFriends()` picks up every transition.
-        $friends
-            .sink { [weak self] list in
-                guard let self = self else { return }
-                var stationary: [String: Int64] = [:]
-                var stopped: [String: Int64] = [:]
-                for friend in list {
-                    if let ts = friend.stationarySinceTs?.int64Value {
-                        stationary[friend.id] = ts
-                    }
-                    if let ts = friend.stoppedAtTs?.int64Value {
-                        stopped[friend.id] = ts
-                    }
-                }
-                self.friendStationarySince = stationary
-                self.friendStoppedAt = stopped
             }
             .store(in: &visibleUsersCancellables)
 
@@ -639,7 +611,7 @@ final class LocationSyncService: ObservableObject {
                 }
                 friendLocations[update.userId] = (lat: update.lat, lng: update.lng, ts: update.timestamp)
                 friendLastPing[update.userId] = Date(timeIntervalSince1970: TimeInterval(update.timestamp))
-                // friendStationarySince / friendStoppedAt are derived from FriendEntry rows
+                // Stationary/stopped state lives on FriendEntry rows
                 // (persisted by E2eeManager.processBatch in the same transaction as lastLat/etc.).
                 // The refresh happens via the $friends sink in init.
                 onFriendLocationReceived(friendId: update.userId)
@@ -1038,10 +1010,10 @@ final class LocationSyncService: ObservableObject {
         }
 
         var updates: [Shared.UserLocation] = []
+        let stationaryIds = Set(friends.compactMap { $0.stationarySinceTs != nil ? $0.id : nil })
         for (id, loc) in friendLocations {
             if pausedFriendIds.contains(id) { continue }
-            let stationary = friendStationarySince[id] != nil
-            updates.append(Shared.UserLocation(userId: id, lat: loc.lat, lng: loc.lng, timestamp: loc.ts, stationary: stationary))
+            updates.append(Shared.UserLocation(userId: id, lat: loc.lat, lng: loc.lng, timestamp: loc.ts, stationary: stationaryIds.contains(id)))
         }
         visibleUsers = updates
     }

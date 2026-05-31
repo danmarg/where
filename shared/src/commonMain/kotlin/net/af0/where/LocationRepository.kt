@@ -22,10 +22,6 @@ interface LocationSource {
     val lastLocation: StateFlow<Triple<Double, Double, Double?>?>
     val friendLocations: StateFlow<Map<String, UserLocation>>
     val friendLastPing: StateFlow<Map<String, Long>>
-    /** friendId → epoch-seconds the peer first reported stationary in the current run; null = moving. */
-    val friendStationarySince: StateFlow<Map<String, Long>>
-    /** friendId → epoch-seconds the peer sent StoppedSharing. Cleared when peer sends a new Location. */
-    val friendStoppedAt: StateFlow<Map<String, Long>>
     val connectionStatus: StateFlow<ConnectionStatus>
     val isAppInForeground: StateFlow<Boolean>
     val pendingInitPayload: StateFlow<KeyExchangeInitPayload?>
@@ -101,17 +97,6 @@ class LocationRepository(
     private val _friendLastPing = MutableStateFlow<Map<String, Long>>(emptyMap())
     override val friendLastPing: StateFlow<Map<String, Long>> = _friendLastPing.asStateFlow()
 
-    /**
-     * Both derived from the [friends] StateFlow — `FriendEntry` owns the persisted
-     * `stationarySinceTs` / `stoppedAtTs` fields, so these maps refresh every time
-     * `onFriendsUpdated` runs.
-     */
-    private val _friendStationarySince = MutableStateFlow<Map<String, Long>>(emptyMap())
-    override val friendStationarySince: StateFlow<Map<String, Long>> = _friendStationarySince.asStateFlow()
-
-    private val _friendStoppedAt = MutableStateFlow<Map<String, Long>>(emptyMap())
-    override val friendStoppedAt: StateFlow<Map<String, Long>> = _friendStoppedAt.asStateFlow()
-
     private val _connectionStatus = MutableStateFlow<ConnectionStatus>(ConnectionStatus.Ok)
     override val connectionStatus: StateFlow<ConnectionStatus> = _connectionStatus
 
@@ -151,15 +136,11 @@ class LocationRepository(
     ) {
         _friendLocations.update { it + (update.userId to update) }
         _friendLastPing.update { it + (update.userId to timestamp) }
-        // Stationary/stopped state lives on FriendEntry (persisted) and is refreshed by
-        // onFriendsUpdated; nothing else to do here.
     }
 
     override fun onFriendRemoved(id: String) {
         _friendLocations.update { it - id }
         _friendLastPing.update { it - id }
-        // friendStationarySince/friendStoppedAt drop out automatically on the next
-        // onFriendsUpdated, since the entry is no longer in the list.
     }
 
     override fun onConnectionStatus(status: ConnectionStatus) {
@@ -220,12 +201,6 @@ class LocationRepository(
 
     override fun onFriendsUpdated(friends: List<FriendEntry>) {
         _friends.value = friends
-        _friendStationarySince.value = friends
-            .mapNotNull { f -> f.stationarySinceTs?.let { f.id to it } }
-            .toMap()
-        _friendStoppedAt.value = friends
-            .mapNotNull { f -> f.stoppedAtTs?.let { f.id to it } }
-            .toMap()
     }
 
     override fun triggerRapidPoll() {
@@ -265,8 +240,6 @@ class LocationRepository(
         _lastLocation.value = null
         _friendLocations.value = emptyMap()
         _friendLastPing.value = emptyMap()
-        _friendStationarySince.value = emptyMap()
-        _friendStoppedAt.value = emptyMap()
         _connectionStatus.value = ConnectionStatus.Ok
         _isAppInForeground.value = false
         _pendingInitPayload.value = null

@@ -87,10 +87,6 @@ class LocationViewModel(
 
     val sharingExpiresAt: StateFlow<Long?> = userStore.sharingExpiresAt
 
-    val friendStoppedAt: StateFlow<Map<String, Long>> = locationSource.friendStoppedAt
-
-    val friendStationarySince: StateFlow<Map<String, Long>> = locationSource.friendStationarySince
-
     val displayName: StateFlow<String> = userStore.displayName
 
     val friends: StateFlow<List<FriendEntry>> = locationSource.friends

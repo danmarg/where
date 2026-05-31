@@ -124,8 +124,6 @@ class MainActivity : ComponentActivity() {
                 val friendLastPing by viewModel.friendLastPing.collectAsState()
                 val isSharing by viewModel.isSharingLocation.collectAsState()
                 val sharingExpiresAt by viewModel.sharingExpiresAt.collectAsState()
-                val friendStoppedAt by viewModel.friendStoppedAt.collectAsState()
-                val friendStationarySince by viewModel.friendStationarySince.collectAsState()
                 val inviteState by viewModel.inviteState.collectAsState()
                 val isInviteActive = inviteState is InviteState.Pending
                 androidx.compose.runtime.LaunchedEffect(isInviteActive) {
@@ -156,8 +154,6 @@ class MainActivity : ComponentActivity() {
                     pausedFriendIds = pausedFriendIds,
                     onTogglePause = { viewModel.togglePauseFriend(it) },
                     onCancelInvite = { viewModel.cancelPendingInvite(it) },
-                    friendStoppedAt = friendStoppedAt,
-                    friendStationarySince = friendStationarySince,
                     isSharing = isSharing,
                     sharingExpiresAt = sharingExpiresAt,
                     onSetSharing = { sharing, exp -> viewModel.setSharing(sharing, exp) },

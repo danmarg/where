@@ -7,8 +7,6 @@ struct FriendsSheet: View {
     let pendingInvites: [Shared.PendingInviteView]
     let pausedFriendIds: Set<String>
     let lastPingTimes: [String: Date]
-    var friendStoppedAt: [String: Int64] = [:]
-    var friendStationarySince: [String: Int64] = [:]
     let onTogglePause: (String) -> Void
     let onCancelInvite: (Shared.PendingInviteView) -> Void
     let onCreateInvite: () -> Void
@@ -68,11 +66,9 @@ struct FriendsSheet: View {
                                             .font(.caption2)
                                             .fontDesign(.monospaced)
                                             .foregroundStyle(.secondary)
-                                        let display = PeerDisplayKt.peerDisplay(
-                                            stoppedAtSeconds: friendStoppedAt[friend.id].map { KotlinLong(value: $0) },
-                                            stationarySinceSeconds: friendStationarySince[friend.id].map { KotlinLong(value: $0) },
-                                            lastPingSeconds: lastPingTimes[friend.id].map { KotlinLong(value: Int64($0.timeIntervalSince1970)) },
+                                        let display = friend.displayState(
                                             nowSeconds: Int64(Date().timeIntervalSince1970),
+                                            lastPingSeconds: lastPingTimes[friend.id].map { KotlinLong(value: Int64($0.timeIntervalSince1970)) },
                                             dimWindowSeconds: PeerDisplayKt.STOPPED_PIN_DIM_WINDOW_SECONDS,
                                         )
                                         Text(peerSubtitleText(display))

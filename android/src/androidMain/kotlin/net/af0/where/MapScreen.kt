@@ -54,8 +54,6 @@ fun MapScreen(
     friendLastPing: Map<String, Long>,
     onTogglePause: (String) -> Unit,
     onCancelInvite: (ByteArray) -> Unit,
-    friendStoppedAt: Map<String, Long> = emptyMap(),
-    friendStationarySince: Map<String, Long> = emptyMap(),
     isSharing: Boolean,
     sharingExpiresAt: Long?,
     onSetSharing: (sharing: Boolean, expiresAt: Long?) -> Unit,
@@ -266,12 +264,10 @@ fun MapScreen(
 
             friendData.forEach { (user, friend, name) ->
                 val nowSec = System.currentTimeMillis() / 1000L
-                val display = peerDisplay(
-                    stoppedAtSeconds = friendStoppedAt[user.userId],
-                    stationarySinceSeconds = friendStationarySince[user.userId],
-                    lastPingSeconds = friendLastPing[user.userId]?.let { it / 1000L },
+                val display = friend?.displayState(
                     nowSeconds = nowSec,
-                )
+                    lastPingSeconds = friendLastPing[user.userId]?.let { it / 1000L },
+                ) ?: PeerDisplay.LastSeen(friendLastPing[user.userId]?.let { it / 1000L })
                 val style = display.pinStyle
                 if (style == PeerPinStyle.HIDDEN) return@forEach
                 val subtitle = peerSubtitleText(display)
@@ -480,8 +476,6 @@ fun MapScreen(
             onDisplayNameChange = onDisplayNameChange,
             pausedFriendIds = pausedFriendIds,
             friendLastPing = friendLastPing,
-            friendStoppedAt = friendStoppedAt,
-            friendStationarySince = friendStationarySince,
             onTogglePause = onTogglePause,
             onCancelInvite = onCancelInvite,
             onCreateInvite = onCreateInvite,
