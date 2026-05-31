@@ -1010,10 +1010,9 @@ final class LocationSyncService: ObservableObject {
         }
 
         var updates: [Shared.UserLocation] = []
-        let stationaryIds = Set(friends.compactMap { $0.stationarySinceTs != nil ? $0.id : nil })
         for (id, loc) in friendLocations {
             if pausedFriendIds.contains(id) { continue }
-            updates.append(Shared.UserLocation(userId: id, lat: loc.lat, lng: loc.lng, timestamp: loc.ts, stationary: stationaryIds.contains(id)))
+            updates.append(Shared.UserLocation(userId: id, lat: loc.lat, lng: loc.lng, timestamp: loc.ts))
         }
         visibleUsers = updates
     }

@@ -237,7 +237,7 @@ class LocationSyncServiceTests: XCTestCase {
         XCTAssertTrue(isRapidInitial)
 
         let existingFriendId = "existing_friend"
-        let update1 = Shared.UserLocation(userId: existingFriendId, lat: 1.0, lng: 2.0, timestamp: 123, stationary: false)
+        let update1 = Shared.UserLocation(userId: existingFriendId, lat: 1.0, lng: 2.0, timestamp: 123)
         mockClient.pollResult = [update1]
 
         await service.confirmPendingInit(payload: Shared.KeyExchangeInitPayload(v: 1, token: "t", ekPub: kotlinByteArray(from: Data([1])), keyConfirmation: kotlinByteArray(from: Data([2])), encryptedName: kotlinByteArray(from: Data(repeating: 0, count: 31)), suggestedName: "n", msgId: "m1"), name: "n")
@@ -249,7 +249,7 @@ class LocationSyncServiceTests: XCTestCase {
 
         let addedFriendId = service.friends.first?.id ?? ""
         if !addedFriendId.isEmpty {
-            let update2 = Shared.UserLocation(userId: addedFriendId, lat: 3.0, lng: 4.0, timestamp: 456, stationary: false)
+            let update2 = Shared.UserLocation(userId: addedFriendId, lat: 3.0, lng: 4.0, timestamp: 456)
             mockClient.pollResult = [update2]
 
             await service.pollAll(updateUi: true)

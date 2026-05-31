@@ -93,16 +93,18 @@ class LocationViewModel(
 
     val pausedFriendIds: StateFlow<Set<String>> = userStore.pausedFriendIds
 
+    private val confirmedFriendIds: StateFlow<Set<String>> =
+        friends.map { list -> list.filter { it.isConfirmed }.map { it.id }.toSet() }
+            .stateIn(viewModelScope, SharingStarted.Eagerly, emptySet())
+
     val friendLocations: StateFlow<Map<String, UserLocation>> =
-        combine(locationSource.friendLocations, friends) { locations, friendList ->
-            val confirmedIds = friendList.filter { it.isConfirmed }.map { it.id }.toSet()
-            locations.filterKeys { it in confirmedIds }
+        combine(locationSource.friendLocations, confirmedFriendIds) { locations, ids ->
+            locations.filterKeys { it in ids }
         }.stateIn(viewModelScope, SharingStarted.Eagerly, emptyMap())
 
     val friendLastPing: StateFlow<Map<String, Long>> =
-        combine(locationSource.friendLastPing, friends) { pings, friendList ->
-            val confirmedIds = friendList.filter { it.isConfirmed }.map { it.id }.toSet()
-            pings.filterKeys { it in confirmedIds }
+        combine(locationSource.friendLastPing, confirmedFriendIds) { pings, ids ->
+            pings.filterKeys { it in ids }
         }.stateIn(viewModelScope, SharingStarted.Eagerly, emptyMap())
 
     private val _inviteState = MutableStateFlow<InviteState>(InviteState.None)

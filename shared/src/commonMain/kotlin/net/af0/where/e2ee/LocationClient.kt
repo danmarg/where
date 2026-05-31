@@ -248,7 +248,6 @@ open class LocationClient(
                                 lat = loc.lat,
                                 lng = loc.lng,
                                 timestamp = loc.ts,
-                                stationary = loc.stationary,
                             )
                         },
                     )

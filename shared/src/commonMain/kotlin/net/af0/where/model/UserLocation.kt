@@ -8,5 +8,4 @@ data class UserLocation(
     val lat: Double,
     val lng: Double,
     val timestamp: Long,
-    val stationary: Boolean = false,
 )
