@@ -242,7 +242,12 @@ open class LocationClient(
 
                     resultLocations.addAll(
                         result.decryptedLocations.map { loc ->
-                            UserLocation(userId = friendId, lat = loc.lat, lng = loc.lng, timestamp = loc.ts)
+                            UserLocation(
+                                userId = friendId,
+                                lat = loc.lat,
+                                lng = loc.lng,
+                                timestamp = loc.ts,
+                            )
                         },
                     )
 
@@ -360,10 +365,11 @@ open class LocationClient(
         lat: Double,
         lng: Double,
         pausedFriendIds: Set<String> = emptySet(),
+        stationary: Boolean = false,
     ) {
         coroutineScope {
             val ts = currentTimeSeconds()
-            val payload = MessagePlaintext.Location(lat = lat, lng = lng, acc = 0.0, ts = ts)
+            val payload = MessagePlaintext.Location(lat = lat, lng = lng, acc = 0.0, ts = ts, stationary = stationary)
             val activeFriends = store.listFriends().filter { it.id !in pausedFriendIds && !it.isStale }
 
             // Parallel send to all active friends to minimize radio wake time.
@@ -395,12 +401,49 @@ open class LocationClient(
         friendId: String,
         lat: Double,
         lng: Double,
+        stationary: Boolean = false,
     ) {
         val mutex = getFriendMutex(friendId)
         mutex.withLock {
             val ts = currentTimeSeconds()
-            val payload = MessagePlaintext.Location(lat = lat, lng = lng, acc = 0.0, ts = ts)
+            val payload = MessagePlaintext.Location(lat = lat, lng = lng, acc = 0.0, ts = ts, stationary = stationary)
             sendMessageToFriendInternal(friendId, payload)
+        }
+    }
+
+    /**
+     * Enqueue a StoppedSharing message to every active (non-paused, non-stale) friend.
+     * This only writes to the WAL outbox; the existing processOutboxes loop handles delivery.
+     * Keepalives continue afterwards so the peer's session doesn't go stale.
+     */
+    open suspend fun sendStoppedSharing(pausedFriendIds: Set<String> = emptySet()) {
+        coroutineScope {
+            val ts = currentTimeSeconds()
+            val payload = MessagePlaintext.StoppedSharing(ts = ts)
+            val activeFriends = store.listFriends().filter { it.id !in pausedFriendIds && !it.isStale }
+            val deferreds = activeFriends.map { friend ->
+                async {
+                    runCatching {
+                        val mutex = getFriendMutex(friend.id)
+                        mutex.withLock {
+                            sendMessageToFriendInternal(friend.id, payload)
+                        }
+                    }
+                }
+            }
+            deferreds.awaitAll()
+        }
+    }
+
+    /**
+     * Enqueue a StoppedSharing message to a single friend (used by the per-friend expiry watcher).
+     * Same WAL-outbox semantics as [sendStoppedSharing]; Keepalives continue afterwards.
+     */
+    open suspend fun sendStoppedSharingToFriend(friendId: String) {
+        val payload = MessagePlaintext.StoppedSharing(ts = currentTimeSeconds())
+        val mutex = getFriendMutex(friendId)
+        mutex.withLock {
+            runCatching { sendMessageToFriendInternal(friendId, payload) }
         }
     }
 

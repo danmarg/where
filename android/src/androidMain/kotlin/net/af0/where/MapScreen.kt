@@ -55,7 +55,9 @@ fun MapScreen(
     onTogglePause: (String) -> Unit,
     onCancelInvite: (ByteArray) -> Unit,
     isSharing: Boolean,
-    onToggleSharing: () -> Unit,
+    onSetSharing: (sharing: Boolean) -> Unit,
+    friendExpiresAt: Map<String, Long> = emptyMap(),
+    onSetFriendExpiry: (id: String, expiresAt: Long?) -> Unit = { _, _ -> },
     connectionStatus: ConnectionStatus,
     onCreateInvite: () -> Unit,
     onScanQr: () -> Unit,
@@ -262,12 +264,19 @@ fun MapScreen(
                 }
 
             friendData.forEach { (user, friend, name) ->
-                val timeAgo = timeAgoStringFromMs(friendLastPing[user.userId])
+                val nowSec = System.currentTimeMillis() / 1000L
+                val display = friend?.displayState(
+                    nowSeconds = nowSec,
+                    lastPingSeconds = friendLastPing[user.userId]?.let { it / 1000L },
+                ) ?: PeerDisplay.LastSeen(friendLastPing[user.userId]?.let { it / 1000L })
+                val style = display.pinStyle
+                if (style == PeerPinStyle.HIDDEN) return@forEach
+                val subtitle = peerSubtitleText(display)
                 val isSelected = selectedUserId == user.userId
                 key(user.userId) {
                     val markerState = rememberUpdatedMarkerState(position = LatLng(user.lat, user.lng))
                     MarkerComposable(
-                        keys = arrayOf<Any>(name, isSelected, timeAgo),
+                        keys = arrayOf<Any>(name, isSelected, subtitle, style),
                         state = markerState,
                         anchor = Offset(0.5f, 1f),
                         onClick = {
@@ -277,14 +286,15 @@ fun MapScreen(
                             true
                         },
                     ) {
+                        val pinAlpha = if (style == PeerPinStyle.DIMMED) 0.45f else 1f
                         Column(
                             horizontalAlignment = Alignment.CenterHorizontally,
                             verticalArrangement = Arrangement.spacedBy(2.dp),
                         ) {
                             Surface(
                                 shape = MaterialTheme.shapes.extraSmall,
-                                color = Color.Black.copy(alpha = 0.65f),
-                                contentColor = Color.White,
+                                color = Color.Black.copy(alpha = 0.65f * pinAlpha),
+                                contentColor = Color.White.copy(alpha = pinAlpha),
                             ) {
                                 Column(
                                     modifier = Modifier.padding(horizontal = 5.dp, vertical = 2.dp),
@@ -298,9 +308,9 @@ fun MapScreen(
                                     )
                                     if (isSelected) {
                                         Text(
-                                            text = timeAgo,
+                                            text = subtitle,
                                             style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp),
-                                            color = Color.White.copy(alpha = 0.7f),
+                                            color = Color.White.copy(alpha = 0.7f * pinAlpha),
                                         )
                                     }
                                 }
@@ -309,7 +319,7 @@ fun MapScreen(
                                 Icons.Default.Place,
                                 contentDescription = null,
                                 modifier = Modifier.size(36.dp),
-                                tint = MaterialTheme.colorScheme.error,
+                                tint = MaterialTheme.colorScheme.error.copy(alpha = pinAlpha),
                             )
                         }
                     }
@@ -328,9 +338,11 @@ fun MapScreen(
             horizontalArrangement = Arrangement.spacedBy(8.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            // Pause / resume sharing
+            // Master sharing toggle. Per-friend timers live in FriendsSheet.
+            val sharingLabel = if (isSharing) stringResource(MR.strings.sharing) else stringResource(MR.strings.paused)
+
             FilledTonalButton(
-                onClick = onToggleSharing,
+                onClick = { onSetSharing(!isSharing) },
                 colors =
                     ButtonDefaults.filledTonalButtonColors(
                         containerColor = if (isSharing) Color(0xFF1565C0) else Color(0xFF555555),
@@ -344,7 +356,7 @@ fun MapScreen(
                 )
                 Spacer(Modifier.width(4.dp))
                 Text(
-                    if (isSharing) stringResource(MR.strings.sharing) else stringResource(MR.strings.paused),
+                    sharingLabel,
                     style = MaterialTheme.typography.labelMedium,
                 )
             }
@@ -427,6 +439,8 @@ fun MapScreen(
             onDisplayNameChange = onDisplayNameChange,
             pausedFriendIds = pausedFriendIds,
             friendLastPing = friendLastPing,
+            friendExpiresAt = friendExpiresAt,
+            onSetFriendExpiry = onSetFriendExpiry,
             onTogglePause = onTogglePause,
             onCancelInvite = onCancelInvite,
             onCreateInvite = onCreateInvite,

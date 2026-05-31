@@ -759,4 +759,74 @@ class LocationViewModelTest {
                 "The intent must target the newly confirmed friend ID",
             )
         }
+
+    /**
+     * Pausing a friend gives the peer the same positive "stopped" signal that master-off
+     * and timer-expiry produce, so they don't see indefinite silent staleness. Un-pause
+     * is silent on the wire — the next outgoing Location is itself the "I'm back" signal.
+     */
+    @Test
+    fun testTogglePauseFriend_sendsStoppedSharingOnPauseOnly() =
+        runTest {
+            val mockClient = mockk<LocationClient>(relaxed = true)
+            val source = TestFakeLocationSource()
+            viewModel =
+                LocationViewModel(
+                    app,
+                    e2eeManagerParam = E2eeManager(createTestSqlDriver()),
+                    locationClientParam = mockClient,
+                    userStoreParam = net.af0.where.e2ee.UserStore(FakeRawKeyValueStorage()),
+                    startPolling = false,
+                    locationSourceParam = source,
+                    uiStateStoreParam = FakeUiStateStore(),
+                )
+            val vm = viewModel!!
+
+            // Pause Bob: should enqueue one StoppedSharing for him.
+            vm.togglePauseFriend("bob")
+            advanceUntilIdle()
+            io.mockk.coVerify(exactly = 1) { mockClient.sendStoppedSharingToFriend("bob") }
+
+            // Un-pause Bob: must NOT enqueue. Still exactly 1 from the pause above.
+            vm.togglePauseFriend("bob")
+            advanceUntilIdle()
+            io.mockk.coVerify(exactly = 1) { mockClient.sendStoppedSharingToFriend("bob") }
+        }
+
+    /**
+     * If the app was killed with a per-friend timer set to expire in the past, the watcher
+     * coroutine must fire the expiry on the next launch: that friend ends up in
+     * pausedFriendIds and a single StoppedSharing is enqueued for them. This is the
+     * remainingSec <= 0 branch in fireFriendExpiry's collectLatest.
+     */
+    @Test
+    fun testFireFriendExpiry_appliesElapsedTimerOnLaunch() =
+        runTest {
+            val storage = FakeRawKeyValueStorage()
+            val userStore = net.af0.where.e2ee.UserStore(storage)
+            // Pre-seed: a per-friend timer that already elapsed before this launch.
+            val friendId = "friend-bob"
+            userStore.setFriendExpiry(friendId, epochSeconds = 500L) // way in the past
+
+            val mockClient = mockk<LocationClient>(relaxed = true)
+            val source = TestFakeLocationSource()
+
+            viewModel =
+                LocationViewModel(
+                    app,
+                    e2eeManagerParam = E2eeManager(createTestSqlDriver()),
+                    locationClientParam = mockClient,
+                    userStoreParam = userStore,
+                    startPolling = false,
+                    locationSourceParam = source,
+                    uiStateStoreParam = FakeUiStateStore(),
+                )
+
+            advanceUntilIdle()
+
+            // The watcher should have run fireFriendExpiry, clearing the timer and pausing.
+            assertFalse(friendId in userStore.friendExpiresAt.value, "elapsed timer must be cleared")
+            assertTrue(friendId in userStore.pausedFriendIds.value, "expired friend must be paused")
+            io.mockk.coVerify(exactly = 1) { mockClient.sendStoppedSharingToFriend(friendId) }
+        }
 }

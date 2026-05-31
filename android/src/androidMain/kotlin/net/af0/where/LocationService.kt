@@ -290,6 +290,7 @@ class LocationService : Service() {
 
                     while (true) {
                         val friendId = pendingFriendSends.tryReceive().getOrNull() ?: break
+                        if (!userStore.isSharingLocation.value) break
                         launch {
                             try {
                                 locationClient.sendLocationToFriend(friendId, loc.first, loc.second)
@@ -404,7 +405,7 @@ class LocationService : Service() {
         }
         if (intent?.action == ACTION_FORCE_PUBLISH) {
             val friendId = intent.getStringExtra(EXTRA_FRIEND_ID)
-            if (friendId != null) {
+            if (friendId != null && userStore.isSharingLocation.value) {
                 val loc = locationSource.lastLocation.value
                 if (loc != null) {
                     serviceScope.launch {
@@ -698,7 +699,7 @@ class LocationService : Service() {
                     try {
                         val activeFriends =
                             e2eeManager.listFriends().filter {
-                                it.id !in userStore.pausedFriendIds.value && !it.isStale
+                                it.id !in userStore.effectivelyPausedIds() && !it.isStale
                             }
                         for (friend in activeFriends) {
                             locationClient.sendKeepalive(friend.id)
@@ -776,7 +777,7 @@ class LocationService : Service() {
             val updates =
                 locationClient.poll(
                     isForeground = locationSource.isAppInForeground.value,
-                    pausedFriendIds = userStore.pausedFriendIds.value,
+                    pausedFriendIds = userStore.effectivelyPausedIds(),
                 )
             Log.d(TAG, "Got ${updates.size} location updates")
             withContext(Dispatchers.Main) {
@@ -883,7 +884,7 @@ class LocationService : Service() {
                 if (!userStore.isSharingLocation.value) return
             }
             try {
-                locationClient.sendLocation(lat, lng, userStore.pausedFriendIds.value)
+                locationClient.sendLocation(lat, lng, userStore.effectivelyPausedIds())
                 val sendCompleteTime = clock()
                 logReliability(source, true, interval)
                 checkLateHeartbeat(interval)

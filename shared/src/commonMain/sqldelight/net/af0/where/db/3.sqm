@@ -1,0 +1,2 @@
+ALTER TABLE Friends ADD COLUMN stationarySinceTs INTEGER;
+ALTER TABLE Friends ADD COLUMN stoppedAtTs INTEGER;

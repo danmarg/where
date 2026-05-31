@@ -209,6 +209,7 @@ data class LocationPlaintext(
     val acc: Double,
     val ts: Long,
     val precision: LocationPrecision = LocationPrecision.FINE,
+    val stationary: Boolean = false,
 ) {
     fun blur(): LocationPlaintext =
         if (precision == LocationPrecision.COARSE) {

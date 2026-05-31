@@ -216,6 +216,8 @@ internal class E2eeStore(
             sharingEnabled = if (finalEntry.sharingEnabled) 1L else 0L,
             lastDecryptFailed = if (finalEntry.lastDecryptFailed) 1L else 0L,
             version = nextVersion.toLong(),
+            stationarySinceTs = finalEntry.stationarySinceTs,
+            stoppedAtTs = finalEntry.stoppedAtTs,
         )
         return finalEntry
     }
@@ -303,6 +305,8 @@ internal class E2eeStore(
             sharingEnabled = sharingEnabled == 1L,
             lastDecryptFailed = lastDecryptFailed == 1L,
             version = version.toInt(),
+            stationarySinceTs = stationarySinceTs,
+            stoppedAtTs = stoppedAtTs,
         )
 
     private fun net.af0.where.db.PendingInvites.toInvite() =

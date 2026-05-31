@@ -22,6 +22,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
@@ -84,22 +85,26 @@ class LocationViewModel(
 
     val isSharingLocation: StateFlow<Boolean> = userStore.isSharingLocation
 
+    val friendExpiresAt: StateFlow<Map<String, Long>> = userStore.friendExpiresAt
+
     val displayName: StateFlow<String> = userStore.displayName
 
     val friends: StateFlow<List<FriendEntry>> = locationSource.friends
 
     val pausedFriendIds: StateFlow<Set<String>> = userStore.pausedFriendIds
 
+    private val confirmedFriendIds: StateFlow<Set<String>> =
+        friends.map { list -> list.filter { it.isConfirmed }.map { it.id }.toSet() }
+            .stateIn(viewModelScope, SharingStarted.Eagerly, emptySet())
+
     val friendLocations: StateFlow<Map<String, UserLocation>> =
-        combine(locationSource.friendLocations, friends) { locations, friendList ->
-            val confirmedIds = friendList.filter { it.isConfirmed }.map { it.id }.toSet()
-            locations.filterKeys { it in confirmedIds }
+        combine(locationSource.friendLocations, confirmedFriendIds) { locations, ids ->
+            locations.filterKeys { it in ids }
         }.stateIn(viewModelScope, SharingStarted.Eagerly, emptyMap())
 
     val friendLastPing: StateFlow<Map<String, Long>> =
-        combine(locationSource.friendLastPing, friends) { pings, friendList ->
-            val confirmedIds = friendList.filter { it.isConfirmed }.map { it.id }.toSet()
-            pings.filterKeys { it in confirmedIds }
+        combine(locationSource.friendLastPing, confirmedFriendIds) { pings, ids ->
+            pings.filterKeys { it in ids }
         }.stateIn(viewModelScope, SharingStarted.Eagerly, emptyMap())
 
     private val _inviteState = MutableStateFlow<InviteState>(InviteState.None)
@@ -167,6 +172,22 @@ class LocationViewModel(
             locationSource.setInitialFriendLocations(initialLocations, initialLastPing)
         }
 
+        // Per-friend timed share: when the soonest expiry passes, pause that friend (so the send
+        // gate effectivelyPausedIds() locks in the new state) and enqueue a StoppedSharing message.
+        // collectLatest re-arms when the map changes (user adds/clears a timer).
+        viewModelScope.launch {
+            friendExpiresAt.collectLatest { map ->
+                if (map.isEmpty()) return@collectLatest
+                val nowSec = clock() / 1000L
+                val (friendId, expiresAt) = map.minByOrNull { it.value } ?: return@collectLatest
+                val remainingSec = expiresAt - nowSec
+                if (remainingSec > 0L) kotlinx.coroutines.delay(remainingSec * 1000L)
+                // Re-check after the delay: the timer may have been cleared or reset.
+                if (userStore.friendExpiresAt.value[friendId] != expiresAt) return@collectLatest
+                fireFriendExpiry(friendId)
+            }
+        }
+
         // When a friend response (init payload) arrives from the service, flip the invite
         // state to None so the UI shows the naming dialog (dismissing the QR sheet).
         viewModelScope.launch {
@@ -194,12 +215,61 @@ class LocationViewModel(
 
     fun toggleSharing() {
         check(Looper.myLooper() == Looper.getMainLooper()) { "toggleSharing must be called on the main thread" }
-        userStore.setSharing(!isSharingLocation.value)
+        setSharing(!isSharingLocation.value)
+    }
+
+    /**
+     * Set the master sharing toggle. Off = no Locations to anyone (Keepalives continue);
+     * a StoppedSharing fan-out is enqueued so peers see a positive "stopped" signal rather
+     * than stale data.
+     */
+    fun setSharing(sharing: Boolean) {
+        check(Looper.myLooper() == Looper.getMainLooper()) { "setSharing must be called on the main thread" }
+        val wasSharing = isSharingLocation.value
+        userStore.setSharing(sharing)
+        if (wasSharing && !sharing) {
+            viewModelScope.launch {
+                try {
+                    locationClient.sendStoppedSharing(pausedFriendIds = userStore.effectivelyPausedIds())
+                } catch (e: Exception) {
+                    Log.w(TAG, "sendStoppedSharing failed: ${e.message}")
+                }
+            }
+        }
+    }
+
+    /** Set or clear a per-friend share timer. null clears (= share indefinitely). */
+    fun setFriendExpiry(friendId: String, expiresAt: Long?) {
+        check(Looper.myLooper() == Looper.getMainLooper()) { "setFriendExpiry must be called on the main thread" }
+        userStore.setFriendExpiry(friendId, expiresAt)
+    }
+
+    private fun fireFriendExpiry(friendId: String) {
+        userStore.setFriendExpiry(friendId, null)
+        // togglePauseFriend handles the StoppedSharing fan-out on a pause-transition.
+        // If the friend is already paused, Bob already got the message — no double-send.
+        if (friendId !in userStore.pausedFriendIds.value) {
+            togglePauseFriend(friendId)
+        }
     }
 
     fun togglePauseFriend(id: String) {
         check(Looper.myLooper() == Looper.getMainLooper()) { "togglePauseFriend must be called on the main thread" }
+        val wasPaused = id in userStore.pausedFriendIds.value
         userStore.togglePauseFriend(id)
+        // On transition into paused, give the peer the same positive "stopped" signal
+        // that master-off and per-friend-timer-expiry produce. Un-pause has no wire
+        // message: the next outgoing Location is itself the implicit "I'm back" signal,
+        // and the recipient clears stoppedAtTs on receipt.
+        if (!wasPaused) {
+            viewModelScope.launch {
+                try {
+                    locationClient.sendStoppedSharingToFriend(id)
+                } catch (e: Exception) {
+                    Log.w(TAG, "sendStoppedSharingToFriend($id) failed: ${e.message}")
+                }
+            }
+        }
     }
 
     fun renameFriend(

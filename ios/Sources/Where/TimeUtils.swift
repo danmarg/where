@@ -20,3 +20,41 @@ func timeAgoStringFromSeconds(_ seconds: Int64) -> String {
     let date = Date(timeIntervalSince1970: Double(seconds))
     return timeAgoString(date)
 }
+
+private let shortTimeFormatter: DateFormatter = {
+    let f = DateFormatter()
+    f.dateStyle = .none
+    f.timeStyle = .short
+    return f
+}()
+
+private let shortDateFormatter: DateFormatter = {
+    let f = DateFormatter()
+    f.dateStyle = .short
+    f.timeStyle = .none
+    return f
+}()
+
+/// Renders the human-readable subtitle for the recipient's pin / friend list row,
+/// matching the shared PeerDisplay rule.
+func peerSubtitleText(_ display: Shared.PeerDisplay) -> String {
+    if let recent = display as? Shared.PeerDisplay.StoppedRecently {
+        let d = Date(timeIntervalSince1970: TimeInterval(recent.timestampSeconds))
+        return MR.strings().peer_stopped_at.localized(args: [shortTimeFormatter.string(from: d) as NSString])
+    }
+    if let longAgo = display as? Shared.PeerDisplay.StoppedLongAgo {
+        let d = Date(timeIntervalSince1970: TimeInterval(longAgo.timestampSeconds))
+        return MR.strings().peer_stopped_on.localized(args: [shortDateFormatter.string(from: d) as NSString])
+    }
+    if let stationary = display as? Shared.PeerDisplay.StationarySince {
+        let d = Date(timeIntervalSince1970: TimeInterval(stationary.timestampSeconds))
+        return MR.strings().peer_here_since.localized(args: [shortTimeFormatter.string(from: d) as NSString])
+    }
+    if let lastSeen = display as? Shared.PeerDisplay.LastSeen {
+        if let ts = lastSeen.timestampSeconds?.int64Value {
+            return timeAgoStringFromSeconds(ts)
+        }
+        return timeAgoStringFromSeconds(0)
+    }
+    return timeAgoStringFromSeconds(0)
+}

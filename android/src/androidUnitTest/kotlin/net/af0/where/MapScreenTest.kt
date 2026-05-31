@@ -39,7 +39,7 @@ class MapScreenTest {
                 onTogglePause = {},
                 onCancelInvite = {},
                 isSharing = true,
-                onToggleSharing = {},
+                onSetSharing = { },
                 connectionStatus = ConnectionStatus.Ok,
                 onCreateInvite = {},
                 onScanQr = {},

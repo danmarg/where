@@ -49,6 +49,10 @@ data class FriendEntry(
     val lastDecryptFailed: Boolean = false,
     val version: Int = 0,
     val isCaughtUp: Boolean = false,
+    /** Epoch-seconds the peer first reported `stationary=true` in the current run. Null when moving. */
+    val stationarySinceTs: Long? = null,
+    /** Epoch-seconds the peer sent StoppedSharing. Null when sharing or after they resume. */
+    val stoppedAtTs: Long? = null,
 ) {
     companion object {
         const val ACK_TIMEOUT_SECONDS = 7 * 24 * 3600L
@@ -435,6 +439,34 @@ class E2eeManager(
 
             val currentRecvToken = if (result.anySuccess || hadStateUpdate) result.finalSession.recvToken else entry.session.recvToken
 
+            // Derive the sharing-state fields (stationarySinceTs, stoppedAtTs) atomically
+            // from the most recent event in this batch. Whichever of {last Location, max
+            // StoppedSharing ts} is later wins: a Location implies the peer is active
+            // (clear stopped); a StoppedSharing implies they paused (clear stationary).
+            // Within a stationary run we preserve the original "since" timestamp.
+            val lastLocTs = lastLocation?.ts ?: Long.MIN_VALUE
+            val stopTs = result.stoppedSharingTs ?: Long.MIN_VALUE
+            val newStationarySinceTs: Long?
+            val newStoppedAtTs: Long?
+            when {
+                lastLocation == null && result.stoppedSharingTs == null -> {
+                    newStationarySinceTs = entry.stationarySinceTs
+                    newStoppedAtTs = entry.stoppedAtTs
+                }
+                stopTs > lastLocTs -> {
+                    newStationarySinceTs = null
+                    newStoppedAtTs = result.stoppedSharingTs
+                }
+                else -> {
+                    newStoppedAtTs = null
+                    newStationarySinceTs = if (lastLocation!!.stationary) {
+                        entry.stationarySinceTs ?: lastLocation.ts
+                    } else {
+                        null
+                    }
+                }
+            }
+
             val updatedEntry =
                 entry.copy(
                     session = result.finalSession,
@@ -444,6 +476,8 @@ class E2eeManager(
                     lastLng = if (lastLocation != null && (lastLocation.ts >= (entry.lastTs ?: 0))) lastLocation.lng else entry.lastLng,
                     lastTs = if (lastLocation != null && (lastLocation.ts >= (entry.lastTs ?: 0))) lastLocation.ts else entry.lastTs,
                     lastPollTs = currentTimeSeconds(),
+                    stationarySinceTs = newStationarySinceTs,
+                    stoppedAtTs = newStoppedAtTs,
                 )
 
             if (result.finalSession != entry.session) {

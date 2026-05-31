@@ -74,11 +74,28 @@ func updateUIView(_ mapView: MKMapView, context: Context) {
         }
 
         // Update existing or add new friend annotations
+        let nowSec = Int64(Date().timeIntervalSince1970)
+        let friendsById = Dictionary(uniqueKeysWithValues: friends.map { ($0.id, $0) })
+        var hiddenUserIds = Set<String>()
         for (_, group) in locationGroups {
             for (index, user) in group.enumerated() {
+                let lastPingSec: KotlinLong? = friendLastPing[user.userId].map { KotlinLong(value: Int64($0.timeIntervalSince1970)) }
+                let display: Shared.PeerDisplay
+                if let entry = friendsById[user.userId] {
+                    display = entry.displayState(
+                        nowSeconds: nowSec,
+                        lastPingSeconds: lastPingSec,
+                        dimWindowSeconds: PeerDisplayKt.STOPPED_PIN_DIM_WINDOW_SECONDS,
+                    )
+                } else {
+                    display = Shared.PeerDisplay.LastSeen(timestampSeconds: lastPingSec)
+                }
+                if display.pinStyle == .hidden {
+                    hiddenUserIds.insert(user.userId)
+                    continue
+                }
                 var coord = CLLocationCoordinate2D(latitude: user.lat, longitude: user.lng)
                 if group.count > 1 {
-                    // Apply a small circular offset if multiple users are at the same spot
                     let angle = 2.0 * .pi * Double(index) / Double(group.count)
                     let radius = 0.00005 // Approx 5 meters at the equator
                     coord.latitude += radius * cos(angle)
@@ -87,14 +104,28 @@ func updateUIView(_ mapView: MKMapView, context: Context) {
                 let friend = friends.first { $0.id == user.userId }
                 let friendName = friend?.name ?? String(user.userId.prefix(8))
                 let lastPing = friendLastPing[user.userId]
+                let subtitle = peerSubtitleText(display)
+                let dimmed = display.pinStyle == .dimmed
                 if let pin = existingById[user.userId] {
                     pin.coordinate = coord
                     pin.title = friendName
-                    pin.subtitle = timeAgoString(lastPing)
+                    pin.subtitle = subtitle
+                    pin.dimmed = dimmed
+                    if let view = mapView.view(for: pin) as? MKMarkerAnnotationView {
+                        view.markerTintColor = dimmed ? .gray : .systemRed
+                    }
                 } else {
-                    mapView.addAnnotation(UserAnnotation(userId: user.userId, coordinate: coord, friendName: friendName, lastPing: lastPing))
+                    let ann = UserAnnotation(userId: user.userId, coordinate: coord, friendName: friendName, lastPing: lastPing)
+                    ann.subtitle = subtitle
+                    ann.dimmed = dimmed
+                    mapView.addAnnotation(ann)
                 }
             }
+        }
+        // Drop any existing pins that newly transitioned to hidden state.
+        let drops = existing.filter { hiddenUserIds.contains($0.userId) }
+        if !drops.isEmpty {
+            mapView.removeAnnotations(drops)
         }
 
         // Zoom to friend if requested, then clear the target so it doesn't re-trigger.
@@ -157,7 +188,7 @@ func updateUIView(_ mapView: MKMapView, context: Context) {
             let view = mapView.dequeueReusableAnnotationView(withIdentifier: id) as? MKMarkerAnnotationView
                 ?? MKMarkerAnnotationView(annotation: annotation, reuseIdentifier: id)
             view.annotation = annotation
-            view.markerTintColor = .systemRed
+            view.markerTintColor = userAnnotation.dimmed ? .gray : .systemRed
             view.glyphText = nil
             view.titleVisibility = .visible
             view.displayPriority = .required
@@ -218,6 +249,7 @@ final class UserAnnotation: NSObject, MKAnnotation {
     @objc dynamic var title: String?
     @objc dynamic var subtitle: String?
     let isOwn: Bool
+    var dimmed: Bool = false
 
     init(userId: String, coordinate: CLLocationCoordinate2D, friendName: String, lastPing: Date?) {
         self.userId = userId

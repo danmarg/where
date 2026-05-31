@@ -15,6 +15,8 @@ internal object E2eeProtocol {
         val softFailCount: Int,
         val hardFailCount: Int,
         val silentDrops: Int,
+        /** Timestamp of the most recent StoppedSharing message seen in this batch, if any. */
+        val stoppedSharingTs: Long? = null,
     )
 
     /**
@@ -73,6 +75,7 @@ internal object E2eeProtocol {
         var anyReplay = false
         var softFailCount = 0
         var hardFailCount = 0
+        var stoppedSharingTs: Long? = null
 
         val processedIds = mutableListOf<String>()
         val replayedIds = mutableListOf<String>()
@@ -90,8 +93,13 @@ internal object E2eeProtocol {
                             lng = pt.lng,
                             acc = pt.acc,
                             ts = pt.ts,
+                            stationary = pt.stationary,
                         ),
                     )
+                } else if (pt is MessagePlaintext.StoppedSharing) {
+                    if (stoppedSharingTs == null || pt.ts > stoppedSharingTs) {
+                        stoppedSharingTs = pt.ts
+                    }
                 }
             } catch (e: Exception) {
                 if (e is ReplayException) {
@@ -119,6 +127,7 @@ internal object E2eeProtocol {
             softFailCount = softFailCount,
             hardFailCount = hardFailCount,
             silentDrops = totalEncryptedCount - orderedMessages.size,
+            stoppedSharingTs = stoppedSharingTs,
         )
     }
 

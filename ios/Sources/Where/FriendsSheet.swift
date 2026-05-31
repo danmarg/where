@@ -7,6 +7,7 @@ struct FriendsSheet: View {
     let pendingInvites: [Shared.PendingInviteView]
     let pausedFriendIds: Set<String>
     let lastPingTimes: [String: Date]
+    var friendExpiresAt: [String: Int64] = [:]
     let onTogglePause: (String) -> Void
     let onCancelInvite: (Shared.PendingInviteView) -> Void
     let onCreateInvite: () -> Void
@@ -14,6 +15,7 @@ struct FriendsSheet: View {
     let onRename: (String, String) -> Void
     let onPasteUrl: (String) -> Void
     let onRemove: (String) -> Void
+    var onSetFriendExpiry: (String, Int64?) -> Void = { _, _ in }
     let onZoomTo: (String) -> Void
     var diagnosticLog: [String] = []
 
@@ -24,6 +26,8 @@ struct FriendsSheet: View {
     @State private var pastedUrl = ""
     @State private var debugExpandedFriendId: String? = nil
     @State private var showDiagnosticLog = false
+    /// Ticks each minute so any active "Sharing for Xh Ym" label re-renders live.
+    @State private var nowTick: Int = 0
 
     var body: some View {
         NavigationStack {
@@ -57,40 +61,13 @@ struct FriendsSheet: View {
                         ForEach(friends, id: \.id) { friend in
                             VStack(alignment: .leading, spacing: 0) {
                                 HStack {
-                                    VStack(alignment: .leading, spacing: 2) {
-                                        let pendingText = "(" + MR.strings().pending.localized() + ")"
-                                        let displayName = friend.isConfirmed ? friend.name : "\(friend.name) \(pendingText)"
-                                        Text(displayName)
-                                            .font(.body)
-                                        Text(friend.safetyNumber)
-                                            .font(.caption2)
-                                            .fontDesign(.monospaced)
-                                            .foregroundStyle(.secondary)
-                                        Text(timeAgoString(lastPingTimes[friend.id]))
-                                            .font(.caption)
-                                            .foregroundStyle(.secondary)
-                                        if friend.isStale {
-                                            Text(MR.strings().friend_inactive_warning.localized())
-                                                .font(.caption)
-                                                .foregroundStyle(.red)
-                                        }
-                                        if friend.lastDecryptFailed {
-                                            Text(MR.strings().decryption_error_warning.localized())
-                                                .font(.caption)
-                                                .foregroundStyle(.red)
-                                        }
-                                    }
+                                    FriendInfoColumn(
+                                        friend: friend,
+                                        lastPing: lastPingTimes[friend.id],
+                                        expiresAt: friendExpiresAt[friend.id],
+                                        nowTick: nowTick,
+                                    )
                                     Spacer()
-
-                                    Button {
-                                        friendToRename = friend
-                                        newFriendName = friend.name
-                                    } label: {
-                                        Image(systemName: "pencil")
-                                            .font(.title3)
-                                            .foregroundStyle(.gray)
-                                    }
-                                    .buttonStyle(.plain)
 
                                     let isPaused = pausedFriendIds.contains(friend.id)
                                     Button {
@@ -101,6 +78,24 @@ struct FriendsSheet: View {
                                             .foregroundStyle(isPaused ? .blue : .gray)
                                     }
                                     .buttonStyle(.plain)
+
+                                    FriendOverflowMenu(
+                                        friend: friend,
+                                        isPaused: isPaused,
+                                        hasTimer: friendExpiresAt[friend.id] != nil,
+                                        onRename: {
+                                            friendToRename = friend
+                                            newFriendName = friend.name
+                                        },
+                                        onRemove: { friendToRemove = friend },
+                                        onShareFor: { durationSec in
+                                            if let d = durationSec {
+                                                onSetFriendExpiry(friend.id, Int64(Date().timeIntervalSince1970) + d)
+                                            } else {
+                                                onSetFriendExpiry(friend.id, nil)
+                                            }
+                                        },
+                                    )
                                 }
                                 if debugExpandedFriendId == friend.id {
                                     FriendDebugView(friend: friend)
@@ -154,6 +149,12 @@ struct FriendsSheet: View {
             }
             .navigationTitle(MR.strings().friends.localized())
             .navigationBarTitleDisplayMode(.inline)
+            .task {
+                while !Task.isCancelled {
+                    try? await Task.sleep(for: .seconds(60))
+                    nowTick &+= 1
+                }
+            }
             .confirmationDialog(
                 (MR.strings().remove_friend_title.localized()) + " (\(friendToRemove?.name ?? MR.strings().friend_.localized()))?",
                 isPresented: Binding(get: { friendToRemove != nil }, set: { if !$0 { friendToRemove = nil } }),
@@ -179,6 +180,87 @@ struct FriendsSheet: View {
                 }
             }
         }
+    }
+}
+
+private struct FriendInfoColumn: View {
+    let friend: Shared.FriendEntry
+    let lastPing: Date?
+    let expiresAt: Int64?
+    let nowTick: Int
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            let pendingText = "(" + MR.strings().pending.localized() + ")"
+            let displayName: String = friend.isConfirmed ? friend.name : friend.name + " " + pendingText
+            Text(displayName).font(.body)
+            Text(friend.safetyNumber)
+                .font(.caption2)
+                .fontDesign(.monospaced)
+                .foregroundStyle(.secondary)
+            let display = friend.displayState(
+                nowSeconds: Int64(Date().timeIntervalSince1970),
+                lastPingSeconds: lastPing.map { KotlinLong(value: Int64($0.timeIntervalSince1970)) },
+                dimWindowSeconds: PeerDisplayKt.STOPPED_PIN_DIM_WINDOW_SECONDS,
+            )
+            Text(peerSubtitleText(display))
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            if friend.isStale {
+                Text(MR.strings().friend_inactive_warning.localized())
+                    .font(.caption)
+                    .foregroundStyle(.red)
+            }
+            if friend.lastDecryptFailed {
+                Text(MR.strings().decryption_error_warning.localized())
+                    .font(.caption)
+                    .foregroundStyle(.red)
+            }
+            if let exp = expiresAt {
+                // nowTick is a property input; SwiftUI re-evaluates this body whenever
+                // the parent sheet bumps the ticker, so the remaining-time label stays current.
+                let nowSec = Int64(Date().timeIntervalSince1970)
+                let rem = max(0, exp - nowSec)
+                let h = rem / 3600
+                let m = (rem % 3600) / 60
+                let left = h > 0 ? "\(h)h \(m)m" : "\(m)m"
+                Text(MR.strings().sharing_for_remaining.localized(args: [left as NSString]))
+                    .font(.caption)
+                    .foregroundStyle(.blue)
+            }
+        }
+    }
+}
+
+private struct FriendOverflowMenu: View {
+    let friend: Shared.FriendEntry
+    let isPaused: Bool
+    let hasTimer: Bool
+    let onRename: () -> Void
+    let onRemove: () -> Void
+    let onShareFor: (Int64?) -> Void
+
+    var body: some View {
+        Menu {
+            if !isPaused {
+                Section(MR.strings().stop_sharing_after.localized()) {
+                    Button(MR.strings().share_for_30m.localized()) { onShareFor(30 * 60) }
+                    Button(MR.strings().share_for_1h.localized())  { onShareFor(60 * 60) }
+                    Button(MR.strings().share_for_4h.localized())  { onShareFor(4 * 60 * 60) }
+                    Button(MR.strings().share_for_8h.localized())  { onShareFor(8 * 60 * 60) }
+                    if hasTimer {
+                        Button(MR.strings().share_indefinitely.localized()) { onShareFor(nil) }
+                    }
+                }
+            }
+            Button(MR.strings().rename.localized(), systemImage: "pencil") { onRename() }
+            Button(MR.strings().remove.localized(), systemImage: "trash", role: .destructive) { onRemove() }
+        } label: {
+            Image(systemName: "ellipsis.circle")
+                .font(.title3)
+                .foregroundStyle(.gray)
+        }
+        .buttonStyle(.plain)
     }
 }
 

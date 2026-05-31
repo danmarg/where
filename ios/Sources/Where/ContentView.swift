@@ -23,13 +23,9 @@ struct ContentView: View {
             return MR.strings().paused.localized()
         }
         switch locationManager.authorizationStatus {
-        case .notDetermined:
-            return MR.strings().sharing.localized()
         case .denied, .restricted:
             return MR.strings().location_permission_missing.localized()
-        case .authorizedWhenInUse, .authorizedAlways:
-            return MR.strings().sharing.localized()
-        @unknown default:
+        default:
             return MR.strings().sharing.localized()
         }
     }
@@ -96,6 +92,7 @@ struct ContentView: View {
                 pendingInvites: syncService.pendingInvites,
                 pausedFriendIds: syncService.pausedFriendIds,
                 lastPingTimes: syncService.friendLastPing,
+                friendExpiresAt: syncService.friendExpiresAt,
                 onTogglePause: { syncService.togglePauseFriend(id: $0) },
                 onCancelInvite: { invite in
                     Task { await syncService.clearInvite(ekPub: toSwiftData(invite.qrPayload.ekPub)) }
@@ -114,6 +111,7 @@ struct ContentView: View {
                     syncService.processQrUrl(url)
                 },
                 onRemove: { id in Task { await syncService.removeFriend(id: id) } },
+                onSetFriendExpiry: { id, exp in syncService.setFriendExpiry(friendId: id, epochSeconds: exp) },
                 onZoomTo: { friendId in
                     if let loc = syncService.friendLocations[friendId] {
                         zoomTarget = CLLocationCoordinate2D(latitude: loc.lat, longitude: loc.lng)
@@ -308,12 +306,13 @@ struct ContentView: View {
                 if let url = URL(string: UIApplication.openSettingsURLString) {
                     UIApplication.shared.open(url)
                 }
-                return // don't set isSharingLocation = true
+                return
+            case .notDetermined:
+                locationManager.requestPermissionAndStart()
             default:
                 break
             }
             syncService.isSharingLocation = true
-            locationManager.requestPermissionAndStart()
             return
         }
 
@@ -322,17 +321,15 @@ struct ContentView: View {
             locationManager.requestPermissionAndStart()
         case .authorizedWhenInUse:
             // If already sharing but only foreground, offer to upgrade to 'Always'.
-            // Note: We don't toggle isSharingLocation off here; if they 'Skip' the rationale,
-            // we continue sharing in foreground mode.
             showLocationRationale = true
         case .denied, .restricted:
             if let url = URL(string: UIApplication.openSettingsURLString) {
                 UIApplication.shared.open(url)
             }
         case .authorizedAlways:
-            syncService.isSharingLocation = false
+            syncService.stopSharing()
         @unknown default:
-            syncService.isSharingLocation = false
+            syncService.stopSharing()
         }
     }
 }

@@ -111,6 +111,55 @@ class UserStore(private val storage: RawKeyValueStorage) {
         storage.putString(KEY_CAMERA_REQUESTED, requested.toString())
     }
 
+    // ---- Per-friend timed share ------------------------------------------------------------
+
+    /**
+     * Per-friend epoch-seconds at which sharing with that friend auto-pauses.
+     * A friend not in the map shares indefinitely (subject to the global toggle and
+     * pausedFriendIds). Persisted as JSON in KV, like [pausedFriendIds].
+     */
+    private val _friendExpiresAt =
+        MutableStateFlow(loadFriendExpiresAt())
+    val friendExpiresAt: StateFlow<Map<String, Long>> = _friendExpiresAt.asStateFlow()
+
+    private fun loadFriendExpiresAt(): Map<String, Long> {
+        val str = storage.getString(KEY_FRIEND_EXPIRES_AT) ?: return emptyMap()
+        return try {
+            json.decodeFromString<Map<String, Long>>(str)
+        } catch (_: Exception) {
+            emptyMap()
+        }
+    }
+
+    private fun persistFriendExpiresAt(map: Map<String, Long>) {
+        storage.putString(KEY_FRIEND_EXPIRES_AT, json.encodeToString(map))
+    }
+
+    fun setFriendExpiry(friendId: String, epochSeconds: Long?) {
+        _friendExpiresAt.update { current ->
+            val new = if (epochSeconds == null) current - friendId else current + (friendId to epochSeconds)
+            persistFriendExpiresAt(new)
+            new
+        }
+    }
+
+    fun removeFriendExpiry(friendId: String) = setFriendExpiry(friendId, null)
+
+    /**
+     * Source-of-truth set of friends that must not receive Location messages right now,
+     * combining the user's explicit pause list with any per-friend timer that has elapsed.
+     * Every send-path gate uses this — the per-friend watcher is the fast path that
+     * propagates expiry → persisted pause + StoppedSharing, but this set is the hard
+     * guarantee that no Location slips through in the window before the watcher fires.
+     */
+    fun effectivelyPausedIds(nowSeconds: Long = currentTimeSeconds()): Set<String> {
+        val expired = _friendExpiresAt.value.entries.asSequence()
+            .filter { (_, expiry) -> nowSeconds >= expiry }
+            .map { it.key }
+            .toSet()
+        return if (expired.isEmpty()) _pausedFriendIds.value else _pausedFriendIds.value + expired
+    }
+
     companion object {
         private const val KEY_IS_SHARING = "is_sharing"
         private const val KEY_DISPLAY_NAME = "display_name"
@@ -119,5 +168,6 @@ class UserStore(private val storage: RawKeyValueStorage) {
         private const val KEY_LAST_LNG = "last_lng"
         private const val KEY_LAST_ZOOM = "last_zoom"
         private const val KEY_CAMERA_REQUESTED = "camera_requested"
+        private const val KEY_FRIEND_EXPIRES_AT = "friend_expires_at"
     }
 }

@@ -2,6 +2,8 @@ package net.af0.where
 
 import androidx.compose.runtime.Composable
 import dev.icerock.moko.resources.compose.stringResource
+import java.text.DateFormat
+import java.util.Date
 import net.af0.where.shared.MR
 
 @Composable
@@ -20,4 +22,18 @@ fun timeAgoStringFromSeconds(timestampSeconds: Long?): String {
         seconds < 86400 -> stringResource(MR.strings.h_ago, seconds / 3600)
         else -> stringResource(MR.strings.d_ago, seconds / 86400)
     }
+}
+
+private fun formatLocalTime(epochSeconds: Long): String =
+    DateFormat.getTimeInstance(DateFormat.SHORT).format(Date(epochSeconds * 1000L))
+
+private fun formatLocalDate(epochSeconds: Long): String =
+    DateFormat.getDateInstance(DateFormat.SHORT).format(Date(epochSeconds * 1000L))
+
+@Composable
+fun peerSubtitleText(display: PeerDisplay): String = when (display) {
+    is PeerDisplay.StoppedRecently -> stringResource(MR.strings.peer_stopped_at, formatLocalTime(display.timestampSeconds))
+    is PeerDisplay.StoppedLongAgo -> stringResource(MR.strings.peer_stopped_on, formatLocalDate(display.timestampSeconds))
+    is PeerDisplay.StationarySince -> stringResource(MR.strings.peer_here_since, formatLocalTime(display.timestampSeconds))
+    is PeerDisplay.LastSeen -> timeAgoStringFromSeconds(display.timestampSeconds)
 }

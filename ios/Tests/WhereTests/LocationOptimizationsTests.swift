@@ -28,9 +28,9 @@ class LocationOptimizationsTests: XCTestCase {
     @MainActor
     class MockLocationClient: LocationSyncServiceTests.MockLocationClient {
         var sendLocationCallCount = 0
-        override func sendLocation(lat: Double, lng: Double, pausedFriendIds: Set<String>) async throws {
+        override func sendLocation(lat: Double, lng: Double, pausedFriendIds: Set<String>, stationary: Bool) async throws {
             sendLocationCallCount += 1
-            try await super.sendLocation(lat: lat, lng: lng, pausedFriendIds: pausedFriendIds)
+            try await super.sendLocation(lat: lat, lng: lng, pausedFriendIds: pausedFriendIds, stationary: stationary)
         }
     }
 
