@@ -794,9 +794,7 @@ For a **Stopped-Sharing** notice (`"type": "stop"`):
 *   `ts` (int): Sender's wall-clock at the moment sharing was stopped. The recipient uses this to render the terminal state ("stopped sharing at HH:mm"). See §5.7.2 for sender obligations after emitting this message.
 
 **Legacy decoder fallback (receivers only):**
-*   A plaintext object containing `"lat"` but no `"type"` field MUST decode as a `Location` with `stationary = false`.
-*   The literal `{}` MUST decode as a `Keepalive`.
-*   Any other `"type"` value MUST decode as a `Keepalive` (forward-compat).
+For interoperability with pre-`"type"` senders, a plaintext object missing the `"type"` field is dispatched by structure: an object containing `"lat"` decodes as a `Location`; the literal `{}` decodes as a `Keepalive`. Any other `"type"` value MUST decode as a `Keepalive` (forward-compat, §5.7.3). This fallback exists only to bridge the rollout and may be removed once old senders are no longer in the field.
 
 New senders MUST emit the explicit `"type"` form for every variant they produce.
 
