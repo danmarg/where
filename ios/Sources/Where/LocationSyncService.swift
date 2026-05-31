@@ -157,7 +157,7 @@ final class LocationSyncService: ObservableObject {
     // Injectable sleep used for the GPS-fix fallback timeout. Tests replace this
     // with an instant or controllable variant so they don't wait real walltime.
     var sleepForFixTimeout: @Sendable (TimeInterval) async throws -> Void = { seconds in
-        try await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+        try await Task.sleep(for: .seconds(seconds))
     }
     private var awaitingFirstUpdateIds: Set<String> = []
     // Monotonically increasing counter used to prevent stale task cleanup from
@@ -607,7 +607,7 @@ final class LocationSyncService: ObservableObject {
         // socket that never reaches a cancellation checkpoint), the defer block never fires and
         // isPollInFlight would stick permanently. Reset it after 90s regardless.
         let watchdog = Task { @MainActor [weak self] in
-            try? await Task.sleep(nanoseconds: 90_000_000_000)
+            try? await Task.sleep(for: .seconds(90))
             guard let self, self.isPollInFlight else { return }
             logger.warning("pollAll: watchdog resetting stuck isPollInFlight")
             self.isPollInFlight = false

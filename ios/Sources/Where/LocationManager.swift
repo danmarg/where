@@ -172,12 +172,12 @@ final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelega
         // Heartbeats are handled by LocationSyncService.pollAll() which is driven by
         // the existing tick() timer, so no separate heartbeat task is needed here.
         updatesTask = Task { @MainActor in
-            var retryDelay: UInt64 = 5_000_000_000
+            var retryDelay: Duration = .seconds(5)
             while !Task.isCancelled {
                 do {
                     for try await update in CLLocationUpdate.liveUpdates() {
                         if Task.isCancelled { break }
-                        retryDelay = 5_000_000_000  // reset on successful stream
+                        retryDelay = .seconds(5)  // reset on successful stream
 
                         guard let loc = update.location else { continue }
                         self.location = loc
@@ -197,7 +197,7 @@ final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelega
                             if self.stationaryTask == nil {
                                 self.stationaryTask = Task { @MainActor in
                                     do {
-                                        try await Task.sleep(nanoseconds: 5 * 60 * 1_000_000_000)
+                                        try await Task.sleep(for: .seconds(5 * 60))
                                         if !Task.isCancelled {
                                             self.enterLowPowerMode(at: loc)
                                         }
@@ -228,8 +228,8 @@ final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelega
                 }
 
                 if Task.isCancelled { break }
-                try? await Task.sleep(nanoseconds: retryDelay)
-                retryDelay = min(retryDelay * 2, 60_000_000_000)  // cap at 60s
+                try? await Task.sleep(for: retryDelay)
+                retryDelay = min(retryDelay * 2, .seconds(60))  // cap at 60s
             }
         }
 
