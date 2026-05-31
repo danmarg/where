@@ -76,6 +76,16 @@ fun FriendsSheet(
     var debugExpandedFriendId by remember { mutableStateOf<String?>(null) }
     var showDiagnosticLog by remember { mutableStateOf(false) }
 
+    // Live countdown for any active per-friend timer. Recomposing rows that read
+    // [nowSecTicker] re-evaluate their "Sharing for Xh Ym" labels each minute.
+    var nowSecTicker by remember { mutableStateOf(System.currentTimeMillis() / 1000L) }
+    androidx.compose.runtime.LaunchedEffect(friendExpiresAt.isEmpty()) {
+        while (friendExpiresAt.isNotEmpty()) {
+            kotlinx.coroutines.delay(60_000L)
+            nowSecTicker = System.currentTimeMillis() / 1000L
+        }
+    }
+
     ModalBottomSheet(onDismissRequest = onDismiss) {
         Column(
             modifier =
@@ -187,7 +197,7 @@ fun FriendsSheet(
                                     }
                                     val expiresAt = friendExpiresAt[friend.id]
                                     if (expiresAt != null) {
-                                        val rem = (expiresAt - nowSec).coerceAtLeast(0L)
+                                        val rem = (expiresAt - nowSecTicker).coerceAtLeast(0L)
                                         val h = rem / 3600
                                         val m = (rem % 3600) / 60
                                         val left = if (h > 0) "${h}h ${m}m" else "${m}m"

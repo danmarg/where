@@ -26,6 +26,8 @@ struct FriendsSheet: View {
     @State private var pastedUrl = ""
     @State private var debugExpandedFriendId: String? = nil
     @State private var showDiagnosticLog = false
+    /// Ticks each minute so any active "Sharing for Xh Ym" label re-renders live.
+    @State private var nowTick: Int = 0
 
     var body: some View {
         NavigationStack {
@@ -59,44 +61,12 @@ struct FriendsSheet: View {
                         ForEach(friends, id: \.id) { friend in
                             VStack(alignment: .leading, spacing: 0) {
                                 HStack {
-                                    VStack(alignment: .leading, spacing: 2) {
-                                        let pendingText = "(" + MR.strings().pending.localized() + ")"
-                                        let displayName = friend.isConfirmed ? friend.name : "\(friend.name) \(pendingText)"
-                                        Text(displayName)
-                                            .font(.body)
-                                        Text(friend.safetyNumber)
-                                            .font(.caption2)
-                                            .fontDesign(.monospaced)
-                                            .foregroundStyle(.secondary)
-                                        let display = friend.displayState(
-                                            nowSeconds: Int64(Date().timeIntervalSince1970),
-                                            lastPingSeconds: lastPingTimes[friend.id].map { KotlinLong(value: Int64($0.timeIntervalSince1970)) },
-                                            dimWindowSeconds: PeerDisplayKt.STOPPED_PIN_DIM_WINDOW_SECONDS,
-                                        )
-                                        Text(peerSubtitleText(display))
-                                            .font(.caption)
-                                            .foregroundStyle(.secondary)
-                                        if friend.isStale {
-                                            Text(MR.strings().friend_inactive_warning.localized())
-                                                .font(.caption)
-                                                .foregroundStyle(.red)
-                                        }
-                                        if friend.lastDecryptFailed {
-                                            Text(MR.strings().decryption_error_warning.localized())
-                                                .font(.caption)
-                                                .foregroundStyle(.red)
-                                        }
-                                        if let exp = friendExpiresAt[friend.id] {
-                                            let nowSec = Int64(Date().timeIntervalSince1970)
-                                            let rem = max(0, exp - nowSec)
-                                            let h = rem / 3600
-                                            let m = (rem % 3600) / 60
-                                            let left = h > 0 ? "\(h)h \(m)m" : "\(m)m"
-                                            Text(String(format: MR.strings().sharing_for_remaining.localized(), left))
-                                                .font(.caption)
-                                                .foregroundStyle(.blue)
-                                        }
-                                    }
+                                    FriendInfoColumn(
+                                        friend: friend,
+                                        lastPing: lastPingTimes[friend.id],
+                                        expiresAt: friendExpiresAt[friend.id],
+                                        nowTick: nowTick,
+                                    )
                                     Spacer()
 
                                     FriendOverflowMenu(
@@ -170,6 +140,12 @@ struct FriendsSheet: View {
             }
             .navigationTitle(MR.strings().friends.localized())
             .navigationBarTitleDisplayMode(.inline)
+            .task {
+                while !Task.isCancelled {
+                    try? await Task.sleep(nanoseconds: 60 * 1_000_000_000)
+                    nowTick &+= 1
+                }
+            }
             .confirmationDialog(
                 (MR.strings().remove_friend_title.localized()) + " (\(friendToRemove?.name ?? MR.strings().friend_.localized()))?",
                 isPresented: Binding(get: { friendToRemove != nil }, set: { if !$0 { friendToRemove = nil } }),
@@ -193,6 +169,55 @@ struct FriendsSheet: View {
                 Button(MR.strings().cancel.localized(), role: .cancel) {
                     friendToRename = nil
                 }
+            }
+        }
+    }
+}
+
+private struct FriendInfoColumn: View {
+    let friend: Shared.FriendEntry
+    let lastPing: Date?
+    let expiresAt: Int64?
+    let nowTick: Int
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            let pendingText = "(" + MR.strings().pending.localized() + ")"
+            let displayName: String = friend.isConfirmed ? friend.name : friend.name + " " + pendingText
+            Text(displayName).font(.body)
+            Text(friend.safetyNumber)
+                .font(.caption2)
+                .fontDesign(.monospaced)
+                .foregroundStyle(.secondary)
+            let display = friend.displayState(
+                nowSeconds: Int64(Date().timeIntervalSince1970),
+                lastPingSeconds: lastPing.map { KotlinLong(value: Int64($0.timeIntervalSince1970)) },
+                dimWindowSeconds: PeerDisplayKt.STOPPED_PIN_DIM_WINDOW_SECONDS,
+            )
+            Text(peerSubtitleText(display))
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            if friend.isStale {
+                Text(MR.strings().friend_inactive_warning.localized())
+                    .font(.caption)
+                    .foregroundStyle(.red)
+            }
+            if friend.lastDecryptFailed {
+                Text(MR.strings().decryption_error_warning.localized())
+                    .font(.caption)
+                    .foregroundStyle(.red)
+            }
+            if let exp = expiresAt {
+                // Use nowTick in an .id() so SwiftUI re-renders this row each minute.
+                let nowSec = Int64(Date().timeIntervalSince1970)
+                let rem = max(0, exp - nowSec)
+                let h = rem / 3600
+                let m = (rem % 3600) / 60
+                let left = h > 0 ? "\(h)h \(m)m" : "\(m)m"
+                Text(String(format: MR.strings().sharing_for_remaining.localized(), left))
+                    .font(.caption)
+                    .foregroundStyle(.blue)
+                    .id(nowTick)
             }
         }
     }
