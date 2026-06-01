@@ -47,7 +47,6 @@ data class SessionState(
     // localDhPriv MUST be persisted across app restarts to allow DH ratcheting.
     @Serializable(with = ByteArrayBase64Serializer::class) val localDhPriv: ByteArray,
     @Serializable(with = ByteArrayBase64Serializer::class) val localDhPub: ByteArray,
-    @Serializable(with = ByteArrayBase64Serializer::class) val prevLocalDhPub: ByteArray = ByteArray(0),
     @Serializable(with = ByteArrayBase64Serializer::class) val remoteDhPub: ByteArray,
     @Serializable(with = ByteArrayBase64Serializer::class) val aliceEkPub: ByteArray,
     @Serializable(with = ByteArrayBase64Serializer::class) val bobEkPub: ByteArray,
@@ -56,7 +55,6 @@ data class SessionState(
     @Serializable(with = ByteArrayBase64Serializer::class) val localFp: ByteArray = ByteArray(0),
     @Serializable(with = ByteArrayBase64Serializer::class) val remoteFp: ByteArray = ByteArray(0),
     @Serializable(with = ByteArrayBase64Serializer::class) val prevSendToken: ByteArray,
-    @Serializable(with = ByteArrayBase64Serializer::class) val prevSendChainKey: ByteArray = ByteArray(0),
     @Serializable(with = ByteArrayBase64Serializer::class) val prevSendHeaderKey: ByteArray = ByteArray(0),
     val isAlice: Boolean,
     // REPLAY PROTECTION & OUT-OF-ORDER SUPPORT
@@ -89,10 +87,8 @@ data class SessionState(
             sendToken = sendToken.copyOf(),
             recvToken = recvToken.copyOf(),
             localDhPriv = localDhPriv.copyOf(),
-            prevSendChainKey = prevSendChainKey.copyOf(),
             prevSendHeaderKey = prevSendHeaderKey.copyOf(),
             localDhPub = localDhPub.copyOf(),
-            prevLocalDhPub = prevLocalDhPub.copyOf(),
             remoteDhPub = remoteDhPub.copyOf(),
             aliceEkPub = aliceEkPub.copyOf(),
             bobEkPub = bobEkPub.copyOf(),
@@ -118,7 +114,6 @@ data class SessionState(
             recvSeq == other.recvSeq &&
             localDhPriv.contentEquals(other.localDhPriv) &&
             localDhPub.contentEquals(other.localDhPub) &&
-            prevLocalDhPub.contentEquals(other.prevLocalDhPub) &&
             remoteDhPub.contentEquals(other.remoteDhPub) &&
             aliceEkPub.contentEquals(other.aliceEkPub) &&
             bobEkPub.contentEquals(other.bobEkPub) &&
@@ -127,7 +122,6 @@ data class SessionState(
             localFp.contentEquals(other.localFp) &&
             remoteFp.contentEquals(other.remoteFp) &&
             prevSendToken.contentEquals(other.prevSendToken) &&
-            prevSendChainKey.contentEquals(other.prevSendChainKey) &&
             prevSendHeaderKey.contentEquals(other.prevSendHeaderKey) &&
             isAlice == other.isAlice &&
             skippedMessageKeys.size == other.skippedMessageKeys.size &&
@@ -150,7 +144,6 @@ data class SessionState(
         h = 31 * h + recvSeq.hashCode()
         h = 31 * h + localDhPriv.contentHashCode()
         h = 31 * h + localDhPub.contentHashCode()
-        h = 31 * h + prevLocalDhPub.contentHashCode()
         h = 31 * h + remoteDhPub.contentHashCode()
         h = 31 * h + aliceEkPub.contentHashCode()
         h = 31 * h + bobEkPub.contentHashCode()
@@ -159,7 +152,6 @@ data class SessionState(
         h = 31 * h + localFp.contentHashCode()
         h = 31 * h + remoteFp.contentHashCode()
         h = 31 * h + prevSendToken.contentHashCode()
-        h = 31 * h + prevSendChainKey.contentHashCode()
         h = 31 * h + prevSendHeaderKey.contentHashCode()
         h = 31 * h + isAlice.hashCode()
         // Content-based hash for collections containing ByteArrays

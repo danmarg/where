@@ -648,7 +648,7 @@ SessionState {
 }
 ```
 
-**Note on Alice's Initial State:** Due to the eager ratchet step performed in `aliceProcessInit` (§4.4), Alice's initial session state will already have `isSendTokenPending = true` and `local_dh_pub` set to $A_1$, with $A_0$ stored in `prev_local_dh_pub`. Bob's initial state remains in Epoch 0 until he receives Alice's first message.
+**Note on Alice's Initial State:** Due to the eager ratchet step performed in `aliceProcessInit` (§4.4), Alice's initial session state will already have `isSendTokenPending = true` and `local_dh_pub` set to $A_1$. Bob's initial state remains in Epoch 0 until he receives Alice's first message.
 
 ### 8.3 Ratchet Step Functions
 
