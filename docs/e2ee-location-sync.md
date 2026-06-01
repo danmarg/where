@@ -362,6 +362,8 @@ If Alice ratchets her DH key from `dh_1` to `dh_2`, Bob may receive `Msg(dh_2, s
 
 This ensures that gaps are filled deterministically even when the metadata needed for gap calculation is hidden behind the AEAD boundary.
 
+**Scope:** the cross-epoch reorder guarantee above applies to messages that arrive *in the same batch* (`decryptAndSort` orders previous-epoch frames before current-epoch ones, and the cache lookup uses a pre-decrypted header — see §8.3.1). A previous-epoch straggler that arrives in a *later* poll than the one that triggered the ratchet will fail `tryDecryptHeader`, because the receiver retains only the current and next receive header keys (§8.3.1(6)) — the previous epoch's receive header key is discarded on DH ratchet. For location samples this is invisible (next update supersedes); for sticky state transitions (`stop`, `stationary`) it can produce a brief UI glitch until the sender's next message arrives. Closing this gap would be a purely local state addition (retain `prev_recv_header_key` for a bounded window) — no wire change — and can be added later if it proves to matter in practice.
+
 ### 5.4 Routing Token Rotation and Reliability (Epoch Transitions)
 
 Routing tokens are derived from the current root key. Whenever the DH ratchet advances and a new root key is derived, new routing tokens are computed.
