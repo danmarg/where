@@ -101,7 +101,7 @@ For threat models that include a metadata-analyzing server, the mitigations in �
 Across-epoch replay protection comes from header-key rotation: the recipient retains only the current and next receive header keys, so a replayed frame from a retired epoch fails header decryption (`tryDecryptHeader`) and is discarded before any ratchet logic runs. See §8.3.1(6).
 - **Ciphertext forgery.** ChaCha20-Poly1305 authentication tags cover both the ciphertext and associated data. Metadata (DH public key and sequence number) is sealed within an encrypted envelope, preventing a malicious server from reading or correlating them across token rotations.
 - **Ratchet hijacking.** All messages are AEAD-encrypted under keys derived from the current session root key and symmetric chains. An attacker without session state or header keys cannot forge or inject valid messages.
-- **Key mismatch at bootstrap.** The `key_confirmation` field in `KeyExchangeInit` (§4.2) detects corruption or bit-flips in `EK_B.pub` in transit. It does NOT authenticate the origin of the QR code or defeat an active MITM who can intercept and substitute the initial ephemeral key material. Trust establishment relies on TOFU + Safety Number verification (§3.4).
+- **Key mismatch at bootstrap.** The `key_confirmation` field in `KeyExchangeInit` (§4.2) detects corruption or bit-flips in `EK_B.pub` in transit — Alice recomputes the MAC and rejects on mismatch. It does NOT authenticate the origin of the QR code or defeat an active MITM who can intercept and substitute the initial ephemeral key material; trust establishment relies on TOFU + Safety Number verification (§3.4). It is also NOT the primary defense against an attacker substituting `EK_B.pub` with a low-order curve point (which would coerce `SK` to a known constant): defense against that class lives at the X25519 layer — see §4.3 *Public-Key Validation*.
 
 To ensure robustness against network failures, the protocol employs **Server-side Idempotency** and **Client-side Write Ahead Logging (WAL)**:
 - **Unique Message IDs:** Every message (encrypted frame or handshake) includes a unique `msg_id` (derived from the ciphertext or public key).
@@ -248,6 +248,12 @@ K_confirm = HKDF-SHA-256(ikm=SK, salt=null, info="Where-v1-ConfirmKey", length=3
 key_confirmation = HMAC-SHA-256(key  = K_confirm,
                                 data = "Where-v1-Confirm" || EK_A.pub || EK_B.pub)
 ```
+
+**Public-Key Validation.** All X25519 operations in this protocol (the `SK` derivation above and every DH ratchet step in §8.3) MUST reject low-order or otherwise invalid public keys. An attacker who substitutes a low-order point for `EK_B.pub` (or for a later ratchet `dh_pub`) could otherwise coerce the X25519 output to a known constant (typically all-zero), compromising forward secrecy and enabling key confirmation to pass under attacker-known inputs.
+
+The reference implementation relies on libsodium's `crypto_scalarmult_curve25519`, which returns an error for all 7 canonical low-order points listed in its blacklist (`0`, `1`, the two cofactor-order generators from cr.yp.to/ecdh.html, and `p-1`, `p`, `p+1`). Our wrappers propagate this as an exception (`shared/.../e2ee/CryptoPrimitivesImpl.kt`), which `KeyExchange` and `Session` surface as a session-creation or message-decryption failure. The regression guard lives in `shared/.../e2ee/X25519LowOrderPointTest.kt`.
+
+Implementations using a different X25519 library MUST add an equivalent check: either reject the input against the published low-order point list (RFC 7748 §6.1) or verify in constant time that the X25519 output is not all-zero.
 
 Both parties initialize their Double Ratchet state (§8.2) seeded with a root key derived from `SK`. Alice and Bob expand `SK` over 192 bytes to obtain initial chain keys, the starting root key, and the initial header keys:
 
