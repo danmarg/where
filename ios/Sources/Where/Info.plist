@@ -21,7 +21,7 @@
 	<key>CFBundleShortVersionString</key>
 	<string>$(MARKETING_VERSION)</string>
 	<key>CFBundleVersion</key>
-	<string>$(CURRENT_PROJECT_VERSION)</string>
+	<string>5</string>
 	<key>NSCameraUsageDescription</key>
 	<string>Where needs the camera to scan friend invite QR codes.</string>
 	<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
