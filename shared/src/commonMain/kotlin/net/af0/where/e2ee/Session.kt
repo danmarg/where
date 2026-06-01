@@ -255,8 +255,23 @@ object Session {
                 try {
                     aeadDecrypt(finalStep.messageKey, finalStep.messageNonce, message.ct, aad)
                 } catch (e: Exception) {
-                    // Decryption failure: We still want to persist the ratcheted state if the header
-                    // authenticated, to prevent permanent DH desync (§5.5).
+                    // Decryption failure. We persist the ratcheted state if the header
+                    // authenticated, to prevent permanent DH desync (§5.5), AND cache the
+                    // message key for `seq` itself so that a later genuine copy of the same
+                    // message — e.g. the clean original after a malicious server bit-flipped
+                    // the first delivery — can still decrypt via the skipped-key cache path
+                    // instead of failing the recvSeq replay check.
+                    // (Deliberate deviation from spec §8.3.1(4); see spec note.)
+                    val seqCacheKey = remoteDhPub.toHex() + ":" + seq
+                    derivationSkippedKeys[seqCacheKey] =
+                        finalStep.messageKey + finalStep.messageNonce + longToBeBytes(now)
+                    if (derivationSkippedKeys.size > MAX_SKIPPED_KEYS) {
+                        val oldestKey = derivationSkippedKeys.keys.first()
+                        if (oldestKey != seqCacheKey) {
+                            derivationSkippedKeys[oldestKey]?.zeroize()
+                            derivationSkippedKeys.remove(oldestKey)
+                        }
+                    }
 
                     val failedState =
                         speculativeState.deepCopy().copy(
@@ -265,7 +280,9 @@ object Session {
                             skippedMessageKeys = derivationSkippedKeys.mapValues { it.value.copyOf() },
                             needsRatchet = cleanState.needsRatchet || isNewDhEpoch,
                         )
-                    // Also wipe any message keys derived during this failed call
+                    // Wipe any speculative intermediate keys derived during this failed call.
+                    // The seq cache entry above is intentionally NOT in addedSkippedKeys —
+                    // failedState already holds a copy of it.
                     addedSkippedKeys.forEach { it.zeroize() }
                     chainKey.zeroize()
                     throw DecryptionExceptionWithState(failedState, e)
