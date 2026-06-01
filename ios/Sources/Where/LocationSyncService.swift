@@ -202,7 +202,7 @@ final class LocationSyncService: ObservableObject {
             self.isDataLoaded = true
             // Apply any persisted per-friend share timer (or fire if already past).
             self.rescheduleFriendExpiryTask()
-            // Start polling AFTER repo.friends/invites are loaded to ensure targetPollInterval is correct.
+            // Start polling AFTER friends/invites are loaded to ensure targetPollInterval is correct.
             self.startPolling()
         }
 
@@ -405,7 +405,7 @@ final class LocationSyncService: ObservableObject {
         // Reset lastPollTime to .distantPast so tick() bypasses its interval guard and fires
         // a poll immediately. A stuck isPollInFlight is handled by pollAll()'s watchdog task.
         lastPollTime = .distantPast
-        // Proactively send own location so repo.friends see us immediately (subject to 30s throttle).
+        // Proactively send own location so friends see us immediately (subject to 30s throttle).
         // sendLocation() updates lastSentTime synchronously, so pollAll()'s heartbeat guard
         // (elapsed >= 300s) will not fire a second send even if a heartbeat was overdue.
         if isSharingLocation, let loc = bestAvailableLocation {
