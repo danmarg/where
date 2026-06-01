@@ -66,4 +66,18 @@ class MessagePlaintextCodecTest {
         val decoded = Session.decodeMessage(future.encodeToByteArray())
         assertTrue(decoded is MessagePlaintext.Keepalive)
     }
+
+    @Test
+    fun malformedStopMissingTsDegradesToKeepalive() {
+        val malformed = """{"type":"stop"}"""
+        val decoded = Session.decodeMessage(malformed.encodeToByteArray())
+        assertTrue(decoded is MessagePlaintext.Keepalive)
+    }
+
+    @Test
+    fun malformedStopWithNonNumericTsDegradesToKeepalive() {
+        val malformed = """{"type":"stop","ts":"not-a-number"}"""
+        val decoded = Session.decodeMessage(malformed.encodeToByteArray())
+        assertTrue(decoded is MessagePlaintext.Keepalive)
+    }
 }

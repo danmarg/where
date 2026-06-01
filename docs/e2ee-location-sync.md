@@ -98,10 +98,10 @@ For threat models that include a metadata-analyzing server, the mitigations in �
 - **Passive eavesdropping.** All location payloads are encrypted with ephemeral symmetric keys derived from a per-friend ratchet. A passive observer with access to ciphertext learns nothing about coordinates.
 - **Replay attacks.** Each message carries a monotonically increasing message number `msg_num` which is also authenticated (as AEAD additional data for the body, and encrypted within the header envelope). The recipient rejects any frame with a counter it has already seen within the same DH epoch. 
 
-Across-epoch replay protection utilizes a sliding window of the most recent 10 DH public keys; replays from older epochs will trigger a speculative ratchet but always fail final AEAD authentication.
+Across-epoch replay protection comes from header-key rotation: the recipient retains only the current and next receive header keys, so a replayed frame from a retired epoch fails header decryption (`tryDecryptHeader`) and is discarded before any ratchet logic runs. See §8.3.1(6).
 - **Ciphertext forgery.** ChaCha20-Poly1305 authentication tags cover both the ciphertext and associated data. Metadata (DH public key and sequence number) is sealed within an encrypted envelope, preventing a malicious server from reading or correlating them across token rotations.
 - **Ratchet hijacking.** All messages are AEAD-encrypted under keys derived from the current session root key and symmetric chains. An attacker without session state or header keys cannot forge or inject valid messages.
-- **Key mismatch at bootstrap.** The `key_confirmation` field in `KeyExchangeInit` (§4.2) detects corruption or bit-flips in `EK_B.pub` in transit. It does NOT authenticate the origin of the QR code or defeat an active MITM who can intercept and substitute the initial ephemeral key material. Trust establishment relies on TOFU + Safety Number verification (§3.4).
+- **Key mismatch at bootstrap.** The `key_confirmation` field in `KeyExchangeInit` (§4.2) detects corruption or bit-flips in `EK_B.pub` in transit — Alice recomputes the MAC and rejects on mismatch. It does NOT authenticate the origin of the QR code or defeat an active MITM who can intercept and substitute the initial ephemeral key material; trust establishment relies on TOFU + Safety Number verification (§3.4). It is also NOT the primary defense against an attacker substituting `EK_B.pub` with a low-order curve point (which would coerce `SK` to a known constant): defense against that class lives at the X25519 layer — see §4.3 *Public-Key Validation*.
 
 To ensure robustness against network failures, the protocol employs **Server-side Idempotency** and **Client-side Write Ahead Logging (WAL)**:
 - **Unique Message IDs:** Every message (encrypted frame or handshake) includes a unique `msg_id` (derived from the ciphertext or public key).
@@ -249,6 +249,12 @@ key_confirmation = HMAC-SHA-256(key  = K_confirm,
                                 data = "Where-v1-Confirm" || EK_A.pub || EK_B.pub)
 ```
 
+**Public-Key Validation.** All X25519 operations in this protocol (the `SK` derivation above and every DH ratchet step in §8.3) MUST reject low-order or otherwise invalid public keys. An attacker who substitutes a low-order point for `EK_B.pub` (or for a later ratchet `dh_pub`) could otherwise coerce the X25519 output to a known constant (typically all-zero), compromising forward secrecy and enabling key confirmation to pass under attacker-known inputs.
+
+The reference implementation relies on libsodium's `crypto_scalarmult_curve25519`, which returns an error for all 7 canonical low-order points listed in its blacklist (`0`, `1`, the two cofactor-order generators from cr.yp.to/ecdh.html, and `p-1`, `p`, `p+1`). Our wrappers propagate this as an exception (`shared/.../e2ee/CryptoPrimitivesImpl.kt`), which `KeyExchange` and `Session` surface as a session-creation or message-decryption failure. The regression guard lives in `shared/.../e2ee/X25519LowOrderPointTest.kt`.
+
+Implementations using a different X25519 library MUST add an equivalent check: either reject the input against the published low-order point list (RFC 7748 §6.1) or verify in constant time that the X25519 output is not all-zero.
+
 Both parties initialize their Double Ratchet state (§8.2) seeded with a root key derived from `SK`. Alice and Bob expand `SK` over 192 bytes to obtain initial chain keys, the starting root key, and the initial header keys:
 
 ```
@@ -358,52 +364,43 @@ If Alice ratchets her DH key from `dh_1` to `dh_2`, Bob may receive `Msg(dh_2, s
 1.  **Speculative Ratchet:** Bob moves to the new DH epoch upon receiving `Msg(dh_2)`.
 2.  **Decryption:** Bob decrypts the payload of `Msg(dh_2)` to extract the **encrypted `prev_chain_len` field** (§7.4).
 3.  **Gap Filling:** The `prev_chain_len` field tells Bob exactly how many messages Alice sent in epoch `dh_1`. Bob goes back to the old chain, derives all remaining keys up to `prev_chain_len`, and stores them in the cache.
-4.  **Historical Delivery:** When `Msg(dh_1, msg_num=last)` eventually arrives, Bob retrieves the key from the cache, verifies the AAD (using the `prev_chain_len` stored in the cache entry), and decrypts.
+4.  **Historical Delivery:** When `Msg(dh_1, msg_num=last)` eventually arrives, Bob retrieves the key from the cache, verifies the AAD, and decrypts.
 
 This ensures that gaps are filled deterministically even when the metadata needed for gap calculation is hidden behind the AEAD boundary.
+
+**Scope:** the cross-epoch reorder guarantee above applies to messages that arrive *in the same batch* (`decryptAndSort` orders previous-epoch frames before current-epoch ones, and the cache lookup uses a pre-decrypted header — see §8.3.1). A previous-epoch straggler that arrives in a *later* poll than the one that triggered the ratchet will fail `tryDecryptHeader`, because the receiver retains only the current and next receive header keys (§8.3.1(6)) — the previous epoch's receive header key is discarded on DH ratchet. For location samples this is invisible (next update supersedes); for sticky state transitions (`stop`, `stationary`) it can produce a brief UI glitch until the sender's next message arrives. Closing this gap would be a purely local state addition (retain `prev_recv_header_key` for a bounded window) — no wire change — and can be added later if it proves to matter in practice.
 
 ### 5.4 Routing Token Rotation and Reliability (Epoch Transitions)
 
 Routing tokens are derived from the current root key. Whenever the DH ratchet advances and a new root key is derived, new routing tokens are computed.
 
-A peer’s mailbox state is identified by its DH public key `dh_pub`, which serves as the canonical epoch identifier. Epoch numbers may exist as an internal convenience, but they are derived from DH ratchet progression and must never be treated as an independent source of truth.
+A peer's mailbox state is identified by its DH public key `dh_pub`, which serves as the canonical epoch identifier. Epoch numbers may exist as an internal convenience, but they are derived from DH ratchet progression and must never be treated as an independent source of truth.
 
 **The Mailbox Synchronization Challenge:**
-In an anonymous mailbox model, a client polling token `T_old` will never see a message posted to `T_new`. To prevent race conditions during epoch transitions, the protocol employs a two-epoch sliding window and authenticated acknowledgments.
+In an anonymous mailbox model, a client polling token `T_old` will never see a message posted to `T_new`. The protocol resolves this with a **transition-message rule** on the send side and a **root-key-advance observation** on the retirement side, rather than a two-token polling window on the receive side.
 
-#### 5.4.1 Send Rule
-A sender MUST send to the peer mailbox token associated with the last **proven** peer DH state.
+#### 5.4.1 Send Rule (Transition Message on Old Token)
+The first message of a new sending epoch (`seq == 1`) MUST be posted to the *previous* send token and encrypted under the *previous* send header key. All subsequent messages in that epoch go to the new send token under the new send header key.
 
-Formally:
-`active_send_target = token_for(highest_peer_dh_pub_seen)`
+This is symmetric by construction: `prev_send_token` is derived from the pre-ratchet root key, which is exactly the token the peer is currently polling for messages from us. When the peer decrypts the transition message, the new `dh_pub` triggers a DH ratchet step that derives a new `recv_token` matching our new `send_token` — so the next message we post will land on the token the peer has rotated to.
 
-- **Bootstrap Rule:** At session bootstrap, neither party has any prior peer DH state. `highest_peer_dh_pub_seen` is initialized to the peer's bootstrap ephemeral public key: Alice initializes it to `EK_B.pub`; Bob initializes it to `EK_A.pub`. Consequently, the `ack_remote_dh_pub` field in the first outbound message MUST be set to that same bootstrap key (`EK_B.pub` for Alice, `EK_A.pub` for Bob). Until the first decrypted peer message arrives and updates this belief, the initial outbound target remains `T_AB_0` and no alternate token is permitted.
-- A sender MUST NOT switch to the next token solely because it locally ratcheted.
-- A sender may switch only after the peer’s newer DH state is observed in a decrypted message and acknowledged by the protocol state machine.
+Implementation: `Session.encryptMessage` selects `prevSendHeaderKey` and `prevSendToken` when `sendSeq + 1 == 1` (`Session.kt:36-41`; `E2eeManager.kt:274`).
 
-#### 5.4.2 Receive Rule (Two-Epoch Sliding Window)
-Each direction keeps at most two active epochs:
-- **current**: The latest verified peer epoch.
-- **previous_pending**: The prior epoch, kept only for safety during transition.
+#### 5.4.2 Receive Rule (Single Active Token)
+The receiver polls exactly one mailbox token at a time (the current `recv_token`). There is no `prev_recv_token` polling — the sender's transition rule (§5.4.1) routes the first new-epoch message onto the token the receiver is already polling. After processing that message, the receiver ratchets forward and switches its polling target to the new `recv_token`.
 
-**Initialization:** At session bootstrap, `prev_recv_token` is unset. The client MUST NOT poll or derive any mailbox token from an unset `prev_recv_token`. `prev_recv_token` becomes valid only after the first inbound message advances the receive ratchet and establishes a previous epoch.
+When a decrypted message carries a new sender `dh_pub`:
+1. Speculatively perform the DH ratchet step (§8.3.1(4) requires this to be committed only after body AEAD authentication succeeds — but see §8.3.1(4) note for the deliberate failed-body liveness deviation).
+2. Update `recv_token` to the value derived from the new root key.
 
-Messages may be accepted from both. When a message is decrypted:
-1. If the sender `dh_pub` is newer than the local view, ratchet forward.
-2. Record that `dh_pub` as `highest_peer_dh_pub_seen`.
-3. Do not retire the previous receive path immediately. Continue accepting messages on the previous token until the retirement condition is satisfied.
+#### 5.4.3 Send-Side Retirement (Observed Root-Key Advance)
+The sender retires its `prev_send_token` (and stops posting fallback retries to it) when it observes an authenticated proof that the peer has processed its new DH key. The proof used here is a successful decryption whose post-ratchet `root_key` is strictly newer than the one in effect when those outbox entries were enqueued — exactly the property an authenticated ack-of-DH would have established, inferred directly from the ratchet instead.
 
-#### 5.4.3 Ack and Retirement Rules
-**Ack Rule:**
-Each message carries an `ack_remote_dh_pub` field, an authenticated claim inside the encrypted header defined as: **the newest peer DH public key for which at least one message has been successfully authenticated and committed to session state.** "Committed" means the AEAD tag verified and the resulting session state was durably saved to local storage; speculative ratchet steps, temporary observations, or replayed historical epochs MUST NOT advance this value.
+Implementation: `E2eeManager` clears outbox entries still targeting `prevSendToken` once `decryptBatch` returns a session with an advanced `rootKey` (`E2eeManager.kt:433-438`).
 
-`ack_remote_dh_pub` is the **only authenticated signal** that a peer has successfully processed a message for the corresponding DH epoch. Implementations MUST use it as the sole basis for retiring `previous_pending`; it MUST NOT be treated as telemetry or as an advisory hint.
+`ack_remote_dh_pub` is carried in the header, authenticated, and bound into the message AAD (`buildMessageAad`) so its value cannot be modified in flight. The implementation does not currently read it for any retirement decision — retirement is fully driven by observed root-key advance. The field is retained on the wire for backwards compatibility and to leave room for a future ack-driven retirement scheme without a wire break.
 
-Before using `ack_remote_dh_pub` for retirement decisions, the receiver MUST validate it against known state. If the value is not one of the bootstrap peer key, the current peer `dh_pub`, or a peer `dh_pub` retained in `previous_pending`, then the receiver MUST ignore it for retirement purposes and continue processing the message normally if the rest of the AEAD authentication succeeds.
-
-**Retirement Rule:** Retire `previous_pending` only after receiving an authenticated `ack_remote_dh_pub` equal to the peer’s previous active `dh_pub`. Implementations MUST compare against a retained peer `dh_pub` value, not against any locally assigned epoch number.
-
-**Secondary Bounded Fallback:** The 7-day timeout is a liveness fallback only. It MAY be used to retire an old mailbox path when server TTL guarantees that the mailbox entry can no longer deliver messages. It MUST NOT be used as a substitute for authenticated acknowledgment during normal operation.
+> **v2 candidate:** removing `ack_remote_dh_pub` would shave 32 bytes per message and drop a vestigial primitive, but it is both a wire break and an AAD break (old and new clients cannot decrypt each other's messages), so it can only ship as part of a forced re-pair / protocol-version bump. Reconsider at the next v2 break; until then, keep.
 
 #### 5.4.4 Duplicate Handling and Batch Ordering
 **Duplicate Handling:**
@@ -583,7 +580,7 @@ Standard Double Ratchet protocols leak the message sequence number (`msg_num`) a
 To mitigate this, Where moves all session metadata into the **encrypted envelope header** (§9.1.1):
 1. **Encrypted Header:** The envelope header includes `dh_pub`, `ack_remote_dh_pub`, `msg_num`, and `prev_chain_len`.
 2. **Post-Decryption Extraction:** The receiver first decrypts the envelope header using the current or next `header_key` and *then* reads the metadata to perform historical gap-filling of the old chain (§5.3).
-3. **Cache Storage:** When storing skipped keys for out-of-order delivery, the receiver stores the active `prev_chain_len` alongside the message key: `(MK_n, Nonce_n, PN_n)`. This ensures that if the message arrives later, the AAD can be re-verified against the correct historical value.
+3. **Cache Storage:** When storing skipped keys for out-of-order delivery, the receiver stores `(MK_n, Nonce_n)` plus an insertion timestamp for age-based eviction. `prev_chain_len` is not included in the AAD (`buildMessageAad`), so it is not retained in the cache entry.
 
 This removes session-related metadata from the server's payload view, but it does not eliminate timing, IP correlation, or polling-pattern leakage.
 
@@ -645,11 +642,10 @@ SessionState {
   bob_ek_pub:         [32]byte        // bootstrap public key EK_B.pub (stable)
   alice_fp:           [32]byte        // SHA-256(EK_A.pub) (stable)
   bob_fp:             [32]byte        // SHA-256(EK_B.pub) (stable)
-  retired_dh_pubs:    Set<[32]byte>   // bounded set of retired peer DH pub keys (max 50) for across-epoch replay rejection
 }
 ```
 
-**Note on Alice's Initial State:** Due to the eager ratchet step performed in `aliceProcessInit` (§4.4), Alice's initial session state will already have `isSendTokenPending = true` and `local_dh_pub` set to $A_1$, with $A_0$ stored in `prev_local_dh_pub`. Bob's initial state remains in Epoch 0 until he receives Alice's first message.
+**Note on Alice's Initial State:** Due to the eager ratchet step performed in `aliceProcessInit` (§4.4), Alice's initial session state will already have `isSendTokenPending = true` and `local_dh_pub` set to $A_1$. Bob's initial state remains in Epoch 0 until he receives Alice's first message.
 
 ### 8.3 Ratchet Step Functions
 
@@ -693,10 +689,12 @@ Each message frame carries a `msg_num` counter. Recipients enforce:
 
 1.  **Replay rejection:** Any frame with `msg_num <= max_msg_num_received` (within the same DH epoch) is dropped, EXCEPT if the key for that message number is present in the **skipped message key cache**.
 2.  **Maximum gap (MAX_GAP):** recipients MUST enforce a maximum gap (default 10,000) for chain advancement to prevent resource exhaustion attacks.
-3.  **OutOfOrder Support:** If a message is skipped (e.g., recipient receives `msg_num=10` after `msg_num=8`), the recipient advances the symmetric ratchet to `msg_num=10` and stores the intermediate message keys in a bounded cache (100 entries).
+3.  **OutOfOrder Support:** If a message is skipped (e.g., recipient receives `msg_num=10` after `msg_num=8`), the recipient advances the symmetric ratchet to `msg_num=10` and stores the intermediate message keys in a bounded cache (1000 entries, `MAX_SKIPPED_KEYS`). The bound is sized to comfortably absorb a full `MAX_MESSAGES_PER_POLL = 500` backlog with headroom.
 4.  **Transactional Commitment:** The receiving state (receiving chain, root key, skipped keys) MUST only be updated if the message AEAD authentication succeeds. The receiving state MUST not be committed earlier.
+
+    *Deliberate deviation in this implementation:* if the header authenticated but the body AEAD failed, the receiver advances `recv_msg_num` and the chain key to prevent permanent DH desync (§5.5), AND caches the message key for the failed `msg_num` itself in `skipped_message_keys`. The motivation: a malicious server can deliver a bit-flipped copy of a genuine message (header is encrypted under a secret key, so the server cannot fabricate one, but it can flip body bytes). Without the cache, when the clean original later arrives in the same batch, it fails the `msg_num <= recv_msg_num` check and is permanently undeliverable. Caching the seq key lets the clean copy decrypt via the skipped-key path. This keeps the deviation inside the existing "server can drop messages" threat boundary.
 5.  **Epoch Transition:** When a message with a new `dh_pub` is received, the `msg_num` counter resets to 0. All skipped message keys belonging to epochs older than the *previous* valid epoch MUST be cleared.
-6.  **Across-Epoch Replay:** Recipients MUST reject any message for an epoch that has already been superseded and retired (§5.4.3). Retired peer DH public keys are stored in `retired_dh_pubs` (§8.2, max 10 entries, evict oldest when full). When a `previous_pending` epoch is retired, its `dh_pub` is added to this set. Any incoming message whose `dh_pub` matches an entry in `retired_dh_pubs` MUST be dropped without further processing.
+6.  **Across-Epoch Replay:** Recipients hold only two receive header keys at any time — the current epoch's `header_key` and the next epoch's `next_header_key`. The previous epoch's receive header key is discarded on DH ratchet (`Session.performDhRatchet`). A replayed frame from a retired epoch therefore fails `tryDecryptHeader` and is dropped before any ratchet logic runs, with no dedicated `retired_dh_pubs` set required. Within-epoch replay is caught by the `msg_num <= recv_msg_num` check plus the single-use skipped-key cache.
 
 
 ---

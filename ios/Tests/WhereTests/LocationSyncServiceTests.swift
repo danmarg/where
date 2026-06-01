@@ -248,7 +248,7 @@ class LocationSyncServiceTests: XCTestCase {
         let isRapidAfterPartial = service.isRapidPolling()
         XCTAssertTrue(isRapidAfterPartial)
 
-        let addedFriendId = service.friends.first?.id ?? ""
+        let addedFriendId = service.repo.friends.first?.id ?? ""
         if !addedFriendId.isEmpty {
             let update2 = Shared.UserLocation(userId: addedFriendId, lat: 3.0, lng: 4.0, timestamp: 456)
             mockClient.pollResult = [update2]
@@ -303,7 +303,7 @@ class LocationSyncServiceTests: XCTestCase {
     }
 
     func testPausedFriendIdsStoredInKeychain() async throws {
-        service.pausedFriendIds = ["friend1", "friend2"]
+        service.repo.pausedFriendIds = ["friend1", "friend2"]
         let stored = mockStorage.getString(key: "paused_friends")
         XCTAssertNotNil(stored)
         XCTAssertTrue(stored?.contains("friend1") == true)
@@ -520,31 +520,31 @@ class LocationSyncServiceTests: XCTestCase {
 
         // Test 1: Scanning a QR code dismisses the invite sheet
         service.isInviteSheetShowing = true
-        service.inviteState = Shared.InviteState.Pending(qr: qr)
+        service.repo.inviteState = Shared.InviteState.Pending(qr: qr)
 
         let qrUrl = qr.toUrl()
         service.processQrUrl(qrUrl)
 
         XCTAssertFalse(service.isInviteSheetShowing, "processQrUrl should dismiss the invite sheet")
-        XCTAssertTrue(service.inviteState is Shared.InviteState.None, "processQrUrl should reset inviteState")
+        XCTAssertTrue(service.repo.inviteState is Shared.InviteState.None, "processQrUrl should reset inviteState")
 
         // Test 2: Confirming a QR scan dismisses the invite sheet
         service.isInviteSheetShowing = true
-        service.inviteState = Shared.InviteState.Pending(qr: qr)
+        service.repo.inviteState = Shared.InviteState.Pending(qr: qr)
 
         await service.confirmQrScan(qr: qr, friendName: "Alice")
 
         XCTAssertFalse(service.isInviteSheetShowing, "confirmQrScan should dismiss the invite sheet")
-        XCTAssertTrue(service.inviteState is Shared.InviteState.None, "confirmQrScan should reset inviteState")
+        XCTAssertTrue(service.repo.inviteState is Shared.InviteState.None, "confirmQrScan should reset inviteState")
 
         // Test 3: Canceling a QR scan dismisses the invite sheet
         service.isInviteSheetShowing = true
-        service.inviteState = Shared.InviteState.Pending(qr: qr)
+        service.repo.inviteState = Shared.InviteState.Pending(qr: qr)
 
         await service.clearInvite()
 
         XCTAssertFalse(service.isInviteSheetShowing, "clearInvite should dismiss the invite sheet")
-        XCTAssertTrue(service.inviteState is Shared.InviteState.None, "clearInvite should reset inviteState")
+        XCTAssertTrue(service.repo.inviteState is Shared.InviteState.None, "clearInvite should reset inviteState")
     }
 
     // MARK: - QR sheet dismissal regression
@@ -593,7 +593,7 @@ class LocationSyncServiceTests: XCTestCase {
         service.endBackgroundTask = { _ in }
 
         // 4. Simulate the QR sheet being open.
-        service.inviteState = Shared.InviteState.Pending(qr: qr)
+        service.repo.inviteState = Shared.InviteState.Pending(qr: qr)
         service.isInviteSheetShowing = true
 
         // 5. Foreground poll — this is the path that must dismiss the sheet.
@@ -605,7 +605,7 @@ class LocationSyncServiceTests: XCTestCase {
             "QR sheet must be dismissed when a scan arrives during pollAll(updateUi:true)"
         )
         XCTAssertNotNil(
-            service.pendingInitPayload,
+            service.repo.pendingInitPayload,
             "pendingInitPayload must be set so the naming dialog appears after the sheet closes"
         )
     }
@@ -648,7 +648,7 @@ class LocationSyncServiceTests: XCTestCase {
         service.beginBackgroundTask = { _, _ in .invalid }
         service.endBackgroundTask = { _ in }
 
-        service.inviteState = Shared.InviteState.Pending(qr: qr)
+        service.repo.inviteState = Shared.InviteState.Pending(qr: qr)
         service.isInviteSheetShowing = true
 
         // Background wakeup path: updateUi is false, but isInviteSheetShowing is true.
@@ -659,7 +659,7 @@ class LocationSyncServiceTests: XCTestCase {
             "QR sheet must be dismissed even when pollAll(updateUi:false) if isInviteSheetShowing is true"
         )
         XCTAssertNotNil(
-            service.pendingInitPayload,
+            service.repo.pendingInitPayload,
             "pendingInitPayload must be set so the naming dialog appears"
         )
     }

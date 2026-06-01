@@ -8,6 +8,7 @@ import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.double
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.long
+import kotlinx.serialization.json.longOrNull
 import kotlinx.serialization.json.put
 
 /**
@@ -87,8 +88,8 @@ object Session {
         while (it.hasNext()) {
             val entry = it.next()
             val v = entry.value
-            // Format: [MK (32) || Nonce (12) || PN (8) || Timestamp (8)]
-            if (v.size >= 60 && (now - bytesToLong(v.copyOfRange(52, 60))) > MAX_KEY_AGE_MS) {
+            // Format: [MK (32) || Nonce (12) || Timestamp (8)]
+            if (v.size >= 52 && (now - bytesToLong(v.copyOfRange(44, 52))) > MAX_KEY_AGE_MS) {
                 v.zeroize()
                 it.remove()
                 modified = true
@@ -128,7 +129,7 @@ object Session {
             val sender = cleanState.remoteFp
             val recipient = cleanState.localFp
 
-            // Cached key format ([§5.5]): [MK (32) || Nonce (12) || PN (8)]
+            // Cached key format (§5.5): [MK (32) || Nonce (12) || Timestamp (8)]
             if (cachedKey.size < 52) throw ProtocolException("invalid cached key size in cache")
             val mk = cachedKey.copyOfRange(0, 32)
             val nonce = cachedKey.copyOfRange(32, 44)
@@ -169,12 +170,11 @@ object Session {
         var speculativeState = cleanState
 
         if (isNewDhEpoch) {
-            // Unified error message to satisfy existing brittle test assertions (§9.2)
-            if (cleanState.prevLocalDhPub.size > 0 && remoteDhPub.contentEquals(cleanState.prevLocalDhPub)) {
-                throw ReplayException("replay: dhPub already superseded")
-            }
-
             // Ratchet state forward. Note: headerKey transition happens inside performDhRatchet.
+            // Across-epoch replays are dropped earlier at the header-decryption stage:
+            // tryDecryptHeader only ever holds the current + next receive header keys
+            // (see §2.2, §8.3.1(6)), so a replayed retired-epoch frame fails to decrypt
+            // its header before any ratchet logic runs.
             speculativeState = performDhRatchet(speculativeState, remoteDhPub)
         }
 
@@ -232,8 +232,8 @@ object Session {
                 val currentSeq = speculativeState.recvSeq + i + 1
                 if (currentSeq < seq) {
                     // Store intermediate message key for future out-of-order delivery.
-                    // Cached format: [MK (32) || Nonce (12) || PN (8) || Timestamp (8)]
-                    val mkPlusNonce = step.messageKey + step.messageNonce + longToBeBytes(speculativeState.pr) + longToBeBytes(now)
+                    // Cached format: [MK (32) || Nonce (12) || Timestamp (8)]
+                    val mkPlusNonce = step.messageKey + step.messageNonce + longToBeBytes(now)
                     addedSkippedKeys.add(mkPlusNonce)
                     val mkKey = remoteDhPub.toHex() + ":" + currentSeq
                     derivationSkippedKeys[mkKey] = mkPlusNonce
@@ -255,8 +255,23 @@ object Session {
                 try {
                     aeadDecrypt(finalStep.messageKey, finalStep.messageNonce, message.ct, aad)
                 } catch (e: Exception) {
-                    // Decryption failure: We still want to persist the ratcheted state if the header
-                    // authenticated, to prevent permanent DH desync (§5.5).
+                    // Decryption failure. We persist the ratcheted state if the header
+                    // authenticated, to prevent permanent DH desync (§5.5), AND cache the
+                    // message key for `seq` itself so that a later genuine copy of the same
+                    // message — e.g. the clean original after a malicious server bit-flipped
+                    // the first delivery — can still decrypt via the skipped-key cache path
+                    // instead of failing the recvSeq replay check.
+                    // (Deliberate deviation from spec §8.3.1(4); see spec note.)
+                    val seqCacheKey = remoteDhPub.toHex() + ":" + seq
+                    derivationSkippedKeys[seqCacheKey] =
+                        finalStep.messageKey + finalStep.messageNonce + longToBeBytes(now)
+                    if (derivationSkippedKeys.size > MAX_SKIPPED_KEYS) {
+                        val oldestKey = derivationSkippedKeys.keys.first()
+                        if (oldestKey != seqCacheKey) {
+                            derivationSkippedKeys[oldestKey]?.zeroize()
+                            derivationSkippedKeys.remove(oldestKey)
+                        }
+                    }
 
                     val failedState =
                         speculativeState.deepCopy().copy(
@@ -265,7 +280,9 @@ object Session {
                             skippedMessageKeys = derivationSkippedKeys.mapValues { it.value.copyOf() },
                             needsRatchet = cleanState.needsRatchet || isNewDhEpoch,
                         )
-                    // Also wipe any message keys derived during this failed call
+                    // Wipe any speculative intermediate keys derived during this failed call.
+                    // The seq cache entry above is intentionally NOT in addedSkippedKeys —
+                    // failedState already holds a copy of it.
                     addedSkippedKeys.forEach { it.zeroize() }
                     chainKey.zeroize()
                     throw DecryptionExceptionWithState(failedState, e)
@@ -301,7 +318,7 @@ object Session {
 
                     val skippedSeq = cleanState.recvSeq + i + 1
                     val mkKey = prevEpochHex + ":" + skippedSeq
-                    updatedCache[mkKey] = step.messageKey + step.messageNonce + longToBeBytes(cleanState.pr) + longToBeBytes(now)
+                    updatedCache[mkKey] = step.messageKey + step.messageNonce + longToBeBytes(now)
 
                     if (updatedCache.size > MAX_SKIPPED_KEYS) {
                         updatedCache.remove(updatedCache.keys.first())?.zeroize()
@@ -363,7 +380,6 @@ object Session {
                 nextHeaderKey = stepSend.newHeaderKey.copyOf(),
                 sendToken = newSendToken,
                 recvToken = newRecvToken,
-                prevSendChainKey = state.sendChainKey.copyOf(),
                 prevSendHeaderKey = state.sendHeaderKey.copyOf(),
                 sendSeq = 0L,
                 recvSeq = 0L,
@@ -371,7 +387,6 @@ object Session {
                 pr = state.recvSeq,
                 localDhPriv = newLocalDh.priv.copyOf(),
                 localDhPub = newLocalDh.pub.copyOf(),
-                prevLocalDhPub = state.localDhPub.copyOf(),
                 remoteDhPub = remoteDhPub.copyOf(),
                 prevSendToken = state.sendToken.copyOf(),
                 needsRatchet = false,
@@ -484,9 +499,13 @@ object Session {
             when (obj["type"]?.jsonPrimitive?.content) {
                 "loc" -> decodeLocation(obj)
                 "ka" -> MessagePlaintext.Keepalive()
-                "stop" -> MessagePlaintext.StoppedSharing(
-                    ts = obj["ts"]!!.jsonPrimitive.long,
-                )
+                "stop" -> {
+                    // Lenient: a malformed "stop" missing/invalid ts degrades to a
+                    // Keepalive instead of hard-failing the whole frame, matching
+                    // the unknown-type behavior below (spec §5.7.3).
+                    val ts = obj["ts"]?.jsonPrimitive?.longOrNull
+                    if (ts != null) MessagePlaintext.StoppedSharing(ts = ts) else MessagePlaintext.Keepalive()
+                }
                 null -> {
                     // Legacy emitter: sniff for "lat" → Location, else Keepalive.
                     if (obj.containsKey("lat")) decodeLocation(obj) else MessagePlaintext.Keepalive()

@@ -549,29 +549,6 @@ class E2eeManager(
         }
     }
 
-    suspend fun sendLocationToAllFriends(
-        lat: Double,
-        lng: Double,
-        acc: Double,
-    ) {
-        val friends = persistence.listFriends()
-        friends.forEach { friend ->
-            if (friend.sharingEnabled) {
-                try {
-                    sendMessageToFriendInternal(friend.id, MessagePlaintext.Location(lat, lng, acc, currentTimeMillis()))
-                } catch (e: Exception) {
-                }
-            }
-        }
-    }
-
-    private suspend fun sendMessageToFriendInternal(
-        friendId: String,
-        payload: MessagePlaintext,
-    ) {
-        encryptAndAdvance(friendId, payload)
-    }
-
     suspend fun decryptSuggestedName(
         aliceEkPub: ByteArray,
         bobEkPub: ByteArray,

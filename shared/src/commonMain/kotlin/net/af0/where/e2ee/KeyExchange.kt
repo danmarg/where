@@ -180,11 +180,9 @@ object KeyExchange {
                     nextHeaderKey = rkStep.newHeaderKey.copyOf(),
                     sendToken = newSendToken,
                     recvToken = session.recvToken.copyOf(),
-                    prevSendChainKey = session.sendChainKey.copyOf(),
                     prevSendHeaderKey = session.sendHeaderKey.copyOf(),
                     localDhPriv = newLocalDh.priv.copyOf(),
                     localDhPub = newLocalDh.pub.copyOf(),
-                    prevLocalDhPub = session.localDhPub.copyOf(),
                     prevSendToken = session.sendToken,
                     pr = session.recvSeq,
                 )
@@ -326,7 +324,6 @@ object KeyExchange {
             recvSeq = 0L,
             localDhPriv = myDhPriv.copyOf(),
             localDhPub = myDhPub.copyOf(),
-            prevLocalDhPub = ByteArray(0), // No previous local DH at bootstrap
             remoteDhPub = theirDhPub.copyOf(),
             aliceEkPub = (if (isAlice) myDhPub else theirDhPub).copyOf(),
             bobEkPub = (if (isAlice) theirDhPub else myDhPub).copyOf(),
@@ -335,7 +332,6 @@ object KeyExchange {
             localFp = (if (isAlice) aliceFp else bobFp).copyOf(),
             remoteFp = (if (isAlice) bobFp else aliceFp).copyOf(),
             prevSendToken = sendToken,
-            prevSendChainKey = sendChainKey.copyOf(),
             prevSendHeaderKey = sendHeaderKey.copyOf(),
             isAlice = isAlice,
             pn = 0L,

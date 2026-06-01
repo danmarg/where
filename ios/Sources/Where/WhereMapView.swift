@@ -5,7 +5,6 @@ import Shared
 struct WhereMapView: UIViewRepresentable {
     let users: [Shared.UserLocation]
     let friends: [Shared.FriendEntry]
-    let friendLastPing: [String: Date]
     var ownLocation: CLLocationCoordinate2D? = nil
     var ownHeading: Double? = nil
     var zoomTarget: CLLocationCoordinate2D? = nil
@@ -79,9 +78,10 @@ func updateUIView(_ mapView: MKMapView, context: Context) {
         var hiddenUserIds = Set<String>()
         for (_, group) in locationGroups {
             for (index, user) in group.enumerated() {
-                let lastPingSec: KotlinLong? = friendLastPing[user.userId].map { KotlinLong(value: Int64($0.timeIntervalSince1970)) }
+                let entry = friendsById[user.userId]
+                let lastPingSec: KotlinLong? = entry?.lastTs
                 let display: Shared.PeerDisplay
-                if let entry = friendsById[user.userId] {
+                if let entry = entry {
                     display = entry.displayState(
                         nowSeconds: nowSec,
                         lastPingSeconds: lastPingSec,
@@ -101,9 +101,8 @@ func updateUIView(_ mapView: MKMapView, context: Context) {
                     coord.latitude += radius * cos(angle)
                     coord.longitude += radius * sin(angle)
                 }
-                let friend = friends.first { $0.id == user.userId }
-                let friendName = friend?.name ?? String(user.userId.prefix(8))
-                let lastPing = friendLastPing[user.userId]
+                let friendName = entry?.name ?? String(user.userId.prefix(8))
+                let lastPing = entry?.lastTs.map { Date(timeIntervalSince1970: TimeInterval($0.int64Value)) }
                 let subtitle = peerSubtitleText(display)
                 let dimmed = display.pinStyle == .dimmed
                 if let pin = existingById[user.userId] {

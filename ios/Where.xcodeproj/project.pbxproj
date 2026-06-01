@@ -17,12 +17,14 @@
 		4E93722722CB32B78B2A4722 /* LocationOptimizationsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BE6003AE49DAF2ACADEE9C38 /* LocationOptimizationsTests.swift */; };
 		5DA2E3F14E66CA37B7867851 /* StringResourceExtensions.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7BE943A4DFDA9252F1EC7A4C /* StringResourceExtensions.swift */; };
 		5EF9E5113CEBF25BACE77F5E /* WhereMapView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2421CE3D6966994F4875E311 /* WhereMapView.swift */; };
+		6071B47BBAFF49285D0DC6E1 /* StringResourceExtensionsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BA018B00DAB55E7127ED8C8E /* StringResourceExtensionsTests.swift */; };
 		60D8A627443A5ADF3F5C00CB /* WhereApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7A1BBBBE8782378C8B03BB4C /* WhereApp.swift */; };
 		6CB91DD32C87A081852B00C4 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D43663670EB5FB46B5C7C4EA /* ContentView.swift */; };
 		6E06317DAA727CD5D54FFF08 /* BrandLaunch.storyboard in Resources */ = {isa = PBXBuildFile; fileRef = B57072E2FB8B41E587A705FF /* BrandLaunch.storyboard */; };
 		879D3942338D8B373CBA6A4E /* Shared.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 4CCEF0D6661013EBFBD2A61F /* Shared.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		907110FAC1EDCF0B63C3B573 /* Shared.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 4CCEF0D6661013EBFBD2A61F /* Shared.xcframework */; };
 		A9DED1D3FE0D23575EFA45B1 /* KeychainRawKeyValueStorage.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4193F83983F122AC92674584 /* KeychainRawKeyValueStorage.swift */; };
+		AC7DB8DCBECB7553B5F757F2 /* FriendSyncRepository.swift in Sources */ = {isa = PBXBuildFile; fileRef = 76A4AA9D14572C4B45F25E76 /* FriendSyncRepository.swift */; };
 		ACE3C7F5E723E981710460E2 /* CoreLocation in Frameworks */ = {isa = PBXBuildFile; fileRef = 18F48F8FCFBE392E06CD2BB3 /* CoreLocation */; };
 		B60DEE3289B4F67659B77C8A /* LocationManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3ADAF0FD19742D151B957FD9 /* LocationManager.swift */; };
 		C6B7D5B6964E195E120267EE /* QrScannerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 220A8EA077B99368AF6DA3D4 /* QrScannerView.swift */; };
@@ -70,11 +72,13 @@
 		4193F83983F122AC92674584 /* KeychainRawKeyValueStorage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeychainRawKeyValueStorage.swift; sourceTree = "<group>"; };
 		4CCEF0D6661013EBFBD2A61F /* Shared.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = Shared.xcframework; path = "../shared/build/XCFrameworks/$(CONFIGURATION:lower)/Shared.xcframework"; sourceTree = "<group>"; };
 		5DBE659D6FC99FBE57AB21DB /* QrCodeView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QrCodeView.swift; sourceTree = "<group>"; };
+		76A4AA9D14572C4B45F25E76 /* FriendSyncRepository.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FriendSyncRepository.swift; sourceTree = "<group>"; };
 		7A1BBBBE8782378C8B03BB4C /* WhereApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WhereApp.swift; sourceTree = "<group>"; };
 		7BE943A4DFDA9252F1EC7A4C /* StringResourceExtensions.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StringResourceExtensions.swift; sourceTree = "<group>"; };
 		9849DF78DF23CE90DE4F7F10 /* LocationSyncServiceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocationSyncServiceTests.swift; sourceTree = "<group>"; };
 		AC2B156B7AAD99EBB5C7C775 /* KotlinByteArrayUtils.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KotlinByteArrayUtils.swift; sourceTree = "<group>"; };
 		B57072E2FB8B41E587A705FF /* BrandLaunch.storyboard */ = {isa = PBXFileReference; lastKnownFileType = file.storyboard; path = BrandLaunch.storyboard; sourceTree = "<group>"; };
+		BA018B00DAB55E7127ED8C8E /* StringResourceExtensionsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StringResourceExtensionsTests.swift; sourceTree = "<group>"; };
 		BE6003AE49DAF2ACADEE9C38 /* LocationOptimizationsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocationOptimizationsTests.swift; sourceTree = "<group>"; };
 		C57BAEE960002A54C33DAF06 /* CoreMotion */ = {isa = PBXFileReference; path = CoreMotion; sourceTree = "<group>"; };
 		CFF6771BE7FE45B2F4F8952B /* MapKit */ = {isa = PBXFileReference; path = MapKit; sourceTree = "<group>"; };
@@ -140,6 +144,7 @@
 				B57072E2FB8B41E587A705FF /* BrandLaunch.storyboard */,
 				D43663670EB5FB46B5C7C4EA /* ContentView.swift */,
 				28DD2FC8358389E8C9F6ABE6 /* FriendsSheet.swift */,
+				76A4AA9D14572C4B45F25E76 /* FriendSyncRepository.swift */,
 				1D232AA64C61387DE75E8145 /* Info.plist */,
 				4193F83983F122AC92674584 /* KeychainRawKeyValueStorage.swift */,
 				AC2B156B7AAD99EBB5C7C775 /* KotlinByteArrayUtils.swift */,
@@ -181,6 +186,7 @@
 			children = (
 				BE6003AE49DAF2ACADEE9C38 /* LocationOptimizationsTests.swift */,
 				9849DF78DF23CE90DE4F7F10 /* LocationSyncServiceTests.swift */,
+				BA018B00DAB55E7127ED8C8E /* StringResourceExtensionsTests.swift */,
 			);
 			path = WhereTests;
 			sourceTree = "<group>";
@@ -203,6 +209,8 @@
 			dependencies = (
 			);
 			name = Where;
+			packageProductDependencies = (
+			);
 			productName = Where;
 			productReference = EA47D2499F3983EF98B459AB /* Where.app */;
 			productType = "com.apple.product-type.application";
@@ -219,6 +227,8 @@
 				A16788C8831A1120EA429060 /* PBXTargetDependency */,
 			);
 			name = WhereTests;
+			packageProductDependencies = (
+			);
 			productName = WhereTests;
 			productReference = 2785C3E616D50F787106E3D5 /* WhereTests.xctest */;
 			productType = "com.apple.product-type.bundle.unit-test";
@@ -298,6 +308,7 @@
 			files = (
 				4E93722722CB32B78B2A4722 /* LocationOptimizationsTests.swift in Sources */,
 				2F25461E66995FAC063DAD07 /* LocationSyncServiceTests.swift in Sources */,
+				6071B47BBAFF49285D0DC6E1 /* StringResourceExtensionsTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -306,6 +317,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				6CB91DD32C87A081852B00C4 /* ContentView.swift in Sources */,
+				AC7DB8DCBECB7553B5F757F2 /* FriendSyncRepository.swift in Sources */,
 				296E222ADF2ED6BA05F597CC /* FriendsSheet.swift in Sources */,
 				A9DED1D3FE0D23575EFA45B1 /* KeychainRawKeyValueStorage.swift in Sources */,
 				FC1918F51962F01656F21EE5 /* KotlinByteArrayUtils.swift in Sources */,
@@ -434,10 +446,9 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_ENTITLEMENTS = Sources/Where/Where.entitlements;
-				CODE_SIGN_IDENTITY = "Apple Distribution";
-				CODE_SIGN_STYLE = Manual;
-				CURRENT_PROJECT_VERSION = 2;
-				DEVELOPMENT_TEAM = 5PM2V9LTHC;
+				CODE_SIGN_IDENTITY = "Apple Development";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1.12;
 				FRAMEWORK_SEARCH_PATHS = (
 					"$(inherited) $(SRCROOT)/../shared/build/XCFrameworks/$(CONFIGURATION:lower)",
 					"\".\"",
@@ -451,7 +462,6 @@
 				);
 				MARKETING_VERSION = 1.12;
 				PRODUCT_BUNDLE_IDENTIFIER = net.af0.WhereApp;
-				PROVISIONING_PROFILE_SPECIFIER = "Where AppStore";
 				SDKROOT = iphoneos;
 				TARGETED_DEVICE_FAMILY = "1,2";
 			};
@@ -465,7 +475,7 @@
 				CODE_SIGN_ENTITLEMENTS = Sources/Where/Where.entitlements;
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 2;
+				CURRENT_PROJECT_VERSION = 1.12;
 				FRAMEWORK_SEARCH_PATHS = (
 					"$(inherited) $(SRCROOT)/../shared/build/XCFrameworks/$(CONFIGURATION:lower)",
 					"\".\"",

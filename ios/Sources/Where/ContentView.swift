@@ -46,8 +46,7 @@ struct ContentView: View {
         ZStack {
             WhereMapView(
                 users: syncService.visibleUsers,
-                friends: syncService.friends,
-                friendLastPing: syncService.friendLastPing,
+                friends: syncService.repo.friends,
                 ownLocation: locationManager.location.map {
                     CLLocationCoordinate2D(latitude: $0.coordinate.latitude, longitude: $0.coordinate.longitude)
                 },
@@ -67,14 +66,14 @@ struct ContentView: View {
                         get: { syncService.isInviteSheetShowing },
                         set: { if !$0 {
                             syncService.isInviteSheetShowing = false
-                            if syncService.pendingInitPayload == nil {
+                            if syncService.repo.pendingInitPayload == nil {
                                 Task { await syncService.clearInviteIfNotExported() }
                             }
                         } else {
                             syncService.isInviteSheetShowing = true
                         } }
                     )) {
-                        if let pending = syncService.inviteState as? Shared.InviteState.Pending {
+                        if let pending = syncService.repo.inviteState as? Shared.InviteState.Pending {
                             InviteSheet(
                                 qrPayload: pending.qr,
                                 displayName: $syncService.displayName,
@@ -88,11 +87,10 @@ struct ContentView: View {
         .sheet(isPresented: $showFriends) {
             FriendsSheet(
                 displayName: $syncService.displayName,
-                friends: syncService.friends,
-                pendingInvites: syncService.pendingInvites,
-                pausedFriendIds: syncService.pausedFriendIds,
-                lastPingTimes: syncService.friendLastPing,
-                friendExpiresAt: syncService.friendExpiresAt,
+                friends: syncService.repo.friends,
+                pendingInvites: syncService.repo.pendingInvites,
+                pausedFriendIds: syncService.repo.pausedFriendIds,
+                friendExpiresAt: syncService.repo.friendExpiresAt,
                 onTogglePause: { syncService.togglePauseFriend(id: $0) },
                 onCancelInvite: { invite in
                     Task { await syncService.clearInvite(ekPub: toSwiftData(invite.qrPayload.ekPub)) }
@@ -113,12 +111,14 @@ struct ContentView: View {
                 onRemove: { id in Task { await syncService.removeFriend(id: id) } },
                 onSetFriendExpiry: { id, exp in syncService.setFriendExpiry(friendId: id, epochSeconds: exp) },
                 onZoomTo: { friendId in
-                    if let loc = syncService.friendLocations[friendId] {
-                        zoomTarget = CLLocationCoordinate2D(latitude: loc.lat, longitude: loc.lng)
+                    if let friend = syncService.repo.friends.first(where: { $0.id == friendId }),
+                       let lat = friend.lastLat?.doubleValue,
+                       let lng = friend.lastLng?.doubleValue {
+                        zoomTarget = CLLocationCoordinate2D(latitude: lat, longitude: lng)
                     }
                     showFriends = false
                 },
-                diagnosticLog: syncService.diagnosticLog
+                diagnosticLog: syncService.repo.diagnosticLog
             )
         }
         .fullScreenCover(isPresented: $showScanner, onDismiss: {
@@ -137,42 +137,42 @@ struct ContentView: View {
             .ignoresSafeArea()
         }
         .alert(MR.strings().name_this_contact.localized(), isPresented: Binding(
-            get: { (syncService.pendingQrForNaming != nil || syncService.pendingInitPayload != nil) && !syncService.isInviteActive },
+            get: { (syncService.repo.pendingQrForNaming != nil || syncService.repo.pendingInitPayload != nil) && !syncService.isInviteActive },
             set: { if !$0 {
-                syncService.pendingQrForNaming = nil
-                syncService.pendingInitPayload = nil
+                syncService.repo.pendingQrForNaming = nil
+                syncService.repo.pendingInitPayload = nil
                 Task { await syncService.cancelPendingInit() }
                 newFriendName = ""
             } }
         )) {
             TextField(MR.strings().friend_name_label.localized(), text: $newFriendName)
-            if let qr = syncService.pendingQrForNaming {
+            if let qr = syncService.repo.pendingQrForNaming {
                 Button(MR.strings().add.localized()) {
                     let name = newFriendName.isEmpty ? MR.strings().friend_.localized() : newFriendName
-                    syncService.pendingQrForNaming = nil
+                    syncService.repo.pendingQrForNaming = nil
                     newFriendName = ""
                     Task { await syncService.confirmQrScan(qr: qr, friendName: name) }
                 }
-            } else if let payload = syncService.pendingInitPayload {
+            } else if let payload = syncService.repo.pendingInitPayload {
                 Button(MR.strings().save.localized()) {
                     let name = newFriendName.isEmpty ? MR.strings().friend_.localized() : newFriendName
                     Task {
                         await syncService.confirmPendingInit(payload: payload, name: name)
                         newFriendName = ""
-                        syncService.pendingInitPayload = nil
+                        syncService.repo.pendingInitPayload = nil
                     }
                 }
             }
             Button(MR.strings().cancel.localized(), role: .cancel) {
-                syncService.pendingQrForNaming = nil
-                syncService.pendingInitPayload = nil
+                syncService.repo.pendingQrForNaming = nil
+                syncService.repo.pendingInitPayload = nil
                 Task { await syncService.cancelPendingInit() }
                 newFriendName = ""
             }
         } message: {
-            if syncService.pendingQrForNaming != nil {
+            if syncService.repo.pendingQrForNaming != nil {
                 Text(MR.strings().enter_name_for_friend.localized())
-            } else if syncService.multipleScansDetected {
+            } else if syncService.repo.multipleScansDetected {
                 Text(MR.strings().multiple_scans_detected_warning.localized())
             } else {
                 Text(MR.strings().new_friend_scanned_qr.localized())
@@ -184,10 +184,10 @@ struct ContentView: View {
         .onChange(of: scenePhase) { _, newPhase in
             handlePhaseChange(newPhase)
         }
-        .onReceive(syncService.$pendingQrForNaming) { qr in
+        .onReceive(syncService.repo.$pendingQrForNaming) { qr in
             if let qr = qr { newFriendName = qr.suggestedName } else { newFriendName = "" }
         }
-        .onReceive(syncService.$pendingInitPayload) { payload in
+        .onReceive(syncService.repo.$pendingInitPayload) { payload in
             if let payload = payload { newFriendName = payload.suggestedName } else { newFriendName = "" }
         }
         .onOpenURL { url in
@@ -279,7 +279,7 @@ struct ContentView: View {
         Button {
             showFriends = true
         } label: {
-            Label("\(syncService.friends.count)", systemImage: "person.2.fill")
+            Label("\(syncService.repo.friends.count)", systemImage: "person.2.fill")
                 .font(.caption)
                 .padding(.horizontal, 14)
                 .padding(.vertical, 8)

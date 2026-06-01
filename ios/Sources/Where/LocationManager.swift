@@ -94,7 +94,7 @@ final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelega
         let status = manager.authorizationStatus
         let isSharing = LocationSyncService.shared.isSharingLocation
         let isDataLoaded = LocationSyncService.shared.isDataLoaded
-        let hasRelationships = !LocationSyncService.shared.friends.isEmpty || !LocationSyncService.shared.pendingInvites.isEmpty
+        let hasRelationships = !LocationSyncService.shared.repo.friends.isEmpty || !LocationSyncService.shared.repo.pendingInvites.isEmpty
 
         // Defer decision if relationships are still loading from the database
         guard isDataLoaded else { return }

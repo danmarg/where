@@ -6,7 +6,6 @@ struct FriendsSheet: View {
     let friends: [Shared.FriendEntry]
     let pendingInvites: [Shared.PendingInviteView]
     let pausedFriendIds: Set<String>
-    let lastPingTimes: [String: Date]
     var friendExpiresAt: [String: Int64] = [:]
     let onTogglePause: (String) -> Void
     let onCancelInvite: (Shared.PendingInviteView) -> Void
@@ -63,7 +62,6 @@ struct FriendsSheet: View {
                                 HStack {
                                     FriendInfoColumn(
                                         friend: friend,
-                                        lastPing: lastPingTimes[friend.id],
                                         expiresAt: friendExpiresAt[friend.id],
                                         nowTick: nowTick,
                                     )
@@ -185,7 +183,6 @@ struct FriendsSheet: View {
 
 private struct FriendInfoColumn: View {
     let friend: Shared.FriendEntry
-    let lastPing: Date?
     let expiresAt: Int64?
     let nowTick: Int
 
@@ -200,7 +197,7 @@ private struct FriendInfoColumn: View {
                 .foregroundStyle(.secondary)
             let display = friend.displayState(
                 nowSeconds: Int64(Date().timeIntervalSince1970),
-                lastPingSeconds: lastPing.map { KotlinLong(value: Int64($0.timeIntervalSince1970)) },
+                lastPingSeconds: friend.lastTs,
                 dimWindowSeconds: PeerDisplayKt.STOPPED_PIN_DIM_WINDOW_SECONDS,
             )
             Text(peerSubtitleText(display))
