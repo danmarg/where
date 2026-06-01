@@ -2,7 +2,6 @@ package net.af0.where.e2ee
 
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineDispatcher
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.map
 import kotlinx.serialization.Serializable
@@ -91,7 +90,7 @@ class E2eeManager(
     ioDispatcher: CoroutineDispatcher,
 ) {
     // Secondary constructor for callers (including Swift/ObjC) that don't need to inject a dispatcher.
-    constructor(sqlDriver: app.cash.sqldelight.db.SqlDriver) : this(sqlDriver, Dispatchers.Default)
+    constructor(sqlDriver: app.cash.sqldelight.db.SqlDriver) : this(sqlDriver, storageDispatcher)
 
     private val persistence = E2eeStore(net.af0.where.db.WhereDatabase(sqlDriver), ioDispatcher)
 

@@ -2,7 +2,6 @@ package net.af0.where.e2ee
 
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineDispatcher
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -35,7 +34,7 @@ internal sealed class PersistenceAction {
  */
 internal class E2eeStore(
     private val database: net.af0.where.db.WhereDatabase,
-    private val ioDispatcher: CoroutineDispatcher = Dispatchers.Default,
+    private val ioDispatcher: CoroutineDispatcher = storageDispatcher,
 ) {
     internal companion object {
         val json =
@@ -58,7 +57,7 @@ internal class E2eeStore(
     private val storeLock = Mutex()
 
     private suspend fun <T> withStoreLock(block: suspend () -> T): T =
-        withContext(ioDispatcher) { storeLock.withLock { block() } }
+        storeLock.withLock { withContext(ioDispatcher) { block() } }
 
     init {
         loadFromDb()
@@ -149,9 +148,9 @@ internal class E2eeStore(
         }
     }
 
-    suspend fun getFriend(id: String): FriendEntry? = withStoreLock { friends[id] }
+    suspend fun getFriend(id: String): FriendEntry? = storeLock.withLock { friends[id] }
 
-    suspend fun listFriends(): List<FriendEntry> = withStoreLock { friends.values.toList() }
+    suspend fun listFriends(): List<FriendEntry> = storeLock.withLock { friends.values.toList() }
 
     fun addDiagnosticEvent(message: String, coalesceKey: String? = null) {
         val t = currentTimeSeconds()
