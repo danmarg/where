@@ -88,8 +88,11 @@ internal fun PendingInvite.toView() = PendingInviteView(qrPayload, createdAt, ex
  */
 class E2eeManager(
     sqlDriver: app.cash.sqldelight.db.SqlDriver,
-    ioDispatcher: CoroutineDispatcher = Dispatchers.Default,
+    ioDispatcher: CoroutineDispatcher,
 ) {
+    // Secondary constructor for callers (including Swift/ObjC) that don't need to inject a dispatcher.
+    constructor(sqlDriver: app.cash.sqldelight.db.SqlDriver) : this(sqlDriver, Dispatchers.Default)
+
     private val persistence = E2eeStore(net.af0.where.db.WhereDatabase(sqlDriver), ioDispatcher)
 
     val diagnosticLog: StateFlow<List<String>> = persistence.diagnosticLog
