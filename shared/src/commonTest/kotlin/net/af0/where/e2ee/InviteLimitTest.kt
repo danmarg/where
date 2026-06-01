@@ -11,7 +11,7 @@ class InviteLimitTest {
     @Test
     fun testInviteLimitDropsOldest() = runTest {
         val driver = createTestSqlDriver()
-        val manager = E2eeManager(driver)
+        val manager = testE2eeManager(driver)
 
         // Create 10 invites
         val firstQr = manager.createInvite("Invite-0")

@@ -28,7 +28,7 @@ class LocationHandshakeTest {
     @Test
     fun testHandshakeMatchingWithMultipleInvites() = runTest {
         val aliceDriver = createTestSqlDriver()
-        val aliceManager = E2eeManager(aliceDriver)
+        val aliceManager = testE2eeManager(aliceDriver)
         val aliceClient = LocationClient("http://localhost", aliceManager, mailbox)
 
         // 1. Alice creates 3 different invites
@@ -38,7 +38,7 @@ class LocationHandshakeTest {
 
         // 2. Bob scans the SECOND invite
         val bobDriver = createTestSqlDriver()
-        val bobManager = E2eeManager(bobDriver)
+        val bobManager = testE2eeManager(bobDriver)
         val bobClient = LocationClient("http://localhost", bobManager, mailbox)
         
         val (initPayload, bobEntry) = bobManager.processScannedQr(qr2, "Bob")
@@ -65,12 +65,12 @@ class LocationHandshakeTest {
     @Test
     fun testLocationUpdatesFlowImmediatelyAfterHandshake() = runTest {
         val aliceDriver = createTestSqlDriver()
-        val aliceManager = E2eeManager(aliceDriver)
+        val aliceManager = testE2eeManager(aliceDriver)
         val aliceClient = LocationClient("http://localhost", aliceManager, mailbox)
         val qr = aliceManager.createInvite("Alice")
 
         val bobDriver = createTestSqlDriver()
-        val bobManager = E2eeManager(bobDriver)
+        val bobManager = testE2eeManager(bobDriver)
         val bobClient = LocationClient("http://localhost", bobManager, mailbox)
 
         // 1. Bob scans and posts handshake
@@ -108,12 +108,12 @@ class LocationHandshakeTest {
     @Test
     fun testPollDoesNotConsumeInvite() = runTest {
         val aliceDriver = createTestSqlDriver()
-        val aliceManager = E2eeManager(aliceDriver)
+        val aliceManager = testE2eeManager(aliceDriver)
         val aliceClient = LocationClient("http://localhost", aliceManager, mailbox)
         val qr = aliceManager.createInvite("Alice")
 
         val bobDriver = createTestSqlDriver()
-        val bobManager = E2eeManager(bobDriver)
+        val bobManager = testE2eeManager(bobDriver)
         val bobClient = LocationClient("http://localhost", bobManager, mailbox)
 
         val (initPayload, bobEntry) = bobManager.processScannedQr(qr, "Bob")
@@ -144,12 +144,12 @@ class LocationHandshakeTest {
     @Test
     fun testAliceSendsLocationToBobAfterHandshake() = runTest {
         val aliceDriver = createTestSqlDriver()
-        val aliceManager = E2eeManager(aliceDriver)
+        val aliceManager = testE2eeManager(aliceDriver)
         val aliceClient = LocationClient("http://localhost", aliceManager, mailbox)
         val qr = aliceManager.createInvite("Alice")
 
         val bobDriver = createTestSqlDriver()
-        val bobManager = E2eeManager(bobDriver)
+        val bobManager = testE2eeManager(bobDriver)
         val bobClient = LocationClient("http://localhost", bobManager, mailbox)
 
         // Bob scans and posts

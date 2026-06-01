@@ -22,6 +22,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.resetMain
+import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
 import net.af0.where.db.WhereDatabase
@@ -245,7 +246,7 @@ class LocationViewModelTest {
     fun testInviteLifecycle_AliceSide() =
         runTest {
             val fakeLocationSource = TestFakeLocationSource()
-            val store = E2eeManager(createTestSqlDriver())
+            val store = E2eeManager(createTestSqlDriver(), UnconfinedTestDispatcher())
             val client = LocationClient("http://localhost", store)
             // Disable automatic polling loop to prevent hangs
             viewModel =
@@ -301,7 +302,7 @@ class LocationViewModelTest {
             viewModel =
                 LocationViewModel(
                     app,
-                    e2eeManagerParam = E2eeManager(createTestSqlDriver()),
+                    e2eeManagerParam = E2eeManager(createTestSqlDriver(), UnconfinedTestDispatcher()),
                     startPolling = false,
                     locationSourceParam = source,
                     uiStateStoreParam = uiStore,
@@ -370,7 +371,7 @@ class LocationViewModelTest {
     @Test
     fun testCancelPendingInit_SurgicalRemoval() =
         runTest {
-            val store = E2eeManager(createTestSqlDriver())
+            val store = E2eeManager(createTestSqlDriver(), UnconfinedTestDispatcher())
             val client = mockk<LocationClient>(relaxed = true)
             val source = TestFakeLocationSource()
             viewModel =
@@ -562,7 +563,7 @@ class LocationViewModelTest {
             viewModel =
                 LocationViewModel(
                     app,
-                    e2eeManagerParam = E2eeManager(createTestSqlDriver()),
+                    e2eeManagerParam = E2eeManager(createTestSqlDriver(), UnconfinedTestDispatcher()),
                     userStoreParam = userStore,
                     startPolling = false,
                     locationSourceParam = source,
@@ -773,7 +774,7 @@ class LocationViewModelTest {
             viewModel =
                 LocationViewModel(
                     app,
-                    e2eeManagerParam = E2eeManager(createTestSqlDriver()),
+                    e2eeManagerParam = E2eeManager(createTestSqlDriver(), UnconfinedTestDispatcher()),
                     locationClientParam = mockClient,
                     userStoreParam = net.af0.where.e2ee.UserStore(FakeRawKeyValueStorage()),
                     startPolling = false,
@@ -814,7 +815,7 @@ class LocationViewModelTest {
             viewModel =
                 LocationViewModel(
                     app,
-                    e2eeManagerParam = E2eeManager(createTestSqlDriver()),
+                    e2eeManagerParam = E2eeManager(createTestSqlDriver(), UnconfinedTestDispatcher()),
                     locationClientParam = mockClient,
                     userStoreParam = userStore,
                     startPolling = false,

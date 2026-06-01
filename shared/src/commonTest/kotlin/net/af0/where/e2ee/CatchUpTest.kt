@@ -36,12 +36,12 @@ class CatchUpTest {
     @Test
     fun testCatchUpLargeBacklog() = runTest {
         val aliceDriver = createTestSqlDriver()
-        val aliceManager = E2eeManager(aliceDriver)
+        val aliceManager = testE2eeManager(aliceDriver)
         val aliceClient = LocationClient("http://localhost", aliceManager, mailbox)
         val qr = aliceManager.createInvite("Alice")
 
         val bobDriver = createTestSqlDriver()
-        val bobManager = E2eeManager(bobDriver)
+        val bobManager = testE2eeManager(bobDriver)
         val bobClient = LocationClient("http://localhost", bobManager, mailbox)
 
         // 1. Bob scans and posts handshake
@@ -83,12 +83,12 @@ class CatchUpTest {
     @Test
     fun testTokenFollowBound() = runTest {
         val aliceDriver = createTestSqlDriver()
-        val aliceManager = E2eeManager(aliceDriver)
+        val aliceManager = testE2eeManager(aliceDriver)
         val aliceClient = LocationClient("http://localhost", aliceManager, mailbox)
         val qr = aliceManager.createInvite("Alice")
 
         val bobDriver = createTestSqlDriver()
-        val bobManager = E2eeManager(bobDriver)
+        val bobManager = testE2eeManager(bobDriver)
         val bobClient = LocationClient("http://localhost", bobManager, mailbox)
 
         // Handshake
@@ -156,12 +156,12 @@ class CatchUpTest {
     @Test
     fun testForceAckBreaksLoop() = runTest {
         val aliceDriver = createTestSqlDriver()
-        val aliceManager = E2eeManager(aliceDriver)
+        val aliceManager = testE2eeManager(aliceDriver)
         val aliceClient = LocationClient("http://localhost", aliceManager, mailbox)
         val qr = aliceManager.createInvite("Alice")
 
         val bobDriver = createTestSqlDriver()
-        val bobManager = E2eeManager(bobDriver)
+        val bobManager = testE2eeManager(bobDriver)
         val bobClient = LocationClient("http://localhost", bobManager, mailbox)
 
         // Handshake
@@ -195,12 +195,12 @@ class CatchUpTest {
     @Test
     fun testIsCaughtUpState() = runTest {
         val aliceDriver = createTestSqlDriver()
-        val aliceManager = E2eeManager(aliceDriver)
+        val aliceManager = testE2eeManager(aliceDriver)
         val aliceClient = LocationClient("http://localhost", aliceManager, mailbox)
         val qr = aliceManager.createInvite("Alice")
 
         val bobDriver = createTestSqlDriver()
-        val bobManager = E2eeManager(bobDriver)
+        val bobManager = testE2eeManager(bobDriver)
         val bobClient = LocationClient("http://localhost", bobManager, mailbox)
 
         // Handshake

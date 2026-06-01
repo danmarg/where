@@ -1,6 +1,7 @@
 package net.af0.where.e2ee
 
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -34,6 +35,7 @@ internal sealed class PersistenceAction {
  */
 internal class E2eeStore(
     private val database: net.af0.where.db.WhereDatabase,
+    private val ioDispatcher: CoroutineDispatcher = Dispatchers.Default,
 ) {
     internal companion object {
         val json =
@@ -56,7 +58,7 @@ internal class E2eeStore(
     private val storeLock = Mutex()
 
     private suspend fun <T> withStoreLock(block: suspend () -> T): T =
-        withContext(Dispatchers.Default) { storeLock.withLock { block() } }
+        withContext(ioDispatcher) { storeLock.withLock { block() } }
 
     init {
         loadFromDb()

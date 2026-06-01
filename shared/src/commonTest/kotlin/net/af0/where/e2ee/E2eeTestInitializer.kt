@@ -1,6 +1,9 @@
 package net.af0.where.e2ee
 
+import app.cash.sqldelight.db.SqlDriver
 import com.ionspin.kotlin.crypto.LibsodiumInitializer
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.test.UnconfinedTestDispatcher
 
 /**
  * Singleton that ensures libsodium is initialized exactly once for tests.
@@ -37,3 +40,6 @@ object E2eeTestInitializer {
 fun initializeE2eeTests() {
     E2eeTestInitializer.ensureInitialized()
 }
+
+@OptIn(ExperimentalCoroutinesApi::class)
+fun testE2eeManager(driver: SqlDriver) = E2eeManager(driver, UnconfinedTestDispatcher())

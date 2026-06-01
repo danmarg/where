@@ -119,8 +119,8 @@ class E2eeChaosTest {
             val aliceSqlDriver = createTestSqlDriver()
             val bobSqlDriver = createTestSqlDriver()
 
-            val aliceManager = E2eeManager(aliceSqlDriver)
-            val bobManager = E2eeManager(bobSqlDriver)
+            val aliceManager = testE2eeManager(aliceSqlDriver)
+            val bobManager = testE2eeManager(bobSqlDriver)
 
             val qr = aliceManager.createInvite("Alice")
             val (initPayload, bobEntry) = bobManager.processScannedQr(qr, "Bob")
@@ -276,10 +276,10 @@ class E2eeChaosTest {
             val mailbox = MemoryMailboxClient()
             val chaosMailbox = ChaosMailboxClient(mailbox)
 
-            val aliceManager = E2eeManager(createTestSqlDriver())
+            val aliceManager = testE2eeManager(createTestSqlDriver())
             val aliceClient = LocationClient("http://localhost", aliceManager, chaosMailbox)
 
-            val bobManager = E2eeManager(createTestSqlDriver())
+            val bobManager = testE2eeManager(createTestSqlDriver())
             val bobClient = LocationClient("http://localhost", bobManager, chaosMailbox)
 
             // 1. Enable AGGRESSIVE chaos BEFORE handshake starts
@@ -404,7 +404,7 @@ class E2eeChaosTest {
         val managers =
             (0 until numFriends).map { i ->
                 val driver = createTestSqlDriver()
-                E2eeManager(driver)
+                testE2eeManager(driver)
             }
 
         val clients =

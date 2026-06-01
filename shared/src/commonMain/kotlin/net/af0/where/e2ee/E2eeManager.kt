@@ -1,6 +1,8 @@
 package net.af0.where.e2ee
 
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.map
 import kotlinx.serialization.Serializable
@@ -86,8 +88,9 @@ internal fun PendingInvite.toView() = PendingInviteView(qrPayload, createdAt, ex
  */
 class E2eeManager(
     sqlDriver: app.cash.sqldelight.db.SqlDriver,
+    ioDispatcher: CoroutineDispatcher = Dispatchers.Default,
 ) {
-    private val persistence = E2eeStore(net.af0.where.db.WhereDatabase(sqlDriver))
+    private val persistence = E2eeStore(net.af0.where.db.WhereDatabase(sqlDriver), ioDispatcher)
 
     val diagnosticLog: StateFlow<List<String>> = persistence.diagnosticLog
 
