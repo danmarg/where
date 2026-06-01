@@ -394,6 +394,8 @@ Implementation: `E2eeManager` clears outbox entries still targeting `prevSendTok
 
 `ack_remote_dh_pub` is carried in the header, authenticated, and bound into the message AAD (`buildMessageAad`) so its value cannot be modified in flight. The implementation does not currently read it for any retirement decision — retirement is fully driven by observed root-key advance. The field is retained on the wire for backwards compatibility and to leave room for a future ack-driven retirement scheme without a wire break.
 
+> **v2 candidate:** removing `ack_remote_dh_pub` would shave 32 bytes per message and drop a vestigial primitive, but it is both a wire break and an AAD break (old and new clients cannot decrypt each other's messages), so it can only ship as part of a forced re-pair / protocol-version bump. Reconsider at the next v2 break; until then, keep.
+
 #### 5.4.4 Duplicate Handling and Batch Ordering
 **Duplicate Handling:**
 Duplicates MUST be ACKable. If a peer receives multiple copies of the same transition message, the first advances state. Subsequent duplicates must not poison the batch and should still allow the receiver to generate the authenticated ACK needed to drain the old queue.
