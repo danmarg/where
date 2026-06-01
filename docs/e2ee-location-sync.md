@@ -368,44 +368,31 @@ This ensures that gaps are filled deterministically even when the metadata neede
 
 Routing tokens are derived from the current root key. Whenever the DH ratchet advances and a new root key is derived, new routing tokens are computed.
 
-A peer’s mailbox state is identified by its DH public key `dh_pub`, which serves as the canonical epoch identifier. Epoch numbers may exist as an internal convenience, but they are derived from DH ratchet progression and must never be treated as an independent source of truth.
+A peer's mailbox state is identified by its DH public key `dh_pub`, which serves as the canonical epoch identifier. Epoch numbers may exist as an internal convenience, but they are derived from DH ratchet progression and must never be treated as an independent source of truth.
 
 **The Mailbox Synchronization Challenge:**
-In an anonymous mailbox model, a client polling token `T_old` will never see a message posted to `T_new`. To prevent race conditions during epoch transitions, the protocol employs a two-epoch sliding window and authenticated acknowledgments.
+In an anonymous mailbox model, a client polling token `T_old` will never see a message posted to `T_new`. The protocol resolves this with a **transition-message rule** on the send side and a **root-key-advance observation** on the retirement side, rather than a two-token polling window on the receive side.
 
-#### 5.4.1 Send Rule
-A sender MUST send to the peer mailbox token associated with the last **proven** peer DH state.
+#### 5.4.1 Send Rule (Transition Message on Old Token)
+The first message of a new sending epoch (`seq == 1`) MUST be posted to the *previous* send token and encrypted under the *previous* send header key. All subsequent messages in that epoch go to the new send token under the new send header key.
 
-Formally:
-`active_send_target = token_for(highest_peer_dh_pub_seen)`
+This is symmetric by construction: `prev_send_token` is derived from the pre-ratchet root key, which is exactly the token the peer is currently polling for messages from us. When the peer decrypts the transition message, the new `dh_pub` triggers a DH ratchet step that derives a new `recv_token` matching our new `send_token` — so the next message we post will land on the token the peer has rotated to.
 
-- **Bootstrap Rule:** At session bootstrap, neither party has any prior peer DH state. `highest_peer_dh_pub_seen` is initialized to the peer's bootstrap ephemeral public key: Alice initializes it to `EK_B.pub`; Bob initializes it to `EK_A.pub`. Consequently, the `ack_remote_dh_pub` field in the first outbound message MUST be set to that same bootstrap key (`EK_B.pub` for Alice, `EK_A.pub` for Bob). Until the first decrypted peer message arrives and updates this belief, the initial outbound target remains `T_AB_0` and no alternate token is permitted.
-- A sender MUST NOT switch to the next token solely because it locally ratcheted.
-- A sender may switch only after the peer’s newer DH state is observed in a decrypted message and acknowledged by the protocol state machine.
+Implementation: `Session.encryptMessage` selects `prevSendHeaderKey` and `prevSendToken` when `sendSeq + 1 == 1` (`Session.kt:36-41`; `E2eeManager.kt:274`).
 
-#### 5.4.2 Receive Rule (Two-Epoch Sliding Window)
-Each direction keeps at most two active epochs:
-- **current**: The latest verified peer epoch.
-- **previous_pending**: The prior epoch, kept only for safety during transition.
+#### 5.4.2 Receive Rule (Single Active Token)
+The receiver polls exactly one mailbox token at a time (the current `recv_token`). There is no `prev_recv_token` polling — the sender's transition rule (§5.4.1) routes the first new-epoch message onto the token the receiver is already polling. After processing that message, the receiver ratchets forward and switches its polling target to the new `recv_token`.
 
-**Initialization:** At session bootstrap, `prev_recv_token` is unset. The client MUST NOT poll or derive any mailbox token from an unset `prev_recv_token`. `prev_recv_token` becomes valid only after the first inbound message advances the receive ratchet and establishes a previous epoch.
+When a decrypted message carries a new sender `dh_pub`:
+1. Speculatively perform the DH ratchet step (§8.3.1(4) requires this to be committed only after body AEAD authentication succeeds — but see §8.3.1(4) note for the deliberate failed-body liveness deviation).
+2. Update `recv_token` to the value derived from the new root key.
 
-Messages may be accepted from both. When a message is decrypted:
-1. If the sender `dh_pub` is newer than the local view, ratchet forward.
-2. Record that `dh_pub` as `highest_peer_dh_pub_seen`.
-3. Do not retire the previous receive path immediately. Continue accepting messages on the previous token until the retirement condition is satisfied.
+#### 5.4.3 Send-Side Retirement (Observed Root-Key Advance)
+The sender retires its `prev_send_token` (and stops posting fallback retries to it) when it observes an authenticated proof that the peer has processed its new DH key. The proof used here is a successful decryption whose post-ratchet `root_key` is strictly newer than the one in effect when those outbox entries were enqueued — exactly the property an authenticated ack-of-DH would have established, inferred directly from the ratchet instead.
 
-#### 5.4.3 Ack and Retirement Rules
-**Ack Rule:**
-Each message carries an `ack_remote_dh_pub` field, an authenticated claim inside the encrypted header defined as: **the newest peer DH public key for which at least one message has been successfully authenticated and committed to session state.** "Committed" means the AEAD tag verified and the resulting session state was durably saved to local storage; speculative ratchet steps, temporary observations, or replayed historical epochs MUST NOT advance this value.
+Implementation: `E2eeManager` clears outbox entries still targeting `prevSendToken` once `decryptBatch` returns a session with an advanced `rootKey` (`E2eeManager.kt:433-438`).
 
-`ack_remote_dh_pub` is the **only authenticated signal** that a peer has successfully processed a message for the corresponding DH epoch. Implementations MUST use it as the sole basis for retiring `previous_pending`; it MUST NOT be treated as telemetry or as an advisory hint.
-
-Before using `ack_remote_dh_pub` for retirement decisions, the receiver MUST validate it against known state. If the value is not one of the bootstrap peer key, the current peer `dh_pub`, or a peer `dh_pub` retained in `previous_pending`, then the receiver MUST ignore it for retirement purposes and continue processing the message normally if the rest of the AEAD authentication succeeds.
-
-**Retirement Rule:** Retire `previous_pending` only after receiving an authenticated `ack_remote_dh_pub` equal to the peer’s previous active `dh_pub`. Implementations MUST compare against a retained peer `dh_pub` value, not against any locally assigned epoch number.
-
-**Secondary Bounded Fallback:** The 7-day timeout is a liveness fallback only. It MAY be used to retire an old mailbox path when server TTL guarantees that the mailbox entry can no longer deliver messages. It MUST NOT be used as a substitute for authenticated acknowledgment during normal operation.
+`ack_remote_dh_pub` is carried in the header, authenticated, and bound into the message AAD (`buildMessageAad`) so its value cannot be modified in flight. The implementation does not currently read it for any retirement decision — retirement is fully driven by observed root-key advance. The field is retained on the wire for backwards compatibility and to leave room for a future ack-driven retirement scheme without a wire break.
 
 #### 5.4.4 Duplicate Handling and Batch Ordering
 **Duplicate Handling:**
