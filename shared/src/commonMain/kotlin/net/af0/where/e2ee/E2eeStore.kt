@@ -1,12 +1,14 @@
 package net.af0.where.e2ee
 
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 
@@ -32,6 +34,7 @@ internal sealed class PersistenceAction {
  */
 internal class E2eeStore(
     private val database: net.af0.where.db.WhereDatabase,
+    private val ioDispatcher: CoroutineDispatcher = storageDispatcher,
 ) {
     internal companion object {
         val json =
@@ -52,6 +55,9 @@ internal class E2eeStore(
 
     // Single lock for all store operations.
     private val storeLock = Mutex()
+
+    private suspend fun <T> withStoreLock(block: suspend () -> T): T =
+        storeLock.withLock { withContext(ioDispatcher) { block() } }
 
     init {
         loadFromDb()
@@ -85,7 +91,7 @@ internal class E2eeStore(
     }
 
     suspend fun <T> withMetadataLock(block: suspend MetadataScope.() -> T): T {
-        return storeLock.withLock {
+        return withStoreLock {
             val scope = MetadataScopeImpl()
             val result: T
             try {
@@ -108,7 +114,7 @@ internal class E2eeStore(
         friendId: String,
         block: suspend (FriendEntry?, MetadataScope) -> Pair<PersistenceAction, T>,
     ): T {
-        return storeLock.withLock {
+        return withStoreLock {
             val entry = friends[friendId]
             val scope = MetadataScopeImpl()
             val result: T
@@ -233,7 +239,7 @@ internal class E2eeStore(
         token: String,
         payloadBlob: ByteArray,
         createdAt: Long,
-    ) = storeLock.withLock {
+    ) = withStoreLock {
         insertOutboxInternal(msgId, friendId, token, payloadBlob, createdAt)
     }
 
@@ -250,7 +256,7 @@ internal class E2eeStore(
     suspend fun deleteOutboxByMsgId(
         friendId: String,
         msgId: String,
-    ) = storeLock.withLock {
+    ) = withStoreLock {
         deleteOutboxByMsgIdInternal(friendId, msgId)
     }
 
@@ -262,7 +268,7 @@ internal class E2eeStore(
     }
 
     suspend fun deleteOutboxByFriendId(friendId: String) =
-        storeLock.withLock {
+        withStoreLock {
             deleteOutboxByFriendIdInternal(friendId)
         }
 
@@ -275,7 +281,7 @@ internal class E2eeStore(
     }
 
     suspend fun getOutbox(friendId: String): List<EncryptedOutboxMessage> =
-        storeLock.withLock {
+        withStoreLock {
             getOutboxInternal(friendId)
         }
 

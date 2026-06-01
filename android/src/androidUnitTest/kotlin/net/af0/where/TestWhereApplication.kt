@@ -5,6 +5,8 @@ import android.content.SharedPreferences
 import app.cash.sqldelight.db.SqlDriver
 import app.cash.sqldelight.driver.android.AndroidSqliteDriver
 import net.af0.where.db.WhereDatabase
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import net.af0.where.e2ee.E2eeManager
 import net.af0.where.e2ee.RawKeyValueStorage
 import net.af0.where.e2ee.UserStore
@@ -38,7 +40,8 @@ class TestWhereApplication : WhereApplication() {
         getSharedPreferences("test_encrypted_prefs", Context.MODE_PRIVATE)
     }
 
-    override val e2eeManager: E2eeManager by lazy { E2eeManager(createTestSqlDriver(this)) }
+    @OptIn(ExperimentalCoroutinesApi::class)
+    override val e2eeManager: E2eeManager by lazy { E2eeManager(createTestSqlDriver(this), UnconfinedTestDispatcher()) }
 
     /**
      * UserStore still uses in-memory storage here because it stores simple global settings
