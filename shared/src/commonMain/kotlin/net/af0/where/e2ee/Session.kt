@@ -169,12 +169,11 @@ object Session {
         var speculativeState = cleanState
 
         if (isNewDhEpoch) {
-            // Unified error message to satisfy existing brittle test assertions (§9.2)
-            if (cleanState.prevLocalDhPub.size > 0 && remoteDhPub.contentEquals(cleanState.prevLocalDhPub)) {
-                throw ReplayException("replay: dhPub already superseded")
-            }
-
             // Ratchet state forward. Note: headerKey transition happens inside performDhRatchet.
+            // Across-epoch replays are dropped earlier at the header-decryption stage:
+            // tryDecryptHeader only ever holds the current + next receive header keys
+            // (see §2.2, §8.3.1(6)), so a replayed retired-epoch frame fails to decrypt
+            // its header before any ratchet logic runs.
             speculativeState = performDhRatchet(speculativeState, remoteDhPub)
         }
 

@@ -98,7 +98,7 @@ For threat models that include a metadata-analyzing server, the mitigations in �
 - **Passive eavesdropping.** All location payloads are encrypted with ephemeral symmetric keys derived from a per-friend ratchet. A passive observer with access to ciphertext learns nothing about coordinates.
 - **Replay attacks.** Each message carries a monotonically increasing message number `msg_num` which is also authenticated (as AEAD additional data for the body, and encrypted within the header envelope). The recipient rejects any frame with a counter it has already seen within the same DH epoch. 
 
-Across-epoch replay protection utilizes a sliding window of the most recent 10 DH public keys; replays from older epochs will trigger a speculative ratchet but always fail final AEAD authentication.
+Across-epoch replay protection comes from header-key rotation: the recipient retains only the current and next receive header keys, so a replayed frame from a retired epoch fails header decryption (`tryDecryptHeader`) and is discarded before any ratchet logic runs. See §8.3.1(6).
 - **Ciphertext forgery.** ChaCha20-Poly1305 authentication tags cover both the ciphertext and associated data. Metadata (DH public key and sequence number) is sealed within an encrypted envelope, preventing a malicious server from reading or correlating them across token rotations.
 - **Ratchet hijacking.** All messages are AEAD-encrypted under keys derived from the current session root key and symmetric chains. An attacker without session state or header keys cannot forge or inject valid messages.
 - **Key mismatch at bootstrap.** The `key_confirmation` field in `KeyExchangeInit` (§4.2) detects corruption or bit-flips in `EK_B.pub` in transit. It does NOT authenticate the origin of the QR code or defeat an active MITM who can intercept and substitute the initial ephemeral key material. Trust establishment relies on TOFU + Safety Number verification (§3.4).
@@ -645,7 +645,6 @@ SessionState {
   bob_ek_pub:         [32]byte        // bootstrap public key EK_B.pub (stable)
   alice_fp:           [32]byte        // SHA-256(EK_A.pub) (stable)
   bob_fp:             [32]byte        // SHA-256(EK_B.pub) (stable)
-  retired_dh_pubs:    Set<[32]byte>   // bounded set of retired peer DH pub keys (max 50) for across-epoch replay rejection
 }
 ```
 
@@ -696,7 +695,7 @@ Each message frame carries a `msg_num` counter. Recipients enforce:
 3.  **OutOfOrder Support:** If a message is skipped (e.g., recipient receives `msg_num=10` after `msg_num=8`), the recipient advances the symmetric ratchet to `msg_num=10` and stores the intermediate message keys in a bounded cache (100 entries).
 4.  **Transactional Commitment:** The receiving state (receiving chain, root key, skipped keys) MUST only be updated if the message AEAD authentication succeeds. The receiving state MUST not be committed earlier.
 5.  **Epoch Transition:** When a message with a new `dh_pub` is received, the `msg_num` counter resets to 0. All skipped message keys belonging to epochs older than the *previous* valid epoch MUST be cleared.
-6.  **Across-Epoch Replay:** Recipients MUST reject any message for an epoch that has already been superseded and retired (§5.4.3). Retired peer DH public keys are stored in `retired_dh_pubs` (§8.2, max 10 entries, evict oldest when full). When a `previous_pending` epoch is retired, its `dh_pub` is added to this set. Any incoming message whose `dh_pub` matches an entry in `retired_dh_pubs` MUST be dropped without further processing.
+6.  **Across-Epoch Replay:** Recipients hold only two receive header keys at any time — the current epoch's `header_key` and the next epoch's `next_header_key`. The previous epoch's receive header key is discarded on DH ratchet (`Session.performDhRatchet`). A replayed frame from a retired epoch therefore fails `tryDecryptHeader` and is dropped before any ratchet logic runs, with no dedicated `retired_dh_pubs` set required. Within-epoch replay is caught by the `msg_num <= recv_msg_num` check plus the single-use skipped-key cache.
 
 
 ---
