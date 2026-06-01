@@ -14,10 +14,6 @@ private val qrJson =
         encodeDefaults = true
     }
 
-enum class RatchetPhase {
-    STABLE, // needsRatchet=false — normal operating state
-    NEEDS_KEEPALIVE, // needsRatchet=true — received new remoteDhPub, must send keepalive before next poll
-}
 
 /**
  * Raw X25519 keypair. Both fields are 32-byte little-endian representations
@@ -165,18 +161,6 @@ data class SessionState(
         h = 31 * h + sendHeaderKey.contentHashCode()
         h = 31 * h + nextHeaderKey.contentHashCode()
         return h
-    }
-}
-
-fun SessionState.phase(): RatchetPhase =
-    when {
-        needsRatchet -> RatchetPhase.NEEDS_KEEPALIVE
-        else -> RatchetPhase.STABLE
-    }
-
-fun SessionState.assertInvariants() {
-    check(skippedMessageKeys.size <= MAX_SKIPPED_KEYS) {
-        "skippedMessageKeys overflow: ${skippedMessageKeys.size} > $MAX_SKIPPED_KEYS"
     }
 }
 
