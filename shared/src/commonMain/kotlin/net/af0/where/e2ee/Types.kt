@@ -58,7 +58,7 @@ data class SessionState(
     @Serializable(with = ByteArrayBase64Serializer::class) val prevSendHeaderKey: ByteArray = ByteArray(0),
     val isAlice: Boolean,
     // REPLAY PROTECTION & OUT-OF-ORDER SUPPORT
-    // Map of (remoteDhPubHex + ":" + seq) to [MK (32) || Nonce (12) || PN (8) || Timestamp (8)]
+    // Map of (remoteDhPubHex + ":" + seq) to [MK (32) || Nonce (12) || Timestamp (8)]
     val skippedMessageKeys: Map<
         String,
         @Serializable(with = ByteArrayBase64Serializer::class)

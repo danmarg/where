@@ -358,7 +358,7 @@ If Alice ratchets her DH key from `dh_1` to `dh_2`, Bob may receive `Msg(dh_2, s
 1.  **Speculative Ratchet:** Bob moves to the new DH epoch upon receiving `Msg(dh_2)`.
 2.  **Decryption:** Bob decrypts the payload of `Msg(dh_2)` to extract the **encrypted `prev_chain_len` field** (§7.4).
 3.  **Gap Filling:** The `prev_chain_len` field tells Bob exactly how many messages Alice sent in epoch `dh_1`. Bob goes back to the old chain, derives all remaining keys up to `prev_chain_len`, and stores them in the cache.
-4.  **Historical Delivery:** When `Msg(dh_1, msg_num=last)` eventually arrives, Bob retrieves the key from the cache, verifies the AAD (using the `prev_chain_len` stored in the cache entry), and decrypts.
+4.  **Historical Delivery:** When `Msg(dh_1, msg_num=last)` eventually arrives, Bob retrieves the key from the cache, verifies the AAD, and decrypts.
 
 This ensures that gaps are filled deterministically even when the metadata needed for gap calculation is hidden behind the AEAD boundary.
 
@@ -583,7 +583,7 @@ Standard Double Ratchet protocols leak the message sequence number (`msg_num`) a
 To mitigate this, Where moves all session metadata into the **encrypted envelope header** (§9.1.1):
 1. **Encrypted Header:** The envelope header includes `dh_pub`, `ack_remote_dh_pub`, `msg_num`, and `prev_chain_len`.
 2. **Post-Decryption Extraction:** The receiver first decrypts the envelope header using the current or next `header_key` and *then* reads the metadata to perform historical gap-filling of the old chain (§5.3).
-3. **Cache Storage:** When storing skipped keys for out-of-order delivery, the receiver stores the active `prev_chain_len` alongside the message key: `(MK_n, Nonce_n, PN_n)`. This ensures that if the message arrives later, the AAD can be re-verified against the correct historical value.
+3. **Cache Storage:** When storing skipped keys for out-of-order delivery, the receiver stores `(MK_n, Nonce_n)` plus an insertion timestamp for age-based eviction. `prev_chain_len` is not included in the AAD (`buildMessageAad`), so it is not retained in the cache entry.
 
 This removes session-related metadata from the server's payload view, but it does not eliminate timing, IP correlation, or polling-pattern leakage.
 

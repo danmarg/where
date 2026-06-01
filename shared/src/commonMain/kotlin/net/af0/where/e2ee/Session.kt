@@ -88,8 +88,8 @@ object Session {
         while (it.hasNext()) {
             val entry = it.next()
             val v = entry.value
-            // Format: [MK (32) || Nonce (12) || PN (8) || Timestamp (8)]
-            if (v.size >= 60 && (now - bytesToLong(v.copyOfRange(52, 60))) > MAX_KEY_AGE_MS) {
+            // Format: [MK (32) || Nonce (12) || Timestamp (8)]
+            if (v.size >= 52 && (now - bytesToLong(v.copyOfRange(44, 52))) > MAX_KEY_AGE_MS) {
                 v.zeroize()
                 it.remove()
                 modified = true
@@ -129,7 +129,7 @@ object Session {
             val sender = cleanState.remoteFp
             val recipient = cleanState.localFp
 
-            // Cached key format ([§5.5]): [MK (32) || Nonce (12) || PN (8)]
+            // Cached key format (§5.5): [MK (32) || Nonce (12) || Timestamp (8)]
             if (cachedKey.size < 52) throw ProtocolException("invalid cached key size in cache")
             val mk = cachedKey.copyOfRange(0, 32)
             val nonce = cachedKey.copyOfRange(32, 44)
@@ -232,8 +232,8 @@ object Session {
                 val currentSeq = speculativeState.recvSeq + i + 1
                 if (currentSeq < seq) {
                     // Store intermediate message key for future out-of-order delivery.
-                    // Cached format: [MK (32) || Nonce (12) || PN (8) || Timestamp (8)]
-                    val mkPlusNonce = step.messageKey + step.messageNonce + longToBeBytes(speculativeState.pr) + longToBeBytes(now)
+                    // Cached format: [MK (32) || Nonce (12) || Timestamp (8)]
+                    val mkPlusNonce = step.messageKey + step.messageNonce + longToBeBytes(now)
                     addedSkippedKeys.add(mkPlusNonce)
                     val mkKey = remoteDhPub.toHex() + ":" + currentSeq
                     derivationSkippedKeys[mkKey] = mkPlusNonce
@@ -301,7 +301,7 @@ object Session {
 
                     val skippedSeq = cleanState.recvSeq + i + 1
                     val mkKey = prevEpochHex + ":" + skippedSeq
-                    updatedCache[mkKey] = step.messageKey + step.messageNonce + longToBeBytes(cleanState.pr) + longToBeBytes(now)
+                    updatedCache[mkKey] = step.messageKey + step.messageNonce + longToBeBytes(now)
 
                     if (updatedCache.size > MAX_SKIPPED_KEYS) {
                         updatedCache.remove(updatedCache.keys.first())?.zeroize()
