@@ -8,6 +8,7 @@ import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.double
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.long
+import kotlinx.serialization.json.longOrNull
 import kotlinx.serialization.json.put
 
 /**
@@ -481,9 +482,13 @@ object Session {
             when (obj["type"]?.jsonPrimitive?.content) {
                 "loc" -> decodeLocation(obj)
                 "ka" -> MessagePlaintext.Keepalive()
-                "stop" -> MessagePlaintext.StoppedSharing(
-                    ts = obj["ts"]!!.jsonPrimitive.long,
-                )
+                "stop" -> {
+                    // Lenient: a malformed "stop" missing/invalid ts degrades to a
+                    // Keepalive instead of hard-failing the whole frame, matching
+                    // the unknown-type behavior below (spec §5.7.3).
+                    val ts = obj["ts"]?.jsonPrimitive?.longOrNull
+                    if (ts != null) MessagePlaintext.StoppedSharing(ts = ts) else MessagePlaintext.Keepalive()
+                }
                 null -> {
                     // Legacy emitter: sniff for "lat" → Location, else Keepalive.
                     if (obj.containsKey("lat")) decodeLocation(obj) else MessagePlaintext.Keepalive()
