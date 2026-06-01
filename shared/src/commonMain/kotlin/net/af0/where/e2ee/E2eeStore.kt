@@ -56,7 +56,7 @@ internal class E2eeStore(
     private val storeLock = Mutex()
 
     private suspend fun <T> withStoreLock(block: suspend () -> T): T =
-        withContext(Dispatchers.IO) { storeLock.withLock { block() } }
+        withContext(Dispatchers.Default) { storeLock.withLock { block() } }
 
     init {
         loadFromDb()
