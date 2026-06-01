@@ -68,6 +68,15 @@ final class LocationSyncService: ObservableObject {
                 forceNextLocationUpdate = false
                 locationFixTimeoutTask?.cancel()
                 locationFixTimeoutTask = nil
+            } else if !oldValue {
+                // Master toggle off→on: broadcast our current location immediately to every
+                // (non-paused) friend so peers don't wait for the next regular tick. Also
+                // request a fresh fix so the next update sends an up-to-date position.
+                if let loc = bestAvailableLocation {
+                    sendLocation(lat: loc.lat, lng: loc.lng, heading: loc.heading, force: true, source: .manual)
+                }
+                forceNextLocationUpdate = true
+                locationProvider.requestImmediateLocation()
             }
         }
     }

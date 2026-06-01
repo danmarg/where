@@ -235,6 +235,15 @@ class LocationViewModel(
                     Log.w(TAG, "sendStoppedSharing failed: ${e.message}")
                 }
             }
+        } else if (!wasSharing && sharing) {
+            // Symmetric to the stop fan-out: ask the service to broadcast our current location
+            // to every (non-paused) friend immediately, so peers don't wait for the next
+            // regular location tick (up to a heartbeat interval if stationary/backgrounded).
+            val intent =
+                Intent(getApplication(), LocationService::class.java).apply {
+                    action = LocationService.ACTION_FORCE_PUBLISH
+                }
+            getApplication<Application>().startForegroundService(intent)
         }
     }
 

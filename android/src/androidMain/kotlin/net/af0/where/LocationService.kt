@@ -405,18 +405,35 @@ class LocationService : Service() {
         }
         if (intent?.action == ACTION_FORCE_PUBLISH) {
             val friendId = intent.getStringExtra(EXTRA_FRIEND_ID)
-            if (friendId != null && userStore.isSharingLocation.value) {
-                val loc = locationSource.lastLocation.value
-                if (loc != null) {
-                    serviceScope.launch {
-                        try {
-                            locationClient.sendLocationToFriend(friendId, loc.first, loc.second)
-                        } catch (e: Exception) {
-                            Log.e(TAG, "Failed to send forced location to $friendId: ${e.message}")
+            if (userStore.isSharingLocation.value) {
+                if (friendId != null) {
+                    val loc = locationSource.lastLocation.value
+                    if (loc != null) {
+                        serviceScope.launch {
+                            try {
+                                locationClient.sendLocationToFriend(friendId, loc.first, loc.second)
+                            } catch (e: Exception) {
+                                Log.e(TAG, "Failed to send forced location to $friendId: ${e.message}")
+                            }
                         }
+                    } else {
+                        pendingFriendSends.trySend(friendId)
                     }
                 } else {
-                    pendingFriendSends.trySend(friendId)
+                    // Broadcast to all (non-paused) friends — used on master sharing toggle off→on
+                    // so peers see us without waiting for the next regular location tick.
+                    val loc = locationSource.lastLocation.value
+                    if (loc != null) {
+                        serviceScope.launch {
+                            sendLocationIfNeeded(
+                                loc.first,
+                                loc.second,
+                                isHeartbeat = false,
+                                force = true,
+                                source = WakeSource.LOCATION_UPDATE,
+                            )
+                        }
+                    }
                 }
             }
         }
