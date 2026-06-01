@@ -22,7 +22,10 @@ internal const val MAX_MESSAGES_PER_POLL = 500
 // At a 30-second poll interval, 5 retries = ~2.5 minutes before force-ACK.
 internal const val MAX_SILENT_DROP_RETRIES = 5
 internal const val MAX_GAP = 10000
-internal const val MAX_SKIPPED_KEYS = 10000
+// Bound on the skipped-message-key cache. Sized to comfortably absorb a full
+// MAX_MESSAGES_PER_POLL backlog (500) with headroom; peer-influenceable but
+// bounded at ~60 bytes/entry ≈ 60 KB worst case.
+internal const val MAX_SKIPPED_KEYS = 1000
 internal const val MAX_KEY_AGE_MS = 604_800_000L // 7 days in milliseconds
 
 const val PROTOCOL_VERSION = 1
