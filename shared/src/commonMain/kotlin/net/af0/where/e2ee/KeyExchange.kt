@@ -132,8 +132,12 @@ object KeyExchange {
 
             // VERIFY TOKEN (#168): Alice MUST verify that Bob computed the same initial routing token.
             // Alice is the initiator, so her SEND token (Alice->Bob) uses (AliceFp, BobFp).
+            // Constant-time comparison (matching verifyKeyConfirmation) to prevent timing oracle.
             val expectedToken = deriveRoutingToken(sk, aliceFp, bobFp)
-            if (!expectedToken.contentEquals(msg.token)) {
+            var tokenDiff = expectedToken.size xor msg.token.size
+            val tokenLen = minOf(expectedToken.size, msg.token.size)
+            for (i in 0 until tokenLen) tokenDiff = tokenDiff or (expectedToken[i].toInt() xor msg.token[i].toInt())
+            if (tokenDiff != 0) {
                 val expectedHex = expectedToken.toHex()
                 val providedHex = msg.token.toHex()
                 throw AuthenticationException(

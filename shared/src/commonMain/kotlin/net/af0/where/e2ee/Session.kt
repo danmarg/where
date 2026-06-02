@@ -208,7 +208,8 @@ object Session {
 
         val pnGaps =
             if (isNewDhEpoch && header.pn > cleanState.recvSeq) {
-                (header.pn - cleanState.recvSeq).toInt()
+                val diff = header.pn - cleanState.recvSeq
+                if (diff > MAX_SKIPPED_KEYS) MAX_SKIPPED_KEYS else diff.toInt()
             } else {
                 0
             }
