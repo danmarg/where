@@ -172,13 +172,13 @@ class KeyExchangeTest {
     }
 
     @Test
-    fun `decryptSuggestedName handles empty name for legacy compatibility`() {
+    fun `decryptSuggestedName rejects empty encryptedName`() {
         val sk = randomBytes(32)
         val ekA = randomBytes(32)
         val ekB = randomBytes(32)
-        
-        val decrypted = KeyExchange.decryptSuggestedName(sk, ekA, ekB, byteArrayOf())
-        assertEquals("", decrypted)
+        assertFailsWith<AuthenticationException> {
+            KeyExchange.decryptSuggestedName(sk, ekA, ekB, byteArrayOf())
+        }
         sk.zeroize()
     }
 
