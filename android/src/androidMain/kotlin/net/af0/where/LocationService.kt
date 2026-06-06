@@ -52,6 +52,8 @@ private const val TAG = "LocationService"
 enum class WakeSource(val value: String) {
     TIMER("Timer"),
     ALARM("Alarm"),
+    WORKER("Worker"),
+    GEOFENCE("Geofence"),
     LOCATION_UPDATE("GPS"),
     ACTIVITY_TRANSITION("Activity"),
     HEARTBEAT("Heartbeat"),
@@ -308,7 +310,10 @@ class LocationService : Service() {
         }
     }
 
-    private var isAlarmWakePending = false
+    // The wake source that drove the next pollLoop iteration, set by onStartCommand for
+    // alarm/worker-initiated wakes and consumed (cleared) once by the loop. Null means the
+    // loop ran off its own timer (WakeSource.TIMER).
+    private var pendingWakeSource: WakeSource? = null
 
     override fun onStartCommand(
         intent: Intent?,
@@ -364,13 +369,16 @@ class LocationService : Service() {
 
                         if (event.activityType == DetectedActivity.STILL) {
                             isStill = true
-                            val loc = locationSource.lastLocation.value
-                            if (loc != null) {
-                                setGeofenceAt(loc.first, loc.second)
-                            }
                         } else {
                             isStill = false
-                            removeGeofence()
+                        }
+                        // Always maintain a geofence as a belt-and-suspenders restart trigger
+                        // in case the foreground service is killed. On MOVING transitions we
+                        // replant it at the current position rather than removing it so that
+                        // a 200m displacement still wakes us regardless of activity state.
+                        val loc = locationSource.lastLocation.value
+                        if (loc != null) {
+                            setGeofenceAt(loc.first, loc.second)
                         }
 
                         // Force re-registration with new settings.
@@ -388,19 +396,23 @@ class LocationService : Service() {
             // ACTION_HEARTBEAT_TICK is sent by LocationServiceRestartWorker on its 15-min
             // cadence — useful on Samsung where setExactAndAllowWhileIdle is throttled.
             if (!pollWakeLock.isHeld) pollWakeLock.acquire(60_000L)
-            isAlarmWakePending = true
+            pendingWakeSource = if (intent.action == ACTION_HEARTBEAT_TICK) WakeSource.WORKER else WakeSource.ALARM
             locationSource.wakePoll()
         }
         if (intent?.action == ACTION_GEOFENCE_EVENT) {
             Log.d(TAG, "onStartCommand: Received Geofence Exit event")
-            removeGeofence()
             // Resume full tracking
             currentPriority = Priority.PRIORITY_HIGH_ACCURACY
             currentInterval = 10_000L
             isStill = false
             isRegistered = false
             ensureLocationRegistration()
-            logReliability(WakeSource.ALARM, true) // Geofence is a form of alarm wake
+            // Replant geofence at current position so coverage continues for the next 200m.
+            val loc = locationSource.lastLocation.value
+            if (loc != null) {
+                setGeofenceAt(loc.first, loc.second)
+            }
+            logReliability(WakeSource.GEOFENCE, true)
             locationSource.wakePoll()
         }
         if (intent?.action == ACTION_FORCE_PUBLISH) {
@@ -664,9 +676,10 @@ class LocationService : Service() {
             val rapid = isRapidPolling()
             val inForeground = locationSource.isAppInForeground.value
             val isSharing = userStore.isSharingLocation.value
-            val source = if (isAlarmWakePending) {
-                isAlarmWakePending = false
-                WakeSource.ALARM
+            val pending = pendingWakeSource
+            val source = if (pending != null) {
+                pendingWakeSource = null
+                pending
             } else {
                 WakeSource.TIMER
             }
