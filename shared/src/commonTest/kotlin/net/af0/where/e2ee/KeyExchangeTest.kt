@@ -172,13 +172,35 @@ class KeyExchangeTest {
     }
 
     @Test
-    fun `decryptSuggestedName handles empty name for legacy compatibility`() {
+    fun `decryptSuggestedName round-trips the name Bob encrypted`() {
+        val (qr, aliceEkPriv) = KeyExchange.aliceCreateQrPayload("Alice")
+        val (msg, _) = KeyExchange.bobProcessQr(qr, "Bob")
+        val sk = x25519(aliceEkPriv, msg.ekPub)
+        val name = KeyExchange.decryptSuggestedName(sk, qr.ekPub, msg.ekPub, msg.encryptedName)
+        assertEquals("Bob", name)
+        sk.zeroize()
+    }
+
+    @Test
+    fun `decryptSuggestedName rejects wrong session key`() {
+        val (qr, aliceEkPriv) = KeyExchange.aliceCreateQrPayload("Alice")
+        val (msg, _) = KeyExchange.bobProcessQr(qr, "Bob")
+        val wrongSk = randomBytes(32)
+        assertFailsWith<AuthenticationException> {
+            KeyExchange.decryptSuggestedName(wrongSk, qr.ekPub, msg.ekPub, msg.encryptedName)
+        }
+        aliceEkPriv.zeroize()
+        wrongSk.zeroize()
+    }
+
+    @Test
+    fun `decryptSuggestedName rejects empty encryptedName`() {
         val sk = randomBytes(32)
         val ekA = randomBytes(32)
         val ekB = randomBytes(32)
-        
-        val decrypted = KeyExchange.decryptSuggestedName(sk, ekA, ekB, byteArrayOf())
-        assertEquals("", decrypted)
+        assertFailsWith<AuthenticationException> {
+            KeyExchange.decryptSuggestedName(sk, ekA, ekB, byteArrayOf())
+        }
         sk.zeroize()
     }
 

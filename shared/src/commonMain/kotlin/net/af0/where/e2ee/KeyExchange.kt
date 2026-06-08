@@ -244,8 +244,6 @@ object KeyExchange {
         ekBPub: ByteArray,
         encryptedName: ByteArray,
     ): String {
-        // TODO: remove allowing empty encrypted_name once some time has passed and legacy clients are updated.
-        if (encryptedName.isEmpty()) return ""
         if (encryptedName.size < 28) { // 12-byte nonce + 16-byte tag
             throw AuthenticationException("encryptedName payload is too short")
         }
