@@ -244,6 +244,10 @@ class LocationService : Service() {
                             loc.longitude,
                             if (loc.hasBearing()) loc.bearing.toDouble() else null,
                         )
+                        // Plant the initial geofence. Activity Recognition only fires on
+                        // transitions, so if the device is already stationary at start no
+                        // STILL-enter fires and the geofence would never be set otherwise.
+                        setGeofenceAt(loc.latitude, loc.longitude)
                     }
                 }
             }

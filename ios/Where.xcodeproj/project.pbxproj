@@ -209,6 +209,8 @@
 			dependencies = (
 			);
 			name = Where;
+			packageProductDependencies = (
+			);
 			productName = Where;
 			productReference = EA47D2499F3983EF98B459AB /* Where.app */;
 			productType = "com.apple.product-type.application";
@@ -225,6 +227,8 @@
 				A16788C8831A1120EA429060 /* PBXTargetDependency */,
 			);
 			name = WhereTests;
+			packageProductDependencies = (
+			);
 			productName = WhereTests;
 			productReference = 2785C3E616D50F787106E3D5 /* WhereTests.xctest */;
 			productType = "com.apple.product-type.bundle.unit-test";
@@ -442,10 +446,9 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_ENTITLEMENTS = Sources/Where/Where.entitlements;
-				CODE_SIGN_IDENTITY = "Apple Distribution";
-				CODE_SIGN_STYLE = Manual;
-				CURRENT_PROJECT_VERSION = 5;
-				DEVELOPMENT_TEAM = 5PM2V9LTHC;
+				CODE_SIGN_IDENTITY = "Apple Development";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 3;
 				FRAMEWORK_SEARCH_PATHS = (
 					"$(inherited) $(SRCROOT)/../shared/build/XCFrameworks/$(CONFIGURATION:lower)",
 					"\".\"",
@@ -459,7 +462,6 @@
 				);
 				MARKETING_VERSION = 1.13;
 				PRODUCT_BUNDLE_IDENTIFIER = net.af0.WhereApp;
-				PROVISIONING_PROFILE_SPECIFIER = "Where AppStore";
 				SDKROOT = iphoneos;
 				TARGETED_DEVICE_FAMILY = "1,2";
 			};
@@ -473,7 +475,7 @@
 				CODE_SIGN_ENTITLEMENTS = Sources/Where/Where.entitlements;
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 5;
+				CURRENT_PROJECT_VERSION = 3;
 				FRAMEWORK_SEARCH_PATHS = (
 					"$(inherited) $(SRCROOT)/../shared/build/XCFrameworks/$(CONFIGURATION:lower)",
 					"\".\"",
