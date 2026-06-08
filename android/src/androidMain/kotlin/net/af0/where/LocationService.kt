@@ -115,6 +115,12 @@ class LocationService : Service() {
     @VisibleForTesting
     internal var consecutiveLateHeartbeats = 0
 
+    @VisibleForTesting
+    internal var lastLocationCallbackTime: Long = 0L
+
+    @VisibleForTesting
+    internal var lastRegistrationTime: Long = 0L
+
     private data class RecentFix(val ts: Long, val lat: Double, val lng: Double)
 
     private val recentFixes = ArrayDeque<RecentFix>()
@@ -221,6 +227,7 @@ class LocationService : Service() {
             object : LocationCallback() {
                 override fun onLocationResult(result: LocationResult) {
                     val loc = result.lastLocation ?: return
+                    lastLocationCallbackTime = clock()
                     recordRecentFix(loc.latitude, loc.longitude)
                     locationSource.onLocation(loc.latitude, loc.longitude, if (loc.hasBearing()) loc.bearing.toDouble() else null)
                 }
@@ -230,6 +237,7 @@ class LocationService : Service() {
             object : LocationCallback() {
                 override fun onLocationResult(result: LocationResult) {
                     val loc = result.lastLocation ?: return
+                    lastLocationCallbackTime = clock()
                     recordRecentFix(loc.latitude, loc.longitude)
                     locationSource.onLocation(loc.latitude, loc.longitude, if (loc.hasBearing()) loc.bearing.toDouble() else null)
                 }
@@ -393,31 +401,51 @@ class LocationService : Service() {
             }
         }
 
+        // Acquire the wake lock for any intent that drives real work (GPS fix + network send).
+        // Applied unconditionally — no isHeld guard — so back-to-back wakes refresh the timeout.
+        // ACTION_GEOFENCE_EVENT is included because it launches forceLocationUpdateAndGet()
+        // which can take 10 s+, and Samsung re-enters Doze immediately after onReceive() in
+        // GeofenceReceiver returns if no wake lock is held here.
+        if (intent?.action == ACTION_POLL_ALARM || intent?.action == ACTION_HEARTBEAT_TICK ||
+            intent?.action == ACTION_GEOFENCE_EVENT) {
+            pollWakeLock.acquire(WAKE_LOCK_TIMEOUT_MS)
+        }
         if (intent?.action == ACTION_POLL_ALARM || intent?.action == ACTION_HEARTBEAT_TICK) {
-            // Acquire a wakelock so the CPU stays awake for the GPS fix + network send.
-            // setExactAndAllowWhileIdle wakes the CPU but doesn't hold it; without this
-            // the device can sleep again before forceLocationUpdateAndGet() completes.
-            // ACTION_HEARTBEAT_TICK is sent by LocationServiceRestartWorker on its 15-min
-            // cadence — useful on Samsung where setExactAndAllowWhileIdle is throttled.
-            if (!pollWakeLock.isHeld) pollWakeLock.acquire(60_000L)
+            // ACTION_HEARTBEAT_TICK comes from LocationServiceRestartWorker (15-min cadence),
+            // useful on Samsung where setExactAndAllowWhileIdle is heavily throttled.
             pendingWakeSource = if (intent.action == ACTION_HEARTBEAT_TICK) WakeSource.WORKER else WakeSource.ALARM
             locationSource.wakePoll()
         }
         if (intent?.action == ACTION_GEOFENCE_EVENT) {
             Log.d(TAG, "onStartCommand: Received Geofence Exit event")
-            // Resume full tracking
             currentPriority = Priority.PRIORITY_HIGH_ACCURACY
             currentInterval = 10_000L
             isStill = false
             isRegistered = false
             ensureLocationRegistration()
-            // Replant geofence at current position so coverage continues for the next 200m.
-            val loc = locationSource.lastLocation.value
-            if (loc != null) {
-                setGeofenceAt(loc.first, loc.second)
-            }
             logReliability(WakeSource.GEOFENCE, true)
-            locationSource.wakePoll()
+            // Use the triggering location from the geofence event to replant the fence,
+            // so we don't anchor at a stale cached position the user has already moved past.
+            val geofenceLat = intent.getDoubleExtra(EXTRA_GEOFENCE_LAT, Double.NaN)
+            val geofenceLng = intent.getDoubleExtra(EXTRA_GEOFENCE_LNG, Double.NaN)
+            val hasTriggeringLoc = !geofenceLat.isNaN() && !geofenceLng.isNaN()
+            if (hasTriggeringLoc) {
+                setGeofenceAt(geofenceLat, geofenceLng)
+            }
+            // Force a fresh fix before waking the poll loop. Without this, the service
+            // re-registers with FLP but can wait 30 s+ for the first streaming callback;
+            // the wake lock would expire on Samsung before the send completes.
+            serviceScope.launch {
+                val loc = forceLocationUpdateAndGet()
+                if (loc != null) {
+                    locationSource.onLocation(loc.latitude, loc.longitude, if (loc.hasBearing()) loc.bearing.toDouble() else null)
+                    setGeofenceAt(loc.latitude, loc.longitude)
+                } else if (!hasTriggeringLoc) {
+                    val cached = locationSource.lastLocation.value
+                    if (cached != null) setGeofenceAt(cached.first, cached.second)
+                }
+                locationSource.wakePoll()
+            }
         }
         if (intent?.action == ACTION_FORCE_PUBLISH) {
             val friendId = intent.getStringExtra(EXTRA_FRIEND_ID)
@@ -575,6 +603,8 @@ class LocationService : Service() {
         try {
             fusedClient.requestLocationUpdates(request, locationCallback, mainLooper)
             isRegistered = true
+            lastRegistrationTime = clock()
+            lastLocationCallbackTime = 0L  // reset so watchdog waits for the first callback from this registration
             Log.i(TAG, "Location updates registered successfully with priority=$currentPriority.")
         } catch (e: SecurityException) {
             Log.w(TAG, "SecurityException while requesting location updates: ${e.message}")
@@ -692,6 +722,20 @@ class LocationService : Service() {
                 stopSelf()
                 return
             }
+            // Watchdog: Samsung (and some other OEMs) can silently revoke FLP registrations
+            // without any error callback. If we're in moving mode and haven't seen a callback
+            // for STALE_REGISTRATION_THRESHOLD_MS, force a re-registration.
+            val now = clock()
+            if (isRegistered && !isStill) {
+                val referenceTime = if (lastLocationCallbackTime > 0L) lastLocationCallbackTime else lastRegistrationTime
+                if (referenceTime > 0L && now - referenceTime > STALE_REGISTRATION_THRESHOLD_MS) {
+                    Log.w(TAG, "FLP callbacks stale for ${(now - referenceTime) / 60000}min; re-registering")
+                    e2eeManager.addDiagnosticEvent("FLP stale; re-registering")
+                    isRegistered = false
+                    lastLocationCallbackTime = 0L
+                    ensureLocationRegistration()
+                }
+            }
             // Always poll — even when sharing is off we need to process incoming
             // EpochRotations and post Ratchet Acks so Alice's location doesn't get
             // stuck.  The interval is 30 min in that case (maintenance-only).
@@ -745,9 +789,16 @@ class LocationService : Service() {
                 }
             }
             val interval = pollInterval(rapid, inForeground, isSharing)
-            // Always schedule a doze alarm as a fallback wakeup, even during rapid polling.
-            // Without this, backgrounding during key exchange can silently stall the service.
-            scheduleDozeAlarm(maxOf(interval, STATIONARY_FORCE_UPDATE_THRESHOLD_MS))
+            // Schedule the doze alarm above the platform's ~9-min minimum for
+            // setExactAndAllowWhileIdle. Scheduling below that causes silent deferral to the
+            // next maintenance window — often hours on Samsung in deep Doze.
+            // During rapid polling (key exchange) keep the tight interval for responsiveness.
+            // FLP PRIORITY_LOW_POWER callbacks drive the finer-grained stationary heartbeat
+            // while the foreground service is alive; the alarm is the dead-service safety net.
+            scheduleDozeAlarm(if (rapid) interval else maxOf(DOZE_ALARM_INTERVAL_MS, interval))
+            // All work for this wake is complete. Release the wake lock now so we don't hold
+            // it across the entire sleep interval (could be 10+ min in background).
+            if (pollWakeLock.isHeld) pollWakeLock.release()
             locationSource.awaitPollWake(interval)
             cancelDozeAlarm()
         }
@@ -1031,6 +1082,8 @@ class LocationService : Service() {
         const val ACTION_HEARTBEAT_TICK = "net.af0.where.ACTION_HEARTBEAT_TICK"
         private const val PENDING_INTENT_REQUEST_CODE_ACTIVITY = 1
         const val EXTRA_FRIEND_ID = "friend_id"
+        const val EXTRA_GEOFENCE_LAT = "geofence_lat"
+        const val EXTRA_GEOFENCE_LNG = "geofence_lng"
 
         /**
          * Minimum distance in meters before a location update is considered movement
@@ -1053,6 +1106,29 @@ class LocationService : Service() {
 
         /** Backoff delays for in-wake send retries on transient network failure. */
         val SEND_RETRY_DELAYS_MS = longArrayOf(5_000L, 20_000L)
+
+        /**
+         * Wake lock timeout. Long enough to cover a GPS fix (~10 s) plus a network send on a
+         * cold Samsung radio. Without this, setExactAndAllowWhileIdle/geofence wakes the CPU
+         * but the device can re-enter Doze before the send completes.
+         */
+        const val WAKE_LOCK_TIMEOUT_MS = 120_000L
+
+        /**
+         * Interval for the dead-service doze alarm. setExactAndAllowWhileIdle is rate-limited
+         * to roughly one delivery per ~9 min by the Android platform (enforced more aggressively
+         * on Samsung); scheduling below this causes silent deferral to the next maintenance
+         * window, which can be hours in deep Doze. FLP PRIORITY_LOW_POWER callbacks drive the
+         * finer-grained stationary heartbeat while the foreground service is alive.
+         */
+        const val DOZE_ALARM_INTERVAL_MS = 10 * 60 * 1000L
+
+        /**
+         * If no FLP callback has arrived for this long while in non-STILL mode, treat the
+         * registration as silently dropped and force a re-registration. Samsung's power
+         * management can revoke FLP registrations without any error callback.
+         */
+        const val STALE_REGISTRATION_THRESHOLD_MS = 15 * 60 * 1000L
 
         /** Window of recent GPS fixes consulted by the STILL cross-check. */
         const val RECENT_FIX_WINDOW_MS = 2 * 60 * 1000L
