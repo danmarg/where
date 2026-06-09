@@ -29,6 +29,7 @@ class LocationSyncServiceTests: XCTestCase {
             $location.eraseToAnyPublisher()
         }
         var lastLocation: CLLocation? { location }
+        var isStationary: Bool = false
         var requestPermissionAndStartCalled = false
         func requestPermissionAndStart() {
             requestPermissionAndStartCalled = true
@@ -106,7 +107,9 @@ class LocationSyncServiceTests: XCTestCase {
         var pollCallCount: Int {
             return _pollCallCount
         }
+        var lastStationary: Bool? = nil
         func sendLocation(lat: Double, lng: Double, pausedFriendIds: Set<String>, stationary: Bool) async throws {
+            lastStationary = stationary
             sendLocationCallback?()
         }
         func sendLocationToFriend(friendId: String, lat: Double, lng: Double, stationary: Bool) async throws {
@@ -275,6 +278,56 @@ class LocationSyncServiceTests: XCTestCase {
         XCTAssertTrue(mockLocationProvider.requestImmediateLocationCalled, "Should call requestImmediateLocation when heartbeat is due")
     }
 
+    func testPollAllHeartbeat_SendsStationaryTrue_WhenStationaryCheckReturnsTrue() async throws {
+        let mockClient = MockLocationClient()
+        service = LocationSyncService(e2eeManager: service.e2eeManager, userStore: service.userStore, locationClient: mockClient, locationProvider: mockLocationProvider)
+        service.skipNetworkRestore = true
+        service.isSharingLocation = true
+        service.beginBackgroundTask = { _, _ in .invalid }
+        service.endBackgroundTask = { _ in }
+        service.lastSentTime = Date(timeIntervalSinceNow: -400)
+        service.isStationaryCheck = { true }
+        mockLocationProvider.location = CLLocation(
+            coordinate: CLLocationCoordinate2D(latitude: 37.7, longitude: -122.4),
+            altitude: 0, horizontalAccuracy: 50, verticalAccuracy: 50, timestamp: Date()
+        )
+
+        let expectation = XCTestExpectation(description: "Stationary heartbeat send")
+        mockClient.sendLocationCallback = { expectation.fulfill() }
+
+        await service.pollAll(updateUi: false)
+        await service.currentSendTask?.value
+
+        await fulfillment(of: [expectation], timeout: 1.0)
+        XCTAssertEqual(mockClient.lastStationary, true,
+            "Heartbeat while stationary must send stationary: true")
+    }
+
+    func testPollAllHeartbeat_SendsStationaryFalse_WhenStationaryCheckReturnsFalse() async throws {
+        let mockClient = MockLocationClient()
+        service = LocationSyncService(e2eeManager: service.e2eeManager, userStore: service.userStore, locationClient: mockClient, locationProvider: mockLocationProvider)
+        service.skipNetworkRestore = true
+        service.isSharingLocation = true
+        service.beginBackgroundTask = { _, _ in .invalid }
+        service.endBackgroundTask = { _ in }
+        service.lastSentTime = Date(timeIntervalSinceNow: -400)
+        service.isStationaryCheck = { false }
+        mockLocationProvider.location = CLLocation(
+            coordinate: CLLocationCoordinate2D(latitude: 37.7, longitude: -122.4),
+            altitude: 0, horizontalAccuracy: 50, verticalAccuracy: 50, timestamp: Date()
+        )
+
+        let expectation = XCTestExpectation(description: "Moving heartbeat send")
+        mockClient.sendLocationCallback = { expectation.fulfill() }
+
+        await service.pollAll(updateUi: false)
+        await service.currentSendTask?.value
+
+        await fulfillment(of: [expectation], timeout: 1.0)
+        XCTAssertEqual(mockClient.lastStationary, false,
+            "Heartbeat while moving must send stationary: false")
+    }
+
     func testPollAllDoesNotTriggerHeartbeatWhenRecentlySent() async throws {
         let mockClient = MockLocationClient()
         service = LocationSyncService(e2eeManager: service.e2eeManager, userStore: service.userStore, locationClient: mockClient, locationProvider: mockLocationProvider)
@@ -367,6 +420,48 @@ class LocationSyncServiceTests: XCTestCase {
 
         service.sendLocationOnBackground()
         await fulfillment(of: [expectation], timeout: 0.1)
+    }
+
+    func testSendLocationOnBackground_PassesStationaryFlag_WhenProviderIsStationary() async throws {
+        let mockClient = MockLocationClient()
+        service = LocationSyncService(e2eeManager: service.e2eeManager, userStore: service.userStore, locationClient: mockClient, locationProvider: mockLocationProvider)
+        service.skipNetworkRestore = true
+        service.isSharingLocation = true
+        service.beginBackgroundTask = { _, _ in .invalid }
+        service.endBackgroundTask = { _ in }
+        service.lastSentTime = Date(timeIntervalSinceNow: -60)
+        mockLocationProvider.location = CLLocation(latitude: 37.7749, longitude: -122.4194)
+        mockLocationProvider.isStationary = true
+
+        let expectation = XCTestExpectation(description: "Background stationary send")
+        mockClient.sendLocationCallback = { expectation.fulfill() }
+
+        service.sendLocationOnBackground()
+
+        await fulfillment(of: [expectation], timeout: 1.0)
+        XCTAssertEqual(mockClient.lastStationary, true,
+            "sendLocationOnBackground must pass stationary: true when the provider is stationary")
+    }
+
+    func testSendLocationOnBackground_PassesStationaryFalse_WhenProviderIsMoving() async throws {
+        let mockClient = MockLocationClient()
+        service = LocationSyncService(e2eeManager: service.e2eeManager, userStore: service.userStore, locationClient: mockClient, locationProvider: mockLocationProvider)
+        service.skipNetworkRestore = true
+        service.isSharingLocation = true
+        service.beginBackgroundTask = { _, _ in .invalid }
+        service.endBackgroundTask = { _ in }
+        service.lastSentTime = Date(timeIntervalSinceNow: -60)
+        mockLocationProvider.location = CLLocation(latitude: 37.7749, longitude: -122.4194)
+        mockLocationProvider.isStationary = false
+
+        let expectation = XCTestExpectation(description: "Background moving send")
+        mockClient.sendLocationCallback = { expectation.fulfill() }
+
+        service.sendLocationOnBackground()
+
+        await fulfillment(of: [expectation], timeout: 1.0)
+        XCTAssertEqual(mockClient.lastStationary, false,
+            "sendLocationOnBackground must pass stationary: false when the provider is not stationary")
     }
 
     func testSendLocationOnBackground_UsesLastSentLocationWhenGpsUnavailable() async throws {

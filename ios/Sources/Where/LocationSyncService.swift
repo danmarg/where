@@ -152,6 +152,9 @@ final class LocationSyncService: ObservableObject {
     var sleepForFixTimeout: @Sendable (TimeInterval) async throws -> Void = { seconds in
         try await Task.sleep(for: .seconds(seconds))
     }
+    // Injectable stationarity check. Tests inject a closure to control the result
+    // without requiring a real CMMotionActivityManager.
+    var isStationaryCheck: (@Sendable () async -> Bool)? = nil
     private var awaitingFirstUpdateIds: Set<String> = []
     // Monotonically increasing counter used to prevent stale task cleanup from
     // clearing a newer task's state. Incremented each time a new send task is created.
@@ -392,11 +395,11 @@ final class LocationSyncService: ObservableObject {
                 logger.info("requestImmediateLocation timeout: sending stale fix as fallback")
                 self.forceNextLocationUpdate = false
                 if let loc = self.bestAvailableLocation {
-                    self.sendLocation(lat: loc.lat, lng: loc.lng, heading: loc.heading, force: true, source: .network)
+                    self.sendLocation(lat: loc.lat, lng: loc.lng, heading: loc.heading, force: true, source: .network, stationary: self.locationProvider.isStationary)
                 }
             }
         } else if let loc = bestAvailableLocation {
-            sendLocation(lat: loc.lat, lng: loc.lng, heading: loc.heading, source: .network)
+            sendLocation(lat: loc.lat, lng: loc.lng, heading: loc.heading, source: .network, stationary: locationProvider.isStationary)
         }
     }
 
@@ -638,11 +641,19 @@ final class LocationSyncService: ObservableObject {
             logger.info("pollAll: sharing=\(sharing) elapsed=\(Int(elapsed))s")
             if isSharingLocation {
                 if elapsed >= Self.normalPollInterval {
-                    let stationary = await isStationary()
+                    let stationary: Bool
+                    if let check = isStationaryCheck {
+                        stationary = await check()
+                    } else {
+                        stationary = await isStationary()
+                    }
+                    // Converge CoreMotion result into the provider's cached flag so
+                    // background-entry and network-restore sends read a consistent value.
+                    (locationProvider as? LocationManager)?.isStationary = stationary
                     if stationary {
                         logger.info("pollAll: heartbeat due — stationary, re-reporting cached location")
                         if let loc = bestAvailableLocation {
-                            sendLocation(lat: loc.lat, lng: loc.lng, heading: loc.heading, force: true, source: .heartbeat)
+                            sendLocation(lat: loc.lat, lng: loc.lng, heading: loc.heading, force: true, source: .heartbeat, stationary: true)
                         }
                     } else {
                         logger.info("pollAll: heartbeat due — moving, requesting fresh fix")
@@ -886,7 +897,7 @@ final class LocationSyncService: ObservableObject {
             return
         }
         logger.info("sendLocationOnBackground: sending location before app suspends")
-        sendLocation(lat: loc.lat, lng: loc.lng, source: .backgroundEntry)
+        sendLocation(lat: loc.lat, lng: loc.lng, source: .backgroundEntry, stationary: locationProvider.isStationary)
     }
 
     func sendLocation(lat: Double, lng: Double, heading: Double? = nil, force: Bool = false, source: WakeSource = .locationUpdate, stationary: Bool = false) {

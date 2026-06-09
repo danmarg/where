@@ -8,6 +8,9 @@ private let stationaryGeofenceId = "stationary_fence"
 protocol LocationProviding: AnyObject {
     var locationPublisher: AnyPublisher<CLLocation?, Never> { get }
     var lastLocation: CLLocation? { get }
+    /// Cached stationarity flag. True when the device is known to be stationary,
+    /// false otherwise. Set by the liveUpdates loop and the CoreMotion heartbeat check.
+    var isStationary: Bool { get }
     func requestPermissionAndStart()
     func requestImmediateLocation()
     func sharingStateChanged()
@@ -33,7 +36,13 @@ final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelega
 
     // Reliability loop state
     private var isLowPowerMode = false
-    private var stationaryTask: Task<Void, Never>?
+    var stationaryTask: Task<Void, Never>?  // internal for testability
+    /// Anchor set when the stationaryTask timer begins. Non-stationary fixes within
+    /// minimumReportingDistanceMeters of this anchor are treated as GPS jitter and
+    /// do not reset the 5-minute timer. Internal for testability.
+    var stationaryAnchor: CLLocation? = nil
+    /// Cached stationarity flag readable by any send path without an async query.
+    var isStationary: Bool = false
 
     /// When true, fully tear down the background activity session and live-updates
     /// stream once the user has been stationary for 5+ minutes. The app then relies
@@ -109,6 +118,8 @@ final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelega
     func stopUpdating() {
         stationaryTask?.cancel()
         stationaryTask = nil
+        stationaryAnchor = nil
+        isStationary = false
         isLowPowerMode = false
 
         updatesTask?.cancel()
@@ -149,8 +160,10 @@ final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelega
 
         // Clean up reliability loop state before starting high-fidelity tracking
         isLowPowerMode = false
+        isStationary = false
         stationaryTask?.cancel()
         stationaryTask = nil
+        stationaryAnchor = nil
         for region in manager.monitoredRegions {
             if region.identifier == stationaryGeofenceId {
                 manager.stopMonitoring(for: region)
@@ -195,6 +208,7 @@ final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelega
 
                         if stationary {
                             if self.stationaryTask == nil {
+                                self.stationaryAnchor = loc
                                 self.stationaryTask = Task { @MainActor in
                                     do {
                                         try await Task.sleep(for: .seconds(5 * 60))
@@ -206,16 +220,30 @@ final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelega
                                     }
                                 }
                             }
+                            self.isStationary = true
                             LocationSyncService.shared.e2eeManager.addDiagnosticEvent(message: "Stationary (System)", coalesceKey: nil)
                         } else {
-                            self.stationaryTask?.cancel()
-                            self.stationaryTask = nil
-                            if self.isLowPowerMode {
-                                self.resumeHighFidelityTracking()
+                            // Debounce: sub-200m fixes near the stationary anchor are GPS
+                            // jitter — don't cancel the 5-minute timer for them.
+                            let isJitter: Bool
+                            if let anchor = self.stationaryAnchor {
+                                isJitter = loc.distance(from: anchor) < LocationSyncService.minimumReportingDistanceMeters
+                            } else {
+                                isJitter = false
                             }
 
-                            if loc.horizontalAccuracy <= LocationSyncService.minBroadcastAccuracyMeters {
-                                LocationSyncService.shared.sendLocation(lat: coordinate.latitude, lng: coordinate.longitude, heading: self.heading, source: .locationUpdate)
+                            if !isJitter {
+                                self.isStationary = false
+                                self.stationaryAnchor = nil
+                                self.stationaryTask?.cancel()
+                                self.stationaryTask = nil
+                                if self.isLowPowerMode {
+                                    self.resumeHighFidelityTracking()
+                                }
+
+                                if loc.horizontalAccuracy <= LocationSyncService.minBroadcastAccuracyMeters {
+                                    LocationSyncService.shared.sendLocation(lat: coordinate.latitude, lng: coordinate.longitude, heading: self.heading, source: .locationUpdate)
+                                }
                             }
                         }
                     }
