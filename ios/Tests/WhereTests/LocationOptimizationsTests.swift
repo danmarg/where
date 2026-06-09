@@ -81,19 +81,18 @@ class LocationOptimizationsTests: XCTestCase {
 
     func testLocationManager_StationaryDebounce_JitterDoesNotCancelTimer() async throws {
         let locationManager = LocationManager.shared
-        // Simulate the manager being in a stationary state with an anchor set.
         let anchor = CLLocation(
             coordinate: CLLocationCoordinate2D(latitude: 37.7749, longitude: -122.4194),
             altitude: 0, horizontalAccuracy: 10, verticalAccuracy: 10, timestamp: Date()
         )
-        locationManager.isStationary = true
-        locationManager.stationaryAnchor = anchor
-        let originalTask = Task<Void, Never> { @MainActor in
-            try? await Task.sleep(for: .seconds(300))
-        }
-        locationManager.stationaryTask = originalTask
 
-        // A fix 50m away is jitter — should not cancel the timer.
+        // Arm a stationary reading to set the anchor and start the timer.
+        locationManager.handleStationarityUpdate(anchor, stationary: true)
+        XCTAssertNotNil(locationManager.stationaryTask, "stationaryTask must be created on first stationary reading")
+        XCTAssertTrue(locationManager.isStationary)
+        let originalTask = locationManager.stationaryTask!
+
+        // Feed a non-stationary fix 50 m from the anchor — this is GPS jitter.
         let jitterFix = CLLocation(
             coordinate: CLLocationCoordinate2D(latitude: 37.7753, longitude: -122.4194),
             altitude: 0, horizontalAccuracy: 10, verticalAccuracy: 10, timestamp: Date()
@@ -101,18 +100,17 @@ class LocationOptimizationsTests: XCTestCase {
         XCTAssertLessThan(jitterFix.distance(from: anchor), LocationSyncService.minimumReportingDistanceMeters,
             "Test precondition: jitter fix must be < 200m from anchor")
 
-        // Manually exercise the debounce path. We feed the non-stationary fix through
-        // locationManager(didUpdateLocations:), which calls the legacy handler (not
-        // liveUpdates). The legacy handler only resumes high-fidelity tracking; the
-        // debounce logic is in liveUpdates. This test validates the anchor/task state
-        // directly after setting it up, confirming the design is in place.
+        locationManager.handleStationarityUpdate(jitterFix, stationary: false)
+
         XCTAssertFalse(originalTask.isCancelled,
             "stationaryTask must not be cancelled by a sub-200m jitter reading")
         XCTAssertTrue(locationManager.isStationary,
-            "isStationary must remain true while within the anchor radius")
+            "isStationary must remain true for a jitter reading")
+        XCTAssertNotNil(locationManager.stationaryAnchor,
+            "stationaryAnchor must be preserved for a jitter reading")
 
         // Clean up
-        originalTask.cancel()
+        locationManager.stationaryTask?.cancel()
         locationManager.stationaryTask = nil
         locationManager.stationaryAnchor = nil
         locationManager.isStationary = false
@@ -124,14 +122,13 @@ class LocationOptimizationsTests: XCTestCase {
             coordinate: CLLocationCoordinate2D(latitude: 37.7749, longitude: -122.4194),
             altitude: 0, horizontalAccuracy: 10, verticalAccuracy: 10, timestamp: Date()
         )
-        locationManager.isStationary = true
-        locationManager.stationaryAnchor = anchor
-        let originalTask = Task<Void, Never> { @MainActor in
-            try? await Task.sleep(for: .seconds(300))
-        }
-        locationManager.stationaryTask = originalTask
 
-        // A fix 300m away is genuine movement — debounce must allow the cancel.
+        // Arm stationary state.
+        locationManager.handleStationarityUpdate(anchor, stationary: true)
+        XCTAssertNotNil(locationManager.stationaryTask)
+        let originalTask = locationManager.stationaryTask!
+
+        // Feed a non-stationary fix 300 m away — genuine movement.
         let farFix = CLLocation(
             coordinate: CLLocationCoordinate2D(latitude: 37.7776, longitude: -122.4194),
             altitude: 0, horizontalAccuracy: 10, verticalAccuracy: 10, timestamp: Date()
@@ -139,21 +136,56 @@ class LocationOptimizationsTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(farFix.distance(from: anchor), LocationSyncService.minimumReportingDistanceMeters,
             "Test precondition: far fix must be >= 200m from anchor")
 
-        // Simulate the debounce decision as it would execute in liveUpdates.
-        let isJitter = farFix.distance(from: anchor) < LocationSyncService.minimumReportingDistanceMeters
-        if !isJitter {
-            locationManager.isStationary = false
-            locationManager.stationaryAnchor = nil
-            locationManager.stationaryTask?.cancel()
-            locationManager.stationaryTask = nil
-        }
+        locationManager.handleStationarityUpdate(farFix, stationary: false)
 
         XCTAssertTrue(originalTask.isCancelled,
             "stationaryTask must be cancelled when movement >= 200m from anchor")
         XCTAssertFalse(locationManager.isStationary,
-            "isStationary must be false after genuine movement detected")
+            "isStationary must be false after genuine movement")
         XCTAssertNil(locationManager.stationaryAnchor,
             "stationaryAnchor must be cleared after genuine movement")
+        XCTAssertNil(locationManager.stationaryTask,
+            "stationaryTask must be nil after genuine movement")
+    }
+
+    func testLocationManager_StationaryUpdate_SetsAnchorOnFirstStationaryReading() async throws {
+        let locationManager = LocationManager.shared
+        // Ensure clean state.
+        locationManager.stationaryTask?.cancel()
+        locationManager.stationaryTask = nil
+        locationManager.stationaryAnchor = nil
+        locationManager.isStationary = false
+
+        let loc = CLLocation(
+            coordinate: CLLocationCoordinate2D(latitude: 37.7749, longitude: -122.4194),
+            altitude: 0, horizontalAccuracy: 10, verticalAccuracy: 10, timestamp: Date()
+        )
+        locationManager.handleStationarityUpdate(loc, stationary: true)
+
+        XCTAssertNotNil(locationManager.stationaryTask, "stationaryTask must be started on first stationary reading")
+        XCTAssertNotNil(locationManager.stationaryAnchor, "stationaryAnchor must be set on first stationary reading")
+        XCTAssertTrue(locationManager.isStationary)
+
+        // A second stationary reading must not replace the existing task or anchor.
+        let anchor1Lat = locationManager.stationaryAnchor?.coordinate.latitude
+        let loc2 = CLLocation(
+            coordinate: CLLocationCoordinate2D(latitude: 37.7750, longitude: -122.4194),
+            altitude: 0, horizontalAccuracy: 10, verticalAccuracy: 10, timestamp: Date()
+        )
+        locationManager.handleStationarityUpdate(loc2, stationary: true)
+
+        XCTAssertNotNil(locationManager.stationaryTask,
+            "stationaryTask must still exist after a second stationary reading")
+        XCTAssertFalse(locationManager.stationaryTask!.isCancelled,
+            "stationaryTask must not be cancelled by a second stationary reading")
+        XCTAssertEqual(locationManager.stationaryAnchor?.coordinate.latitude, anchor1Lat,
+            "stationaryAnchor must not shift on subsequent stationary readings")
+
+        // Clean up
+        locationManager.stationaryTask?.cancel()
+        locationManager.stationaryTask = nil
+        locationManager.stationaryAnchor = nil
+        locationManager.isStationary = false
     }
 
     func testSendLocation_SoftwareDistanceFilter() async throws {
