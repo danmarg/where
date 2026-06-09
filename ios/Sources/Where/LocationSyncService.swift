@@ -152,6 +152,11 @@ final class LocationSyncService: ObservableObject {
     var sleepForFixTimeout: @Sendable (TimeInterval) async throws -> Void = { seconds in
         try await Task.sleep(for: .seconds(seconds))
     }
+    // Queries whether the device is stationary. Default queries CoreMotion;
+    // tests replace with { true } or { false } for deterministic results.
+    // Initialized in init() to capture motionActivityManager/motionQueue without
+    // a self reference, avoiding actor-isolation issues in the closure.
+    var isStationaryQuery: () async -> Bool = { false }  // overridden in init
     private var awaitingFirstUpdateIds: Set<String> = []
     // Monotonically increasing counter used to prevent stale task cleanup from
     // clearing a newer task's state. Incremented each time a new send task is created.
@@ -198,6 +203,36 @@ final class LocationSyncService: ObservableObject {
 
         self.isSharingLocation = (userStoreValue.isSharingLocation.value as? Shared.KotlinBoolean)?.boolValue ?? true
         self.displayName = userStoreValue.displayName.value as? String ?? ""
+
+        // Capture manager and queue by value so the closure needs no self reference,
+        // keeping it actor-isolation-free and trivially replaceable in tests.
+        let motionManager = self.motionActivityManager
+        let motionQueue = self.motionQueue
+        self.isStationaryQuery = {
+            guard CMMotionActivityManager.isActivityAvailable() else { return false }
+            switch CMMotionActivityManager.authorizationStatus() {
+            case .denied, .restricted:
+                logger.warning("Motion activity permission denied/restricted; skipping stationarity check")
+                return false
+            case .notDetermined:
+                return false
+            case .authorized:
+                break
+            @unknown default:
+                return false
+            }
+            return await withCheckedContinuation { continuation in
+                let now = Date()
+                motionManager.queryActivityStarting(from: now.addingTimeInterval(-60), to: now, to: motionQueue) { activities, error in
+                    if error != nil {
+                        continuation.resume(returning: false)
+                        return
+                    }
+                    let stationary = activities?.last(where: { $0.confidence != .low })?.stationary ?? false
+                    continuation.resume(returning: stationary)
+                }
+            }
+        }
 
         // Forward repo's @Published changes to our own observers so the existing
         // `service.foo` forwarders continue to drive SwiftUI updates.
@@ -392,11 +427,11 @@ final class LocationSyncService: ObservableObject {
                 logger.info("requestImmediateLocation timeout: sending stale fix as fallback")
                 self.forceNextLocationUpdate = false
                 if let loc = self.bestAvailableLocation {
-                    self.sendLocation(lat: loc.lat, lng: loc.lng, heading: loc.heading, force: true, source: .network)
+                    self.sendLocation(lat: loc.lat, lng: loc.lng, heading: loc.heading, force: true, source: .network, stationary: self.locationProvider.isStationary)
                 }
             }
         } else if let loc = bestAvailableLocation {
-            sendLocation(lat: loc.lat, lng: loc.lng, heading: loc.heading, source: .network)
+            sendLocation(lat: loc.lat, lng: loc.lng, heading: loc.heading, source: .network, stationary: locationProvider.isStationary)
         }
     }
 
@@ -529,46 +564,6 @@ final class LocationSyncService: ObservableObject {
         e2eeManager.addDiagnosticEvent(message: message, coalesceKey: nil)
     }
 
-    private func isStationary() async -> Bool {
-        guard CMMotionActivityManager.isActivityAvailable() else {
-            return false
-        }
-
-        switch CMMotionActivityManager.authorizationStatus() {
-        case .denied, .restricted:
-            logger.warning("Motion activity permission denied/restricted; skipping stationarity check")
-            return false
-        case .notDetermined:
-            // Permission prompt has not been shown yet. Skip the query so we don't
-            // inadvertently trigger the system permission dialog during a background wake.
-            return false
-        case .authorized:
-            break
-        @unknown default:
-            return false
-        }
-
-        return await withCheckedContinuation { [weak self] continuation in
-            guard let self = self else {
-                continuation.resume(returning: false)
-                return
-            }
-
-            let now = Date()
-            let sixtySecondsAgo = now.addingTimeInterval(-60)
-
-            self.motionActivityManager.queryActivityStarting(from: sixtySecondsAgo, to: now, to: self.motionQueue) { activities, error in
-                if let _ = error {
-                    continuation.resume(returning: false)
-                    return
-                }
-
-                let stationary = activities?.last(where: { $0.confidence != .low })?.stationary ?? false
-                continuation.resume(returning: stationary)
-            }
-        }
-    }
-
     func pollAll(updateUi: Bool = true, source: WakeSource = .timer) async {
         if isPollInFlight { return }
         isPollInFlight = true
@@ -638,11 +633,14 @@ final class LocationSyncService: ObservableObject {
             logger.info("pollAll: sharing=\(sharing) elapsed=\(Int(elapsed))s")
             if isSharingLocation {
                 if elapsed >= Self.normalPollInterval {
-                    let stationary = await isStationary()
+                    let stationary = await isStationaryQuery()
+                    // Converge CoreMotion result into the provider's cached flag so
+                    // background-entry and network-restore sends read a consistent value.
+                    locationProvider.isStationary = stationary
                     if stationary {
                         logger.info("pollAll: heartbeat due — stationary, re-reporting cached location")
                         if let loc = bestAvailableLocation {
-                            sendLocation(lat: loc.lat, lng: loc.lng, heading: loc.heading, force: true, source: .heartbeat)
+                            sendLocation(lat: loc.lat, lng: loc.lng, heading: loc.heading, force: true, source: .heartbeat, stationary: true)
                         }
                     } else {
                         logger.info("pollAll: heartbeat due — moving, requesting fresh fix")
@@ -886,7 +884,7 @@ final class LocationSyncService: ObservableObject {
             return
         }
         logger.info("sendLocationOnBackground: sending location before app suspends")
-        sendLocation(lat: loc.lat, lng: loc.lng, source: .backgroundEntry)
+        sendLocation(lat: loc.lat, lng: loc.lng, source: .backgroundEntry, stationary: locationProvider.isStationary)
     }
 
     func sendLocation(lat: Double, lng: Double, heading: Double? = nil, force: Bool = false, source: WakeSource = .locationUpdate, stationary: Bool = false) {
