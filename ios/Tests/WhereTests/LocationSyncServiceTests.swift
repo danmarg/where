@@ -286,7 +286,7 @@ class LocationSyncServiceTests: XCTestCase {
         service.beginBackgroundTask = { _, _ in .invalid }
         service.endBackgroundTask = { _ in }
         service.lastSentTime = Date(timeIntervalSinceNow: -400)
-        service.isStationaryCheck = { true }
+        service.isStationaryQuery = { true }
         mockLocationProvider.location = CLLocation(
             coordinate: CLLocationCoordinate2D(latitude: 37.7, longitude: -122.4),
             altitude: 0, horizontalAccuracy: 50, verticalAccuracy: 50, timestamp: Date()
@@ -311,7 +311,7 @@ class LocationSyncServiceTests: XCTestCase {
         service.beginBackgroundTask = { _, _ in .invalid }
         service.endBackgroundTask = { _ in }
         service.lastSentTime = Date(timeIntervalSinceNow: -400)
-        service.isStationaryCheck = { false }
+        service.isStationaryQuery = { false }
         mockLocationProvider.location = CLLocation(
             coordinate: CLLocationCoordinate2D(latitude: 37.7, longitude: -122.4),
             altitude: 0, horizontalAccuracy: 50, verticalAccuracy: 50, timestamp: Date()
@@ -326,6 +326,27 @@ class LocationSyncServiceTests: XCTestCase {
         await fulfillment(of: [expectation], timeout: 1.0)
         XCTAssertEqual(mockClient.lastStationary, false,
             "Heartbeat while moving must send stationary: false")
+    }
+
+    func testPollAllHeartbeat_ConvergesStationaryFlagIntoProvider() async throws {
+        let mockClient = MockLocationClient()
+        service = LocationSyncService(e2eeManager: service.e2eeManager, userStore: service.userStore, locationClient: mockClient, locationProvider: mockLocationProvider)
+        service.skipNetworkRestore = true
+        service.isSharingLocation = true
+        service.beginBackgroundTask = { _, _ in .invalid }
+        service.endBackgroundTask = { _ in }
+        service.lastSentTime = Date(timeIntervalSinceNow: -400)
+        service.isStationaryQuery = { true }
+        mockLocationProvider.isStationary = false  // starts false
+        mockLocationProvider.location = CLLocation(
+            coordinate: CLLocationCoordinate2D(latitude: 37.7, longitude: -122.4),
+            altitude: 0, horizontalAccuracy: 50, verticalAccuracy: 50, timestamp: Date()
+        )
+
+        await service.pollAll(updateUi: false)
+
+        XCTAssertTrue(mockLocationProvider.isStationary,
+            "pollAll must write the CoreMotion result back into locationProvider.isStationary via the protocol, not a cast")
     }
 
     func testPollAllDoesNotTriggerHeartbeatWhenRecentlySent() async throws {

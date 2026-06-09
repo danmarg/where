@@ -10,7 +10,9 @@ protocol LocationProviding: AnyObject {
     var lastLocation: CLLocation? { get }
     /// Cached stationarity flag. True when the device is known to be stationary,
     /// false otherwise. Set by the liveUpdates loop and the CoreMotion heartbeat check.
-    var isStationary: Bool { get }
+    /// Best-effort: defaults to false on cold wake until the first liveUpdates reading
+    /// or heartbeat CoreMotion check runs; early sends conservatively report moving.
+    var isStationary: Bool { get set }
     func requestPermissionAndStart()
     func requestImmediateLocation()
     func sharingStateChanged()
