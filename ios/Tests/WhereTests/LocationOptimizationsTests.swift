@@ -36,6 +36,7 @@ class LocationOptimizationsTests: XCTestCase {
     }
 
     override func setUp() async throws {
+        resetLocationManagerShared()
         self.mockLocationProvider = MockLocationProvider()
         self.mockLocationClient = MockLocationClient()
         let e2eeManager = Shared.E2eeManager(sqlDriver: Shared.IosSqlDriverKt.createIosSqlDriver(name: ":memory:"))
@@ -43,6 +44,17 @@ class LocationOptimizationsTests: XCTestCase {
         self.service = LocationSyncService(e2eeManager: e2eeManager, userStore: userStore, locationClient: mockLocationClient, locationProvider: mockLocationProvider)
         self.service.beginBackgroundTask = { _, _ in .invalid }
         self.service.endBackgroundTask = { _ in }
+    }
+
+    override func tearDown() async throws {
+        resetLocationManagerShared()
+    }
+
+    private func resetLocationManagerShared() {
+        LocationManager.shared.stationaryTask?.cancel()
+        LocationManager.shared.stationaryTask = nil
+        LocationManager.shared.stationaryAnchor = nil
+        LocationManager.shared.isStationary = false
     }
 
     func testHeartbeat_CallsRequestImmediateLocation() async throws {
@@ -108,12 +120,6 @@ class LocationOptimizationsTests: XCTestCase {
             "isStationary must remain true for a jitter reading")
         XCTAssertNotNil(locationManager.stationaryAnchor,
             "stationaryAnchor must be preserved for a jitter reading")
-
-        // Clean up
-        locationManager.stationaryTask?.cancel()
-        locationManager.stationaryTask = nil
-        locationManager.stationaryAnchor = nil
-        locationManager.isStationary = false
     }
 
     func testLocationManager_StationaryDebounce_LargeMoveCancelsTimer() async throws {
@@ -150,12 +156,6 @@ class LocationOptimizationsTests: XCTestCase {
 
     func testLocationManager_StationaryUpdate_SetsAnchorOnFirstStationaryReading() async throws {
         let locationManager = LocationManager.shared
-        // Ensure clean state.
-        locationManager.stationaryTask?.cancel()
-        locationManager.stationaryTask = nil
-        locationManager.stationaryAnchor = nil
-        locationManager.isStationary = false
-
         let loc = CLLocation(
             coordinate: CLLocationCoordinate2D(latitude: 37.7749, longitude: -122.4194),
             altitude: 0, horizontalAccuracy: 10, verticalAccuracy: 10, timestamp: Date()
@@ -180,12 +180,6 @@ class LocationOptimizationsTests: XCTestCase {
             "stationaryTask must not be cancelled by a second stationary reading")
         XCTAssertEqual(locationManager.stationaryAnchor?.coordinate.latitude, anchor1Lat,
             "stationaryAnchor must not shift on subsequent stationary readings")
-
-        // Clean up
-        locationManager.stationaryTask?.cancel()
-        locationManager.stationaryTask = nil
-        locationManager.stationaryAnchor = nil
-        locationManager.isStationary = false
     }
 
     func testSendLocation_SoftwareDistanceFilter() async throws {
