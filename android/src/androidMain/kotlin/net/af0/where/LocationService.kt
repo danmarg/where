@@ -269,12 +269,19 @@ class LocationService : Service() {
             object : ConnectivityManager.NetworkCallback() {
                 override fun onAvailable(network: Network) {
                     Log.d(TAG, "Network available, triggering syncNow()")
+                    pollWakeLock.acquire(WAKE_LOCK_TIMEOUT_MS)
                     serviceScope.launch {
                         try {
-                            locationClient.syncNow()
-                            logReliability(WakeSource.NETWORK, true)
-                        } catch (_: Exception) {
-                            logReliability(WakeSource.NETWORK, false)
+                            try {
+                                locationClient.syncNow()
+                                logReliability(WakeSource.NETWORK, true)
+                            } catch (e: CancellationException) {
+                                throw e
+                            } catch (_: Exception) {
+                                logReliability(WakeSource.NETWORK, false)
+                            }
+                        } finally {
+                            if (pollWakeLock.isHeld) pollWakeLock.release()
                         }
                     }
                 }
@@ -705,6 +712,12 @@ class LocationService : Service() {
     private val sendLock = Mutex()
 
     private suspend fun pollLoop() {
+        // On cold/headless restart the StateFlow starts empty — hydrate once before the
+        // first iteration so we don't stopSelf() before sending anything.
+        if (locationSource.friends.value.isEmpty() && locationSource.allPendingInvites.value.isEmpty()) {
+            locationSource.onFriendsUpdated(e2eeManager.listFriends())
+            locationSource.onPendingInvitesUpdated(e2eeManager.listPendingInvites())
+        }
         // The loop continues until serviceScope is cancelled in onDestroy().
         while (true) {
             val rapid = isRapidPolling()
