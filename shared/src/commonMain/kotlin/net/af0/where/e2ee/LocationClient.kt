@@ -1,5 +1,6 @@
 package net.af0.where.e2ee
 
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
@@ -315,12 +316,16 @@ open class LocationClient(
             val friends = store.listFriends()
             friends.map { friend ->
                 async {
-                    runCatching {
+                    try {
                         val mutex = getFriendMutex(friend.id)
                         mutex.withLock {
                             processOutbox(friend.id)
                             pollFriend(friend.id)
                         }
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (_: Exception) {
+                        // ignore per-friend failures
                     }
                 }
             }.awaitAll()
@@ -336,11 +341,15 @@ open class LocationClient(
 
             friends.map { friend ->
                 async {
-                    runCatching {
+                    try {
                         val mutex = getFriendMutex(friend.id)
                         mutex.withLock {
                             processOutbox(friend.id)
                         }
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (_: Exception) {
+                        // ignore per-friend failures
                     }
                 }
             }.awaitAll()
@@ -382,7 +391,7 @@ open class LocationClient(
                             mutex.withLock {
                                 sendMessageToFriendInternal(friend.id, payload)
                             }
-                        }
+                        }.onFailure { if (it is CancellationException) throw it }
                     }
                 }
 
@@ -423,11 +432,15 @@ open class LocationClient(
             val activeFriends = store.listFriends().filter { it.id !in pausedFriendIds && !it.isStale }
             val deferreds = activeFriends.map { friend ->
                 async {
-                    runCatching {
+                    try {
                         val mutex = getFriendMutex(friend.id)
                         mutex.withLock {
                             sendMessageToFriendInternal(friend.id, payload)
                         }
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (_: Exception) {
+                        // ignore per-friend failures
                     }
                 }
             }
@@ -443,7 +456,13 @@ open class LocationClient(
         val payload = MessagePlaintext.StoppedSharing(ts = currentTimeSeconds())
         val mutex = getFriendMutex(friendId)
         mutex.withLock {
-            runCatching { sendMessageToFriendInternal(friendId, payload) }
+            try {
+                sendMessageToFriendInternal(friendId, payload)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                // Ignore
+            }
         }
     }
 
