@@ -908,6 +908,37 @@ class LocationSyncServiceTests: XCTestCase {
         XCTAssertFalse(service.forceNextLocationUpdate, "forceNextLocationUpdate should be cleared after fallback send")
     }
 
+    func testNetworkRestore_StaleLocation_Stationary_SendsStationaryWithoutRequestingFix() async throws {
+        let mockClient = MockLocationClient()
+        service = LocationSyncService(e2eeManager: service.e2eeManager, userStore: service.userStore, locationClient: mockClient, locationProvider: mockLocationProvider)
+        service.skipNetworkRestore = true
+        service.beginBackgroundTask = { _, _ in .invalid }
+        service.endBackgroundTask = { _ in }
+        service.isSharingLocation = true
+        service.lastSentTime = Date(timeIntervalSince1970: 0)
+
+        // Stale location (90s old) but device is stationary
+        let staleLocation = CLLocation(
+            coordinate: CLLocationCoordinate2D(latitude: 37.0, longitude: -122.0),
+            altitude: 0, horizontalAccuracy: 10, verticalAccuracy: 10,
+            timestamp: Date(timeIntervalSinceNow: -90)
+        )
+        mockLocationProvider.location = staleLocation
+        mockLocationProvider.isStationary = true
+
+        let expectation = XCTestExpectation(description: "Should send stationary:true immediately")
+        mockClient.sendLocationCallback = { expectation.fulfill() }
+
+        await service.handleNetworkRestored()
+        await service.currentSendTask?.value
+
+        await fulfillment(of: [expectation], timeout: 1.0)
+        XCTAssertTrue(mockClient.lastStationary == true, "Network restore while stationary must send stationary:true")
+        XCTAssertFalse(mockLocationProvider.requestImmediateLocationCalled,
+            "Must not request a fresh fix when stationary — that resets isStationary to false")
+        XCTAssertFalse(service.forceNextLocationUpdate, "forceNextLocationUpdate must not be set when stationary")
+    }
+
     func testNetworkRestore_RapidFlap_OnlyOneSend() async throws {
         let mockClient = MockLocationClient()
         service = LocationSyncService(e2eeManager: service.e2eeManager, userStore: service.userStore, locationClient: mockClient, locationProvider: mockLocationProvider)

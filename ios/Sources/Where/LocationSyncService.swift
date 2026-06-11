@@ -409,7 +409,14 @@ final class LocationSyncService: ObservableObject {
         guard isSharingLocation else { return }
 
         let locationIsStale = (locationProvider.lastLocation?.timestamp.timeIntervalSinceNow ?? -.infinity) < -Self.staleLocationThreshold
-        if locationIsStale {
+        if locationIsStale && locationProvider.isStationary {
+            // Don't request a fresh fix when stationary: the position hasn't changed, and
+            // requestImmediateLocation() → didUpdateLocations → resumeHighFidelityTracking()
+            // would reset isStationary=false and send stationary:false to friends.
+            if let loc = bestAvailableLocation {
+                sendLocation(lat: loc.lat, lng: loc.lng, heading: loc.heading, force: true, source: .network, stationary: true)
+            }
+        } else if locationIsStale {
             forceNextLocationUpdate = true
             locationProvider.requestImmediateLocation()
             // Cancel any previous fallback timeout before starting a new one.
