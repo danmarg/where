@@ -631,7 +631,6 @@ SessionState {
   recv_chain_key:     [32]byte        // CK for incoming messages
   send_token:         [16]byte        // token for highest_peer_dh_pub_seen
   recv_token:         [16]byte        // token for current local ratchet key
-  prev_recv_token:    [16]byte        // token for previous local ratchet key (pending retirement); unset at bootstrap
   send_msg_num:       uint64          // sender chain message number
   recv_msg_num:       uint64          // highest received msg_num in the current epoch (for replay rejection)
   highest_peer_dh_pub_seen: [32]byte  // highest peer DH pub key successfully processed
@@ -794,7 +793,7 @@ Senders MUST emit the `"type"` field on every plaintext message. Receivers MUST 
 
 Bob retrieves pending messages by performing a `GET` request to his pairwise receive token: `GET /inbox/{hex(recv_token_T)}`. There is no JSON payload for the poll request itself.
 
-During an epoch transition, Bob MUST also poll `prev_recv_token` if it is set (non-zero): `GET /inbox/{hex(prev_recv_token)}`. Both polls occur within the same polling cycle. `prev_recv_token` is unset at bootstrap and after it has been retired per §5.4.3.
+The receiver polls **exactly one token per cycle** — the current `recv_token`. Epoch transitions are handled entirely on the send side (§5.4.1): the sender's transition-message rule routes the first new-epoch message onto the token the receiver is already polling, so the receiver naturally observes the new `dh_pub`, ratchets forward, and switches its polling target without needing a two-token window.
 
 The server returns a JSON array of `MailboxPayload` objects, or an empty array `[]` if no messages are pending (§7.2).
 

@@ -39,9 +39,13 @@ otherwise process Alice's eager-ratchet message.
 polling); §9.2 says the receiver MUST also poll `prev_recv_token` during epoch
 transition; §8.2 `SessionState` carries `prev_recv_token`.
 
-- [ ] Determine which behavior the implementation actually has.
-- [ ] Make §5.4.2, §8.2, and §9.2 agree. Note metadata impact if two-token
+- [x] Determine which behavior the implementation actually has.
+      (Single-token polling per §5.4.2; `prevRecvToken` does not exist in SessionState
+      or polling logic; §9.2 and §8.2 were wrong.)
+- [x] Make §5.4.2, §8.2, and §9.2 agree. Note metadata impact if two-token
       polling is the real behavior (doubles per-friend poll fingerprint).
+      (Removed `prev_recv_token` from §8.2 SessionState; rewrote §9.2 to match §5.4.2;
+      noted the metadata benefit of single-token design.)
 
 ## 4. Reconcile the two KDF_CK definitions (doc only)
 
