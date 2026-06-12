@@ -126,11 +126,10 @@ class E2eeManager(
             }
         if (pending == null || aliceEkPubBytes == null) return null
 
-        val tokenBytes = payload.token.hexToByteArray()
         val msg =
             KeyExchangeInitMessage(
                 protocolVersion = payload.v,
-                token = tokenBytes,
+                token = payload.token?.hexToByteArray() ?: ByteArray(0),
                 ekPub = payload.ekPub,
                 keyConfirmation = payload.keyConfirmation,
                 encryptedName = payload.encryptedName,
