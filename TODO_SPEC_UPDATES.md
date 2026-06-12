@@ -53,7 +53,9 @@ transition; §8.2 `SessionState` carries `prev_recv_token`.
 §11 table: single 76-byte HKDF expand for message key + nonce. These produce
 different bytes.
 
-- [ ] Check the implementation, fix whichever section is wrong.
+- [x] Check the implementation, fix whichever section is wrong.
+      (§8.3 is correct: HMAC for MK/CK', separate HKDF for nonce. Fixed §11 table
+      and the incorrect file-header comment in Ratchet.kt.)
 
 ## 5. Specify discovery-mailbox multiple-responder behavior (doc, maybe impl)
 

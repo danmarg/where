@@ -861,7 +861,7 @@ With this design, and assuming only the advertised mailbox API and payload encry
 | Asymmetric key agreement | X25519 (ECDH) | Diffie-Hellman key exchange at bootstrap and each DH ratchet step | libsodium / Tink / CryptoKit |
 | Symmetric encryption | ChaCha20-Poly1305 (IETF) | Encrypt location payloads and control messages (AEAD) | libsodium |
 | Key derivation (KDF_RK) | HKDF-SHA-256 | Derive new root key and chain key from DH output | libsodium |
-| Chain KDF (KDF_CK) | HKDF-SHA-256 | Advance symmetric ratchet; derive message key (32 B) and nonce (12 B) via single 76-byte HKDF expand | libsodium |
+| Chain KDF (KDF_CK) | HMAC-SHA-256 + HKDF-SHA-256 | Advance symmetric ratchet: `MK = HMAC(CK, 0x01)`, `CK' = HMAC(CK, 0x02)`, `nonce = HKDF(ikm=MK, info="Where-v1-MsgNonce", length=12)` | libsodium |
 | Suggested name KDF | HKDF-SHA-256 | Derive name encryption key `K_name` from shared secret `SK` | libsodium |
 | Suggested name encryption | ChaCha20-Poly1305 (IETF) | Encrypt/decrypt suggested name during key exchange | libsodium |
 | Session auth | HMAC-SHA-256 | Authenticate `KeyExchangeInit` key confirmation | libsodium |
