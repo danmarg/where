@@ -65,10 +65,12 @@ that the server controls GET ordering ("up to 50 from the front of the
 queue"), i.e., a malicious server picks which `KeyExchangeInit` Alice sees
 first.
 
-- [ ] Specify behavior when multiple `KeyExchangeInit` messages are present in
-      the discovery mailbox (e.g., surface an error to Alice), turning a silent
-      hijack into a detectable event.
-- [ ] If specified behavior differs from implementation, file follow-up impl work.
+- [x] Specify behavior when multiple `KeyExchangeInit` messages are present in
+      the discovery mailbox: process all of them (process-all, not first-responder-
+      wins), surface a count to Alice, prompt Safety Number verification per session.
+      This eliminates silent displacement and aligns with issue #233.
+- [x] Specified behavior differs from implementation (current: first-responder-wins).
+      Impl work tracked in https://github.com/danmarg/where/issues/233.
 
 ## 6. Reconcile MAX_GAP (10,000) vs skipped-key cache (1,000) (doc, maybe impl)
 

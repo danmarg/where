@@ -204,8 +204,10 @@ Using a random secret (rather than `EK_A.pub`) as HKDF IKM ensures that only som
 
 - Alice begins polling `GET /inbox/{hex(discovery_token_A)}` immediately.
 - Bob derives the same `discovery_token_A` from the scanned `discovery_secret` and POSTs his `KeyExchangeInit` there.
-- Once Alice retrieves and processes the `KeyExchangeInit`, she switches to polling `recv_token` for all subsequent messages.
-- The discovery token is single-use and ephemeral: implementations MUST discard it after `aliceProcessInit` completes.
+- Alice processes **all** `KeyExchangeInit` messages received during the discovery window, establishing one fully independent session per scanner. Each scanner's `EK_B` is fresh and produces a distinct `SK`, so sessions are cryptographically isolated from one another.
+- The discovery window closes when Alice dismisses the Add Friend UI (or an implementation-defined timeout). The discovery token MUST be discarded at that point.
+- **Multiple-init UX:** When more than one `KeyExchangeInit` is processed in a single discovery window, Alice's UI SHOULD make this visible (e.g. "Added 3 friends from this QR") and SHOULD prompt Safety Number verification for each resulting session. This ensures that a rogue init — which Alice cannot distinguish cryptographically from a legitimate one — produces a visible, verifiable event rather than a silent side-session.
+- **Security note:** A malicious server controlling GET response ordering cannot displace a legitimate scanner under this model, because all inits in the mailbox are processed. The server can still withhold a specific `KeyExchangeInit` entirely (DoS — see §2.3), but it cannot cause Alice to silently pair with an attacker *instead of* a legitimate scanner.
 
 ### 4.3 Option B: Out-of-Band (URI / Manual)
 
