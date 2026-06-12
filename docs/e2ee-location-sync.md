@@ -130,7 +130,7 @@ This protocol uses **no long-term identity keys**. There is no `IK`, no `SigIK`,
 
 This design decision is dependent upon the device management policy (§3.3): when a device is lost or the app is reinstalled, all contacts must be manually re-added. Dropping long-term keys eliminates the exposure of a stable device identifier to the server (§4.4), risking social graph leakage, and considerably simplifies the protocol.
 
-Each friendship session is identified by the pair `(EK_A.pub, EK_B.pub)` — the initial bootstrap ephemeral public keys from Alice and Bob respectively. These keys are used to derive the Safety Number (§3.4) and session fingerprints (§8.3). The session's root key `SK` is derived from a single X25519 operation over these keys; both private keys are deleted immediately after derivation.
+Each friendship session is identified by the pair `(EK_A.pub, EK_B.pub)` — the initial bootstrap ephemeral public keys from Alice and Bob respectively. These keys are used to derive the Safety Number (§3.4) and session fingerprints (§8.3). The session's root key `SK` is derived from a single X25519 operation over these keys. Alice's private key `EK_A.priv` is deleted immediately after derivation. Bob's private key `EK_B.priv` is **not** deleted at this point — it is copied into `localDhPriv` and persists until Bob completes his first DH ratchet step (see §4.4 and §5.5).
 
 ### 3.2 Naming and Local Aliases
 
@@ -172,7 +172,7 @@ Each exchange requires only one ephemeral X25519 key pair per side, generated fr
 - **Alice:** Generates a fresh ephemeral key pair `EK_A` when displaying a QR/link. No persistent key material required.
 - **Bob:** Generates a fresh ephemeral key pair `EK_B` when scanning Alice's QR.
 
-Both private keys are deleted immediately after `SK` is computed and verified.
+Alice's private key `EK_A.priv` is deleted immediately after `SK` is computed and verified. Bob's private key `EK_B.priv` is retained as `localDhPriv` until his first DH ratchet step completes (see §4.4 and §5.5).
 
 ### 4.2 Option A: In-Person QR Code Exchange (Recommended)
 
@@ -326,7 +326,7 @@ Alice receives the `KeyExchangeInit` and:
 10. **Eager Ratchet (Deadlock Breaker):** To prevent the session from being stuck in the initial symmetric chain (Epoch 0), Alice immediately generates a new DH keypair (`A1`) and performs one DH ratchet step using `EK_B.pub` before returning the session. This ensures her very first location message is sent in Epoch 1. When Bob receives this message, he will observe the new `A1` and perform his own DH ratchet step, completing the transition to a fully ratcheted state. This eager approach is a deliberate deadlock breaker; while a Keepalive mechanism (§5.3) provides an alternative path for rotation, the implementation chooses this eager transition to ensure post-compromise security from the first message.
 11. Stores the session.
 
-Bob **deletes `EK_B.priv` immediately** after posting the `KeyExchangeInit`.
+Bob **does not delete `EK_B.priv` immediately** after posting the `KeyExchangeInit`. Instead, it is copied into `localDhPriv` in the session state — Bob needs it to perform his first DH ratchet step when he receives Alice's eager-ratchet message (§4.4 step 10). The original `EK_B.priv` buffer is zeroed after the copy. `localDhPriv` is deleted (zeroed) after Bob completes that first ratchet step.
 
 ---
 
@@ -433,6 +433,7 @@ To maximize forward secrecy, implementations should adhere to the following hygi
 3.  **Persistence Policy:** 
     - Full `SessionState` (including `localDhPriv`) is persisted to local storage to ensure session stability across app restarts and crashes.
     - **Initial State Hygiene:** Bob's initial ephemeral private key (`ekB.priv`) is copied into `localDhPriv` in the `SessionState` to enable the first DH ratchet step when Alice responds. The original buffer is zeroed immediately after session initialization.
+    - **Bootstrap window security implication:** Between Bob posting `KeyExchangeInit` and completing his first DH ratchet step, `localDhPriv` holds a copy of `EK_B.priv`. During this window, an attacker who recovers Bob's device state (e.g., via a backup) *and* has access to the public QR payload (which contains `EK_A.pub`) can reconstruct `SK = X25519(EK_B.priv, EK_A.pub)` and derive all session keys. This window closes as soon as Bob processes Alice's first message and ratchets forward. The QR payload should be treated as sensitive for the duration of the pairing interaction.
     - To mitigate backup-recovery risks, this state MUST be stored using device-local, backup-excluded security controls (e.g., `kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly` on iOS, `KeyStore`-backed encryption with `allowBackup=false` on Android).
     - **Android 9+:** Use `setIsStrongBoxBacked(true)` if available. If hardware is unavailable, fall back to TEE-backed Keystore with `setUserAuthenticationRequired(true)` and ensure the manifest has `allowBackup=false`.
     - **JVM Memory Hygiene:** On the JVM, `Arrays.fill()` is inherently limited by garbage collector behavior, which may relocate byte arrays and leave stale copies in memory. For improved hygiene, consider using off-heap storage (`DirectByteBuffer`), Conscrypt's `SecretKey` wrappers, or native bindings to libsodium (which handles zeroization natively).
