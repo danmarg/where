@@ -130,20 +130,11 @@ object KeyExchange {
             val aliceFp = fingerprint(aliceEkPub)
             val bobFp = fingerprint(msg.ekPub)
 
-            // VERIFY TOKEN (#168): Alice MUST verify that Bob computed the same initial routing token.
-            // Alice is the initiator, so her SEND token (Alice->Bob) uses (AliceFp, BobFp).
-            // Constant-time comparison (matching verifyKeyConfirmation) to prevent timing oracle.
-            val expectedToken = deriveRoutingToken(sk, aliceFp, bobFp)
-            var tokenDiff = expectedToken.size xor msg.token.size
-            val tokenLen = minOf(expectedToken.size, msg.token.size)
-            for (i in 0 until tokenLen) tokenDiff = tokenDiff or (expectedToken[i].toInt() xor msg.token[i].toInt())
-            if (tokenDiff != 0) {
-                val expectedHex = expectedToken.toHex()
-                val providedHex = msg.token.toHex()
-                throw AuthenticationException(
-                    "KeyExchangeInit token mismatch (expected=$expectedHex, provided=$providedHex) — possible tampering or protocol error",
-                )
-            }
+            // NOTE: The `token` field in KeyExchangeInit is deprecated and ignored.
+            // It was redundant with `key_confirmation` (both are derived from SK), and
+            // including it in plaintext let the server link the discovery mailbox to the
+            // session routing token, defeating the purpose of `discovery_secret`. Alice
+            // derives T_AB_0 independently; no wire value is needed or trusted.
 
             val session =
                 initSession(

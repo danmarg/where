@@ -156,19 +156,15 @@ class KeyExchangeTest {
     }
 
     @Test
-    fun `aliceProcessInit rejects tampered token`() {
+    fun `aliceProcessInit ignores token field`() {
+        // token is deprecated and ignored by Alice — a wrong or absent value must not
+        // cause rejection; key_confirmation is the authoritative check.
         val (qr, aliceEkPriv) = KeyExchange.aliceCreateQrPayload("Alice")
         val (msg, _) = KeyExchange.bobProcessQr(qr, "Bob")
-        val badMsg = msg.copy(token = ByteArray(16) { 0x42.toByte() })
-
-        val threw =
-            try {
-                KeyExchange.aliceProcessInit(badMsg, aliceEkPriv, qr.ekPub)
-                false
-            } catch (_: AuthenticationException) {
-                true
-            }
-        assertTrue(threw, "Expected AuthenticationException for tampered token")
+        val badTokenMsg = msg.copy(token = ByteArray(16) { 0x42.toByte() })
+        // Should succeed despite the wrong token value.
+        val session = KeyExchange.aliceProcessInit(badTokenMsg, aliceEkPriv, qr.ekPub)
+        assertNotNull(session)
     }
 
     @Test
@@ -441,7 +437,7 @@ class KeyExchangeTest {
 
         // Attacker constructs a tampered KeyExchangeInitMessage with EK_M.pub and a keyConfirmation
         // correctly computed over (SK_AM, EK_A.pub, EK_M.pub) using KeyExchange.buildKeyConfirmation.
-        // Attacker must also compute the "correct" tampered token to pass verification.
+        // token is deprecated/ignored, so the attacker does not need to forge it.
         val aliceFp = fingerprint(qr.ekPub)
         val attackerFp = fingerprint(ekM.pub)
 

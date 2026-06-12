@@ -303,7 +303,6 @@ Bob transmits:
 {
   "v": 1,
   "type":             "KeyExchangeInit",
-  "token":            "<hex, T_AB_0>",
   "ek_pub":           "<base64, Bob's X25519 ephemeral public key>",
   "encrypted_name":   "<base64, 12-byte nonce || ChaCha20-Poly1305 ciphertext>",
   "key_confirmation": "<base64, key_confirmation>"
@@ -322,8 +321,7 @@ Alice receives the `KeyExchangeInit` and:
 4. Derives `K_name = HKDF-SHA-256(ikm=SK, salt=null, info="Where-v1-SuggestedName", length=32)`.
 5. Decrypts `encrypted_name` using `ChaCha20-Poly1305-Decrypt` with key `K_name`, nonce `name_nonce` (the first 12 bytes), ciphertext `name_ct` (the remaining bytes), and AAD `EK_A.pub || EK_B.pub`. If decryption fails, Alice **MUST abort and discard** the session.
 6. Derives `alice_fp`, `bob_fp`, `T_AB_0`, `T_BA_0` using the same formulas above.
-7. **Alice MUST verify** that the `token` in `KeyExchangeInit` matches her independently derived `T_AB_0`. If they do not match, she MUST abort and discard the session.
-8. **Deletes `EK_A.priv` immediately.**
+7. **Deletes `EK_A.priv` immediately.**
 9. Prompts user to name Bob (pre-filled with the decrypted `suggested_name` from `KeyExchangeInit`).
 10. **Eager Ratchet (Deadlock Breaker):** To prevent the session from being stuck in the initial symmetric chain (Epoch 0), Alice immediately generates a new DH keypair (`A1`) and performs one DH ratchet step using `EK_B.pub` before returning the session. This ensures her very first location message is sent in Epoch 1. When Bob receives this message, he will observe the new `A1` and perform his own DH ratchet step, completing the transition to a fully ratcheted state. This eager approach is a deliberate deadlock breaker; while a Keepalive mechanism (§5.3) provides an alternative path for rotation, the implementation chooses this eager transition to ensure post-compromise security from the first message.
 11. Stores the session.
@@ -806,7 +804,6 @@ The server returns a JSON array of `MailboxPayload` objects, or an empty array `
 {
   "v": 1,
   "type": "KeyExchangeInit",
-  "token":            "<hex, T_AB_0>",
   "ek_pub":           "<base64, Bob's X25519 ephemeral public key>",
   "encrypted_name":   "<base64, 12-byte nonce || ChaCha20-Poly1305 ciphertext>",
   "key_confirmation": "<base64, key_confirmation>"
