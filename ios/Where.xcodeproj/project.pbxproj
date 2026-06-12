@@ -444,7 +444,7 @@
 				CODE_SIGN_ENTITLEMENTS = Sources/Where/Where.entitlements;
 				CODE_SIGN_IDENTITY = "Apple Distribution";
 				CODE_SIGN_STYLE = Manual;
-				CURRENT_PROJECT_VERSION = 7;
+				CURRENT_PROJECT_VERSION = 8;
 				DEVELOPMENT_TEAM = 5PM2V9LTHC;
 				FRAMEWORK_SEARCH_PATHS = (
 					"$(inherited) $(SRCROOT)/../shared/build/XCFrameworks/$(CONFIGURATION:lower)",
@@ -473,7 +473,7 @@
 				CODE_SIGN_ENTITLEMENTS = Sources/Where/Where.entitlements;
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 7;
+				CURRENT_PROJECT_VERSION = 8;
 				FRAMEWORK_SEARCH_PATHS = (
 					"$(inherited) $(SRCROOT)/../shared/build/XCFrameworks/$(CONFIGURATION:lower)",
 					"\".\"",
