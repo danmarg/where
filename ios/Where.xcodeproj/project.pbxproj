@@ -444,7 +444,7 @@
 				CODE_SIGN_ENTITLEMENTS = Sources/Where/Where.entitlements;
 				CODE_SIGN_IDENTITY = "Apple Distribution";
 				CODE_SIGN_STYLE = Manual;
-				CURRENT_PROJECT_VERSION = 7;
+				CURRENT_PROJECT_VERSION = 10;
 				DEVELOPMENT_TEAM = 5PM2V9LTHC;
 				FRAMEWORK_SEARCH_PATHS = (
 					"$(inherited) $(SRCROOT)/../shared/build/XCFrameworks/$(CONFIGURATION:lower)",
@@ -457,7 +457,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.14;
+				MARKETING_VERSION = 1.15;
 				PRODUCT_BUNDLE_IDENTIFIER = net.af0.WhereApp;
 				PROVISIONING_PROFILE_SPECIFIER = "Where AppStore";
 				SDKROOT = iphoneos;
@@ -473,7 +473,7 @@
 				CODE_SIGN_ENTITLEMENTS = Sources/Where/Where.entitlements;
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 7;
+				CURRENT_PROJECT_VERSION = 10;
 				FRAMEWORK_SEARCH_PATHS = (
 					"$(inherited) $(SRCROOT)/../shared/build/XCFrameworks/$(CONFIGURATION:lower)",
 					"\".\"",
@@ -485,7 +485,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.14;
+				MARKETING_VERSION = 1.15;
 				PRODUCT_BUNDLE_IDENTIFIER = net.af0.WhereApp;
 				SDKROOT = iphoneos;
 				TARGETED_DEVICE_FAMILY = "1,2";
