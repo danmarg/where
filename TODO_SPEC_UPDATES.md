@@ -99,8 +99,10 @@ re-fetched every poll for up to 7 days and can starve the 50-message GET window.
 Also tension with §5.4.4 "duplicates MUST be ACKable": a duplicate transition
 message arriving after ratchet is header-undecryptable.
 
-- [ ] Specify whether clients delete header-undecryptable frames (and the
-      replay implications) or how queue starvation is otherwise avoided.
+- [x] Specified in §5.4.4: header-undecryptable frames are not immediately deleted
+      (can't distinguish garbage from a future-epoch message); starvation is bounded
+      by force-ACK after MAX_SILENT_DROP_RETRIES consecutive failed polls (~2.5 min).
+      Addressed the post-ratchet duplicate tension.
 
 ## 9. Soften §12.3 cross-epoch correlation claim (doc only)
 

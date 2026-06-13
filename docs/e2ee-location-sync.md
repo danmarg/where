@@ -406,6 +406,13 @@ Implementation: `E2eeManager` clears outbox entries still targeting `prevSendTok
 **Duplicate Handling:**
 Duplicates MUST be ACKable. If a peer receives multiple copies of the same transition message, the first advances state. Subsequent duplicates must not poison the batch and should still allow the receiver to generate the authenticated ACK needed to drain the old queue.
 
+**Header-Undecryptable Frames:**
+Frames that fail header decryption (both `header_key` and `next_header_key` fail) are silently skipped — not ACKed and not deleted. They remain in the server queue and are re-fetched on subsequent polls. Clients MUST NOT delete them immediately: the client cannot distinguish a corrupted frame from a genuine future-epoch message it has not yet ratcheted to.
+
+To prevent header-undecryptable frames from permanently filling the server's 50-message GET window, clients MUST force-ACK (delete) an entire batch after `MAX_SILENT_DROP_RETRIES` consecutive polls in which no message from that batch could be processed. At a 30-second poll interval and the default of 5 retries, the maximum starvation window is approximately 2.5 minutes.
+
+Note: a duplicate transition message arriving after the ratchet has already advanced is header-undecryptable (the previous epoch's receive header key has been discarded). It will be cleared by the force-ACK mechanism above. If the queue contains a mix of decryptable and undecryptable frames, successfully decryptable frames reset the retry counter, so an undecryptable duplicate may linger longer — but since it is not blocking progress it only occupies a queue slot until it is eventually force-ACKed or ages out (7 days, §10.2).
+
 **Batch Ordering:**
 When processing a batch of messages already retrieved from the server, clients SHOULD process older epoch classes before newer ones, then lower `prev_chain_len`, then lower `msg_num`.
 
