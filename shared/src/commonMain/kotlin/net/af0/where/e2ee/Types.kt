@@ -216,9 +216,9 @@ data class QrPayload(
     @Serializable(with = ByteArrayBase64Serializer::class) val ekPub: ByteArray,
     @SerialName("suggested_name")
     val suggestedName: String,
-    // hex(SHA-256(ekPub)[0:20])
+    // hex(SHA-256(ekPub)[0:20]); optional — ignored by receiver (Stage 1 of §4.2 removal)
     @SerialName("fingerprint")
-    val fingerprint: String,
+    val fingerprint: String? = null,
     // Fresh random 32-byte secret; HKDF IKM for the discovery token (§4.2).
     @SerialName("discovery_secret")
     @Serializable(with = ByteArrayBase64Serializer::class) val discoverySecret: ByteArray,

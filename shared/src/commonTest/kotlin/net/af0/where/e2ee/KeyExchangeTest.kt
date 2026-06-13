@@ -23,7 +23,7 @@ class KeyExchangeTest {
         val (qr, ekPriv) = KeyExchange.aliceCreateQrPayload("Alice")
 
         assertEquals(32, qr.ekPub.size)
-        assertEquals(40, qr.fingerprint.length) // hex(SHA-256(ekPub)[0:20])
+        assertEquals(40, qr.fingerprint?.length) // hex(SHA-256(ekPub)[0:20]); still sent by Alice
 
         // ekPriv is 32 bytes and non-zero.
         assertEquals(32, ekPriv.size)
@@ -212,21 +212,6 @@ class KeyExchangeTest {
             KeyExchange.decryptSuggestedName(sk, wrongAliceEkPub, msg.ekPub, msg.encryptedName)
         }
         sk.zeroize()
-    }
-
-    @Test
-    fun `bobProcessQr rejects tampered fingerprint`() {
-        val (qr, _) = KeyExchange.aliceCreateQrPayload("Alice")
-        val badQr = qr.copy(fingerprint = "0".repeat(40)) // Tampered fingerprint
-
-        val threw =
-            try {
-                KeyExchange.bobProcessQr(badQr, "Bob")
-                false
-            } catch (_: AuthenticationException) {
-                true
-            }
-        assertTrue(threw, "Expected AuthenticationException for tampered fingerprint")
     }
 
     @Test

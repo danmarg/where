@@ -33,11 +33,10 @@ object KeyExchange {
     }
 
     /**
-     * Bob: verify the QR fingerprint, perform single-term DH, derive SK, compute
-     * key_confirmation HMAC, and return the KeyExchangeInit message plus the initial
-     * session state.
+     * Bob: perform single-term DH, derive SK, compute key_confirmation HMAC, and
+     * return the KeyExchangeInit message plus the initial session state.
      *
-     * Throws AuthenticationException if the fingerprint or key_confirmation fails.
+     * Throws AuthenticationException if key_confirmation fails.
      */
     fun bobProcessQr(
         qr: QrPayload,
@@ -46,12 +45,6 @@ object KeyExchange {
         // VERIFY PROTOCOL VERSION (#194)
         if (qr.protocolVersion > SUPPORTED_MAX_VERSION) {
             throw ProtocolVersionException("Unsupported protocol version ${qr.protocolVersion}")
-        }
-
-        // VERIFY FINGERPRINT (#157)
-        val expectedFp = qrFingerprint(qr.ekPub)
-        if (expectedFp != qr.fingerprint) {
-            throw AuthenticationException("QR code fingerprint mismatch — possible tampering or mis-scan")
         }
 
         val ekB = generateX25519KeyPair()
