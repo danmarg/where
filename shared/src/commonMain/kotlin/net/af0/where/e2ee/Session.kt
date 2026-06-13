@@ -184,7 +184,7 @@ object Session {
         }
 
         val stepsNeeded = seq - speculativeState.recvSeq
-        if (stepsNeeded > MAX_GAP + 1) {
+        if (stepsNeeded > MAX_SKIPPED_KEYS + 1) {
             throw ProtocolGapException("gap too large: stepsNeeded $stepsNeeded")
         }
 

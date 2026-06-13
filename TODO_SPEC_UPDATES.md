@@ -77,12 +77,10 @@ first.
 A near-MAX_GAP jump derives up to 10,000 skipped keys into a 1,000-entry
 cache; 90% are evicted immediately and those messages are silently lost.
 
-- [ ] Either bound MAX_GAP to cache capacity or document that gaps beyond
-      cache size cause silent loss (§8.3.1).
-- [ ] Note the DoS angle: a malicious server can replay a genuine high-`msg_num`
-      envelope to force up to MAX_GAP HMAC derivations per frame while
-      censoring the intervening band. (It cannot forge headers, so it cannot
-      pick arbitrary `msg_num` values — only replay/withhold genuine ones.)
+- [x] Removed MAX_GAP constant; same-epoch gap limit is now MAX_SKIPPED_KEYS (1,000)
+      at both the coarse check and the cache pre-check. Updated §8.3.1 and Session.kt.
+- [x] Noted DoS bound (≤1,000 HMACs/frame, not 10,000) and cross-epoch silent-loss
+      behavior in §8.3.1.
 
 ## 7. Document residual FS cost of failed-body key caching (doc only)
 
