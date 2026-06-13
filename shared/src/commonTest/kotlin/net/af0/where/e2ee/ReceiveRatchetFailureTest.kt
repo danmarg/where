@@ -1,8 +1,8 @@
 package net.af0.where.e2ee
 
 import kotlin.test.Test
-import kotlin.test.assertEquals
-import kotlin.test.assertIs
+import kotlin.test.assertFailsWith
+import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 import kotlin.test.fail
 
@@ -12,17 +12,13 @@ class ReceiveRatchetFailureTest {
     }
 
     /**
-     * Issue #2: a malicious server bit-flips the body of a genuine message.
-     * The header still authenticates (header keys are secret), so decryptMessage
-     * advances the receive ratchet (per §5.5 — to prevent permanent DH desync).
-     * Without the seq-key cache, when the clean original later arrives in the
-     * same batch, it is `seq <= recvSeq` → ReplayException and permanently lost.
-     *
-     * This test exercises the within-batch case (Bob's pre-decrypted header is
-     * reused across both decryption attempts, matching E2eeProtocol.decryptBatch).
+     * A body-AEAD failure after a valid header must advance recvSeq and the chain key
+     * to prevent permanent DH desync (§8.3.1(4)). The failed message's key must NOT
+     * be cached — there is no robustness benefit to caching it, since a server willing
+     * to deliver a corrupted copy can equally just drop the message.
      */
     @Test
-    fun cleanCopyDecryptsAfterTamperedAdvanceCachesSeqKey() {
+    fun bodyFailAdvancesStateWithoutCachingSeqKey() {
         val (qr, aliceEkPriv) = KeyExchange.aliceCreateQrPayload("Alice")
         val (msg, bobSession) = KeyExchange.bobProcessQr(qr, "Bob")
         val aliceSession = KeyExchange.aliceProcessInit(msg, aliceEkPriv, qr.ekPub)
@@ -32,9 +28,6 @@ class ReceiveRatchetFailureTest {
             MessagePlaintext.Location(1.0, 2.0, 3.0, 4L),
         )
 
-        // Pre-decrypt the header once (matching the batch path). Both the
-        // tampered and the clean copy share the same envelope, so this header
-        // applies to both.
         val sessionAad = bobSession.aliceFp + bobSession.bobFp
         val header = try {
             Session.decryptHeader(bobSession.headerKey, original.envelope, sessionAad)
@@ -42,7 +35,6 @@ class ReceiveRatchetFailureTest {
             Session.decryptHeader(bobSession.nextHeaderKey, original.envelope, sessionAad)
         }
 
-        // Simulate a malicious server bit-flipping the body.
         val tampered = original.copy(
             ct = original.ct.copyOf().also { it[it.size - 1] = (it.last().toInt() xor 0xFF).toByte() },
         )
@@ -54,20 +46,18 @@ class ReceiveRatchetFailureTest {
             e.newState
         }
 
+        // recvSeq must advance so the ratchet state stays consistent.
         assertTrue(bobAfterFailure.recvSeq >= 1, "recvSeq should have advanced past the failed message")
 
-        // The clean original now arrives. The cached seq key must rescue it
-        // from the recvSeq replay rejection.
-        val (bobFinal, plaintext) = Session.decryptMessage(bobAfterFailure, original, header)
-        assertIs<MessagePlaintext.Location>(plaintext)
-        assertEquals(1.0, plaintext.lat)
-        assertEquals(2.0, plaintext.lng)
-        assertEquals(4L, plaintext.ts)
-
-        // Cache entry for this seq was consumed by the successful decryption.
-        assertTrue(
-            bobFinal.skippedMessageKeys.keys.none { it.endsWith(":${header.seq}") },
-            "seq=${header.seq} cache entry should have been consumed",
+        // The seq key must NOT be cached — the message is lost, equivalent to a drop.
+        assertFalse(
+            bobAfterFailure.skippedMessageKeys.keys.any { it.endsWith(":${header.seq}") },
+            "seq=${header.seq} key must not be cached after body-fail",
         )
+
+        // A subsequent attempt to decrypt the (uncorrupted) original is rejected as a replay.
+        assertFailsWith<ReplayException> {
+            Session.decryptMessage(bobAfterFailure, original, header)
+        }
     }
 }

@@ -44,7 +44,7 @@ Trust On First Use is NOT a bug; it's a choice (and accepted risk) of the
 current design.
 
 ### E2EE
-Uses a standard, bidirectional Double Ratchet protocol with X25519 ephemeral keys, HKDF-SHA-256 for ratcheting, and AES-256-GCM for encryption. See `docs/e2ee-location-sync.md` for the full protocol spec.
+Uses a standard, bidirectional Double Ratchet protocol with X25519 ephemeral keys, HKDF-SHA-256 for ratcheting, and ChaCha20-Poly1305 for encryption. See `docs/e2ee-location-sync.md` for the full protocol spec.
 
 ---
 
