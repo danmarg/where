@@ -145,30 +145,12 @@ the user confirms), but the doc implies more coverage than exists.
 
 ## 10. Minor spec corrections (doc only)
 
-- [ ] §5.3 step 2: `prev_chain_len` is in the encrypted *header* (§9.1.1), not
-      the body payload; fix wording (header must be read before body keys can
-      be derived).
-- [ ] §8.3.1(5) vs §5.4.1: msg_num "resets to 0" vs first message is `seq == 1`.
-      Pick one convention; state initial `recv_msg_num`.
-- [ ] §4.2: observer sees `EK_B.pub` (not `EK_A.pub`) in `KeyExchangeInit`.
-- [ ] §9.1.1 vs §9.1.2 vs §9 top: PROTOCOL_VERSION is 1 byte in header, 4 bytes
-      in body AAD, plus a JSON `"v": 1` — three encodings of one logical field.
-      Nail down a single canonical byte layout.
-- [ ] §3.4 / §4.4: `formatSafetyNumber` is unspecified. 60 bytes rendered as
-      "12 groups of 5 decimal digits" doesn't define the reduction (e.g.,
-      5-byte chunks mod 10^5, a la Signal) — the encoding determines the real
-      comparison strength. Define it.
-- [ ] §4.4 / §8.3: specify the full header-key schedule, not just the initial
-      assignment. Assign direction for the initial shared `next_header_key`
-      (send-next vs recv-next, given Alice's eager ratchet), AND state how the
-      single `new_header_key` emitted by each KDF_RK step rolls into the
-      current/next header-key pair per epoch. As written, a reasonable
-      implementer can produce a schedule that cannot decrypt out-of-order
-      new-epoch headers, breaking the §5.3 reliability property.
-- [ ] §9.1.2: state max plaintext is 511 bytes (≥1 pad byte always required)
-      and the de-padding rule (scan back to last 0x80; reject if absent).
-- [ ] §7.4.2: "GCM overhead" → ChaCha20-Poly1305. Also fix stale "AES-256-GCM"
-      claim in CLAUDE.md's E2EE summary.
-- [ ] Fix stale cross-references: ToC lists 12 sections (doc has 13); §2.3 /
-      §12.5 quantum pointers; §5.7.2 cites §7.2 for the 7-day window (it's
-      §10.2/§13.4); §3.4 cites "§8.3 format" for safety-number rendering.
+- [x] §5.3 step 2: fixed — pn is in the encrypted header, not body payload.
+- [x] §8.3.1(5): clarified — counter resets to 0, first message is seq=1, initial recv_msg_num=0.
+- [x] §4.2: fixed EK_A.pub → EK_B.pub in observer sentence.
+- [x] §9: documented all three PROTOCOL_VERSION encodings (JSON int, 1-byte header, 4-byte AAD) with rationale.
+- [x] §3.4: defined formatSafetyNumber algorithm inline (5-byte chunks, mod 100,000, zero-pad); §4.4 back-references §3.4.
+- [x] §4.4: specified full header-key schedule across bootstrap and DH ratchet steps.
+- [x] §9.1.2: added max plaintext (511 bytes) and de-padding rule.
+- [x] §7.4.2: "GCM overhead" → "Poly1305 tag (16 bytes)"; CLAUDE.md/AGENTS.md AES-256-GCM → ChaCha20-Poly1305.
+- [x] Cross-references: ToC updated to 13 sections; §2.3 quantum → §13; §5.7.2 §7.2 → §10.2; §12.5 → §13.2; §3.4 formatSafetyNumber self-contained.

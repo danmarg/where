@@ -19,7 +19,8 @@
 9. [Wire Format](#9-wire-format)
 10. [Server Changes](#10-server-changes)
 11. [Cryptographic Primitives Summary](#11-cryptographic-primitives-summary)
-12. [Open Questions and Future Work](#12-open-questions-and-future-work)
+12. [Comparison with Signal Protocol (libsignal)](#12-comparison-with-signal-protocol-libsignal)
+13. [Open Questions and Future Work](#13-open-questions-and-future-work)
 
 ---
 
@@ -118,7 +119,7 @@ To ensure robustness against network failures, the protocol employs **Server-sid
 - **Compromised backups revealing future epochs.** Because the current implementation persists the active ratchet private key (`localDhPriv`) to ensure session stability across app restarts (§5.5), an attacker who recovers a device backup gains access to the current `localDhPriv` and header keys. They can decrypt headers of future messages to observe the peer's new DH public keys, and use `localDhPriv` to advance the root key through each subsequent peer DH epoch — tracking all future message keys until the compromised device generates a fresh DH keypair and the peer ratchets against it. In practice, the exposure window is bounded by the peer's message cadence: the ratchet self-heals after the next complete DH exchange (roughly one location-update interval if both parties are active), but stalls if the peer is offline. Historical messages remain protected by forward secrecy: deleted chain keys cannot be recovered from the backup snapshot. See §5.6 for a detailed analysis of compromise consequences and self-healing (PCS). As mitigation, the `localDhPriv` key is excluded from cloud backups (see §5.5).
 - **Map tile server leakage.** When a recipient views a friend's location on a map, the map provider (e.g., Google Maps, Apple Maps, Mapbox) may infer the friend's location from which tiles the recipient's device requests. This can be mitigated at the application layer via tile pre-fetching or caching, but is outside the scope of this protocol.
 - **Denial of service / message withholding.** This protocol does not protect against a server that drops or delays messages. From the receiver's perspective, a server withholding new updates is indistinguishable from the sender going offline or staying stationary. The authenticated `ts` field in every message means the receiver can always display an honest "last seen at X" timestamp; no fabricated location or timestamp is possible. The one edge case is a `stationary` flag (§5.7.1): if a server happens to withhold all messages after a stationary update, the receiver's UI may display "here since X" indefinitely — but this is indistinguishable from the sender genuinely remaining stationary, and the timestamp is still authentic.
-- **Quantum adversaries.** All DH operations here use X25519 (256-bit elliptic curve). A cryptographically relevant quantum computer running Shor's algorithm could break these. See §12.
+- **Quantum adversaries.** All DH operations here use X25519 (256-bit elliptic curve). A cryptographically relevant quantum computer running Shor's algorithm could break these. See §13.
 
 ---
 
@@ -157,7 +158,7 @@ This protocol uses **Trust-on-First-Use (TOFU)** with local session pinning.
 
 **Safety Numbers:** Two users can optionally verify their connection by comparing a safety number fingerprint.
 - **Calculation:** `HKDF-SHA-256(ikm=SHA-256(lower_EK.pub || higher_EK.pub), salt=null, info="Where-v1-SafetyNumber", length=60)`.
-- The result is displayed as 12 groups of 5 decimal digits (consistent with §8.3 format).
+- **Rendering (`formatSafetyNumber`):** Split the 60 bytes into 12 consecutive 5-byte chunks. Interpret each chunk as a 40-bit big-endian unsigned integer, take the value modulo 100,000, and zero-pad to 5 decimal digits. Display as 3 lines of 4 space-separated groups (e.g. `"12345 67890 11111 22222"`). This encoding gives each group ~17 bits of entropy (log₂(100,000) ≈ 16.6 bits), for a total of ~199 bits across 12 groups.
 - This is **session-scoped**: the Safety Number is unique to the specific pairing event, not to a device. Every re-pairing after a device reset produces a new Safety Number.
 
 **Risk:** If the invite link (Option B, §4.3) is intercepted over an unauthenticated channel (e.g., SMS), an attacker can substitute their own key. Fingerprint verification is the primary countermeasure.
@@ -200,7 +201,7 @@ discovery_token_A = HKDF-SHA-256(IKM  = Alice.discovery_secret,   // 32-byte ran
                                  info = "Where-v1-Discovery")[0:16]
 ```
 
-Using a random secret (rather than `EK_A.pub`) as HKDF IKM ensures that only someone who received the QR out-of-band can compute `discovery_token_A`. A network observer who later sees `EK_A.pub` in Bob's `KeyExchangeInit` message cannot retroactively map it to the discovery-phase mailbox.
+Using a random secret (rather than `EK_A.pub`) as HKDF IKM ensures that only someone who received the QR out-of-band can compute `discovery_token_A`. A network observer who later sees `EK_B.pub` in Bob's `KeyExchangeInit` message cannot retroactively map it to the discovery-phase mailbox.
 
 - Alice begins polling `GET /inbox/{hex(discovery_token_A)}` immediately.
 - Bob derives the same `discovery_token_A` from the scanned `discovery_secret` and POSTs his `KeyExchangeInit` there.
@@ -237,7 +238,7 @@ bob_fp   = SHA-256(EK_B.pub)   // 32 bytes
 
 // Safety Number (for out-of-band verification)
 safety_number_bytes = HKDF-SHA-256(ikm=SHA-256(lower_EK.pub || higher_EK.pub), salt=null, info="Where-v1-SafetyNumber", length=60)
-safety_number = formatSafetyNumber(safety_number_bytes)
+safety_number = formatSafetyNumber(safety_number_bytes)  // encoding defined in §3.4
 ```
 
 **Key Confirmation:**
@@ -272,6 +273,18 @@ Both parties initialize their Double Ratchet state (§8.2) seeded with a root ke
 - **Alice:** Uses `send_chain = chain_key_0`, `recv_chain = chain_key_1`, `send_header_key = header_key_0`, `recv_header_key = header_key_1`.
 - **Bob:** Uses `send_chain = chain_key_1`, `recv_chain = chain_key_0`, `send_header_key = header_key_1`, `recv_header_key = header_key_0`.
 - **Root Key:** Both start with `root_key = root_key_0`.
+- **`next_header_key`** (bytes [160:192]) is shared by both parties as the seed for the first DH-ratchet receive header key.
+
+**Header-key schedule across DH ratchet steps:**
+
+After Alice's eager ratchet (§4.4 step 10), Alice promotes `next_header_key` to her `send_header_key` for Epoch 1, retaining `header_key_1` as her receive key for Bob's Epoch 0 messages. Her new `next_header_key` comes from the KDF_RK send step of the eager ratchet.
+
+On each subsequent `KDF_RK` (DH ratchet step), two sub-steps are performed — one for the receive direction, one for the send direction — each producing a `new_header_key`. The schedule is:
+- `recv_header_key` ← old `next_header_key` (the previous next becomes the current receive key)
+- `send_header_key` ← `new_header_key` from the **recv** KDF_RK sub-step
+- `next_header_key` ← `new_header_key` from the **send** KDF_RK sub-step
+
+This means a receiver always holds exactly two receive header keys at any time (`recv_header_key` and `next_header_key`), enabling decryption of both current-epoch and one-step-ahead new-epoch headers without retaining any retired keys.
 
 Initial routing tokens are also derived from `SK`:
 
@@ -362,7 +375,7 @@ To handle out-of-order delivery across DH ratchet steps, the receiver maintains 
 **Out-of-Order DH Epoch Transitions:**
 If Alice ratchets her DH key from `dh_1` to `dh_2`, Bob may receive `Msg(dh_2, seq=1)` before he receives `Msg(dh_1, seq=last)`.
 1.  **Speculative Ratchet:** Bob moves to the new DH epoch upon receiving `Msg(dh_2)`.
-2.  **Decryption:** Bob decrypts the payload of `Msg(dh_2)` to extract the **encrypted `prev_chain_len` field** (§7.4).
+2.  **Decryption:** Bob decrypts the *header* of `Msg(dh_2)` to extract `prev_chain_len` (`pn` in the header plaintext, §9.1.1). The header must be decrypted before body keys can be derived.
 3.  **Gap Filling:** The `prev_chain_len` field tells Bob exactly how many messages Alice sent in epoch `dh_1`. Bob goes back to the old chain, derives all remaining keys up to `prev_chain_len`, and stores them in the cache.
 4.  **Historical Delivery:** When `Msg(dh_1, msg_num=last)` eventually arrives, Bob retrieves the key from the cache, verifies the AAD, and decrypts.
 
@@ -492,7 +505,7 @@ A `Location` carrying `stationary: true` is a signal that the sender does not ex
 A `StoppedSharing` message signals the deliberate end of a share session (manual toggle-off, or expiry of a time-limited share — the protocol does not know which). Receivers SHOULD reflect a terminal state in their UI for some bounded window, then suppress the peer's pin entirely.
 
 **Critical sender rule: "stop sharing" means "stop sending Locations," not "stop talking."**
-After emitting `StoppedSharing`, the sender MUST continue its normal Keepalive cadence. The 7-day inactivity window (§7.2) tears down a peer's session entirely once `lastRecvTs` exceeds the timeout; if a sender both stopped Locations *and* stopped Keepalives, every recipient would silently expire the session within a week and lose all post-compromise security guarantees on the channel. Resuming sharing later would require fresh pairing. Keepalives also continue to drive the DH ratchet forward, preserving PCS during the quiet period.
+After emitting `StoppedSharing`, the sender MUST continue its normal Keepalive cadence. The 7-day inactivity window (§10.2) tears down a peer's session entirely once `lastRecvTs` exceeds the timeout; if a sender both stopped Locations *and* stopped Keepalives, every recipient would silently expire the session within a week and lose all post-compromise security guarantees on the channel. Resuming sharing later would require fresh pairing. Keepalives also continue to drive the DH ratchet forward, preserving PCS during the quiet period.
 
 #### 5.7.3 Forward-Compatibility — Unknown Message Types
 
@@ -594,7 +607,7 @@ This removes session-related metadata from the server's payload view, but it doe
 
 #### 7.4.2 Payload padding
 
-- **Payload padding (mandatory):** All payloads MUST be padded to a fixed length (512 bytes recommended) before encryption. 256 bytes is insufficient: a JSON location payload plus GCM overhead already approaches ~150 bytes, leaving little headroom for variable-length fields. 512 bytes provides comfortable clearance while remaining a small fixed multiple of a cache line.
+- **Payload padding (mandatory):** All payloads MUST be padded to a fixed length (512 bytes recommended) before encryption. 256 bytes is insufficient: a JSON location payload plus the 16-byte Poly1305 tag already approaches ~150 bytes, leaving little headroom for variable-length fields. 512 bytes provides comfortable clearance while remaining a small fixed multiple of a cache line.
 
 #### 7.4.3 Polling Strategy
 
@@ -702,7 +715,7 @@ Each message frame carries a `msg_num` counter. Recipients enforce:
 4.  **Transactional Commitment:** The receiving state (receiving chain, root key, skipped keys) MUST only be updated if the message AEAD authentication succeeds. The receiving state MUST not be committed earlier.
 
     *Exception:* if the header authenticated but the body AEAD failed, the receiver MUST still advance `recv_msg_num` and the chain key. Without this, a server-dropped message and a server-corrupted message would leave different ratchet states, causing permanent DH desync. The failed message's key MUST NOT be cached — caching it confers no robustness benefit (a server willing to corrupt a message can equally drop it) and unnecessarily extends the key's lifetime.
-5.  **Epoch Transition:** When a message with a new `dh_pub` is received, the `msg_num` counter resets to 0. All skipped message keys belonging to epochs older than the *previous* valid epoch MUST be cleared.
+5.  **Epoch Transition:** When a message with a new `dh_pub` is received, the `msg_num` counter resets to 0 (so the first message in the new epoch has `seq == 1`). All skipped message keys belonging to epochs older than the *previous* valid epoch MUST be cleared. The initial `recv_msg_num` is 0; the replay check is `seq <= recv_msg_num`, so seq=1 is accepted.
 6.  **Across-Epoch Replay:** Recipients hold only two receive header keys at any time — the current epoch's `header_key` and the next epoch's `next_header_key`. The previous epoch's receive header key is discarded on DH ratchet (`Session.performDhRatchet`). A replayed frame from a retired epoch therefore fails `tryDecryptHeader` and is dropped before any ratchet logic runs, with no dedicated `retired_dh_pubs` set required. Within-epoch replay is caught by the `msg_num <= recv_msg_num` check plus the single-use skipped-key cache.
 
 
@@ -711,6 +724,13 @@ Each message frame carries a `msg_num` counter. Recipients enforce:
 ## 9. Wire Format
 
 All messages are JSON-encoded. Every message MUST include a top-level `"v"` field set to the current protocol version (currently `1`). This enables recipients to reject messages from incompatible future versions.
+
+**PROTOCOL_VERSION encodings:** the version field appears in three distinct contexts with different byte widths, each serving a different purpose:
+- **JSON `"v"` field** (integer `1`): outer versioning, allows a recipient to reject an incompatible message before attempting any crypto.
+- **Encrypted header** (1 byte, `0x01`, offset 0 of the 82-byte header plaintext): checked after header decryption to catch version mismatches inside the sealed envelope.
+- **Body AAD** (4 bytes big-endian, `0x00000001`): bound into the AEAD tag, ensuring the version is authenticated as part of the message integrity check.
+
+All three must be consistent for a valid message. The different widths are intentional: the header byte is space-constrained (fixed 82-byte plaintext); the AAD uses a 4-byte int for straightforward serialization.
 
 ### 9.1 Encrypted Location Frame
 
@@ -753,7 +773,7 @@ The `ct` field contains the ChaCha20-Poly1305 ciphertext of the location payload
 
 **AAD for Ciphertext:**
 - `AAD_PREFIX` ("Where-v1-Message")
-- `PROTOCOL_VERSION` (4 bytes, `0x01`)
+- `PROTOCOL_VERSION` (4 bytes big-endian, `0x00000001`)
 - `sender_fp` (32 bytes)
 - `recipient_fp` (32 bytes)
 - `msg_num` (8 bytes, big-endian uint64)
@@ -765,7 +785,11 @@ Implementations MUST parse the `msg_num` field as a uint64 integer and serialize
 Note that even though metadata is hidden from the server in the envelope, the client uses the *decrypted* values to verify the body AAD, ensuring the body and header are cryptographically bound together.
 
 **Plaintext (before encryption):**
-The plaintext is a JSON object. All plaintext payloads MUST be padded with 0x80 then 0x00 bytes to a fixed 512-byte length **before** encryption. The padding is included in the plaintext and authenticated by the AEAD tag.
+The plaintext is a JSON object. All plaintext payloads MUST be padded to a fixed 512-byte length **before** encryption. The padding is included in the plaintext and authenticated by the AEAD tag.
+
+**Padding rule:** append `0x80` immediately after the last byte of plaintext, then fill the remaining bytes with `0x00` to reach 512 bytes. The plaintext MUST be at most 511 bytes (at least one `0x80` byte is always required). Implementations MUST reject plaintexts of 512 bytes or more at encode time.
+
+**De-padding rule:** scan backwards from the end of the decrypted 512-byte buffer. Skip `0x00` bytes. The first non-zero byte MUST be `0x80`; everything before it is the plaintext. Reject (throw) if no `0x80` marker is found or if any non-`0x00` byte is encountered before the marker.
 
 Every plaintext object carries a string `"type"` discriminator identifying its variant. Receivers MUST dispatch on `"type"` and MUST treat any unknown value as a Keepalive (see §5.7.3 for the forward-compatibility contract). Receivers MUST also accept the legacy schemas defined below for backwards-compatibility.
 
@@ -915,7 +939,7 @@ While this protocol shares the core **Double Ratchet** design with Signal, it ma
 ### 12.5 Post-Quantum Resistance
 
 - **Signal:** Recently introduced **PQXDH** and **SPQR**, incorporating Kyber into the initial handshake and ratchet to provide post-quantum confidentiality.
-- **Where:** Currently **not quantum-resistant**. The protocol relies entirely on X25519 (ECDH). Quantum resistance is recognized as a future requirement but is not part of the v1 implementation (see §13).
+- **Where:** Currently **not quantum-resistant**. The protocol relies entirely on X25519 (ECDH). Quantum resistance is recognized as a future requirement but is not part of the v1 implementation (see §13.2).
 
 ### 12.6 Safety Numbers
 
