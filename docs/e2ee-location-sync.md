@@ -161,6 +161,8 @@ This protocol uses **Trust-on-First-Use (TOFU)** with local session pinning.
 - **Rendering (`formatSafetyNumber`):** Split the 60 bytes into 12 consecutive 5-byte chunks. Interpret each chunk as a 40-bit big-endian unsigned integer, take the value modulo 100,000, and zero-pad to 5 decimal digits. Display as 3 lines of 4 space-separated groups (e.g. `"12345 67890 11111 22222"`). This encoding gives each group ~17 bits of entropy (log₂(100,000) ≈ 16.6 bits), for a total of ~199 bits across 12 groups.
 - This is **session-scoped**: the Safety Number is unique to the specific pairing event, not to a device. Every re-pairing after a device reset produces a new Safety Number.
 
+**What safety-number verification covers:** The safety number is derived solely from the two bootstrap public keys `EK_A.pub` and `EK_B.pub`. It authenticates the key material only — it does NOT cover the `suggested_name` pre-fill or the `fingerprint` convenience field in the invite payload. An attacker who tampers the invite's suggested name while leaving `ek_pub` intact will pass safety-number verification; the name is merely a user-confirmed pre-fill (§3.2) with no cryptographic standing.
+
 **Risk:** If the invite link (Option B, §4.3) is intercepted over an unauthenticated channel (e.g., SMS), an attacker can substitute their own key. Fingerprint verification is the primary countermeasure.
 
 ---
@@ -184,7 +186,6 @@ Alice opens "Add Friend" and generates a fresh ephemeral key pair `EK_A` and a f
 {
   "ek_pub":            base64(Alice.EK_A.pub),  // X25519 ephemeral public key (32 bytes)
   "suggested_name":    "Alice",
-  "fingerprint":       hex(SHA-256(EK_A.pub)[0:20]),
   "discovery_secret":  base64(random_32_bytes)   // fresh per QR; HKDF IKM for discovery token
 }
 ```

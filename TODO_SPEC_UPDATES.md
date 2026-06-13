@@ -114,7 +114,7 @@ polling targets in adjacent cycles. Align with §2.3/§7.3 admissions.
       same client IP polling T_old then T_new remains a metadata linkage (§2.3/§7.3).
 - [ ] Optional: decorrelate the receiver's polling switch from T_old to T_new
       in time (jitter, or switch on the next regular cycle) to weaken the
-      deterministic linkage.
+      deterministic linkage. Tracked in https://github.com/danmarg/where/issues/312.
 
 ## 11. Freshness lower-bound: stale-pinning by a withholding server (NEW — HIGH)
 
@@ -134,14 +134,16 @@ pre-seeds Bob's naming dialog with an attacker-chosen label while safety-number
 verification still passes. Severity is capped by §3.2 (name is only a pre-fill
 the user confirms), but the doc implies more coverage than exists.
 
-- [ ] State explicitly in §3.4 that safety-number verification authenticates
-      keys only, not the displayed/suggested name.
-- [ ] Consider folding a hash of the full invite payload into the
-      safety-number/confirmation transcript (wire-compatible for the QR;
-      check `key_confirmation` implications).
-- [ ] Drop the redundant `fingerprint` field from the invite payload, or
-      document it as a non-security convenience (it is derivable from `ek_pub`
-      and provides no integrity an adversary can't recompute).
+- [x] Stated explicitly in §3.4 that safety-number verification authenticates
+      keys only, not the suggested name.
+- [x] Binding the name into the safety number: won't fix. The name is a
+      user-confirmed pre-fill with no cryptographic standing (§3.2); the attack
+      is social engineering, not a key-layer weakness.
+- [x] Removed `fingerprint` from the spec QR payload. QR codes have built-in
+      Reed-Solomon error correction; the field is redundant with `ek_pub` and
+      provides no integrity an adversary can't recompute. Two-stage impl removal
+      tracked in https://github.com/danmarg/where/issues/313 (Stage 1: stop verifying)
+      and https://github.com/danmarg/where/issues/314 (Stage 2: stop sending).
 
 ## 10. Minor spec corrections (doc only)
 
