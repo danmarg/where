@@ -110,7 +110,8 @@ message arriving after ratchet is header-undecryptable.
 the transition message posts to the old token, and the receiver's IP switches
 polling targets in adjacent cycles. Align with §2.3/§7.3 admissions.
 
-- [ ] Reword §12.3 to "content-layer correlation" only.
+- [x] Reworded §12.3: token rotation prevents content-layer correlation only;
+      same client IP polling T_old then T_new remains a metadata linkage (§2.3/§7.3).
 - [ ] Optional: decorrelate the receiver's polling switch from T_old to T_new
       in time (jitter, or switch on the next regular cycle) to weaken the
       deterministic linkage.

@@ -905,7 +905,7 @@ While this protocol shares the core **Double Ratchet** design with Signal, it ma
 - **Signal:** Historically identified users by stable identifiers (phone numbers, now UUIDs). "Sealed Sender" was added later as an extension to hide the sender from the server.
 - **Where:** Metadata protection is integrated into the base protocol.
     - **Header Encryption:** Every message uses an **Encrypted Envelope** that hides the DH public key, message number (`msg_num`), and previous chain length (`prev_chain_len`) from the server.
-    - **Dynamic Routing:** Instead of stable user IDs, Where uses **Pairwise Routing Tokens** derived from the session root key. These tokens rotate automatically with the DH ratchet, making it impossible for the server to correlate messages across epochs without session state.
+    - **Dynamic Routing:** Instead of stable user IDs, Where uses **Pairwise Routing Tokens** derived from the session root key. These tokens rotate automatically with the DH ratchet, making it impossible for the server to correlate message *content* across epochs without session state. Cross-epoch correlation at the IP level remains possible: the same client IP that was polling T_old will begin polling T_new in the next cycle. This is a metadata limitation acknowledged in §2.3 and §7.3, not a content-layer weakness.
 
 ### 12.4 Group Messaging (Sender Keys vs Per-Friend)
 
