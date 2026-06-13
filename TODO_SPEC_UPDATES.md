@@ -88,8 +88,9 @@ cache; 90% are evicted immediately and those messages are silently lost.
 can trigger this at will, keeping keys alive until age-based eviction. §5.5
 rule 2 doesn't cover the never-used case.
 
-- [ ] Add a sentence in §8.3.1(4) and/or §5.5 stating the bounded
-      forward-secrecy cost.
+- [x] Removed the body-fail seq-key caching entirely (no robustness benefit;
+      server can drop instead). §8.3.1(4) now requires advancing state on body-fail
+      but explicitly forbids caching the key. Test updated accordingly.
 
 ## 8. Specify handling of header-undecryptable frames (doc, maybe impl)
 

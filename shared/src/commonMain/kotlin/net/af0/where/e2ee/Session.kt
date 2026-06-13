@@ -256,24 +256,13 @@ object Session {
                 try {
                     aeadDecrypt(finalStep.messageKey, finalStep.messageNonce, message.ct, aad)
                 } catch (e: Exception) {
-                    // Decryption failure. We persist the ratcheted state if the header
-                    // authenticated, to prevent permanent DH desync (§5.5), AND cache the
-                    // message key for `seq` itself so that a later genuine copy of the same
-                    // message — e.g. the clean original after a malicious server bit-flipped
-                    // the first delivery — can still decrypt via the skipped-key cache path
-                    // instead of failing the recvSeq replay check.
-                    // (Deliberate deviation from spec §8.3.1(4); see spec note.)
-                    val seqCacheKey = remoteDhPub.toHex() + ":" + seq
-                    derivationSkippedKeys[seqCacheKey] =
-                        finalStep.messageKey + finalStep.messageNonce + longToBeBytes(now)
-                    if (derivationSkippedKeys.size > MAX_SKIPPED_KEYS) {
-                        val oldestKey = derivationSkippedKeys.keys.first()
-                        if (oldestKey != seqCacheKey) {
-                            derivationSkippedKeys[oldestKey]?.zeroize()
-                            derivationSkippedKeys.remove(oldestKey)
-                        }
-                    }
-
+                    // Body AEAD failed despite a valid header. Advance recvSeq and the chain
+                    // key to prevent permanent DH desync — without this, a server that drops
+                    // the message entirely and a server that delivers a corrupted copy would
+                    // have different effects on session state, breaking the ratchet.
+                    // The failed message's key is NOT cached: caching it would keep MK_n alive
+                    // for up to 7 days with no benefit, since a server willing to deliver a
+                    // corrupted copy can equally just drop the message.
                     val failedState =
                         speculativeState.deepCopy().copy(
                             recvChainKey = chainKey.copyOf(),
@@ -282,8 +271,6 @@ object Session {
                             needsRatchet = cleanState.needsRatchet || isNewDhEpoch,
                         )
                     // Wipe any speculative intermediate keys derived during this failed call.
-                    // The seq cache entry above is intentionally NOT in addedSkippedKeys —
-                    // failedState already holds a copy of it.
                     addedSkippedKeys.forEach { it.zeroize() }
                     chainKey.zeroize()
                     throw DecryptionExceptionWithState(failedState, e)
