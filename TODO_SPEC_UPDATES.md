@@ -118,25 +118,12 @@ polling targets in adjacent cycles. Align with §2.3/§7.3 admissions.
 
 ## 11. Freshness lower-bound: stale-pinning by a withholding server (NEW — HIGH)
 
-§2.3 treats message dropping as DoS, but for a location app withholding is an
-*integrity* attack: GET is non-destructive and the server controls delivery.
-Once Bob has processed up to seq=N and DELETEd, a malicious server simply never
-serves seq>N. Bob's UI shows an authentic-but-stale location with a
-trustworthy-looking authenticated `ts` — a confident false belief ("she's still
-here"), not a visible gap. The only staleness signal is `isStale` at 7 days
-(§13.4), useless against minutes-to-hours pinning. `seq` gives ordering but no
-wall-clock anchor.
-
-- [ ] Receiver-side (no wire change): the protocol already mandates regular
-      Keepalives (§5.7.2), so the client knows the expected cadence. Enforce a
-      max-age on the last authenticated `ts` and surface "no fresh update in
-      >X minutes" prominently; treat a stalled seq against expected cadence as
-      suspicious, not benign.
-- [ ] Optional wire-level strengthening (plaintext-schema only, rides §5.7.3
-      forward-compat): sender includes an `expected_next_interval` /
-      heartbeat-commitment field so the receiver's max-age is sender-declared
-      rather than client-guessed.
-- [ ] Document the attack in §2.2/§2.3 (currently mis-filed under DoS).
+- [x] Won't fix at the protocol layer. A withholding server is indistinguishable
+      from the sender going offline or staying stationary. The authenticated `ts`
+      ensures the receiver always displays an honest last-seen time — no fabricated
+      location or timestamp is possible. The stationary-flag edge case ("here since X"
+      displayed indefinitely) is WAI: it is indistinguishable from genuine stationarity
+      and the timestamp remains authentic. Added a note to §2.3.
 
 ## 12. Safety number does not authenticate the rest of the invite payload (NEW)
 
