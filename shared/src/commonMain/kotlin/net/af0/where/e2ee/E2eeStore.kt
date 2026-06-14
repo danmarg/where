@@ -409,7 +409,7 @@ internal class E2eeStore(
                         database.invitesQueries.insertPendingInvite(
                             ekPub = invite.qrPayload.ekPub,
                             suggestedName = invite.qrPayload.suggestedName,
-                            fingerprint = invite.qrPayload.fingerprint,
+                            fingerprint = invite.qrPayload.fingerprint ?: "",
                             discoverySecret = invite.qrPayload.discoverySecret,
                             privKeyBlob = invite.aliceEkPriv,
                             createdAt = invite.createdAt,

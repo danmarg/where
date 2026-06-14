@@ -25,5 +25,4 @@ ios/Local.xcconfig
 cli/where_cli_state.json
 *.swp
 *.txt
-*.log
-TODO_SPEC_UPDATES.md
+.log
