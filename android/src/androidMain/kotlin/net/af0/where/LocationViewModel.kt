@@ -313,6 +313,10 @@ class LocationViewModel(
                 try {
                     val qr = e2eeManager.createInvite(displayName.value)
                     _inviteState.value = InviteState.Pending(qr)
+                    // Ensure the service is running so it polls the discovery mailbox.
+                    // If no friends exist yet the service will have stopped itself; restart it.
+                    val svcIntent = Intent(getApplication(), LocationService::class.java)
+                    getApplication<Application>().startForegroundService(svcIntent)
                     triggerRapidPoll()
                 } catch (e: Exception) {
                     Log.e(TAG, "Failed to create invite", e)

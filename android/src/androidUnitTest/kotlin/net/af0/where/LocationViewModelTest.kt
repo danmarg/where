@@ -830,4 +830,32 @@ class LocationViewModelTest {
             assertTrue(friendId in userStore.pausedFriendIds.value, "expired friend must be paused")
             io.mockk.coVerify(exactly = 1) { mockClient.sendStoppedSharingToFriend(friendId) }
         }
+
+    @Test
+    fun testCreateInvite_StartsServiceWhenNoPriorFriends() =
+        runTest {
+            // Regression: when there are no existing friends the LocationService stops itself
+            // on startup. createInvite() must start the service so it polls the discovery mailbox.
+            viewModel =
+                LocationViewModel(
+                    app,
+                    e2eeManagerParam = E2eeManager(createTestSqlDriver(), UnconfinedTestDispatcher()),
+                    startPolling = false,
+                    locationSourceParam = TestFakeLocationSource(),
+                    uiStateStoreParam = FakeUiStateStore(),
+                )
+
+            // Drain any service starts from ViewModel init.
+            while (shadowOf(app).peekNextStartedService() != null) {
+                shadowOf(app).nextStartedService
+            }
+
+            viewModel!!.createInvite()
+            advanceUntilIdle()
+
+            assertTrue(viewModel!!.inviteState.value is InviteState.Pending)
+            val started: Intent? = shadowOf(app).nextStartedService
+            assertNotNull(started, "createInvite must start LocationService so discovery mailbox is polled")
+            assertEquals(LocationService::class.java.name, started.component?.className)
+        }
 }
