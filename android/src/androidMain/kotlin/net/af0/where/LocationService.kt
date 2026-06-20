@@ -513,11 +513,14 @@ class LocationService : Service() {
         // full minute of fixes before delivering — that batching can mask "moving"
         // updates by up to 60s in marginal conditions. When STILL, batching is fine.
         val maxDelay = if (isStill) 60_000L else 10_000L
-        locationProvider.requestActiveUpdates(currentPriority, currentInterval, maxDelay)
-        isRegistered = true
-        lastRegistrationTime = clock()
-        lastLocationCallbackTime = 0L  // reset so watchdog waits for the first callback from this registration
-        Log.i(TAG, "Location updates registered successfully with priority=$currentPriority.")
+        isRegistered = locationProvider.requestActiveUpdates(currentPriority, currentInterval, maxDelay)
+        if (isRegistered) {
+            lastRegistrationTime = clock()
+            lastLocationCallbackTime = 0L  // reset so watchdog waits for the first callback from this registration
+            Log.i(TAG, "Location updates registered successfully with priority=$currentPriority.")
+        } else {
+            Log.w(TAG, "requestActiveUpdates failed (likely missing permission); isRegistered=false")
+        }
     }
 
 

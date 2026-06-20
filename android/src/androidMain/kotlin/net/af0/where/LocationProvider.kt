@@ -13,7 +13,7 @@ enum class LocationAccuracy {
 interface LocationProvider {
     fun init(context: Context, onLocation: (lat: Double, lng: Double, bearing: Double?) -> Unit)
     fun getLastLocationAsync(callback: (Location?) -> Unit)
-    fun requestActiveUpdates(accuracy: LocationAccuracy, intervalMs: Long, maxDelayMs: Long)
+    fun requestActiveUpdates(accuracy: LocationAccuracy, intervalMs: Long, maxDelayMs: Long): Boolean
     fun requestPassiveUpdates(): Boolean
     fun removeActiveUpdates()
     fun removePassiveUpdates()

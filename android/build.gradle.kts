@@ -139,9 +139,12 @@ android {
 }
 
 // Disable fullFdroid variants: full flavor requires activity recognition which needs GMS.
+// Use productFlavors pair matching rather than a string check so dimension reordering
+// doesn't silently produce a broken APK.
 androidComponents {
     beforeVariants { variantBuilder ->
-        if (variantBuilder.flavorName?.contains("fullFdroid", ignoreCase = true) == true) {
+        val flavors = variantBuilder.productFlavors.map { it.second }.toSet()
+        if ("full" in flavors && "fdroid" in flavors) {
             variantBuilder.enable = false
         }
     }

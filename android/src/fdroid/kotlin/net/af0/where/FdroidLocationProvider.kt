@@ -39,29 +39,36 @@ class FdroidLocationProvider : LocationProvider {
         }.maxByOrNull { it.time }
     }
 
-    override fun requestActiveUpdates(accuracy: LocationAccuracy, intervalMs: Long, maxDelayMs: Long) {
+    override fun requestActiveUpdates(accuracy: LocationAccuracy, intervalMs: Long, maxDelayMs: Long): Boolean {
         removeActiveUpdates()
+        // PASSIVE accuracy maps to PASSIVE_PROVIDER to honour the deep-sleep power intent.
+        // For all other accuracies use a single real provider to avoid duplicate callbacks.
+        // FUSED_PROVIDER is intentionally excluded: it is GMS-provided even on API 31+ and
+        // may be absent on de-Googled devices.
+        val provider = when {
+            accuracy == LocationAccuracy.PASSIVE &&
+                locationManager.isProviderEnabled(LocationManager.PASSIVE_PROVIDER) ->
+                LocationManager.PASSIVE_PROVIDER
+            locationManager.isProviderEnabled(LocationManager.GPS_PROVIDER) ->
+                LocationManager.GPS_PROVIDER
+            else -> LocationManager.NETWORK_PROVIDER
+        }
         val minDistance = when (accuracy) {
-            LocationAccuracy.PASSIVE -> 0f
+            LocationAccuracy.PASSIVE, LocationAccuracy.HIGH -> 0f
             LocationAccuracy.LOW_POWER -> 50f
             LocationAccuracy.BALANCED -> 20f
-            LocationAccuracy.HIGH -> 0f
         }
         val listener = LocationListener { loc ->
             onLocationCallback?.invoke(loc.latitude, loc.longitude, if (loc.hasBearing()) loc.bearing.toDouble() else null)
         }
-        activeListener = listener
-        // Use a single provider to avoid duplicate callbacks. FUSED_PROVIDER is intentionally
-        // excluded: it is GMS-provided even on API 31+ and may be absent on de-Googled devices.
-        val provider = if (locationManager.isProviderEnabled(LocationManager.GPS_PROVIDER))
-            LocationManager.GPS_PROVIDER
-        else
-            LocationManager.NETWORK_PROVIDER
-        try {
+        return try {
             locationManager.requestLocationUpdates(provider, intervalMs, minDistance, listener)
-            Log.i(TAG, "Registered active location updates via $provider")
+            activeListener = listener
+            Log.i(TAG, "Registered active location updates via $provider (accuracy=$accuracy)")
+            true
         } catch (e: SecurityException) {
             Log.w(TAG, "SecurityException requesting $provider updates: ${e.message}")
+            false
         }
     }
 

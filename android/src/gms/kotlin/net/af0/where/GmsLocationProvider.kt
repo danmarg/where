@@ -60,16 +60,18 @@ class GmsLocationProvider : LocationProvider {
         LocationAccuracy.HIGH -> Priority.PRIORITY_HIGH_ACCURACY
     }
 
-    override fun requestActiveUpdates(accuracy: LocationAccuracy, intervalMs: Long, maxDelayMs: Long) {
+    override fun requestActiveUpdates(accuracy: LocationAccuracy, intervalMs: Long, maxDelayMs: Long): Boolean {
         val request = LocationRequest.Builder(accuracy.toGmsPriority(), intervalMs)
             .setMinUpdateIntervalMillis(10_000L)
             .setMinUpdateDistanceMeters(LocationService.MOVEMENT_RADIUS_THRESHOLD_METERS)
             .setMaxUpdateDelayMillis(maxDelayMs)
             .build()
-        try {
+        return try {
             fusedClient.requestLocationUpdates(request, locationCallback, Looper.getMainLooper())
+            true
         } catch (e: SecurityException) {
             Log.w(TAG, "SecurityException requesting active updates: ${e.message}")
+            false
         }
     }
 

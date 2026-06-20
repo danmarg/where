@@ -836,6 +836,8 @@ class LocationViewModelTest {
         runTest {
             // Regression: when there are no existing friends the LocationService stops itself
             // on startup. createInvite() must start the service so it polls the discovery mailbox.
+            shadowOf(app).grantPermissions(Manifest.permission.ACCESS_FINE_LOCATION)
+
             viewModel =
                 LocationViewModel(
                     app,
