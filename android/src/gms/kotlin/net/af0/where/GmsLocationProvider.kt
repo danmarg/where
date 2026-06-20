@@ -25,9 +25,13 @@ class GmsLocationProvider : LocationProvider {
     private lateinit var geofencingClient: GeofencingClient
     private lateinit var locationCallback: LocationCallback
     private lateinit var passiveLocationCallback: LocationCallback
+    // Captured at init() time — callers must invoke init() on the thread whose looper
+    // should receive location callbacks (LocationService calls init() on the main thread).
+    private lateinit var callbackLooper: Looper
 
     override fun init(context: Context, onLocation: (Double, Double, Double?) -> Unit) {
         this.context = context.applicationContext
+        callbackLooper = Looper.myLooper() ?: callbackLooper
         fusedClient = LocationServices.getFusedLocationProviderClient(context)
         geofencingClient = LocationServices.getGeofencingClient(context)
         locationCallback = object : LocationCallback() {
@@ -67,7 +71,7 @@ class GmsLocationProvider : LocationProvider {
             .setMaxUpdateDelayMillis(maxDelayMs)
             .build()
         return try {
-            fusedClient.requestLocationUpdates(request, locationCallback, Looper.getMainLooper())
+            fusedClient.requestLocationUpdates(request, locationCallback, callbackLooper)
             true
         } catch (e: SecurityException) {
             Log.w(TAG, "SecurityException requesting active updates: ${e.message}")
@@ -80,7 +84,7 @@ class GmsLocationProvider : LocationProvider {
             .setMinUpdateDistanceMeters(0f)
             .build()
         return try {
-            fusedClient.requestLocationUpdates(request, passiveLocationCallback, Looper.getMainLooper())
+            fusedClient.requestLocationUpdates(request, passiveLocationCallback, callbackLooper)
             true
         } catch (e: SecurityException) {
             Log.w(TAG, "SecurityException requesting passive updates: ${e.message}")

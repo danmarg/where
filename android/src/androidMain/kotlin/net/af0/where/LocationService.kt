@@ -455,6 +455,10 @@ class LocationService : Service() {
         if (locationProvider.setGeofenceAt(lat, lng)) {
             Log.i(TAG, "Stationary: Geofence set at $lat, $lng")
             e2eeManager.addDiagnosticEvent("Stationary: Geofence set")
+        } else {
+            // F-Droid build: geofencing unavailable (GMS-only). Movement-triggered restart
+            // is absent; the service relies solely on WorkManager and the alarm fallback.
+            Log.w(TAG, "Stationary: geofence not set — movement-triggered restart unavailable")
         }
     }
 

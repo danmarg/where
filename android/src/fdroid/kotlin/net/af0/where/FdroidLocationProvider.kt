@@ -61,10 +61,13 @@ class FdroidLocationProvider : LocationProvider {
         val listener = LocationListener { loc ->
             onLocationCallback?.invoke(loc.latitude, loc.longitude, if (loc.hasBearing()) loc.bearing.toDouble() else null)
         }
+        // Mirror GmsLocationProvider's 10s floor to prevent excessive wakeups under fast
+        // heartbeat conditions (e.g. activity transition to MOVING uses a 10s interval).
+        val effectiveInterval = maxOf(intervalMs, 10_000L)
         return try {
-            locationManager.requestLocationUpdates(provider, intervalMs, minDistance, listener)
+            locationManager.requestLocationUpdates(provider, effectiveInterval, minDistance, listener)
             activeListener = listener
-            Log.i(TAG, "Registered active location updates via $provider (accuracy=$accuracy)")
+            Log.i(TAG, "Registered active location updates via $provider (accuracy=$accuracy, intervalMs=$effectiveInterval)")
             true
         } catch (e: SecurityException) {
             Log.w(TAG, "SecurityException requesting $provider updates: ${e.message}")
