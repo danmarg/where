@@ -129,7 +129,6 @@ class E2eeManager(
         val msg =
             KeyExchangeInitMessage(
                 protocolVersion = payload.v,
-                token = payload.token?.hexToByteArray() ?: ByteArray(0),
                 ekPub = payload.ekPub,
                 keyConfirmation = payload.keyConfirmation,
                 encryptedName = payload.encryptedName,
@@ -334,7 +333,6 @@ class E2eeManager(
         val payload =
             KeyExchangeInitPayload(
                 v = initMsg.protocolVersion,
-                token = initMsg.token.toHex(),
                 ekPub = initMsg.ekPub,
                 keyConfirmation = initMsg.keyConfirmation,
                 encryptedName = initMsg.encryptedName,

@@ -48,7 +48,6 @@ class KeyExchangeTest {
 
         val (msg, _) = KeyExchange.bobProcessQr(qr, "Bob")
 
-        assertEquals(16, msg.token.size)
         assertEquals(32, msg.ekPub.size)
         assertEquals(32, msg.keyConfirmation.size)
         // nonce(12) + tag(16) + nameLength(3) = 31
@@ -153,18 +152,6 @@ class KeyExchangeTest {
                 true
             }
         assertTrue(threw)
-    }
-
-    @Test
-    fun `aliceProcessInit ignores token field`() {
-        // token is deprecated and ignored by Alice — a wrong or absent value must not
-        // cause rejection; key_confirmation is the authoritative check.
-        val (qr, aliceEkPriv) = KeyExchange.aliceCreateQrPayload("Alice")
-        val (msg, _) = KeyExchange.bobProcessQr(qr, "Bob")
-        val badTokenMsg = msg.copy(token = ByteArray(16) { 0x42.toByte() })
-        // Should succeed despite the wrong token value.
-        val session = KeyExchange.aliceProcessInit(badTokenMsg, aliceEkPriv, qr.ekPub)
-        assertNotNull(session)
     }
 
     @Test
@@ -422,9 +409,6 @@ class KeyExchangeTest {
 
         // Attacker constructs a tampered KeyExchangeInitMessage with EK_M.pub and a keyConfirmation
         // correctly computed over (SK_AM, EK_A.pub, EK_M.pub) using KeyExchange.buildKeyConfirmation.
-        // token is deprecated/ignored, so the attacker does not need to forge it.
-        val aliceFp = fingerprint(qr.ekPub)
-        val attackerFp = fingerprint(ekM.pub)
 
         // Encrypt name under SK_AM
         val kName = hkdfSha256(skAM, null, "Where-v1-SuggestedName".encodeToByteArray(), 32)
@@ -433,7 +417,6 @@ class KeyExchangeTest {
 
         val tamperedMsg =
             KeyExchangeInitMessage(
-                token = deriveRoutingToken(skAM, aliceFp, attackerFp),
                 ekPub = ekM.pub.copyOf(),
                 keyConfirmation = KeyExchange.buildKeyConfirmation(skAM, qr.ekPub, ekM.pub),
                 encryptedName = nonce + ct,

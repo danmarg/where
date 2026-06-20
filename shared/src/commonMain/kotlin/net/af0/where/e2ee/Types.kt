@@ -273,8 +273,6 @@ data class QrPayload(
 /** Bob's KeyExchangeInit message sent to the mailbox. */
 data class KeyExchangeInitMessage(
     val protocolVersion: Int = PROTOCOL_VERSION,
-    // T_AB_0 (16 bytes) — mailbox address
-    @Serializable(with = ByteArrayBase64Serializer::class) val token: ByteArray,
     // Bob's ephemeral X25519 public key
     @Serializable(with = ByteArrayBase64Serializer::class) val ekPub: ByteArray,
     // HMAC-SHA-256(SK, "Where-v1-Confirm" || EK_A.pub || EK_B.pub)
@@ -283,13 +281,13 @@ data class KeyExchangeInitMessage(
 ) {
     override fun equals(other: Any?): Boolean {
         if (other !is KeyExchangeInitMessage) return false
-        return protocolVersion == other.protocolVersion && token.contentEquals(other.token) && ekPub.contentEquals(other.ekPub) &&
+        return protocolVersion == other.protocolVersion && ekPub.contentEquals(other.ekPub) &&
             keyConfirmation.contentEquals(other.keyConfirmation) && encryptedName.contentEquals(other.encryptedName)
     }
 
     override fun hashCode(): Int {
         var h = protocolVersion
-        h = 31 * h + token.contentHashCode()
+        h = 31 * h + ekPub.contentHashCode()
         return h
     }
 }

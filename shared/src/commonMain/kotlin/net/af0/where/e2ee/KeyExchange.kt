@@ -66,10 +66,6 @@ object KeyExchange {
 
         val keyConfirmation = buildKeyConfirmation(sk, qr.ekPub, ekB.pub)
 
-        // Initial token Bob sends to Alice for discovery is T_AB_0 (Alice -> Bob).
-        // Bob is the scanner, so this token uses (AliceFp, BobFp).
-        val tokenAliceToBob = deriveRoutingToken(sk, aliceFp, bobFp)
-
         val encryptedName = encryptSuggestedName(sk, qr.ekPub, ekB.pub, suggestedName)
 
         // MEMORY HYGIENE NOTE (§5.5): Bob's initial ephemeral key (ekB.priv) is copied into
@@ -81,7 +77,6 @@ object KeyExchange {
 
         val msg =
             KeyExchangeInitMessage(
-                token = tokenAliceToBob,
                 ekPub = ekB.pub.copyOf(),
                 keyConfirmation = keyConfirmation,
                 encryptedName = encryptedName,
