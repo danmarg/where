@@ -10,11 +10,13 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
 import net.af0.where.e2ee.FriendEntry
 import net.af0.where.model.UserLocation
-import org.osmdroid.config.Configuration
 import org.osmdroid.tileprovider.tilesource.TileSourceFactory
 import org.osmdroid.util.GeoPoint
 import org.osmdroid.views.MapView
@@ -53,6 +55,19 @@ fun MapComposable(
 
     var mapViewRef by remember { mutableStateOf<MapView?>(null) }
     var didInitialCenter by remember { mutableStateOf(false) }
+    val lifecycleOwner = LocalLifecycleOwner.current
+
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            when (event) {
+                Lifecycle.Event.ON_RESUME -> mapViewRef?.onResume()
+                Lifecycle.Event.ON_PAUSE -> mapViewRef?.onPause()
+                else -> Unit
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
 
     LaunchedEffect(ownLocation) {
         val mv = mapViewRef ?: return@LaunchedEffect
@@ -78,15 +93,12 @@ fun MapComposable(
     DisposableEffect(Unit) {
         onDispose {
             val mv = mapViewRef ?: return@onDispose
-            val center = mv.mapCenter
-            UserPrefs.setLastLocation(context, center.latitude, center.longitude, mv.zoomLevelDouble.toFloat())
-            mv.onPause()
+            UserPrefs.setLastLocation(context, mv.mapCenter.latitude, mv.mapCenter.longitude, mv.zoomLevelDouble.toFloat())
         }
     }
 
     AndroidView(
         factory = { ctx ->
-            Configuration.getInstance().userAgentValue = ctx.packageName
             MapView(ctx).apply {
                 setTileSource(TileSourceFactory.MAPNIK)
                 setMultiTouchControls(true)
@@ -98,10 +110,7 @@ fun MapComposable(
                     controller.setZoom(10.0)
                     controller.setCenter(GeoPoint(37.33, -122.03))
                 }
-            }.also {
-                mapViewRef = it
-                it.onResume()
-            }
+            }.also { mapViewRef = it }
         },
         update = { mapView ->
             mapView.overlays.removeAll { it is Marker }

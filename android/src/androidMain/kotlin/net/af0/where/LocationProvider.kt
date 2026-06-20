@@ -14,7 +14,7 @@ interface LocationProvider {
     fun init(context: Context, onLocation: (lat: Double, lng: Double, bearing: Double?) -> Unit)
     fun getLastLocationAsync(callback: (Location?) -> Unit)
     fun requestActiveUpdates(accuracy: LocationAccuracy, intervalMs: Long, maxDelayMs: Long)
-    fun requestPassiveUpdates()
+    fun requestPassiveUpdates(): Boolean
     fun removeActiveUpdates()
     fun removePassiveUpdates()
     suspend fun getCurrentLocation(): Location?

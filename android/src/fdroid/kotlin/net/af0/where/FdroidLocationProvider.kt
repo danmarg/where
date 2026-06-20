@@ -51,13 +51,9 @@ class FdroidLocationProvider : LocationProvider {
             onLocationCallback?.invoke(loc.latitude, loc.longitude, if (loc.hasBearing()) loc.bearing.toDouble() else null)
         }
         activeListener = listener
-        // API 31+ exposes FUSED_PROVIDER which merges GPS+network internally (no double callbacks).
-        // Below API 31 use GPS_PROVIDER only to avoid duplicate fixes from registering both GPS
-        // and NETWORK providers simultaneously.
-        val provider = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
-            locationManager.isProviderEnabled(LocationManager.FUSED_PROVIDER))
-            LocationManager.FUSED_PROVIDER
-        else if (locationManager.isProviderEnabled(LocationManager.GPS_PROVIDER))
+        // Use a single provider to avoid duplicate callbacks. FUSED_PROVIDER is intentionally
+        // excluded: it is GMS-provided even on API 31+ and may be absent on de-Googled devices.
+        val provider = if (locationManager.isProviderEnabled(LocationManager.GPS_PROVIDER))
             LocationManager.GPS_PROVIDER
         else
             LocationManager.NETWORK_PROVIDER
@@ -69,18 +65,22 @@ class FdroidLocationProvider : LocationProvider {
         }
     }
 
-    override fun requestPassiveUpdates() {
+    override fun requestPassiveUpdates(): Boolean {
+        if (!locationManager.isProviderEnabled(LocationManager.PASSIVE_PROVIDER)) {
+            Log.w(TAG, "PASSIVE_PROVIDER not enabled; passive updates skipped")
+            return false
+        }
         val listener = LocationListener { loc ->
             onLocationCallback?.invoke(loc.latitude, loc.longitude, if (loc.hasBearing()) loc.bearing.toDouble() else null)
         }
-        passiveListener = listener
-        if (locationManager.isProviderEnabled(LocationManager.PASSIVE_PROVIDER)) {
-            try {
-                locationManager.requestLocationUpdates(LocationManager.PASSIVE_PROVIDER, 1_000L, 0f, listener)
-                Log.i(TAG, "Registered passive location updates")
-            } catch (e: SecurityException) {
-                Log.w(TAG, "SecurityException requesting passive updates: ${e.message}")
-            }
+        return try {
+            locationManager.requestLocationUpdates(LocationManager.PASSIVE_PROVIDER, 1_000L, 0f, listener)
+            passiveListener = listener
+            Log.i(TAG, "Registered passive location updates")
+            true
+        } catch (e: SecurityException) {
+            Log.w(TAG, "SecurityException requesting passive updates: ${e.message}")
+            false
         }
     }
 
@@ -88,7 +88,9 @@ class FdroidLocationProvider : LocationProvider {
         activeListener?.let {
             try {
                 locationManager.removeUpdates(it)
-            } catch (_: Exception) {}
+            } catch (e: Exception) {
+                Log.w(TAG, "removeActiveUpdates failed: ${e.message}")
+            }
             activeListener = null
         }
     }
@@ -97,7 +99,9 @@ class FdroidLocationProvider : LocationProvider {
         passiveListener?.let {
             try {
                 locationManager.removeUpdates(it)
-            } catch (_: Exception) {}
+            } catch (e: Exception) {
+                Log.w(TAG, "removePassiveUpdates failed: ${e.message}")
+            }
             passiveListener = null
         }
     }
@@ -107,6 +111,7 @@ class FdroidLocationProvider : LocationProvider {
             suspendCancellableCoroutine { cont ->
                 try {
                     // R == API 30; LocationManager.getCurrentLocation() was added in API 30.
+                    // The else branch returns the best last-known fix, which may be stale.
                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
                         val signal = CancellationSignal()
                         cont.invokeOnCancellation { signal.cancel() }
@@ -129,6 +134,9 @@ class FdroidLocationProvider : LocationProvider {
     override suspend fun getLastLocation(): Location? = getBestLastKnownLocation()
 
     // Geofencing is GMS-specific; WorkManager + alarm provide the fallback restart mechanism.
+    // TODO: F-Droid background reliability is weaker than the GMS build because there is no
+    //  movement-triggered wake (geofence exit). Investigate AlarmManager inexact repeating or
+    //  a fused passive listener as a compensating mechanism.
     override fun setGeofenceAt(lat: Double, lng: Double): Boolean = false
 
     override fun removeGeofence() {}

@@ -40,6 +40,7 @@ class LocationServiceSharingPauseTest {
         LocationService.clock = { System.currentTimeMillis() }
 
         mockLocationProvider = mockk(relaxed = true)
+        io.mockk.every { mockLocationProvider.requestPassiveUpdates() } returns true
 
         io.mockk.mockkObject(net.af0.where.e2ee.KtorMailboxClient)
         io.mockk.coEvery { net.af0.where.e2ee.KtorMailboxClient.poll(any(), any()) } returns emptyList()

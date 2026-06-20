@@ -73,14 +73,16 @@ class GmsLocationProvider : LocationProvider {
         }
     }
 
-    override fun requestPassiveUpdates() {
+    override fun requestPassiveUpdates(): Boolean {
         val request = LocationRequest.Builder(Priority.PRIORITY_PASSIVE, 1_000L)
             .setMinUpdateDistanceMeters(0f)
             .build()
-        try {
+        return try {
             fusedClient.requestLocationUpdates(request, passiveLocationCallback, Looper.getMainLooper())
+            true
         } catch (e: SecurityException) {
             Log.w(TAG, "SecurityException requesting passive updates: ${e.message}")
+            false
         }
     }
 

@@ -505,9 +505,8 @@ class LocationService : Service() {
         if (isRegistered) return
 
         if (!isPassiveRegistered) {
-            locationProvider.requestPassiveUpdates()
-            isPassiveRegistered = true
-            Log.i(TAG, "Passive location updates registered.")
+            isPassiveRegistered = locationProvider.requestPassiveUpdates()
+            if (isPassiveRegistered) Log.i(TAG, "Passive location updates registered.")
         }
 
         // When moving, keep max delivery delay tight (10s) so the provider doesn't batch up to a
