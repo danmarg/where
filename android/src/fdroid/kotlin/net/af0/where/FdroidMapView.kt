@@ -98,7 +98,10 @@ fun MapComposable(
                     controller.setZoom(10.0)
                     controller.setCenter(GeoPoint(37.33, -122.03))
                 }
-            }.also { mapViewRef = it }
+            }.also {
+                mapViewRef = it
+                it.onResume()
+            }
         },
         update = { mapView ->
             mapView.overlays.removeAll { it is Marker }

@@ -19,7 +19,7 @@ interface LocationProvider {
     fun removePassiveUpdates()
     suspend fun getCurrentLocation(): Location?
     suspend fun getLastLocation(): Location?
-    fun setGeofenceAt(lat: Double, lng: Double)
+    fun setGeofenceAt(lat: Double, lng: Double): Boolean
     fun removeGeofence()
     fun onDestroy()
 }

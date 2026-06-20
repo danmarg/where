@@ -40,6 +40,7 @@ class FdroidLocationProvider : LocationProvider {
     }
 
     override fun requestActiveUpdates(accuracy: LocationAccuracy, intervalMs: Long, maxDelayMs: Long) {
+        removeActiveUpdates()
         val minDistance = when (accuracy) {
             LocationAccuracy.PASSIVE -> 0f
             LocationAccuracy.LOW_POWER -> 50f
@@ -50,16 +51,21 @@ class FdroidLocationProvider : LocationProvider {
             onLocationCallback?.invoke(loc.latitude, loc.longitude, if (loc.hasBearing()) loc.bearing.toDouble() else null)
         }
         activeListener = listener
-        val providers = listOf(LocationManager.GPS_PROVIDER, LocationManager.NETWORK_PROVIDER)
-        for (provider in providers) {
-            if (locationManager.isProviderEnabled(provider)) {
-                try {
-                    locationManager.requestLocationUpdates(provider, intervalMs, minDistance, listener)
-                    Log.i(TAG, "Registered active location updates via $provider")
-                } catch (e: SecurityException) {
-                    Log.w(TAG, "SecurityException requesting $provider updates: ${e.message}")
-                }
-            }
+        // API 31+ exposes FUSED_PROVIDER which merges GPS+network internally (no double callbacks).
+        // Below API 31 use GPS_PROVIDER only to avoid duplicate fixes from registering both GPS
+        // and NETWORK providers simultaneously.
+        val provider = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
+            locationManager.isProviderEnabled(LocationManager.FUSED_PROVIDER))
+            LocationManager.FUSED_PROVIDER
+        else if (locationManager.isProviderEnabled(LocationManager.GPS_PROVIDER))
+            LocationManager.GPS_PROVIDER
+        else
+            LocationManager.NETWORK_PROVIDER
+        try {
+            locationManager.requestLocationUpdates(provider, intervalMs, minDistance, listener)
+            Log.i(TAG, "Registered active location updates via $provider")
+        } catch (e: SecurityException) {
+            Log.w(TAG, "SecurityException requesting $provider updates: ${e.message}")
         }
     }
 
@@ -100,6 +106,7 @@ class FdroidLocationProvider : LocationProvider {
         return withTimeoutOrNull(10_000L) {
             suspendCancellableCoroutine { cont ->
                 try {
+                    // R == API 30; LocationManager.getCurrentLocation() was added in API 30.
                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
                         val signal = CancellationSignal()
                         cont.invokeOnCancellation { signal.cancel() }
@@ -121,8 +128,8 @@ class FdroidLocationProvider : LocationProvider {
 
     override suspend fun getLastLocation(): Location? = getBestLastKnownLocation()
 
-    // Geofencing is GMS-specific; no-op for F-Droid (WorkManager + alarm provide the fallback).
-    override fun setGeofenceAt(lat: Double, lng: Double) {}
+    // Geofencing is GMS-specific; WorkManager + alarm provide the fallback restart mechanism.
+    override fun setGeofenceAt(lat: Double, lng: Double): Boolean = false
 
     override fun removeGeofence() {}
 

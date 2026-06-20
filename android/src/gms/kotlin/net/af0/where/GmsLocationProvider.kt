@@ -45,7 +45,12 @@ class GmsLocationProvider : LocationProvider {
     }
 
     override fun getLastLocationAsync(callback: (Location?) -> Unit) {
-        fusedClient.lastLocation.addOnSuccessListener { loc -> callback(loc) }
+        try {
+            fusedClient.lastLocation.addOnSuccessListener { loc -> callback(loc) }
+        } catch (e: SecurityException) {
+            Log.w(TAG, "SecurityException getting last location: ${e.message}")
+            callback(null)
+        }
     }
 
     private fun LocationAccuracy.toGmsPriority() = when (this) {
@@ -114,7 +119,7 @@ class GmsLocationProvider : LocationProvider {
         }
     }
 
-    override fun setGeofenceAt(lat: Double, lng: Double) {
+    override fun setGeofenceAt(lat: Double, lng: Double): Boolean {
         val geofence = Geofence.Builder()
             .setRequestId("stationary_fence")
             .setCircularRegion(lat, lng, LocationService.MOVEMENT_RADIUS_THRESHOLD_METERS)
@@ -125,11 +130,13 @@ class GmsLocationProvider : LocationProvider {
             .setInitialTrigger(GeofencingRequest.INITIAL_TRIGGER_EXIT)
             .addGeofence(geofence)
             .build()
-        try {
+        return try {
             geofencingClient.addGeofences(request, getGeofencePendingIntent())
             Log.i(TAG, "Geofence set at $lat, $lng")
+            true
         } catch (e: SecurityException) {
             Log.w(TAG, "SecurityException setting geofence: ${e.message}")
+            false
         }
     }
 

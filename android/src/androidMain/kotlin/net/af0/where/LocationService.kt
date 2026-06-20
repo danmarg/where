@@ -452,9 +452,10 @@ class LocationService : Service() {
 
     private fun setGeofenceAt(lat: Double, lng: Double) {
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED) return
-        locationProvider.setGeofenceAt(lat, lng)
-        Log.i(TAG, "Stationary: Geofence set at $lat, $lng")
-        e2eeManager.addDiagnosticEvent("Stationary: Geofence set")
+        if (locationProvider.setGeofenceAt(lat, lng)) {
+            Log.i(TAG, "Stationary: Geofence set at $lat, $lng")
+            e2eeManager.addDiagnosticEvent("Stationary: Geofence set")
+        }
     }
 
     private fun removeGeofence() {
