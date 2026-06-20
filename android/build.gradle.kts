@@ -34,7 +34,6 @@ kotlin {
     sourceSets {
         androidMain.dependencies {
             implementation(libs.kotlinx.serialization.json)
-            implementation(libs.kotlinx.coroutines.play.services)
             implementation(libs.security.crypto)
             implementation(libs.androidx.core.splashscreen)
             implementation(libs.sqldelight.android)
@@ -63,7 +62,6 @@ android {
         targetSdk = 35
         versionCode = 98
         versionName = "2026.06.20.1"
-        manifestPlaceholders["MAPS_API_KEY"] = localProperties.getProperty("MAPS_API_KEY") ?: System.getenv("MAPS_API_KEY") ?: ""
     }
 
     buildFeatures {
@@ -99,7 +97,7 @@ android {
         }
     }
 
-    flavorDimensions += "activityRecognition"
+    flavorDimensions += listOf("activityRecognition", "store")
 
     productFlavors {
         create("standard") {
@@ -109,6 +107,13 @@ android {
         create("full") {
             dimension = "activityRecognition"
             buildConfigField("Boolean", "ACTIVITY_RECOGNITION_ENABLED", "true")
+        }
+        create("gms") {
+            dimension = "store"
+            manifestPlaceholders["MAPS_API_KEY"] = localProperties.getProperty("MAPS_API_KEY") ?: System.getenv("MAPS_API_KEY") ?: ""
+        }
+        create("fdroid") {
+            dimension = "store"
         }
     }
 
@@ -133,6 +138,15 @@ android {
     }
 }
 
+// Disable fullFdroid variants: full flavor requires activity recognition which needs GMS.
+androidComponents {
+    beforeVariants { variantBuilder ->
+        if (variantBuilder.flavorName?.contains("fullFdroid", ignoreCase = true) == true) {
+            variantBuilder.enable = false
+        }
+    }
+}
+
 dependencies {
     implementation(project(":shared"))
     implementation(platform(libs.compose.bom))
@@ -142,13 +156,19 @@ dependencies {
     implementation(libs.compose.material.icons.extended)
     implementation(libs.activity.compose)
     implementation(libs.androidx.fragment)
-    implementation(libs.maps.compose)
-    implementation(libs.play.services.location)
     implementation(libs.accompanist.permissions)
     implementation(libs.zxing.core)
     implementation(libs.zxing.android.embedded)
     implementation(libs.moko.resources.compose)
     implementation(libs.work.runtime.ktx)
+
+    // GMS-only (Play Store flavor)
+    "gmsImplementation"(libs.maps.compose)
+    "gmsImplementation"(libs.play.services.location)
+    "gmsImplementation"(libs.kotlinx.coroutines.play.services)
+
+    // F-Droid only
+    "fdroidImplementation"(libs.osmdroid)
 
     debugImplementation(libs.compose.ui.test.manifest)
 }

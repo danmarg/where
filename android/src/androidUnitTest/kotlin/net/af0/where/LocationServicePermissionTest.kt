@@ -33,7 +33,7 @@ class LocationServicePermissionTest {
     private val context: Application get() = ApplicationProvider.getApplicationContext()
     private val testDispatcher = StandardTestDispatcher()
     private lateinit var fakeLocationSource: ServiceFakeLocationSource
-    private lateinit var mockFused: com.google.android.gms.location.FusedLocationProviderClient
+    private lateinit var mockLocationProvider: LocationProvider
 
     @Before
     fun setup() {
@@ -46,7 +46,7 @@ class LocationServicePermissionTest {
         fakeLocationSource.onFriendsUpdated(listOf(io.mockk.mockk<net.af0.where.e2ee.FriendEntry>(relaxed = true)))
         LocationService.clock = { System.currentTimeMillis() }
 
-        mockFused = mockk(relaxed = true)
+        mockLocationProvider = mockk(relaxed = true)
 
         io.mockk.mockkObject(net.af0.where.e2ee.KtorMailboxClient)
         io.mockk.coEvery { net.af0.where.e2ee.KtorMailboxClient.poll(any(), any()) } returns emptyList()
@@ -73,7 +73,7 @@ class LocationServicePermissionTest {
         val mockStore = io.mockk.mockk<net.af0.where.e2ee.E2eeManager>(relaxed = true)
         service.e2eeManagerOverride = mockStore
         service.uiStateStoreOverride = FakeUiStateStore()
-        service.fusedClientOverride = mockFused
+        service.locationProviderOverride = mockLocationProvider
 
         controller.create()
 
@@ -88,14 +88,9 @@ class LocationServicePermissionTest {
         val shadowNotification = shadowOf(notification)
         assertEquals(StringDesc.Resource(MR.strings.location_permission_missing).toString(context), shadowNotification.contentText)
 
-        // Verify fusedClient was NOT used for updates due to lack of permission
-        verify(exactly = 0) {
-            mockFused.requestLocationUpdates(
-                any<com.google.android.gms.location.LocationRequest>(),
-                any<com.google.android.gms.location.LocationCallback>(),
-                any<android.os.Looper>(),
-            )
-        }
+        // Verify location provider was NOT used for updates due to lack of permission
+        verify(exactly = 0) { mockLocationProvider.requestActiveUpdates(any(), any(), any()) }
+        verify(exactly = 0) { mockLocationProvider.requestPassiveUpdates() }
     }
 
     @Test
@@ -112,7 +107,7 @@ class LocationServicePermissionTest {
         val mockStore = io.mockk.mockk<net.af0.where.e2ee.E2eeManager>(relaxed = true)
         service.e2eeManagerOverride = mockStore
         service.uiStateStoreOverride = FakeUiStateStore()
-        service.fusedClientOverride = mockFused
+        service.locationProviderOverride = mockLocationProvider
 
         controller.create()
 
@@ -148,7 +143,7 @@ class LocationServicePermissionTest {
         val mockStore = io.mockk.mockk<net.af0.where.e2ee.E2eeManager>(relaxed = true)
         service.e2eeManagerOverride = mockStore
         service.uiStateStoreOverride = FakeUiStateStore()
-        service.fusedClientOverride = mockFused
+        service.locationProviderOverride = mockLocationProvider
 
         controller.create()
 
@@ -156,14 +151,9 @@ class LocationServicePermissionTest {
         assertFalse(shadowService.isStoppedBySelf, "Service should NOT have stopped itself with Coarse permission")
         assertEquals(1, shadowService.lastForegroundNotificationId)
 
-        // Verify fusedClient WAS used for updates because Coarse permission is sufficient
-        verify(exactly = 2) {
-            mockFused.requestLocationUpdates(
-                any<com.google.android.gms.location.LocationRequest>(),
-                any<com.google.android.gms.location.LocationCallback>(),
-                any<android.os.Looper>(),
-            )
-        }
+        // Verify location provider WAS used for updates because Coarse permission is sufficient
+        verify(exactly = 1) { mockLocationProvider.requestActiveUpdates(any(), any(), any()) }
+        verify(exactly = 1) { mockLocationProvider.requestPassiveUpdates() }
 
         // Notification should show "sharing" because Coarse is enough
         val notificationManager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager

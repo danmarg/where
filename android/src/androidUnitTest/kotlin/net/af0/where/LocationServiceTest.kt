@@ -5,7 +5,6 @@ import android.app.Application
 import android.content.Intent
 import android.location.Location
 import androidx.test.core.app.ApplicationProvider
-import com.google.android.gms.tasks.Task
 import dev.icerock.moko.resources.desc.Raw
 import dev.icerock.moko.resources.desc.StringDesc
 import io.mockk.every
@@ -16,7 +15,6 @@ import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.tasks.await
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.resetMain
@@ -197,14 +195,11 @@ class LocationServiceTest {
         // Mock KtorMailboxClient to prevent network calls during pollPendingInvite
         io.mockk.mockkObject(net.af0.where.e2ee.KtorMailboxClient)
         io.mockk.coEvery { net.af0.where.e2ee.KtorMailboxClient.poll(any(), any()) } returns emptyList()
-
-        mockkStatic("kotlinx.coroutines.tasks.TasksKt")
     }
 
     @After
     fun tearDown() {
         io.mockk.unmockkAll()
-        io.mockk.unmockkStatic("kotlinx.coroutines.tasks.TasksKt")
         Dispatchers.resetMain()
     }
 
@@ -450,8 +445,8 @@ class LocationServiceTest {
             val mockClient = io.mockk.mockk<LocationClient>(relaxed = true)
             service.locationClientOverride = mockClient
             service.locationSourceOverride = fakeLocationSource
-            val mockFused = io.mockk.mockk<com.google.android.gms.location.FusedLocationProviderClient>(relaxed = true)
-            service.fusedClientOverride = mockFused
+            val mockProvider = io.mockk.mockk<LocationProvider>(relaxed = true)
+            service.locationProviderOverride = mockProvider
 
             // Initialize sharing
             val app = context as TestWhereApplication
@@ -459,26 +454,17 @@ class LocationServiceTest {
 
             controller.create()
             try {
-                // 1. Threshold not exceeded.
-                // We simulate one poll cycle.
-                service.lastSentTime = currentTime - 60_000L // 1 minute ago
-                service.pollInterval(false, false, true) // Just to trigger some logic if needed
-
                 val mockLocation = mockk<Location>()
                 every { mockLocation.latitude } returns 45.0
                 every { mockLocation.longitude } returns 90.0
                 every { mockLocation.hasBearing() } returns false
 
-                val mockTask = mockk<Task<Location>>()
-                io.mockk.coEvery { mockTask.await() } returns mockLocation
-                every { mockFused.getCurrentLocation(any<Int>(), null) } returns mockTask
+                io.mockk.coEvery { mockProvider.getCurrentLocation() } returns mockLocation
 
                 val result = service.forceLocationUpdateAndGet()
 
                 assertEquals(mockLocation, result)
-                io.mockk.verify(exactly = 1) {
-                    mockFused.getCurrentLocation(com.google.android.gms.location.Priority.PRIORITY_BALANCED_POWER_ACCURACY, null)
-                }
+                io.mockk.coVerify(exactly = 1) { mockProvider.getCurrentLocation() }
             } finally {
                 controller.destroy()
             }

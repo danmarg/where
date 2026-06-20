@@ -22,6 +22,7 @@ libsodium = "0.9.5"
 security-crypto = "1.1.0-alpha06"
 moko-resources = "0.24.5"
 work = "2.9.1"
+osmdroid = "6.1.20"
 
 [libraries]
 # Moko Resources
@@ -80,6 +81,9 @@ androidx-core-splashscreen = { module = "androidx.core:core-splashscreen", versi
 
 # WorkManager
 work-runtime-ktx = { module = "androidx.work:work-runtime-ktx", version.ref = "work" }
+
+# OSMDroid (F-Droid map)
+osmdroid = { module = "org.osmdroid:osmdroid-android", version.ref = "osmdroid" }
 
 # Redis
 jedis = { module = "redis.clients:jedis", version.ref = "jedis" }
