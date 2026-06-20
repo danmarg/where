@@ -52,7 +52,6 @@ class MailboxMessageTest {
             listOf(
                 EncryptedMessagePayload(envelope = ByteArray(77), ct = ByteArray(32)),
                 KeyExchangeInitPayload(
-                    token = "deadbeef",
                     ekPub = ByteArray(32),
                     keyConfirmation = ByteArray(32),
                     encryptedName = ByteArray(31) { 0xFF.toByte() },
@@ -69,7 +68,6 @@ class MailboxMessageTest {
     @Test
     fun `KeyExchangeInitPayload suggestedName is transient`() {
         val payload = KeyExchangeInitPayload(
-            token = "deadbeef",
             ekPub = ByteArray(32),
             keyConfirmation = ByteArray(32),
             encryptedName = ByteArray(31) { 0xAA.toByte() },

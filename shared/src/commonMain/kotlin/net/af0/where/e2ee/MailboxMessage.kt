@@ -66,10 +66,6 @@ data class EncryptedMessagePayload(
  * Bob's KeyExchangeInit posted to the discovery token address (§4.2).
  *
  * @property v               Protocol version.
- * @property token           Hex-encoded T_AB_0 (16 bytes) — the pairwise routing token Bob computed.
- *                           **Deprecated:** Alice derives T_AB_0 independently and the check is
- *                           redundant with `key_confirmation`. This field is optional and ignored
- *                           by Alice; it will be removed in a future protocol version.
  * @property ekPub           Bob's X25519 ephemeral public key (32 bytes).
  * @property keyConfirmation HMAC-SHA-256(SK, "Where-v1-Confirm" || EK_A.pub || EK_B.pub).
  * @property encryptedName   Bob's suggested display name for Alice, encrypted under K_name.
@@ -80,7 +76,6 @@ data class EncryptedMessagePayload(
 @SerialName("KeyExchangeInit")
 data class KeyExchangeInitPayload(
     override val v: Int = PROTOCOL_VERSION,
-    val token: String? = null,
     @SerialName("ek_pub")
     @Serializable(with = ByteArrayBase64Serializer::class) val ekPub: ByteArray,
     @SerialName("key_confirmation")
@@ -92,14 +87,14 @@ data class KeyExchangeInitPayload(
 ) : MailboxPayload() {
     override fun equals(other: Any?): Boolean {
         if (other !is KeyExchangeInitPayload) return false
-        return token == other.token && ekPub.contentEquals(other.ekPub) &&
+        return ekPub.contentEquals(other.ekPub) &&
             keyConfirmation.contentEquals(other.keyConfirmation) &&
             encryptedName.contentEquals(other.encryptedName) &&
             suggestedName == other.suggestedName
     }
 
     override fun hashCode(): Int {
-        var h = token?.hashCode() ?: 0
+        var h = ekPub.contentHashCode()
         h = 31 * h + encryptedName.contentHashCode()
         h = 31 * h + suggestedName.hashCode()
         return h

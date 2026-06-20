@@ -271,7 +271,7 @@ class LocationViewModelTest {
             val initPayload =
                 KeyExchangeInitPayload(
                     v = PROTOCOL_VERSION,
-                    token = "token",
+
                     ekPub = byteArrayOf(1, 2, 3),
                     keyConfirmation = byteArrayOf(4, 5, 6),
                     suggestedName = "Bob",
@@ -314,7 +314,7 @@ class LocationViewModelTest {
                     protocolVersion = PROTOCOL_VERSION,
                     ekPub = byteArrayOf(1, 2, 3),
                     suggestedName = "Alice",
-                    fingerprint = "fp",
+
                     discoverySecret = ByteArray(32),
                 )
 
@@ -348,7 +348,7 @@ class LocationViewModelTest {
             val initPayload =
                 KeyExchangeInitPayload(
                     v = PROTOCOL_VERSION,
-                    token = "token",
+
                     ekPub = byteArrayOf(1, 2, 3),
                     keyConfirmation = byteArrayOf(4, 5, 6),
                     suggestedName = "Bob",
@@ -400,7 +400,7 @@ class LocationViewModelTest {
             val initPayload =
                 KeyExchangeInitPayload(
                     v = PROTOCOL_VERSION,
-                    token = "token",
+
                     ekPub = byteArrayOf(1, 2, 3),
                     keyConfirmation = byteArrayOf(4, 5, 6),
                     suggestedName = "Bob",
@@ -441,7 +441,7 @@ class LocationViewModelTest {
             val initPayload =
                 KeyExchangeInitPayload(
                     v = PROTOCOL_VERSION,
-                    token = "token",
+
                     ekPub = byteArrayOf(1, 2, 3),
                     keyConfirmation = byteArrayOf(4, 5, 6),
                     suggestedName = "Bob",
@@ -485,7 +485,7 @@ class LocationViewModelTest {
                     protocolVersion = PROTOCOL_VERSION,
                     ekPub = byteArrayOf(1, 2, 3),
                     suggestedName = "Alice",
-                    fingerprint = "alice_fp",
+
                     discoverySecret = ByteArray(32),
                 )
 
@@ -532,7 +532,7 @@ class LocationViewModelTest {
                     protocolVersion = PROTOCOL_VERSION,
                     ekPub = byteArrayOf(1, 2, 3),
                     suggestedName = "Alice",
-                    fingerprint = "fp",
+
                     discoverySecret = ByteArray(32),
                 )
 
@@ -612,7 +612,7 @@ class LocationViewModelTest {
                     protocolVersion = PROTOCOL_VERSION,
                     ekPub = byteArrayOf(1, 2, 3),
                     suggestedName = "Alice",
-                    fingerprint = "fp",
+
                     discoverySecret = ByteArray(32),
                 )
 
@@ -660,7 +660,7 @@ class LocationViewModelTest {
                     protocolVersion = PROTOCOL_VERSION,
                     ekPub = byteArrayOf(1, 2, 3),
                     suggestedName = "Alice",
-                    fingerprint = "fp",
+
                     discoverySecret = ByteArray(32),
                 )
 
@@ -736,7 +736,7 @@ class LocationViewModelTest {
             val initPayload =
                 KeyExchangeInitPayload(
                     v = PROTOCOL_VERSION,
-                    token = "token",
+
                     ekPub = byteArrayOf(1, 2, 3),
                     keyConfirmation = byteArrayOf(4, 5, 6),
                     suggestedName = "Alice",

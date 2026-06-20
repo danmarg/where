@@ -21,12 +21,10 @@ object KeyExchange {
      */
     fun aliceCreateQrPayload(suggestedName: String): Pair<QrPayload, ByteArray> {
         val ek = generateX25519KeyPair()
-        val fp = qrFingerprint(ek.pub)
         val payload =
             QrPayload(
                 ekPub = ek.pub.copyOf(),
                 suggestedName = suggestedName,
-                fingerprint = fp,
                 discoverySecret = randomBytes(32),
             )
         return payload to ek.priv
@@ -66,10 +64,6 @@ object KeyExchange {
 
         val keyConfirmation = buildKeyConfirmation(sk, qr.ekPub, ekB.pub)
 
-        // Initial token Bob sends to Alice for discovery is T_AB_0 (Alice -> Bob).
-        // Bob is the scanner, so this token uses (AliceFp, BobFp).
-        val tokenAliceToBob = deriveRoutingToken(sk, aliceFp, bobFp)
-
         val encryptedName = encryptSuggestedName(sk, qr.ekPub, ekB.pub, suggestedName)
 
         // MEMORY HYGIENE NOTE (§5.5): Bob's initial ephemeral key (ekB.priv) is copied into
@@ -81,7 +75,6 @@ object KeyExchange {
 
         val msg =
             KeyExchangeInitMessage(
-                token = tokenAliceToBob,
                 ekPub = ekB.pub.copyOf(),
                 keyConfirmation = keyConfirmation,
                 encryptedName = encryptedName,
@@ -108,8 +101,7 @@ object KeyExchange {
         try {
             // Verify key confirmation before proceeding.
             if (!verifyKeyConfirmation(sk, aliceEkPub, msg.ekPub, msg.keyConfirmation)) {
-                val actualFp = qrFingerprint(aliceEkPub)
-                throw AuthenticationException("KeyExchangeInit key_confirmation failed (expectedAliceFp=$actualFp) — aborting key exchange")
+                throw AuthenticationException("KeyExchangeInit key_confirmation failed — aborting key exchange")
             }
 
             // Decrypt/verify the suggested name to bind it cryptographically

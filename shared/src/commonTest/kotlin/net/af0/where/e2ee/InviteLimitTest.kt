@@ -33,7 +33,6 @@ class InviteLimitTest {
         val result = manager.processKeyExchangeInit(
             payload = KeyExchangeInitPayload(
                 v = 1,
-                token = "00".repeat(32),
                 ekPub = ByteArray(32),
                 keyConfirmation = ByteArray(32),
                 suggestedName = "Bob"
