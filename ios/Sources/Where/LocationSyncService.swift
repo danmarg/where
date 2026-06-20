@@ -745,10 +745,9 @@ final class LocationSyncService: ObservableObject {
         repo.inviteState = Shared.InviteState.None()
         isInviteSheetShowing = false
 
-        let qrWithName = Shared.QrPayload(protocolVersion: Shared.ProtocolConstantsKt.PROTOCOL_VERSION, 
+        let qrWithName = Shared.QrPayload(protocolVersion: Shared.ProtocolConstantsKt.PROTOCOL_VERSION,
             ekPub: qr.ekPub,
             suggestedName: friendName,
-            fingerprint: qr.fingerprint,
             discoverySecret: qr.discoverySecret
         )
         debugLog { "Scanning QR: discovery=\(qrWithName.discoveryToken().toHex()), friendName=\(friendName)" }

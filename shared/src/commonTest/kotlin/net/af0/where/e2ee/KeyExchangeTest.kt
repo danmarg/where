@@ -23,7 +23,6 @@ class KeyExchangeTest {
         val (qr, ekPriv) = KeyExchange.aliceCreateQrPayload("Alice")
 
         assertEquals(32, qr.ekPub.size)
-        assertEquals(40, qr.fingerprint?.length) // hex(SHA-256(ekPub)[0:20]); still sent by Alice
 
         // ekPriv is 32 bytes and non-zero.
         assertEquals(32, ekPriv.size)
