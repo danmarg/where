@@ -838,6 +838,7 @@ class LocationViewModelTest {
             // on startup. createInvite() must start the service so it polls the discovery mailbox.
             shadowOf(app).grantPermissions(Manifest.permission.ACCESS_FINE_LOCATION)
 
+
             viewModel =
                 LocationViewModel(
                     app,
