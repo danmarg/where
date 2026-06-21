@@ -56,8 +56,8 @@ class FdroidLocationProvider : LocationProvider {
             return ok
         }
         // For real providers: GPS preferred, NETWORK as fallback.
-        // FUSED_PROVIDER is intentionally excluded: it is GMS-provided even on API 31+ and
-        // may be absent on de-Googled devices.
+        // FUSED_PROVIDER is intentionally excluded: it is a GMS-injected provider string not
+        // present in AOSP and absent on de-Googled devices (GrapheneOS, CalyxOS, etc.).
         val provider = when {
             locationManager.isProviderEnabled(LocationManager.GPS_PROVIDER) ->
                 LocationManager.GPS_PROVIDER

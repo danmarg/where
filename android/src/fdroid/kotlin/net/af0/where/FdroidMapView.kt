@@ -29,8 +29,11 @@ import org.osmdroid.views.overlay.mylocation.MyLocationNewOverlay
 // Feeds our known own-location into MyLocationNewOverlay without opening a second
 // GPS listener — location is already tracked by LocationService.
 private class OwnLocationProvider : IMyLocationProvider {
-    private var consumer: IMyLocationConsumer? = null
-    private var lastLocation: Location? = null
+    // Both fields accessed only on the main looper (LocationService routes callbacks there;
+    // Compose calls pushLocation from the main thread). @Volatile guards against any future
+    // threading change without requiring a lock.
+    @Volatile private var consumer: IMyLocationConsumer? = null
+    @Volatile private var lastLocation: Location? = null
 
     override fun startLocationProvider(myLocationConsumer: IMyLocationConsumer): Boolean {
         consumer = myLocationConsumer

@@ -84,7 +84,7 @@ class LocationService : Service() {
     @VisibleForTesting
     internal var isPassiveRegistered = false
 
-@VisibleForTesting
+    @VisibleForTesting
     internal var currentPriority = LocationAccuracy.BALANCED
 
     @VisibleForTesting
