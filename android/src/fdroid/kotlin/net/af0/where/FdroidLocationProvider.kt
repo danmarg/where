@@ -6,6 +6,7 @@ import android.location.LocationListener
 import android.location.LocationManager
 import android.os.Build
 import android.os.CancellationSignal
+import android.os.Looper
 import android.util.Log
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withTimeoutOrNull
@@ -19,9 +20,13 @@ class FdroidLocationProvider : LocationProvider {
     private var activeListener: LocationListener? = null
     private var passiveListener: LocationListener? = null
     private var onLocationCallback: ((Double, Double, Double?) -> Unit)? = null
+    // Captured at init() time — callers must invoke init() on the thread whose looper
+    // should receive location callbacks (LocationService calls init() on the main thread).
+    private lateinit var callbackLooper: Looper
 
     override fun init(context: Context, onLocation: (Double, Double, Double?) -> Unit) {
         this.onLocationCallback = onLocation
+        callbackLooper = Looper.myLooper() ?: Looper.getMainLooper()
         locationManager = context.applicationContext.getSystemService(Context.LOCATION_SERVICE) as LocationManager
     }
 
@@ -53,11 +58,11 @@ class FdroidLocationProvider : LocationProvider {
                 LocationManager.GPS_PROVIDER
             else -> LocationManager.NETWORK_PROVIDER
         }
-        val minDistance = when (accuracy) {
-            LocationAccuracy.PASSIVE, LocationAccuracy.HIGH -> 0f
-            LocationAccuracy.LOW_POWER -> 50f
-            LocationAccuracy.BALANCED -> 20f
-        }
+        // Use the same 200m distance filter as GmsLocationProvider so stationary users
+        // don't receive a flood of fixes. PASSIVE doesn't apply a distance filter because
+        // it piggybacks on other apps' requests and we want every opportunistic fix.
+        val minDistance = if (accuracy == LocationAccuracy.PASSIVE) 0f
+                         else LocationService.MOVEMENT_RADIUS_THRESHOLD_METERS
         val listener = LocationListener { loc ->
             onLocationCallback?.invoke(loc.latitude, loc.longitude, if (loc.hasBearing()) loc.bearing.toDouble() else null)
         }
@@ -65,7 +70,7 @@ class FdroidLocationProvider : LocationProvider {
         // heartbeat conditions (e.g. activity transition to MOVING uses a 10s interval).
         val effectiveInterval = maxOf(intervalMs, 10_000L)
         return try {
-            locationManager.requestLocationUpdates(provider, effectiveInterval, minDistance, listener)
+            locationManager.requestLocationUpdates(provider, effectiveInterval, minDistance, listener, callbackLooper)
             activeListener = listener
             Log.i(TAG, "Registered active location updates via $provider (accuracy=$accuracy, intervalMs=$effectiveInterval)")
             true
@@ -84,7 +89,7 @@ class FdroidLocationProvider : LocationProvider {
             onLocationCallback?.invoke(loc.latitude, loc.longitude, if (loc.hasBearing()) loc.bearing.toDouble() else null)
         }
         return try {
-            locationManager.requestLocationUpdates(LocationManager.PASSIVE_PROVIDER, 1_000L, 0f, listener)
+            locationManager.requestLocationUpdates(LocationManager.PASSIVE_PROVIDER, 1_000L, 0f, listener, callbackLooper)
             passiveListener = listener
             Log.i(TAG, "Registered passive location updates")
             true
