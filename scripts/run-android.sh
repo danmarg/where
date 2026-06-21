@@ -90,15 +90,22 @@ fi
 
 echo "Using device: $EMU_SERIAL"
 
-echo "=== Building Android app ==="
-if ! run ./gradlew :android:assembleDebug; then
+# Accept optional flavor argument (e.g. standardGms, standardFdroid). Default: standardGms.
+FLAVOR="${1:-standardGms}"
+# Capitalize first letter for the Gradle task name (standardGms → StandardGms)
+FLAVOR_CAP="$(tr '[:lower:]' '[:upper:]' <<< "${FLAVOR:0:1}")${FLAVOR:1}"
+
+echo "=== Building Android app (flavor: $FLAVOR) ==="
+if ! run ./gradlew ":android:assemble${FLAVOR_CAP}Debug"; then
   echo "Android build failed."
   exit 1
 fi
 echo "✓ Android app built"
 echo ""
 
-APK_PATH="${BUILD_DIR}/outputs/apk/debug/android-debug.apk"
+# AGP names the APK file in kebab-case (e.g. standardFdroid → standard-fdroid)
+FLAVOR_KEBAB="$(echo "$FLAVOR" | sed 's/\([A-Z]\)/-\1/g' | tr '[:upper:]' '[:lower:]')"
+APK_PATH="${BUILD_DIR}/outputs/apk/${FLAVOR}/debug/android-${FLAVOR_KEBAB}-debug.apk"
 echo "=== Installing ==="
 run adb -s "$EMU_SERIAL" install -r "$APK_PATH"
 echo "✓ APK installed"

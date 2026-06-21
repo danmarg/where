@@ -313,6 +313,19 @@ class LocationViewModel(
                 try {
                     val qr = e2eeManager.createInvite(displayName.value)
                     _inviteState.value = InviteState.Pending(qr)
+                    // Ensure the service is running so it polls the discovery mailbox.
+                    // Only start if location permission is granted; without it the service
+                    // would immediately enter the "permission missing" notification state.
+                    val hasPermission = ContextCompat.checkSelfPermission(
+                        getApplication(), Manifest.permission.ACCESS_FINE_LOCATION
+                    ) == PackageManager.PERMISSION_GRANTED ||
+                        ContextCompat.checkSelfPermission(
+                            getApplication(), Manifest.permission.ACCESS_COARSE_LOCATION
+                        ) == PackageManager.PERMISSION_GRANTED
+                    if (hasPermission) {
+                        val svcIntent = Intent(getApplication(), LocationService::class.java)
+                        getApplication<Application>().startForegroundService(svcIntent)
+                    }
                     triggerRapidPoll()
                 } catch (e: Exception) {
                     Log.e(TAG, "Failed to create invite", e)

@@ -11,23 +11,15 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.LocationOff
 import androidx.compose.material.icons.filled.LocationOn
 import androidx.compose.material.icons.filled.People
-import androidx.compose.material.icons.filled.Place
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import com.google.accompanist.permissions.*
-import com.google.android.gms.maps.CameraUpdateFactory
-import com.google.android.gms.maps.model.CameraPosition
-import com.google.android.gms.maps.model.LatLng
-import com.google.maps.android.compose.*
 import dev.icerock.moko.resources.compose.stringResource
-import kotlinx.coroutines.launch
 import net.af0.where.e2ee.ConnectionStatus
 import net.af0.where.e2ee.FriendEntry
 import net.af0.where.model.UserLocation
@@ -69,7 +61,6 @@ fun MapScreen(
     onLocationPermissionGranted: () -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
-    val scope = rememberCoroutineScope()
     val locationPermissions =
         rememberMultiplePermissionsState(
             listOf(
@@ -134,198 +125,25 @@ fun MapScreen(
         return
     }
 
+    val context = LocalContext.current
     var showFriends by remember { mutableStateOf(false) }
     var zoomToUserId by remember { mutableStateOf<String?>(null) }
     var showErrorAlert by remember { mutableStateOf(false) }
-    val context = LocalContext.current
-
-    val initialPosition =
-        remember {
-            val last = UserPrefs.getLastLocation(context)
-            if (last != null) {
-                CameraPosition.fromLatLngZoom(LatLng(last.first, last.second), last.third)
-            } else {
-                CameraPosition.fromLatLngZoom(LatLng(37.33, -122.03), 10f)
-            }
-        }
-
-    val cameraPositionState = rememberCameraPositionState { position = initialPosition }
-
-    val mapLocationSource =
-        remember {
-            object : com.google.android.gms.maps.LocationSource {
-                private var listener: com.google.android.gms.maps.LocationSource.OnLocationChangedListener? = null
-
-                override fun activate(l: com.google.android.gms.maps.LocationSource.OnLocationChangedListener) {
-                    listener = l
-                }
-
-                override fun deactivate() {
-                    listener = null
-                }
-
-                fun update(
-                    loc: UserLocation,
-                    heading: Double?,
-                ) {
-                    val androidLoc =
-                        android.location.Location("where").apply {
-                            latitude = loc.lat
-                            longitude = loc.lng
-                            time = loc.timestamp * 1000
-                            if (heading != null) {
-                                bearing = heading.toFloat()
-                            }
-                            // Add a default accuracy so the native layer shows the dot clearly
-                            accuracy = 10f
-                        }
-                    listener?.onLocationChanged(androidLoc)
-                }
-            }
-        }
-
-    LaunchedEffect(ownLocation, ownHeading) {
-        ownLocation?.let { mapLocationSource.update(it, ownHeading) }
-    }
-
-    DisposableEffect(Unit) {
-        onDispose {
-            val pos = cameraPositionState.position
-            UserPrefs.setLastLocation(
-                context,
-                pos.target.latitude,
-                pos.target.longitude,
-                pos.zoom,
-            )
-        }
-    }
-
-    LaunchedEffect(ownLocation) {
-        if (ownLocation != null && UserPrefs.getLastLocation(context) == null) {
-            cameraPositionState.position =
-                CameraPosition.fromLatLngZoom(
-                    LatLng(ownLocation.lat, ownLocation.lng), 14f,
-                )
-        }
-    }
-
-    LaunchedEffect(zoomToUserId) {
-        val id = zoomToUserId ?: return@LaunchedEffect
-        val target =
-            if (id == "__own__") {
-                ownLocation?.let { LatLng(it.lat, it.lng) }
-            } else {
-                users.find { it.userId == id }?.let { LatLng(it.lat, it.lng) }
-            }
-        if (target != null) {
-            cameraPositionState.animate(CameraUpdateFactory.newLatLngZoom(target, 15f))
-        }
-        zoomToUserId = null
-    }
-
-    val mapStyleJson =
-        """
-        [
-          {
-            "featureType": "poi",
-            "elementType": "labels",
-            "stylers": [
-              { "visibility": "off" }
-            ]
-          }
-        ]
-        """.trimIndent()
 
     Box(modifier.fillMaxSize()) {
-        val navBarBottom = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
-        GoogleMap(
+        MapComposable(
+            ownLocation = ownLocation,
+            ownHeading = ownHeading,
+            users = users,
+            friends = friends,
+            friendLastPing = friendLastPing,
+            selectedUserId = selectedUserId,
+            hasFineLocationPermission = locationPermissions.hasFineLocationPermission,
+            zoomToUserId = zoomToUserId,
+            onZoomToUserIdConsumed = { zoomToUserId = null },
+            onSelectedUserIdChange = onSelectedUserIdChange,
             modifier = Modifier.fillMaxSize(),
-            cameraPositionState = cameraPositionState,
-            contentPadding = PaddingValues(bottom = 96.dp + navBarBottom),
-            onMapClick = { onSelectedUserIdChange(null) },
-            properties =
-                MapProperties(
-                    isMyLocationEnabled = locationPermissions.hasFineLocationPermission,
-                    mapStyleOptions = com.google.android.gms.maps.model.MapStyleOptions(mapStyleJson),
-                ),
-            uiSettings =
-                MapUiSettings(
-                    myLocationButtonEnabled = false,
-                    zoomControlsEnabled = false,
-                    compassEnabled = false,
-                ),
-            locationSource = mapLocationSource,
-        ) {
-            val friendData =
-                users.map { user ->
-                    val friend = friends.find { it.id == user.userId }
-                    val name = friend?.name ?: user.userId.take(8)
-                    Triple(user, friend, name)
-                }
-
-            friendData.forEach { (user, friend, name) ->
-                val nowSec = System.currentTimeMillis() / 1000L
-                val display = friend?.displayState(
-                    nowSeconds = nowSec,
-                    lastPingSeconds = friendLastPing[user.userId]?.let { it / 1000L },
-                ) ?: PeerDisplay.LastSeen(friendLastPing[user.userId]?.let { it / 1000L })
-                val style = display.pinStyle
-                if (style == PeerPinStyle.HIDDEN) return@forEach
-                val subtitle = peerSubtitleText(display)
-                val isSelected = selectedUserId == user.userId
-                key(user.userId) {
-                    val markerState = rememberUpdatedMarkerState(position = LatLng(user.lat, user.lng))
-                    MarkerComposable(
-                        keys = arrayOf<Any>(name, isSelected, subtitle, style),
-                        state = markerState,
-                        anchor = Offset(0.5f, 1f),
-                        onClick = {
-                            scope.launch {
-                                onSelectedUserIdChange(if (selectedUserId == user.userId) null else user.userId)
-                            }
-                            true
-                        },
-                    ) {
-                        val pinAlpha = if (style == PeerPinStyle.DIMMED) 0.45f else 1f
-                        Column(
-                            horizontalAlignment = Alignment.CenterHorizontally,
-                            verticalArrangement = Arrangement.spacedBy(2.dp),
-                        ) {
-                            Surface(
-                                shape = MaterialTheme.shapes.extraSmall,
-                                color = Color.Black.copy(alpha = 0.65f * pinAlpha),
-                                contentColor = Color.White.copy(alpha = pinAlpha),
-                            ) {
-                                Column(
-                                    modifier = Modifier.padding(horizontal = 5.dp, vertical = 2.dp),
-                                    horizontalAlignment = Alignment.CenterHorizontally,
-                                ) {
-                                    Text(
-                                        text = name,
-                                        style = MaterialTheme.typography.labelSmall,
-                                        maxLines = 1,
-                                        overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
-                                    )
-                                    if (isSelected) {
-                                        Text(
-                                            text = subtitle,
-                                            style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp),
-                                            color = Color.White.copy(alpha = 0.7f * pinAlpha),
-                                        )
-                                    }
-                                }
-                            }
-                            Icon(
-                                Icons.Default.Place,
-                                contentDescription = null,
-                                modifier = Modifier.size(36.dp),
-                                tint = MaterialTheme.colorScheme.error.copy(alpha = pinAlpha),
-                            )
-                        }
-                    }
-                }
-            }
-        }
+        )
 
         // Bottom controls row
         Row(

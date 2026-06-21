@@ -39,7 +39,9 @@ jobs:
           ./gradlew :shared:jvmTest :server:test
 
       - name: Run Android unit tests
-        run: ./gradlew :android:testStandardDebugUnitTest :android:testFullDebugUnitTest
+        # fullFdroid is intentionally omitted: the variant is disabled in build.gradle.kts
+        # (F-Droid ships standardFdroid only; fullFdroid has no published use case).
+        run: ./gradlew :android:testStandardGmsDebugUnitTest :android:testStandardFdroidDebugUnitTest :android:testFullGmsDebugUnitTest
 
       - name: Run E2E CLI test
         run: |

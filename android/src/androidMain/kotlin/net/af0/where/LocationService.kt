@@ -18,16 +18,6 @@ import android.os.SystemClock
 import android.util.Log
 import androidx.annotation.VisibleForTesting
 import androidx.core.content.ContextCompat
-import com.google.android.gms.location.ActivityRecognition
-import com.google.android.gms.location.ActivityRecognitionClient
-import com.google.android.gms.location.ActivityTransition
-import com.google.android.gms.location.ActivityTransitionRequest
-import com.google.android.gms.location.DetectedActivity
-import com.google.android.gms.location.LocationCallback
-import com.google.android.gms.location.LocationRequest
-import com.google.android.gms.location.LocationResult
-import com.google.android.gms.location.LocationServices
-import com.google.android.gms.location.Priority
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -38,7 +28,6 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
-import kotlinx.coroutines.tasks.await
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import net.af0.where.e2ee.ConnectionStatus
@@ -67,10 +56,10 @@ enum class WakeSource(val value: String) {
  */
 class LocationService : Service() {
     @VisibleForTesting
-    internal var fusedClientOverride: com.google.android.gms.location.FusedLocationProviderClient? = null
+    internal var locationProviderOverride: LocationProvider? = null
 
     @VisibleForTesting
-    internal var activityRecognitionClientOverride: ActivityRecognitionClient? = null
+    internal var activityHelperOverride: ActivityHelper? = null
 
     @VisibleForTesting
     internal var e2eeManagerOverride: E2eeManager? = null
@@ -86,11 +75,8 @@ class LocationService : Service() {
 
     private lateinit var alarmManager: AlarmManager
     private lateinit var pollWakeLock: PowerManager.WakeLock
-    private lateinit var fusedClient: com.google.android.gms.location.FusedLocationProviderClient
-    private lateinit var activityRecognitionClient: ActivityRecognitionClient
-    private lateinit var geofencingClient: com.google.android.gms.location.GeofencingClient
-    private lateinit var locationCallback: LocationCallback
-    private lateinit var passiveLocationCallback: LocationCallback
+    private lateinit var locationProvider: LocationProvider
+    private lateinit var activityHelper: ActivityHelper
 
     @VisibleForTesting
     internal var isRegistered = false
@@ -99,10 +85,7 @@ class LocationService : Service() {
     internal var isPassiveRegistered = false
 
     @VisibleForTesting
-    internal var isActivityRegistered = false
-
-    @VisibleForTesting
-    internal var currentPriority = Priority.PRIORITY_BALANCED_POWER_ACCURACY
+    internal var currentPriority = LocationAccuracy.BALANCED
 
     @VisibleForTesting
     internal var currentInterval = 60_000L
@@ -219,47 +202,31 @@ class LocationService : Service() {
 
         e2eeManager = e2eeManagerOverride ?: app.e2eeManager
         locationClient = locationClientOverride ?: app.locationClient
-        fusedClient = fusedClientOverride ?: LocationServices.getFusedLocationProviderClient(this)
-        activityRecognitionClient = activityRecognitionClientOverride ?: ActivityRecognition.getClient(this)
-        geofencingClient = LocationServices.getGeofencingClient(this)
 
-        locationCallback =
-            object : LocationCallback() {
-                override fun onLocationResult(result: LocationResult) {
-                    val loc = result.lastLocation ?: return
-                    lastLocationCallbackTime = clock()
-                    recordRecentFix(loc.latitude, loc.longitude)
-                    locationSource.onLocation(loc.latitude, loc.longitude, if (loc.hasBearing()) loc.bearing.toDouble() else null)
+        locationProvider = locationProviderOverride ?: createLocationProvider()
+        locationProvider.init(this) { lat, lng, bearing ->
+            lastLocationCallbackTime = clock()
+            recordRecentFix(lat, lng)
+            locationSource.onLocation(lat, lng, bearing)
+        }
+
+        activityHelper = activityHelperOverride ?: createActivityHelper()
+        activityHelper.init(this)
+
+        if (hasLocationPermission()) {
+            locationProvider.getLastLocationAsync { loc ->
+                if (loc != null) {
+                    locationSource.onLocation(
+                        loc.latitude,
+                        loc.longitude,
+                        if (loc.hasBearing()) loc.bearing.toDouble() else null,
+                    )
+                    // Plant the initial geofence. Activity Recognition only fires on
+                    // transitions, so if the device is already stationary at start no
+                    // STILL-enter fires and the geofence would never be set otherwise.
+                    setGeofenceAt(loc.latitude, loc.longitude)
                 }
             }
-
-        passiveLocationCallback =
-            object : LocationCallback() {
-                override fun onLocationResult(result: LocationResult) {
-                    val loc = result.lastLocation ?: return
-                    lastLocationCallbackTime = clock()
-                    recordRecentFix(loc.latitude, loc.longitude)
-                    locationSource.onLocation(loc.latitude, loc.longitude, if (loc.hasBearing()) loc.bearing.toDouble() else null)
-                }
-            }
-
-        try {
-            if (hasLocationPermission()) {
-                fusedClient.lastLocation.addOnSuccessListener { loc ->
-                    if (loc != null) {
-                        locationSource.onLocation(
-                            loc.latitude,
-                            loc.longitude,
-                            if (loc.hasBearing()) loc.bearing.toDouble() else null,
-                        )
-                        // Plant the initial geofence. Activity Recognition only fires on
-                        // transitions, so if the device is already stationary at start no
-                        // STILL-enter fires and the geofence would never be set otherwise.
-                        setGeofenceAt(loc.latitude, loc.longitude)
-                    }
-                }
-            }
-        } catch (_: SecurityException) {
         }
 
         ensureLocationRegistration()
@@ -342,20 +309,18 @@ class LocationService : Service() {
         Log.d(TAG, "onStartCommand: isRegistered=$isRegistered")
         ensureLocationRegistration()
         if (BuildConfig.ACTIVITY_RECOGNITION_ENABLED) {
-            ensureActivityRecognitionRegistration()
+            activityHelper.ensureRegistered(hasActivityPermission(), userStore.isSharingLocation.value)
         }
 
         if (BuildConfig.ACTIVITY_RECOGNITION_ENABLED && intent?.action == ACTION_ACTIVITY_TRANSITION) {
-            val result = com.google.android.gms.location.ActivityTransitionResult.extractResult(intent)
-            if (result != null) {
-                for (event in result.transitionEvents) {
-                    Log.d(TAG, "Activity Transition: ${event.activityType} (${event.transitionType})")
+            val events = activityHelper.extractTransitionEvents(intent)
+            if (events != null) {
+                for (event in events) {
+                    Log.d(TAG, "Activity Transition: ${event.type} (${event.transition})")
                     // Cross-check: if Activity Recognition reports STILL but we've actually
                     // moved >100m in the last 2 minutes (e.g. phone-in-pocket while walking),
                     // ignore the signal rather than demoting the location request.
-                    if (event.activityType == DetectedActivity.STILL &&
-                        event.transitionType == ActivityTransition.ACTIVITY_TRANSITION_ENTER
-                    ) {
+                    if (event.type == ActivityType.STILL && event.transition == TransitionType.ENTER) {
                         val displacement = maxRecentDisplacementMeters()
                         if (displacement > STILL_DISPLACEMENT_IGNORE_METERS) {
                             Log.i(TAG, "Ignoring STILL enter: moved ${displacement.toInt()}m in last 2 min")
@@ -363,22 +328,16 @@ class LocationService : Service() {
                             continue
                         }
                     }
-                    val newPriority =
-                        when {
-                            event.activityType == DetectedActivity.STILL && deepSleepWhenStationary ->
-                                Priority.PRIORITY_PASSIVE
-                            event.activityType == DetectedActivity.STILL ->
-                                Priority.PRIORITY_LOW_POWER
-                            else -> Priority.PRIORITY_HIGH_ACCURACY
-                        }
-                    val newInterval =
-                        when {
-                            event.activityType == DetectedActivity.STILL && deepSleepWhenStationary ->
-                                60_000L
-                            event.activityType == DetectedActivity.STILL ->
-                                HEARTBEAT_INTERVAL_MS
-                            else -> 10_000L
-                        }
+                    val newPriority = when {
+                        event.type == ActivityType.STILL && deepSleepWhenStationary -> LocationAccuracy.PASSIVE
+                        event.type == ActivityType.STILL -> LocationAccuracy.LOW_POWER
+                        else -> LocationAccuracy.HIGH
+                    }
+                    val newInterval = when {
+                        event.type == ActivityType.STILL && deepSleepWhenStationary -> 60_000L
+                        event.type == ActivityType.STILL -> HEARTBEAT_INTERVAL_MS
+                        else -> 10_000L
+                    }
 
                     if (newPriority != currentPriority || newInterval != currentInterval) {
                         currentPriority = newPriority
@@ -386,11 +345,7 @@ class LocationService : Service() {
                         Log.i(TAG, "Updating location request: priority=$currentPriority, interval=$currentInterval")
                         logReliability(WakeSource.ACTIVITY_TRANSITION, true)
 
-                        if (event.activityType == DetectedActivity.STILL) {
-                            isStill = true
-                        } else {
-                            isStill = false
-                        }
+                        isStill = event.type == ActivityType.STILL
                         // Always maintain a geofence as a belt-and-suspenders restart trigger
                         // in case the foreground service is killed. On MOVING transitions we
                         // replant it at the current position rather than removing it so that
@@ -425,7 +380,7 @@ class LocationService : Service() {
         }
         if (intent?.action == ACTION_GEOFENCE_EVENT) {
             Log.d(TAG, "onStartCommand: Received Geofence Exit event")
-            currentPriority = Priority.PRIORITY_HIGH_ACCURACY
+            currentPriority = LocationAccuracy.HIGH
             currentInterval = 10_000L
             isStill = false
             isRegistered = false
@@ -492,47 +447,22 @@ class LocationService : Service() {
         return START_STICKY
     }
 
-    private fun setGeofenceAt(
-        lat: Double,
-        lng: Double,
-    ) {
+    private fun setGeofenceAt(lat: Double, lng: Double) {
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED) return
-        val geofence =
-            com.google.android.gms.location.Geofence.Builder()
-                .setRequestId("stationary_fence")
-                .setCircularRegion(lat, lng, MOVEMENT_RADIUS_THRESHOLD_METERS)
-                .setExpirationDuration(com.google.android.gms.location.Geofence.NEVER_EXPIRE)
-                .setTransitionTypes(com.google.android.gms.location.Geofence.GEOFENCE_TRANSITION_EXIT)
-                .build()
-
-        val request =
-            com.google.android.gms.location.GeofencingRequest.Builder()
-                .setInitialTrigger(com.google.android.gms.location.GeofencingRequest.INITIAL_TRIGGER_EXIT)
-                .addGeofence(geofence)
-                .build()
-
-        try {
-            geofencingClient.addGeofences(request, getGeofencePendingIntent())
-            Log.i(TAG, "Stationary: Geofence set at $lat, $lng")
-            e2eeManager.addDiagnosticEvent("Stationary: Geofence set")
-        } catch (e: SecurityException) {
-            Log.w(TAG, "SecurityException setting geofence: ${e.message}")
+        if (locationProvider.setGeofenceAt(lat, lng)) {
+            // GMS: request submitted; actual confirmation logged by provider's Task listener.
+            Log.d(TAG, "Stationary: Geofence submitted at $lat, $lng")
+            e2eeManager.addDiagnosticEvent("Stationary: Geofence submitted")
+        } else {
+            // F-Droid build: geofencing unavailable (GMS-only). Movement-triggered restart
+            // is absent; the service relies solely on WorkManager and the alarm fallback.
+            Log.w(TAG, "Stationary: geofence not set — movement-triggered restart unavailable")
         }
     }
 
     private fun removeGeofence() {
-        geofencingClient.removeGeofences(getGeofencePendingIntent())
+        locationProvider.removeGeofence()
         Log.i(TAG, "Moving: Geofence removed")
-    }
-
-    private fun getGeofencePendingIntent(): PendingIntent {
-        val intent = Intent(this, GeofenceReceiver::class.java)
-        return PendingIntent.getBroadcast(
-            this,
-            0,
-            intent,
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
-        )
     }
 
     private fun ensureLocationRegistration() {
@@ -545,17 +475,11 @@ class LocationService : Service() {
                     TAG,
                     "Location registration no longer needed (permission=$hasPermission, sharing=$isSharing); resetting registration state.",
                 )
-                try {
-                    fusedClient.removeLocationUpdates(locationCallback)
-                } catch (_: SecurityException) {
-                }
+                locationProvider.removeActiveUpdates()
                 isRegistered = false
             }
             if (isPassiveRegistered) {
-                try {
-                    fusedClient.removeLocationUpdates(passiveLocationCallback)
-                } catch (_: SecurityException) {
-                }
+                locationProvider.removePassiveUpdates()
                 isPassiveRegistered = false
             }
             // Note: We don't call stopSelf() here even if permissions are missing or sharing is paused.
@@ -570,11 +494,11 @@ class LocationService : Service() {
 
         if (locationSource.friends.value.isEmpty() && locationSource.allPendingInvites.value.isEmpty()) {
             if (isRegistered) {
-                try { fusedClient.removeLocationUpdates(locationCallback) } catch (_: SecurityException) {}
+                locationProvider.removeActiveUpdates()
                 isRegistered = false
             }
             if (isPassiveRegistered) {
-                try { fusedClient.removeLocationUpdates(passiveLocationCallback) } catch (_: SecurityException) {}
+                locationProvider.removePassiveUpdates()
                 isPassiveRegistered = false
             }
             return
@@ -583,118 +507,32 @@ class LocationService : Service() {
         if (isRegistered) return
 
         if (!isPassiveRegistered) {
-            val passiveRequest =
-                LocationRequest.Builder(Priority.PRIORITY_PASSIVE, 1_000L)
-                    .setMinUpdateDistanceMeters(0f)
-                    .build()
-            try {
-                fusedClient.requestLocationUpdates(passiveRequest, passiveLocationCallback, mainLooper)
-                isPassiveRegistered = true
-                Log.i(TAG, "Passive location updates registered.")
-            } catch (e: SecurityException) {
-                Log.w(TAG, "SecurityException while requesting passive location updates: ${e.message}")
-            }
+            isPassiveRegistered = locationProvider.requestPassiveUpdates()
+            if (isPassiveRegistered) Log.i(TAG, "Passive location updates registered.")
         }
 
-        // When moving, keep max delivery delay tight (10s) so FLP doesn't batch up to a
+        // When moving, keep max delivery delay tight (10s) so the provider doesn't batch up to a
         // full minute of fixes before delivering — that batching can mask "moving"
         // updates by up to 60s in marginal conditions. When STILL, batching is fine.
         val maxDelay = if (isStill) 60_000L else 10_000L
-        val request =
-            LocationRequest.Builder(currentPriority, currentInterval)
-                .setMinUpdateIntervalMillis(10_000L) // Floor on active-registration delivery; passive piggybacking handled by PRIORITY_PASSIVE registration above.
-                .setMinUpdateDistanceMeters(MOVEMENT_RADIUS_THRESHOLD_METERS)
-                .setMaxUpdateDelayMillis(maxDelay)
-                .build()
-
-        try {
-            fusedClient.requestLocationUpdates(request, locationCallback, mainLooper)
-            isRegistered = true
+        isRegistered = locationProvider.requestActiveUpdates(currentPriority, currentInterval, maxDelay)
+        if (isRegistered) {
             lastRegistrationTime = clock()
             lastLocationCallbackTime = 0L  // reset so watchdog waits for the first callback from this registration
             Log.i(TAG, "Location updates registered successfully with priority=$currentPriority.")
-        } catch (e: SecurityException) {
-            Log.w(TAG, "SecurityException while requesting location updates: ${e.message}")
+        } else {
+            Log.w(TAG, "requestActiveUpdates failed (likely missing permission); isRegistered=false")
         }
     }
 
-    private fun ensureActivityRecognitionRegistration() {
-        val hasPermission = hasActivityPermission()
-        val isSharing = userStore.isSharingLocation.value
-
-        if (!hasPermission || !isSharing) {
-            if (isActivityRegistered) {
-                Log.i(TAG, "Activity recognition no longer needed; removing updates.")
-                activityRecognitionClient.removeActivityTransitionUpdates(getActivityTransitionPendingIntent())
-                isActivityRegistered = false
-            }
-            return
-        }
-
-        if (isActivityRegistered) return
-
-        val transitions = mutableListOf<ActivityTransition>()
-        val activities =
-            listOf(
-                DetectedActivity.STILL,
-                DetectedActivity.WALKING,
-                DetectedActivity.RUNNING,
-                DetectedActivity.ON_BICYCLE,
-                DetectedActivity.IN_VEHICLE,
-            )
-
-        for (activity in activities) {
-            transitions.add(
-                ActivityTransition.Builder()
-                    .setActivityType(activity)
-                    .setActivityTransition(ActivityTransition.ACTIVITY_TRANSITION_ENTER)
-                    .build(),
-            )
-            transitions.add(
-                ActivityTransition.Builder()
-                    .setActivityType(activity)
-                    .setActivityTransition(ActivityTransition.ACTIVITY_TRANSITION_EXIT)
-                    .build(),
-            )
-        }
-
-        val request = ActivityTransitionRequest(transitions)
-        try {
-            activityRecognitionClient.requestActivityTransitionUpdates(request, getActivityTransitionPendingIntent())
-            isActivityRegistered = true
-            Log.i(TAG, "Activity transition updates registered successfully.")
-        } catch (e: SecurityException) {
-            Log.w(TAG, "SecurityException while requesting activity transitions: ${e.message}")
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to register activity transitions: ${e.message}")
-        }
-    }
-
-    private fun getActivityTransitionPendingIntent(): PendingIntent {
-        val intent = Intent(this, LocationService::class.java).apply { action = ACTION_ACTIVITY_TRANSITION }
-        return PendingIntent.getService(this, PENDING_INTENT_REQUEST_CODE_ACTIVITY, intent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
-    }
 
     override fun onDestroy() {
         Log.d(TAG, "onDestroy")
-        try {
-            fusedClient.removeLocationUpdates(locationCallback)
-        } catch (e: SecurityException) {
-            Log.w(TAG, "SecurityException removing location updates in onDestroy", e)
-        }
-        if (isPassiveRegistered) {
-            try {
-                fusedClient.removeLocationUpdates(passiveLocationCallback)
-            } catch (_: SecurityException) {
-            }
-            isPassiveRegistered = false
-        }
-        if (BuildConfig.ACTIVITY_RECOGNITION_ENABLED && isActivityRegistered) {
-            try {
-                activityRecognitionClient.removeActivityTransitionUpdates(getActivityTransitionPendingIntent())
-            } catch (_: Exception) {
-            }
-            isActivityRegistered = false
+        locationProvider.onDestroy()
+        isRegistered = false
+        isPassiveRegistered = false
+        if (BuildConfig.ACTIVITY_RECOGNITION_ENABLED) {
+            activityHelper.onDestroy()
         }
         val connectivityManager = getSystemService(ConnectivityManager::class.java)
         networkCallback?.let { connectivityManager?.unregisterNetworkCallback(it) }
@@ -1021,14 +859,12 @@ class LocationService : Service() {
     @VisibleForTesting
     internal suspend fun forceLocationUpdateAndGet(): android.location.Location? {
         return try {
-            val loc = withTimeoutOrNull(10_000L) {
-                fusedClient.getCurrentLocation(Priority.PRIORITY_BALANCED_POWER_ACCURACY, null).await()
-            }
+            val loc = locationProvider.getCurrentLocation()
             when {
                 loc != null -> Log.d(TAG, "Forced location fix successful: ${loc.latitude}, ${loc.longitude}")
                 else -> {
                     Log.d(TAG, "Forced location fix timed out or returned null; falling back to last known location")
-                    return fusedClient.lastLocation.await()
+                    return locationProvider.getLastLocation()
                 }
             }
             loc
@@ -1093,7 +929,7 @@ class LocationService : Service() {
         const val ACTION_ACTIVITY_TRANSITION = "net.af0.where.ACTION_ACTIVITY_TRANSITION"
         const val ACTION_GEOFENCE_EVENT = "net.af0.where.ACTION_GEOFENCE_EVENT"
         const val ACTION_HEARTBEAT_TICK = "net.af0.where.ACTION_HEARTBEAT_TICK"
-        private const val PENDING_INTENT_REQUEST_CODE_ACTIVITY = 1
+        internal const val PENDING_INTENT_REQUEST_CODE_ACTIVITY = 1
         const val EXTRA_FRIEND_ID = "friend_id"
         const val EXTRA_GEOFENCE_LAT = "geofence_lat"
         const val EXTRA_GEOFENCE_LNG = "geofence_lng"

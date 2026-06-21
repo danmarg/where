@@ -39,6 +39,13 @@
 -keep class com.google.android.gms.maps.** { *; }
 -keep interface com.google.android.gms.maps.** { *; }
 
+# Tink uses errorprone annotations which are compile-time only; they're absent
+# from the fdroid APK (no GMS transitive rules to suppress them).
+-dontwarn com.google.errorprone.annotations.CanIgnoreReturnValue
+-dontwarn com.google.errorprone.annotations.CheckReturnValue
+-dontwarn com.google.errorprone.annotations.Immutable
+-dontwarn com.google.errorprone.annotations.RestrictedApi
+
 # ViewModels (keep constructors for reflection)
 -keepclassmembers class * extends androidx.lifecycle.ViewModel {
     <init>(...);

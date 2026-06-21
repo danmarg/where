@@ -28,7 +28,7 @@ class LocationServiceSharingPauseTest {
     private val context: Application get() = ApplicationProvider.getApplicationContext()
     private val testDispatcher = StandardTestDispatcher()
     private lateinit var fakeLocationSource: ServiceFakeLocationSource
-    private lateinit var mockFused: com.google.android.gms.location.FusedLocationProviderClient
+    private lateinit var mockLocationProvider: LocationProvider
 
     @Before
     fun setup() {
@@ -39,7 +39,9 @@ class LocationServiceSharingPauseTest {
         fakeLocationSource.onFriendsUpdated(listOf(io.mockk.mockk<net.af0.where.e2ee.FriendEntry>(relaxed = true)))
         LocationService.clock = { System.currentTimeMillis() }
 
-        mockFused = mockk(relaxed = true)
+        mockLocationProvider = mockk(relaxed = true)
+        io.mockk.every { mockLocationProvider.requestPassiveUpdates() } returns true
+        io.mockk.every { mockLocationProvider.requestActiveUpdates(any(), any(), any()) } returns true
 
         io.mockk.mockkObject(net.af0.where.e2ee.KtorMailboxClient)
         io.mockk.coEvery { net.af0.where.e2ee.KtorMailboxClient.poll(any(), any()) } returns emptyList()
@@ -63,7 +65,7 @@ class LocationServiceSharingPauseTest {
             val mockFriend = io.mockk.mockk<net.af0.where.e2ee.FriendEntry>(relaxed = true)
             val mockE2ee = mockk<net.af0.where.e2ee.E2eeManager>(relaxed = true)
             io.mockk.coEvery { mockE2ee.listFriends() } returns listOf(mockFriend)
-            service.fusedClientOverride = mockFused
+            service.locationProviderOverride = mockLocationProvider
             service.locationClientOverride = mockk(relaxed = true)
             service.e2eeManagerOverride = mockE2ee
             service.locationSourceOverride = fakeLocationSource
@@ -72,33 +74,24 @@ class LocationServiceSharingPauseTest {
             advanceUntilIdle()
 
             assertTrue(service.isRegistered, "Should be registered when sharing is on")
-            verify(exactly = 2) {
-                mockFused.requestLocationUpdates(
-                    any<com.google.android.gms.location.LocationRequest>(),
-                    any<com.google.android.gms.location.LocationCallback>(),
-                    any<android.os.Looper>(),
-                )
-            }
+            verify(exactly = 1) { mockLocationProvider.requestActiveUpdates(any(), any(), any()) }
+            verify(exactly = 1) { mockLocationProvider.requestPassiveUpdates() }
 
             // Pause sharing
             app.userStore.setSharing(false)
             advanceUntilIdle()
 
             assertFalse(service.isRegistered, "Should be unregistered when sharing is paused")
-            verify(exactly = 2) { mockFused.removeLocationUpdates(any<com.google.android.gms.location.LocationCallback>()) }
+            verify(exactly = 1) { mockLocationProvider.removeActiveUpdates() }
+            verify(exactly = 1) { mockLocationProvider.removePassiveUpdates() }
 
             // Resume sharing
             app.userStore.setSharing(true)
             advanceUntilIdle()
 
             assertTrue(service.isRegistered, "Should be registered again when sharing is resumed")
-            verify(exactly = 4) {
-                mockFused.requestLocationUpdates(
-                    any<com.google.android.gms.location.LocationRequest>(),
-                    any<com.google.android.gms.location.LocationCallback>(),
-                    any<android.os.Looper>(),
-                )
-            }
+            verify(exactly = 2) { mockLocationProvider.requestActiveUpdates(any(), any(), any()) }
+            verify(exactly = 2) { mockLocationProvider.requestPassiveUpdates() }
 
             controller.destroy()
         }

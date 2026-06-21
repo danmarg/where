@@ -24,10 +24,10 @@ class GeofenceReceiver : BroadcastReceiver() {
 
         if (event.geofenceTransition == Geofence.GEOFENCE_TRANSITION_EXIT) {
             Log.d(TAG, "Geofence exit detected, restarting/waking LocationService")
+            // Pass the triggering location so the service replants the geofence at where
+            // the user actually exited, not a stale cached position.
             val serviceIntent = Intent(context, LocationService::class.java).apply {
                 action = LocationService.ACTION_GEOFENCE_EVENT
-                // Pass the triggering location so the service replants the geofence at
-                // where the user actually exited, not a stale cached position.
                 val trigLoc = event.triggeringLocation
                 if (trigLoc != null) {
                     putExtra(LocationService.EXTRA_GEOFENCE_LAT, trigLoc.latitude)
