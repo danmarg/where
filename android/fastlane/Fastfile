@@ -10,8 +10,7 @@ platform :android do
   lane :build_debug do
     gradle(
       project_dir: "../",
-      task: "assemble",
-      build_type: "Debug",
+      task: ":android:assembleStandardGmsDebug",
     )
   end
 
@@ -19,9 +18,7 @@ platform :android do
   lane :build_release do
     gradle(
       project_dir: "../",
-      task: "bundle",
-      flavor: "Standard",
-      build_type: "Release",
+      task: ":android:bundleStandardGmsRelease",
     )
   end
 
@@ -29,9 +26,7 @@ platform :android do
   lane :build_release_full do
     gradle(
       project_dir: "../",
-      task: "bundle",
-      flavor: "Full",
-      build_type: "Release",
+      task: ":android:bundleFullGmsRelease",
     )
   end
 
@@ -57,9 +52,7 @@ platform :android do
     bump_version("../build.gradle.kts")
     gradle(
       project_dir: "../",
-      task: "bundle",
-      flavor: "Standard",
-      build_type: "Release",
+      task: ":android:bundleStandardGmsRelease",
     )
     upload_to_play_store(track: "internal", skip_upload_apk: true)
   end
@@ -69,9 +62,7 @@ platform :android do
     bump_version("../build.gradle.kts")
     gradle(
       project_dir: "../",
-      task: "bundle",
-      flavor: "Full",
-      build_type: "Release",
+      task: ":android:bundleFullGmsRelease",
     )
     upload_to_play_store(track: "internal", skip_upload_apk: true)
   end
