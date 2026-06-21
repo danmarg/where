@@ -6,6 +6,7 @@ import android.content.Intent
 import android.location.Location
 import android.os.Looper
 import android.util.Log
+import androidx.annotation.VisibleForTesting
 import com.google.android.gms.location.Geofence
 import com.google.android.gms.location.GeofencingClient
 import com.google.android.gms.location.GeofencingRequest
@@ -29,11 +30,16 @@ class GmsLocationProvider : LocationProvider {
     // should receive location callbacks (LocationService calls init() on the main thread).
     private lateinit var callbackLooper: Looper
 
+    @VisibleForTesting
+    internal var fusedClientOverride: com.google.android.gms.location.FusedLocationProviderClient? = null
+    @VisibleForTesting
+    internal var geofencingClientOverride: GeofencingClient? = null
+
     override fun init(context: Context, onLocation: (Double, Double, Double?) -> Unit) {
         this.context = context.applicationContext
         callbackLooper = Looper.myLooper() ?: Looper.getMainLooper()
-        fusedClient = LocationServices.getFusedLocationProviderClient(context)
-        geofencingClient = LocationServices.getGeofencingClient(context)
+        fusedClient = fusedClientOverride ?: LocationServices.getFusedLocationProviderClient(context)
+        geofencingClient = geofencingClientOverride ?: LocationServices.getGeofencingClient(context)
         locationCallback = object : LocationCallback() {
             override fun onLocationResult(result: LocationResult) {
                 val loc = result.lastLocation ?: return
