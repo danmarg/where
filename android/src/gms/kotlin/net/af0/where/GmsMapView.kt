@@ -132,6 +132,7 @@ fun MapComposable(
     }
 
     // Pre-compute marker data (including @Composable subtitle strings) in composable scope.
+    // Filter HIDDEN peers here so MarkerComposable is never instantiated for them.
     val markerData = users.map { user ->
         val friend = friends.find { it.id == user.userId }
         val name = friend?.name ?: user.userId.take(8)
@@ -143,7 +144,7 @@ fun MapComposable(
         val style = display.pinStyle
         val subtitle = peerSubtitleText(display)
         Triple(user, Triple(friend, name, style), subtitle)
-    }
+    }.filter { (_, meta, _) -> meta.third != PeerPinStyle.HIDDEN }
 
     GoogleMap(
         modifier = modifier,
@@ -163,7 +164,6 @@ fun MapComposable(
     ) {
         markerData.forEach { (user, meta, subtitle) ->
             val (_, name, style) = meta
-            if (style == PeerPinStyle.HIDDEN) return@forEach
             val isSelected = selectedUserId == user.userId
             val pinAlpha = if (style == PeerPinStyle.DIMMED) 0.45f else 1f
             key(user.userId) {

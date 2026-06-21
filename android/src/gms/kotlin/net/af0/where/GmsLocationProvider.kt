@@ -143,7 +143,8 @@ class GmsLocationProvider : LocationProvider {
             .build()
         return try {
             geofencingClient.addGeofences(request, getGeofencePendingIntent())
-            Log.i(TAG, "Geofence set at $lat, $lng")
+                .addOnSuccessListener { Log.i(TAG, "Geofence registered at $lat, $lng") }
+                .addOnFailureListener { e -> Log.w(TAG, "Geofence add failed (fence may not be active): ${e.message}") }
             true
         } catch (e: SecurityException) {
             Log.w(TAG, "SecurityException setting geofence: ${e.message}")
