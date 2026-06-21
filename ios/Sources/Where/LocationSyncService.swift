@@ -363,15 +363,23 @@ final class LocationSyncService: ObservableObject {
             repo.pausedFriendIds.insert(id)
         }
         // On transition into paused, give the peer the same positive "stopped" signal
-        // that master-off and per-friend-timer-expiry produce. Un-pause has no wire
-        // message: the next outgoing Location is itself the implicit "I'm back" signal,
-        // and the recipient clears stoppedAtTs on receipt.
+        // that master-off and per-friend-timer-expiry produce. On transition out of
+        // paused, immediately broadcast our current location so the peer doesn't have
+        // to wait up to a full heartbeat interval for the implicit "I'm back" update.
         if !wasPaused {
             Task {
                 do {
                     try await locationClient.sendStoppedSharingToFriend(friendId: id)
                 } catch {
                     logger.warning("sendStoppedSharingToFriend(\(id)) failed: \(error.localizedDescription)")
+                }
+            }
+        } else if let last = locationProvider.lastLocation, isSharingLocation {
+            Task {
+                do {
+                    try await locationClient.sendLocationToFriend(friendId: id, lat: last.coordinate.latitude, lng: last.coordinate.longitude, stationary: locationProvider.isStationary)
+                } catch {
+                    logger.warning("sendLocationToFriend(\(id)) on unpause failed: \(error.localizedDescription)")
                 }
             }
         }

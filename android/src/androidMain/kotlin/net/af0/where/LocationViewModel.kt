@@ -267,9 +267,9 @@ class LocationViewModel(
         val wasPaused = id in userStore.pausedFriendIds.value
         userStore.togglePauseFriend(id)
         // On transition into paused, give the peer the same positive "stopped" signal
-        // that master-off and per-friend-timer-expiry produce. Un-pause has no wire
-        // message: the next outgoing Location is itself the implicit "I'm back" signal,
-        // and the recipient clears stoppedAtTs on receipt.
+        // that master-off and per-friend-timer-expiry produce. On transition out of
+        // paused, immediately broadcast our current location so the peer doesn't have
+        // to wait up to a full heartbeat interval for the implicit "I'm back" update.
         if (!wasPaused) {
             viewModelScope.launch {
                 try {
@@ -278,6 +278,13 @@ class LocationViewModel(
                     Log.w(TAG, "sendStoppedSharingToFriend($id) failed: ${e.message}")
                 }
             }
+        } else {
+            val intent =
+                Intent(getApplication(), LocationService::class.java).apply {
+                    action = LocationService.ACTION_FORCE_PUBLISH
+                    putExtra(LocationService.EXTRA_FRIEND_ID, id)
+                }
+            getApplication<Application>().startForegroundService(intent)
         }
     }
 
