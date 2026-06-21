@@ -84,10 +84,7 @@ class LocationService : Service() {
     @VisibleForTesting
     internal var isPassiveRegistered = false
 
-    @VisibleForTesting
-    internal var isActivityRegistered = false
-
-    @VisibleForTesting
+@VisibleForTesting
     internal var currentPriority = LocationAccuracy.BALANCED
 
     @VisibleForTesting
@@ -453,8 +450,9 @@ class LocationService : Service() {
     private fun setGeofenceAt(lat: Double, lng: Double) {
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED) return
         if (locationProvider.setGeofenceAt(lat, lng)) {
-            Log.i(TAG, "Stationary: Geofence set at $lat, $lng")
-            e2eeManager.addDiagnosticEvent("Stationary: Geofence set")
+            // GMS: request submitted; actual confirmation logged by provider's Task listener.
+            Log.d(TAG, "Stationary: Geofence submitted at $lat, $lng")
+            e2eeManager.addDiagnosticEvent("Stationary: Geofence submitted")
         } else {
             // F-Droid build: geofencing unavailable (GMS-only). Movement-triggered restart
             // is absent; the service relies solely on WorkManager and the alarm fallback.
@@ -533,9 +531,8 @@ class LocationService : Service() {
         locationProvider.onDestroy()
         isRegistered = false
         isPassiveRegistered = false
-        if (BuildConfig.ACTIVITY_RECOGNITION_ENABLED && isActivityRegistered) {
+        if (BuildConfig.ACTIVITY_RECOGNITION_ENABLED) {
             activityHelper.onDestroy()
-            isActivityRegistered = false
         }
         val connectivityManager = getSystemService(ConnectivityManager::class.java)
         networkCallback?.let { connectivityManager?.unregisterNetworkCallback(it) }

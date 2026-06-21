@@ -49,9 +49,11 @@ class FdroidLocationProvider : LocationProvider {
         // PASSIVE accuracy is handled entirely by requestPassiveUpdates() (PASSIVE_PROVIDER,
         // 1s interval). Registering a second listener here on the same provider would double
         // callbacks during deep sleep, defeating the power intent.
+        // Return whether passive actually registered so the caller's isRegistered flag is honest.
         if (accuracy == LocationAccuracy.PASSIVE) {
-            Log.i(TAG, "PASSIVE accuracy: active registration skipped; passive listener covers this")
-            return true
+            val ok = passiveListener != null
+            Log.i(TAG, "PASSIVE accuracy: active registration skipped; passive listener covers this (registered=$ok)")
+            return ok
         }
         // For real providers: GPS preferred, NETWORK as fallback.
         // FUSED_PROVIDER is intentionally excluded: it is GMS-provided even on API 31+ and
@@ -69,6 +71,7 @@ class FdroidLocationProvider : LocationProvider {
         }
         // Mirror GmsLocationProvider's 10s floor to prevent excessive wakeups under fast
         // heartbeat conditions (e.g. activity transition to MOVING uses a 10s interval).
+        // maxDelayMs (batch delivery control) has no LocationManager equivalent; ignored per interface contract.
         val effectiveInterval = maxOf(intervalMs, 10_000L)
         return try {
             locationManager.requestLocationUpdates(provider, effectiveInterval, minDistance, listener, callbackLooper)
