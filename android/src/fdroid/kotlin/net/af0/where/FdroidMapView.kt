@@ -1,5 +1,6 @@
 package net.af0.where
 
+import android.location.Location
 import androidx.compose.foundation.layout.*
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -10,6 +11,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
@@ -20,6 +22,39 @@ import org.osmdroid.tileprovider.tilesource.TileSourceFactory
 import org.osmdroid.util.GeoPoint
 import org.osmdroid.views.MapView
 import org.osmdroid.views.overlay.Marker
+import org.osmdroid.views.overlay.mylocation.IMyLocationConsumer
+import org.osmdroid.views.overlay.mylocation.IMyLocationProvider
+import org.osmdroid.views.overlay.mylocation.MyLocationNewOverlay
+
+// Feeds our known own-location into MyLocationNewOverlay without opening a second
+// GPS listener — location is already tracked by LocationService.
+private class OwnLocationProvider : IMyLocationProvider {
+    private var consumer: IMyLocationConsumer? = null
+    private var lastLocation: Location? = null
+
+    override fun startLocationProvider(myLocationConsumer: IMyLocationConsumer): Boolean {
+        consumer = myLocationConsumer
+        return true
+    }
+
+    override fun stopLocationProvider() { consumer = null }
+
+    override fun getLastKnownLocation(): Location? = lastLocation
+
+    override fun destroy() {}
+
+    fun pushLocation(lat: Double, lng: Double, heading: Double?) {
+        val loc = Location("where").apply {
+            latitude = lat
+            longitude = lng
+            accuracy = 10f
+            time = System.currentTimeMillis()
+            if (heading != null) bearing = heading.toFloat()
+        }
+        lastLocation = loc
+        consumer?.onLocationChanged(loc, this)
+    }
+}
 
 @Composable
 fun MapComposable(
@@ -36,7 +71,10 @@ fun MapComposable(
     modifier: Modifier = Modifier,
 ) {
     val context = LocalContext.current
+    val density = LocalDensity.current
     val navBarBottom = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
+    // Match GmsMapView's contentPadding so map content clears the bottom controls row.
+    val bottomPaddingPx = with(density) { (96.dp + navBarBottom).roundToPx() }
 
     // Pre-compute marker labels (peerSubtitleText is @Composable, can't be called in AndroidView update).
     val markerData = users.map { user ->
@@ -53,6 +91,8 @@ fun MapComposable(
     }.filter { (_, meta, _) -> meta.third != PeerPinStyle.HIDDEN }
 
     var mapViewRef by remember { mutableStateOf<MapView?>(null) }
+    var ownLocationProvider by remember { mutableStateOf<OwnLocationProvider?>(null) }
+    var myLocationOverlay by remember { mutableStateOf<MyLocationNewOverlay?>(null) }
     var didInitialCenter by remember { mutableStateOf(false) }
     val lifecycleOwner = LocalLifecycleOwner.current
 
@@ -62,7 +102,10 @@ fun MapComposable(
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
 
-    LaunchedEffect(ownLocation) {
+    LaunchedEffect(ownLocation, ownHeading) {
+        ownLocation?.let { loc ->
+            ownLocationProvider?.pushLocation(loc.lat, loc.lng, ownHeading)
+        }
         val mv = mapViewRef ?: return@LaunchedEffect
         if (!didInitialCenter && ownLocation != null && UserPrefs.getLastLocation(context) == null) {
             mv.controller.animateTo(GeoPoint(ownLocation.lat, ownLocation.lng), 14.0, 500L)
@@ -85,6 +128,7 @@ fun MapComposable(
 
     DisposableEffect(Unit) {
         onDispose {
+            myLocationOverlay?.disableMyLocation()
             val mv = mapViewRef ?: return@onDispose
             UserPrefs.setLastLocation(context, mv.mapCenter.latitude, mv.mapCenter.longitude, mv.zoomLevelDouble.toFloat())
         }
@@ -95,6 +139,7 @@ fun MapComposable(
             MapView(ctx).apply {
                 setTileSource(TileSourceFactory.MAPNIK)
                 setMultiTouchControls(true)
+                setPadding(0, 0, 0, bottomPaddingPx)
                 val last = UserPrefs.getLastLocation(ctx)
                 if (last != null) {
                     controller.setZoom(last.third.toDouble())
@@ -103,19 +148,17 @@ fun MapComposable(
                     controller.setZoom(10.0)
                     controller.setCenter(GeoPoint(37.33, -122.03))
                 }
+                val provider = OwnLocationProvider()
+                val overlay = MyLocationNewOverlay(provider, this)
+                overlay.enableMyLocation()
+                overlays.add(overlay)
+                ownLocationProvider = provider
+                myLocationOverlay = overlay
             }.also { mapViewRef = it }
         },
         update = { mapView ->
+            mapView.setPadding(0, 0, 0, bottomPaddingPx)
             mapView.overlays.removeAll { it is Marker }
-
-            // Own location marker
-            ownLocation?.let { own ->
-                val marker = Marker(mapView)
-                marker.position = GeoPoint(own.lat, own.lng)
-                marker.title = context.getString(net.af0.where.shared.MR.strings.you.resourceId)
-                marker.setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_BOTTOM)
-                mapView.overlays.add(marker)
-            }
 
             // Peer markers
             markerData.forEach { (user, meta, subtitle) ->

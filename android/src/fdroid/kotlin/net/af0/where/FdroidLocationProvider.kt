@@ -46,23 +46,24 @@ class FdroidLocationProvider : LocationProvider {
 
     override fun requestActiveUpdates(accuracy: LocationAccuracy, intervalMs: Long, maxDelayMs: Long): Boolean {
         removeActiveUpdates()
-        // PASSIVE accuracy maps to PASSIVE_PROVIDER to honour the deep-sleep power intent.
-        // For all other accuracies use a single real provider to avoid duplicate callbacks.
+        // PASSIVE accuracy is handled entirely by requestPassiveUpdates() (PASSIVE_PROVIDER,
+        // 1s interval). Registering a second listener here on the same provider would double
+        // callbacks during deep sleep, defeating the power intent.
+        if (accuracy == LocationAccuracy.PASSIVE) {
+            Log.i(TAG, "PASSIVE accuracy: active registration skipped; passive listener covers this")
+            return true
+        }
+        // For real providers: GPS preferred, NETWORK as fallback.
         // FUSED_PROVIDER is intentionally excluded: it is GMS-provided even on API 31+ and
         // may be absent on de-Googled devices.
         val provider = when {
-            accuracy == LocationAccuracy.PASSIVE &&
-                locationManager.isProviderEnabled(LocationManager.PASSIVE_PROVIDER) ->
-                LocationManager.PASSIVE_PROVIDER
             locationManager.isProviderEnabled(LocationManager.GPS_PROVIDER) ->
                 LocationManager.GPS_PROVIDER
             else -> LocationManager.NETWORK_PROVIDER
         }
         // Use the same 200m distance filter as GmsLocationProvider so stationary users
-        // don't receive a flood of fixes. PASSIVE doesn't apply a distance filter because
-        // it piggybacks on other apps' requests and we want every opportunistic fix.
-        val minDistance = if (accuracy == LocationAccuracy.PASSIVE) 0f
-                         else LocationService.MOVEMENT_RADIUS_THRESHOLD_METERS
+        // don't receive a flood of fixes (PASSIVE is handled above and never reaches here).
+        val minDistance = LocationService.MOVEMENT_RADIUS_THRESHOLD_METERS
         val listener = LocationListener { loc ->
             onLocationCallback?.invoke(loc.latitude, loc.longitude, if (loc.hasBearing()) loc.bearing.toDouble() else null)
         }
