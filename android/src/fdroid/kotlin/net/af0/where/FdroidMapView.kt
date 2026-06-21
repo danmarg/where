@@ -14,7 +14,6 @@ import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.Lifecycle
-import androidx.lifecycle.LifecycleEventObserver
 import net.af0.where.e2ee.FriendEntry
 import net.af0.where.model.UserLocation
 import org.osmdroid.tileprovider.tilesource.TileSourceFactory
@@ -58,13 +57,7 @@ fun MapComposable(
     val lifecycleOwner = LocalLifecycleOwner.current
 
     DisposableEffect(lifecycleOwner) {
-        val observer = LifecycleEventObserver { _, event ->
-            when (event) {
-                Lifecycle.Event.ON_RESUME -> mapViewRef?.onResume()
-                Lifecycle.Event.ON_PAUSE -> mapViewRef?.onPause()
-                else -> Unit
-            }
-        }
+        val observer = OsmdroidLifecycleObserver { mapViewRef }
         lifecycleOwner.lifecycle.addObserver(observer)
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
