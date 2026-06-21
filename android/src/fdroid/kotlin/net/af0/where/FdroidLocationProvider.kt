@@ -148,10 +148,12 @@ class FdroidLocationProvider : LocationProvider {
 
     override suspend fun getLastLocation(): Location? = getBestLastKnownLocation()
 
-    // Geofencing is GMS-specific; WorkManager + alarm provide the fallback restart mechanism.
-    // TODO: F-Droid background reliability is weaker than the GMS build because there is no
-    //  movement-triggered wake (geofence exit). Investigate AlarmManager inexact repeating or
-    //  a fused passive listener as a compensating mechanism.
+    // Geofencing is GMS-specific; WorkManager + setExactAndAllowWhileIdle alarm are the only
+    // restart mechanisms in the F-Droid build.
+    // Reliability gap: GMS wakes the service on movement (geofence exit) even after process
+    // death; F-Droid wakes only on a 10-min alarm floor and a WorkManager periodic task.
+    // On de-Googled devices with aggressive battery optimization (GrapheneOS, LineageOS),
+    // users should exempt this app from battery optimization to avoid missed heartbeats.
     override fun setGeofenceAt(lat: Double, lng: Double): Boolean = false
 
     override fun removeGeofence() {}

@@ -31,7 +31,7 @@ class GmsLocationProvider : LocationProvider {
 
     override fun init(context: Context, onLocation: (Double, Double, Double?) -> Unit) {
         this.context = context.applicationContext
-        callbackLooper = Looper.myLooper() ?: callbackLooper
+        callbackLooper = Looper.myLooper() ?: Looper.getMainLooper()
         fusedClient = LocationServices.getFusedLocationProviderClient(context)
         geofencingClient = LocationServices.getGeofencingClient(context)
         locationCallback = object : LocationCallback() {
@@ -121,6 +121,9 @@ class GmsLocationProvider : LocationProvider {
     override suspend fun getLastLocation(): Location? {
         return try {
             fusedClient.lastLocation.await()
+        } catch (e: SecurityException) {
+            Log.w(TAG, "SecurityException getting last location: ${e.message}")
+            null
         } catch (e: Exception) {
             Log.e(TAG, "Error getting last location: ${e.message}")
             null
