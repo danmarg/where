@@ -1,5 +1,4 @@
 [versions]
-bouncycastle = "1.80"
 kotlin = "2.1.20"
 kmp-plugin = "2.1.20"
 agp = "8.9.0"
@@ -71,7 +70,6 @@ zxing-core = { module = "com.google.zxing:core", version.ref = "zxing-core" }
 zxing-android-embedded = { module = "com.journeyapps:zxing-android-embedded", version.ref = "zxing-android" }
 
 # Crypto
-bouncycastle = { module = "org.bouncycastle:bcprov-jdk18on", version.ref = "bouncycastle" }
 libsodium-kmp = { module = "com.ionspin.kotlin:multiplatform-crypto-libsodium-bindings", version.ref = "libsodium" }
 libsodium-kmp-jvm = { module = "com.ionspin.kotlin:multiplatform-crypto-libsodium-bindings-jvm", version.ref = "libsodium" }
 security-crypto = { module = "androidx.security:security-crypto", version.ref = "security-crypto" }
