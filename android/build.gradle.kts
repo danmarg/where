@@ -60,8 +60,8 @@ android {
         applicationId = "net.af0.where"
         minSdk = 26
         targetSdk = 35
-        versionCode = 101
-        versionName = "2026.06.21.3"
+        versionCode = 103
+        versionName = "2026.06.21.5"
     }
 
     buildFeatures {
@@ -171,7 +171,7 @@ dependencies {
     "gmsImplementation"(libs.kotlinx.coroutines.play.services)
 
     // F-Droid only
-    "fdroidImplementation"(libs.osmdroid)
+    "fdroidImplementation"(libs.maplibre)
 
     debugImplementation(libs.compose.ui.test.manifest)
 }
