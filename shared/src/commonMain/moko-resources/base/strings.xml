@@ -86,4 +86,6 @@
     <string name="share_indefinitely">Share indefinitely</string>
     <string name="sharing_for_remaining">Sharing for %s</string>
     <string name="more_options">More options</string>
+    <string name="open_source_licenses">Open Source Licenses</string>
+    <string name="close">Close</string>
 </resources>

@@ -11,6 +11,8 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
@@ -75,6 +77,7 @@ fun FriendsSheet(
     var pastedUrl by remember { mutableStateOf("") }
     var debugExpandedFriendId by remember { mutableStateOf<String?>(null) }
     var showDiagnosticLog by remember { mutableStateOf(false) }
+    var showAcknowledgements by remember { mutableStateOf(false) }
 
     // Live countdown for any active per-friend timer. Recomposing rows that read
     // [nowSecTicker] re-evaluate their "Sharing for Xh Ym" labels each minute.
@@ -320,7 +323,22 @@ fun FriendsSheet(
                     }
                 }
             }
+
+            TextButton(
+                onClick = { showAcknowledgements = true },
+                modifier = Modifier.align(Alignment.CenterHorizontally),
+            ) {
+                Text(
+                    stringResource(MR.strings.open_source_licenses),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
         }
+    }
+
+    if (showAcknowledgements) {
+        AcknowledgementsDialog(onDismiss = { showAcknowledgements = false })
     }
 
     confirmDeleteFriend?.let { friend ->
@@ -436,4 +454,62 @@ private fun FriendOverflowMenu(
             onClick = { expanded = false; onRemove() },
         )
     }
+}
+
+private data class License(val name: String, val copyright: String, val spdx: String)
+
+private val LICENSES = listOf(
+    License("libsodium", "Copyright (c) 2013-2024 Frank Denis", "ISC"),
+    License(
+        "multiplatform-crypto-libsodium-bindings",
+        "Copyright (c) 2020 Ugljesa Jovanovic",
+        "Apache-2.0",
+    ),
+    License("Ktor", "Copyright (c) JetBrains s.r.o.", "Apache-2.0"),
+    License(
+        "Kotlin Coroutines / Serialization",
+        "Copyright (c) JetBrains s.r.o.",
+        "Apache-2.0",
+    ),
+    License("ZXing", "Copyright (c) 2007 Sean Owen", "Apache-2.0"),
+    License("SQLDelight", "Copyright (c) 2016 Square, Inc.", "Apache-2.0"),
+    License("MOKO Resources", "Copyright (c) 2019 IceRock Development", "Apache-2.0"),
+    License(
+        "Accompanist",
+        "Copyright (c) 2020 The Android Open Source Project",
+        "Apache-2.0",
+    ),
+)
+
+@Composable
+private fun AcknowledgementsDialog(onDismiss: () -> Unit) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(stringResource(MR.strings.open_source_licenses)) },
+        text = {
+            Column(
+                modifier = Modifier.verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                LICENSES.forEach { lib ->
+                    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                        Text(lib.name, style = MaterialTheme.typography.labelMedium)
+                        Text(
+                            lib.copyright,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        Text(
+                            lib.spdx,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) { Text(stringResource(MR.strings.close)) }
+        },
+    )
 }
