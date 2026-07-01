@@ -141,12 +141,8 @@ fun MapComposable(
     DisposableEffect(Unit) {
         onDispose {
             val pos = mapRef?.cameraPosition ?: return@onDispose
-            UserPrefs.setLastLocation(
-                context,
-                pos.target.latitude,
-                pos.target.longitude,
-                pos.zoom.toFloat(),
-            )
+            val target = pos.target ?: return@onDispose
+            UserPrefs.setLastLocation(context, target.latitude, target.longitude, pos.zoom.toFloat())
         }
     }
 
