@@ -2,4 +2,5 @@ package net.af0.where
 
 import android.content.Context
 
-fun initOsmdroid(context: Context) = Unit
+// MapLibre is only used in the F-Droid flavor; nothing to initialize for GMS.
+fun initMapLibre(context: Context) = Unit

@@ -1,5 +1,4 @@
 [versions]
-bouncycastle = "1.80"
 kotlin = "2.1.20"
 kmp-plugin = "2.1.20"
 agp = "8.9.0"
@@ -22,7 +21,7 @@ libsodium = "0.9.5"
 security-crypto = "1.1.0-alpha06"
 moko-resources = "0.24.5"
 work = "2.9.1"
-osmdroid = "6.1.20"
+maplibre = "11.11.0"
 
 [libraries]
 # Moko Resources
@@ -71,7 +70,6 @@ zxing-core = { module = "com.google.zxing:core", version.ref = "zxing-core" }
 zxing-android-embedded = { module = "com.journeyapps:zxing-android-embedded", version.ref = "zxing-android" }
 
 # Crypto
-bouncycastle = { module = "org.bouncycastle:bcprov-jdk18on", version.ref = "bouncycastle" }
 libsodium-kmp = { module = "com.ionspin.kotlin:multiplatform-crypto-libsodium-bindings", version.ref = "libsodium" }
 libsodium-kmp-jvm = { module = "com.ionspin.kotlin:multiplatform-crypto-libsodium-bindings-jvm", version.ref = "libsodium" }
 security-crypto = { module = "androidx.security:security-crypto", version.ref = "security-crypto" }
@@ -82,8 +80,8 @@ androidx-core-splashscreen = { module = "androidx.core:core-splashscreen", versi
 # WorkManager
 work-runtime-ktx = { module = "androidx.work:work-runtime-ktx", version.ref = "work" }
 
-# OSMDroid (F-Droid map)
-osmdroid = { module = "org.osmdroid:osmdroid-android", version.ref = "osmdroid" }
+# MapLibre (F-Droid map)
+maplibre = { module = "org.maplibre.gl:android-sdk", version.ref = "maplibre" }
 
 # Redis
 jedis = { module = "redis.clients:jedis", version.ref = "jedis" }
