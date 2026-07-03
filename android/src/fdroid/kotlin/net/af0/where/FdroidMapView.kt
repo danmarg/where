@@ -1,6 +1,14 @@
 package net.af0.where
 
+import android.content.Context
+import android.graphics.Bitmap
+import android.graphics.Canvas
+import android.graphics.Color
+import android.graphics.Paint
+import android.graphics.Path
+import android.graphics.RectF
 import android.location.Location
+import android.text.TextPaint
 import androidx.compose.foundation.layout.*
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -17,6 +25,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import net.af0.where.e2ee.FriendEntry
 import net.af0.where.model.UserLocation
+import org.maplibre.android.annotations.IconFactory
 import org.maplibre.android.annotations.MarkerOptions
 import org.maplibre.android.camera.CameraPosition
 import org.maplibre.android.camera.CameraUpdateFactory
@@ -26,8 +35,94 @@ import org.maplibre.android.location.modes.CameraMode
 import org.maplibre.android.location.modes.RenderMode
 import org.maplibre.android.maps.MapLibreMap
 import org.maplibre.android.maps.MapView
+import kotlin.math.roundToInt
 
 private const val STYLE_URL = "https://tiles.openfreemap.org/styles/liberty"
+
+/**
+ * Renders a marker bitmap with a persistent name label above a pin shape, matching the
+ * GMS MarkerComposable visual. subtitle is shown below the name when the peer is selected.
+ * The bitmap anchor is bottom-center (MapLibre default), which places the pin tip at the
+ * geographic coordinate.
+ */
+private fun peerMarkerIcon(
+    context: Context,
+    name: String,
+    subtitle: String?,
+    alpha: Float,
+): org.maplibre.android.annotations.Icon {
+    val dm = context.resources.displayMetrics
+    val dp = dm.density
+    val sp = dm.scaledDensity
+
+    val namePaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
+        textSize = 11f * sp
+        color = Color.WHITE
+        this.alpha = (255 * alpha).roundToInt().coerceIn(0, 255)
+    }
+    val subPaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
+        textSize = 10f * sp
+        color = Color.WHITE
+        this.alpha = (255 * 0.7f * alpha).roundToInt().coerceIn(0, 255)
+    }
+
+    val padH = 5f * dp
+    val padV = 2f * dp
+    val gap = 2f * dp
+
+    val nameW = namePaint.measureText(name)
+    val subW = if (subtitle != null) subPaint.measureText(subtitle) else 0f
+    val boxW = maxOf(nameW, subW) + 2 * padH
+    val nameAscent = -namePaint.ascent()
+    val nameDescent = namePaint.descent()
+    val nameLineH = nameAscent + nameDescent
+    val subAscent = -subPaint.ascent()
+    val subLineH = subAscent + subPaint.descent()
+    val boxH = padV + nameLineH + (if (subtitle != null) gap + subLineH else 0f) + padV
+
+    // Pin: circle (diameter = pinW) + triangle below tapering to a point
+    val pinW = 24f * dp
+    val pinH = 36f * dp
+    val pinR = pinW / 2f
+
+    val bmpW = maxOf(boxW, pinW).roundToInt()
+    val bmpH = (boxH + pinH).roundToInt()
+    val cx = bmpW / 2f
+
+    val bmp = Bitmap.createBitmap(bmpW, bmpH, Bitmap.Config.ARGB_8888)
+    val canvas = Canvas(bmp)
+
+    // Label background — semi-transparent dark box, matching GMS Color.Black.copy(alpha=0.65)
+    val bgPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.argb((0.65f * alpha * 255).roundToInt().coerceIn(0, 255), 0, 0, 0)
+    }
+    val boxX = (bmpW - boxW) / 2f
+    canvas.drawRoundRect(RectF(boxX, 0f, boxX + boxW, boxH), 4f * dp, 4f * dp, bgPaint)
+
+    // Name text, centered in the box
+    canvas.drawText(name, cx - nameW / 2f, padV + nameAscent, namePaint)
+
+    // Subtitle text (only when selected)
+    if (subtitle != null) {
+        canvas.drawText(subtitle, cx - subW / 2f, padV + nameLineH + gap + subAscent, subPaint)
+    }
+
+    // Pin: filled circle + triangle pointing down, matching GMS MaterialTheme.colorScheme.error
+    val pinPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.argb((255 * alpha).roundToInt().coerceIn(0, 255), 176, 0, 32)
+    }
+    canvas.drawCircle(cx, boxH + pinR, pinR, pinPaint)
+    val path = Path().apply {
+        // Triangle connects at the lower portion of the circle and tapers to the tip
+        moveTo(cx - pinR * 0.7f, boxH + pinR + pinR * 0.7f)
+        lineTo(cx + pinR * 0.7f, boxH + pinR + pinR * 0.7f)
+        lineTo(cx, boxH + pinH)
+        close()
+    }
+    canvas.drawPath(path, pinPaint)
+
+    return IconFactory.getInstance(context).fromBitmap(bmp)
+}
 
 @Composable
 fun MapComposable(
@@ -175,12 +270,13 @@ fun MapComposable(
             map.clear()
             val markerIds = mutableMapOf<Long, String>()
             markerData.forEach { (user, meta, subtitle) ->
-                val (_, name, _) = meta
+                val (_, name, style) = meta
+                val pinAlpha = if (style == PeerPinStyle.DIMMED) 0.45f else 1f
+                val isSelected = selectedUserId == user.userId
                 val marker = map.addMarker(
                     MarkerOptions()
                         .position(LatLng(user.lat, user.lng))
-                        .title(name)
-                        .snippet(if (selectedUserId == user.userId) subtitle else null),
+                        .icon(peerMarkerIcon(context, name, if (isSelected) subtitle else null, pinAlpha)),
                 )
                 if (marker != null) markerIds[marker.id] = user.userId
             }
