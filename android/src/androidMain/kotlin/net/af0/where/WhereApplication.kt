@@ -25,6 +25,6 @@ open class WhereApplication : Application() {
     override fun onCreate() {
         super.onCreate()
         initializeLibsodium()
-        initOsmdroid(this)
+        initMapLibre(this)
     }
 }

@@ -1,6 +1,14 @@
 package net.af0.where
 
+import android.content.Context
+import android.graphics.Bitmap
+import android.graphics.Canvas
+import android.graphics.Color
+import android.graphics.Paint
+import android.graphics.Path
+import android.graphics.RectF
 import android.location.Location
+import android.text.TextPaint
 import androidx.compose.foundation.layout.*
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -15,48 +23,105 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
-import androidx.lifecycle.Lifecycle
 import net.af0.where.e2ee.FriendEntry
 import net.af0.where.model.UserLocation
-import org.osmdroid.tileprovider.tilesource.TileSourceFactory
-import org.osmdroid.util.GeoPoint
-import org.osmdroid.views.MapView
-import org.osmdroid.views.overlay.Marker
-import org.osmdroid.views.overlay.mylocation.IMyLocationConsumer
-import org.osmdroid.views.overlay.mylocation.IMyLocationProvider
-import org.osmdroid.views.overlay.mylocation.MyLocationNewOverlay
+import org.maplibre.android.annotations.IconFactory
+import org.maplibre.android.annotations.MarkerOptions
+import org.maplibre.android.camera.CameraPosition
+import org.maplibre.android.camera.CameraUpdateFactory
+import org.maplibre.android.geometry.LatLng
+import org.maplibre.android.location.LocationComponentActivationOptions
+import org.maplibre.android.location.modes.CameraMode
+import org.maplibre.android.location.modes.RenderMode
+import org.maplibre.android.maps.MapLibreMap
+import org.maplibre.android.maps.MapView
+import kotlin.math.roundToInt
 
-// Feeds our known own-location into MyLocationNewOverlay without opening a second
-// GPS listener — location is already tracked by LocationService.
-private class OwnLocationProvider : IMyLocationProvider {
-    // Both fields accessed only on the main looper (LocationService routes callbacks there;
-    // Compose calls pushLocation from the main thread). @Volatile guards against any future
-    // threading change without requiring a lock.
-    @Volatile private var consumer: IMyLocationConsumer? = null
-    @Volatile private var lastLocation: Location? = null
+private const val STYLE_URL = "https://tiles.openfreemap.org/styles/liberty"
 
-    override fun startLocationProvider(myLocationConsumer: IMyLocationConsumer): Boolean {
-        consumer = myLocationConsumer
-        return true
+/**
+ * Renders a marker bitmap with a persistent name label above a pin shape, matching the
+ * GMS MarkerComposable visual. subtitle is shown below the name when the peer is selected.
+ * The bitmap anchor is bottom-center (MapLibre default), which places the pin tip at the
+ * geographic coordinate.
+ */
+private fun peerMarkerIcon(
+    context: Context,
+    name: String,
+    subtitle: String?,
+    alpha: Float,
+): org.maplibre.android.annotations.Icon {
+    val dm = context.resources.displayMetrics
+    val dp = dm.density
+    val sp = dm.scaledDensity
+
+    val namePaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
+        textSize = 11f * sp
+        color = Color.WHITE
+        this.alpha = (255 * alpha).roundToInt().coerceIn(0, 255)
+    }
+    val subPaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
+        textSize = 10f * sp
+        color = Color.WHITE
+        this.alpha = (255 * 0.7f * alpha).roundToInt().coerceIn(0, 255)
     }
 
-    override fun stopLocationProvider() { consumer = null }
+    val padH = 5f * dp
+    val padV = 2f * dp
+    val gap = 2f * dp
 
-    override fun getLastKnownLocation(): Location? = lastLocation
+    val nameW = namePaint.measureText(name)
+    val subW = if (subtitle != null) subPaint.measureText(subtitle) else 0f
+    val boxW = maxOf(nameW, subW) + 2 * padH
+    val nameAscent = -namePaint.ascent()
+    val nameDescent = namePaint.descent()
+    val nameLineH = nameAscent + nameDescent
+    val subAscent = -subPaint.ascent()
+    val subLineH = subAscent + subPaint.descent()
+    val boxH = padV + nameLineH + (if (subtitle != null) gap + subLineH else 0f) + padV
 
-    override fun destroy() {}
+    // Pin: circle (diameter = pinW) + triangle below tapering to a point
+    val pinW = 24f * dp
+    val pinH = 36f * dp
+    val pinR = pinW / 2f
 
-    fun pushLocation(lat: Double, lng: Double, heading: Double?) {
-        val loc = Location("where").apply {
-            latitude = lat
-            longitude = lng
-            accuracy = 10f
-            time = System.currentTimeMillis()
-            if (heading != null) bearing = heading.toFloat()
-        }
-        lastLocation = loc
-        consumer?.onLocationChanged(loc, this)
+    val bmpW = maxOf(boxW, pinW).roundToInt()
+    val bmpH = (boxH + pinH).roundToInt()
+    val cx = bmpW / 2f
+
+    val bmp = Bitmap.createBitmap(bmpW, bmpH, Bitmap.Config.ARGB_8888)
+    val canvas = Canvas(bmp)
+
+    // Label background — semi-transparent dark box, matching GMS Color.Black.copy(alpha=0.65)
+    val bgPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.argb((0.65f * alpha * 255).roundToInt().coerceIn(0, 255), 0, 0, 0)
     }
+    val boxX = (bmpW - boxW) / 2f
+    canvas.drawRoundRect(RectF(boxX, 0f, boxX + boxW, boxH), 4f * dp, 4f * dp, bgPaint)
+
+    // Name text, centered in the box
+    canvas.drawText(name, cx - nameW / 2f, padV + nameAscent, namePaint)
+
+    // Subtitle text (only when selected)
+    if (subtitle != null) {
+        canvas.drawText(subtitle, cx - subW / 2f, padV + nameLineH + gap + subAscent, subPaint)
+    }
+
+    // Pin: filled circle + triangle pointing down, matching GMS MaterialTheme.colorScheme.error
+    val pinPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.argb((255 * alpha).roundToInt().coerceIn(0, 255), 176, 0, 32)
+    }
+    canvas.drawCircle(cx, boxH + pinR, pinR, pinPaint)
+    val path = Path().apply {
+        // Triangle connects at the lower portion of the circle and tapers to the tip
+        moveTo(cx - pinR * 0.7f, boxH + pinR + pinR * 0.7f)
+        lineTo(cx + pinR * 0.7f, boxH + pinR + pinR * 0.7f)
+        lineTo(cx, boxH + pinH)
+        close()
+    }
+    canvas.drawPath(path, pinPaint)
+
+    return IconFactory.getInstance(context).fromBitmap(bmp)
 }
 
 @Composable
@@ -76,10 +141,9 @@ fun MapComposable(
     val context = LocalContext.current
     val density = LocalDensity.current
     val navBarBottom = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
-    // Match GmsMapView's contentPadding so map content clears the bottom controls row.
     val bottomPaddingPx = with(density) { (96.dp + navBarBottom).roundToPx() }
 
-    // Pre-compute marker labels (peerSubtitleText is @Composable, can't be called in AndroidView update).
+    // Pre-compute marker data outside AndroidView so peerSubtitleText (@Composable) is callable.
     val markerData = users.map { user ->
         val friend = friends.find { it.id == user.userId }
         val name = friend?.name ?: user.userId.take(8)
@@ -88,99 +152,139 @@ fun MapComposable(
             nowSeconds = nowSec,
             lastPingSeconds = friendLastPing[user.userId]?.let { it / 1000L },
         ) ?: PeerDisplay.LastSeen(friendLastPing[user.userId]?.let { it / 1000L })
-        val style = display.pinStyle
+        val pinStyle = display.pinStyle
         val subtitle = peerSubtitleText(display)
-        Triple(user, Triple(friend, name, style), subtitle)
+        Triple(user, Triple(friend, name, pinStyle), subtitle)
     }.filter { (_, meta, _) -> meta.third != PeerPinStyle.HIDDEN }
 
+    var mapRef by remember { mutableStateOf<MapLibreMap?>(null) }
     var mapViewRef by remember { mutableStateOf<MapView?>(null) }
-    var ownLocationProvider by remember { mutableStateOf<OwnLocationProvider?>(null) }
-    var myLocationOverlay by remember { mutableStateOf<MyLocationNewOverlay?>(null) }
     var didInitialCenter by remember { mutableStateOf(false) }
     val lifecycleOwner = LocalLifecycleOwner.current
 
     DisposableEffect(lifecycleOwner) {
-        val observer = OsmdroidLifecycleObserver { mapViewRef }
+        val observer = MapLifecycleObserver { mapViewRef }
         lifecycleOwner.lifecycle.addObserver(observer)
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
 
-    LaunchedEffect(ownLocation, ownHeading) {
-        ownLocation?.let { loc ->
-            ownLocationProvider?.pushLocation(loc.lat, loc.lng, ownHeading)
+    // Activate or disable the location component when permission state or map readiness changes.
+    // mapRef is only set after setStyle completes, so map.style is guaranteed non-null here.
+    LaunchedEffect(mapRef, hasFineLocationPermission) {
+        val map = mapRef ?: return@LaunchedEffect
+        val style = map.style ?: return@LaunchedEffect
+        val lc = map.locationComponent
+        if (!hasFineLocationPermission) {
+            if (lc.isLocationComponentActivated) lc.isLocationComponentEnabled = false
+            return@LaunchedEffect
         }
-        val mv = mapViewRef ?: return@LaunchedEffect
-        if (!didInitialCenter && ownLocation != null && UserPrefs.getLastLocation(context) == null) {
-            mv.controller.animateTo(GeoPoint(ownLocation.lat, ownLocation.lng), 14.0, 500L)
+        if (!lc.isLocationComponentActivated) {
+            lc.activateLocationComponent(
+                LocationComponentActivationOptions.builder(context, style)
+                    .useDefaultLocationEngine(false)
+                    .build(),
+            )
+        }
+        lc.isLocationComponentEnabled = true
+        lc.cameraMode = CameraMode.NONE
+        lc.renderMode = RenderMode.COMPASS
+    }
+
+    // Push own location to the location component (blue dot).
+    LaunchedEffect(mapRef, ownLocation, ownHeading) {
+        val map = mapRef ?: return@LaunchedEffect
+        val loc = ownLocation ?: return@LaunchedEffect
+        val lc = map.locationComponent
+        if (!lc.isLocationComponentActivated || !lc.isLocationComponentEnabled) return@LaunchedEffect
+        lc.forceLocationUpdate(
+            Location("where").apply {
+                latitude = loc.lat
+                longitude = loc.lng
+                accuracy = 10f
+                time = System.currentTimeMillis()
+                ownHeading?.let { bearing = it.toFloat() }
+            },
+        )
+    }
+
+    // Auto-center on first fix when there is no saved camera position.
+    LaunchedEffect(mapRef, ownLocation) {
+        val map = mapRef ?: return@LaunchedEffect
+        val loc = ownLocation ?: return@LaunchedEffect
+        if (!didInitialCenter && UserPrefs.getLastLocation(context) == null) {
+            map.animateCamera(CameraUpdateFactory.newLatLngZoom(LatLng(loc.lat, loc.lng), 14.0))
             didInitialCenter = true
         }
     }
 
-    LaunchedEffect(zoomToUserId) {
+    // Zoom to a specific peer or own location.
+    LaunchedEffect(mapRef, zoomToUserId) {
         val id = zoomToUserId ?: return@LaunchedEffect
-        val mapView = mapViewRef ?: return@LaunchedEffect
-        val target = when {
-            id == "__own__" -> ownLocation?.let { GeoPoint(it.lat, it.lng) }
-            else -> users.find { it.userId == id }?.let { GeoPoint(it.lat, it.lng) }
+        val map = mapRef ?: return@LaunchedEffect
+        val target = when (id) {
+            "__own__" -> ownLocation?.let { LatLng(it.lat, it.lng) }
+            else -> users.find { it.userId == id }?.let { LatLng(it.lat, it.lng) }
         }
-        if (target != null) {
-            mapView.controller.animateTo(target, 15.0, 500L)
-        }
+        if (target != null) map.animateCamera(CameraUpdateFactory.newLatLngZoom(target, 15.0))
         onZoomToUserIdConsumed()
     }
 
+    // Persist camera position on dispose.
     DisposableEffect(Unit) {
         onDispose {
-            myLocationOverlay?.disableMyLocation()
-            val mv = mapViewRef ?: return@onDispose
-            UserPrefs.setLastLocation(context, mv.mapCenter.latitude, mv.mapCenter.longitude, mv.zoomLevelDouble.toFloat())
+            val pos = mapRef?.cameraPosition ?: return@onDispose
+            val target = pos.target ?: return@onDispose
+            UserPrefs.setLastLocation(context, target.latitude, target.longitude, pos.zoom.toFloat())
         }
     }
 
     AndroidView(
         factory = { ctx ->
             MapView(ctx).apply {
-                setTileSource(TileSourceFactory.MAPNIK)
-                setMultiTouchControls(true)
-                setPadding(0, 0, 0, bottomPaddingPx)
-                val last = UserPrefs.getLastLocation(ctx)
-                if (last != null) {
-                    controller.setZoom(last.third.toDouble())
-                    controller.setCenter(GeoPoint(last.first, last.second))
-                } else {
-                    controller.setZoom(10.0)
-                    controller.setCenter(GeoPoint(37.33, -122.03))
+                onCreate(null)
+                getMapAsync { map ->
+                    val last = UserPrefs.getLastLocation(ctx)
+                    map.cameraPosition = CameraPosition.Builder()
+                        .target(if (last != null) LatLng(last.first, last.second) else LatLng(37.33, -122.03))
+                        .zoom(last?.third?.toDouble() ?: 10.0)
+                        .build()
+                    map.uiSettings.isCompassEnabled = false
+                    map.setStyle(STYLE_URL) {
+                        // mapRef is set here — after style load — so LaunchedEffects that
+                        // read mapRef can safely call map.style without null-checking.
+                        map.addOnMapClickListener {
+                            onSelectedUserIdChange(null)
+                            false
+                        }
+                        mapRef = map
+                    }
                 }
-                val provider = OwnLocationProvider()
-                val overlay = MyLocationNewOverlay(provider, this)
-                overlay.enableMyLocation()
-                overlays.add(overlay)
-                ownLocationProvider = provider
-                myLocationOverlay = overlay
             }.also { mapViewRef = it }
         },
-        update = { mapView ->
-            mapView.setPadding(0, 0, 0, bottomPaddingPx)
-            mapView.overlays.removeAll { it is Marker }
+        update = { _ ->
+            val map = mapRef ?: return@AndroidView
+            map.setPadding(0, 0, 0, bottomPaddingPx)
 
-            // Peer markers
+            // Rebuild peer markers. Track Marker.id → userId so the click listener
+            // can resolve taps without relying on LatLng equality.
+            map.clear()
+            val markerIds = mutableMapOf<Long, String>()
             markerData.forEach { (user, meta, subtitle) ->
                 val (_, name, style) = meta
-                val alpha = if (style == PeerPinStyle.DIMMED) 0.45f else 1f
-                val marker = Marker(mapView)
-                marker.position = GeoPoint(user.lat, user.lng)
-                marker.title = name
-                marker.snippet = if (selectedUserId == user.userId) subtitle else null
-                marker.alpha = alpha
-                marker.setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_BOTTOM)
-                marker.setOnMarkerClickListener { _, _ ->
-                    onSelectedUserIdChange(if (selectedUserId == user.userId) null else user.userId)
-                    true
-                }
-                mapView.overlays.add(marker)
+                val pinAlpha = if (style == PeerPinStyle.DIMMED) 0.45f else 1f
+                val isSelected = selectedUserId == user.userId
+                val marker = map.addMarker(
+                    MarkerOptions()
+                        .position(LatLng(user.lat, user.lng))
+                        .icon(peerMarkerIcon(context, name, if (isSelected) subtitle else null, pinAlpha)),
+                )
+                if (marker != null) markerIds[marker.id] = user.userId
             }
-
-            mapView.invalidate()
+            map.setOnMarkerClickListener { marker ->
+                val userId = markerIds[marker.id] ?: return@setOnMarkerClickListener false
+                onSelectedUserIdChange(if (selectedUserId == userId) null else userId)
+                true
+            }
         },
         modifier = modifier,
     )
