@@ -144,6 +144,13 @@ struct FriendsSheet: View {
                         }
                     }
                 }
+                Section {
+                    NavigationLink(destination: AcknowledgementsView()) {
+                        Text(MR.strings().open_source_licenses.localized())
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    }
+                }
             }
             .navigationTitle(MR.strings().friends.localized())
             .navigationBarTitleDisplayMode(.inline)
