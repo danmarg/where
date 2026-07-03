@@ -209,7 +209,8 @@ object Session {
         val pnGaps =
             if (isNewDhEpoch && header.pn > cleanState.recvSeq) {
                 val diff = header.pn - cleanState.recvSeq
-                if (diff > MAX_SKIPPED_KEYS) MAX_SKIPPED_KEYS else diff.toInt()
+                if (diff > MAX_SKIPPED_KEYS) throw ProtocolGapException("previous-chain pn gap too large: $diff")
+                diff.toInt()
             } else {
                 0
             }
@@ -295,11 +296,10 @@ object Session {
             val prevEpochHex = cleanState.remoteDhPub.toHex()
             val finalSkippedKeys: LinkedHashMap<String, ByteArray>
             if (isNewDhEpoch && header.pn > cleanState.recvSeq) {
-                val actualPnGaps = (header.pn - cleanState.recvSeq).toInt()
-
+                // pnGaps is already validated <= MAX_SKIPPED_KEYS in the admission check above.
                 val updatedCache = LinkedHashMap(derivationSkippedKeys)
                 var oldChainKey = cleanState.recvChainKey.copyOf()
-                repeat(actualPnGaps) { i ->
+                repeat(pnGaps) { i ->
                     val step = kdfCk(oldChainKey)
                     oldChainKey.zeroize()
                     oldChainKey = step.newChainKey
