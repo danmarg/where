@@ -91,7 +91,7 @@ jobs:
           cd ios
           xcodebuild test \
             -scheme Where \
-            -destination 'platform=iOS Simulator,name=iPhone 16,OS=latest' \
+            -destination 'platform=iOS Simulator,name=iPhone 17' \
             -resultBundlePath TestResults.xcresult \
             ONLY_ACTIVE_ARCH=YES \
             ARCHS=arm64 \
