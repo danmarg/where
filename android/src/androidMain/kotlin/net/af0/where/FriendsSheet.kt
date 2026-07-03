@@ -474,6 +474,7 @@ private val LICENSES = listOf(
     License("ZXing", "Copyright (c) 2007 Sean Owen", "Apache-2.0"),
     License("SQLDelight", "Copyright (c) 2016 Square, Inc.", "Apache-2.0"),
     License("MOKO Resources", "Copyright (c) 2019 IceRock Development", "Apache-2.0"),
+    License("MapLibre Native", "Copyright (c) 2021-2024 MapLibre Contributors", "BSD-2-Clause"),
     License(
         "Accompanist",
         "Copyright (c) 2020 The Android Open Source Project",
