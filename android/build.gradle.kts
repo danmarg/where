@@ -60,8 +60,8 @@ android {
         applicationId = "net.af0.where"
         minSdk = 26
         targetSdk = 35
-        versionCode = 103
-        versionName = "2026.06.21.5"
+        versionCode = 104
+        versionName = "2026.07.04.1"
     }
 
     buildFeatures {

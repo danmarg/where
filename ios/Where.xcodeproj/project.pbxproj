@@ -23,6 +23,7 @@
 		6E06317DAA727CD5D54FFF08 /* BrandLaunch.storyboard in Resources */ = {isa = PBXBuildFile; fileRef = B57072E2FB8B41E587A705FF /* BrandLaunch.storyboard */; };
 		879D3942338D8B373CBA6A4E /* Shared.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 4CCEF0D6661013EBFBD2A61F /* Shared.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		907110FAC1EDCF0B63C3B573 /* Shared.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 4CCEF0D6661013EBFBD2A61F /* Shared.xcframework */; };
+		A350DAA0DF7C2FC1D3477678 /* AcknowledgementsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 928FAEAA2DF6627840F9E7C1 /* AcknowledgementsView.swift */; };
 		A9DED1D3FE0D23575EFA45B1 /* KeychainRawKeyValueStorage.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4193F83983F122AC92674584 /* KeychainRawKeyValueStorage.swift */; };
 		AC7DB8DCBECB7553B5F757F2 /* FriendSyncRepository.swift in Sources */ = {isa = PBXBuildFile; fileRef = 76A4AA9D14572C4B45F25E76 /* FriendSyncRepository.swift */; };
 		ACE3C7F5E723E981710460E2 /* CoreLocation in Frameworks */ = {isa = PBXBuildFile; fileRef = 18F48F8FCFBE392E06CD2BB3 /* CoreLocation */; };
@@ -75,6 +76,7 @@
 		76A4AA9D14572C4B45F25E76 /* FriendSyncRepository.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FriendSyncRepository.swift; sourceTree = "<group>"; };
 		7A1BBBBE8782378C8B03BB4C /* WhereApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WhereApp.swift; sourceTree = "<group>"; };
 		7BE943A4DFDA9252F1EC7A4C /* StringResourceExtensions.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StringResourceExtensions.swift; sourceTree = "<group>"; };
+		928FAEAA2DF6627840F9E7C1 /* AcknowledgementsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AcknowledgementsView.swift; sourceTree = "<group>"; };
 		9849DF78DF23CE90DE4F7F10 /* LocationSyncServiceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocationSyncServiceTests.swift; sourceTree = "<group>"; };
 		AC2B156B7AAD99EBB5C7C775 /* KotlinByteArrayUtils.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KotlinByteArrayUtils.swift; sourceTree = "<group>"; };
 		B57072E2FB8B41E587A705FF /* BrandLaunch.storyboard */ = {isa = PBXFileReference; lastKnownFileType = file.storyboard; path = BrandLaunch.storyboard; sourceTree = "<group>"; };
@@ -140,6 +142,7 @@
 		B39C72AD8B5E1F0E3A409FD2 /* Where */ = {
 			isa = PBXGroup;
 			children = (
+				928FAEAA2DF6627840F9E7C1 /* AcknowledgementsView.swift */,
 				1CDCC10A00DAB4D475C2B7C1 /* Assets.xcassets */,
 				B57072E2FB8B41E587A705FF /* BrandLaunch.storyboard */,
 				D43663670EB5FB46B5C7C4EA /* ContentView.swift */,
@@ -312,6 +315,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				A350DAA0DF7C2FC1D3477678 /* AcknowledgementsView.swift in Sources */,
 				6CB91DD32C87A081852B00C4 /* ContentView.swift in Sources */,
 				AC7DB8DCBECB7553B5F757F2 /* FriendSyncRepository.swift in Sources */,
 				296E222ADF2ED6BA05F597CC /* FriendsSheet.swift in Sources */,
@@ -444,7 +448,7 @@
 				CODE_SIGN_ENTITLEMENTS = Sources/Where/Where.entitlements;
 				CODE_SIGN_IDENTITY = "Apple Distribution";
 				CODE_SIGN_STYLE = Manual;
-				CURRENT_PROJECT_VERSION = 14;
+				CURRENT_PROJECT_VERSION = 15;
 				DEVELOPMENT_TEAM = 5PM2V9LTHC;
 				FRAMEWORK_SEARCH_PATHS = (
 					"$(inherited) $(SRCROOT)/../shared/build/XCFrameworks/$(CONFIGURATION:lower)",
@@ -457,7 +461,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.18;
+				MARKETING_VERSION = 1.19;
 				PRODUCT_BUNDLE_IDENTIFIER = net.af0.WhereApp;
 				PROVISIONING_PROFILE_SPECIFIER = "Where AppStore";
 				SDKROOT = iphoneos;
@@ -473,7 +477,7 @@
 				CODE_SIGN_ENTITLEMENTS = Sources/Where/Where.entitlements;
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 14;
+				CURRENT_PROJECT_VERSION = 15;
 				FRAMEWORK_SEARCH_PATHS = (
 					"$(inherited) $(SRCROOT)/../shared/build/XCFrameworks/$(CONFIGURATION:lower)",
 					"\".\"",
@@ -485,7 +489,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.18;
+				MARKETING_VERSION = 1.19;
 				PRODUCT_BUNDLE_IDENTIFIER = net.af0.WhereApp;
 				SDKROOT = iphoneos;
 				TARGETED_DEVICE_FAMILY = "1,2";
