@@ -485,7 +485,7 @@ object Session {
         runCatching {
             val obj = Json.decodeFromString<JsonObject>(bytes.decodeToString())
             when (obj["type"]?.jsonPrimitive?.content) {
-                "loc" -> decodeLocation(obj)
+                "loc" -> decodeLocation(obj) ?: MessagePlaintext.Keepalive()
                 "ka" -> MessagePlaintext.Keepalive()
                 "stop" -> {
                     // Lenient: a malformed "stop" missing/invalid ts degrades to a
@@ -496,7 +496,7 @@ object Session {
                 }
                 null -> {
                     // Legacy emitter: sniff for "lat" → Location, else Keepalive.
-                    if (obj.containsKey("lat")) decodeLocation(obj) else MessagePlaintext.Keepalive()
+                    if (obj.containsKey("lat")) decodeLocation(obj) ?: MessagePlaintext.Keepalive() else MessagePlaintext.Keepalive()
                 }
                 else -> {
                     // Unknown future variant — treat as Keepalive (safe no-op).
@@ -505,15 +505,22 @@ object Session {
             }
         }.getOrElse { e -> throw DecryptionException("malformed message plaintext", e) }
 
-    private fun decodeLocation(obj: JsonObject): MessagePlaintext.Location =
-        MessagePlaintext.Location(
-            lat = obj["lat"]!!.jsonPrimitive.double,
-            lng = obj["lng"]!!.jsonPrimitive.double,
-            acc = obj["acc"]!!.jsonPrimitive.double,
-            ts = obj["ts"]!!.jsonPrimitive.long,
-            precision = obj["precision"]?.jsonPrimitive?.content?.let { LocationPrecision.valueOf(it) } ?: LocationPrecision.FINE,
+    private fun decodeLocation(obj: JsonObject): MessagePlaintext.Location? {
+        // Missing required coordinates → degrade to Keepalive (§5.7.3 leniency, mirrors "stop" handling).
+        val lat = obj["lat"]?.jsonPrimitive?.content?.toDoubleOrNull() ?: return null
+        val lng = obj["lng"]?.jsonPrimitive?.content?.toDoubleOrNull() ?: return null
+        val acc = obj["acc"]?.jsonPrimitive?.content?.toDoubleOrNull() ?: return null
+        val ts = obj["ts"]?.jsonPrimitive?.longOrNull ?: return null
+        // Unknown precision string (e.g. a future "MEDIUM") falls back to FINE for forward-compat.
+        val precision = obj["precision"]?.jsonPrimitive?.content
+            ?.let { runCatching { LocationPrecision.valueOf(it) }.getOrNull() }
+            ?: LocationPrecision.FINE
+        return MessagePlaintext.Location(
+            lat = lat, lng = lng, acc = acc, ts = ts,
+            precision = precision,
             stationary = obj["stationary"]?.jsonPrimitive?.booleanOrNull ?: false,
         )
+    }
 
     internal fun padToFixedSize(
         data: ByteArray,
