@@ -80,4 +80,21 @@ class MessagePlaintextCodecTest {
         val decoded = Session.decodeMessage(malformed.encodeToByteArray())
         assertTrue(decoded is MessagePlaintext.Keepalive)
     }
+
+    // Regression tests for issue #325: loc forward-compat / ratchet-wedge fixes.
+
+    @Test
+    fun forwardCompatLocUnknownPrecisionDecodesToFine() {
+        val future = """{"type":"loc","lat":1.0,"lng":2.0,"acc":5.0,"ts":1000,"precision":"MEDIUM"}"""
+        val decoded = Session.decodeMessage(future.encodeToByteArray()) as MessagePlaintext.Location
+        assertEquals(LocationPrecision.FINE, decoded.precision)
+        assertEquals(1.0, decoded.lat)
+    }
+
+    @Test
+    fun forwardCompatLocMissingLatDegradesToKeepalive() {
+        val incomplete = """{"type":"loc","lng":2.0,"acc":5.0,"ts":1000}"""
+        val decoded = Session.decodeMessage(incomplete.encodeToByteArray())
+        assertTrue(decoded is MessagePlaintext.Keepalive)
+    }
 }
