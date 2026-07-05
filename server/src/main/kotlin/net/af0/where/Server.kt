@@ -53,8 +53,50 @@ internal const val RATE_LIMIT_MAX_POSTS = 1000
 /** Maximum GET requests per token within the rate-limit window. */
 internal const val RATE_LIMIT_MAX_GETS = 2000
 
+// ---------------------------------------------------------------------------
+// In-process rate limiter (shared by both store implementations)
+// ---------------------------------------------------------------------------
+
+/**
+ * Tracks per-token POST/GET counts and per-IP POST counts entirely in the JVM
+ * process. This avoids storing short-lived rate-limit keys in Redis, which
+ * caused ~50 % of all observed Redis commands (INCR + EXPIRE per request,
+ * plus constant TTL-expiry EVICTs for the 60-second windows).
+ *
+ * Thread-safe via ConcurrentHashMap + ConcurrentLinkedQueue; no locking needed
+ * because we only need approximate counts (a few extra requests past the limit
+ * are harmless, and missing a concurrent removal is safe).
+ */
+class InProcessRateLimiter {
+    private val postTimes = ConcurrentHashMap<String, ConcurrentLinkedQueue<Long>>()
+    private val getTimes  = ConcurrentHashMap<String, ConcurrentLinkedQueue<Long>>()
+    private val ipTimes   = ConcurrentHashMap<String, ConcurrentLinkedQueue<Long>>()
+
+    fun checkPost(token: String): Boolean = check(postTimes, token, RATE_LIMIT_MAX_POSTS)
+    fun checkGet(token: String): Boolean  = check(getTimes,  token, RATE_LIMIT_MAX_GETS)
+    fun checkIp(ip: String): Boolean      = check(ipTimes,   ip,    IP_RATE_LIMIT_MAX)
+
+    fun evict(windowMs: Long = RATE_LIMIT_WINDOW_MS) {
+        val cutoff = System.currentTimeMillis() - windowMs
+        for (q in postTimes.values) q.removeIf { it < cutoff }
+        for (q in getTimes.values)  q.removeIf { it < cutoff }
+        for (q in ipTimes.values)   q.removeIf { it < cutoff }
+    }
+
+    private fun check(map: ConcurrentHashMap<String, ConcurrentLinkedQueue<Long>>, key: String, limit: Int): Boolean {
+        val now = System.currentTimeMillis()
+        val q = map.getOrPut(key) { ConcurrentLinkedQueue() }
+        q.removeIf { it < now - RATE_LIMIT_WINDOW_MS }
+        if (q.size >= limit) return false
+        q.add(now)
+        return true
+    }
+}
+
+private const val IP_RATE_LIMIT_MAX = 2000
+
 interface MailboxStore : AutoCloseable {
-    fun checkIpRateLimit(ip: String): Boolean = true
+    fun checkIpRateLimit(ip: String): Boolean
 
     /**
      * Posts a [payload] to the inbox for [token].
@@ -107,27 +149,19 @@ fun MailboxStore.evictForTest(rateLimitWindowMs: Long) {
 
 private data class MailboxEntry(val payload: JsonElement, val expiresAt: Long, val msgId: String? = null)
 
-class InMemoryMailboxState : MailboxStore {
+class InMemoryMailboxState(
+    private val limiter: InProcessRateLimiter = InProcessRateLimiter(),
+) : MailboxStore {
     private val mailboxes = ConcurrentHashMap<String, ConcurrentLinkedQueue<MailboxEntry>>()
-    private val postTimes = ConcurrentHashMap<String, ConcurrentLinkedQueue<Long>>()
-    private val drainTimes = ConcurrentHashMap<String, ConcurrentLinkedQueue<Long>>()
     private val receivedIds = ConcurrentHashMap<String, MutableSet<String>>()
     private val receivedIdsOrder = ConcurrentHashMap<String, ConcurrentLinkedQueue<String>>()
-    private val ipPostTimes = ConcurrentHashMap<String, ConcurrentLinkedQueue<Long>>()
     private val dummyQueue = ConcurrentLinkedQueue<MailboxEntry>()
 
     private val locks = ConcurrentHashMap<String, Any>()
 
     private fun getLock(token: String) = locks.getOrPut(token) { Any() }
 
-    override fun checkIpRateLimit(ip: String): Boolean {
-        val now = System.currentTimeMillis()
-        val times = ipPostTimes.getOrPut(ip) { ConcurrentLinkedQueue() }
-        times.removeIf { it < now - RATE_LIMIT_WINDOW_MS }
-        if (times.size >= 2000) return false
-        times.add(now)
-        return true
-    }
+    override fun checkIpRateLimit(ip: String) = limiter.checkIp(ip)
 
     override fun post(
         token: String,
@@ -142,10 +176,7 @@ class InMemoryMailboxState : MailboxStore {
                 if (ids.contains(msgId)) return true
             }
 
-            val times = postTimes.getOrPut(token) { ConcurrentLinkedQueue() }
-            times.removeIf { it < now - RATE_LIMIT_WINDOW_MS }
-            if (times.size >= RATE_LIMIT_MAX_POSTS) return false
-            times.add(now)
+            if (!limiter.checkPost(token)) return false
 
             val queue = mailboxes.getOrPut(token) { ConcurrentLinkedQueue() }
             queue.removeIf { it.expiresAt <= now }
@@ -159,12 +190,8 @@ class InMemoryMailboxState : MailboxStore {
         }
 
     override fun drain(token: String): List<JsonElement>? {
+        if (!limiter.checkGet(token)) return null
         val now = System.currentTimeMillis()
-        val times = drainTimes.getOrPut(token) { ConcurrentLinkedQueue() }
-        times.removeIf { it < now - RATE_LIMIT_WINDOW_MS }
-        if (times.size >= RATE_LIMIT_MAX_GETS) return null
-        times.add(now)
-
         val queue = mailboxes[token] ?: dummyQueue
         return queue.asSequence()
             .filter { it.expiresAt > now }
@@ -193,12 +220,11 @@ class InMemoryMailboxState : MailboxStore {
 
     override fun evict() = evictWithParams(RATE_LIMIT_WINDOW_MS)
 
+    // Kept for tests that need to drive eviction with a custom window.
     internal fun evictWithParams(rateLimitWindowMs: Long) {
-        val now = System.currentTimeMillis()
-        postTimes.forEach { (_, times) -> times.removeIf { it < now - rateLimitWindowMs } }
-        drainTimes.forEach { (_, times) -> times.removeIf { it < now - rateLimitWindowMs } }
-        ipPostTimes.forEach { (_, times) -> times.removeIf { it < now - rateLimitWindowMs } }
+        limiter.evict(rateLimitWindowMs)
 
+        val now = System.currentTimeMillis()
         mailboxes.forEach { (token, _) ->
             mailboxes.computeIfPresent(token) { _, q ->
                 q.removeIf { it.expiresAt <= now }
@@ -206,8 +232,6 @@ class InMemoryMailboxState : MailboxStore {
             }
         }
 
-        // receivedIds can grow quite large, so we also need to cap them per token.
-        // For simplicity in this in-memory implementation, we just clear the oldest if it exceeds MAX_QUEUE_DEPTH.
         receivedIds.forEach { (token, set) ->
             if (set.size > MAX_QUEUE_DEPTH) {
                 val order = receivedIdsOrder[token]
@@ -224,43 +248,40 @@ class InMemoryMailboxState : MailboxStore {
 // Redis implementation
 // ---------------------------------------------------------------------------
 
-class RedisMailboxState(val jedis: JedisPooled) : MailboxStore {
+class RedisMailboxState(
+    val jedis: JedisPooled,
+    private val limiter: InProcessRateLimiter = InProcessRateLimiter(),
+) : MailboxStore {
+    // Rate limiting is handled in-process by InProcessRateLimiter; these scripts
+    // are pure mailbox operations with no INCR/EXPIRE rate-limit keys. This
+    // eliminates the two biggest Redis cost drivers: the constant short-TTL key
+    // churn (one INCR + one EXPIRE per request) and the resulting EVICT spam from
+    // 60-second windows expiring dozens of times per minute.
     private val postScript =
         """
-        local rlKey = KEYS[1]
-        local inboxKey = KEYS[2]
-        local receivedIdsKey = KEYS[3]
-        local dataKey = KEYS[4]
+        local inboxKey = KEYS[1]
+        local receivedIdsKey = KEYS[2]
+        local dataKey = KEYS[3]
 
-        local maxPosts = tonumber(ARGV[1])
-        local maxQueueDepth = tonumber(ARGV[2])
-        local payload = ARGV[3]
-        local ttlSec = tonumber(ARGV[4])
-        local rlTtlSec = tonumber(ARGV[5])
-        local msgId = ARGV[6]
-        local score = tonumber(ARGV[7])
+        local maxQueueDepth = tonumber(ARGV[1])
+        local payload = ARGV[2]
+        local ttlSec = tonumber(ARGV[3])
+        local msgId = ARGV[4]
+        local score = tonumber(ARGV[5])
 
-        -- Check msgId for idempotency
+        -- Idempotency check: drop retransmits we have already stored.
         if msgId ~= "" then
             if redis.call('SISMEMBER', receivedIdsKey, msgId) == 1 then
                 return 1
             end
         end
 
-        -- Rate limit check
-        local count = redis.call('INCR', rlKey)
-        if count == 1 then redis.call('EXPIRE', rlKey, rlTtlSec) end
-        if count > maxPosts then return 0 end
-
-        -- Queue depth check (optional but recommended)
+        -- Queue depth guard.
         if redis.call('ZCARD', inboxKey) >= maxQueueDepth then
             return 0
         end
 
-        -- Store payload
-        if msgId == "" then
-            msgId = redis.call('INCR', 'msgid-seq')
-        end
+        -- Store payload.
         redis.call('HSET', dataKey, msgId, payload)
         redis.call('ZADD', inboxKey, score, msgId)
         redis.call('EXPIRE', inboxKey, ttlSec)
@@ -276,47 +297,37 @@ class RedisMailboxState(val jedis: JedisPooled) : MailboxStore {
 
     private val drainScript =
         """
-        local rlKey = KEYS[1]
-        local inboxKey = KEYS[2]
-        local dataKey = KEYS[3]
+        local inboxKey = KEYS[1]
+        local dataKey = KEYS[2]
 
-        local maxGets = tonumber(ARGV[1])
-        local rlTtlSec = tonumber(ARGV[2])
-
-        -- Rate limit check
-        local count = redis.call('INCR', rlKey)
-        if count == 1 then redis.call('EXPIRE', rlKey, rlTtlSec) end
-        if count > maxGets then return nil end
-
-        local ids = redis.call('ZRANGE', inboxKey, 0, tonumber(ARGV[3]) - 1)
+        local ids = redis.call('ZRANGE', inboxKey, 0, tonumber(ARGV[1]) - 1)
         if #ids == 0 then return {} end
 
-        -- Fetch payloads from Hash. Note: some might be nil if deleted between ZRANGE and HMGET
         local payloads = redis.call('HMGET', dataKey, unpack(ids))
         for i, payload in ipairs(payloads) do
             if not payload then
-                -- Cleanup: remove orphaned ID from the ZSET if the data hash field is missing
                 redis.call('ZREM', inboxKey, ids[i])
             end
         end
         return payloads
         """.trimIndent()
 
+    override fun checkIpRateLimit(ip: String) = limiter.checkIp(ip)
+
     override fun post(
         token: String,
         payload: JsonElement,
         msgId: String?,
     ): Boolean {
+        if (!limiter.checkPost(token)) return false
         val result =
             jedis.eval(
                 postScript,
-                listOf("ratelimit:$token", "inbox:$token", "receivedIds:$token", "inbox-data:$token"),
+                listOf("inbox:$token", "receivedIds:$token", "inbox-data:$token"),
                 listOf(
-                    RATE_LIMIT_MAX_POSTS.toString(),
                     MAX_QUEUE_DEPTH.toString(),
                     payload.toString(),
                     (MAILBOX_TTL_MS / 1000).toString(),
-                    (RATE_LIMIT_WINDOW_MS / 1000).toString(),
                     msgId ?: "",
                     System.currentTimeMillis().toString(),
                 ),
@@ -325,18 +336,15 @@ class RedisMailboxState(val jedis: JedisPooled) : MailboxStore {
     }
 
     override fun drain(token: String): List<JsonElement>? {
+        if (!limiter.checkGet(token)) return null
         @Suppress("UNCHECKED_CAST")
         val result =
             jedis.eval(
                 drainScript,
-                listOf("ratelimit-get:$token", "inbox:$token", "inbox-data:$token"),
-                listOf(
-                    RATE_LIMIT_MAX_GETS.toString(),
-                    (RATE_LIMIT_WINDOW_MS / 1000).toString(),
-                    MAX_MESSAGES_PER_POLL.toString(),
-                ),
-            ) ?: return null
-        return (result as List<*>).filterNotNull().map { item ->
+                listOf("inbox:$token", "inbox-data:$token"),
+                listOf(MAX_MESSAGES_PER_POLL.toString()),
+            ) as? List<*> ?: return emptyList()
+        return result.filterNotNull().map { item ->
             val str = if (item is ByteArray) item.decodeToString() else item.toString()
             json.parseToJsonElement(str)
         }
@@ -360,6 +368,8 @@ class RedisMailboxState(val jedis: JedisPooled) : MailboxStore {
         jedis.hdel("inbox-data:$token", *msgIds.toTypedArray())
         return msgIds.size
     }
+
+    override fun evict() = limiter.evict()
 
     override fun close() {
         jedis.close()
