@@ -25,4 +25,5 @@ ios/Local.xcconfig
 cli/where_cli_state.json
 *.swp
 *.txt
+!android/fastlane/metadata/**/*.txt
 .log

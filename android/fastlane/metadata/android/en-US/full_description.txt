@@ -1,0 +1,10 @@
+Where is a cross-platform, end-to-end encrypted realtime location sharing app.
+
+Where is designed so the server learns as little as possible:
+
+* No accounts. Identity is a device-scoped ephemeral key pair — no usernames, email addresses, or persistent IDs.
+* End-to-end encrypted by default. Location payloads are encrypted with a Double Ratchet protocol before they leave the device. The server routes opaque ciphertext and cannot read coordinates.
+* No social graph. Routing uses pairwise anonymous tokens; the server cannot reconstruct who is sharing with whom.
+* Forward secrecy. Automated keepalives advance the ratchet even when only one party is sharing, so past sessions cannot be decrypted if a key is later compromised.
+
+This build uses MapLibre and Android's built-in location APIs instead of Google Maps and Play Services.
