@@ -82,14 +82,15 @@ android {
         }
     }
 
-    signingConfigs {
-        create("release") {
-            val ksFile = System.getenv("KEYSTORE_FILE") ?: System.getProperty("KEYSTORE_FILE")
-            val ksPassword = System.getenv("KEYSTORE_PASSWORD") ?: System.getProperty("KEYSTORE_PASSWORD")
-            val kPassword = System.getenv("KEY_PASSWORD") ?: System.getProperty("KEY_PASSWORD")
+    val ksFile = System.getenv("KEYSTORE_FILE") ?: System.getProperty("KEYSTORE_FILE")
+    val ksPassword = System.getenv("KEYSTORE_PASSWORD") ?: System.getProperty("KEYSTORE_PASSWORD")
+    val kPassword = System.getenv("KEY_PASSWORD") ?: System.getProperty("KEY_PASSWORD")
+    val hasSigningSecrets = ksFile != null && ksPassword != null && kPassword != null
 
-            if (ksFile != null && ksPassword != null && kPassword != null) {
-                storeFile = file(ksFile)
+    if (hasSigningSecrets) {
+        signingConfigs {
+            create("release") {
+                storeFile = file(ksFile!!)
                 storePassword = ksPassword
                 keyAlias = "where"
                 keyPassword = kPassword
@@ -125,7 +126,9 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro",
             )
-            signingConfig = signingConfigs.getByName("release")
+            if (hasSigningSecrets) {
+                signingConfig = signingConfigs.getByName("release")
+            }
             buildConfigField("String", "SERVER_HTTP_URL", "\"https://where-api.af0.net\"")
         }
         debug {
