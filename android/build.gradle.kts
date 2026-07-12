@@ -62,6 +62,13 @@ android {
         targetSdk = 35
         versionCode = 104
         versionName = "2026.07.04.1"
+
+        // JNA (a transitive dep of the libsodium bindings) ships dispatch stubs for
+        // legacy ABIs no Android device has used in years (armeabi, mips, mips64),
+        // without the actual libsodium.so to match. Restrict to real ABIs.
+        ndk {
+            abiFilters += listOf("arm64-v8a", "armeabi-v7a", "x86", "x86_64")
+        }
     }
 
     dependenciesInfo {
