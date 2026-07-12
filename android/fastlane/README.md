@@ -55,6 +55,14 @@ Build standard AAB (no activity recognition) and upload to Google Play (internal
 
 Build full AAB (with activity recognition) and upload to Google Play (internal track)
 
+### android release_github_binaries
+
+```sh
+[bundle exec] fastlane android release_github_binaries
+```
+
+Build signed standardGms + standardFdroid release APKs for the current versionName and publish them as assets on a GitHub Release tagged v<versionName>. This is the signed reference binary F-Droid's Reproducible Builds feature diffs its own build against (see Binaries:/AllowedAPKSigningKeys in metadata/net.af0.where.yml upstream). Signing stays local — nothing here touches GitHub Actions or CI secrets. Run this after committing the versionName/versionCode bump (e.g. from deploy/deploy_full) so HEAD is the exact commit you want the tag to point at. Requires signing env vars and an authenticated `gh` CLI.
+
 ### android promote_to_closed
 
 ```sh

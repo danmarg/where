@@ -67,6 +67,54 @@ platform :android do
     upload_to_play_store(track: "internal", skip_upload_apk: true)
   end
 
+  desc "Build signed standardGms + standardFdroid release APKs for the current versionName " \
+       "and publish them as assets on a GitHub Release tagged v<versionName>. This is the " \
+       "signed reference binary F-Droid's Reproducible Builds feature diffs its own build " \
+       "against (see Binaries:/AllowedAPKSigningKeys in metadata/net.af0.where.yml upstream). " \
+       "Signing stays local — nothing here touches GitHub Actions or CI secrets. " \
+       "Run this after committing the versionName/versionCode bump (e.g. from deploy/deploy_full) " \
+       "so HEAD is the exact commit you want the tag to point at. Requires signing env vars " \
+       "and an authenticated `gh` CLI."
+  lane :release_github_binaries do
+    gradle_file = File.expand_path("../build.gradle.kts", __dir__)
+    version_name = File.read(gradle_file).match(/versionName\s*=\s*"([^"]+)"/)[1]
+    tag = "v#{version_name}"
+    repo = "danmarg/where"
+
+    unless system("git", "rev-parse", "--verify", "--quiet", tag)
+      UI.message("Tag #{tag} not found; creating and pushing it at HEAD")
+      sh("git", "tag", "-a", tag, "-m", "Release #{version_name}")
+      sh("git", "push", "origin", tag)
+    end
+    unless system("git", "ls-remote", "--exit-code", "--tags", "origin", tag, out: File::NULL)
+      UI.user_error!("Tag #{tag} exists locally but isn't pushed to origin — push it before continuing.")
+    end
+
+    UI.message("Building signed release APKs for #{tag}...")
+    gradle(project_dir: "../", task: ":android:assembleStandardGmsRelease")
+    gradle(project_dir: "../", task: ":android:assembleStandardFdroidRelease")
+
+    gms_apk = Dir[File.expand_path("../build/outputs/apk/standardGms/release/*.apk", __dir__)].first
+    fdroid_apk = Dir[File.expand_path("../build/outputs/apk/standardFdroid/release/*.apk", __dir__)].first
+    UI.user_error!("standardGms release APK not found — did signing env vars fail?") unless gms_apk
+    UI.user_error!("standardFdroid release APK not found — did signing env vars fail?") unless fdroid_apk
+
+    # Without signing env vars, assembleRelease still succeeds (by design, so CI/F-Droid can
+    # build unsigned) but names the output *-unsigned.apk. Refuse to publish that as the
+    # reproducible-build reference binary.
+    [gms_apk, fdroid_apk].each do |apk|
+      UI.user_error!("#{apk} is unsigned — check KEYSTORE_FILE/KEYSTORE_PASSWORD/KEY_PASSWORD") if apk.include?("-unsigned")
+    end
+
+    unless system("gh", "release", "view", tag, "-R", repo, out: File::NULL, err: File::NULL)
+      sh("gh", "release", "create", tag, "--title", tag, "--notes", "Release #{version_name}", "-R", repo)
+    end
+    sh("gh", "release", "upload", tag, gms_apk, "--clobber", "-R", repo)
+    sh("gh", "release", "upload", tag, fdroid_apk, "--clobber", "-R", repo)
+
+    UI.success("Uploaded signed standardGms + standardFdroid APKs to GitHub release #{tag}")
+  end
+
   desc "Promote the internal version to closed testing (alpha)"
   lane :promote_to_closed do
     key_path = ENV["PLAY_STORE_JSON_KEY"] || File.expand_path("signing/where_play_store_api_key.json", __dir__)
