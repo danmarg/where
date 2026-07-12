@@ -84,6 +84,10 @@ while [[ $# -gt 0 ]]; do
       DEPLOY_ANDROID="promote-alpha"
       shift
       ;;
+    --deploy-android-github-binaries)
+      DEPLOY_ANDROID="github-binaries"
+      shift
+      ;;
     *)
       echo "Unknown option: $1"
       exit 1
@@ -99,6 +103,7 @@ if [[ -n "$DEPLOY_IOS" || -n "$DEPLOY_ANDROID" ]]; then
       internal)        ANDROID_LANE="deploy" ;;
       internal-full)   ANDROID_LANE="deploy_full" ;;
       promote-alpha)   ANDROID_LANE="promote_to_closed" ;;
+      github-binaries) ANDROID_LANE="release_github_binaries" ;;
     esac
     echo "=== Deploying Android via fastlane (lane: $ANDROID_LANE) ==="
     if [[ "$DEPLOY_ANDROID" != "promote-alpha" ]]; then
