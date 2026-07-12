@@ -64,6 +64,14 @@ android {
         versionName = "2026.07.04.1"
     }
 
+    dependenciesInfo {
+        // AGP's "Dependency metadata" signing block breaks F-Droid's Reproducible Builds
+        // verification, which requires the signature block to contain nothing but the
+        // actual signature.
+        includeInApk = false
+        includeInBundle = false
+    }
+
     buildFeatures {
         compose = true
         buildConfig = true
