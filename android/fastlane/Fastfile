@@ -67,10 +67,11 @@ platform :android do
     upload_to_play_store(track: "internal", skip_upload_apk: true)
   end
 
-  desc "Build signed standardGms + standardFdroid release APKs for the current versionName " \
-       "and publish them as assets on a GitHub Release tagged v<versionName>. This is the " \
-       "signed reference binary F-Droid's Reproducible Builds feature diffs its own build " \
-       "against (see Binaries:/AllowedAPKSigningKeys in metadata/net.af0.where.yml upstream). " \
+  desc "Build signed standardGms (universal) + standardFdroid (per-ABI split) release APKs " \
+       "for the current versionName and publish them as assets on a GitHub Release tagged " \
+       "v<versionName>. The standardFdroid APKs are the signed reference binaries F-Droid's " \
+       "Reproducible Builds feature diffs its own build against (see the per-Build `binary:` " \
+       "fields in metadata/net.af0.where.yml upstream — one per ABI). " \
        "Signing stays local — nothing here touches GitHub Actions or CI secrets. " \
        "Run this after committing the versionName/versionCode bump (e.g. from deploy/deploy_full) " \
        "so HEAD is the exact commit you want the tag to point at. Requires signing env vars " \
@@ -94,25 +95,33 @@ platform :android do
     gradle(project_dir: "../", task: ":android:assembleStandardGmsRelease")
     gradle(project_dir: "../", task: ":android:assembleStandardFdroidRelease")
 
-    gms_apk = Dir[File.expand_path("../build/outputs/apk/standardGms/release/*.apk", __dir__)].first
-    fdroid_apk = Dir[File.expand_path("../build/outputs/apk/standardFdroid/release/*.apk", __dir__)].first
-    UI.user_error!("standardGms release APK not found — did signing env vars fail?") unless gms_apk
-    UI.user_error!("standardFdroid release APK not found — did signing env vars fail?") unless fdroid_apk
+    # GMS: Play Store delivery goes through the AAB (bundleStandardGmsRelease, elsewhere); the
+    # only APK we publish here is the universal one, purely as a GitHub reference artifact.
+    gms_apk = Dir[File.expand_path("../build/outputs/apk/standardGms/release/*-universal-release.apk", __dir__)].first
+    UI.user_error!("standardGms universal release APK not found — did signing env vars fail?") unless gms_apk
 
+    # F-Droid: one signed APK per ABI (skip the universal one — F-Droid's Reproducible Builds
+    # diffs per-ABI split APKs, matched by versionCode, not a universal APK).
+    fdroid_apks = Dir[File.expand_path("../build/outputs/apk/standardFdroid/release/*-release.apk", __dir__)]
+      .reject { |apk| apk.include?("-universal-") }
+    UI.user_error!("No standardFdroid per-ABI release APKs found — did signing env vars fail?") if fdroid_apks.empty?
+
+    all_apks = [gms_apk] + fdroid_apks
     # Without signing env vars, assembleRelease still succeeds (by design, so CI/F-Droid can
     # build unsigned) but names the output *-unsigned.apk. Refuse to publish that as the
     # reproducible-build reference binary.
-    [gms_apk, fdroid_apk].each do |apk|
+    all_apks.each do |apk|
       UI.user_error!("#{apk} is unsigned — check KEYSTORE_FILE/KEYSTORE_PASSWORD/KEY_PASSWORD") if apk.include?("-unsigned")
     end
 
     unless system("gh", "release", "view", tag, "-R", repo, out: File::NULL, err: File::NULL)
       sh("gh", "release", "create", tag, "--title", tag, "--notes", "Release #{version_name}", "-R", repo)
     end
-    sh("gh", "release", "upload", tag, gms_apk, "--clobber", "-R", repo)
-    sh("gh", "release", "upload", tag, fdroid_apk, "--clobber", "-R", repo)
+    all_apks.each do |apk|
+      sh("gh", "release", "upload", tag, apk, "--clobber", "-R", repo)
+    end
 
-    UI.success("Uploaded signed standardGms + standardFdroid APKs to GitHub release #{tag}")
+    UI.success("Uploaded signed standardGms (universal) + standardFdroid (#{fdroid_apks.size} ABIs) APKs to GitHub release #{tag}")
   end
 
   desc "Promote the internal version to closed testing (alpha)"

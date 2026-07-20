@@ -1,3 +1,4 @@
+import com.android.build.api.variant.FilterConfiguration
 import java.util.Properties
 
 plugins {
@@ -68,6 +69,18 @@ android {
         // without the actual libsodium.so to match. Restrict to real ABIs.
         ndk {
             abiFilters += listOf("arm64-v8a", "armeabi-v7a", "x86", "x86_64")
+        }
+    }
+
+    splits {
+        abi {
+            isEnable = true
+            reset()
+            include("armeabi-v7a", "arm64-v8a", "x86", "x86_64")
+            // Keep a universal APK too: Play Store delivery uses the AAB (unaffected by this
+            // block), but the release_github_binaries Fastlane lane still expects a single
+            // GMS reference APK.
+            isUniversalApk = true
         }
     }
 
@@ -164,6 +177,25 @@ androidComponents {
         val flavors = variantBuilder.productFlavors.map { it.second }.toSet()
         if ("full" in flavors && "fdroid" in flavors) {
             variantBuilder.enable = false
+        }
+    }
+
+    // F-Droid requires each per-ABI split APK to have a distinct versionCode, ordered
+    // armeabi-v7a < arm64-v8a < x86 < x86_64. The universal APK and the AAB (Play Store)
+    // output are untouched, since they have no ABI filter.
+    val abiVersionCodes = mapOf(
+        "armeabi-v7a" to 1,
+        "arm64-v8a" to 2,
+        "x86" to 3,
+        "x86_64" to 4,
+    )
+    onVariants { variant ->
+        variant.outputs.forEach { output ->
+            val abi = output.filters.find { it.filterType == FilterConfiguration.FilterType.ABI }?.identifier
+            val abiCode = abi?.let { abiVersionCodes[it] }
+            if (abiCode != null) {
+                output.versionCode.set((output.versionCode.orNull ?: 0) * 10 + abiCode)
+            }
         }
     }
 }
