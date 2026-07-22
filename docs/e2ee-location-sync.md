@@ -296,8 +296,6 @@ T_AB_0 = HKDF-SHA-256(ikm=SK, salt=null, info="Where-v1-RoutingToken" || alice_f
 T_BA_0 = HKDF-SHA-256(ikm=SK, salt=null, info="Where-v1-RoutingToken" || bob_fp || alice_fp, length=16)
 ```
 
-**Deprecated `token` field.** `KeyExchangeInit` does **not** carry a `token` field on the wire (see the payload in §9.3) and Alice does not verify one. An earlier draft of this protocol included a wire-supplied token that Alice was meant to check against her independently-derived `T_AB_0`, aborting on mismatch. That field is unused by receivers — kept, if emitted at all, only for backward wire compatibility with older senders, and otherwise dropped from the wire format entirely, as it is in the current implementation. Alice always derives `T_AB_0` (and `T_BA_0`) independently from `SK`, `alice_fp`, and `bob_fp`, and trusts no wire-supplied token value. The field was redundant with `key_confirmation` — both are derived from `SK` — and transmitting a token in plaintext would let the server link the discovery mailbox to the session routing token, defeating the purpose of `discovery_secret` (§4.2).
-
 To prevent leaking Bob's suggested name to the server, Bob encrypts it under a one-shot key derived from `SK`:
 ```
 K_name = HKDF-SHA-256(
@@ -853,8 +851,6 @@ The server returns a JSON array of `MailboxPayload` objects, or an empty array `
 *   `ek_pub` (bytes): Bob's ephemeral X25519 public key, `EK_B.pub`.
 *   `key_confirmation` (bytes): proves Bob derived the same `SK` as Alice (§4.4).
 *   `encrypted_name` (bytes): Bob's suggested display name, AEAD-encrypted — not sent in plaintext. `nonce (12 bytes) || ChaCha20-Poly1305-Encrypt(key = K_name, nonce, plaintext = UTF-8(suggested_name), aad = EK_A.pub || EK_B.pub)`, where `K_name = HKDF-SHA-256(ikm=SK, salt=null, info="Where-v1-SuggestedName", length=32)` (§4.4).
-
-There is no `token` field on the wire; see the deprecated-token note in §4.4.
 
 Alice MUST verify `key_confirmation` and decrypt/verify `encrypted_name` before accepting the session. Abort and discard if either fails.
 
