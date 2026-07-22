@@ -192,6 +192,8 @@ Alice opens "Add Friend" and generates a fresh ephemeral key pair `EK_A` and a f
 
 No long-term keys, no signatures. The QR is intentionally minimal.
 
+Note the asymmetry: Alice's `suggested_name` above is sent in the clear, because the QR itself is the out-of-band channel (§2.1, MITM row) — there is no `SK` yet to encrypt it under. Bob's reciprocal suggested name, sent later in `KeyExchangeInit` over the (untrusted, server-relayed) discovery mailbox, is instead AEAD-encrypted as `encrypted_name` under a key derived from `SK` (§4.4, §9.3) rather than sent as plaintext.
+
 **Discovery Token (Pre-Session Rendezvous):**
 
 After Alice generates her QR, she derives the discovery token from `discovery_secret`:
@@ -293,6 +295,8 @@ Initial routing tokens are also derived from `SK`:
 T_AB_0 = HKDF-SHA-256(ikm=SK, salt=null, info="Where-v1-RoutingToken" || alice_fp || bob_fp, length=16)
 T_BA_0 = HKDF-SHA-256(ikm=SK, salt=null, info="Where-v1-RoutingToken" || bob_fp || alice_fp, length=16)
 ```
+
+**Deprecated `token` field.** `KeyExchangeInit` does **not** carry a `token` field on the wire (see the payload in §9.3) and Alice does not verify one. An earlier draft of this protocol included a wire-supplied token that Alice was meant to check against her independently-derived `T_AB_0`, aborting on mismatch. That field is unused by receivers — kept, if emitted at all, only for backward wire compatibility with older senders, and otherwise dropped from the wire format entirely, as it is in the current implementation. Alice always derives `T_AB_0` (and `T_BA_0`) independently from `SK`, `alice_fp`, and `bob_fp`, and trusts no wire-supplied token value. The field was redundant with `key_confirmation` — both are derived from `SK` — and transmitting a token in plaintext would let the server link the discovery mailbox to the session routing token, defeating the purpose of `discovery_secret` (§4.2).
 
 To prevent leaking Bob's suggested name to the server, Bob encrypts it under a one-shot key derived from `SK`:
 ```
@@ -835,16 +839,22 @@ The server returns a JSON array of `MailboxPayload` objects, or an empty array `
 
 ### 9.3 KeyExchangeInit
 
-**KeyExchangeInit** (Bob → Alice, posted to discovery token):
+**KeyExchangeInit** (Bob → Alice, posted to discovery token). Field names below match `KeyExchangeInitPayload` (`MailboxMessage.kt`) and its `@SerialName` annotations:
 ```json
 {
-  "v": 1,
-  "type": "KeyExchangeInit",
+  "v":                1,
+  "type":             "KeyExchangeInit",
   "ek_pub":           "<base64, Bob's X25519 ephemeral public key>",
-  "encrypted_name":   "<base64, 12-byte nonce || ChaCha20-Poly1305 ciphertext>",
-  "key_confirmation": "<base64, key_confirmation>"
+  "key_confirmation": "<base64, HMAC-SHA-256(K_confirm, \"Where-v1-Confirm\" || EK_A.pub || EK_B.pub)>",
+  "encrypted_name":   "<base64, 12-byte nonce || ChaCha20-Poly1305 ciphertext>"
 }
 ```
+*   `v` (int): protocol version.
+*   `ek_pub` (bytes): Bob's ephemeral X25519 public key, `EK_B.pub`.
+*   `key_confirmation` (bytes): proves Bob derived the same `SK` as Alice (§4.4).
+*   `encrypted_name` (bytes): Bob's suggested display name, AEAD-encrypted — not sent in plaintext. `nonce (12 bytes) || ChaCha20-Poly1305-Encrypt(key = K_name, nonce, plaintext = UTF-8(suggested_name), aad = EK_A.pub || EK_B.pub)`, where `K_name = HKDF-SHA-256(ikm=SK, salt=null, info="Where-v1-SuggestedName", length=32)` (§4.4).
+
+There is no `token` field on the wire; see the deprecated-token note in §4.4.
 
 Alice MUST verify `key_confirmation` and decrypt/verify `encrypted_name` before accepting the session. Abort and discard if either fails.
 
