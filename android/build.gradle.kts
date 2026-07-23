@@ -74,12 +74,15 @@ android {
 
     splits {
         abi {
-            isEnable = true
+            // Only enable ABI splits when explicitly requested (via -PenableAbiSplits=true).
+            // Enabling splits globally creates multiple outputs for every variant, which
+            // breaks bundle builds: AGP's pre-bundle task calls .single() on variant outputs
+            // and throws "Sequence contains more than one matching element".
+            // The release_github_binaries Fastlane lane passes this property when building
+            // the fdroid per-ABI APKs (and the GMS universal reference APK).
+            isEnable = project.findProperty("enableAbiSplits") == "true"
             reset()
             include("armeabi-v7a", "arm64-v8a", "x86", "x86_64")
-            // Keep a universal APK too: Play Store delivery uses the AAB (unaffected by this
-            // block), but the release_github_binaries Fastlane lane still expects a single
-            // GMS reference APK.
             isUniversalApk = true
         }
     }
@@ -190,6 +193,7 @@ androidComponents {
         "x86_64" to 4,
     )
     onVariants { variant ->
+        if (project.findProperty("enableAbiSplits") != "true") return@onVariants
         variant.outputs.forEach { output ->
             val abi = output.filters.find { it.filterType == FilterConfiguration.FilterType.ABI }?.identifier
             val abiCode = abi?.let { abiVersionCodes[it] }

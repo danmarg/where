@@ -92,8 +92,8 @@ platform :android do
     end
 
     UI.message("Building signed release APKs for #{tag}...")
-    gradle(project_dir: "../", task: ":android:assembleStandardGmsRelease")
-    gradle(project_dir: "../", task: ":android:assembleStandardFdroidRelease")
+    gradle(project_dir: "../", task: ":android:assembleStandardGmsRelease", properties: { "enableAbiSplits" => "true" })
+    gradle(project_dir: "../", task: ":android:assembleStandardFdroidRelease", properties: { "enableAbiSplits" => "true" })
 
     # GMS: Play Store delivery goes through the AAB (bundleStandardGmsRelease, elsewhere); the
     # only APK we publish here is the universal one, purely as a GitHub reference artifact.
@@ -140,6 +140,7 @@ platform :android do
       track_promote_to: "alpha",
       skip_upload_aab: true,
       skip_upload_metadata: true,
+      skip_upload_changelogs: true,
       skip_upload_images: true,
       skip_upload_screenshots: true,
     )
