@@ -192,6 +192,8 @@ Alice opens "Add Friend" and generates a fresh ephemeral key pair `EK_A` and a f
 
 No long-term keys, no signatures. The QR is intentionally minimal.
 
+Note the asymmetry: Alice's `suggested_name` above is sent in the clear, because the QR itself is the out-of-band channel (§2.1, MITM row) — there is no `SK` yet to encrypt it under. Bob's reciprocal suggested name, sent later in `KeyExchangeInit` over the (untrusted, server-relayed) discovery mailbox, is instead AEAD-encrypted as `encrypted_name` under a key derived from `SK` (§4.4, §9.3) rather than sent as plaintext.
+
 **Discovery Token (Pre-Session Rendezvous):**
 
 After Alice generates her QR, she derives the discovery token from `discovery_secret`:
@@ -835,16 +837,20 @@ The server returns a JSON array of `MailboxPayload` objects, or an empty array `
 
 ### 9.3 KeyExchangeInit
 
-**KeyExchangeInit** (Bob → Alice, posted to discovery token):
+**KeyExchangeInit** (Bob → Alice, posted to discovery token). Field names below match `KeyExchangeInitPayload` (`MailboxMessage.kt`) and its `@SerialName` annotations:
 ```json
 {
-  "v": 1,
-  "type": "KeyExchangeInit",
+  "v":                1,
+  "type":             "KeyExchangeInit",
   "ek_pub":           "<base64, Bob's X25519 ephemeral public key>",
-  "encrypted_name":   "<base64, 12-byte nonce || ChaCha20-Poly1305 ciphertext>",
-  "key_confirmation": "<base64, key_confirmation>"
+  "key_confirmation": "<base64, HMAC-SHA-256(K_confirm, \"Where-v1-Confirm\" || EK_A.pub || EK_B.pub)>",
+  "encrypted_name":   "<base64, 12-byte nonce || ChaCha20-Poly1305 ciphertext>"
 }
 ```
+*   `v` (int): protocol version.
+*   `ek_pub` (bytes): Bob's ephemeral X25519 public key, `EK_B.pub`.
+*   `key_confirmation` (bytes): proves Bob derived the same `SK` as Alice (§4.4).
+*   `encrypted_name` (bytes): Bob's suggested display name, AEAD-encrypted — not sent in plaintext. `nonce (12 bytes) || ChaCha20-Poly1305-Encrypt(key = K_name, nonce, plaintext = UTF-8(suggested_name), aad = EK_A.pub || EK_B.pub)`, where `K_name = HKDF-SHA-256(ikm=SK, salt=null, info="Where-v1-SuggestedName", length=32)` (§4.4).
 
 Alice MUST verify `key_confirmation` and decrypt/verify `encrypted_name` before accepting the session. Abort and discard if either fails.
 
