@@ -69,21 +69,27 @@ internal const val RATE_LIMIT_MAX_GETS = 2000
  */
 class InProcessRateLimiter {
     private val postTimes = ConcurrentHashMap<String, ConcurrentLinkedQueue<Long>>()
-    private val getTimes  = ConcurrentHashMap<String, ConcurrentLinkedQueue<Long>>()
-    private val ipTimes   = ConcurrentHashMap<String, ConcurrentLinkedQueue<Long>>()
+    private val getTimes = ConcurrentHashMap<String, ConcurrentLinkedQueue<Long>>()
+    private val ipTimes = ConcurrentHashMap<String, ConcurrentLinkedQueue<Long>>()
 
     fun checkPost(token: String): Boolean = check(postTimes, token, RATE_LIMIT_MAX_POSTS)
-    fun checkGet(token: String): Boolean  = check(getTimes,  token, RATE_LIMIT_MAX_GETS)
-    fun checkIp(ip: String): Boolean      = check(ipTimes,   ip,    IP_RATE_LIMIT_MAX)
+
+    fun checkGet(token: String): Boolean = check(getTimes, token, RATE_LIMIT_MAX_GETS)
+
+    fun checkIp(ip: String): Boolean = check(ipTimes, ip, IP_RATE_LIMIT_MAX)
 
     fun evict(windowMs: Long = RATE_LIMIT_WINDOW_MS) {
         val cutoff = System.currentTimeMillis() - windowMs
         for (q in postTimes.values) q.removeIf { it < cutoff }
-        for (q in getTimes.values)  q.removeIf { it < cutoff }
-        for (q in ipTimes.values)   q.removeIf { it < cutoff }
+        for (q in getTimes.values) q.removeIf { it < cutoff }
+        for (q in ipTimes.values) q.removeIf { it < cutoff }
     }
 
-    private fun check(map: ConcurrentHashMap<String, ConcurrentLinkedQueue<Long>>, key: String, limit: Int): Boolean {
+    private fun check(
+        map: ConcurrentHashMap<String, ConcurrentLinkedQueue<Long>>,
+        key: String,
+        limit: Int,
+    ): Boolean {
         val now = System.currentTimeMillis()
         val q = map.getOrPut(key) { ConcurrentLinkedQueue() }
         q.removeIf { it < now - RATE_LIMIT_WINDOW_MS }
