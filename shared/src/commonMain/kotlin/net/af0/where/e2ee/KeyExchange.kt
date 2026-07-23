@@ -16,6 +16,20 @@ object KeyExchange {
     private const val CONFIRM_PREFIX = "Where-v1-Confirm"
 
     /**
+     * X25519 returns an all-zero shared secret (rather than throwing) for canonical
+     * low-order public keys on at least one supported platform (see
+     * X25519LowOrderPointTest). An attacker-chosen low-order EK_pub would otherwise
+     * force SK to this known constant while key_confirmation — an HMAC keyed off SK —
+     * still verifies, since it's derived from the same attacker-known value.
+     */
+    private fun requireNonZeroSharedSecret(sk: ByteArray) {
+        if (sk.all { it == 0.toByte() }) {
+            sk.zeroize()
+            throw AuthenticationException("X25519 produced an all-zero shared secret, rejecting low-order public key")
+        }
+    }
+
+    /**
      * Alice: create the QR / invite-link payload.
      * Returns (QrPayload, EK_A.priv). The caller MUST zero EK_A.priv after aliceProcessInit.
      */
@@ -47,6 +61,7 @@ object KeyExchange {
 
         val ekB = generateX25519KeyPair()
         val sk = x25519(ekB.priv, qr.ekPub)
+        requireNonZeroSharedSecret(sk)
 
         val aliceFp = fingerprint(qr.ekPub)
         val bobFp = fingerprint(ekB.pub)
@@ -98,6 +113,7 @@ object KeyExchange {
         }
 
         val sk = x25519(aliceEkPriv, msg.ekPub)
+        requireNonZeroSharedSecret(sk)
         try {
             // Verify key confirmation before proceeding.
             if (!verifyKeyConfirmation(sk, aliceEkPub, msg.ekPub, msg.keyConfirmation)) {
