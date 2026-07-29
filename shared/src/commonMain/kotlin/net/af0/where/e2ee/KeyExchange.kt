@@ -131,12 +131,6 @@ object KeyExchange {
             val aliceFp = fingerprint(aliceEkPub)
             val bobFp = fingerprint(msg.ekPub)
 
-            // NOTE: The `token` field in KeyExchangeInit is deprecated and ignored.
-            // It was redundant with `key_confirmation` (both are derived from SK), and
-            // including it in plaintext let the server link the discovery mailbox to the
-            // session routing token, defeating the purpose of `discovery_secret`. Alice
-            // derives T_AB_0 independently; no wire value is needed or trusted.
-
             val session =
                 initSession(
                     sk = sk,

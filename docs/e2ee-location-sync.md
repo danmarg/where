@@ -137,7 +137,7 @@ Each friendship session is identified by the pair `(EK_A.pub, EK_B.pub)` — the
 
 To avoid requiring users to manage session keys in the UI, the protocol implements local aliases:
 
-1. **Invite Payload:** An invite contains `{ek_pub, suggested_name: "Alice", fingerprint}`. Alice's suggested name is pre-filled in Bob's naming dialog.
+1. **Invite Payload:** An invite contains `{ek_pub, suggested_name: "Alice", discovery_secret}` (§4.2). Alice's suggested name is pre-filled in Bob's naming dialog.
 2. **KeyExchangeInit:** Bob includes his own `suggested_name` encrypted under `K_name` (derived from `SK`) when responding to Alice's QR. Alice decrypts it after verifying `key_confirmation` and pre-fills her naming dialog.
 3. **Local Import:** The receiving party sees the other's suggested name but may rename it locally before confirming.
 4. **Local Storage:** The name is a purely local alias. It is never sent to the server in plaintext. *It's important to note that these names are merely human-friendly aliases*; they are not globally unique or authoritative in any way.
@@ -581,7 +581,7 @@ The server's role is strictly limited to acting as a stateless message router fo
    - `DELETE /inbox/{token}/{msgId}`: Clients confirm receipt of a specific message by its ID. **Idempotent.**
 3. **Server Obliviousness:** The server does not know the sender or recipient identity—only the opaque routing token.
 
-**Receive atomicity (§5.4.1):** The three-step GET → save → DELETE sequence ensures that a client crash between receiving messages and persisting session state does not cause permanent token desync. On restart, the unACK'd messages are still available for re-processing from the same session state.
+**Receive atomicity (§5.4.5):** The three-step GET → save → DELETE sequence ensures that a client crash between receiving messages and persisting session state does not cause permanent token desync. On restart, the unACK'd messages are still available for re-processing from the same session state.
 
 ### 7.2 Invariant: Indistinguishable Responses
 
