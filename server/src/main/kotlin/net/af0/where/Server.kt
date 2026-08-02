@@ -39,6 +39,14 @@ private const val RATE_LIMIT_WINDOW_MS = 60 * 1000L
 private const val POLL_BASELINE_LATENCY_MS = 50L
 private const val MAILBOX_TTL_MS = 7 * 24 * 60 * 60 * 1000L
 
+/**
+ * Extra headroom added to the TTL when refreshing mailbox keys in Redis. Keys are only
+ * re-EXPIREd once their remaining TTL drops below MAILBOX_TTL_MS, so a chatty mailbox doesn't
+ * issue an EXPIRE on every single write. This means data can live up to this long past the
+ * 7-day floor (acceptable: it's encrypted at rest) but never expires earlier than 7 days.
+ */
+private const val TTL_REFRESH_PADDING_SEC = 2 * 24 * 60 * 60L
+
 /** Maximum messages retained per token. Prevents unbounded memory growth from floods. */
 private const val MAX_QUEUE_DEPTH = 10000
 
@@ -274,6 +282,7 @@ class RedisMailboxState(
         local ttlSec = tonumber(ARGV[3])
         local msgId = ARGV[4]
         local score = tonumber(ARGV[5])
+        local paddedTtlSec = tonumber(ARGV[6])
 
         -- Idempotency check: drop retransmits we have already stored.
         if msgId ~= "" then
@@ -290,12 +299,22 @@ class RedisMailboxState(
         -- Store payload.
         redis.call('HSET', dataKey, msgId, payload)
         redis.call('ZADD', inboxKey, score, msgId)
-        redis.call('EXPIRE', inboxKey, ttlSec)
-        redis.call('EXPIRE', dataKey, ttlSec)
-
         if msgId ~= "" then
             redis.call('SADD', receivedIdsKey, msgId)
-            redis.call('EXPIRE', receivedIdsKey, ttlSec)
+        end
+
+        -- Only re-EXPIRE once the TTL has decayed below the floor, padding back up above it.
+        -- Avoids an EXPIRE (x2-3) on every write while guaranteeing keys never expire before
+        -- ttlSec of remaining life. inboxKey/dataKey/receivedIdsKey are always refreshed
+        -- together, so a single TTL check on dataKey is enough to gate all three. SADD above
+        -- must run first so receivedIdsKey already exists by the time EXPIRE targets it.
+        local ttl = redis.call('TTL', dataKey)
+        if ttl < ttlSec then
+            redis.call('EXPIRE', inboxKey, paddedTtlSec)
+            redis.call('EXPIRE', dataKey, paddedTtlSec)
+            if msgId ~= "" then
+                redis.call('EXPIRE', receivedIdsKey, paddedTtlSec)
+            end
         end
 
         return 1
@@ -336,6 +355,7 @@ class RedisMailboxState(
                     (MAILBOX_TTL_MS / 1000).toString(),
                     msgId ?: "",
                     System.currentTimeMillis().toString(),
+                    (MAILBOX_TTL_MS / 1000 + TTL_REFRESH_PADDING_SEC).toString(),
                 ),
             )
         return result == 1L
