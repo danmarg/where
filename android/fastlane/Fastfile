@@ -54,7 +54,13 @@ platform :android do
       project_dir: "../",
       task: ":android:bundleStandardGmsRelease",
     )
-    upload_to_play_store(track: "internal", skip_upload_apk: true)
+    # Pass the AAB path explicitly: fastlane's gradle action can't disambiguate which flavor's
+    # AAB was just built when more than one exists under build/outputs/bundle (we have both
+    # standardGms and fullGms), so it falls back to "most recently modified file", which can
+    # silently pick the wrong flavor's stale AAB.
+    aab_path = Dir[File.expand_path("../build/outputs/bundle/standardGmsRelease/*.aab", __dir__)].first
+    UI.user_error!("standardGmsRelease AAB not found — did the gradle bundle task fail silently?") unless aab_path
+    upload_to_play_store(track: "internal", skip_upload_apk: true, aab: aab_path)
   end
 
   desc "Build full AAB (with activity recognition) and upload to Google Play (internal track)"
@@ -64,7 +70,9 @@ platform :android do
       project_dir: "../",
       task: ":android:bundleFullGmsRelease",
     )
-    upload_to_play_store(track: "internal", skip_upload_apk: true)
+    aab_path = Dir[File.expand_path("../build/outputs/bundle/fullGmsRelease/*.aab", __dir__)].first
+    UI.user_error!("fullGmsRelease AAB not found — did the gradle bundle task fail silently?") unless aab_path
+    upload_to_play_store(track: "internal", skip_upload_apk: true, aab: aab_path)
   end
 
   desc "Build signed standardGms (universal) + standardFdroid (per-ABI split) release APKs " \
@@ -138,10 +146,15 @@ platform :android do
       package_name: package_name,
       track: "internal",
       track_promote_to: "alpha",
+      skip_upload_apk: true,
       skip_upload_aab: true,
       skip_upload_metadata: true,
       skip_upload_images: true,
       skip_upload_screenshots: true,
+      # This is a pure track promotion — no APK/AAB is uploaded, so there's no version code to
+      # key a changelog to. Without this, supply still tries to push "what's new" text keyed to
+      # a nil version code and crashes (uploader.rb's upload_changelog requires a version code).
+      skip_upload_changelogs: true,
     )
   end
 end
