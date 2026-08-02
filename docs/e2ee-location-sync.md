@@ -137,7 +137,7 @@ Each friendship session is identified by the pair `(EK_A.pub, EK_B.pub)` — the
 
 To avoid requiring users to manage session keys in the UI, the protocol implements local aliases:
 
-1. **Invite Payload:** An invite contains `{ek_pub, suggested_name: "Alice", fingerprint}`. Alice's suggested name is pre-filled in Bob's naming dialog.
+1. **Invite Payload:** An invite contains `{ek_pub, suggested_name: "Alice", discovery_secret}` (§4.2). Alice's suggested name is pre-filled in Bob's naming dialog.
 2. **KeyExchangeInit:** Bob includes his own `suggested_name` encrypted under `K_name` (derived from `SK`) when responding to Alice's QR. Alice decrypts it after verifying `key_confirmation` and pre-fills her naming dialog.
 3. **Local Import:** The receiving party sees the other's suggested name but may rename it locally before confirming.
 4. **Local Storage:** The name is a purely local alias. It is never sent to the server in plaintext. *It's important to note that these names are merely human-friendly aliases*; they are not globally unique or authoritative in any way.
@@ -191,6 +191,8 @@ Alice opens "Add Friend" and generates a fresh ephemeral key pair `EK_A` and a f
 ```
 
 No long-term keys, no signatures. The QR is intentionally minimal.
+
+Note the asymmetry: Alice's `suggested_name` above is sent in the clear, because the QR itself is the out-of-band channel (§2.1, MITM row) — there is no `SK` yet to encrypt it under. Bob's reciprocal suggested name, sent later in `KeyExchangeInit` over the (untrusted, server-relayed) discovery mailbox, is instead AEAD-encrypted as `encrypted_name` under a key derived from `SK` (§4.4, §9.3) rather than sent as plaintext.
 
 **Discovery Token (Pre-Session Rendezvous):**
 
@@ -579,7 +581,7 @@ The server's role is strictly limited to acting as a stateless message router fo
    - `DELETE /inbox/{token}/{msgId}`: Clients confirm receipt of a specific message by its ID. **Idempotent.**
 3. **Server Obliviousness:** The server does not know the sender or recipient identity—only the opaque routing token.
 
-**Receive atomicity (§5.4.1):** The three-step GET → save → DELETE sequence ensures that a client crash between receiving messages and persisting session state does not cause permanent token desync. On restart, the unACK'd messages are still available for re-processing from the same session state.
+**Receive atomicity (§5.4.5):** The three-step GET → save → DELETE sequence ensures that a client crash between receiving messages and persisting session state does not cause permanent token desync. On restart, the unACK'd messages are still available for re-processing from the same session state.
 
 ### 7.2 Invariant: Indistinguishable Responses
 
@@ -835,16 +837,20 @@ The server returns a JSON array of `MailboxPayload` objects, or an empty array `
 
 ### 9.3 KeyExchangeInit
 
-**KeyExchangeInit** (Bob → Alice, posted to discovery token):
+**KeyExchangeInit** (Bob → Alice, posted to discovery token). Field names below match `KeyExchangeInitPayload` (`MailboxMessage.kt`) and its `@SerialName` annotations:
 ```json
 {
-  "v": 1,
-  "type": "KeyExchangeInit",
+  "v":                1,
+  "type":             "KeyExchangeInit",
   "ek_pub":           "<base64, Bob's X25519 ephemeral public key>",
-  "encrypted_name":   "<base64, 12-byte nonce || ChaCha20-Poly1305 ciphertext>",
-  "key_confirmation": "<base64, key_confirmation>"
+  "key_confirmation": "<base64, HMAC-SHA-256(K_confirm, \"Where-v1-Confirm\" || EK_A.pub || EK_B.pub)>",
+  "encrypted_name":   "<base64, 12-byte nonce || ChaCha20-Poly1305 ciphertext>"
 }
 ```
+*   `v` (int): protocol version.
+*   `ek_pub` (bytes): Bob's ephemeral X25519 public key, `EK_B.pub`.
+*   `key_confirmation` (bytes): proves Bob derived the same `SK` as Alice (§4.4).
+*   `encrypted_name` (bytes): Bob's suggested display name, AEAD-encrypted — not sent in plaintext. `nonce (12 bytes) || ChaCha20-Poly1305-Encrypt(key = K_name, nonce, plaintext = UTF-8(suggested_name), aad = EK_A.pub || EK_B.pub)`, where `K_name = HKDF-SHA-256(ikm=SK, salt=null, info="Where-v1-SuggestedName", length=32)` (§4.4).
 
 Alice MUST verify `key_confirmation` and decrypt/verify `encrypted_name` before accepting the session. Abort and discard if either fails.
 

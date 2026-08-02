@@ -83,9 +83,6 @@ android {
             isEnable = !isBuildingBundle
             reset()
             include("armeabi-v7a", "arm64-v8a", "x86", "x86_64")
-            // Keep a universal APK too: Play Store delivery uses the AAB (unaffected by this
-            // block), but the release_github_binaries Fastlane lane still expects a single
-            // GMS reference APK.
             isUniversalApk = true
         }
     }
@@ -196,6 +193,7 @@ androidComponents {
         "x86_64" to 4,
     )
     onVariants { variant ->
+        if (project.findProperty("enableAbiSplits") != "true") return@onVariants
         variant.outputs.forEach { output ->
             val abi = output.filters.find { it.filterType == FilterConfiguration.FilterType.ABI }?.identifier
             val abiCode = abi?.let { abiVersionCodes[it] }
