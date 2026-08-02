@@ -55,14 +55,14 @@ kotlin {
 
 android {
     namespace = "net.af0.where"
-    compileSdk = 35
+    compileSdk = 36
 
     defaultConfig {
         applicationId = "net.af0.where"
         minSdk = 26
-        targetSdk = 35
-        versionCode = 108
-        versionName = "2026.07.23.4"
+        targetSdk = 36
+        versionCode = 114
+        versionName = "2026.07.26.9"
 
         // JNA (a transitive dep of the libsodium bindings) ships dispatch stubs for
         // legacy ABIs no Android device has used in years (armeabi, mips, mips64),
@@ -74,13 +74,13 @@ android {
 
     splits {
         abi {
-            // Only enable ABI splits when explicitly requested (via -PenableAbiSplits=true).
-            // Enabling splits globally creates multiple outputs for every variant, which
-            // breaks bundle builds: AGP's pre-bundle task calls .single() on variant outputs
-            // and throws "Sequence contains more than one matching element".
-            // The release_github_binaries Fastlane lane passes this property when building
-            // the fdroid per-ABI APKs (and the GMS universal reference APK).
-            isEnable = project.findProperty("enableAbiSplits") == "true"
+            // AGP's bundle (AAB) task can't cope with ABI-split resources present in the same
+            // module — it throws "Sequence contains more than one matching element" trying to
+            // pick a single linked-resources file. Bundling doesn't need per-ABI split APKs
+            // anyway (Play Store's dynamic delivery handles that from the AAB), so only turn
+            // splits on when we're not building a bundle.
+            val isBuildingBundle = gradle.startParameter.taskNames.any { it.contains("bundle", ignoreCase = true) }
+            isEnable = !isBuildingBundle
             reset()
             include("armeabi-v7a", "arm64-v8a", "x86", "x86_64")
             isUniversalApk = true

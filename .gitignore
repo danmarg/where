@@ -21,6 +21,9 @@ DerivedData/
 holes.sb
 .kotlin/
 android/fastlane/report.xml
+android/fastlane/repo/
+android/.bundle/
+android/vendor/
 ios/Local.xcconfig
 cli/where_cli_state.json
 *.swp
