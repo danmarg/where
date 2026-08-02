@@ -6,3 +6,9 @@ build/
 .idea/
 .vscode/
 *.log
+.gradle_home/
+android/
+cli/
+ios/
+.git/
+.gradle/
