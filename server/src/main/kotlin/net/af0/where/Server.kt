@@ -1,5 +1,7 @@
 package net.af0.where
 
+import com.zaxxer.hikari.HikariConfig
+import com.zaxxer.hikari.HikariDataSource
 import io.ktor.http.*
 import io.ktor.serialization.kotlinx.json.*
 import io.ktor.server.application.*
@@ -12,7 +14,9 @@ import io.ktor.server.request.*
 import io.ktor.server.response.*
 import io.ktor.server.routing.*
 import io.ktor.server.routing.delete
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
@@ -20,10 +24,14 @@ import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
+import org.slf4j.LoggerFactory
 import redis.clients.jedis.JedisPooled
 import java.net.URI
+import java.security.MessageDigest
+import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.ConcurrentLinkedQueue
+import javax.sql.DataSource
 
 // ---------------------------------------------------------------------------
 // Server module
@@ -403,6 +411,339 @@ class RedisMailboxState(
 }
 
 // ---------------------------------------------------------------------------
+// Postgres implementation
+// ---------------------------------------------------------------------------
+
+private const val MAILBOX_SCHEMA_SQL = """
+CREATE TABLE IF NOT EXISTS mailbox_messages (
+    token       TEXT NOT NULL,
+    msg_id      TEXT NOT NULL,
+    payload     TEXT NOT NULL,
+    posted_at   BIGINT NOT NULL,
+    expires_at  BIGINT NOT NULL,
+    PRIMARY KEY (token, msg_id)
+);
+CREATE INDEX IF NOT EXISTS idx_mailbox_messages_token_posted ON mailbox_messages (token, posted_at);
+CREATE INDEX IF NOT EXISTS idx_mailbox_messages_expires ON mailbox_messages (expires_at);
+
+CREATE TABLE IF NOT EXISTS mailbox_received_ids (
+    token       TEXT NOT NULL,
+    msg_id      TEXT NOT NULL,
+    expires_at  BIGINT NOT NULL,
+    PRIMARY KEY (token, msg_id)
+);
+CREATE INDEX IF NOT EXISTS idx_mailbox_received_expires ON mailbox_received_ids (expires_at);
+"""
+
+/**
+ * Accepts a plain "postgresql://user:pass@host/db?params" connection string (what Neon and most
+ * providers hand out) and adapts it for pgjdbc, which - unlike libpq - doesn't accept
+ * "user:pass@" userinfo in the URL itself (credentials must be separate JDBC properties) and
+ * doesn't recognize libpq-only params like "channel_binding".
+ */
+fun createHikariDataSource(connectionString: String): HikariDataSource {
+    val uri = URI(connectionString.removePrefix("jdbc:").replaceFirst(Regex("^postgres(ql)?://"), "postgresql://"))
+    val dbUser = uri.userInfo?.substringBefore(":")
+    val dbPassword = uri.userInfo?.substringAfter(":", "")
+    val query =
+        uri.query
+            ?.split("&")
+            ?.filterNot { it.startsWith("channel_binding=") }
+            ?.joinToString("&")
+    val hostPart = if (uri.port != -1) "${uri.host}:${uri.port}" else uri.host
+    val jdbcUrl = "jdbc:postgresql://$hostPart${uri.path}" + if (query.isNullOrEmpty()) "" else "?$query"
+
+    return HikariDataSource(
+        HikariConfig().apply {
+            this.jdbcUrl = jdbcUrl
+            driverClassName = "org.postgresql.Driver"
+            username = dbUser
+            password = dbPassword
+            maximumPoolSize = 5
+        },
+    )
+}
+
+/**
+ * Postgres-backed mailbox store (Neon). Unlike Redis, each row carries its own [expiresAt], so
+ * there's no need for the EXPIRE-churn-avoidance padding RedisMailboxState uses (Server.kt above) -
+ * that hack existed only to avoid billed EXPIRE commands on shared per-mailbox Redis keys.
+ *
+ * Atomicity for post() is provided by an in-process per-token lock (same pattern as
+ * InMemoryMailboxState.getLock), not SQL isolation level: Fly runs exactly one machine/JVM for
+ * this app, so there's never more than one writer.
+ */
+class PostgresMailboxState(
+    private val dataSource: DataSource,
+    private val limiter: InProcessRateLimiter = InProcessRateLimiter(),
+) : MailboxStore {
+    private val locks = ConcurrentHashMap<String, Any>()
+
+    private fun getLock(token: String) = locks.getOrPut(token) { Any() }
+
+    init {
+        dataSource.connection.use { conn ->
+            conn.createStatement().use { it.execute(MAILBOX_SCHEMA_SQL) }
+        }
+    }
+
+    override fun checkIpRateLimit(ip: String) = limiter.checkIp(ip)
+
+    override fun post(
+        token: String,
+        payload: JsonElement,
+        msgId: String?,
+    ): Boolean {
+        if (!limiter.checkPost(token)) return false
+        synchronized(getLock(token)) {
+            dataSource.connection.use { conn ->
+                conn.autoCommit = false
+                try {
+                    val now = System.currentTimeMillis()
+                    val expiresAt = now + MAILBOX_TTL_MS
+
+                    if (msgId != null) {
+                        val inserted =
+                            conn.prepareStatement(
+                                "INSERT INTO mailbox_received_ids (token, msg_id, expires_at) VALUES (?, ?, ?) " +
+                                    "ON CONFLICT (token, msg_id) DO NOTHING",
+                            ).use { ps ->
+                                ps.setString(1, token)
+                                ps.setString(2, msgId)
+                                ps.setLong(3, expiresAt)
+                                ps.executeUpdate() > 0
+                            }
+                        if (!inserted) {
+                            // Already seen: idempotent no-op, matches RedisMailboxState's SISMEMBER check.
+                            conn.commit()
+                            return true
+                        }
+                    }
+
+                    val depth =
+                        conn.prepareStatement(
+                            "SELECT COUNT(*) FROM mailbox_messages WHERE token = ? AND expires_at > ?",
+                        ).use { ps ->
+                            ps.setString(1, token)
+                            ps.setLong(2, now)
+                            ps.executeQuery().use { rs ->
+                                rs.next()
+                                rs.getLong(1)
+                            }
+                        }
+                    if (depth >= MAX_QUEUE_DEPTH) {
+                        conn.rollback()
+                        return false
+                    }
+
+                    conn.prepareStatement(
+                        "INSERT INTO mailbox_messages (token, msg_id, payload, posted_at, expires_at) " +
+                            "VALUES (?, ?, ?, ?, ?) ON CONFLICT (token, msg_id) DO NOTHING",
+                    ).use { ps ->
+                        ps.setString(1, token)
+                        // A null msgId means "no idempotency requested" (never happens over the real HTTP
+                        // API, which requires msgId in the path) - give it a unique key so it behaves like
+                        // InMemoryMailboxState's queue (a fresh entry per post), not a dedup target.
+                        ps.setString(2, msgId ?: UUID.randomUUID().toString())
+                        ps.setString(3, payload.toString())
+                        ps.setLong(4, now)
+                        ps.setLong(5, expiresAt)
+                        ps.executeUpdate()
+                    }
+                    conn.commit()
+                    return true
+                } catch (e: Exception) {
+                    conn.rollback()
+                    throw e
+                }
+            }
+        }
+    }
+
+    override fun drain(token: String): List<JsonElement>? {
+        if (!limiter.checkGet(token)) return null
+        return dataSource.connection.use { conn ->
+            conn.prepareStatement(
+                "SELECT payload FROM mailbox_messages WHERE token = ? AND expires_at > ? ORDER BY posted_at LIMIT ?",
+            ).use { ps ->
+                ps.setString(1, token)
+                ps.setLong(2, System.currentTimeMillis())
+                ps.setInt(3, MAX_MESSAGES_PER_POLL)
+                ps.executeQuery().use { rs ->
+                    val results = mutableListOf<JsonElement>()
+                    while (rs.next()) {
+                        results.add(json.parseToJsonElement(rs.getString(1)))
+                    }
+                    results
+                }
+            }
+        }
+    }
+
+    override fun deleteById(
+        token: String,
+        msgId: String,
+    ): Boolean {
+        dataSource.connection.use { conn ->
+            conn.prepareStatement("DELETE FROM mailbox_messages WHERE token = ? AND msg_id = ?").use { ps ->
+                ps.setString(1, token)
+                ps.setString(2, msgId)
+                ps.executeUpdate()
+            }
+        }
+        return true
+    }
+
+    override fun deleteByIds(
+        token: String,
+        msgIds: List<String>,
+    ): Int {
+        if (msgIds.isEmpty()) return 0
+        return dataSource.connection.use { conn ->
+            val placeholders = msgIds.joinToString(",") { "?" }
+            conn.prepareStatement(
+                "DELETE FROM mailbox_messages WHERE token = ? AND msg_id IN ($placeholders)",
+            ).use { ps ->
+                ps.setString(1, token)
+                msgIds.forEachIndexed { i, id -> ps.setString(i + 2, id) }
+                ps.executeUpdate()
+            }
+        }
+    }
+
+    override fun evict() {
+        limiter.evict()
+        val now = System.currentTimeMillis()
+        dataSource.connection.use { conn ->
+            conn.prepareStatement("DELETE FROM mailbox_messages WHERE expires_at <= ?").use { ps ->
+                ps.setLong(1, now)
+                ps.executeUpdate()
+            }
+            conn.prepareStatement("DELETE FROM mailbox_received_ids WHERE expires_at <= ?").use { ps ->
+                ps.setLong(1, now)
+                ps.executeUpdate()
+            }
+        }
+    }
+
+    override fun close() {
+        (dataSource as? HikariDataSource)?.close()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Dual-write wrapper - Redis -> Postgres migration aid, removed once cutover completes
+// ---------------------------------------------------------------------------
+
+private val migrationLog = LoggerFactory.getLogger("MailboxMigration")
+
+private fun tokenHash(token: String): String =
+    MessageDigest.getInstance("SHA-256").digest(token.toByteArray())
+        .joinToString("") { "%02x".format(it) }.take(12)
+
+/**
+ * Mirrors every mutation from [primary] to [secondary] best-effort (never fails the caller's
+ * request if the mirror write fails), and diffs every drain() against a shadow read of
+ * [secondary]. Used during the Redis -> Postgres migration: deploy with Redis as primary and
+ * Postgres as secondary first, then flip once confident. "Zero WARN logs from this class" is the
+ * proof of parity.
+ */
+class DualWriteMailboxState(
+    private val primary: MailboxStore,
+    private val secondary: MailboxStore,
+    // Capped so a slow secondary (e.g. Postgres under load, bounded by its own small Hikari pool)
+    // can't cause unbounded coroutine fan-out under sustained request volume - each mirrored
+    // operation still runs off the request path, just with a ceiling on how many run at once.
+    private val scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO.limitedParallelism(4)),
+) : MailboxStore {
+    override fun checkIpRateLimit(ip: String) = primary.checkIpRateLimit(ip)
+
+    override fun post(
+        token: String,
+        payload: JsonElement,
+        msgId: String?,
+    ): Boolean {
+        val result = primary.post(token, payload, msgId)
+        if (result) {
+            scope.launch {
+                runCatching { secondary.post(token, payload, msgId) }
+                    .onFailure { migrationLog.warn("secondary post failed token={}", tokenHash(token), it) }
+            }
+        }
+        return result
+    }
+
+    override fun drain(token: String): List<JsonElement>? {
+        val result = primary.drain(token) ?: return null
+        scope.launch {
+            runCatching {
+                val secondaryResult = secondary.drain(token) ?: emptyList()
+                comparePayloads(token, result, secondaryResult)
+            }.onFailure { migrationLog.warn("secondary drain failed token={}", tokenHash(token), it) }
+        }
+        return result
+    }
+
+    override fun deleteById(
+        token: String,
+        msgId: String,
+    ): Boolean {
+        val result = primary.deleteById(token, msgId)
+        scope.launch {
+            runCatching { secondary.deleteById(token, msgId) }
+                .onFailure { migrationLog.warn("secondary deleteById failed token={}", tokenHash(token), it) }
+        }
+        return result
+    }
+
+    override fun deleteByIds(
+        token: String,
+        msgIds: List<String>,
+    ): Int {
+        val result = primary.deleteByIds(token, msgIds)
+        if (msgIds.isNotEmpty()) {
+            scope.launch {
+                runCatching { secondary.deleteByIds(token, msgIds) }
+                    .onFailure { migrationLog.warn("secondary deleteByIds failed token={}", tokenHash(token), it) }
+            }
+        }
+        return result
+    }
+
+    override fun evict() {
+        primary.evict()
+        runCatching { secondary.evict() }
+            .onFailure { migrationLog.warn("secondary evict failed", it) }
+    }
+
+    override fun close() {
+        primary.close()
+        secondary.close()
+    }
+
+    private fun comparePayloads(
+        token: String,
+        primaryPayloads: List<JsonElement>,
+        secondaryPayloads: List<JsonElement>,
+    ) {
+        val primarySorted = primaryPayloads.map { it.toString() }.sorted()
+        val secondarySorted = secondaryPayloads.map { it.toString() }.sorted()
+        if (primarySorted != secondarySorted) {
+            val onlyInPrimary = primarySorted.toSet() - secondarySorted.toSet()
+            val onlyInSecondary = secondarySorted.toSet() - primarySorted.toSet()
+            migrationLog.warn(
+                "drain mismatch token={} primaryCount={} secondaryCount={} onlyInPrimary={} onlyInSecondary={}",
+                tokenHash(token),
+                primarySorted.size,
+                secondarySorted.size,
+                onlyInPrimary.size,
+                onlyInSecondary.size,
+            )
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
 
@@ -412,17 +753,50 @@ data class ServerState(
     val debug: Boolean = false,
 )
 
+/**
+ * "redis" / "postgres": that store alone.
+ * "dual-write-redis-primary" / "dual-write-postgres-primary": both stores, mirroring every
+ * mutation from the primary to the secondary, used during the Redis -> Postgres migration.
+ * Requires both REDIS_URL and DATABASE_URL.
+ */
+private fun buildMailboxStore(
+    redisUrl: String?,
+    databaseUrl: String?,
+    storeMode: String,
+): MailboxStore {
+    val redisStore = redisUrl?.let { RedisMailboxState(JedisPooled(it)) }
+    val postgresStore = databaseUrl?.let { PostgresMailboxState(createHikariDataSource(it)) }
+
+    return when (storeMode) {
+        "redis" ->
+            redisStore?.also { println("Using Redis at ${URI(redisUrl).host}") }
+                ?: InMemoryMailboxState().also { println("Using in-memory store") }
+        "postgres" -> {
+            requireNotNull(postgresStore) { "DATABASE_URL is required for MAILBOX_STORE_MODE=postgres" }
+            println("Using Postgres store")
+            postgresStore
+        }
+        "dual-write-redis-primary" -> {
+            requireNotNull(redisStore) { "REDIS_URL is required for dual-write-redis-primary" }
+            requireNotNull(postgresStore) { "DATABASE_URL is required for dual-write-redis-primary" }
+            println("Using dual-write store (Redis primary, Postgres shadow)")
+            DualWriteMailboxState(primary = redisStore, secondary = postgresStore)
+        }
+        "dual-write-postgres-primary" -> {
+            requireNotNull(redisStore) { "REDIS_URL is required for dual-write-postgres-primary" }
+            requireNotNull(postgresStore) { "DATABASE_URL is required for dual-write-postgres-primary" }
+            println("Using dual-write store (Postgres primary, Redis shadow)")
+            DualWriteMailboxState(primary = postgresStore, secondary = redisStore)
+        }
+        else -> error("Unknown MAILBOX_STORE_MODE: $storeMode")
+    }
+}
+
 fun main() {
     val port = System.getenv("PORT")?.toInt() ?: 8080
-    val redisUrl = System.getenv("REDIS_URL")
-    val state =
-        if (redisUrl != null) {
-            println("Using Redis at ${URI(redisUrl).host}")
-            ServerState(mailbox = RedisMailboxState(JedisPooled(redisUrl)))
-        } else {
-            println("Using in-memory store")
-            ServerState()
-        }
+    val storeMode = System.getenv("MAILBOX_STORE_MODE") ?: "redis"
+    val mailbox = buildMailboxStore(System.getenv("REDIS_URL"), System.getenv("DATABASE_URL"), storeMode)
+    val state = ServerState(mailbox = mailbox)
 
     embeddedServer(Netty, port = port, host = "0.0.0.0") {
         module(state)

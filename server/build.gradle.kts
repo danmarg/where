@@ -21,6 +21,8 @@ dependencies {
     implementation(libs.ktor.server.call.logging)
     implementation(libs.kotlinx.serialization.json)
     implementation(libs.jedis)
+    implementation(libs.postgresql)
+    implementation(libs.hikaricp)
     implementation(libs.logback.classic)
     testImplementation(libs.ktor.server.test.host)
     testImplementation(libs.ktor.client.content.negotiation)
@@ -28,5 +30,6 @@ dependencies {
     testImplementation(libs.kotlinx.coroutines.test)
     testImplementation(libs.libsodium.kmp)
     testImplementation(libs.sqldelight.sqlite)
+    testImplementation(libs.testcontainers.postgresql)
     testImplementation(kotlin("test"))
 }
