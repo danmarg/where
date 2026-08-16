@@ -6,6 +6,11 @@
 app = 'where-api'
 primary_region = 'fra'
 
+[env]
+  # Phase A of the Redis -> Postgres mailbox migration: Redis stays authoritative, Postgres
+  # mirrors every write and gets shadow-read-compared on drain(). See DualWriteMailboxState.
+  MAILBOX_STORE_MODE = 'dual-write-redis-primary'
+
 [http_service]
   internal_port = 8080
   force_https = true
