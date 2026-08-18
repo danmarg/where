@@ -27,6 +27,7 @@ private class FakeMailboxStore(
     val messages = mutableMapOf<String, MutableList<Pair<String, JsonElement>>>()
     var postCount = 0
     var deleteCount = 0
+    var evictCount = 0
 
     fun failNext() {
         failNextWrite = true
@@ -75,6 +76,10 @@ private class FakeMailboxStore(
         deleteCount++
         messages[token]?.removeIf { it.first in msgIds }
         return msgIds.size
+    }
+
+    override fun evict() {
+        evictCount++
     }
 }
 
@@ -155,6 +160,34 @@ class DualWriteMailboxStateTest {
         dual.drain("token")
 
         assertTrue(warnLogs().any { it.formattedMessage.contains("drain mismatch") })
+    }
+
+    @Test
+    fun `secondary evict is skipped when called again before the interval elapses`() {
+        // Regression test: evict() fires every 60s from the app's housekeeping loop, but pinging
+        // a serverless Postgres that often defeats its autosuspend billing - see secondaryEvictIntervalMs.
+        val primary = FakeMailboxStore()
+        val secondary = FakeMailboxStore()
+        val dual = DualWriteMailboxState(primary, secondary, scope = testScope, secondaryEvictIntervalMs = 60 * 60 * 1000L)
+
+        dual.evict()
+        dual.evict()
+        dual.evict()
+
+        assertEquals(1, secondary.evictCount, "secondary.evict() should only run once per interval, not on every tick")
+        assertEquals(3, primary.evictCount, "primary.evict() (cheap, in-process) should still run every tick")
+    }
+
+    @Test
+    fun `secondary evict interval of zero allows every tick`() {
+        val primary = FakeMailboxStore()
+        val secondary = FakeMailboxStore()
+        val dual = DualWriteMailboxState(primary, secondary, scope = testScope, secondaryEvictIntervalMs = 0L)
+
+        dual.evict()
+        dual.evict()
+
+        assertEquals(2, secondary.evictCount, "an interval of 0 means every tick is eligible to run")
     }
 
     @Test

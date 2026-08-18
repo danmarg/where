@@ -460,6 +460,12 @@ fun createHikariDataSource(connectionString: String): HikariDataSource {
             username = dbUser
             password = dbPassword
             maximumPoolSize = 5
+            // Let the pool drain to zero connections when idle (default minimumIdle equals
+            // maximumPoolSize, which holds connections open indefinitely) - this app's traffic is
+            // low/bursty and Neon's serverless compute autosuspends based on connection/query
+            // activity, so idle connections sitting open defeat scale-to-zero billing.
+            minimumIdle = 0
+            idleTimeout = 60_000
         },
     )
 }
@@ -655,7 +661,15 @@ class DualWriteMailboxState(
     // can't cause unbounded coroutine fan-out under sustained request volume - each mirrored
     // operation still runs off the request path, just with a ceiling on how many run at once.
     private val scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO.limitedParallelism(4)),
+    // evict() is called every RATE_LIMIT_WINDOW_MS (60s) by the app's housekeeping loop. Running
+    // secondary.evict() on that cadence pings a serverless Postgres (Neon) far more often than its
+    // autosuspend idle window, keeping its compute billed as always-on instead of scale-to-zero.
+    // drain()/post() already filter on expires_at directly, so delaying the physical sweep is
+    // correctness-neutral - only the row cleanup itself needs a much coarser cadence.
+    private val secondaryEvictIntervalMs: Long = 30 * 60 * 1000L,
 ) : MailboxStore {
+    private val lastSecondaryEvictAt = java.util.concurrent.atomic.AtomicLong(0)
+
     override fun checkIpRateLimit(ip: String) = primary.checkIpRateLimit(ip)
 
     override fun post(
@@ -712,8 +726,12 @@ class DualWriteMailboxState(
 
     override fun evict() {
         primary.evict()
-        runCatching { secondary.evict() }
-            .onFailure { migrationLog.warn("secondary evict failed", it) }
+        val now = System.currentTimeMillis()
+        val last = lastSecondaryEvictAt.get()
+        if (now - last >= secondaryEvictIntervalMs && lastSecondaryEvictAt.compareAndSet(last, now)) {
+            runCatching { secondary.evict() }
+                .onFailure { migrationLog.warn("secondary evict failed", it) }
+        }
     }
 
     override fun close() {
