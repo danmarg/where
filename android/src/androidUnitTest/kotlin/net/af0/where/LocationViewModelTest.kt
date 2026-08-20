@@ -82,6 +82,9 @@ class TestFakeLocationSource : LocationSource {
     private val _pendingInitPayload = MutableStateFlow<KeyExchangeInitPayload?>(null)
     override val pendingInitPayload: StateFlow<KeyExchangeInitPayload?> = _pendingInitPayload.asStateFlow()
 
+    private val _pendingInitPayloadSetAt = MutableStateFlow(0L)
+    override val pendingInitPayloadSetAt: StateFlow<Long> = _pendingInitPayloadSetAt.asStateFlow()
+
     private val _pendingInitAliceEkPub = MutableStateFlow<ByteArray?>(null)
     override val pendingInitAliceEkPub: StateFlow<ByteArray?> = _pendingInitAliceEkPub.asStateFlow()
 
@@ -142,6 +145,7 @@ class TestFakeLocationSource : LocationSource {
         aliceEkPub: ByteArray?,
     ) {
         _pendingInitPayload.value = payload
+        _pendingInitPayloadSetAt.value = if (payload != null) System.currentTimeMillis() else 0L
         _pendingInitAliceEkPub.value = aliceEkPub
     }
 

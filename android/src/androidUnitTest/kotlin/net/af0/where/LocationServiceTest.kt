@@ -61,6 +61,9 @@ class ServiceFakeLocationSource : LocationSource {
     private val _pendingInitPayload = MutableStateFlow<KeyExchangeInitPayload?>(null)
     override val pendingInitPayload: StateFlow<KeyExchangeInitPayload?> = _pendingInitPayload.asStateFlow()
 
+    private val _pendingInitPayloadSetAt = MutableStateFlow(0L)
+    override val pendingInitPayloadSetAt: StateFlow<Long> = _pendingInitPayloadSetAt.asStateFlow()
+
     private val _pendingInitAliceEkPub = MutableStateFlow<ByteArray?>(null)
     override val pendingInitAliceEkPub: StateFlow<ByteArray?> = _pendingInitAliceEkPub.asStateFlow()
 
@@ -125,6 +128,7 @@ class ServiceFakeLocationSource : LocationSource {
         aliceEkPub: ByteArray?,
     ) {
         _pendingInitPayload.value = payload
+        _pendingInitPayloadSetAt.value = if (payload != null) LocationService.clock() else 0L
         _pendingInitAliceEkPub.value = aliceEkPub
     }
 
@@ -343,6 +347,40 @@ class LocationServiceTest {
                 // 8. Verify rapid poll IS reset now
                 assertFalse(service.isRapidPolling(), "Rapid poll should be reset after all new friends have sent updates")
                 assertEquals(0L, fakeLocationSource.lastRapidPollTrigger.value)
+            } finally {
+                controller.destroy()
+            }
+        }
+
+    @Test
+    fun testPendingInitPayloadStopsForcingRapidPollAfterTimeout() =
+        runTest {
+            // Regression test for #336: an incoming invite the user never confirms or cancels
+            // must not pin the client at the 2s rapid interval forever.
+            var currentTime = 1_000_000_000L
+            LocationService.clock = { currentTime }
+
+            val controller = Robolectric.buildService(LocationService::class.java)
+            val service = controller.get()
+            service.locationSourceOverride = fakeLocationSource
+            controller.create()
+
+            try {
+                val payload = io.mockk.mockk<KeyExchangeInitPayload>(relaxed = true)
+                fakeLocationSource.onPendingInit(payload, aliceEkPub = byteArrayOf(0))
+                assertTrue(service.isRapidPolling(), "An unconfirmed pending invite should force rapid polling")
+
+                currentTime += LocationService.PENDING_INIT_RAPID_TIMEOUT_MS - 1
+                assertTrue(
+                    service.isRapidPolling(),
+                    "Rapid polling should still hold just under the timeout",
+                )
+
+                currentTime += 2
+                assertFalse(
+                    service.isRapidPolling(),
+                    "An invite pending past the timeout must stop forcing rapid polling",
+                )
             } finally {
                 controller.destroy()
             }
