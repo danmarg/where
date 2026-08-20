@@ -7,9 +7,11 @@ app = 'where-api'
 primary_region = 'fra'
 
 [env]
-  # Phase A of the Redis -> Postgres mailbox migration: Redis stays authoritative, Postgres
-  # mirrors every write and gets shadow-read-compared on drain(). See DualWriteMailboxState.
-  MAILBOX_STORE_MODE = 'dual-write-redis-primary'
+  # The Redis -> Postgres/Neon migration was abandoned on cost grounds: Neon bills per
+  # wall-clock CU-hour of compute awake time, and this app's poll-heavy traffic pattern
+  # keeps it awake almost continuously, making it no cheaper than Redis. Back to plain
+  # Redis while a DynamoDB migration (pure per-request billing) is evaluated instead.
+  MAILBOX_STORE_MODE = 'redis'
 
 [http_service]
   internal_port = 8080
