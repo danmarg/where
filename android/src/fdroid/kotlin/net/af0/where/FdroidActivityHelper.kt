@@ -9,8 +9,15 @@ import android.content.Intent
 // heartbeat interval in LocationService.
 class FdroidActivityHelper : ActivityHelper {
     override fun init(context: Context) {}
+
     override fun extractTransitionEvents(intent: Intent): List<ActivityTransitionEvent>? = null
-    override fun ensureRegistered(hasPermission: Boolean, isSharing: Boolean) {}
+
+    override fun ensureRegistered(
+        hasPermission: Boolean,
+        isSharing: Boolean,
+    ) {}
+
     override fun unregister() {}
+
     override fun onDestroy() {}
 }

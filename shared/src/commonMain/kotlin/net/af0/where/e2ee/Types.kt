@@ -14,7 +14,6 @@ private val qrJson =
         encodeDefaults = true
     }
 
-
 /**
  * Raw X25519 keypair. Both fields are 32-byte little-endian representations
  * as defined by RFC 7748.
@@ -306,8 +305,10 @@ sealed class ConnectionStatus {
 /** Result of polling for incoming handshakes (KeyExchangeInit). */
 data class PendingInviteResult(
     val payload: KeyExchangeInitPayload,
-    val scannerEkPub: ByteArray, // The public key of the person who scanned our QR
-    val inviteEkPub: ByteArray,  // The public key of the QR code they scanned (ours)
+    // The public key of the person who scanned our QR
+    val scannerEkPub: ByteArray,
+    // The public key of the QR code they scanned (ours)
+    val inviteEkPub: ByteArray,
     val multipleScansDetected: Boolean,
     val pairingError: String? = null,
 ) {

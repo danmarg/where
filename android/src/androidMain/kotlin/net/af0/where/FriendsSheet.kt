@@ -180,10 +180,11 @@ fun FriendsSheet(
                                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                                     )
                                     val nowSec = System.currentTimeMillis() / 1000L
-                                    val display = friend.displayState(
-                                        nowSeconds = nowSec,
-                                        lastPingSeconds = friendLastPing[friend.id]?.let { it / 1000L },
-                                    )
+                                    val display =
+                                        friend.displayState(
+                                            nowSeconds = nowSec,
+                                            lastPingSeconds = friendLastPing[friend.id]?.let { it / 1000L },
+                                        )
                                     Text(
                                         peerSubtitleText(display),
                                         style = MaterialTheme.typography.bodySmall,
@@ -421,24 +422,39 @@ private fun FriendOverflowMenu(
             DropdownMenuItem(
                 text = { Text(stringResource(MR.strings.share_for_30m)) },
                 leadingIcon = { Icon(Icons.Default.Schedule, contentDescription = null) },
-                onClick = { expanded = false; onShareFor(30 * 60L) },
+                onClick = {
+                    expanded = false
+                    onShareFor(30 * 60L)
+                },
             )
             DropdownMenuItem(
                 text = { Text(stringResource(MR.strings.share_for_1h)) },
-                onClick = { expanded = false; onShareFor(60 * 60L) },
+                onClick = {
+                    expanded = false
+                    onShareFor(60 * 60L)
+                },
             )
             DropdownMenuItem(
                 text = { Text(stringResource(MR.strings.share_for_4h)) },
-                onClick = { expanded = false; onShareFor(4 * 60 * 60L) },
+                onClick = {
+                    expanded = false
+                    onShareFor(4 * 60 * 60L)
+                },
             )
             DropdownMenuItem(
                 text = { Text(stringResource(MR.strings.share_for_8h)) },
-                onClick = { expanded = false; onShareFor(8 * 60 * 60L) },
+                onClick = {
+                    expanded = false
+                    onShareFor(8 * 60 * 60L)
+                },
             )
             if (hasTimer) {
                 DropdownMenuItem(
                     text = { Text(stringResource(MR.strings.share_indefinitely)) },
-                    onClick = { expanded = false; onShareFor(null) },
+                    onClick = {
+                        expanded = false
+                        onShareFor(null)
+                    },
                 )
             }
             HorizontalDivider()
@@ -446,41 +462,48 @@ private fun FriendOverflowMenu(
         DropdownMenuItem(
             text = { Text(stringResource(MR.strings.rename)) },
             leadingIcon = { Icon(Icons.Default.Edit, contentDescription = null) },
-            onClick = { expanded = false; onRename() },
+            onClick = {
+                expanded = false
+                onRename()
+            },
         )
         DropdownMenuItem(
             text = { Text(stringResource(MR.strings.remove), color = MaterialTheme.colorScheme.error) },
             leadingIcon = { Icon(Icons.Default.Delete, contentDescription = null, tint = MaterialTheme.colorScheme.error) },
-            onClick = { expanded = false; onRemove() },
+            onClick = {
+                expanded = false
+                onRemove()
+            },
         )
     }
 }
 
 private data class License(val name: String, val copyright: String, val spdx: String)
 
-private val LICENSES = listOf(
-    License("libsodium", "Copyright (c) 2013-2024 Frank Denis", "ISC"),
-    License(
-        "multiplatform-crypto-libsodium-bindings",
-        "Copyright (c) 2020 Ugljesa Jovanovic",
-        "Apache-2.0",
-    ),
-    License("Ktor", "Copyright (c) JetBrains s.r.o.", "Apache-2.0"),
-    License(
-        "Kotlin Coroutines / Serialization",
-        "Copyright (c) JetBrains s.r.o.",
-        "Apache-2.0",
-    ),
-    License("ZXing", "Copyright (c) 2007 Sean Owen", "Apache-2.0"),
-    License("SQLDelight", "Copyright (c) 2016 Square, Inc.", "Apache-2.0"),
-    License("MOKO Resources", "Copyright (c) 2019 IceRock Development", "Apache-2.0"),
-    License("MapLibre Native", "Copyright (c) 2021-2024 MapLibre Contributors", "BSD-2-Clause"),
-    License(
-        "Accompanist",
-        "Copyright (c) 2020 The Android Open Source Project",
-        "Apache-2.0",
-    ),
-)
+private val LICENSES =
+    listOf(
+        License("libsodium", "Copyright (c) 2013-2024 Frank Denis", "ISC"),
+        License(
+            "multiplatform-crypto-libsodium-bindings",
+            "Copyright (c) 2020 Ugljesa Jovanovic",
+            "Apache-2.0",
+        ),
+        License("Ktor", "Copyright (c) JetBrains s.r.o.", "Apache-2.0"),
+        License(
+            "Kotlin Coroutines / Serialization",
+            "Copyright (c) JetBrains s.r.o.",
+            "Apache-2.0",
+        ),
+        License("ZXing", "Copyright (c) 2007 Sean Owen", "Apache-2.0"),
+        License("SQLDelight", "Copyright (c) 2016 Square, Inc.", "Apache-2.0"),
+        License("MOKO Resources", "Copyright (c) 2019 IceRock Development", "Apache-2.0"),
+        License("MapLibre Native", "Copyright (c) 2021-2024 MapLibre Contributors", "BSD-2-Clause"),
+        License(
+            "Accompanist",
+            "Copyright (c) 2020 The Android Open Source Project",
+            "Apache-2.0",
+        ),
+    )
 
 @Composable
 private fun AcknowledgementsDialog(onDismiss: () -> Unit) {

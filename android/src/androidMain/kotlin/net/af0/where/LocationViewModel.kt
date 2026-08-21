@@ -29,7 +29,6 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import java.util.concurrent.TimeUnit
 import net.af0.where.e2ee.ConnectionStatus
 import net.af0.where.e2ee.E2eeManager
 import net.af0.where.e2ee.FriendEntry
@@ -41,6 +40,7 @@ import net.af0.where.e2ee.QrPayload
 import net.af0.where.e2ee.UserStore
 import net.af0.where.e2ee.toHex
 import net.af0.where.model.UserLocation
+import java.util.concurrent.TimeUnit
 
 private const val TAG = "LocationViewModel"
 
@@ -248,7 +248,10 @@ class LocationViewModel(
     }
 
     /** Set or clear a per-friend share timer. null clears (= share indefinitely). */
-    fun setFriendExpiry(friendId: String, expiresAt: Long?) {
+    fun setFriendExpiry(
+        friendId: String,
+        expiresAt: Long?,
+    ) {
         check(Looper.myLooper() == Looper.getMainLooper()) { "setFriendExpiry must be called on the main thread" }
         userStore.setFriendExpiry(friendId, expiresAt)
     }
@@ -323,12 +326,13 @@ class LocationViewModel(
                     // Ensure the service is running so it polls the discovery mailbox.
                     // Only start if location permission is granted; without it the service
                     // would immediately enter the "permission missing" notification state.
-                    val hasPermission = ContextCompat.checkSelfPermission(
-                        getApplication(), Manifest.permission.ACCESS_FINE_LOCATION
-                    ) == PackageManager.PERMISSION_GRANTED ||
+                    val hasPermission =
                         ContextCompat.checkSelfPermission(
-                            getApplication(), Manifest.permission.ACCESS_COARSE_LOCATION
-                        ) == PackageManager.PERMISSION_GRANTED
+                            getApplication(), Manifest.permission.ACCESS_FINE_LOCATION,
+                        ) == PackageManager.PERMISSION_GRANTED ||
+                            ContextCompat.checkSelfPermission(
+                                getApplication(), Manifest.permission.ACCESS_COARSE_LOCATION,
+                            ) == PackageManager.PERMISSION_GRANTED
                     if (hasPermission) {
                         val svcIntent = Intent(getApplication(), LocationService::class.java)
                         getApplication<Application>().startForegroundService(svcIntent)
@@ -620,8 +624,12 @@ class LocationViewModel(
                 }
             }
         } else if (!hasRelationships) {
-            try { WorkManager.getInstance(getApplication()).cancelUniqueWork(LocationServiceRestartWorker.WORK_NAME) }
-            catch (_: IllegalStateException) {}
+            try {
+                WorkManager.getInstance(getApplication()).cancelUniqueWork(LocationServiceRestartWorker.WORK_NAME)
+            } catch (
+                _: IllegalStateException,
+            ) {
+            }
         }
         // Intentionally no stopService() here: when sharing is paused the service must remain
         // alive for maintenance polls (ratchet keepalives, token ACKs) so the Double Ratchet

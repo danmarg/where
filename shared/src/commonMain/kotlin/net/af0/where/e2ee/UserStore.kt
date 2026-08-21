@@ -135,7 +135,10 @@ class UserStore(private val storage: RawKeyValueStorage) {
         storage.putString(KEY_FRIEND_EXPIRES_AT, json.encodeToString(map))
     }
 
-    fun setFriendExpiry(friendId: String, epochSeconds: Long?) {
+    fun setFriendExpiry(
+        friendId: String,
+        epochSeconds: Long?,
+    ) {
         _friendExpiresAt.update { current ->
             val new = if (epochSeconds == null) current - friendId else current + (friendId to epochSeconds)
             persistFriendExpiresAt(new)
@@ -153,10 +156,11 @@ class UserStore(private val storage: RawKeyValueStorage) {
      * guarantee that no Location slips through in the window before the watcher fires.
      */
     fun effectivelyPausedIds(nowSeconds: Long = currentTimeSeconds()): Set<String> {
-        val expired = _friendExpiresAt.value.entries.asSequence()
-            .filter { (_, expiry) -> nowSeconds >= expiry }
-            .map { it.key }
-            .toSet()
+        val expired =
+            _friendExpiresAt.value.entries.asSequence()
+                .filter { (_, expiry) -> nowSeconds >= expiry }
+                .map { it.key }
+                .toSet()
         return if (expired.isEmpty()) _pausedFriendIds.value else _pausedFriendIds.value + expired
     }
 

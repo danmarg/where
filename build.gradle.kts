@@ -10,15 +10,6 @@ plugins {
 
 subprojects {
     apply(plugin = "org.jlleitschuh.gradle.ktlint")
-    configure<org.jlleitschuh.gradle.ktlint.KtlintExtension> {
-        filter {
-            exclude("**/build/**")
-            exclude("**/generated/**")
-        }
-        if (project.name == "shared") {
-            ignoreFailures.set(true)
-        }
-    }
 }
 
 if (file("local.gradle.kts").exists()) apply(from = "local.gradle.kts")

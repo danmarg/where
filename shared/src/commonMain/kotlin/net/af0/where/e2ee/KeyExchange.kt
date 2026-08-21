@@ -127,7 +127,7 @@ object KeyExchange {
                 if (e is AuthenticationException) throw e
                 throw AuthenticationException("Failed to decrypt encrypted_name — aborting key exchange: ${e.message}")
             }
-            
+
             val aliceFp = fingerprint(aliceEkPub)
             val bobFp = fingerprint(msg.ekPub)
 
@@ -204,20 +204,22 @@ object KeyExchange {
         ekBPub: ByteArray,
         suggestedName: String,
     ): ByteArray {
-        val kName = hkdfSha256(
-            ikm = sk,
-            salt = null,
-            info = "Where-v1-SuggestedName".encodeToByteArray(),
-            length = 32
-        )
+        val kName =
+            hkdfSha256(
+                ikm = sk,
+                salt = null,
+                info = "Where-v1-SuggestedName".encodeToByteArray(),
+                length = 32,
+            )
         try {
             val nameNonce = randomBytes(12)
-            val nameCt = aeadEncrypt(
-                key = kName,
-                nonce = nameNonce,
-                plaintext = suggestedName.encodeToByteArray(),
-                aad = ekAPub + ekBPub
-            )
+            val nameCt =
+                aeadEncrypt(
+                    key = kName,
+                    nonce = nameNonce,
+                    plaintext = suggestedName.encodeToByteArray(),
+                    aad = ekAPub + ekBPub,
+                )
             return nameNonce + nameCt
         } finally {
             kName.zeroize()
@@ -233,21 +235,23 @@ object KeyExchange {
         if (encryptedName.size < 28) { // 12-byte nonce + 16-byte tag
             throw AuthenticationException("encryptedName payload is too short")
         }
-        val kName = hkdfSha256(
-            ikm = sk,
-            salt = null,
-            info = "Where-v1-SuggestedName".encodeToByteArray(),
-            length = 32
-        )
+        val kName =
+            hkdfSha256(
+                ikm = sk,
+                salt = null,
+                info = "Where-v1-SuggestedName".encodeToByteArray(),
+                length = 32,
+            )
         try {
             val nonce = encryptedName.copyOfRange(0, 12)
             val ct = encryptedName.copyOfRange(12, encryptedName.size)
-            val plaintext = aeadDecrypt(
-                key = kName,
-                nonce = nonce,
-                ciphertext = ct,
-                aad = ekAPub + ekBPub
-            )
+            val plaintext =
+                aeadDecrypt(
+                    key = kName,
+                    nonce = nonce,
+                    ciphertext = ct,
+                    aad = ekAPub + ekBPub,
+                )
             return plaintext.decodeToString()
         } catch (e: Exception) {
             throw AuthenticationException("Failed to decrypt suggested_name: ${e.message}")

@@ -181,13 +181,14 @@ class GmsLocationProviderTest {
         val anotherProvider = GmsLocationProvider()
         anotherProvider.fusedClientOverride = mockFusedClient
         anotherProvider.geofencingClientOverride = mockGeofencingClient
-        val thread = Thread {
-            try {
-                anotherProvider.init(context) { _, _, _ -> }
-            } catch (e: Throwable) {
-                caught = e
+        val thread =
+            Thread {
+                try {
+                    anotherProvider.init(context) { _, _, _ -> }
+                } catch (e: Throwable) {
+                    caught = e
+                }
             }
-        }
         thread.start()
         thread.join()
         // thread.join() provides the happens-before edge; caught is safely readable here.

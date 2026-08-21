@@ -20,11 +20,15 @@ class FdroidLocationProvider : LocationProvider {
     private var activeListener: LocationListener? = null
     private var passiveListener: LocationListener? = null
     private var onLocationCallback: ((Double, Double, Double?) -> Unit)? = null
+
     // Captured at init() time — callers must invoke init() on the thread whose looper
     // should receive location callbacks (LocationService calls init() on the main thread).
     private lateinit var callbackLooper: Looper
 
-    override fun init(context: Context, onLocation: (Double, Double, Double?) -> Unit) {
+    override fun init(
+        context: Context,
+        onLocation: (Double, Double, Double?) -> Unit,
+    ) {
         this.onLocationCallback = onLocation
         callbackLooper = Looper.myLooper() ?: Looper.getMainLooper()
         locationManager = context.applicationContext.getSystemService(Context.LOCATION_SERVICE) as LocationManager
@@ -40,11 +44,17 @@ class FdroidLocationProvider : LocationProvider {
         return providers.mapNotNull { provider ->
             try {
                 locationManager.getLastKnownLocation(provider)
-            } catch (_: SecurityException) { null }
+            } catch (_: SecurityException) {
+                null
+            }
         }.maxByOrNull { it.time }
     }
 
-    override fun requestActiveUpdates(accuracy: LocationAccuracy, intervalMs: Long, maxDelayMs: Long): Boolean {
+    override fun requestActiveUpdates(
+        accuracy: LocationAccuracy,
+        intervalMs: Long,
+        maxDelayMs: Long,
+    ): Boolean {
         removeActiveUpdates()
         // PASSIVE accuracy is handled entirely by requestPassiveUpdates() (PASSIVE_PROVIDER,
         // 1s interval). Registering a second listener here on the same provider would double
@@ -58,17 +68,19 @@ class FdroidLocationProvider : LocationProvider {
         // For real providers: GPS preferred, NETWORK as fallback.
         // FUSED_PROVIDER is intentionally excluded: it is a GMS-injected provider string not
         // present in AOSP and absent on de-Googled devices (GrapheneOS, CalyxOS, etc.).
-        val provider = when {
-            locationManager.isProviderEnabled(LocationManager.GPS_PROVIDER) ->
-                LocationManager.GPS_PROVIDER
-            else -> LocationManager.NETWORK_PROVIDER
-        }
+        val provider =
+            when {
+                locationManager.isProviderEnabled(LocationManager.GPS_PROVIDER) ->
+                    LocationManager.GPS_PROVIDER
+                else -> LocationManager.NETWORK_PROVIDER
+            }
         // Use the same 200m distance filter as GmsLocationProvider so stationary users
         // don't receive a flood of fixes (PASSIVE is handled above and never reaches here).
         val minDistance = LocationService.MOVEMENT_RADIUS_THRESHOLD_METERS
-        val listener = LocationListener { loc ->
-            onLocationCallback?.invoke(loc.latitude, loc.longitude, if (loc.hasBearing()) loc.bearing.toDouble() else null)
-        }
+        val listener =
+            LocationListener { loc ->
+                onLocationCallback?.invoke(loc.latitude, loc.longitude, if (loc.hasBearing()) loc.bearing.toDouble() else null)
+            }
         // Mirror GmsLocationProvider's 10s floor to prevent excessive wakeups under fast
         // heartbeat conditions (e.g. activity transition to MOVING uses a 10s interval).
         // maxDelayMs (batch delivery control) has no LocationManager equivalent; ignored per interface contract.
@@ -89,9 +101,10 @@ class FdroidLocationProvider : LocationProvider {
             Log.w(TAG, "PASSIVE_PROVIDER not enabled; passive updates skipped")
             return false
         }
-        val listener = LocationListener { loc ->
-            onLocationCallback?.invoke(loc.latitude, loc.longitude, if (loc.hasBearing()) loc.bearing.toDouble() else null)
-        }
+        val listener =
+            LocationListener { loc ->
+                onLocationCallback?.invoke(loc.latitude, loc.longitude, if (loc.hasBearing()) loc.bearing.toDouble() else null)
+            }
         return try {
             locationManager.requestLocationUpdates(LocationManager.PASSIVE_PROVIDER, 1_000L, 0f, listener, callbackLooper)
             passiveListener = listener
@@ -134,8 +147,12 @@ class FdroidLocationProvider : LocationProvider {
                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
                         val signal = CancellationSignal()
                         cont.invokeOnCancellation { signal.cancel() }
-                        val provider = if (locationManager.isProviderEnabled(LocationManager.GPS_PROVIDER))
-                            LocationManager.GPS_PROVIDER else LocationManager.NETWORK_PROVIDER
+                        val provider =
+                            if (locationManager.isProviderEnabled(LocationManager.GPS_PROVIDER)) {
+                                LocationManager.GPS_PROVIDER
+                            } else {
+                                LocationManager.NETWORK_PROVIDER
+                            }
                         locationManager.getCurrentLocation(provider, signal, Executors.newSingleThreadExecutor()) { loc ->
                             cont.resume(loc)
                         }
@@ -158,7 +175,10 @@ class FdroidLocationProvider : LocationProvider {
     // death; F-Droid wakes only on a 10-min alarm floor and a WorkManager periodic task.
     // On de-Googled devices with aggressive battery optimization (GrapheneOS, LineageOS),
     // users should exempt this app from battery optimization to avoid missed heartbeats.
-    override fun setGeofenceAt(lat: Double, lng: Double): Boolean = false
+    override fun setGeofenceAt(
+        lat: Double,
+        lng: Double,
+    ): Boolean = false
 
     override fun removeGeofence() {}
 

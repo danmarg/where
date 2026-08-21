@@ -186,12 +186,13 @@ androidComponents {
     // F-Droid requires each per-ABI split APK to have a distinct versionCode, ordered
     // armeabi-v7a < arm64-v8a < x86 < x86_64. The universal APK and the AAB (Play Store)
     // output are untouched, since they have no ABI filter.
-    val abiVersionCodes = mapOf(
-        "armeabi-v7a" to 1,
-        "arm64-v8a" to 2,
-        "x86" to 3,
-        "x86_64" to 4,
-    )
+    val abiVersionCodes =
+        mapOf(
+            "armeabi-v7a" to 1,
+            "arm64-v8a" to 2,
+            "x86" to 3,
+            "x86_64" to 4,
+        )
     onVariants { variant ->
         if (project.findProperty("enableAbiSplits") != "true") return@onVariants
         variant.outputs.forEach { output ->

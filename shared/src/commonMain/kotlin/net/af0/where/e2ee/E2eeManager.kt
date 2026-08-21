@@ -96,7 +96,10 @@ class E2eeManager(
 
     val diagnosticLog: StateFlow<List<String>> = persistence.diagnosticLog
 
-    fun addDiagnosticEvent(message: String, coalesceKey: String? = null) {
+    fun addDiagnosticEvent(
+        message: String,
+        coalesceKey: String? = null,
+    ) {
         persistence.addDiagnosticEvent(message, coalesceKey)
     }
 
@@ -112,13 +115,18 @@ class E2eeManager(
             qr
         }
 
-    @Throws(Exception::class, SelfPairingException::class, AuthenticationException::class, IllegalArgumentException::class, CancellationException::class)
+    @Throws(
+        Exception::class,
+        SelfPairingException::class,
+        AuthenticationException::class,
+        IllegalArgumentException::class,
+        CancellationException::class,
+    )
     suspend fun processKeyExchangeInit(
         payload: KeyExchangeInitPayload,
         aliceSuggestedName: String,
         aliceEkPub: ByteArray,
     ): FriendEntry? {
-
         val (pending, aliceEkPubBytes) =
             persistence.withMetadataLock {
                 val p = pendingInvites.find { it.qrPayload.ekPub.contentEquals(aliceEkPub) }
@@ -461,11 +469,12 @@ class E2eeManager(
                 }
                 else -> {
                     newStoppedAtTs = null
-                    newStationarySinceTs = if (lastLocation!!.stationary) {
-                        entry.stationarySinceTs ?: lastLocation.ts
-                    } else {
-                        null
-                    }
+                    newStationarySinceTs =
+                        if (lastLocation!!.stationary) {
+                            entry.stationarySinceTs ?: lastLocation.ts
+                        } else {
+                            null
+                        }
                 }
             }
 
@@ -554,7 +563,7 @@ class E2eeManager(
     suspend fun decryptSuggestedName(
         aliceEkPub: ByteArray,
         bobEkPub: ByteArray,
-        encryptedName: ByteArray
+        encryptedName: ByteArray,
     ): String? {
         return persistence.withMetadataLock {
             val pending = pendingInvites.find { it.qrPayload.ekPub.contentEquals(aliceEkPub) }

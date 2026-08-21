@@ -56,8 +56,7 @@ internal class E2eeStore(
     // Single lock for all store operations.
     private val storeLock = Mutex()
 
-    private suspend fun <T> withStoreLock(block: suspend () -> T): T =
-        storeLock.withLock { withContext(ioDispatcher) { block() } }
+    private suspend fun <T> withStoreLock(block: suspend () -> T): T = storeLock.withLock { withContext(ioDispatcher) { block() } }
 
     init {
         loadFromDb()
@@ -72,10 +71,11 @@ internal class E2eeStore(
         database.invitesQueries.getAllPendingInvites().executeAsList().forEach { p ->
             pendingInvites.add(p.toInvite())
         }
-        _diagnosticLog.value = database.diagnosticEventsQueries
-            .getRecentEvents(MAX_DIAGNOSTIC_EVENTS.toLong())
-            .executeAsList()
-            .map { "${TimeSource.formatLocalTime(it.ts)} ${it.message}" }
+        _diagnosticLog.value =
+            database.diagnosticEventsQueries
+                .getRecentEvents(MAX_DIAGNOSTIC_EVENTS.toLong())
+                .executeAsList()
+                .map { "${TimeSource.formatLocalTime(it.ts)} ${it.message}" }
     }
 
     private fun reloadFromDb() {
@@ -137,7 +137,6 @@ internal class E2eeStore(
                     scope.applyToDb()
                 }
                 scope.applyToMemory()
-
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
@@ -152,7 +151,10 @@ internal class E2eeStore(
 
     suspend fun listFriends(): List<FriendEntry> = storeLock.withLock { friends.values.toList() }
 
-    fun addDiagnosticEvent(message: String, coalesceKey: String? = null) {
+    fun addDiagnosticEvent(
+        message: String,
+        coalesceKey: String? = null,
+    ) {
         val t = currentTimeSeconds()
         val latest = if (coalesceKey != null) database.diagnosticEventsQueries.getLatestEvent().executeAsOneOrNull() else null
         if (coalesceKey != null && latest != null && latest.message.startsWith(coalesceKey)) {
@@ -170,7 +172,11 @@ internal class E2eeStore(
         }
     }
 
-    private fun coalesceMessage(previous: String, incoming: String, coalesceKey: String): String {
+    private fun coalesceMessage(
+        previous: String,
+        incoming: String,
+        coalesceKey: String,
+    ): String {
         val prevSuffix = previous.removePrefix(coalesceKey)
         val countMatch = Regex("""^ ×(\d+)""").find(prevSuffix)
         val prevCount = countMatch?.groupValues?.get(1)?.toIntOrNull() ?: 1
@@ -276,7 +282,10 @@ internal class E2eeStore(
         database.outboxQueries.deleteOutboxByFriendId(friendId)
     }
 
-    internal fun deleteOutboxByFriendIdAndTokenInternal(friendId: String, token: String) {
+    internal fun deleteOutboxByFriendIdAndTokenInternal(
+        friendId: String,
+        token: String,
+    ) {
         database.outboxQueries.deleteOutboxByFriendIdAndToken(friendId, token)
     }
 
@@ -378,7 +387,10 @@ internal class E2eeStore(
 
         private var friendMemoryUpdate: (() -> Unit)? = null
 
-        fun stageFriendUpdate(friendId: String, entry: FriendEntry) {
+        fun stageFriendUpdate(
+            friendId: String,
+            entry: FriendEntry,
+        ) {
             friendMemoryUpdate = { this@E2eeStore.friends[friendId] = entry }
         }
 

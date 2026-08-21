@@ -20,17 +20,21 @@ internal class WallClockTimeoutCancellationException :
  * rather than coroutine-local ticks. This ensures that if the process is suspended and resumes
  * after the deadline, it will immediately timeout instead of pausing the clock.
  */
-suspend fun <T> withWallClockTimeout(timeoutMillis: Long, block: suspend () -> T): T {
+suspend fun <T> withWallClockTimeout(
+    timeoutMillis: Long,
+    block: suspend () -> T,
+): T {
     val deadline = currentTimeMillis() + timeoutMillis
     return coroutineScope {
-        val watcher = launch {
-            while (currentTimeMillis() < deadline) {
-                val remaining = deadline - currentTimeMillis()
-                if (remaining <= 0) break
-                delay(minOf(100L, remaining))
+        val watcher =
+            launch {
+                while (currentTimeMillis() < deadline) {
+                    val remaining = deadline - currentTimeMillis()
+                    if (remaining <= 0) break
+                    delay(minOf(100L, remaining))
+                }
+                this@coroutineScope.cancel(WallClockTimeoutCancellationException())
             }
-            this@coroutineScope.cancel(WallClockTimeoutCancellationException())
-        }
         try {
             block()
         } finally {
@@ -40,14 +44,16 @@ suspend fun <T> withWallClockTimeout(timeoutMillis: Long, block: suspend () -> T
 }
 
 /** Variant of withWallClockTimeout that returns null on timeout instead of throwing. */
-suspend fun <T> withWallClockTimeoutOrNull(timeoutMillis: Long, block: suspend () -> T): T? {
+suspend fun <T> withWallClockTimeoutOrNull(
+    timeoutMillis: Long,
+    block: suspend () -> T,
+): T? {
     return try {
         withWallClockTimeout(timeoutMillis, block)
     } catch (e: WallClockTimeoutCancellationException) {
         null
     }
 }
-
 
 object TimeSource {
     @kotlin.concurrent.Volatile

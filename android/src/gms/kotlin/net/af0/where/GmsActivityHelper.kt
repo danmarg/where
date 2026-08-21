@@ -26,24 +26,29 @@ class GmsActivityHelper : ActivityHelper {
     override fun extractTransitionEvents(intent: Intent): List<ActivityTransitionEvent>? {
         val result = ActivityTransitionResult.extractResult(intent) ?: return null
         return result.transitionEvents.mapNotNull { event ->
-            val type = when (event.activityType) {
-                DetectedActivity.STILL -> ActivityType.STILL
-                DetectedActivity.WALKING -> ActivityType.WALKING
-                DetectedActivity.RUNNING -> ActivityType.RUNNING
-                DetectedActivity.ON_BICYCLE -> ActivityType.ON_BICYCLE
-                DetectedActivity.IN_VEHICLE -> ActivityType.IN_VEHICLE
-                else -> return@mapNotNull null
-            }
-            val transition = when (event.transitionType) {
-                ActivityTransition.ACTIVITY_TRANSITION_ENTER -> TransitionType.ENTER
-                ActivityTransition.ACTIVITY_TRANSITION_EXIT -> TransitionType.EXIT
-                else -> return@mapNotNull null
-            }
+            val type =
+                when (event.activityType) {
+                    DetectedActivity.STILL -> ActivityType.STILL
+                    DetectedActivity.WALKING -> ActivityType.WALKING
+                    DetectedActivity.RUNNING -> ActivityType.RUNNING
+                    DetectedActivity.ON_BICYCLE -> ActivityType.ON_BICYCLE
+                    DetectedActivity.IN_VEHICLE -> ActivityType.IN_VEHICLE
+                    else -> return@mapNotNull null
+                }
+            val transition =
+                when (event.transitionType) {
+                    ActivityTransition.ACTIVITY_TRANSITION_ENTER -> TransitionType.ENTER
+                    ActivityTransition.ACTIVITY_TRANSITION_EXIT -> TransitionType.EXIT
+                    else -> return@mapNotNull null
+                }
             ActivityTransitionEvent(type, transition)
         }
     }
 
-    override fun ensureRegistered(hasPermission: Boolean, isSharing: Boolean) {
+    override fun ensureRegistered(
+        hasPermission: Boolean,
+        isSharing: Boolean,
+    ) {
         if (!hasPermission || !isSharing) {
             if (isRegistered) {
                 Log.i(TAG, "Activity recognition no longer needed; removing updates.")
@@ -54,25 +59,27 @@ class GmsActivityHelper : ActivityHelper {
         }
         if (isRegistered) return
 
-        val activities = listOf(
-            DetectedActivity.STILL,
-            DetectedActivity.WALKING,
-            DetectedActivity.RUNNING,
-            DetectedActivity.ON_BICYCLE,
-            DetectedActivity.IN_VEHICLE,
-        )
-        val transitions = activities.flatMap { activity ->
+        val activities =
             listOf(
-                ActivityTransition.Builder()
-                    .setActivityType(activity)
-                    .setActivityTransition(ActivityTransition.ACTIVITY_TRANSITION_ENTER)
-                    .build(),
-                ActivityTransition.Builder()
-                    .setActivityType(activity)
-                    .setActivityTransition(ActivityTransition.ACTIVITY_TRANSITION_EXIT)
-                    .build(),
+                DetectedActivity.STILL,
+                DetectedActivity.WALKING,
+                DetectedActivity.RUNNING,
+                DetectedActivity.ON_BICYCLE,
+                DetectedActivity.IN_VEHICLE,
             )
-        }
+        val transitions =
+            activities.flatMap { activity ->
+                listOf(
+                    ActivityTransition.Builder()
+                        .setActivityType(activity)
+                        .setActivityTransition(ActivityTransition.ACTIVITY_TRANSITION_ENTER)
+                        .build(),
+                    ActivityTransition.Builder()
+                        .setActivityType(activity)
+                        .setActivityTransition(ActivityTransition.ACTIVITY_TRANSITION_EXIT)
+                        .build(),
+                )
+            }
         val request = ActivityTransitionRequest(transitions)
         try {
             client.requestActivityTransitionUpdates(request, getPendingIntent())
@@ -89,7 +96,8 @@ class GmsActivityHelper : ActivityHelper {
         if (isRegistered) {
             try {
                 client.removeActivityTransitionUpdates(getPendingIntent())
-            } catch (_: Exception) {}
+            } catch (_: Exception) {
+            }
             isRegistered = false
         }
     }
@@ -99,9 +107,10 @@ class GmsActivityHelper : ActivityHelper {
     }
 
     private fun getPendingIntent(): PendingIntent {
-        val intent = Intent(context, LocationService::class.java).apply {
-            action = LocationService.ACTION_ACTIVITY_TRANSITION
-        }
+        val intent =
+            Intent(context, LocationService::class.java).apply {
+                action = LocationService.ACTION_ACTIVITY_TRANSITION
+            }
         return PendingIntent.getService(
             context,
             LocationService.PENDING_INTENT_REQUEST_CODE_ACTIVITY,

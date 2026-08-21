@@ -29,7 +29,6 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
-import kotlinx.coroutines.withTimeoutOrNull
 import net.af0.where.e2ee.ConnectionStatus
 import net.af0.where.e2ee.E2eeManager
 import net.af0.where.e2ee.LocationClient
@@ -108,7 +107,10 @@ class LocationService : Service() {
 
     private val recentFixes = ArrayDeque<RecentFix>()
 
-    private fun recordRecentFix(lat: Double, lng: Double) {
+    private fun recordRecentFix(
+        lat: Double,
+        lng: Double,
+    ) {
         val now = clock()
         recentFixes.addLast(RecentFix(now, lat, lng))
         val cutoff = now - RECENT_FIX_WINDOW_MS
@@ -126,8 +128,10 @@ class LocationService : Service() {
         for (i in list.indices) {
             for (j in i + 1 until list.size) {
                 android.location.Location.distanceBetween(
-                    list[i].lat, list[i].lng,
-                    list[j].lat, list[j].lng,
+                    list[i].lat,
+                    list[i].lng,
+                    list[j].lat,
+                    list[j].lng,
                     results,
                 )
                 if (results[0] > maxD) maxD = results[0]
@@ -161,6 +165,7 @@ class LocationService : Service() {
         val coalesceKey = if (success) prefix else null
         e2eeManager.addDiagnosticEvent(message, coalesceKey)
     }
+
     private lateinit var userStore: UserStore
     private lateinit var locationClient: LocationClient
     private lateinit var locationSource: LocationSource
@@ -195,10 +200,11 @@ class LocationService : Service() {
         startForeground(NOTIFICATION_ID, buildNotification())
 
         alarmManager = getSystemService(AlarmManager::class.java)
-        pollWakeLock = (getSystemService(Context.POWER_SERVICE) as PowerManager)
-            .newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "where:poll_alarm").also {
-                it.setReferenceCounted(false)
-            }
+        pollWakeLock =
+            (getSystemService(Context.POWER_SERVICE) as PowerManager)
+                .newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "where:poll_alarm").also {
+                    it.setReferenceCounted(false)
+                }
 
         e2eeManager = e2eeManagerOverride ?: app.e2eeManager
         locationClient = locationClientOverride ?: app.locationClient
@@ -328,16 +334,18 @@ class LocationService : Service() {
                             continue
                         }
                     }
-                    val newPriority = when {
-                        event.type == ActivityType.STILL && deepSleepWhenStationary -> LocationAccuracy.PASSIVE
-                        event.type == ActivityType.STILL -> LocationAccuracy.LOW_POWER
-                        else -> LocationAccuracy.HIGH
-                    }
-                    val newInterval = when {
-                        event.type == ActivityType.STILL && deepSleepWhenStationary -> 60_000L
-                        event.type == ActivityType.STILL -> HEARTBEAT_INTERVAL_MS
-                        else -> 10_000L
-                    }
+                    val newPriority =
+                        when {
+                            event.type == ActivityType.STILL && deepSleepWhenStationary -> LocationAccuracy.PASSIVE
+                            event.type == ActivityType.STILL -> LocationAccuracy.LOW_POWER
+                            else -> LocationAccuracy.HIGH
+                        }
+                    val newInterval =
+                        when {
+                            event.type == ActivityType.STILL && deepSleepWhenStationary -> 60_000L
+                            event.type == ActivityType.STILL -> HEARTBEAT_INTERVAL_MS
+                            else -> 10_000L
+                        }
 
                     if (newPriority != currentPriority || newInterval != currentInterval) {
                         currentPriority = newPriority
@@ -369,7 +377,8 @@ class LocationService : Service() {
         // which can take 10 s+, and Samsung re-enters Doze immediately after onReceive() in
         // GeofenceReceiver returns if no wake lock is held here.
         if (intent?.action == ACTION_POLL_ALARM || intent?.action == ACTION_HEARTBEAT_TICK ||
-            intent?.action == ACTION_GEOFENCE_EVENT) {
+            intent?.action == ACTION_GEOFENCE_EVENT
+        ) {
             pollWakeLock.acquire(WAKE_LOCK_TIMEOUT_MS)
         }
         if (intent?.action == ACTION_POLL_ALARM || intent?.action == ACTION_HEARTBEAT_TICK) {
@@ -447,7 +456,10 @@ class LocationService : Service() {
         return START_STICKY
     }
 
-    private fun setGeofenceAt(lat: Double, lng: Double) {
+    private fun setGeofenceAt(
+        lat: Double,
+        lng: Double,
+    ) {
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED) return
         if (locationProvider.setGeofenceAt(lat, lng)) {
             // GMS: request submitted; actual confirmation logged by provider's Task listener.
@@ -518,13 +530,12 @@ class LocationService : Service() {
         isRegistered = locationProvider.requestActiveUpdates(currentPriority, currentInterval, maxDelay)
         if (isRegistered) {
             lastRegistrationTime = clock()
-            lastLocationCallbackTime = 0L  // reset so watchdog waits for the first callback from this registration
+            lastLocationCallbackTime = 0L // reset so watchdog waits for the first callback from this registration
             Log.i(TAG, "Location updates registered successfully with priority=$currentPriority.")
         } else {
             Log.w(TAG, "requestActiveUpdates failed (likely missing permission); isRegistered=false")
         }
     }
-
 
     override fun onDestroy() {
         Log.d(TAG, "onDestroy")
@@ -562,12 +573,13 @@ class LocationService : Service() {
             val inForeground = locationSource.isAppInForeground.value
             val isSharing = userStore.isSharingLocation.value
             val pending = pendingWakeSource
-            val source = if (pending != null) {
-                pendingWakeSource = null
-                pending
-            } else {
-                WakeSource.TIMER
-            }
+            val source =
+                if (pending != null) {
+                    pendingWakeSource = null
+                    pending
+                } else {
+                    WakeSource.TIMER
+                }
             if (locationSource.friends.value.isEmpty() && locationSource.allPendingInvites.value.isEmpty()) {
                 Log.i(TAG, "No friends or pending invites; stopping service.")
                 stopSelf()

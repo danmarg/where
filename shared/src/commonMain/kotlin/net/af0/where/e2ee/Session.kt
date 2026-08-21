@@ -5,9 +5,7 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.buildJsonObject
-import kotlinx.serialization.json.double
 import kotlinx.serialization.json.jsonPrimitive
-import kotlinx.serialization.json.long
 import kotlinx.serialization.json.longOrNull
 import kotlinx.serialization.json.put
 
@@ -320,7 +318,8 @@ object Session {
 
             val newState =
                 speculativeState.deepCopy().copy(
-                    recvChainKey = chainKey, // Move ownership
+                    // Move ownership
+                    recvChainKey = chainKey,
                     recvSeq = seq,
                     skippedMessageKeys = finalSkippedKeys,
                     needsRatchet = speculativeState.needsRatchet,
@@ -512,11 +511,15 @@ object Session {
         val acc = obj["acc"]?.jsonPrimitive?.content?.toDoubleOrNull() ?: return null
         val ts = obj["ts"]?.jsonPrimitive?.longOrNull ?: return null
         // Unknown precision string (e.g. a future "MEDIUM") falls back to FINE for forward-compat.
-        val precision = obj["precision"]?.jsonPrimitive?.content
-            ?.let { runCatching { LocationPrecision.valueOf(it) }.getOrNull() }
-            ?: LocationPrecision.FINE
+        val precision =
+            obj["precision"]?.jsonPrimitive?.content
+                ?.let { runCatching { LocationPrecision.valueOf(it) }.getOrNull() }
+                ?: LocationPrecision.FINE
         return MessagePlaintext.Location(
-            lat = lat, lng = lng, acc = acc, ts = ts,
+            lat = lat,
+            lng = lng,
+            acc = acc,
+            ts = ts,
             precision = precision,
             stationary = obj["stationary"]?.jsonPrimitive?.booleanOrNull ?: false,
         )

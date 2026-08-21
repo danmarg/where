@@ -1,17 +1,5 @@
 package net.af0.where
 
-import androidx.compose.runtime.Composable
-import androidx.compose.runtime.DisposableEffect
-import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.key
-import androidx.compose.runtime.remember
-import androidx.compose.ui.Alignment
-import androidx.compose.ui.Modifier
-import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import androidx.compose.foundation.layout.*
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Place
@@ -19,6 +7,19 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.key
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import com.google.android.gms.maps.CameraUpdateFactory
 import com.google.android.gms.maps.model.CameraPosition
 import com.google.android.gms.maps.model.LatLng
@@ -32,20 +33,19 @@ import com.google.maps.android.compose.rememberUpdatedMarkerState
 import kotlinx.coroutines.launch
 import net.af0.where.e2ee.FriendEntry
 import net.af0.where.model.UserLocation
-import androidx.compose.runtime.rememberCoroutineScope
-import androidx.compose.foundation.layout.fillMaxSize
 
-private val mapStyleJson = """
-[
-  {
-    "featureType": "poi",
-    "elementType": "labels",
-    "stylers": [
-      { "visibility": "off" }
+private val mapStyleJson =
+    """
+    [
+      {
+        "featureType": "poi",
+        "elementType": "labels",
+        "stylers": [
+          { "visibility": "off" }
+        ]
+      }
     ]
-  }
-]
-""".trimIndent()
+    """.trimIndent()
 
 @Composable
 fun MapComposable(
@@ -65,41 +65,47 @@ fun MapComposable(
     val scope = rememberCoroutineScope()
     val navBarBottom = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
 
-    val initialPosition = remember {
-        val last = UserPrefs.getLastLocation(context)
-        if (last != null) {
-            CameraPosition.fromLatLngZoom(LatLng(last.first, last.second), last.third)
-        } else {
-            CameraPosition.fromLatLngZoom(LatLng(37.33, -122.03), 10f)
+    val initialPosition =
+        remember {
+            val last = UserPrefs.getLastLocation(context)
+            if (last != null) {
+                CameraPosition.fromLatLngZoom(LatLng(last.first, last.second), last.third)
+            } else {
+                CameraPosition.fromLatLngZoom(LatLng(37.33, -122.03), 10f)
+            }
         }
-    }
 
     val cameraPositionState = rememberCameraPositionState { position = initialPosition }
 
-    val mapLocationSource = remember {
-        object : com.google.android.gms.maps.LocationSource {
-            private var listener: com.google.android.gms.maps.LocationSource.OnLocationChangedListener? = null
+    val mapLocationSource =
+        remember {
+            object : com.google.android.gms.maps.LocationSource {
+                private var listener: com.google.android.gms.maps.LocationSource.OnLocationChangedListener? = null
 
-            override fun activate(l: com.google.android.gms.maps.LocationSource.OnLocationChangedListener) {
-                listener = l
-            }
-
-            override fun deactivate() {
-                listener = null
-            }
-
-            fun update(loc: UserLocation, heading: Double?) {
-                val androidLoc = android.location.Location("where").apply {
-                    latitude = loc.lat
-                    longitude = loc.lng
-                    time = loc.timestamp * 1000
-                    if (heading != null) bearing = heading.toFloat()
-                    accuracy = 10f
+                override fun activate(l: com.google.android.gms.maps.LocationSource.OnLocationChangedListener) {
+                    listener = l
                 }
-                listener?.onLocationChanged(androidLoc)
+
+                override fun deactivate() {
+                    listener = null
+                }
+
+                fun update(
+                    loc: UserLocation,
+                    heading: Double?,
+                ) {
+                    val androidLoc =
+                        android.location.Location("where").apply {
+                            latitude = loc.lat
+                            longitude = loc.lng
+                            time = loc.timestamp * 1000
+                            if (heading != null) bearing = heading.toFloat()
+                            accuracy = 10f
+                        }
+                    listener?.onLocationChanged(androidLoc)
+                }
             }
         }
-    }
 
     LaunchedEffect(ownLocation, ownHeading) {
         ownLocation?.let { mapLocationSource.update(it, ownHeading) }
@@ -120,11 +126,12 @@ fun MapComposable(
 
     LaunchedEffect(zoomToUserId) {
         val id = zoomToUserId ?: return@LaunchedEffect
-        val target = if (id == "__own__") {
-            ownLocation?.let { LatLng(it.lat, it.lng) }
-        } else {
-            users.find { it.userId == id }?.let { LatLng(it.lat, it.lng) }
-        }
+        val target =
+            if (id == "__own__") {
+                ownLocation?.let { LatLng(it.lat, it.lng) }
+            } else {
+                users.find { it.userId == id }?.let { LatLng(it.lat, it.lng) }
+            }
         if (target != null) {
             cameraPositionState.animate(CameraUpdateFactory.newLatLngZoom(target, 15f))
         }
@@ -133,33 +140,37 @@ fun MapComposable(
 
     // Pre-compute marker data (including @Composable subtitle strings) in composable scope.
     // Filter HIDDEN peers here so MarkerComposable is never instantiated for them.
-    val markerData = users.map { user ->
-        val friend = friends.find { it.id == user.userId }
-        val name = friend?.name ?: user.userId.take(8)
-        val nowSec = System.currentTimeMillis() / 1000L
-        val display = friend?.displayState(
-            nowSeconds = nowSec,
-            lastPingSeconds = friendLastPing[user.userId]?.let { it / 1000L },
-        ) ?: PeerDisplay.LastSeen(friendLastPing[user.userId]?.let { it / 1000L })
-        val style = display.pinStyle
-        val subtitle = peerSubtitleText(display)
-        Triple(user, Triple(friend, name, style), subtitle)
-    }.filter { (_, meta, _) -> meta.third != PeerPinStyle.HIDDEN }
+    val markerData =
+        users.map { user ->
+            val friend = friends.find { it.id == user.userId }
+            val name = friend?.name ?: user.userId.take(8)
+            val nowSec = System.currentTimeMillis() / 1000L
+            val display =
+                friend?.displayState(
+                    nowSeconds = nowSec,
+                    lastPingSeconds = friendLastPing[user.userId]?.let { it / 1000L },
+                ) ?: PeerDisplay.LastSeen(friendLastPing[user.userId]?.let { it / 1000L })
+            val style = display.pinStyle
+            val subtitle = peerSubtitleText(display)
+            Triple(user, Triple(friend, name, style), subtitle)
+        }.filter { (_, meta, _) -> meta.third != PeerPinStyle.HIDDEN }
 
     GoogleMap(
         modifier = modifier,
         cameraPositionState = cameraPositionState,
         contentPadding = PaddingValues(bottom = 96.dp + navBarBottom),
         onMapClick = { onSelectedUserIdChange(null) },
-        properties = MapProperties(
-            isMyLocationEnabled = hasFineLocationPermission,
-            mapStyleOptions = MapStyleOptions(mapStyleJson),
-        ),
-        uiSettings = MapUiSettings(
-            myLocationButtonEnabled = false,
-            zoomControlsEnabled = false,
-            compassEnabled = false,
-        ),
+        properties =
+            MapProperties(
+                isMyLocationEnabled = hasFineLocationPermission,
+                mapStyleOptions = MapStyleOptions(mapStyleJson),
+            ),
+        uiSettings =
+            MapUiSettings(
+                myLocationButtonEnabled = false,
+                zoomControlsEnabled = false,
+                compassEnabled = false,
+            ),
         locationSource = mapLocationSource,
     ) {
         markerData.forEach { (user, meta, subtitle) ->

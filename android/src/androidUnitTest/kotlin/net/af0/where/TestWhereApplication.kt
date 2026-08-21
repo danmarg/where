@@ -4,14 +4,17 @@ import android.content.Context
 import android.content.SharedPreferences
 import app.cash.sqldelight.db.SqlDriver
 import app.cash.sqldelight.driver.android.AndroidSqliteDriver
-import net.af0.where.db.WhereDatabase
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
+import net.af0.where.db.WhereDatabase
 import net.af0.where.e2ee.E2eeManager
 import net.af0.where.e2ee.RawKeyValueStorage
 import net.af0.where.e2ee.UserStore
 
-private fun createTestSqlDriver(context: android.content.Context, name: String? = null): SqlDriver {
+private fun createTestSqlDriver(
+    context: android.content.Context,
+    name: String? = null,
+): SqlDriver {
     return AndroidSqliteDriver(
         WhereDatabase.Schema,
         context,

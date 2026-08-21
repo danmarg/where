@@ -8,15 +8,22 @@ import kotlin.test.assertTrue
 class UserStoreTest {
     private class MemoryStorage : RawKeyValueStorage {
         val map = mutableMapOf<String, String>()
+
         override fun getString(key: String): String? = map[key]
-        override fun putString(key: String, value: String) { map[key] = value }
+
+        override fun putString(
+            key: String,
+            value: String,
+        ) {
+            map[key] = value
+        }
     }
 
     @Test
     fun effectivelyPausedIdsIncludesElapsedTimers() {
         val store = UserStore(MemoryStorage())
-        store.togglePauseFriend("alice")  // explicitly paused
-        store.setFriendExpiry("bob", epochSeconds = 1000L)   // expired in the past
+        store.togglePauseFriend("alice") // explicitly paused
+        store.setFriendExpiry("bob", epochSeconds = 1000L) // expired in the past
         store.setFriendExpiry("carol", epochSeconds = 5000L) // future
 
         val now = 2000L

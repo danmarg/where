@@ -5,7 +5,6 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Bundle
-import android.os.PowerManager
 import android.provider.Settings
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -244,14 +243,18 @@ class MainActivity : ComponentActivity() {
                     AlertDialog(
                         onDismissRequest = { viewModel.dismissBatteryOptimizationDialog() },
                         title = { Text("Improve background updates") },
-                        text = { Text("For reliable location sharing when the screen is off, allow Where to run without battery restrictions.") },
+                        text = {
+                            Text(
+                                "For reliable location sharing when the screen is off, allow Where to run without battery restrictions.",
+                            )
+                        },
                         confirmButton = {
                             TextButton(onClick = {
                                 viewModel.dismissBatteryOptimizationDialog()
                                 startActivity(
                                     Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
                                         data = Uri.parse("package:$packageName")
-                                    }
+                                    },
                                 )
                             }) { Text("Allow") }
                         },

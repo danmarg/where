@@ -23,28 +23,32 @@ class ReceiveRatchetFailureTest {
         val (msg, bobSession) = KeyExchange.bobProcessQr(qr, "Bob")
         val aliceSession = KeyExchange.aliceProcessInit(msg, aliceEkPriv, qr.ekPub)
 
-        val (_, original) = Session.encryptMessage(
-            aliceSession,
-            MessagePlaintext.Location(1.0, 2.0, 3.0, 4L),
-        )
+        val (_, original) =
+            Session.encryptMessage(
+                aliceSession,
+                MessagePlaintext.Location(1.0, 2.0, 3.0, 4L),
+            )
 
         val sessionAad = bobSession.aliceFp + bobSession.bobFp
-        val header = try {
-            Session.decryptHeader(bobSession.headerKey, original.envelope, sessionAad)
-        } catch (_: Exception) {
-            Session.decryptHeader(bobSession.nextHeaderKey, original.envelope, sessionAad)
-        }
+        val header =
+            try {
+                Session.decryptHeader(bobSession.headerKey, original.envelope, sessionAad)
+            } catch (_: Exception) {
+                Session.decryptHeader(bobSession.nextHeaderKey, original.envelope, sessionAad)
+            }
 
-        val tampered = original.copy(
-            ct = original.ct.copyOf().also { it[it.size - 1] = (it.last().toInt() xor 0xFF).toByte() },
-        )
+        val tampered =
+            original.copy(
+                ct = original.ct.copyOf().also { it[it.size - 1] = (it.last().toInt() xor 0xFF).toByte() },
+            )
 
-        val bobAfterFailure: SessionState = try {
-            Session.decryptMessage(bobSession, tampered, header)
-            fail("Expected DecryptionExceptionWithState on tampered body")
-        } catch (e: DecryptionExceptionWithState) {
-            e.newState
-        }
+        val bobAfterFailure: SessionState =
+            try {
+                Session.decryptMessage(bobSession, tampered, header)
+                fail("Expected DecryptionExceptionWithState on tampered body")
+            } catch (e: DecryptionExceptionWithState) {
+                e.newState
+            }
 
         // recvSeq must advance so the ratchet state stays consistent.
         assertTrue(bobAfterFailure.recvSeq >= 1, "recvSeq should have advanced past the failed message")

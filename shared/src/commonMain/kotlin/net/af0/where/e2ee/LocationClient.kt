@@ -131,11 +131,12 @@ open class LocationClient(
                         val inits = messages.filterIsInstance<KeyExchangeInitPayload>()
                         val last = inits.lastOrNull()
                         if (last != null) {
-                            val decryptedName = store.decryptSuggestedName(
-                                aliceEkPub = invite.qrPayload.ekPub,
-                                bobEkPub = last.ekPub,
-                                encryptedName = last.encryptedName
-                            )
+                            val decryptedName =
+                                store.decryptSuggestedName(
+                                    aliceEkPub = invite.qrPayload.ekPub,
+                                    bobEkPub = last.ekPub,
+                                    encryptedName = last.encryptedName,
+                                )
                             if (decryptedName == null) {
                                 store.addDiagnosticEvent("Failed to decrypt suggested_name for invite from discovery=$discoveryHex")
                                 PendingInviteResult(
@@ -143,7 +144,7 @@ open class LocationClient(
                                     scannerEkPub = last.ekPub,
                                     inviteEkPub = invite.qrPayload.ekPub,
                                     multipleScansDetected = inits.size > 1,
-                                    pairingError = "Handshake failed: Cryptographic verification error."
+                                    pairingError = "Handshake failed: Cryptographic verification error.",
                                 )
                             } else {
                                 // Return a copy of the payload with the transient suggestedName field populated for UI consumption.
@@ -430,20 +431,21 @@ open class LocationClient(
             val ts = currentTimeSeconds()
             val payload = MessagePlaintext.StoppedSharing(ts = ts)
             val activeFriends = store.listFriends().filter { it.id !in pausedFriendIds && !it.isStale }
-            val deferreds = activeFriends.map { friend ->
-                async {
-                    try {
-                        val mutex = getFriendMutex(friend.id)
-                        mutex.withLock {
-                            sendMessageToFriendInternal(friend.id, payload)
+            val deferreds =
+                activeFriends.map { friend ->
+                    async {
+                        try {
+                            val mutex = getFriendMutex(friend.id)
+                            mutex.withLock {
+                                sendMessageToFriendInternal(friend.id, payload)
+                            }
+                        } catch (e: CancellationException) {
+                            throw e
+                        } catch (_: Exception) {
+                            // ignore per-friend failures
                         }
-                    } catch (e: CancellationException) {
-                        throw e
-                    } catch (_: Exception) {
-                        // ignore per-friend failures
                     }
                 }
-            }
             deferreds.awaitAll()
         }
     }

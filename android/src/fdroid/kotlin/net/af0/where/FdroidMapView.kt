@@ -55,16 +55,18 @@ private fun peerMarkerIcon(
     val dp = dm.density
     val sp = dm.scaledDensity
 
-    val namePaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
-        textSize = 11f * sp
-        color = Color.WHITE
-        this.alpha = (255 * alpha).roundToInt().coerceIn(0, 255)
-    }
-    val subPaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
-        textSize = 10f * sp
-        color = Color.WHITE
-        this.alpha = (255 * 0.7f * alpha).roundToInt().coerceIn(0, 255)
-    }
+    val namePaint =
+        TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
+            textSize = 11f * sp
+            color = Color.WHITE
+            this.alpha = (255 * alpha).roundToInt().coerceIn(0, 255)
+        }
+    val subPaint =
+        TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
+            textSize = 10f * sp
+            color = Color.WHITE
+            this.alpha = (255 * 0.7f * alpha).roundToInt().coerceIn(0, 255)
+        }
 
     val padH = 5f * dp
     val padV = 2f * dp
@@ -93,9 +95,10 @@ private fun peerMarkerIcon(
     val canvas = Canvas(bmp)
 
     // Label background — semi-transparent dark box, matching GMS Color.Black.copy(alpha=0.65)
-    val bgPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.argb((0.65f * alpha * 255).roundToInt().coerceIn(0, 255), 0, 0, 0)
-    }
+    val bgPaint =
+        Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.argb((0.65f * alpha * 255).roundToInt().coerceIn(0, 255), 0, 0, 0)
+        }
     val boxX = (bmpW - boxW) / 2f
     canvas.drawRoundRect(RectF(boxX, 0f, boxX + boxW, boxH), 4f * dp, 4f * dp, bgPaint)
 
@@ -108,17 +111,19 @@ private fun peerMarkerIcon(
     }
 
     // Pin: filled circle + triangle pointing down, matching GMS MaterialTheme.colorScheme.error
-    val pinPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.argb((255 * alpha).roundToInt().coerceIn(0, 255), 176, 0, 32)
-    }
+    val pinPaint =
+        Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.argb((255 * alpha).roundToInt().coerceIn(0, 255), 176, 0, 32)
+        }
     canvas.drawCircle(cx, boxH + pinR, pinR, pinPaint)
-    val path = Path().apply {
-        // Triangle connects at the lower portion of the circle and tapers to the tip
-        moveTo(cx - pinR * 0.7f, boxH + pinR + pinR * 0.7f)
-        lineTo(cx + pinR * 0.7f, boxH + pinR + pinR * 0.7f)
-        lineTo(cx, boxH + pinH)
-        close()
-    }
+    val path =
+        Path().apply {
+            // Triangle connects at the lower portion of the circle and tapers to the tip
+            moveTo(cx - pinR * 0.7f, boxH + pinR + pinR * 0.7f)
+            lineTo(cx + pinR * 0.7f, boxH + pinR + pinR * 0.7f)
+            lineTo(cx, boxH + pinH)
+            close()
+        }
     canvas.drawPath(path, pinPaint)
 
     return IconFactory.getInstance(context).fromBitmap(bmp)
@@ -144,18 +149,20 @@ fun MapComposable(
     val bottomPaddingPx = with(density) { (96.dp + navBarBottom).roundToPx() }
 
     // Pre-compute marker data outside AndroidView so peerSubtitleText (@Composable) is callable.
-    val markerData = users.map { user ->
-        val friend = friends.find { it.id == user.userId }
-        val name = friend?.name ?: user.userId.take(8)
-        val nowSec = System.currentTimeMillis() / 1000L
-        val display = friend?.displayState(
-            nowSeconds = nowSec,
-            lastPingSeconds = friendLastPing[user.userId]?.let { it / 1000L },
-        ) ?: PeerDisplay.LastSeen(friendLastPing[user.userId]?.let { it / 1000L })
-        val pinStyle = display.pinStyle
-        val subtitle = peerSubtitleText(display)
-        Triple(user, Triple(friend, name, pinStyle), subtitle)
-    }.filter { (_, meta, _) -> meta.third != PeerPinStyle.HIDDEN }
+    val markerData =
+        users.map { user ->
+            val friend = friends.find { it.id == user.userId }
+            val name = friend?.name ?: user.userId.take(8)
+            val nowSec = System.currentTimeMillis() / 1000L
+            val display =
+                friend?.displayState(
+                    nowSeconds = nowSec,
+                    lastPingSeconds = friendLastPing[user.userId]?.let { it / 1000L },
+                ) ?: PeerDisplay.LastSeen(friendLastPing[user.userId]?.let { it / 1000L })
+            val pinStyle = display.pinStyle
+            val subtitle = peerSubtitleText(display)
+            Triple(user, Triple(friend, name, pinStyle), subtitle)
+        }.filter { (_, meta, _) -> meta.third != PeerPinStyle.HIDDEN }
 
     var mapRef by remember { mutableStateOf<MapLibreMap?>(null) }
     var mapViewRef by remember { mutableStateOf<MapView?>(null) }
@@ -221,10 +228,11 @@ fun MapComposable(
     LaunchedEffect(mapRef, zoomToUserId) {
         val id = zoomToUserId ?: return@LaunchedEffect
         val map = mapRef ?: return@LaunchedEffect
-        val target = when (id) {
-            "__own__" -> ownLocation?.let { LatLng(it.lat, it.lng) }
-            else -> users.find { it.userId == id }?.let { LatLng(it.lat, it.lng) }
-        }
+        val target =
+            when (id) {
+                "__own__" -> ownLocation?.let { LatLng(it.lat, it.lng) }
+                else -> users.find { it.userId == id }?.let { LatLng(it.lat, it.lng) }
+            }
         if (target != null) map.animateCamera(CameraUpdateFactory.newLatLngZoom(target, 15.0))
         onZoomToUserIdConsumed()
     }
@@ -244,10 +252,11 @@ fun MapComposable(
                 onCreate(null)
                 getMapAsync { map ->
                     val last = UserPrefs.getLastLocation(ctx)
-                    map.cameraPosition = CameraPosition.Builder()
-                        .target(if (last != null) LatLng(last.first, last.second) else LatLng(37.33, -122.03))
-                        .zoom(last?.third?.toDouble() ?: 10.0)
-                        .build()
+                    map.cameraPosition =
+                        CameraPosition.Builder()
+                            .target(if (last != null) LatLng(last.first, last.second) else LatLng(37.33, -122.03))
+                            .zoom(last?.third?.toDouble() ?: 10.0)
+                            .build()
                     map.uiSettings.isCompassEnabled = false
                     map.setStyle(STYLE_URL) {
                         // mapRef is set here — after style load — so LaunchedEffects that
@@ -273,11 +282,12 @@ fun MapComposable(
                 val (_, name, style) = meta
                 val pinAlpha = if (style == PeerPinStyle.DIMMED) 0.45f else 1f
                 val isSelected = selectedUserId == user.userId
-                val marker = map.addMarker(
-                    MarkerOptions()
-                        .position(LatLng(user.lat, user.lng))
-                        .icon(peerMarkerIcon(context, name, if (isSelected) subtitle else null, pinAlpha)),
-                )
+                val marker =
+                    map.addMarker(
+                        MarkerOptions()
+                            .position(LatLng(user.lat, user.lng))
+                            .icon(peerMarkerIcon(context, name, if (isSelected) subtitle else null, pinAlpha)),
+                    )
                 if (marker != null) markerIds[marker.id] = user.userId
             }
             map.setOnMarkerClickListener { marker ->
