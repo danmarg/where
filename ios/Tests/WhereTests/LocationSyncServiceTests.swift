@@ -601,6 +601,16 @@ class LocationSyncServiceTests: XCTestCase {
         XCTAssertFalse(isRapid2)
     }
 
+    func testAwaitingFirstUpdateStopsForcingRapidPollAfterTimeout() async throws {
+        // Regression test for #336: a friend who never sends a first location update must not
+        // pin the client at rapid polling forever.
+        service.awaitingFirstUpdateIds = ["stale_friend": Date(timeIntervalSinceNow: -301)]
+        XCTAssertFalse(service.isRapidPolling(), "An awaiting-first-update entry past the timeout must stop forcing rapid polling")
+
+        service.awaitingFirstUpdateIds = ["fresh_friend": Date(timeIntervalSinceNow: -10)]
+        XCTAssertTrue(service.isRapidPolling(), "A recently-added awaiting-first-update entry should still force rapid polling")
+    }
+
     class SendCountBox: @unchecked Sendable {
         private let lock = NSLock()
         private var count = 0

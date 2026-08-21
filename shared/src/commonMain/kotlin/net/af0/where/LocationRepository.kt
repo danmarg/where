@@ -25,6 +25,8 @@ interface LocationSource {
     val connectionStatus: StateFlow<ConnectionStatus>
     val isAppInForeground: StateFlow<Boolean>
     val pendingInitPayload: StateFlow<KeyExchangeInitPayload?>
+    /** Wall-clock time [pendingInitPayload] was last set to a non-null value; 0 when null. */
+    val pendingInitPayloadSetAt: StateFlow<Long>
     val pendingInitAliceEkPub: StateFlow<ByteArray?>
     val friends: StateFlow<List<FriendEntry>>
     val allPendingInvites: StateFlow<List<PendingInviteView>>
@@ -106,6 +108,9 @@ class LocationRepository(
     internal val _pendingInitPayload = MutableStateFlow<KeyExchangeInitPayload?>(null)
     override val pendingInitPayload: StateFlow<KeyExchangeInitPayload?> = _pendingInitPayload.asStateFlow()
 
+    private val _pendingInitPayloadSetAt = MutableStateFlow(0L)
+    override val pendingInitPayloadSetAt: StateFlow<Long> = _pendingInitPayloadSetAt.asStateFlow()
+
     private val _pendingInitAliceEkPub = MutableStateFlow<ByteArray?>(null)
     override val pendingInitAliceEkPub: StateFlow<ByteArray?> = _pendingInitAliceEkPub.asStateFlow()
 
@@ -179,6 +184,7 @@ class LocationRepository(
         aliceEkPub: ByteArray?,
     ) {
         _pendingInitPayload.value = payload
+        _pendingInitPayloadSetAt.value = if (payload != null) net.af0.where.e2ee.currentTimeMillis() else 0L
         _pendingInitAliceEkPub.value = aliceEkPub
     }
 
@@ -243,6 +249,7 @@ class LocationRepository(
         _connectionStatus.value = ConnectionStatus.Ok
         _isAppInForeground.value = false
         _pendingInitPayload.value = null
+        _pendingInitPayloadSetAt.value = 0L
         _pendingInitAliceEkPub.value = null
         _friends.value = emptyList()
         _allPendingInvites.value = emptyList()

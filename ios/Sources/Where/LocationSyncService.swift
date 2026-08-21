@@ -118,6 +118,10 @@ final class LocationSyncService: ObservableObject {
     private static let locationSendThrottle: TimeInterval = 30.0
     static let minimumReportingDistanceMeters: CLLocationDistance = 200
     private static let rapidPollDuration: TimeInterval = 60.0
+    /// How long a newly-added friend who hasn't sent their first location update keeps the
+    /// client in rapid (2s) polling. Bounds the impact of a friend who never shares (see #336) -
+    /// long enough for a normal first exchange, short enough not to run rapid mode forever.
+    private static let awaitingFirstUpdateTimeout: TimeInterval = 5 * 60
     var locationFixTimeout: TimeInterval = 10.0  // internal for testing
     /// Fixes with horizontalAccuracy above this threshold are cell/WiFi network fixes too noisy
     /// to broadcast; only sub-200m GPS fixes are sent to friends or used for heartbeats.
@@ -157,7 +161,10 @@ final class LocationSyncService: ObservableObject {
     // Initialized in init() to capture motionActivityManager/motionQueue without
     // a self reference, avoiding actor-isolation issues in the closure.
     var isStationaryQuery: () async -> Bool = { false }  // overridden in init
-    private var awaitingFirstUpdateIds: Set<String> = []
+    /// Friend IDs awaiting their first location update, keyed to when they were added so
+    /// isRapidPolling() can stop treating a stale entry as a reason to keep rapid mode on.
+    /// internal (not private) for testing, mirroring lastRapidPollTrigger below.
+    var awaitingFirstUpdateIds: [String: Date] = [:]
     // Monotonically increasing counter used to prevent stale task cleanup from
     // clearing a newer task's state. Incremented each time a new send task is created.
     private var sendTaskGeneration: Int = 0
@@ -518,7 +525,9 @@ final class LocationSyncService: ObservableObject {
 
     @MainActor
     func isRapidPolling() -> Bool {
-        if !awaitingFirstUpdateIds.isEmpty { return true }
+        if awaitingFirstUpdateIds.values.contains(where: { Date().timeIntervalSince($0) < Self.awaitingFirstUpdateTimeout }) {
+            return true
+        }
         if isInviteSheetShowing { return true }
         return Date().timeIntervalSince(lastRapidPollTrigger) < Self.rapidPollDuration
     }
@@ -555,7 +564,7 @@ final class LocationSyncService: ObservableObject {
     }
 
     private func onFriendLocationReceived(friendId: String) {
-        if awaitingFirstUpdateIds.remove(friendId) != nil {
+        if awaitingFirstUpdateIds.removeValue(forKey: friendId) != nil {
             if awaitingFirstUpdateIds.isEmpty {
                 resetRapidPoll()
             }
@@ -775,7 +784,7 @@ final class LocationSyncService: ObservableObject {
             await clearInvite()
             // Insert AFTER clearInvite: clearInvite calls resetRapidPoll which clears
             // awaitingFirstUpdateIds, so inserting before it is a no-op.
-            awaitingFirstUpdateIds.insert(bobEntry.id)
+            awaitingFirstUpdateIds[bobEntry.id] = Date()
             repo.friends = try await e2eeManager.listFriends()
             updateVisibleUsers()
 
@@ -829,7 +838,7 @@ final class LocationSyncService: ObservableObject {
             let result = try await e2eeManager.processKeyExchangeInit(payload: payload, aliceSuggestedName: name, aliceEkPub: kotlinByteArray(from: aliceEkPub))
 
             if let entry = result ?? nil {
-                awaitingFirstUpdateIds.insert(entry.id)
+                awaitingFirstUpdateIds[entry.id] = Date()
                 repo.friends = try await e2eeManager.listFriends()
                 updateVisibleUsers()
 

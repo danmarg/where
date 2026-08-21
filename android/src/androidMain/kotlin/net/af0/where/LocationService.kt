@@ -696,7 +696,12 @@ class LocationService : Service() {
         val isSheetShowing = uiStateStore.isInviteSheetShowing.value
         // Also check if Bob is on the naming screen.
         val isNaming = uiStateStore.pendingQrForNaming.value != null
-        return isSheetShowing || locationSource.pendingInitPayload.value != null || recentlyTriggered || isNaming
+        // Bounded: an incoming invite that's never confirmed or cancelled (app backgrounded,
+        // notification ignored, etc.) must not pin the client at the 2s rapid interval forever.
+        val setAt = locationSource.pendingInitPayloadSetAt.value
+        val hasFreshPendingInit =
+            locationSource.pendingInitPayload.value != null && setAt != 0L && now - setAt < PENDING_INIT_RAPID_TIMEOUT_MS
+        return isSheetShowing || hasFreshPendingInit || recentlyTriggered || isNaming
     }
 
     @VisibleForTesting
@@ -1010,5 +1015,12 @@ class LocationService : Service() {
 
         private const val CHANNEL_ID = "where_location"
         private const val NOTIFICATION_ID = 1
+
+        /**
+         * How long an unconfirmed incoming invite keeps the client in rapid (2s) polling.
+         * Bounds the impact of an invite the user never acts on (see #336) - long enough
+         * to notice and respond to a notification, short enough not to run rapid mode forever.
+         */
+        internal const val PENDING_INIT_RAPID_TIMEOUT_MS = 5 * 60 * 1000L
     }
 }
