@@ -357,17 +357,23 @@ open class LocationClient(
         }
     }
 
+    /**
+     * Delivers everything queued for [friendId], stopping (and letting the exception propagate)
+     * on the first failure to preserve delivery order - a later message must never be delivered
+     * before an earlier one that's still stuck. Deliberately doesn't catch here: callers that
+     * only care about best-effort delivery (e.g. [processOutboxes]) catch around their own call
+     * site instead, so a caller that DOES care whether delivery actually happened (e.g.
+     * [sendMessageToFriendInternal], and transitively `LocationService.sendLocationIfNeeded`'s
+     * retry/backoff and connection-status reporting) can see real failures instead of a silent
+     * false success. See https://github.com/danmarg/where/issues/343.
+     */
     private suspend fun processOutbox(friendId: String) {
         val outbox = store.getOutbox(friendId)
         if (outbox.isEmpty()) return
 
         for (outboxMsg in outbox) {
-            try {
-                service.post(outboxMsg.token, outboxMsg.payload)
-                store.removeFromOutbox(friendId, outboxMsg.msgId)
-            } catch (e: Exception) {
-                break // Stop on first failure to preserve order
-            }
+            service.post(outboxMsg.token, outboxMsg.payload)
+            store.removeFromOutbox(friendId, outboxMsg.msgId)
         }
     }
 
@@ -481,21 +487,15 @@ open class LocationClient(
     ) {
         // WAL Safety: If the outbox is not empty, we MUST NOT generate a new message.
         // We instead retry the existing outbox. This bounds the queue and prevents nonce reuse.
-        var currentOutbox = store.getOutbox(friendId)
-        if (currentOutbox.isNotEmpty()) {
-            try {
-                processOutbox(friendId)
-            } catch (e: Exception) {
-                // Ignore
-            }
-
-            // Re-check: if still not empty (e.g. network fail), THEN we must stop to maintain order.
-            if (store.getOutbox(friendId).isNotEmpty()) {
-                return
-            }
+        // processOutbox() now throws on failure instead of swallowing it (see its doc), so a
+        // still-stuck message propagates straight out of this function - callers (ultimately
+        // LocationService.sendLocationIfNeeded) see the real failure instead of a silent
+        // false success, and we never reach encryptAndAdvance() below for a new payload.
+        if (store.getOutbox(friendId).isNotEmpty()) {
+            processOutbox(friendId)
         }
 
-        val (message, session) = store.encryptAndAdvance(friendId, payload)
+        store.encryptAndAdvance(friendId, payload)
 
         // We trigger sequential outbox processing for this friend.
         // This ensures messages are sent in order (0, 1, 2...) even if multiple calls happen rapidly.
