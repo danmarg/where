@@ -6,7 +6,10 @@ import androidx.lifecycle.LifecycleOwner
 import org.maplibre.android.maps.MapView
 
 internal class MapLifecycleObserver(private val getMapView: () -> MapView?) : LifecycleEventObserver {
-    override fun onStateChanged(source: LifecycleOwner, event: Lifecycle.Event) {
+    override fun onStateChanged(
+        source: LifecycleOwner,
+        event: Lifecycle.Event,
+    ) {
         val mv = getMapView() ?: return
         when (event) {
             Lifecycle.Event.ON_START -> mv.onStart()
