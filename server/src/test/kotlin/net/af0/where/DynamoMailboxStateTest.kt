@@ -448,6 +448,68 @@ class DynamoMailboxStateTest {
         client.close()
     }
 
+    private fun seedFullQueue(token: String) {
+        val client = createDynamoDbClient("test", "test", "us-east-1", endpoint())
+        val now = System.currentTimeMillis()
+        val farFutureSec = (now + 7L * 24 * 60 * 60 * 1000) / 1000
+        repeat(TEST_MAX_QUEUE_DEPTH) { i ->
+            client.putItem(
+                PutItemRequest.builder()
+                    .tableName("test_messages_${tableCounter - 1}")
+                    .item(
+                        mapOf(
+                            "token" to AttributeValue.fromS(token),
+                            "msgId" to AttributeValue.fromS("seed-$i"),
+                            "payload" to AttributeValue.fromS("\"seed\""),
+                            "postedAt" to AttributeValue.fromN((now + i).toString()),
+                            "expiresAt" to AttributeValue.fromN(farFutureSec.toString()),
+                        ),
+                    )
+                    .build(),
+            )
+        }
+        client.close()
+    }
+
+    @Test
+    fun `repeated deleteById of the same message only frees one depth-guard slot`() {
+        // Regression guard: DeleteItem gives no signal about whether an item actually existed
+        // unless asked for via ReturnValues - a naive decrement-on-every-call would let a
+        // retried delete-ack for the same id "free" more capacity than was ever actually freed,
+        // letting post() accept messages past MAX_QUEUE_DEPTH rather than just rejecting early.
+        val state = store()
+        val token = freshToken()
+        seedFullQueue(token)
+
+        // Seeds the in-process depth cache to the true count (10000) as a side effect.
+        assertFalse(state.post(token, JsonPrimitive("overflow"), "overflow-msg"))
+
+        // Retry the same delete-ack several times, as a flaky client might.
+        repeat(5) { state.deleteById(token, "seed-0") }
+
+        // Only one real slot was freed - exactly one post should now fit, not five.
+        assertTrue(state.post(token, JsonPrimitive("a"), "after-1"))
+        assertFalse(state.post(token, JsonPrimitive("b"), "after-2"))
+    }
+
+    @Test
+    fun `retried deleteByIds for already-removed ids does not double-free depth-guard slots`() {
+        val state = store()
+        val token = freshToken()
+        seedFullQueue(token)
+
+        assertFalse(state.post(token, JsonPrimitive("overflow"), "overflow-msg"))
+
+        assertEquals(2, state.deleteByIds(token, listOf("seed-0", "seed-1")))
+        // Retry of the same delete-ack, as a client might do after a lost response.
+        assertEquals(2, state.deleteByIds(token, listOf("seed-0", "seed-1")))
+
+        // Exactly two real slots were freed - two posts should fit, not four.
+        assertTrue(state.post(token, JsonPrimitive("a"), "after-1"))
+        assertTrue(state.post(token, JsonPrimitive("b"), "after-2"))
+        assertFalse(state.post(token, JsonPrimitive("c"), "after-3"))
+    }
+
     @Test
     fun `post rethrows a non-duplicate transaction cancellation instead of reporting false success`() {
         // Regression guard: TransactionCanceledException is not synonymous with "duplicate" -

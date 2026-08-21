@@ -30,6 +30,7 @@ import software.amazon.awssdk.regions.Region
 import software.amazon.awssdk.services.dynamodb.DynamoDbClient
 import software.amazon.awssdk.services.dynamodb.model.AttributeDefinition
 import software.amazon.awssdk.services.dynamodb.model.AttributeValue
+import software.amazon.awssdk.services.dynamodb.model.BatchGetItemRequest
 import software.amazon.awssdk.services.dynamodb.model.BatchWriteItemRequest
 import software.amazon.awssdk.services.dynamodb.model.BillingMode
 import software.amazon.awssdk.services.dynamodb.model.CreateTableRequest
@@ -39,6 +40,7 @@ import software.amazon.awssdk.services.dynamodb.model.GetItemRequest
 import software.amazon.awssdk.services.dynamodb.model.GlobalSecondaryIndex
 import software.amazon.awssdk.services.dynamodb.model.KeySchemaElement
 import software.amazon.awssdk.services.dynamodb.model.KeyType
+import software.amazon.awssdk.services.dynamodb.model.KeysAndAttributes
 import software.amazon.awssdk.services.dynamodb.model.Projection
 import software.amazon.awssdk.services.dynamodb.model.ProjectionType
 import software.amazon.awssdk.services.dynamodb.model.Put
@@ -46,6 +48,7 @@ import software.amazon.awssdk.services.dynamodb.model.PutItemRequest
 import software.amazon.awssdk.services.dynamodb.model.QueryRequest
 import software.amazon.awssdk.services.dynamodb.model.ResourceInUseException
 import software.amazon.awssdk.services.dynamodb.model.ResourceNotFoundException
+import software.amazon.awssdk.services.dynamodb.model.ReturnValue
 import software.amazon.awssdk.services.dynamodb.model.ScalarAttributeType
 import software.amazon.awssdk.services.dynamodb.model.Select
 import software.amazon.awssdk.services.dynamodb.model.TimeToLiveSpecification
@@ -790,13 +793,22 @@ class DynamoMailboxState(
         token: String,
         msgId: String,
     ): Boolean {
-        client.deleteItem(
-            DeleteItemRequest.builder()
-                .tableName(messagesTable)
-                .key(mapOf("token" to AttributeValue.fromS(token), "msgId" to AttributeValue.fromS(msgId)))
-                .build(),
-        )
-        synchronized(getLock(token)) { decrementDepth(token, 1) }
+        // ReturnValues.ALL_OLD tells us whether an item actually existed to delete - a retried
+        // delete-ack for an id already removed by a prior call must not decrement depthCounts
+        // again. Unlike the TTL-drift case, an undercount here is unsafe in the wrong direction:
+        // it lets post() accept messages past MAX_QUEUE_DEPTH instead of just rejecting slightly
+        // early.
+        val response =
+            client.deleteItem(
+                DeleteItemRequest.builder()
+                    .tableName(messagesTable)
+                    .key(mapOf("token" to AttributeValue.fromS(token), "msgId" to AttributeValue.fromS(msgId)))
+                    .returnValues(ReturnValue.ALL_OLD)
+                    .build(),
+            )
+        if (response.hasAttributes()) {
+            synchronized(getLock(token)) { decrementDepth(token, 1) }
+        }
         return true
     }
 
@@ -804,6 +816,38 @@ class DynamoMailboxState(
         token: String,
         msgIds: List<String>,
     ): Int {
+        // BatchWriteItem's response doesn't say which keys actually existed (only which requests
+        // are unprocessed and need retrying), so - unlike deleteById's ReturnValues.ALL_OLD -
+        // there's no way to get an accurate decrement count from the delete calls themselves.
+        // Check existence first via BatchGetItem instead; see deleteById's doc for why an
+        // inflated decrement here is unsafe, not just imprecise.
+        var existingCount = 0
+        msgIds.chunked(100).forEach { chunk ->
+            var keysToCheck =
+                chunk.map { msgId ->
+                    mapOf("token" to AttributeValue.fromS(token), "msgId" to AttributeValue.fromS(msgId))
+                }
+            while (keysToCheck.isNotEmpty()) {
+                val response =
+                    client.batchGetItem(
+                        BatchGetItemRequest.builder()
+                            .requestItems(
+                                mapOf(
+                                    messagesTable to
+                                        KeysAndAttributes.builder()
+                                            .keys(keysToCheck)
+                                            .projectionExpression("msgId")
+                                            .consistentRead(true)
+                                            .build(),
+                                ),
+                            )
+                            .build(),
+                    )
+                existingCount += response.responses()[messagesTable]?.size ?: 0
+                keysToCheck = response.unprocessedKeys()[messagesTable]?.keys() ?: emptyList()
+            }
+        }
+
         // BatchWriteItem caps at 25 requests per call and doesn't guarantee all of them land -
         // unprocessed ones come back in the response and get retried until none remain.
         msgIds.chunked(25).forEach { chunk ->
@@ -827,11 +871,7 @@ class DynamoMailboxState(
                 requests = response.unprocessedItems()[messagesTable] ?: emptyList()
             }
         }
-        // Approximate: assumes every requested id existed and was actually deleted. A retried
-        // delete-ack for an id already removed by a prior call would over-decrement by one, but
-        // that only makes the depth guard slightly less strict, and self-heals the next time this
-        // token's cache entry is evicted/reseeded (e.g. after a process restart).
-        synchronized(getLock(token)) { decrementDepth(token, msgIds.size) }
+        synchronized(getLock(token)) { decrementDepth(token, existingCount) }
         return msgIds.size
     }
 
