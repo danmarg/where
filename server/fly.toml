@@ -7,11 +7,12 @@ app = 'where-api'
 primary_region = 'fra'
 
 [env]
-  # The Redis -> Postgres/Neon migration was abandoned on cost grounds: Neon bills per
-  # wall-clock CU-hour of compute awake time, and this app's poll-heavy traffic pattern
-  # keeps it awake almost continuously, making it no cheaper than Redis. Back to plain
-  # Redis while a DynamoDB migration (pure per-request billing) is evaluated instead.
-  MAILBOX_STORE_MODE = 'redis'
+  # Phase A of the Redis -> DynamoDB mailbox store migration (PR #340): Redis stays
+  # authoritative for every request. DynamoDB mirrors every write best-effort and gets
+  # shadow-read-compared on every drain(), off the request path - a DynamoDB failure can
+  # only produce a WARN log, never affect a client response. "Zero WARN lines" over the
+  # wait-out-TTL period is the parity signal before flipping to dual-write-dynamodb-primary.
+  MAILBOX_STORE_MODE = 'dual-write-redis-primary'
 
 [http_service]
   internal_port = 8080
