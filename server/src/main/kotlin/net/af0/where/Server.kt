@@ -497,6 +497,16 @@ fun createDynamoDbClient(
  * failure mode (drift from TTL-expired-but-undeleted rows) can't manifest inside the 7-day
  * window the app is actually designed to tolerate.
  */
+
+/**
+ * True if [e] cancelled the message+receivedIds transaction specifically because the receivedIds
+ * item (index 1 - see DynamoMailboxState.post()'s transactItems order) already existed, i.e. a
+ * genuine duplicate. Any other cancellation reason (throttling, contention, etc.) is a real
+ * failure and must not be swallowed as if it were one - see post()'s call site.
+ */
+internal fun isReceivedIdsConditionalCheckFailure(e: TransactionCanceledException): Boolean =
+    e.cancellationReasons().getOrNull(1)?.code() == "ConditionalCheckFailed"
+
 class DynamoMailboxState(
     private val client: DynamoDbClient,
     private val limiter: InProcessRateLimiter = InProcessRateLimiter(),
@@ -662,11 +672,8 @@ class DynamoMailboxState(
                     // TransactionCanceledException isn't synonymous with "duplicate" - contention,
                     // throttling, and other transaction failures cancel it too, and those must
                     // propagate as a real failure rather than be reported to the HTTP layer as a
-                    // false 204 (which would be silent message loss). Only the receivedIds put (index
-                    // 1) carries a condition, so a duplicate specifically shows up as that item's
-                    // reason being ConditionalCheckFailed - anything else is a genuine failure.
-                    val receivedIdsReason = e.cancellationReasons().getOrNull(1)?.code()
-                    if (receivedIdsReason == "ConditionalCheckFailed") {
+                    // false 204 (which would be silent message loss).
+                    if (isReceivedIdsConditionalCheckFailure(e)) {
                         // Already seen: idempotent no-op, matches the check above.
                         return true
                     }
