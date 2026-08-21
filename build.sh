@@ -141,14 +141,17 @@ fi
 echo "Building with server URL: $SERVER_URL"
 echo ""
 
-# Build server
-echo "=== Building server ==="
-if ! run ./gradlew :server:build; then
-  echo "Server build failed."
-  exit 1
+# Build server (skipped for single-platform builds: neither app consumes server
+# build output, only the SERVER_URL string configured below).
+if ! $SKIP_ANDROID && ! $SKIP_IOS; then
+  echo "=== Building server ==="
+  if ! run ./gradlew :server:build; then
+    echo "Server build failed."
+    exit 1
+  fi
+  echo "✓ Server built"
+  echo ""
 fi
-echo "✓ Server built"
-echo ""
 
 # Configure local.properties with SERVER_HTTP_URL
 if [ ! -f local.properties ]; then
