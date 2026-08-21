@@ -30,19 +30,23 @@ import software.amazon.awssdk.regions.Region
 import software.amazon.awssdk.services.dynamodb.DynamoDbClient
 import software.amazon.awssdk.services.dynamodb.model.AttributeDefinition
 import software.amazon.awssdk.services.dynamodb.model.AttributeValue
+import software.amazon.awssdk.services.dynamodb.model.BatchWriteItemRequest
 import software.amazon.awssdk.services.dynamodb.model.BillingMode
-import software.amazon.awssdk.services.dynamodb.model.ConditionalCheckFailedException
 import software.amazon.awssdk.services.dynamodb.model.CreateTableRequest
 import software.amazon.awssdk.services.dynamodb.model.DeleteItemRequest
+import software.amazon.awssdk.services.dynamodb.model.DeleteRequest
+import software.amazon.awssdk.services.dynamodb.model.GetItemRequest
 import software.amazon.awssdk.services.dynamodb.model.KeySchemaElement
 import software.amazon.awssdk.services.dynamodb.model.KeyType
 import software.amazon.awssdk.services.dynamodb.model.PutItemRequest
 import software.amazon.awssdk.services.dynamodb.model.QueryRequest
+import software.amazon.awssdk.services.dynamodb.model.ResourceInUseException
 import software.amazon.awssdk.services.dynamodb.model.ResourceNotFoundException
 import software.amazon.awssdk.services.dynamodb.model.ScalarAttributeType
 import software.amazon.awssdk.services.dynamodb.model.Select
 import software.amazon.awssdk.services.dynamodb.model.TimeToLiveSpecification
 import software.amazon.awssdk.services.dynamodb.model.UpdateTimeToLiveRequest
+import software.amazon.awssdk.services.dynamodb.model.WriteRequest
 import java.net.URI
 import java.security.MessageDigest
 import java.util.UUID
@@ -470,6 +474,14 @@ fun createDynamoDbClient(
  * drain() sorts client-side after fetching. That's cheap because it's bounded by the same
  * MAX_QUEUE_DEPTH the queue-depth guard already enforces, and a GSI to get server-side ordering
  * wasn't worth the extra write cost/eventual-consistency complexity for that saving.
+ *
+ * post()'s dedup-check + depth-check + insert sequence is serialized per token via [locks],
+ * the same pattern the deleted PostgresMailboxState used. That's sufficient (rather than a
+ * DynamoDB transaction/counter item) because Fly runs this server as exactly one JVM
+ * (`max_machines_running = 1` in fly.toml) - there is never a second writer to race against.
+ * A counter item would also need active decrementing on every delete and on every TTL expiry
+ * (which fires with no application hook), so it would drift from the true live count over time;
+ * the in-process lock has no such drift.
  */
 class DynamoMailboxState(
     private val client: DynamoDbClient,
@@ -477,6 +489,10 @@ class DynamoMailboxState(
     private val messagesTable: String = "where_mailbox_messages",
     private val receivedIdsTable: String = "where_mailbox_received_ids",
 ) : MailboxStore {
+    private val locks = ConcurrentHashMap<String, Any>()
+
+    private fun getLock(token: String) = locks.getOrPut(token) { Any() }
+
     init {
         ensureTable(messagesTable)
         ensureTable(receivedIdsTable)
@@ -489,20 +505,25 @@ class DynamoMailboxState(
         } catch (e: ResourceNotFoundException) {
             // Falls through to create below.
         }
-        client.createTable(
-            CreateTableRequest.builder()
-                .tableName(tableName)
-                .billingMode(BillingMode.PAY_PER_REQUEST)
-                .attributeDefinitions(
-                    AttributeDefinition.builder().attributeName("token").attributeType(ScalarAttributeType.S).build(),
-                    AttributeDefinition.builder().attributeName("msgId").attributeType(ScalarAttributeType.S).build(),
-                )
-                .keySchema(
-                    KeySchemaElement.builder().attributeName("token").keyType(KeyType.HASH).build(),
-                    KeySchemaElement.builder().attributeName("msgId").keyType(KeyType.RANGE).build(),
-                )
-                .build(),
-        )
+        try {
+            client.createTable(
+                CreateTableRequest.builder()
+                    .tableName(tableName)
+                    .billingMode(BillingMode.PAY_PER_REQUEST)
+                    .attributeDefinitions(
+                        AttributeDefinition.builder().attributeName("token").attributeType(ScalarAttributeType.S).build(),
+                        AttributeDefinition.builder().attributeName("msgId").attributeType(ScalarAttributeType.S).build(),
+                    )
+                    .keySchema(
+                        KeySchemaElement.builder().attributeName("token").keyType(KeyType.HASH).build(),
+                        KeySchemaElement.builder().attributeName("msgId").keyType(KeyType.RANGE).build(),
+                    )
+                    .build(),
+            )
+        } catch (e: ResourceInUseException) {
+            // Another process/run already created it between our describeTable and createTable -
+            // fall through to the waiter below, which is safe to call either way.
+        }
         client.waiter().waitUntilTableExists { it.tableName(tableName) }
         client.updateTimeToLive(
             UpdateTimeToLiveRequest.builder()
@@ -522,11 +543,51 @@ class DynamoMailboxState(
         msgId: String?,
     ): Boolean {
         if (!limiter.checkPost(token)) return false
-        val now = System.currentTimeMillis()
-        val expiresAt = (now + MAILBOX_TTL_MS) / 1000
+        synchronized(getLock(token)) {
+            val now = System.currentTimeMillis()
+            val expiresAt = (now + MAILBOX_TTL_MS) / 1000
 
-        if (msgId != null) {
-            try {
+            if (msgId != null) {
+                val existing =
+                    client.getItem(
+                        GetItemRequest.builder()
+                            .tableName(receivedIdsTable)
+                            .key(mapOf("token" to AttributeValue.fromS(token), "msgId" to AttributeValue.fromS(msgId)))
+                            .consistentRead(true)
+                            .build(),
+                    )
+                if (existing.hasItem()) {
+                    // Already seen: idempotent no-op, matches RedisMailboxState's SISMEMBER check.
+                    return true
+                }
+            }
+
+            // Depth check happens before either write below, so a post that's rejected for being
+            // over the limit leaves no trace in receivedIds - a retry of the same msgId (which the
+            // HTTP layer's 429 response implicitly invites) still has a real message to enqueue,
+            // rather than being silently swallowed by a dedup entry from the failed attempt.
+            if (queueDepthAtLeast(token, MAX_QUEUE_DEPTH, now)) return false
+
+            client.putItem(
+                PutItemRequest.builder()
+                    .tableName(messagesTable)
+                    .item(
+                        mapOf(
+                            "token" to AttributeValue.fromS(token),
+                            // A null msgId means "no idempotency requested" (never happens over the real
+                            // HTTP API, which requires msgId in the path) - give it a unique key so it
+                            // behaves like InMemoryMailboxState's queue (a fresh entry per post), not a
+                            // dedup target.
+                            "msgId" to AttributeValue.fromS(msgId ?: UUID.randomUUID().toString()),
+                            "payload" to AttributeValue.fromS(payload.toString()),
+                            "postedAt" to AttributeValue.fromN(now.toString()),
+                            "expiresAt" to AttributeValue.fromN(expiresAt.toString()),
+                        ),
+                    )
+                    .build(),
+            )
+
+            if (msgId != null) {
                 client.putItem(
                     PutItemRequest.builder()
                         .tableName(receivedIdsTable)
@@ -537,36 +598,11 @@ class DynamoMailboxState(
                                 "expiresAt" to AttributeValue.fromN(expiresAt.toString()),
                             ),
                         )
-                        .conditionExpression("attribute_not_exists(msgId)")
                         .build(),
                 )
-            } catch (e: ConditionalCheckFailedException) {
-                // Already seen: idempotent no-op, matches RedisMailboxState's SISMEMBER check.
-                return true
             }
+            return true
         }
-
-        if (queueDepthAtLeast(token, MAX_QUEUE_DEPTH, now)) return false
-
-        client.putItem(
-            PutItemRequest.builder()
-                .tableName(messagesTable)
-                .item(
-                    mapOf(
-                        "token" to AttributeValue.fromS(token),
-                        // A null msgId means "no idempotency requested" (never happens over the real
-                        // HTTP API, which requires msgId in the path) - give it a unique key so it
-                        // behaves like InMemoryMailboxState's queue (a fresh entry per post), not a
-                        // dedup target.
-                        "msgId" to AttributeValue.fromS(msgId ?: UUID.randomUUID().toString()),
-                        "payload" to AttributeValue.fromS(payload.toString()),
-                        "postedAt" to AttributeValue.fromN(now.toString()),
-                        "expiresAt" to AttributeValue.fromN(expiresAt.toString()),
-                    ),
-                )
-                .build(),
-        )
-        return true
     }
 
     /**
@@ -659,7 +695,29 @@ class DynamoMailboxState(
         token: String,
         msgIds: List<String>,
     ): Int {
-        msgIds.forEach { deleteById(token, it) }
+        // BatchWriteItem caps at 25 requests per call and doesn't guarantee all of them land -
+        // unprocessed ones come back in the response and get retried until none remain.
+        msgIds.chunked(25).forEach { chunk ->
+            var requests =
+                chunk.map { msgId ->
+                    WriteRequest.builder()
+                        .deleteRequest(
+                            DeleteRequest.builder()
+                                .key(mapOf("token" to AttributeValue.fromS(token), "msgId" to AttributeValue.fromS(msgId)))
+                                .build(),
+                        )
+                        .build()
+                }
+            while (requests.isNotEmpty()) {
+                val response =
+                    client.batchWriteItem(
+                        BatchWriteItemRequest.builder()
+                            .requestItems(mapOf(messagesTable to requests))
+                            .build(),
+                    )
+                requests = response.unprocessedItems()[messagesTable] ?: emptyList()
+            }
+        }
         return msgIds.size
     }
 

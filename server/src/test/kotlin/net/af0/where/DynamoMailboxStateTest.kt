@@ -5,6 +5,7 @@ import org.testcontainers.containers.GenericContainer
 import org.testcontainers.containers.wait.strategy.Wait
 import org.testcontainers.utility.DockerImageName
 import software.amazon.awssdk.services.dynamodb.model.AttributeValue
+import software.amazon.awssdk.services.dynamodb.model.GetItemRequest
 import software.amazon.awssdk.services.dynamodb.model.PutItemRequest
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
@@ -267,5 +268,115 @@ class DynamoMailboxStateTest {
         assertTrue(state.post(token, JsonPrimitive("one")))
         assertTrue(state.post(token, JsonPrimitive("two")))
         assertEquals(2, state.drain(token)?.size)
+    }
+
+    @Test
+    fun `concurrent posts at the depth limit boundary do not overshoot`() {
+        // Regression guard for the non-atomic-depth-check bug: seed the queue to exactly
+        // limit-1, then fire a burst of concurrent posts at the same token. Without the
+        // per-token lock serializing the depth-check-then-insert sequence, multiple posts can
+        // all observe "one slot free" and all insert, overshooting MAX_QUEUE_DEPTH.
+        val state = store()
+        val token = freshToken()
+
+        val client = createDynamoDbClient("test", "test", "us-east-1", endpoint())
+        val now = System.currentTimeMillis()
+        val farFutureSec = (now + 7L * 24 * 60 * 60 * 1000) / 1000
+        repeat(TEST_MAX_QUEUE_DEPTH - 1) { i ->
+            client.putItem(
+                PutItemRequest.builder()
+                    .tableName("test_messages_${tableCounter - 1}")
+                    .item(
+                        mapOf(
+                            "token" to AttributeValue.fromS(token),
+                            "msgId" to AttributeValue.fromS("seed-$i"),
+                            "payload" to AttributeValue.fromS("\"seed\""),
+                            "postedAt" to AttributeValue.fromN((now + i).toString()),
+                            "expiresAt" to AttributeValue.fromN(farFutureSec.toString()),
+                        ),
+                    )
+                    .build(),
+            )
+        }
+        client.close()
+
+        val n = 10
+        val pool = Executors.newFixedThreadPool(8)
+        val latch = CountDownLatch(n)
+        val accepted = java.util.concurrent.atomic.AtomicInteger(0)
+        repeat(n) { i ->
+            pool.submit {
+                try {
+                    if (state.post(token, JsonPrimitive(i), "race-$i")) accepted.incrementAndGet()
+                } finally {
+                    latch.countDown()
+                }
+            }
+        }
+        assertTrue(latch.await(30, TimeUnit.SECONDS))
+        pool.shutdown()
+
+        // Exactly one of the racing posts should have claimed the single free slot.
+        assertEquals(1, accepted.get(), "only one concurrent post should fit in the single free slot")
+    }
+
+    @Test
+    fun `retry after a rejected post succeeds once space frees up`() {
+        // Regression guard for the "failed post consumes the msgId" bug: a post rejected for
+        // being over the depth limit must not leave a receivedIds entry behind, or a client
+        // retry of that same msgId (which the HTTP 429 response invites) would be silently
+        // swallowed as an idempotent duplicate instead of actually enqueuing.
+        val state = store()
+        val token = freshToken()
+
+        val client = createDynamoDbClient("test", "test", "us-east-1", endpoint())
+        val now = System.currentTimeMillis()
+        val farFutureSec = (now + 7L * 24 * 60 * 60 * 1000) / 1000
+        val seedKeys = mutableListOf<Map<String, AttributeValue>>()
+        repeat(TEST_MAX_QUEUE_DEPTH) { i ->
+            val key =
+                mapOf(
+                    "token" to AttributeValue.fromS(token),
+                    "msgId" to AttributeValue.fromS("seed-$i"),
+                )
+            seedKeys.add(key)
+            client.putItem(
+                PutItemRequest.builder()
+                    .tableName("test_messages_${tableCounter - 1}")
+                    .item(
+                        key +
+                            mapOf(
+                                "payload" to AttributeValue.fromS("\"seed\""),
+                                "postedAt" to AttributeValue.fromN((now + i).toString()),
+                                "expiresAt" to AttributeValue.fromN(farFutureSec.toString()),
+                            ),
+                    )
+                    .build(),
+            )
+        }
+
+        assertFalse(state.post(token, JsonPrimitive("overflow"), "retry-msg"), "queue is full, post must be rejected")
+
+        // Free up a slot, then retry the same msgId that was just rejected.
+        state.deleteById(token, "seed-0")
+
+        assertTrue(
+            state.post(token, JsonPrimitive("overflow"), "retry-msg"),
+            "retry of a msgId rejected for depth (not duplication) must actually enqueue once space is free",
+        )
+
+        // drain() only returns the oldest MAX_MESSAGES_PER_POLL of a 10000-deep queue, so the
+        // retried message (posted last, hence sorted last) wouldn't show up there - check the
+        // table directly instead.
+        val stored =
+            client.getItem(
+                GetItemRequest.builder()
+                    .tableName("test_messages_${tableCounter - 1}")
+                    .key(mapOf("token" to AttributeValue.fromS(token), "msgId" to AttributeValue.fromS("retry-msg")))
+                    .consistentRead(true)
+                    .build(),
+            )
+        assertTrue(stored.hasItem(), "the retried message must actually be in the mailbox, not silently dropped")
+        client.close()
     }
 }
