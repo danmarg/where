@@ -41,6 +41,7 @@ import software.amazon.awssdk.services.dynamodb.model.KeySchemaElement
 import software.amazon.awssdk.services.dynamodb.model.KeyType
 import software.amazon.awssdk.services.dynamodb.model.Projection
 import software.amazon.awssdk.services.dynamodb.model.ProjectionType
+import software.amazon.awssdk.services.dynamodb.model.Put
 import software.amazon.awssdk.services.dynamodb.model.PutItemRequest
 import software.amazon.awssdk.services.dynamodb.model.QueryRequest
 import software.amazon.awssdk.services.dynamodb.model.ResourceInUseException
@@ -48,6 +49,9 @@ import software.amazon.awssdk.services.dynamodb.model.ResourceNotFoundException
 import software.amazon.awssdk.services.dynamodb.model.ScalarAttributeType
 import software.amazon.awssdk.services.dynamodb.model.Select
 import software.amazon.awssdk.services.dynamodb.model.TimeToLiveSpecification
+import software.amazon.awssdk.services.dynamodb.model.TransactWriteItem
+import software.amazon.awssdk.services.dynamodb.model.TransactWriteItemsRequest
+import software.amazon.awssdk.services.dynamodb.model.TransactionCanceledException
 import software.amazon.awssdk.services.dynamodb.model.UpdateTimeToLiveRequest
 import software.amazon.awssdk.services.dynamodb.model.WriteRequest
 import java.net.URI
@@ -601,40 +605,65 @@ class DynamoMailboxState(
             val depth = currentDepth(token, now)
             if (depth >= MAX_QUEUE_DEPTH) return false
 
-            client.putItem(
-                PutItemRequest.builder()
-                    .tableName(messagesTable)
-                    .item(
-                        mapOf(
-                            "token" to AttributeValue.fromS(token),
-                            // A null msgId means "no idempotency requested" (never happens over the real
-                            // HTTP API, which requires msgId in the path) - give it a unique key so it
-                            // behaves like InMemoryMailboxState's queue (a fresh entry per post), not a
-                            // dedup target.
-                            "msgId" to AttributeValue.fromS(msgId ?: UUID.randomUUID().toString()),
-                            "payload" to AttributeValue.fromS(payload.toString()),
-                            "postedAt" to AttributeValue.fromN(now.toString()),
-                            "expiresAt" to AttributeValue.fromN(expiresAt.toString()),
-                        ),
-                    )
-                    .build(),
-            )
-            depthCounts[token] = depth + 1
+            val messageItem =
+                mapOf(
+                    "token" to AttributeValue.fromS(token),
+                    // A null msgId means "no idempotency requested" (never happens over the real
+                    // HTTP API, which requires msgId in the path) - give it a unique key so it
+                    // behaves like InMemoryMailboxState's queue (a fresh entry per post), not a
+                    // dedup target.
+                    "msgId" to AttributeValue.fromS(msgId ?: UUID.randomUUID().toString()),
+                    "payload" to AttributeValue.fromS(payload.toString()),
+                    "postedAt" to AttributeValue.fromN(now.toString()),
+                    "expiresAt" to AttributeValue.fromN(expiresAt.toString()),
+                )
 
             if (msgId != null) {
-                client.putItem(
-                    PutItemRequest.builder()
-                        .tableName(receivedIdsTable)
-                        .item(
-                            mapOf(
-                                "token" to AttributeValue.fromS(token),
-                                "msgId" to AttributeValue.fromS(msgId),
-                                "expiresAt" to AttributeValue.fromN(expiresAt.toString()),
-                            ),
-                        )
-                        .build(),
-                )
+                // The message write and its receivedIds record must land together or not at all -
+                // two independent PutItems left a window where a crash/AWS error between them could
+                // leave a message durably stored with no idempotency record, so a client retry of
+                // the same msgId would silently re-insert (a harmless overwrite, since messagesTable
+                // is keyed on (token, msgId)) but still double-count it in depthCounts. TransactWriteItems
+                // closes that window instead of narrowing it. The conditionExpression here is mostly
+                // redundant with the GetItem check above (both run under the same per-token lock, the
+                // only writer in this process) - it's the defense against exactly the crash case this
+                // fixes: a prior attempt whose transaction actually committed just before this process
+                // died, so a fresh attempt (this call, possibly in a restarted process) must still
+                // recognize it as a duplicate rather than trusting an in-memory decision alone.
+                try {
+                    client.transactWriteItems(
+                        TransactWriteItemsRequest.builder()
+                            .transactItems(
+                                TransactWriteItem.builder()
+                                    .put(Put.builder().tableName(messagesTable).item(messageItem).build())
+                                    .build(),
+                                TransactWriteItem.builder()
+                                    .put(
+                                        Put.builder()
+                                            .tableName(receivedIdsTable)
+                                            .item(
+                                                mapOf(
+                                                    "token" to AttributeValue.fromS(token),
+                                                    "msgId" to AttributeValue.fromS(msgId),
+                                                    "expiresAt" to AttributeValue.fromN(expiresAt.toString()),
+                                                ),
+                                            )
+                                            .conditionExpression("attribute_not_exists(msgId)")
+                                            .build(),
+                                    )
+                                    .build(),
+                            )
+                            .build(),
+                    )
+                } catch (e: TransactionCanceledException) {
+                    // The receivedIds put is the only conditioned item, so a cancellation here means
+                    // it already existed: already seen, idempotent no-op, matches the check above.
+                    return true
+                }
+            } else {
+                client.putItem(PutItemRequest.builder().tableName(messagesTable).item(messageItem).build())
             }
+            depthCounts[token] = depth + 1
             return true
         }
     }
@@ -651,11 +680,14 @@ class DynamoMailboxState(
      * re-scanned the entire, growing backlog just to confirm it's still under the limit. The
      * cache turns that into one scan per token per process lifetime instead of one per post.
      *
-     * The cache can drift from the true live count if a message is deleted by DynamoDB's native
-     * TTL sweep rather than through deleteById/deleteByIds (which decrement it) - but that can
-     * only happen to a message that's already 7 days old, i.e. already past the "up to 7 days
-     * without ratcheting" window the app is designed to tolerate. Within that window, every
-     * delete goes through code that decrements the cache, so it stays exact.
+     * Invariant: this cache is exact for the supported 7-day mailbox lifetime - within that
+     * window every delete goes through deleteById/deleteByIds, which decrement it, so it can
+     * never diverge from the true live count. It is *not* guaranteed exact past that window: a
+     * message DynamoDB's native TTL sweep deletes (rather than the app) doesn't decrement the
+     * cache, since TTL fires with no application hook. That can only happen to a message that's
+     * already 7 days old, which is already past the "up to 7 days without ratcheting" bound the
+     * app is designed around - a mailbox that old is expected to need a restart/re-pair anyway,
+     * not to keep relying on an exact count.
      */
     private fun currentDepth(
         token: String,

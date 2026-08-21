@@ -143,11 +143,45 @@ class DynamoMailboxStateTest {
     fun `drain returns messages in posted order`() {
         val state = store()
         val token = freshToken()
-        // Primary key is (token, msgId), not (token, postedAt) - ordering is done client-side in
-        // drain(), so this is the one behavior that doesn't fall out "for free" from the key
-        // schema the way it did for Postgres/Redis, and is worth its own explicit test.
+        // Primary key is (token, msgId), not (token, postedAt) - drain() relies on the
+        // postedAt-index GSI for ordering rather than the base table's own key schema, so this
+        // is the one behavior that doesn't fall out "for free" the way it did for Postgres/Redis,
+        // and is worth its own explicit test.
         repeat(10) { i -> state.post(token, JsonPrimitive(i), "msg-$i") }
         assertEquals((0..9).map { JsonPrimitive(it) }, state.drain(token))
+    }
+
+    @Test
+    fun `post writes the message and its idempotency record atomically`() {
+        // Regression guard: the message write and the receivedIds write happen inside one
+        // TransactWriteItems call specifically so a crash/AWS error can never leave one without
+        // the other. Verify both rows land together, directly against the tables rather than
+        // through drain()/post()'s own dedup check, so this doesn't just re-test itself.
+        val state = store()
+        val token = freshToken()
+        assertTrue(state.post(token, JsonPrimitive("atomic"), "msg-atomic"))
+
+        val client = createDynamoDbClient("test", "test", "us-east-1", endpoint())
+        val message =
+            client.getItem(
+                GetItemRequest.builder()
+                    .tableName("test_messages_${tableCounter - 1}")
+                    .key(mapOf("token" to AttributeValue.fromS(token), "msgId" to AttributeValue.fromS("msg-atomic")))
+                    .consistentRead(true)
+                    .build(),
+            )
+        val receivedId =
+            client.getItem(
+                GetItemRequest.builder()
+                    .tableName("test_received_${tableCounter - 1}")
+                    .key(mapOf("token" to AttributeValue.fromS(token), "msgId" to AttributeValue.fromS("msg-atomic")))
+                    .consistentRead(true)
+                    .build(),
+            )
+        client.close()
+
+        assertTrue(message.hasItem(), "message row must exist after a successful post")
+        assertTrue(receivedId.hasItem(), "receivedIds row must exist alongside it, not just after a separate call")
     }
 
     @Test
