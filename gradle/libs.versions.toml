@@ -17,9 +17,8 @@ accompanist-permissions = "0.37.3"
 zxing-core = "3.5.3"
 zxing-android = "4.3.0"
 jedis = "5.2.0"
-postgresql = "42.7.4"
-hikaricp = "6.2.1"
 testcontainers = "2.0.2"
+awssdk = "2.44.1"
 libsodium = "0.9.5"
 security-crypto = "1.1.0-alpha06"
 moko-resources = "0.24.5"
@@ -89,10 +88,9 @@ maplibre = { module = "org.maplibre.gl:android-sdk", version.ref = "maplibre" }
 # Redis
 jedis = { module = "redis.clients:jedis", version.ref = "jedis" }
 
-# Postgres
-postgresql = { module = "org.postgresql:postgresql", version.ref = "postgresql" }
-hikaricp = { module = "com.zaxxer:HikariCP", version.ref = "hikaricp" }
-testcontainers-postgresql = { module = "org.testcontainers:testcontainers-postgresql", version.ref = "testcontainers" }
+# DynamoDB
+awssdk-dynamodb = { module = "software.amazon.awssdk:dynamodb", version.ref = "awssdk" }
+testcontainers-core = { module = "org.testcontainers:testcontainers", version.ref = "testcontainers" }
 
 # Logging
 logback-classic = { module = "ch.qos.logback:logback-classic", version.ref = "logback" }
