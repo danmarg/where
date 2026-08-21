@@ -4,15 +4,21 @@ import kotlinx.serialization.json.JsonPrimitive
 import org.testcontainers.containers.GenericContainer
 import org.testcontainers.containers.wait.strategy.Wait
 import org.testcontainers.utility.DockerImageName
+import software.amazon.awssdk.services.dynamodb.DynamoDbClient
 import software.amazon.awssdk.services.dynamodb.model.AttributeValue
+import software.amazon.awssdk.services.dynamodb.model.CancellationReason
 import software.amazon.awssdk.services.dynamodb.model.GetItemRequest
 import software.amazon.awssdk.services.dynamodb.model.PutItemRequest
+import software.amazon.awssdk.services.dynamodb.model.TransactWriteItemsRequest
+import software.amazon.awssdk.services.dynamodb.model.TransactWriteItemsResponse
+import software.amazon.awssdk.services.dynamodb.model.TransactionCanceledException
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
@@ -440,5 +446,47 @@ class DynamoMailboxStateTest {
             )
         assertTrue(stored.hasItem(), "the retried message must actually be in the mailbox, not silently dropped")
         client.close()
+    }
+
+    @Test
+    fun `post rethrows a non-duplicate transaction cancellation instead of reporting false success`() {
+        // Regression guard: TransactionCanceledException is not synonymous with "duplicate" -
+        // contention, throttling, and other transaction failures cancel it too. Wrap the real
+        // client so transactWriteItems always throws a cancellation whose receivedIds reason is
+        // something other than ConditionalCheckFailed, and confirm post() propagates it as a
+        // real failure rather than swallowing it and reporting success with nothing written.
+        val realClient = createDynamoDbClient("test", "test", "us-east-1", endpoint())
+        val suffix = tableCounter++
+        val throttlingClient = ThrottlingCanceledDynamoDbClient(realClient)
+        val state =
+            DynamoMailboxState(
+                throttlingClient,
+                messagesTable = "test_messages_$suffix",
+                receivedIdsTable = "test_received_$suffix",
+            )
+        stores.add(state)
+        val token = freshToken()
+
+        assertFailsWith<TransactionCanceledException> {
+            state.post(token, JsonPrimitive("should not silently succeed"), "msg-1")
+        }
+    }
+}
+
+/** Makes every transactWriteItems() call fail with a cancellation that is NOT a duplicate. */
+private class ThrottlingCanceledDynamoDbClient(
+    private val delegate: DynamoDbClient,
+) : DynamoDbClient by delegate {
+    override fun transactWriteItems(request: TransactWriteItemsRequest): TransactWriteItemsResponse {
+        throw TransactionCanceledException.builder()
+            .message("Transaction cancelled, please refer cancellation reasons for specific reasons")
+            .cancellationReasons(
+                // Index 0 = messagesTable put (unconditioned): "None". Index 1 = receivedIds put
+                // (conditioned): a non-ConditionalCheckFailed reason, simulating throttling/
+                // contention rather than a genuine duplicate.
+                CancellationReason.builder().code("None").build(),
+                CancellationReason.builder().code("ThrottlingError").build(),
+            )
+            .build()
     }
 }

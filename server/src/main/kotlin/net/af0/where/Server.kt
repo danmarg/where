@@ -656,9 +656,18 @@ class DynamoMailboxState(
                             .build(),
                     )
                 } catch (e: TransactionCanceledException) {
-                    // The receivedIds put is the only conditioned item, so a cancellation here means
-                    // it already existed: already seen, idempotent no-op, matches the check above.
-                    return true
+                    // TransactionCanceledException isn't synonymous with "duplicate" - contention,
+                    // throttling, and other transaction failures cancel it too, and those must
+                    // propagate as a real failure rather than be reported to the HTTP layer as a
+                    // false 204 (which would be silent message loss). Only the receivedIds put (index
+                    // 1) carries a condition, so a duplicate specifically shows up as that item's
+                    // reason being ConditionalCheckFailed - anything else is a genuine failure.
+                    val receivedIdsReason = e.cancellationReasons().getOrNull(1)?.code()
+                    if (receivedIdsReason == "ConditionalCheckFailed") {
+                        // Already seen: idempotent no-op, matches the check above.
+                        return true
+                    }
+                    throw e
                 }
             } else {
                 client.putItem(PutItemRequest.builder().tableName(messagesTable).item(messageItem).build())
