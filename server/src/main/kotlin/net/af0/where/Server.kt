@@ -36,8 +36,11 @@ import software.amazon.awssdk.services.dynamodb.model.CreateTableRequest
 import software.amazon.awssdk.services.dynamodb.model.DeleteItemRequest
 import software.amazon.awssdk.services.dynamodb.model.DeleteRequest
 import software.amazon.awssdk.services.dynamodb.model.GetItemRequest
+import software.amazon.awssdk.services.dynamodb.model.GlobalSecondaryIndex
 import software.amazon.awssdk.services.dynamodb.model.KeySchemaElement
 import software.amazon.awssdk.services.dynamodb.model.KeyType
+import software.amazon.awssdk.services.dynamodb.model.Projection
+import software.amazon.awssdk.services.dynamodb.model.ProjectionType
 import software.amazon.awssdk.services.dynamodb.model.PutItemRequest
 import software.amazon.awssdk.services.dynamodb.model.QueryRequest
 import software.amazon.awssdk.services.dynamodb.model.ResourceInUseException
@@ -469,19 +472,23 @@ fun createDynamoDbClient(
  *
  * Primary key is (token, msgId) rather than (token, postedAt+msgId) specifically so
  * deleteById/deleteByIds - which only ever know msgId, not postedAt - are direct O(1)
- * DeleteItem calls with no secondary index or lookup needed. The cost is that Query can't
- * return results pre-sorted by postedAt (DynamoDB sorts by sort key, which is msgId here) - so
- * drain() sorts client-side after fetching. That's cheap because it's bounded by the same
- * MAX_QUEUE_DEPTH the queue-depth guard already enforces, and a GSI to get server-side ordering
- * wasn't worth the extra write cost/eventual-consistency complexity for that saving.
+ * DeleteItem calls with no secondary index or lookup needed. drain() needs postedAt order
+ * though, so messagesTable also carries a [POSTED_AT_INDEX_NAME] GSI (token hash + postedAt
+ * range, ALL projection) purely for that read path - see drain()'s doc for why a client-side
+ * sort over the whole partition wasn't good enough at this app's actual traffic shape.
  *
  * post()'s dedup-check + depth-check + insert sequence is serialized per token via [locks],
  * the same pattern the deleted PostgresMailboxState used. That's sufficient (rather than a
- * DynamoDB transaction/counter item) because Fly runs this server as exactly one JVM
- * (`max_machines_running = 1` in fly.toml) - there is never a second writer to race against.
- * A counter item would also need active decrementing on every delete and on every TTL expiry
- * (which fires with no application hook), so it would drift from the true live count over time;
- * the in-process lock has no such drift.
+ * DynamoDB transaction) because Fly runs this server as exactly one JVM (`max_machines_running
+ * = 1` in fly.toml) - there is never a second writer to race against.
+ *
+ * The depth guard itself is backed by [depthCounts], an in-process cache of each token's live
+ * message count, lazily seeded from one real (paginated, exact) count query and then maintained
+ * by simple increment/decrement on post/delete - see currentDepth()'s doc for why a per-post
+ * COUNT scan was too expensive under real sustained traffic (one party posting steadily while
+ * the other is offline for hours/days - not just an abuse scenario) and why the cache's only
+ * failure mode (drift from TTL-expired-but-undeleted rows) can't manifest inside the 7-day
+ * window the app is actually designed to tolerate.
  */
 class DynamoMailboxState(
     private val client: DynamoDbClient,
@@ -490,15 +497,19 @@ class DynamoMailboxState(
     private val receivedIdsTable: String = "where_mailbox_received_ids",
 ) : MailboxStore {
     private val locks = ConcurrentHashMap<String, Any>()
+    private val depthCounts = ConcurrentHashMap<String, Int>()
 
     private fun getLock(token: String) = locks.getOrPut(token) { Any() }
 
     init {
-        ensureTable(messagesTable)
-        ensureTable(receivedIdsTable)
+        ensureTable(messagesTable, withPostedAtIndex = true)
+        ensureTable(receivedIdsTable, withPostedAtIndex = false)
     }
 
-    private fun ensureTable(tableName: String) {
+    private fun ensureTable(
+        tableName: String,
+        withPostedAtIndex: Boolean,
+    ) {
         try {
             client.describeTable { it.tableName(tableName) }
             return
@@ -506,20 +517,35 @@ class DynamoMailboxState(
             // Falls through to create below.
         }
         try {
-            client.createTable(
+            val attributeDefinitions =
+                mutableListOf(
+                    AttributeDefinition.builder().attributeName("token").attributeType(ScalarAttributeType.S).build(),
+                    AttributeDefinition.builder().attributeName("msgId").attributeType(ScalarAttributeType.S).build(),
+                )
+            val createTableRequest =
                 CreateTableRequest.builder()
                     .tableName(tableName)
                     .billingMode(BillingMode.PAY_PER_REQUEST)
-                    .attributeDefinitions(
-                        AttributeDefinition.builder().attributeName("token").attributeType(ScalarAttributeType.S).build(),
-                        AttributeDefinition.builder().attributeName("msgId").attributeType(ScalarAttributeType.S).build(),
-                    )
                     .keySchema(
                         KeySchemaElement.builder().attributeName("token").keyType(KeyType.HASH).build(),
                         KeySchemaElement.builder().attributeName("msgId").keyType(KeyType.RANGE).build(),
                     )
-                    .build(),
-            )
+            if (withPostedAtIndex) {
+                attributeDefinitions.add(
+                    AttributeDefinition.builder().attributeName("postedAt").attributeType(ScalarAttributeType.N).build(),
+                )
+                createTableRequest.globalSecondaryIndexes(
+                    GlobalSecondaryIndex.builder()
+                        .indexName(POSTED_AT_INDEX_NAME)
+                        .keySchema(
+                            KeySchemaElement.builder().attributeName("token").keyType(KeyType.HASH).build(),
+                            KeySchemaElement.builder().attributeName("postedAt").keyType(KeyType.RANGE).build(),
+                        )
+                        .projection(Projection.builder().projectionType(ProjectionType.ALL).build())
+                        .build(),
+                )
+            }
+            client.createTable(createTableRequest.attributeDefinitions(attributeDefinitions).build())
         } catch (e: ResourceInUseException) {
             // Another process/run already created it between our describeTable and createTable -
             // fall through to the waiter below, which is safe to call either way.
@@ -533,6 +559,12 @@ class DynamoMailboxState(
                 )
                 .build(),
         )
+    }
+
+    private companion object {
+        // GSI on messagesTable only: token (hash) + postedAt (range), ALL projection - lets
+        // drain() query in delivery order directly instead of scanning+sorting client-side.
+        const val POSTED_AT_INDEX_NAME = "postedAt-index"
     }
 
     override fun checkIpRateLimit(ip: String) = limiter.checkIp(ip)
@@ -566,7 +598,8 @@ class DynamoMailboxState(
             // over the limit leaves no trace in receivedIds - a retry of the same msgId (which the
             // HTTP layer's 429 response implicitly invites) still has a real message to enqueue,
             // rather than being silently swallowed by a dedup entry from the failed attempt.
-            if (queueDepthAtLeast(token, MAX_QUEUE_DEPTH, now)) return false
+            val depth = currentDepth(token, now)
+            if (depth >= MAX_QUEUE_DEPTH) return false
 
             client.putItem(
                 PutItemRequest.builder()
@@ -586,6 +619,7 @@ class DynamoMailboxState(
                     )
                     .build(),
             )
+            depthCounts[token] = depth + 1
 
             if (msgId != null) {
                 client.putItem(
@@ -606,17 +640,32 @@ class DynamoMailboxState(
     }
 
     /**
-     * Pages through live (unexpired) items for [token], stopping as soon as [limit] is reached
-     * rather than counting the whole partition - DynamoDB's Select=COUNT still bills for every
-     * item evaluated, so an unbounded count on a token near the limit would itself be an
-     * expensive, paginated scan. Only pays that cost in the exact scenario the guard exists to
-     * catch; a normal token with a handful of messages resolves in one small page.
+     * Returns [token]'s current live (unexpired) message count, from [depthCounts] if cached or
+     * by seeding it with one real paginated count query otherwise. Must be called while holding
+     * [getLock] for [token], same as the rest of post()'s critical section.
+     *
+     * This replaces a per-post COUNT scan of the partition. That scan was cheap for the abuse
+     * case it was originally written for (reject fast once already over the limit) but expensive
+     * for a real, non-abusive one: one party posting steadily (e.g. every 30s while traveling)
+     * while the other is offline for hours - every single post during that stretch would have
+     * re-scanned the entire, growing backlog just to confirm it's still under the limit. The
+     * cache turns that into one scan per token per process lifetime instead of one per post.
+     *
+     * The cache can drift from the true live count if a message is deleted by DynamoDB's native
+     * TTL sweep rather than through deleteById/deleteByIds (which decrement it) - but that can
+     * only happen to a message that's already 7 days old, i.e. already past the "up to 7 days
+     * without ratcheting" window the app is designed to tolerate. Within that window, every
+     * delete goes through code that decrements the cache, so it stays exact.
      */
-    private fun queueDepthAtLeast(
+    private fun currentDepth(
         token: String,
-        limit: Int,
         now: Long,
-    ): Boolean {
+    ): Int = depthCounts.getOrPut(token) { queryLiveDepth(token, now) }
+
+    private fun queryLiveDepth(
+        token: String,
+        now: Long,
+    ): Int {
         var count = 0
         var lastKey: Map<String, AttributeValue>? = null
         do {
@@ -640,12 +689,28 @@ class DynamoMailboxState(
                         .build(),
                 )
             count += response.count()
-            if (count >= limit) return true
             lastKey = response.lastEvaluatedKey().takeIf { it.isNotEmpty() }
         } while (lastKey != null)
-        return false
+        return count
     }
 
+    // Must be called while holding getLock(token) - see currentDepth()'s doc.
+    private fun decrementDepth(
+        token: String,
+        by: Int,
+    ) {
+        depthCounts.computeIfPresent(token) { _, count ->
+            (count - by).coerceAtLeast(0).takeIf { it > 0 }
+        }
+    }
+
+    /**
+     * Queries the [POSTED_AT_INDEX_NAME] GSI rather than the base table, so results come back
+     * already in postedAt order via ScanIndexForward - no need to read the whole partition and
+     * sort client-side. Limit is applied before FilterExpression on DynamoDB's side, so a page
+     * can return fewer than [MAX_MESSAGES_PER_POLL] live items if some in it are expired; the
+     * loop keeps paging until it either has enough or the index is exhausted.
+     */
     override fun drain(token: String): List<JsonElement>? {
         if (!limiter.checkGet(token)) return null
         val now = System.currentTimeMillis() / 1000
@@ -656,6 +721,7 @@ class DynamoMailboxState(
                 client.query(
                     QueryRequest.builder()
                         .tableName(messagesTable)
+                        .indexName(POSTED_AT_INDEX_NAME)
                         .keyConditionExpression("#tok = :token")
                         .filterExpression("expiresAt > :now")
                         .expressionAttributeNames(mapOf("#tok" to "token"))
@@ -665,15 +731,16 @@ class DynamoMailboxState(
                                 ":now" to AttributeValue.fromN(now.toString()),
                             ),
                         )
+                        .scanIndexForward(true)
+                        .limit(MAX_MESSAGES_PER_POLL)
                         .exclusiveStartKey(lastKey)
                         .build(),
                 )
             items.addAll(response.items())
             lastKey = response.lastEvaluatedKey().takeIf { it.isNotEmpty() }
-        } while (lastKey != null && items.size < MAX_QUEUE_DEPTH)
+        } while (lastKey != null && items.size < MAX_MESSAGES_PER_POLL)
 
         return items
-            .sortedBy { it.getValue("postedAt").n().toLong() }
             .take(MAX_MESSAGES_PER_POLL)
             .map { json.parseToJsonElement(it.getValue("payload").s()) }
     }
@@ -688,6 +755,7 @@ class DynamoMailboxState(
                 .key(mapOf("token" to AttributeValue.fromS(token), "msgId" to AttributeValue.fromS(msgId)))
                 .build(),
         )
+        synchronized(getLock(token)) { decrementDepth(token, 1) }
         return true
     }
 
@@ -718,6 +786,11 @@ class DynamoMailboxState(
                 requests = response.unprocessedItems()[messagesTable] ?: emptyList()
             }
         }
+        // Approximate: assumes every requested id existed and was actually deleted. A retried
+        // delete-ack for an id already removed by a prior call would over-decrement by one, but
+        // that only makes the depth guard slightly less strict, and self-heals the next time this
+        // token's cache entry is evicted/reseeded (e.g. after a process restart).
+        synchronized(getLock(token)) { decrementDepth(token, msgIds.size) }
         return msgIds.size
     }
 

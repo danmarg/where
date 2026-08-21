@@ -92,6 +92,34 @@ class DynamoMailboxStateTest {
     }
 
     @Test
+    fun `deleteById on a token with no cached depth entry does not throw`() {
+        // Regression guard for decrementDepth() against a token whose depth cache was never
+        // seeded (e.g. a message written by something other than this process's post() calls) -
+        // computeIfPresent must no-op rather than error or fabricate a negative count.
+        val state = store()
+        val token = freshToken()
+        val client = createDynamoDbClient("test", "test", "us-east-1", endpoint())
+        client.putItem(
+            PutItemRequest.builder()
+                .tableName("test_messages_${tableCounter - 1}")
+                .item(
+                    mapOf(
+                        "token" to AttributeValue.fromS(token),
+                        "msgId" to AttributeValue.fromS("external-msg"),
+                        "payload" to AttributeValue.fromS("\"seeded\""),
+                        "postedAt" to AttributeValue.fromN(System.currentTimeMillis().toString()),
+                        "expiresAt" to AttributeValue.fromN(((System.currentTimeMillis() + 7L * 24 * 60 * 60 * 1000) / 1000).toString()),
+                    ),
+                )
+                .build(),
+        )
+        client.close()
+
+        assertTrue(state.deleteById(token, "external-msg"))
+        assertTrue(state.drain(token)?.isEmpty() == true)
+    }
+
+    @Test
     fun `deleteByIds removes a batch`() {
         val state = store()
         val token = freshToken()
