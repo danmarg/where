@@ -47,12 +47,13 @@ class X25519LowOrderPointTest {
         val myPriv = randomBytes(32)
         for (hex in lowOrderPoints) {
             val pub = hex.hexToByteArray()
-            val outcome = try {
-                val out = x25519(myPriv, pub)
-                if (out.all { it == 0.toByte() }) "ZERO" else "NONZERO(${out.toHex()})"
-            } catch (_: Throwable) {
-                "THREW"
-            }
+            val outcome =
+                try {
+                    val out = x25519(myPriv, pub)
+                    if (out.all { it == 0.toByte() }) "ZERO" else "NONZERO(${out.toHex()})"
+                } catch (_: Throwable) {
+                    "THREW"
+                }
             if (outcome == "THREW" || outcome == "ZERO") continue
             fail("X25519 returned a usable shared secret for low-order point $hex -> $outcome")
         }

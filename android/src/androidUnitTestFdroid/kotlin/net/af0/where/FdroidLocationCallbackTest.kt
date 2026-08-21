@@ -64,59 +64,61 @@ class FdroidLocationCallbackTest {
     }
 
     @Test
-    fun locationFix_stampsCallbackTimeAndForwardsToLocationSource() = runTest {
-        val fakeLocationSource = ServiceFakeLocationSource()
-        val mockFriend = mockk<FriendEntry>(relaxed = true)
-        // Populate friends before service onCreate so ensureLocationRegistration() doesn't stop the service.
-        fakeLocationSource.onFriendsUpdated(listOf(mockFriend))
+    fun locationFix_stampsCallbackTimeAndForwardsToLocationSource() =
+        runTest {
+            val fakeLocationSource = ServiceFakeLocationSource()
+            val mockFriend = mockk<FriendEntry>(relaxed = true)
+            // Populate friends before service onCreate so ensureLocationRegistration() doesn't stop the service.
+            fakeLocationSource.onFriendsUpdated(listOf(mockFriend))
 
-        val mockE2ee = mockk<E2eeManager>(relaxed = true)
-        coEvery { mockE2ee.listFriends() } returns listOf(mockFriend)
+            val mockE2ee = mockk<E2eeManager>(relaxed = true)
+            coEvery { mockE2ee.listFriends() } returns listOf(mockFriend)
 
-        val app = context as TestWhereApplication
-        app.userStore.setSharing(true)
-        LocationService.clock = { System.currentTimeMillis() }
+            val app = context as TestWhereApplication
+            app.userStore.setSharing(true)
+            LocationService.clock = { System.currentTimeMillis() }
 
-        val controller = Robolectric.buildService(LocationService::class.java)
-        val service = controller.get()
-        // Do NOT set locationProviderOverride — use the real FdroidLocationProvider.
-        service.locationSourceOverride = fakeLocationSource
-        service.locationClientOverride = mockk(relaxed = true)
-        service.e2eeManagerOverride = mockE2ee
+            val controller = Robolectric.buildService(LocationService::class.java)
+            val service = controller.get()
+            // Do NOT set locationProviderOverride — use the real FdroidLocationProvider.
+            service.locationSourceOverride = fakeLocationSource
+            service.locationClientOverride = mockk(relaxed = true)
+            service.e2eeManagerOverride = mockE2ee
 
-        controller.create()
-        advanceUntilIdle()
+            controller.create()
+            advanceUntilIdle()
 
-        assertTrue(service.isRegistered, "Service should register with GPS when a friend is present")
-        assertEquals(0L, service.lastLocationCallbackTime, "No callback fired yet")
+            assertTrue(service.isRegistered, "Service should register with GPS when a friend is present")
+            assertEquals(0L, service.lastLocationCallbackTime, "No callback fired yet")
 
-        // Simulate a GPS fix arriving from the system LocationManager.
-        val lm = context.getSystemService(Context.LOCATION_SERVICE) as LocationManager
-        val fix = Location(LocationManager.GPS_PROVIDER).apply {
-            latitude = 37.7749
-            longitude = -122.4194
-            bearing = 45f
-            accuracy = 10f
-            time = System.currentTimeMillis()
+            // Simulate a GPS fix arriving from the system LocationManager.
+            val lm = context.getSystemService(Context.LOCATION_SERVICE) as LocationManager
+            val fix =
+                Location(LocationManager.GPS_PROVIDER).apply {
+                    latitude = 37.7749
+                    longitude = -122.4194
+                    bearing = 45f
+                    accuracy = 10f
+                    time = System.currentTimeMillis()
+                }
+            shadowOf(lm).simulateLocation(fix)
+
+            // Flush the main looper so the LocationListener transport delivers the callback.
+            shadowOf(Looper.getMainLooper()).idle()
+            advanceUntilIdle()
+
+            assertTrue(service.lastLocationCallbackTime > 0L, "lastLocationCallbackTime must be stamped on callback")
+
+            val loc = fakeLocationSource.lastLocation.value
+            assertNotNull(loc, "LocationSource must have a location after the fix")
+            assertEquals(37.7749, loc.first, 0.0001)
+            assertEquals(-122.4194, loc.second, 0.0001)
+            assertEquals(45.0, loc.third!!, 0.1)
+
+            // recordRecentFix is called in the same lambda as lastLocationCallbackTime. A single fix
+            // produces zero displacement, confirming the call was made without needing a second fix.
+            assertEquals(0f, service.maxRecentDisplacementMeters(), "One fix → zero displacement, confirming recordRecentFix was called")
+
+            controller.destroy()
         }
-        shadowOf(lm).simulateLocation(fix)
-
-        // Flush the main looper so the LocationListener transport delivers the callback.
-        shadowOf(Looper.getMainLooper()).idle()
-        advanceUntilIdle()
-
-        assertTrue(service.lastLocationCallbackTime > 0L, "lastLocationCallbackTime must be stamped on callback")
-
-        val loc = fakeLocationSource.lastLocation.value
-        assertNotNull(loc, "LocationSource must have a location after the fix")
-        assertEquals(37.7749, loc.first, 0.0001)
-        assertEquals(-122.4194, loc.second, 0.0001)
-        assertEquals(45.0, loc.third!!, 0.1)
-
-        // recordRecentFix is called in the same lambda as lastLocationCallbackTime. A single fix
-        // produces zero displacement, confirming the call was made without needing a second fix.
-        assertEquals(0f, service.maxRecentDisplacementMeters(), "One fix → zero displacement, confirming recordRecentFix was called")
-
-        controller.destroy()
-    }
 }

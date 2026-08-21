@@ -19,12 +19,15 @@ sealed class PeerDisplay {
     data class LastSeen(val timestampSeconds: Long?) : PeerDisplay() {
         override val pinStyle = PeerPinStyle.NORMAL
     }
+
     data class StationarySince(val timestampSeconds: Long) : PeerDisplay() {
         override val pinStyle = PeerPinStyle.NORMAL
     }
+
     data class StoppedRecently(val timestampSeconds: Long) : PeerDisplay() {
         override val pinStyle = PeerPinStyle.DIMMED
     }
+
     data class StoppedLongAgo(val timestampSeconds: Long) : PeerDisplay() {
         override val pinStyle = PeerPinStyle.HIDDEN
     }

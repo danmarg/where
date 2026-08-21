@@ -20,9 +20,9 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.test.StandardTestDispatcher
+import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.resetMain
-import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
 import net.af0.where.db.WhereDatabase
@@ -275,7 +275,6 @@ class LocationViewModelTest {
             val initPayload =
                 KeyExchangeInitPayload(
                     v = PROTOCOL_VERSION,
-
                     ekPub = byteArrayOf(1, 2, 3),
                     keyConfirmation = byteArrayOf(4, 5, 6),
                     suggestedName = "Bob",
@@ -318,7 +317,6 @@ class LocationViewModelTest {
                     protocolVersion = PROTOCOL_VERSION,
                     ekPub = byteArrayOf(1, 2, 3),
                     suggestedName = "Alice",
-
                     discoverySecret = ByteArray(32),
                 )
 
@@ -352,7 +350,6 @@ class LocationViewModelTest {
             val initPayload =
                 KeyExchangeInitPayload(
                     v = PROTOCOL_VERSION,
-
                     ekPub = byteArrayOf(1, 2, 3),
                     keyConfirmation = byteArrayOf(4, 5, 6),
                     suggestedName = "Bob",
@@ -404,7 +401,6 @@ class LocationViewModelTest {
             val initPayload =
                 KeyExchangeInitPayload(
                     v = PROTOCOL_VERSION,
-
                     ekPub = byteArrayOf(1, 2, 3),
                     keyConfirmation = byteArrayOf(4, 5, 6),
                     suggestedName = "Bob",
@@ -445,7 +441,6 @@ class LocationViewModelTest {
             val initPayload =
                 KeyExchangeInitPayload(
                     v = PROTOCOL_VERSION,
-
                     ekPub = byteArrayOf(1, 2, 3),
                     keyConfirmation = byteArrayOf(4, 5, 6),
                     suggestedName = "Bob",
@@ -489,7 +484,6 @@ class LocationViewModelTest {
                     protocolVersion = PROTOCOL_VERSION,
                     ekPub = byteArrayOf(1, 2, 3),
                     suggestedName = "Alice",
-
                     discoverySecret = ByteArray(32),
                 )
 
@@ -536,7 +530,6 @@ class LocationViewModelTest {
                     protocolVersion = PROTOCOL_VERSION,
                     ekPub = byteArrayOf(1, 2, 3),
                     suggestedName = "Alice",
-
                     discoverySecret = ByteArray(32),
                 )
 
@@ -616,7 +609,6 @@ class LocationViewModelTest {
                     protocolVersion = PROTOCOL_VERSION,
                     ekPub = byteArrayOf(1, 2, 3),
                     suggestedName = "Alice",
-
                     discoverySecret = ByteArray(32),
                 )
 
@@ -664,37 +656,36 @@ class LocationViewModelTest {
                     protocolVersion = PROTOCOL_VERSION,
                     ekPub = byteArrayOf(1, 2, 3),
                     suggestedName = "Alice",
-
                     discoverySecret = ByteArray(32),
                 )
 
             // Test 1: Scanning a QR code dismisses the invite sheet
             uiStateStore.setInviteSheetShowing(true)
             (vm.inviteState as MutableStateFlow).value = InviteState.Pending(qr)
-            
+
             vm.processQrUrl(qr.toUrl())
             advanceUntilIdle()
-            
+
             assertFalse(uiStateStore.isInviteSheetShowing.value, "processQrUrl should dismiss the invite sheet")
             assertEquals(InviteState.None, vm.inviteState.value, "processQrUrl should reset inviteState")
 
             // Test 2: Confirming a QR scan dismisses the invite sheet
             uiStateStore.setInviteSheetShowing(true)
             (vm.inviteState as MutableStateFlow).value = InviteState.Pending(qr)
-            
+
             vm.confirmQrScan(qr, "Alice")
             advanceUntilIdle()
-            
+
             assertFalse(uiStateStore.isInviteSheetShowing.value, "confirmQrScan should dismiss the invite sheet")
             assertEquals(InviteState.None, vm.inviteState.value, "confirmQrScan should reset inviteState")
 
             // Test 3: Canceling a QR scan dismisses the invite sheet
             uiStateStore.setInviteSheetShowing(true)
             (vm.inviteState as MutableStateFlow).value = InviteState.Pending(qr)
-            
+
             vm.clearInvite()
             advanceUntilIdle()
-            
+
             assertFalse(uiStateStore.isInviteSheetShowing.value, "clearInvite should dismiss the invite sheet")
             assertEquals(InviteState.None, vm.inviteState.value, "clearInvite should reset inviteState")
         }
@@ -740,7 +731,6 @@ class LocationViewModelTest {
             val initPayload =
                 KeyExchangeInitPayload(
                     v = PROTOCOL_VERSION,
-
                     ekPub = byteArrayOf(1, 2, 3),
                     keyConfirmation = byteArrayOf(4, 5, 6),
                     suggestedName = "Alice",
@@ -756,11 +746,13 @@ class LocationViewModelTest {
             val startedIntent: Intent? = shadowOf(app).nextStartedService
             assertNotNull(startedIntent, "confirmPendingInit must fire a service intent to publish location")
             assertEquals(
-                LocationService.ACTION_FORCE_PUBLISH, startedIntent!!.action,
+                LocationService.ACTION_FORCE_PUBLISH,
+                startedIntent!!.action,
                 "The intent must carry ACTION_FORCE_PUBLISH",
             )
             assertEquals(
-                "friend-alice-123", startedIntent.getStringExtra(LocationService.EXTRA_FRIEND_ID),
+                "friend-alice-123",
+                startedIntent.getStringExtra(LocationService.EXTRA_FRIEND_ID),
                 "The intent must target the newly confirmed friend ID",
             )
         }
@@ -841,7 +833,6 @@ class LocationViewModelTest {
             // Regression: when there are no existing friends the LocationService stops itself
             // on startup. createInvite() must start the service so it polls the discovery mailbox.
             shadowOf(app).grantPermissions(Manifest.permission.ACCESS_FINE_LOCATION)
-
 
             viewModel =
                 LocationViewModel(

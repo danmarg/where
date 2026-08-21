@@ -379,7 +379,8 @@ class E2eeChaosTest {
         messagesPerFriend: Int,
         failProb: Double,
         dropProb: Double,
-        baseTimeMs: Long = 1715670000000L, // May 14, 2024
+        // May 14, 2024
+        baseTimeMs: Long = 1715670000000L,
     ) {
         TimeSource.setProvider(
             object : TimeProvider {
@@ -389,7 +390,10 @@ class E2eeChaosTest {
 
                 override fun formatLocalTime(seconds: Long): String {
                     val s = (seconds % 86400).toInt()
-                    return "${(s / 3600).toString().padStart(2, '0')}:${((s % 3600) / 60).toString().padStart(2, '0')}:${(s % 60).toString().padStart(2, '0')}"
+                    return "${(s / 3600).toString().padStart(
+                        2,
+                        '0',
+                    )}:${((s % 3600) / 60).toString().padStart(2, '0')}:${(s % 60).toString().padStart(2, '0')}"
                 }
             },
         )
@@ -578,16 +582,19 @@ class E2eeChaosTest {
             }
         } catch (e: Exception) {
             e.printStackTrace()
-            val stateDump = managers.mapIndexed { i, m ->
-                val friends = m.listFriends()
-                val friendLines = friends.joinToString(", ") { f ->
-                    "friend=${f.name} lastLng=${f.lastLng?.toInt() ?: -1}"
-                }
-                "User $i: [$friendLines]"
-            }.joinToString("\n")
-            val diagDump = managers.mapIndexed { i, m ->
-                "User $i: ${m.diagnosticLogSnapshot().joinToString(" | ").ifEmpty { "(no events)" }}"
-            }.joinToString("\n")
+            val stateDump =
+                managers.mapIndexed { i, m ->
+                    val friends = m.listFriends()
+                    val friendLines =
+                        friends.joinToString(", ") { f ->
+                            "friend=${f.name} lastLng=${f.lastLng?.toInt() ?: -1}"
+                        }
+                    "User $i: [$friendLines]"
+                }.joinToString("\n")
+            val diagDump =
+                managers.mapIndexed { i, m ->
+                    "User $i: ${m.diagnosticLogSnapshot().joinToString(" | ").ifEmpty { "(no events)" }}"
+                }.joinToString("\n")
             error(
                 "Multi-friend chaos test timed out after ${testScheduler.currentTime} virtual ms: ${e.message}\n" +
                     "Convergence state:\n$stateDump\n" +

@@ -25,6 +25,7 @@ interface LocationSource {
     val connectionStatus: StateFlow<ConnectionStatus>
     val isAppInForeground: StateFlow<Boolean>
     val pendingInitPayload: StateFlow<KeyExchangeInitPayload?>
+
     /** Wall-clock time [pendingInitPayload] was last set to a non-null value; 0 when null. */
     val pendingInitPayloadSetAt: StateFlow<Long>
     val pendingInitAliceEkPub: StateFlow<ByteArray?>
@@ -105,7 +106,7 @@ class LocationRepository(
     private val _isAppInForeground = MutableStateFlow(false)
     override val isAppInForeground: StateFlow<Boolean> = _isAppInForeground.asStateFlow()
 
-    internal val _pendingInitPayload = MutableStateFlow<KeyExchangeInitPayload?>(null)
+    private val _pendingInitPayload = MutableStateFlow<KeyExchangeInitPayload?>(null)
     override val pendingInitPayload: StateFlow<KeyExchangeInitPayload?> = _pendingInitPayload.asStateFlow()
 
     private val _pendingInitPayloadSetAt = MutableStateFlow(0L)
@@ -124,7 +125,7 @@ class LocationRepository(
 
     private val pollWakeSignal = Channel<Unit>(Channel.CONFLATED)
 
-    internal val _lastRapidPollTrigger = MutableStateFlow(0L)
+    private val _lastRapidPollTrigger = MutableStateFlow(0L)
     override val lastRapidPollTrigger: StateFlow<Long> = _lastRapidPollTrigger.asStateFlow()
 
     override fun onLocation(

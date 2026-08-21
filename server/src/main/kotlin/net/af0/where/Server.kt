@@ -466,6 +466,15 @@ fun createDynamoDbClient(
         .build()
 
 /**
+ * True if [e] cancelled the message+receivedIds transaction specifically because the receivedIds
+ * item (index 1 - see DynamoMailboxState.post()'s transactItems order) already existed, i.e. a
+ * genuine duplicate. Any other cancellation reason (throttling, contention, etc.) is a real
+ * failure and must not be swallowed as if it were one - see post()'s call site.
+ */
+internal fun isReceivedIdsConditionalCheckFailure(e: TransactionCanceledException): Boolean =
+    e.cancellationReasons().getOrNull(1)?.code() == "ConditionalCheckFailed"
+
+/**
  * DynamoDB-backed mailbox store. Two tables, mirroring the same split PostgresMailboxState used
  * and for the same reason: mailbox_received_ids must outlive message deletion, so idempotency
  * can't be folded into the messages table.
@@ -497,16 +506,6 @@ fun createDynamoDbClient(
  * failure mode (drift from TTL-expired-but-undeleted rows) can't manifest inside the 7-day
  * window the app is actually designed to tolerate.
  */
-
-/**
- * True if [e] cancelled the message+receivedIds transaction specifically because the receivedIds
- * item (index 1 - see DynamoMailboxState.post()'s transactItems order) already existed, i.e. a
- * genuine duplicate. Any other cancellation reason (throttling, contention, etc.) is a real
- * failure and must not be swallowed as if it were one - see post()'s call site.
- */
-internal fun isReceivedIdsConditionalCheckFailure(e: TransactionCanceledException): Boolean =
-    e.cancellationReasons().getOrNull(1)?.code() == "ConditionalCheckFailed"
-
 class DynamoMailboxState(
     private val client: DynamoDbClient,
     private val limiter: InProcessRateLimiter = InProcessRateLimiter(),
@@ -1051,7 +1050,9 @@ private fun buildMailboxStore(
             redisStore?.also { println("Using Redis at ${URI(redisUrl).host}") }
                 ?: InMemoryMailboxState().also { println("Using in-memory store") }
         "dynamodb" -> {
-            requireNotNull(dynamoStore) { "AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY/AWS_REGION are required for MAILBOX_STORE_MODE=dynamodb" }
+            requireNotNull(
+                dynamoStore,
+            ) { "AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY/AWS_REGION are required for MAILBOX_STORE_MODE=dynamodb" }
             println("Using DynamoDB store")
             dynamoStore
         }
@@ -1063,7 +1064,9 @@ private fun buildMailboxStore(
         }
         "dual-write-dynamodb-primary" -> {
             requireNotNull(redisStore) { "REDIS_URL is required for dual-write-dynamodb-primary" }
-            requireNotNull(dynamoStore) { "AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY/AWS_REGION are required for dual-write-dynamodb-primary" }
+            requireNotNull(
+                dynamoStore,
+            ) { "AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY/AWS_REGION are required for dual-write-dynamodb-primary" }
             println("Using dual-write store (DynamoDB primary, Redis shadow)")
             DualWriteMailboxState(primary = dynamoStore, secondary = redisStore)
         }
@@ -1078,7 +1081,9 @@ fun main() {
         System.getenv("AWS_ACCESS_KEY_ID")?.let { accessKeyId ->
             DynamoConfig(
                 accessKeyId = accessKeyId,
-                secretAccessKey = System.getenv("AWS_SECRET_ACCESS_KEY") ?: error("AWS_SECRET_ACCESS_KEY is required when AWS_ACCESS_KEY_ID is set"),
+                secretAccessKey =
+                    System.getenv("AWS_SECRET_ACCESS_KEY")
+                        ?: error("AWS_SECRET_ACCESS_KEY is required when AWS_ACCESS_KEY_ID is set"),
                 region = System.getenv("AWS_REGION") ?: error("AWS_REGION is required when AWS_ACCESS_KEY_ID is set"),
             )
         }

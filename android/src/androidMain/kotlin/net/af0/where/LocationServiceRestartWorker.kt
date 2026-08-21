@@ -10,7 +10,6 @@ class LocationServiceRestartWorker(
     context: Context,
     params: WorkerParameters,
 ) : CoroutineWorker(context, params) {
-
     override suspend fun doWork(): Result {
         val app = applicationContext as? WhereApplication ?: return Result.success()
         val friends = app.e2eeManager.listFriends()

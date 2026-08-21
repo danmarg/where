@@ -9,7 +9,6 @@ import dev.icerock.moko.resources.desc.Raw
 import dev.icerock.moko.resources.desc.StringDesc
 import io.mockk.every
 import io.mockk.mockk
-import io.mockk.mockkStatic
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -452,9 +451,10 @@ class LocationServiceTest {
         LocationService.clock = { currentTime }
         val service = Robolectric.buildService(LocationService::class.java).get()
 
-        val recordRecentFix = LocationService::class.java
-            .getDeclaredMethod("recordRecentFix", java.lang.Double.TYPE, java.lang.Double.TYPE)
-            .apply { isAccessible = true }
+        val recordRecentFix =
+            LocationService::class.java
+                .getDeclaredMethod("recordRecentFix", java.lang.Double.TYPE, java.lang.Double.TYPE)
+                .apply { isAccessible = true }
 
         // Stationary: same coordinate twice -> ~0m displacement.
         recordRecentFix.invoke(service, 37.7749, -122.4194)

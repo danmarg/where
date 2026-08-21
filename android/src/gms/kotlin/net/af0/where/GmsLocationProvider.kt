@@ -26,32 +26,39 @@ class GmsLocationProvider : LocationProvider {
     private lateinit var geofencingClient: GeofencingClient
     private lateinit var locationCallback: LocationCallback
     private lateinit var passiveLocationCallback: LocationCallback
+
     // Captured at init() time — callers must invoke init() on the thread whose looper
     // should receive location callbacks (LocationService calls init() on the main thread).
     private lateinit var callbackLooper: Looper
 
     @VisibleForTesting
     internal var fusedClientOverride: com.google.android.gms.location.FusedLocationProviderClient? = null
+
     @VisibleForTesting
     internal var geofencingClientOverride: GeofencingClient? = null
 
-    override fun init(context: Context, onLocation: (Double, Double, Double?) -> Unit) {
+    override fun init(
+        context: Context,
+        onLocation: (Double, Double, Double?) -> Unit,
+    ) {
         this.context = context.applicationContext
         callbackLooper = Looper.myLooper() ?: Looper.getMainLooper()
         fusedClient = fusedClientOverride ?: LocationServices.getFusedLocationProviderClient(context)
         geofencingClient = geofencingClientOverride ?: LocationServices.getGeofencingClient(context)
-        locationCallback = object : LocationCallback() {
-            override fun onLocationResult(result: LocationResult) {
-                val loc = result.lastLocation ?: return
-                onLocation(loc.latitude, loc.longitude, if (loc.hasBearing()) loc.bearing.toDouble() else null)
+        locationCallback =
+            object : LocationCallback() {
+                override fun onLocationResult(result: LocationResult) {
+                    val loc = result.lastLocation ?: return
+                    onLocation(loc.latitude, loc.longitude, if (loc.hasBearing()) loc.bearing.toDouble() else null)
+                }
             }
-        }
-        passiveLocationCallback = object : LocationCallback() {
-            override fun onLocationResult(result: LocationResult) {
-                val loc = result.lastLocation ?: return
-                onLocation(loc.latitude, loc.longitude, if (loc.hasBearing()) loc.bearing.toDouble() else null)
+        passiveLocationCallback =
+            object : LocationCallback() {
+                override fun onLocationResult(result: LocationResult) {
+                    val loc = result.lastLocation ?: return
+                    onLocation(loc.latitude, loc.longitude, if (loc.hasBearing()) loc.bearing.toDouble() else null)
+                }
             }
-        }
     }
 
     override fun getLastLocationAsync(callback: (Location?) -> Unit) {
@@ -63,19 +70,25 @@ class GmsLocationProvider : LocationProvider {
         }
     }
 
-    private fun LocationAccuracy.toGmsPriority() = when (this) {
-        LocationAccuracy.PASSIVE -> Priority.PRIORITY_PASSIVE
-        LocationAccuracy.LOW_POWER -> Priority.PRIORITY_LOW_POWER
-        LocationAccuracy.BALANCED -> Priority.PRIORITY_BALANCED_POWER_ACCURACY
-        LocationAccuracy.HIGH -> Priority.PRIORITY_HIGH_ACCURACY
-    }
+    private fun LocationAccuracy.toGmsPriority() =
+        when (this) {
+            LocationAccuracy.PASSIVE -> Priority.PRIORITY_PASSIVE
+            LocationAccuracy.LOW_POWER -> Priority.PRIORITY_LOW_POWER
+            LocationAccuracy.BALANCED -> Priority.PRIORITY_BALANCED_POWER_ACCURACY
+            LocationAccuracy.HIGH -> Priority.PRIORITY_HIGH_ACCURACY
+        }
 
-    override fun requestActiveUpdates(accuracy: LocationAccuracy, intervalMs: Long, maxDelayMs: Long): Boolean {
-        val request = LocationRequest.Builder(accuracy.toGmsPriority(), intervalMs)
-            .setMinUpdateIntervalMillis(10_000L)
-            .setMinUpdateDistanceMeters(LocationService.MOVEMENT_RADIUS_THRESHOLD_METERS)
-            .setMaxUpdateDelayMillis(maxDelayMs)
-            .build()
+    override fun requestActiveUpdates(
+        accuracy: LocationAccuracy,
+        intervalMs: Long,
+        maxDelayMs: Long,
+    ): Boolean {
+        val request =
+            LocationRequest.Builder(accuracy.toGmsPriority(), intervalMs)
+                .setMinUpdateIntervalMillis(10_000L)
+                .setMinUpdateDistanceMeters(LocationService.MOVEMENT_RADIUS_THRESHOLD_METERS)
+                .setMaxUpdateDelayMillis(maxDelayMs)
+                .build()
         return try {
             fusedClient.requestLocationUpdates(request, locationCallback, callbackLooper)
             true
@@ -86,9 +99,10 @@ class GmsLocationProvider : LocationProvider {
     }
 
     override fun requestPassiveUpdates(): Boolean {
-        val request = LocationRequest.Builder(Priority.PRIORITY_PASSIVE, 1_000L)
-            .setMinUpdateDistanceMeters(0f)
-            .build()
+        val request =
+            LocationRequest.Builder(Priority.PRIORITY_PASSIVE, 1_000L)
+                .setMinUpdateDistanceMeters(0f)
+                .build()
         return try {
             fusedClient.requestLocationUpdates(request, passiveLocationCallback, callbackLooper)
             true
@@ -101,13 +115,15 @@ class GmsLocationProvider : LocationProvider {
     override fun removeActiveUpdates() {
         try {
             fusedClient.removeLocationUpdates(locationCallback)
-        } catch (_: SecurityException) {}
+        } catch (_: SecurityException) {
+        }
     }
 
     override fun removePassiveUpdates() {
         try {
             fusedClient.removeLocationUpdates(passiveLocationCallback)
-        } catch (_: SecurityException) {}
+        } catch (_: SecurityException) {
+        }
     }
 
     override suspend fun getCurrentLocation(): Location? {
@@ -136,17 +152,22 @@ class GmsLocationProvider : LocationProvider {
         }
     }
 
-    override fun setGeofenceAt(lat: Double, lng: Double): Boolean {
-        val geofence = Geofence.Builder()
-            .setRequestId("stationary_fence")
-            .setCircularRegion(lat, lng, LocationService.MOVEMENT_RADIUS_THRESHOLD_METERS)
-            .setExpirationDuration(Geofence.NEVER_EXPIRE)
-            .setTransitionTypes(Geofence.GEOFENCE_TRANSITION_EXIT)
-            .build()
-        val request = GeofencingRequest.Builder()
-            .setInitialTrigger(GeofencingRequest.INITIAL_TRIGGER_EXIT)
-            .addGeofence(geofence)
-            .build()
+    override fun setGeofenceAt(
+        lat: Double,
+        lng: Double,
+    ): Boolean {
+        val geofence =
+            Geofence.Builder()
+                .setRequestId("stationary_fence")
+                .setCircularRegion(lat, lng, LocationService.MOVEMENT_RADIUS_THRESHOLD_METERS)
+                .setExpirationDuration(Geofence.NEVER_EXPIRE)
+                .setTransitionTypes(Geofence.GEOFENCE_TRANSITION_EXIT)
+                .build()
+        val request =
+            GeofencingRequest.Builder()
+                .setInitialTrigger(GeofencingRequest.INITIAL_TRIGGER_EXIT)
+                .addGeofence(geofence)
+                .build()
         return try {
             geofencingClient.addGeofences(request, getGeofencePendingIntent())
                 .addOnSuccessListener { Log.i(TAG, "Geofence registered at $lat, $lng") }
@@ -171,7 +192,9 @@ class GmsLocationProvider : LocationProvider {
     private fun getGeofencePendingIntent(): PendingIntent {
         val intent = Intent(context, GeofenceReceiver::class.java)
         return PendingIntent.getBroadcast(
-            context, 0, intent,
+            context,
+            0,
+            intent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
     }

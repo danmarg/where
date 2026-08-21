@@ -55,7 +55,7 @@ class MailboxMessageTest {
                     ekPub = ByteArray(32),
                     keyConfirmation = ByteArray(32),
                     encryptedName = ByteArray(31) { 0xFF.toByte() },
-                    suggestedName = "Alice"
+                    suggestedName = "Alice",
                 ),
             )
         for (payload in payloads) {
@@ -67,21 +67,22 @@ class MailboxMessageTest {
 
     @Test
     fun `KeyExchangeInitPayload suggestedName is transient`() {
-        val payload = KeyExchangeInitPayload(
-            ekPub = ByteArray(32),
-            keyConfirmation = ByteArray(32),
-            encryptedName = ByteArray(31) { 0xAA.toByte() },
-            suggestedName = "SecretName"
-        )
+        val payload =
+            KeyExchangeInitPayload(
+                ekPub = ByteArray(32),
+                keyConfirmation = ByteArray(32),
+                encryptedName = ByteArray(31) { 0xAA.toByte() },
+                suggestedName = "SecretName",
+            )
         val jsonStr = json.encodeToString(MailboxPayload.serializer(), payload)
-        
+
         // Should NOT contain suggestedName
         assertFalse(jsonStr.contains("suggested_name"), "JSON should not contain transient suggested_name")
         assertFalse(jsonStr.contains("SecretName"), "JSON should not contain the secret name value")
-        
+
         // Should contain encrypted_name
         assertTrue(jsonStr.contains("encrypted_name"), "JSON should contain encrypted_name")
-        
+
         // Round-trip should lose suggestedName but keep encryptedName
         val decoded = json.decodeFromString<MailboxPayload>(jsonStr) as KeyExchangeInitPayload
         assertEquals("", decoded.suggestedName)

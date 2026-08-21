@@ -21,7 +21,6 @@ import kotlin.test.assertNull
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [33], application = TestWhereApplication::class)
 class GmsActivityHelperTest {
-
     @Before
     fun setup() {
         mockkStatic(ActivityTransitionResult::class)
@@ -32,8 +31,10 @@ class GmsActivityHelperTest {
         unmockkStatic(ActivityTransitionResult::class)
     }
 
-    private fun makeGmsEvent(activityType: Int, transitionType: Int) =
-        ActivityTransitionEvent(activityType, transitionType, 0L)
+    private fun makeGmsEvent(
+        activityType: Int,
+        transitionType: Int,
+    ) = ActivityTransitionEvent(activityType, transitionType, 0L)
 
     @Test
     fun extractTransitionEvents_returnsNullWhenNoResult() {
@@ -44,13 +45,14 @@ class GmsActivityHelperTest {
 
     @Test
     fun extractTransitionEvents_mapsAllKnownActivities() {
-        val gmsEvents = listOf(
-            makeGmsEvent(DetectedActivity.STILL, ActivityTransition.ACTIVITY_TRANSITION_ENTER),
-            makeGmsEvent(DetectedActivity.WALKING, ActivityTransition.ACTIVITY_TRANSITION_ENTER),
-            makeGmsEvent(DetectedActivity.RUNNING, ActivityTransition.ACTIVITY_TRANSITION_ENTER),
-            makeGmsEvent(DetectedActivity.ON_BICYCLE, ActivityTransition.ACTIVITY_TRANSITION_ENTER),
-            makeGmsEvent(DetectedActivity.IN_VEHICLE, ActivityTransition.ACTIVITY_TRANSITION_EXIT),
-        )
+        val gmsEvents =
+            listOf(
+                makeGmsEvent(DetectedActivity.STILL, ActivityTransition.ACTIVITY_TRANSITION_ENTER),
+                makeGmsEvent(DetectedActivity.WALKING, ActivityTransition.ACTIVITY_TRANSITION_ENTER),
+                makeGmsEvent(DetectedActivity.RUNNING, ActivityTransition.ACTIVITY_TRANSITION_ENTER),
+                makeGmsEvent(DetectedActivity.ON_BICYCLE, ActivityTransition.ACTIVITY_TRANSITION_ENTER),
+                makeGmsEvent(DetectedActivity.IN_VEHICLE, ActivityTransition.ACTIVITY_TRANSITION_EXIT),
+            )
         every { ActivityTransitionResult.extractResult(any()) } returns ActivityTransitionResult(gmsEvents)
 
         val helper = GmsActivityHelper()
@@ -69,10 +71,11 @@ class GmsActivityHelperTest {
 
     @Test
     fun extractTransitionEvents_skipsUnknownActivityTypes() {
-        val gmsEvents = listOf(
-            makeGmsEvent(DetectedActivity.TILTING, ActivityTransition.ACTIVITY_TRANSITION_ENTER),
-            makeGmsEvent(DetectedActivity.WALKING, ActivityTransition.ACTIVITY_TRANSITION_ENTER),
-        )
+        val gmsEvents =
+            listOf(
+                makeGmsEvent(DetectedActivity.TILTING, ActivityTransition.ACTIVITY_TRANSITION_ENTER),
+                makeGmsEvent(DetectedActivity.WALKING, ActivityTransition.ACTIVITY_TRANSITION_ENTER),
+            )
         every { ActivityTransitionResult.extractResult(any()) } returns ActivityTransitionResult(gmsEvents)
 
         val helper = GmsActivityHelper()

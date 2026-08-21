@@ -6,5 +6,8 @@ import android.content.Intent
 
 // No-op stub: geofencing is GMS-only and not used in the F-Droid build.
 class GeofenceReceiver : BroadcastReceiver() {
-    override fun onReceive(context: Context, intent: Intent) {}
+    override fun onReceive(
+        context: Context,
+        intent: Intent,
+    ) {}
 }
