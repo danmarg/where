@@ -8,6 +8,12 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import net.af0.where.model.UserLocation
 
+/** Silence from a friend beyond this is treated as "not currently reading" - see sendLocation(). */
+const val UNRESPONSIVE_THRESHOLD_SECONDS = 5 * 60L
+
+/** Throttled send cadence to an unresponsive friend, instead of the normal 30s/heartbeat rate. */
+const val UNRESPONSIVE_SEND_INTERVAL_SECONDS = 5 * 60L
+
 /**
  * Orchestrates the end-to-end encrypted location sharing protocol.
  * Unifies polling, decryption, ratchet rotation, and sending for all platforms.
@@ -386,7 +392,20 @@ open class LocationClient(
         coroutineScope {
             val ts = currentTimeSeconds()
             val payload = MessagePlaintext.Location(lat = lat, lng = lng, acc = 0.0, ts = ts, stationary = stationary)
-            val activeFriends = store.listFriends().filter { it.id !in pausedFriendIds && !it.isStale }
+            val now = ts
+            val activeFriends =
+                store.listFriends().filter { friend ->
+                    if (friend.id in pausedFriendIds || friend.isStale) return@filter false
+                    // Sending fresh GPS fixes every 30s is wasted radio/battery/server-write cost if
+                    // this friend's client isn't alive to read them - automated keepalives (§5.3) mean
+                    // any live client sends us *something* at least every UNRESPONSIVE_THRESHOLD_SECONDS
+                    // regardless of their own sharing state, so silence beyond that is a reasonable proxy
+                    // for "not currently reading." Throttle to UNRESPONSIVE_SEND_INTERVAL_SECONDS instead
+                    // of stopping entirely - self-heals the moment they send anything (lastRecvTs updates,
+                    // next call sees it fresh, no separate recovery/cooldown logic needed).
+                    val unresponsive = now - friend.lastRecvTs >= UNRESPONSIVE_THRESHOLD_SECONDS
+                    !unresponsive || now - friend.lastSentTs >= UNRESPONSIVE_SEND_INTERVAL_SECONDS
+                }
 
             // Parallel send to all active friends to minimize radio wake time.
             // Exceptions are caught per-friend so one failure doesn't block updates to others.
