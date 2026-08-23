@@ -1,10 +1,12 @@
 package net.af0.where.e2ee
 
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
 
 /**
@@ -13,6 +15,7 @@ import kotlin.test.assertTrue
  * filter. Uses a virtual clock (TestScope.currentTime) so "5 minutes of silence" doesn't require
  * a real 5-minute test.
  */
+@OptIn(ExperimentalCoroutinesApi::class)
 class UnresponsiveFriendThrottleTest {
     private class MemoryMailboxClient : MailboxClient {
         val mailboxes = mutableMapOf<String, MutableList<MailboxPayload>>()
@@ -115,7 +118,12 @@ class UnresponsiveFriendThrottleTest {
 
             advanceTimeBy(400_000L) // t=400s: unresponsive, throttled send is due.
             mailbox.failNextPost = true
-            aliceClient.sendLocation(1.0, 1.0, emptySet()) // generates + attempts, fails, stays in outbox.
+            // Alice only has one friend here, so this send fails for ALL active friends -
+            // sendLocation() rethrows in that case (see fe74ce0). Generation + the failed attempt
+            // still happened, leaving the message stuck in the outbox, which is what we're testing.
+            assertFailsWith<NetworkException> {
+                aliceClient.sendLocation(1.0, 1.0, emptySet())
+            }
             assertTrue(
                 bobClient.poll(isForeground = true, pausedFriendIds = emptySet()).isEmpty(),
                 "the failed attempt must not have been delivered",
