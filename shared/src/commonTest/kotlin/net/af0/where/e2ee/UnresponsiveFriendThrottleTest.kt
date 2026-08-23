@@ -131,11 +131,14 @@ class UnresponsiveFriendThrottleTest {
 
             // Network "recovers". Only a few seconds later - nowhere near a full 5-minute throttle
             // window - matching the normal (untouched) WAL-outbox retry cadence for any other friend.
+            // This call both flushes the stuck message AND generates+sends a fresh one once the
+            // outbox clears (same WAL-safety fall-through as #344's retry test) - both must land.
             advanceTimeBy(5_000L)
             aliceClient.sendLocation(2.0, 2.0, emptySet())
             val delivered = bobClient.poll(isForeground = true, pausedFriendIds = emptySet())
-            assertEquals(1, delivered.size, "the originally stuck message must retry promptly, not wait out the throttle window")
-            assertEquals(1.0, delivered[0].lat, "must deliver the original stuck message, not a new one")
+            assertEquals(2, delivered.size, "the originally stuck message must retry promptly, not wait out the throttle window")
+            assertEquals(1.0, delivered[0].lat, "the originally stuck message must be delivered first, in order")
+            assertEquals(2.0, delivered[1].lat)
         }
 
     @Test
