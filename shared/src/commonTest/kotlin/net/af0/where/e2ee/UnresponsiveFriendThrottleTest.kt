@@ -82,6 +82,84 @@ class UnresponsiveFriendThrottleTest {
         return aliceClient to bobClient
     }
 
+    private suspend fun pairNewFriend(
+        aliceManager: E2eeManager,
+        aliceClient: LocationClient,
+        mailbox: MailboxClient,
+        name: String,
+    ): LocationClient {
+        val friendDriver = createTestSqlDriver()
+        val friendManager = testE2eeManager(friendDriver)
+        val friendClient = LocationClient("http://localhost", friendManager, mailbox)
+        val qr = aliceManager.createInvite("Alice")
+
+        val (initPayload, friendEntry) = friendManager.processScannedQr(qr, name)
+        friendClient.postKeyExchangeInit(friendEntry.id, qr, initPayload)
+
+        val pending = aliceClient.pollPendingInvites()
+        aliceManager.processKeyExchangeInit(pending.last().payload, name, pending.last().inviteEkPub)
+
+        return friendClient
+    }
+
+    @Test
+    fun `a failed send to an unresponsive friend retries at the next normal cycle, not the full throttle interval`() =
+        runTest {
+            val realMailbox = MemoryMailboxClient()
+            val mailbox = ChaosMailboxClient(realMailbox)
+            setVirtualTime(1_700_000_000_000L)
+            val (aliceClient, bobClient) = pairedClients(mailbox)
+
+            bobClient.sendLocation(0.0, 0.0, emptySet())
+            aliceClient.poll(isForeground = true, pausedFriendIds = emptySet())
+
+            advanceTimeBy(400_000L) // t=400s: unresponsive, throttled send is due.
+            mailbox.failNextPost = true
+            aliceClient.sendLocation(1.0, 1.0, emptySet()) // generates + attempts, fails, stays in outbox.
+            assertTrue(
+                bobClient.poll(isForeground = true, pausedFriendIds = emptySet()).isEmpty(),
+                "the failed attempt must not have been delivered",
+            )
+
+            // Network "recovers". Only a few seconds later - nowhere near a full 5-minute throttle
+            // window - matching the normal (untouched) WAL-outbox retry cadence for any other friend.
+            advanceTimeBy(5_000L)
+            aliceClient.sendLocation(2.0, 2.0, emptySet())
+            val delivered = bobClient.poll(isForeground = true, pausedFriendIds = emptySet())
+            assertEquals(1, delivered.size, "the originally stuck message must retry promptly, not wait out the throttle window")
+            assertEquals(1.0, delivered[0].lat, "must deliver the original stuck message, not a new one")
+        }
+
+    @Test
+    fun `throttling one unresponsive friend does not affect sends to a responsive friend`() =
+        runTest {
+            val mailbox = MemoryMailboxClient()
+            setVirtualTime(1_700_000_000_000L)
+
+            val aliceDriver = createTestSqlDriver()
+            val aliceManager = testE2eeManager(aliceDriver)
+            val aliceClient = LocationClient("http://localhost", aliceManager, mailbox)
+            val bobClient = pairNewFriend(aliceManager, aliceClient, mailbox, "Bob")
+            val charlieClient = pairNewFriend(aliceManager, aliceClient, mailbox, "Charlie")
+
+            // Both friends heard from at t=0.
+            bobClient.sendLocation(0.0, 0.0, emptySet())
+            charlieClient.sendLocation(0.0, 0.0, emptySet())
+            aliceClient.poll(isForeground = true, pausedFriendIds = emptySet())
+
+            advanceTimeBy(400_000L) // Bob goes unresponsive (throttled); Charlie keeps talking.
+            charlieClient.sendLocation(0.0, 0.0, emptySet())
+            aliceClient.poll(isForeground = true, pausedFriendIds = emptySet())
+
+            aliceClient.sendLocation(1.0, 1.0, emptySet()) // fans out to both in one call.
+            assertTrue(
+                bobClient.poll(isForeground = true, pausedFriendIds = emptySet()).isEmpty(),
+                "Bob is unresponsive and not yet due - must be throttled",
+            )
+            val toCharlie = charlieClient.poll(isForeground = true, pausedFriendIds = emptySet())
+            assertEquals(1, toCharlie.size, "Charlie is responsive - one unresponsive friend must not affect sends to another")
+        }
+
     @Test
     fun `sends continue normally while the friend has been heard from recently`() =
         runTest {

@@ -396,6 +396,15 @@ open class LocationClient(
             val activeFriends =
                 store.listFriends().filter { friend ->
                     if (friend.id in pausedFriendIds || friend.isStale) return@filter false
+                    // A message already stuck in this friend's outbox isn't "new" traffic to someone
+                    // who isn't reading - it's retrying delivery of something already committed
+                    // (encryptAndAdvance() already ran, ratchet already advanced). Always retry it at
+                    // the normal cadence; the throttle below only gates the DECISION to generate a
+                    // fresh ping for a quiet friend, not retries of one already generated. Without
+                    // this, a single failed send to an unresponsive friend - a very likely combination
+                    // - would wait a full UNRESPONSIVE_SEND_INTERVAL_SECONDS before even trying again,
+                    // since lastSentTs is set at generation time regardless of delivery success.
+                    if (store.getOutbox(friend.id).isNotEmpty()) return@filter true
                     // Sending fresh GPS fixes every 30s is wasted radio/battery/server-write cost if
                     // this friend's client isn't alive to read them - automated keepalives (§5.3) mean
                     // any live client sends us *something* at least every UNRESPONSIVE_THRESHOLD_SECONDS

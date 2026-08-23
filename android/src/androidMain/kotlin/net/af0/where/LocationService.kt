@@ -632,6 +632,11 @@ class LocationService : Service() {
                     // Force the heartbeat send. The pollLoop timing (5 mins) is already
                     // what we want for stationary updates, and 'force' ensures we bypass
                     // the internal 5-min de-duplication check which might be too tight.
+                    // Note: 'force' only bypasses this service-level dedup check, not
+                    // LocationClient.sendLocation()'s per-friend unresponsive-friend throttle -
+                    // a heartbeat to a friend who hasn't been heard from in 5 min is still
+                    // throttled the same as a regular send (intentional: no point forcing a
+                    // heartbeat to someone not reading either).
                     sendLocationIfNeeded(lastLoc.first, lastLoc.second, isHeartbeat = true, force = true, source = WakeSource.HEARTBEAT)
                 } else {
                     // RECOVERY (§5.3): If we have no GPS fix but are sharing, send a
