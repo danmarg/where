@@ -71,6 +71,14 @@ Build signed standardGms (universal) + standardFdroid (per-ABI split) release AP
 
 Promote the internal version to closed testing (alpha)
 
+### android promote_to_production
+
+```sh
+[bundle exec] fastlane android promote_to_production
+```
+
+Promote the current production track version to full rollout (100%)
+
 ----
 
 This README.md is auto-generated and will be re-generated every time [_fastlane_](https://fastlane.tools) is run.

@@ -21,7 +21,7 @@ IOS_TARGET="device"  # device or simulator
 SKIP_IOS=false
 SKIP_ANDROID=false
 DEPLOY_IOS=""        # "" | "beta" | "release"
-DEPLOY_ANDROID=""    # "" | "internal" | "internal-full" | "promote-alpha"
+DEPLOY_ANDROID=""    # "" | "internal" | "internal-full" | "promote-alpha" | "promote-production"
 while [[ $# -gt 0 ]]; do
   case $1 in
     --server-url)
@@ -84,6 +84,10 @@ while [[ $# -gt 0 ]]; do
       DEPLOY_ANDROID="promote-alpha"
       shift
       ;;
+    --deploy-android-promote-production)
+      DEPLOY_ANDROID="promote-production"
+      shift
+      ;;
     --deploy-android-github-binaries)
       DEPLOY_ANDROID="github-binaries"
       shift
@@ -100,13 +104,14 @@ done
 if [[ -n "$DEPLOY_IOS" || -n "$DEPLOY_ANDROID" ]]; then
   if [[ -n "$DEPLOY_ANDROID" ]]; then
     case "$DEPLOY_ANDROID" in
-      internal)        ANDROID_LANE="deploy" ;;
-      internal-full)   ANDROID_LANE="deploy_full" ;;
-      promote-alpha)   ANDROID_LANE="promote_to_closed" ;;
-      github-binaries) ANDROID_LANE="release_github_binaries" ;;
+      internal)            ANDROID_LANE="deploy" ;;
+      internal-full)       ANDROID_LANE="deploy_full" ;;
+      promote-alpha)       ANDROID_LANE="promote_to_closed" ;;
+      promote-production)  ANDROID_LANE="promote_to_production" ;;
+      github-binaries)     ANDROID_LANE="release_github_binaries" ;;
     esac
     echo "=== Deploying Android via fastlane (lane: $ANDROID_LANE) ==="
-    if [[ "$DEPLOY_ANDROID" != "promote-alpha" ]]; then
+    if [[ "$DEPLOY_ANDROID" != "promote-alpha" && "$DEPLOY_ANDROID" != "promote-production" ]]; then
       read -sp "Enter keystore password: " KEYSTORE_PASSWORD
       echo ""
       export KEYSTORE_FILE="${KEYSTORE_FILE:-$PWD/android/fastlane/signing/where_play_store_signing_key.jks}"

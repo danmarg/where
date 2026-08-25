@@ -136,11 +136,11 @@ platform :android do
   lane :promote_to_closed do
     key_path = ENV["PLAY_STORE_JSON_KEY"] || File.expand_path("signing/where_play_store_api_key.json", __dir__)
     package_name = CredentialsManager::AppfileConfig.try_fetch_value(:package_name) || "net.af0.where"
-    
+
     UI.message("Promoting version from 'internal' to 'alpha'...")
     UI.message("Using JSON key at: #{key_path}")
     UI.message("Package name: #{package_name}")
-    
+
     upload_to_play_store(
       json_key: key_path,
       package_name: package_name,
@@ -156,6 +156,30 @@ platform :android do
       # key a changelog to. Without this, supply still tries to push "what's new" text keyed to
       # a nil version code and crashes (uploader.rb's upload_changelog requires a version code).
       skip_upload_changelogs: true,
+    )
+  end
+
+  desc "Promote the current production track version to full rollout (100%)"
+  lane :promote_to_production do
+    key_path = ENV["PLAY_STORE_JSON_KEY"] || File.expand_path("signing/where_play_store_api_key.json", __dir__)
+    package_name = CredentialsManager::AppfileConfig.try_fetch_value(:package_name) || "net.af0.where"
+
+    UI.message("Promoting version from 'alpha' to 'production'...")
+    UI.message("Using JSON key at: #{key_path}")
+    UI.message("Package name: #{package_name}")
+
+    upload_to_play_store(
+      json_key: key_path,
+      package_name: package_name,
+      track: "alpha",
+      track_promote_to: "production",
+      rollout: "1.0",
+      skip_upload_apk: true,
+      skip_upload_aab: true,
+      skip_upload_metadata: true,
+      skip_upload_changelogs: true,
+      skip_upload_images: true,
+      skip_upload_screenshots: true,
     )
   end
 end
