@@ -29,6 +29,13 @@ open class LocationClient(
 
     private val service = MailboxService(baseUrl, mailbox)
 
+    // Shared by sendLocation(), sendStoppedSharing(), and sendRecoveryKeepalives() - a friend is
+    // eligible for any outbound traffic unless individually paused or stale.
+    private fun isActiveFriend(
+        friend: FriendEntry,
+        pausedFriendIds: Set<String>,
+    ): Boolean = friend.id !in pausedFriendIds && !friend.isStale
+
     // Sending fresh GPS fixes every 30s is wasted radio/battery/server-write cost if this
     // friend's client isn't alive to read them - automated keepalives (§5.3) mean any live
     // client sends us *something* at least every UNRESPONSIVE_THRESHOLD_SECONDS regardless of
@@ -37,13 +44,6 @@ open class LocationClient(
     // self-heals the moment they send anything (lastRecvTs updates, next call sees it fresh, no
     // separate recovery/cooldown logic needed). Shared by sendLocation()'s activeFriends filter
     // and sendRecoveryKeepalives() so the two throttle cadences can't drift apart.
-    // Shared by sendLocation(), sendStoppedSharing(), and sendRecoveryKeepalives() - a friend is
-    // eligible for any outbound traffic unless individually paused or stale.
-    private fun isActiveFriend(
-        friend: FriendEntry,
-        pausedFriendIds: Set<String>,
-    ): Boolean = friend.id !in pausedFriendIds && !friend.isStale
-
     private fun isSendDueForUnresponsiveFriend(
         friend: FriendEntry,
         now: Long,
@@ -345,17 +345,17 @@ open class LocationClient(
                 // separate keepalive timer.
                 val weAreSilent = now - friendAfter.lastSentTs >= UNRESPONSIVE_SEND_INTERVAL_SECONDS
 
-                if (enableAutomatedKeepalives && isPaused && weAreSilent) {
-                    if (!friendAfter.isStale && friendAfter.isConfirmed) {
-                        // Check outbox to avoid redundant keepalives
-                        val outbox = store.getOutbox(friendId)
-                        if (outbox.isEmpty()) {
-                            try {
-                                sendMessageToFriendInternal(friendId, MessagePlaintext.Keepalive())
-                            } catch (e: Exception) {
-                                // Ignore
-                            }
-                        }
+                // Check outbox to avoid redundant keepalives.
+                val dueForAutomatedKeepalive =
+                    enableAutomatedKeepalives && isPaused && weAreSilent &&
+                        !friendAfter.isStale && friendAfter.isConfirmed &&
+                        store.getOutbox(friendId).isEmpty()
+
+                if (dueForAutomatedKeepalive) {
+                    try {
+                        sendMessageToFriendInternal(friendId, MessagePlaintext.Keepalive())
+                    } catch (e: Exception) {
+                        // Ignore
                     }
                 }
             }
@@ -363,17 +363,19 @@ open class LocationClient(
             resultLocations
         }
 
-    suspend fun syncNow() {
+    // Runs [block] for each friend in parallel, holding that friend's mutex, swallowing
+    // per-friend failures (but not cancellation) so one friend's error can't block the rest.
+    // Shared by syncNow(), processOutboxes(), sendStoppedSharing(), and sendRecoveryKeepalives().
+    private suspend fun forEachFriendParallel(
+        friends: List<FriendEntry>,
+        block: suspend (FriendEntry) -> Unit,
+    ) {
         coroutineScope {
-            val friends = store.listFriends()
             friends.map { friend ->
                 async {
                     try {
                         val mutex = getFriendMutex(friend.id)
-                        mutex.withLock {
-                            processOutbox(friend.id)
-                            pollFriend(friend.id)
-                        }
+                        mutex.withLock { block(friend) }
                     } catch (e: CancellationException) {
                         throw e
                     } catch (_: Exception) {
@@ -384,28 +386,16 @@ open class LocationClient(
         }
     }
 
-    suspend fun processOutboxes() {
-        coroutineScope {
-            val friends =
-                runCatching {
-                    store.listFriends()
-                }.getOrElse { return@coroutineScope }
-
-            friends.map { friend ->
-                async {
-                    try {
-                        val mutex = getFriendMutex(friend.id)
-                        mutex.withLock {
-                            processOutbox(friend.id)
-                        }
-                    } catch (e: CancellationException) {
-                        throw e
-                    } catch (_: Exception) {
-                        // ignore per-friend failures
-                    }
-                }
-            }.awaitAll()
+    suspend fun syncNow() {
+        forEachFriendParallel(store.listFriends()) { friend ->
+            processOutbox(friend.id)
+            pollFriend(friend.id)
         }
+    }
+
+    suspend fun processOutboxes() {
+        val friends = runCatching { store.listFriends() }.getOrElse { return }
+        forEachFriendParallel(friends) { friend -> processOutbox(friend.id) }
     }
 
     /**
@@ -428,6 +418,28 @@ open class LocationClient(
         }
     }
 
+    // A friend whose outbox read fails is treated as not-stuck (falls through to the normal
+    // throttle check) rather than the exception aborting sendLocation() for every friend - this
+    // is per-friend I/O, so like the per-friend send path it must not take down the whole batch
+    // over one friend's store error.
+    private suspend fun isSendEligible(
+        friend: FriendEntry,
+        pausedFriendIds: Set<String>,
+        now: Long,
+    ): Boolean {
+        if (!isActiveFriend(friend, pausedFriendIds)) return false
+        // A message already stuck in this friend's outbox isn't "new" traffic to someone who
+        // isn't reading - it's retrying delivery of something already committed
+        // (encryptAndAdvance() already ran, ratchet already advanced). Always retry it at the
+        // normal cadence; the throttle below only gates the DECISION to generate a fresh ping
+        // for a quiet friend, not retries of one already generated. Without this, a single
+        // failed send to an unresponsive friend - a very likely combination - would wait a full
+        // UNRESPONSIVE_SEND_INTERVAL_SECONDS before even trying again, since lastSentTs is set
+        // at generation time regardless of delivery success.
+        val hasStuckOutbox = runCatching { store.getOutbox(friend.id) }.getOrNull()?.isNotEmpty() == true
+        return hasStuckOutbox || isSendDueForUnresponsiveFriend(friend, now)
+    }
+
     open suspend fun sendLocation(
         lat: Double,
         lng: Double,
@@ -435,41 +447,12 @@ open class LocationClient(
         stationary: Boolean = false,
     ) {
         coroutineScope {
-            val ts = currentTimeSeconds()
-            val payload = MessagePlaintext.Location(lat = lat, lng = lng, acc = 0.0, ts = ts, stationary = stationary)
-            val now = ts
-            // A friend whose outbox read fails is treated as not-stuck (falls through to the normal
-            // throttle check below) rather than the exception aborting sendLocation() for every
-            // friend - this is per-friend I/O, so like the per-friend send path it must not take
-            // down the whole batch over one friend's store error.
-            // Per-friend outbox reads run in parallel (like the send phase below) rather than
-            // sequentially in a plain .filter{} - each is a suspending local-DB round trip, and on
-            // this ~30s hot path a sequential scan would add latency that grows with friend count.
-            val activeFriends =
-                store.listFriends().map { friend ->
-                    async {
-                        val isActive =
-                            if (!isActiveFriend(friend, pausedFriendIds)) {
-                                false
-                            } else if (
-                                // A message already stuck in this friend's outbox isn't "new" traffic to
-                                // someone who isn't reading - it's retrying delivery of something already
-                                // committed (encryptAndAdvance() already ran, ratchet already advanced).
-                                // Always retry it at the normal cadence; the throttle below only gates the
-                                // DECISION to generate a fresh ping for a quiet friend, not retries of one
-                                // already generated. Without this, a single failed send to an unresponsive
-                                // friend - a very likely combination - would wait a full
-                                // UNRESPONSIVE_SEND_INTERVAL_SECONDS before even trying again, since
-                                // lastSentTs is set at generation time regardless of delivery success.
-                                runCatching { store.getOutbox(friend.id) }.getOrNull()?.isNotEmpty() == true
-                            ) {
-                                true
-                            } else {
-                                isSendDueForUnresponsiveFriend(friend, now)
-                            }
-                        friend to isActive
-                    }
-                }.awaitAll().filter { (_, isActive) -> isActive }.map { (friend, _) -> friend }
+            val now = currentTimeSeconds()
+            val payload = MessagePlaintext.Location(lat = lat, lng = lng, acc = 0.0, ts = now, stationary = stationary)
+            // Sequential: each friend's eligibility check is a local-DB read serialized behind
+            // E2eeStore's single storeLock anyway, so fanning these out via async/awaitAll (like
+            // the network send phase below) buys no real concurrency, just dispatch overhead.
+            val activeFriends = store.listFriends().filter { isSendEligible(it, pausedFriendIds, now) }
 
             // Parallel send to all active friends to minimize radio wake time.
             // Exceptions are caught per-friend so one failure doesn't block updates to others.
@@ -516,27 +499,9 @@ open class LocationClient(
      * Keepalives continue afterwards so the peer's session doesn't go stale.
      */
     open suspend fun sendStoppedSharing(pausedFriendIds: Set<String> = emptySet()) {
-        coroutineScope {
-            val ts = currentTimeSeconds()
-            val payload = MessagePlaintext.StoppedSharing(ts = ts)
-            val activeFriends = store.listFriends().filter { isActiveFriend(it, pausedFriendIds) }
-            val deferreds =
-                activeFriends.map { friend ->
-                    async {
-                        try {
-                            val mutex = getFriendMutex(friend.id)
-                            mutex.withLock {
-                                sendMessageToFriendInternal(friend.id, payload)
-                            }
-                        } catch (e: CancellationException) {
-                            throw e
-                        } catch (_: Exception) {
-                            // ignore per-friend failures
-                        }
-                    }
-                }
-            deferreds.awaitAll()
-        }
+        val payload = MessagePlaintext.StoppedSharing(ts = currentTimeSeconds())
+        val activeFriends = store.listFriends().filter { isActiveFriend(it, pausedFriendIds) }
+        forEachFriendParallel(activeFriends) { friend -> sendMessageToFriendInternal(friend.id, payload) }
     }
 
     /**
@@ -573,28 +538,15 @@ open class LocationClient(
      * would just be belt-and-suspenders traffic.
      */
     suspend fun sendRecoveryKeepalives(pausedFriendIds: Set<String> = emptySet()) {
-        coroutineScope {
-            val now = currentTimeSeconds()
-            val activeFriends =
-                store.listFriends().filter {
-                    isActiveFriend(it, pausedFriendIds) && isSendDueForUnresponsiveFriend(it, now)
-                }
-            activeFriends.map { friend ->
-                async {
-                    try {
-                        val mutex = getFriendMutex(friend.id)
-                        mutex.withLock {
-                            if (store.getOutbox(friend.id).isEmpty()) {
-                                sendMessageToFriendInternal(friend.id, MessagePlaintext.Keepalive())
-                            }
-                        }
-                    } catch (e: CancellationException) {
-                        throw e
-                    } catch (_: Exception) {
-                        // ignore per-friend failures
-                    }
-                }
-            }.awaitAll()
+        val now = currentTimeSeconds()
+        val activeFriends =
+            store.listFriends().filter {
+                isActiveFriend(it, pausedFriendIds) && isSendDueForUnresponsiveFriend(it, now)
+            }
+        forEachFriendParallel(activeFriends) { friend ->
+            if (store.getOutbox(friend.id).isEmpty()) {
+                sendMessageToFriendInternal(friend.id, MessagePlaintext.Keepalive())
+            }
         }
     }
 
