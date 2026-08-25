@@ -386,10 +386,14 @@ open class LocationClient(
         }
     }
 
-    suspend fun syncNow() {
+    suspend fun syncNow(
+        pausedFriendIds: Set<String> = emptySet(),
+        sharingEnabled: Boolean = true,
+    ) {
         forEachFriendParallel(store.listFriends()) { friend ->
             processOutbox(friend.id)
-            pollFriend(friend.id)
+            val isPaused = !sharingEnabled || friend.id in pausedFriendIds
+            pollFriend(friend.id, isPaused)
         }
     }
 

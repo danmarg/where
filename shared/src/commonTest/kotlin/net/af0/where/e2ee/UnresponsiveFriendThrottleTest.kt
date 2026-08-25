@@ -235,6 +235,35 @@ class UnresponsiveFriendThrottleTest {
         }
 
     @Test
+    fun `syncNow threads pausedFriendIds and sharingEnabled into pollFriend's automated keepalive, same as poll`() =
+        runTest {
+            // Regression test for a bug where syncNow() called pollFriend(friend.id) without
+            // computing isPaused, so it always defaulted to false - permanently disabling the
+            // automated keepalive for every friend reached via syncNow (e.g. Android/iOS's
+            // network-reconnect handler), regardless of actual pause/sharing state.
+            val mailbox = MemoryMailboxClient()
+            setVirtualTime(1_700_000_000_000L)
+            val (aliceClient, bobClient) = pairedClients(mailbox)
+
+            bobClient.sendLocation(0.0, 0.0, emptySet())
+            aliceClient.poll(isForeground = true, pausedFriendIds = emptySet()) // still sharing here - no keepalive.
+            val postsAfterFirstPoll = mailbox.allPosted.size
+
+            // Alice pauses sharing and syncs (as if the network just reconnected) for two full
+            // throttle windows.
+            repeat(20) {
+                advanceTimeBy(30_000L)
+                aliceClient.syncNow(pausedFriendIds = emptySet(), sharingEnabled = false)
+            }
+
+            assertEquals(
+                2,
+                mailbox.allPosted.size - postsAfterFirstPoll,
+                "syncNow must generate automated keepalives while paused, same as poll",
+            )
+        }
+
+    @Test
     fun `an actively-shared friend never receives an automated keepalive, even during a long gap between real sends`() =
         runTest {
             // Verifies the sendLocation/pollFriend race fix directly: while actively sharing (not

@@ -246,7 +246,10 @@ class LocationService : Service() {
                     serviceScope.launch {
                         try {
                             try {
-                                locationClient.syncNow()
+                                locationClient.syncNow(
+                                    pausedFriendIds = userStore.effectivelyPausedIds(),
+                                    sharingEnabled = userStore.isSharingLocation.value,
+                                )
                                 logReliability(WakeSource.NETWORK, true)
                             } catch (e: CancellationException) {
                                 throw e

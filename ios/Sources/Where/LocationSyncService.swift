@@ -24,7 +24,7 @@ protocol LocationClientProtocol: AnyObject, Sendable {
     func poll(isForeground: Bool, pausedFriendIds: Set<String>, sharingEnabled: Bool) async throws -> [Shared.UserLocation]
     func pollPendingInvites() async throws -> [Shared.PendingInviteResult]
     func postKeyExchangeInit(friendId: String, qr: Shared.QrPayload, initPayload: Shared.KeyExchangeInitPayload) async throws
-    func syncNow() async throws
+    func syncNow(pausedFriendIds: Set<String>, sharingEnabled: Bool) async throws
 }
 
 extension Shared.LocationClient: @unchecked @retroactive Sendable, LocationClientProtocol {}
@@ -416,7 +416,7 @@ final class LocationSyncService: ObservableObject {
     // Extracted for testability. Called from pathMonitor handler and directly in tests.
     func handleNetworkRestored() async {
         do {
-            try await locationClient.syncNow()
+            try await locationClient.syncNow(pausedFriendIds: effectivelyPausedIds(), sharingEnabled: isSharingLocation)
         } catch {
             logger.error("syncNow failed on path update: \(error.localizedDescription)")
         }

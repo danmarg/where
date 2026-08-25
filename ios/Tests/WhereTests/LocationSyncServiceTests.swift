@@ -129,7 +129,7 @@ class LocationSyncServiceTests: XCTestCase {
         func postKeyExchangeInit(friendId: String, qr: Shared.QrPayload, initPayload: Shared.KeyExchangeInitPayload) async throws {
             // No-op
         }
-        func syncNow() async throws {}
+        func syncNow(pausedFriendIds: Set<String>, sharingEnabled: Bool) async throws {}
     }
 
     // MARK: - firePoll foreground/background gating
