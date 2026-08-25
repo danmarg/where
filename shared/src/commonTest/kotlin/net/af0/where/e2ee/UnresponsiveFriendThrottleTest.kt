@@ -11,44 +11,17 @@ import kotlin.test.assertTrue
 
 /**
  * Regression/behavior tests for throttling sends to a friend whose client hasn't sent us
- * anything (not even an automated keepalive) in a while - see sendLocation()'s activeFriends
- * filter. Uses a virtual clock (TestScope.currentTime) so "5 minutes of silence" doesn't require
- * a real 5-minute test.
+ * anything in a while - see sendLocation()'s activeFriends filter - and for the automated
+ * keepalive (pollFriend), which only fires when sendLocation() ISN'T the one responsible for a
+ * friend's traffic (individually paused, or sharing off entirely - see poll()'s `sharingEnabled`
+ * param). The two are mutually exclusive by construction: a friend we're actively sharing with
+ * never gets a keepalive on top of real sends, and a paused/unshared friend gets only keepalives,
+ * paced to UNRESPONSIVE_SEND_INTERVAL_SECONDS via the same lastSentTs clock sendLocation uses.
+ * Uses a virtual clock (TestScope.currentTime) so "5 minutes of silence" doesn't require a real
+ * 5-minute test.
  */
 @OptIn(ExperimentalCoroutinesApi::class)
 class UnresponsiveFriendThrottleTest {
-    private class MemoryMailboxClient : MailboxClient {
-        val mailboxes = mutableMapOf<String, MutableList<MailboxPayload>>()
-
-        override suspend fun post(
-            baseUrl: String,
-            token: String,
-            payload: MailboxPayload,
-        ) {
-            mailboxes.getOrPut(token) { mutableListOf() }.add(payload)
-        }
-
-        override suspend fun poll(
-            baseUrl: String,
-            token: String,
-        ): List<MailboxPayload> = mailboxes[token] ?: emptyList()
-
-        override suspend fun ackId(
-            baseUrl: String,
-            token: String,
-            msgId: String,
-        ) {
-            mailboxes[token]?.removeAll { it.msgId == msgId }
-        }
-
-        override suspend fun ackIds(
-            baseUrl: String,
-            token: String,
-            msgIds: List<String>,
-        ) {
-            mailboxes[token]?.removeAll { it.msgId in msgIds }
-        }
-    }
 
     init {
         initializeE2eeTests()
@@ -153,16 +126,23 @@ class UnresponsiveFriendThrottleTest {
             val bobClient = pairNewFriend(aliceManager, aliceClient, mailbox, "Bob")
             val charlieClient = pairNewFriend(aliceManager, aliceClient, mailbox, "Charlie")
 
-            // Both friends heard from at t=0.
+            // Both friends heard from at t=0. Alice is actively sharing with both (default
+            // sharingEnabled=true), so pollFriend's automated keepalive never engages here -
+            // sendLocation is the sole source of Alice's outbound traffic throughout this test.
             bobClient.sendLocation(0.0, 0.0, emptySet())
             charlieClient.sendLocation(0.0, 0.0, emptySet())
             aliceClient.poll(isForeground = true, pausedFriendIds = emptySet())
 
-            advanceTimeBy(400_000L) // Bob goes unresponsive (throttled); Charlie keeps talking.
+            advanceTimeBy(350_000L)
+            aliceClient.sendLocation(1.0, 1.0, emptySet()) // both unresponsive-but-due - fans out to both.
+            bobClient.poll(isForeground = true, pausedFriendIds = emptySet())
+            charlieClient.poll(isForeground = true, pausedFriendIds = emptySet())
+
+            advanceTimeBy(50_000L) // t=400s: only 50s since Bob's last send - well under the throttle interval.
             charlieClient.sendLocation(0.0, 0.0, emptySet())
             aliceClient.poll(isForeground = true, pausedFriendIds = emptySet())
 
-            aliceClient.sendLocation(1.0, 1.0, emptySet()) // fans out to both in one call.
+            aliceClient.sendLocation(2.0, 2.0, emptySet()) // fans out to both in one call.
             assertTrue(
                 bobClient.poll(isForeground = true, pausedFriendIds = emptySet()).isEmpty(),
                 "Bob is unresponsive and not yet due - must be throttled",
@@ -215,6 +195,71 @@ class UnresponsiveFriendThrottleTest {
             val delivered = bobClient.poll(isForeground = true, pausedFriendIds = emptySet())
             assertEquals(1, delivered.size, "throttle interval elapsed - must send the throttled update")
             assertEquals(3.0, delivered[0].lat)
+        }
+
+    @Test
+    fun `while paused, repeated background polling sends periodic keepalives, not one per poll - and resuming sharing still sends`() =
+        runTest {
+            // Regression test for the automated keepalive (pollFriend): while paused/not-sharing,
+            // it must self-pace to UNRESPONSIVE_SEND_INTERVAL_SECONDS via the shared lastSentTs
+            // clock rather than firing on every background poll (constant traffic, defeating the
+            // whole point). And once sharing resumes, sendLocation must still get a real update
+            // through promptly - being paused earlier must not wedge future real sends.
+            val mailbox = MemoryMailboxClient()
+            setVirtualTime(1_700_000_000_000L)
+            val (aliceClient, bobClient) = pairedClients(mailbox)
+
+            bobClient.sendLocation(0.0, 0.0, emptySet())
+            aliceClient.poll(isForeground = true, pausedFriendIds = emptySet()) // still sharing here - no keepalive.
+            val postsAfterFirstPoll = mailbox.allPosted.size
+
+            // Alice pauses sharing (or turns it off entirely) and just does normal background
+            // maintenance polling (every 30s) for two full throttle windows.
+            repeat(20) {
+                advanceTimeBy(30_000L)
+                aliceClient.poll(isForeground = true, pausedFriendIds = emptySet(), sharingEnabled = false)
+            }
+
+            assertEquals(
+                2,
+                mailbox.allPosted.size - postsAfterFirstPoll,
+                "must send exactly one keepalive per throttle interval elapsed while paused, not one per 30s poll",
+            )
+
+            // Alice resumes sharing and has a real location to send.
+            advanceTimeBy(300_000L)
+            aliceClient.sendLocation(1.0, 1.0, emptySet())
+            val delivered = bobClient.poll(isForeground = true, pausedFriendIds = emptySet())
+            assertEquals(1, delivered.size, "a real location must still get through once due, not be blocked by prior periodic keepalives")
+            assertEquals(1.0, delivered[0].lat)
+        }
+
+    @Test
+    fun `an actively-shared friend never receives an automated keepalive, even during a long gap between real sends`() =
+        runTest {
+            // Verifies the sendLocation/pollFriend race fix directly: while actively sharing (not
+            // paused), pollFriend must never inject a keepalive - not even during a long gap with
+            // no fresh GPS fix to send. Getting this friend traffic during such a gap is still
+            // exclusively sendLocation's job once it's eventually called; a keepalive firing in the
+            // meantime could otherwise steal the slot moments before real data becomes available.
+            val mailbox = MemoryMailboxClient()
+            setVirtualTime(1_700_000_000_000L)
+            val (aliceClient, bobClient) = pairedClients(mailbox)
+
+            bobClient.sendLocation(0.0, 0.0, emptySet())
+            aliceClient.poll(isForeground = true, pausedFriendIds = emptySet())
+            val postsAfterFirstPoll = mailbox.allPosted.size
+
+            repeat(20) {
+                advanceTimeBy(30_000L)
+                aliceClient.poll(isForeground = true, pausedFriendIds = emptySet()) // sharingEnabled defaults true.
+            }
+
+            assertEquals(
+                0,
+                mailbox.allPosted.size - postsAfterFirstPoll,
+                "no keepalive must fire while actively sharing, regardless of how long since the last real send",
+            )
         }
 
     @Test

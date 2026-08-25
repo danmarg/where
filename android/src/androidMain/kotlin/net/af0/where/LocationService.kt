@@ -736,6 +736,7 @@ class LocationService : Service() {
                 locationClient.poll(
                     isForeground = locationSource.isAppInForeground.value,
                     pausedFriendIds = userStore.effectivelyPausedIds(),
+                    sharingEnabled = userStore.isSharingLocation.value,
                 )
             Log.d(TAG, "Got ${updates.size} location updates")
             withContext(Dispatchers.Main) {

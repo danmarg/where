@@ -21,7 +21,7 @@ protocol LocationClientProtocol: AnyObject, Sendable {
     func sendLocationToFriend(friendId: String, lat: Double, lng: Double, stationary: Bool) async throws
     func sendStoppedSharing(pausedFriendIds: Set<String>) async throws
     func sendStoppedSharingToFriend(friendId: String) async throws
-    func poll(isForeground: Bool, pausedFriendIds: Set<String>) async throws -> [Shared.UserLocation]
+    func poll(isForeground: Bool, pausedFriendIds: Set<String>, sharingEnabled: Bool) async throws -> [Shared.UserLocation]
     func pollPendingInvites() async throws -> [Shared.PendingInviteResult]
     func postKeyExchangeInit(friendId: String, qr: Shared.QrPayload, initPayload: Shared.KeyExchangeInitPayload) async throws
     func syncNow() async throws
@@ -625,7 +625,11 @@ final class LocationSyncService: ObservableObject {
             }
         }
         do {
-            let updates = try await locationClient.poll(isForeground: isInForeground(), pausedFriendIds: effectivelyPausedIds())
+            let updates = try await locationClient.poll(
+                isForeground: isInForeground(),
+                pausedFriendIds: effectivelyPausedIds(),
+                sharingEnabled: isSharingLocation,
+            )
             logger.debug("Got \(updates.count) location updates")
             for update in updates {
                 do {

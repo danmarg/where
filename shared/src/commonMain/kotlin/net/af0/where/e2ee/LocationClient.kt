@@ -50,6 +50,7 @@ open class LocationClient(
     suspend fun poll(
         isForeground: Boolean = true,
         pausedFriendIds: Set<String> = emptySet(),
+        sharingEnabled: Boolean = true,
     ): List<UserLocation> =
         coroutineScope {
             try {
@@ -93,7 +94,11 @@ open class LocationClient(
                                 if (alreadyPolling) return@async Pair(emptyList<UserLocation>(), null)
 
                                 try {
-                                    val updates = pollFriend(friend.id, friend.id in pausedFriendIds)
+                                    // "Paused" for pollFriend's purposes means "sendLocation isn't
+                                    // sending this friend anything" - true if they're individually
+                                    // paused, or if location sharing is off entirely.
+                                    val isPaused = !sharingEnabled || friend.id in pausedFriendIds
+                                    val updates = pollFriend(friend.id, isPaused)
                                     Pair(updates, null)
                                 } catch (e: Exception) {
                                     Pair(emptyList<UserLocation>(), e)
@@ -294,13 +299,30 @@ open class LocationClient(
             if (friendAfter != null) {
                 val now = currentTimeSeconds()
 
-                // Automated Keepalive Rules:
-                // 1. We haven't heard from them (lastRecvTs) for more than 30 seconds.
-                // Safety: only send if we have nothing else pending for them (outbox is empty).
-                val threshold = 30
-                val isFriendSilent = (now - friendAfter.lastRecvTs >= threshold)
+                // Automated Keepalive Rule: only when sendLocation() isn't the one responsible for
+                // this friend's traffic (isPaused - individually paused, or sharing off entirely).
+                // A friend we're actively sharing with never needs a keepalive on top: sendLocation's
+                // own cadence (including its unresponsive-friend throttle) already keeps them fed, and
+                // letting both fire independently is exactly the "who gets this slot" race this
+                // gate exists to avoid - a keepalive firing moments before a fresh location was about
+                // to go out would otherwise delay that real update by a full throttle interval.
+                //
+                // While paused, still throttle to UNRESPONSIVE_SEND_INTERVAL_SECONDS since our last
+                // send of ANYTHING (real or keepalive) - not more often. Deliberately independent of
+                // lastRecvTs/whether the friend is responsive - it must fire on the same cadence
+                // regardless of why we're not sending real content, so a passive observer of send
+                // timing can't distinguish "sharing paused/off" from "sharing but friend unresponsive"
+                // (§7.4/line 114 of the protocol spec - both are already bucketed together to prevent
+                // exactly this kind of traffic-analysis leak). It's also what lets a friend who only
+                // ever RECEIVES from us (never sends back) still periodically hear from us, instead of
+                // only firing when *they've* gone quiet - a one-way listener would otherwise never keep
+                // our lastRecvTs on their side fresh, and their record of this friendship would go
+                // stale after ACK_TIMEOUT_SECONDS. Evaluated opportunistically on whatever cadence this
+                // function is already called at (foreground polls, background location wake-ups) - no
+                // separate keepalive timer.
+                val weAreSilent = now - friendAfter.lastSentTs >= UNRESPONSIVE_SEND_INTERVAL_SECONDS
 
-                if (enableAutomatedKeepalives && isFriendSilent) {
+                if (enableAutomatedKeepalives && isPaused && weAreSilent) {
                     if (!friendAfter.isStale && friendAfter.isConfirmed) {
                         // Check outbox to avoid redundant keepalives
                         val outbox = store.getOutbox(friendId)
