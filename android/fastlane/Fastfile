@@ -90,18 +90,30 @@ platform :android do
     tag = "v#{version_name}"
     repo = "danmarg/where"
 
-    unless system("git", "rev-parse", "--verify", "--quiet", tag)
-      UI.message("Tag #{tag} not found; creating and pushing it at HEAD")
-      sh("git", "tag", "-a", tag, "-m", "Release #{version_name}")
-      sh("git", "push", "origin", tag)
-    end
-    unless system("git", "ls-remote", "--exit-code", "--tags", "origin", tag, out: File::NULL)
-      UI.user_error!("Tag #{tag} exists locally but isn't pushed to origin — push it before continuing.")
-    end
-
     UI.message("Building signed release APKs for #{tag}...")
     gradle(project_dir: "../", task: ":android:assembleStandardGmsRelease", properties: { "enableAbiSplits" => "true" })
     gradle(project_dir: "../", task: ":android:assembleStandardFdroidRelease", properties: { "enableAbiSplits" => "true" })
+
+    # Tag after a successful build so it always points to the commit whose source
+    # was actually compiled (not a pre-build HEAD that may lack a version bump).
+    if system("git", "rev-parse", "--verify", "--quiet", tag)
+      # Tag exists — make sure it points to HEAD; force-update if not.
+      current = `git rev-list -n1 #{tag}`.strip
+      head    = `git rev-parse HEAD`.strip
+      if current != head
+        UI.message("Tag #{tag} exists but points to #{current[0,8]}, not HEAD (#{head[0,8]}); re-tagging.")
+        sh("git", "tag", "-f", "-a", tag, "-m", "Release #{version_name}")
+        sh("git", "push", "origin", tag, "--force")
+      else
+        unless system("git", "ls-remote", "--exit-code", "--tags", "origin", tag, out: File::NULL)
+          sh("git", "push", "origin", tag)
+        end
+      end
+    else
+      UI.message("Creating tag #{tag} at HEAD and pushing...")
+      sh("git", "tag", "-a", tag, "-m", "Release #{version_name}")
+      sh("git", "push", "origin", tag)
+    end
 
     # GMS: Play Store delivery goes through the AAB (bundleStandardGmsRelease, elsewhere); the
     # only APK we publish here is the universal one, purely as a GitHub reference artifact.
