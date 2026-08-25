@@ -32,6 +32,8 @@ import kotlinx.coroutines.withContext
 import net.af0.where.e2ee.ConnectionStatus
 import net.af0.where.e2ee.E2eeManager
 import net.af0.where.e2ee.LocationClient
+import net.af0.where.e2ee.UNRESPONSIVE_SEND_INTERVAL_SECONDS
+import net.af0.where.e2ee.UNRESPONSIVE_THRESHOLD_SECONDS
 import net.af0.where.e2ee.UserStore
 import net.af0.where.shared.MR
 
@@ -648,7 +650,16 @@ class LocationService : Service() {
                                 it.id !in userStore.effectivelyPausedIds() && !it.isStale
                             }
                         for (friend in activeFriends) {
-                            locationClient.sendKeepalive(friend.id)
+                            // Same unresponsive-friend throttle as sendLocation()'s per-friend filter
+                            // (LocationClient.kt) - a friend silent past UNRESPONSIVE_THRESHOLD_SECONDS
+                            // only gets a fresh keepalive every UNRESPONSIVE_SEND_INTERVAL_SECONDS, not
+                            // every 5-min RECOVERY cycle. Without this, a stuck GPS fix (indoors, cold
+                            // start) would spam an unresponsive friend far more often than the throttled
+                            // GPS-fix heartbeat path right above does.
+                            val unresponsive = now - friend.lastRecvTs >= UNRESPONSIVE_THRESHOLD_SECONDS
+                            if (!unresponsive || now - friend.lastSentTs >= UNRESPONSIVE_SEND_INTERVAL_SECONDS) {
+                                locationClient.sendKeepalive(friend.id)
+                            }
                         }
                         lastSentTime = now
                         logReliability(WakeSource.HEARTBEAT, true)

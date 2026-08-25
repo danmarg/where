@@ -419,28 +419,43 @@ open class LocationClient(
             // throttle check below) rather than the exception aborting sendLocation() for every
             // friend - this is per-friend I/O, so like the per-friend send path it must not take
             // down the whole batch over one friend's store error.
+            // Per-friend outbox reads run in parallel (like the send phase below) rather than
+            // sequentially in a plain .filter{} - each is a suspending local-DB round trip, and on
+            // this ~30s hot path a sequential scan would add latency that grows with friend count.
             val activeFriends =
-                store.listFriends().filter { friend ->
-                    if (friend.id in pausedFriendIds || friend.isStale) return@filter false
-                    // A message already stuck in this friend's outbox isn't "new" traffic to someone
-                    // who isn't reading - it's retrying delivery of something already committed
-                    // (encryptAndAdvance() already ran, ratchet already advanced). Always retry it at
-                    // the normal cadence; the throttle below only gates the DECISION to generate a
-                    // fresh ping for a quiet friend, not retries of one already generated. Without
-                    // this, a single failed send to an unresponsive friend - a very likely combination
-                    // - would wait a full UNRESPONSIVE_SEND_INTERVAL_SECONDS before even trying again,
-                    // since lastSentTs is set at generation time regardless of delivery success.
-                    if (runCatching { store.getOutbox(friend.id) }.getOrNull()?.isNotEmpty() == true) return@filter true
-                    // Sending fresh GPS fixes every 30s is wasted radio/battery/server-write cost if
-                    // this friend's client isn't alive to read them - automated keepalives (§5.3) mean
-                    // any live client sends us *something* at least every UNRESPONSIVE_THRESHOLD_SECONDS
-                    // regardless of their own sharing state, so silence beyond that is a reasonable proxy
-                    // for "not currently reading." Throttle to UNRESPONSIVE_SEND_INTERVAL_SECONDS instead
-                    // of stopping entirely - self-heals the moment they send anything (lastRecvTs updates,
-                    // next call sees it fresh, no separate recovery/cooldown logic needed).
-                    val unresponsive = now - friend.lastRecvTs >= UNRESPONSIVE_THRESHOLD_SECONDS
-                    !unresponsive || now - friend.lastSentTs >= UNRESPONSIVE_SEND_INTERVAL_SECONDS
-                }
+                store.listFriends().map { friend ->
+                    async {
+                        val isActive =
+                            if (friend.id in pausedFriendIds || friend.isStale) {
+                                false
+                            } else if (
+                                // A message already stuck in this friend's outbox isn't "new" traffic to
+                                // someone who isn't reading - it's retrying delivery of something already
+                                // committed (encryptAndAdvance() already ran, ratchet already advanced).
+                                // Always retry it at the normal cadence; the throttle below only gates the
+                                // DECISION to generate a fresh ping for a quiet friend, not retries of one
+                                // already generated. Without this, a single failed send to an unresponsive
+                                // friend - a very likely combination - would wait a full
+                                // UNRESPONSIVE_SEND_INTERVAL_SECONDS before even trying again, since
+                                // lastSentTs is set at generation time regardless of delivery success.
+                                runCatching { store.getOutbox(friend.id) }.getOrNull()?.isNotEmpty() == true
+                            ) {
+                                true
+                            } else {
+                                // Sending fresh GPS fixes every 30s is wasted radio/battery/server-write cost
+                                // if this friend's client isn't alive to read them - automated keepalives
+                                // (§5.3) mean any live client sends us *something* at least every
+                                // UNRESPONSIVE_THRESHOLD_SECONDS regardless of their own sharing state, so
+                                // silence beyond that is a reasonable proxy for "not currently reading."
+                                // Throttle to UNRESPONSIVE_SEND_INTERVAL_SECONDS instead of stopping entirely
+                                // - self-heals the moment they send anything (lastRecvTs updates, next call
+                                // sees it fresh, no separate recovery/cooldown logic needed).
+                                val unresponsive = now - friend.lastRecvTs >= UNRESPONSIVE_THRESHOLD_SECONDS
+                                !unresponsive || now - friend.lastSentTs >= UNRESPONSIVE_SEND_INTERVAL_SECONDS
+                            }
+                        friend to isActive
+                    }
+                }.awaitAll().filter { (_, isActive) -> isActive }.map { (friend, _) -> friend }
 
             // Parallel send to all active friends to minimize radio wake time.
             // Exceptions are caught per-friend so one failure doesn't block updates to others.
