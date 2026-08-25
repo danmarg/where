@@ -393,6 +393,10 @@ open class LocationClient(
             val ts = currentTimeSeconds()
             val payload = MessagePlaintext.Location(lat = lat, lng = lng, acc = 0.0, ts = ts, stationary = stationary)
             val now = ts
+            // A friend whose outbox read fails is treated as not-stuck (falls through to the normal
+            // throttle check below) rather than the exception aborting sendLocation() for every
+            // friend - this is per-friend I/O, so like the per-friend send path it must not take
+            // down the whole batch over one friend's store error.
             val activeFriends =
                 store.listFriends().filter { friend ->
                     if (friend.id in pausedFriendIds || friend.isStale) return@filter false
@@ -404,7 +408,7 @@ open class LocationClient(
                     // this, a single failed send to an unresponsive friend - a very likely combination
                     // - would wait a full UNRESPONSIVE_SEND_INTERVAL_SECONDS before even trying again,
                     // since lastSentTs is set at generation time regardless of delivery success.
-                    if (store.getOutbox(friend.id).isNotEmpty()) return@filter true
+                    if (runCatching { store.getOutbox(friend.id) }.getOrNull()?.isNotEmpty() == true) return@filter true
                     // Sending fresh GPS fixes every 30s is wasted radio/battery/server-write cost if
                     // this friend's client isn't alive to read them - automated keepalives (§5.3) mean
                     // any live client sends us *something* at least every UNRESPONSIVE_THRESHOLD_SECONDS
@@ -519,6 +523,9 @@ open class LocationClient(
         // still-stuck message propagates straight out of this function - callers (ultimately
         // LocationService.sendLocationIfNeeded) see the real failure instead of a silent
         // false success, and we never reach encryptAndAdvance() below for a new payload.
+        // This read is authoritative and must happen under getFriendMutex (held by our caller) -
+        // deliberately NOT reused from sendLocation()'s filter, which runs unlocked and can race
+        // with a concurrent poll()/keepalive enqueueing into this friend's outbox.
         if (store.getOutbox(friendId).isNotEmpty()) {
             processOutbox(friendId)
         }

@@ -6,38 +6,6 @@ import kotlin.test.*
 class LocationHandshakeTest {
     private val mailbox = MemoryMailboxClient()
 
-    private class MemoryMailboxClient : MailboxClient {
-        val mailboxes = mutableMapOf<String, MutableList<MailboxPayload>>()
-
-        override suspend fun post(
-            baseUrl: String,
-            token: String,
-            payload: MailboxPayload,
-        ) {
-            mailboxes.getOrPut(token) { mutableListOf() }.add(payload)
-        }
-
-        override suspend fun poll(
-            baseUrl: String,
-            token: String,
-        ): List<MailboxPayload> = mailboxes[token] ?: emptyList()
-
-        override suspend fun ackId(
-            baseUrl: String,
-            token: String,
-            msgId: String,
-        ) {
-            mailboxes[token]?.removeAll { it.msgId == msgId }
-        }
-
-        override suspend fun ackIds(
-            baseUrl: String,
-            token: String,
-            msgIds: List<String>,
-        ) {
-            mailboxes[token]?.removeAll { it.msgId in msgIds }
-        }
-    }
 
     init {
         initializeE2eeTests()
