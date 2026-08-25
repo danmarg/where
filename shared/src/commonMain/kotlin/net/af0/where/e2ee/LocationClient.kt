@@ -37,6 +37,13 @@ open class LocationClient(
     // self-heals the moment they send anything (lastRecvTs updates, next call sees it fresh, no
     // separate recovery/cooldown logic needed). Shared by sendLocation()'s activeFriends filter
     // and sendRecoveryKeepalives() so the two throttle cadences can't drift apart.
+    // Shared by sendLocation(), sendStoppedSharing(), and sendRecoveryKeepalives() - a friend is
+    // eligible for any outbound traffic unless individually paused or stale.
+    private fun isActiveFriend(
+        friend: FriendEntry,
+        pausedFriendIds: Set<String>,
+    ): Boolean = friend.id !in pausedFriendIds && !friend.isStale
+
     private fun isSendDueForUnresponsiveFriend(
         friend: FriendEntry,
         now: Long,
@@ -442,7 +449,7 @@ open class LocationClient(
                 store.listFriends().map { friend ->
                     async {
                         val isActive =
-                            if (friend.id in pausedFriendIds || friend.isStale) {
+                            if (!isActiveFriend(friend, pausedFriendIds)) {
                                 false
                             } else if (
                                 // A message already stuck in this friend's outbox isn't "new" traffic to
@@ -512,7 +519,7 @@ open class LocationClient(
         coroutineScope {
             val ts = currentTimeSeconds()
             val payload = MessagePlaintext.StoppedSharing(ts = ts)
-            val activeFriends = store.listFriends().filter { it.id !in pausedFriendIds && !it.isStale }
+            val activeFriends = store.listFriends().filter { isActiveFriend(it, pausedFriendIds) }
             val deferreds =
                 activeFriends.map { friend ->
                     async {
@@ -570,7 +577,7 @@ open class LocationClient(
             val now = currentTimeSeconds()
             val activeFriends =
                 store.listFriends().filter {
-                    it.id !in pausedFriendIds && !it.isStale && isSendDueForUnresponsiveFriend(it, now)
+                    isActiveFriend(it, pausedFriendIds) && isSendDueForUnresponsiveFriend(it, now)
                 }
             activeFriends.map { friend ->
                 async {
