@@ -290,6 +290,12 @@ class E2eeManager(
                     payload = message,
                 )
 
+            // lastSentTs is updated uniformly for every payload type, including Keepalive: both
+            // LocationClient.sendLocation's unresponsive-friend throttle and pollFriend's automated
+            // keepalive gate on "now - lastSentTs >= UNRESPONSIVE_SEND_INTERVAL_SECONDS", so whichever
+            // of the two fires resets the shared clock for the other. That's what keeps them mutually
+            // exclusive (a sent Location suppresses the next keepalive, and vice versa) and self-paced
+            // at a consistent ~5-minute cadence instead of firing on every poll cycle.
             val updatedEntry =
                 entry.copy(
                     session = nextSession,

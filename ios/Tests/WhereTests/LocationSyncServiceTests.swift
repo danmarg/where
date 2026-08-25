@@ -118,7 +118,7 @@ class LocationSyncServiceTests: XCTestCase {
         }
         func sendStoppedSharing(pausedFriendIds: Set<String>) async throws {}
         func sendStoppedSharingToFriend(friendId: String) async throws {}
-        func poll(isForeground: Bool, pausedFriendIds: Set<String>) async throws -> [Shared.UserLocation] {
+        func poll(isForeground: Bool, pausedFriendIds: Set<String>, sharingEnabled: Bool) async throws -> [Shared.UserLocation] {
             _pollCallCount += 1
             return pollResult
         }
@@ -129,7 +129,7 @@ class LocationSyncServiceTests: XCTestCase {
         func postKeyExchangeInit(friendId: String, qr: Shared.QrPayload, initPayload: Shared.KeyExchangeInitPayload) async throws {
             // No-op
         }
-        func syncNow() async throws {}
+        func syncNow(pausedFriendIds: Set<String>, sharingEnabled: Bool) async throws {}
     }
 
     // MARK: - firePoll foreground/background gating

@@ -8,6 +8,12 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import net.af0.where.model.UserLocation
 
+/** Silence from a friend beyond this is treated as "not currently reading" - see sendLocation(). */
+const val UNRESPONSIVE_THRESHOLD_SECONDS = 5 * 60L
+
+/** Throttled send cadence to an unresponsive friend, instead of the normal 30s/heartbeat rate. */
+const val UNRESPONSIVE_SEND_INTERVAL_SECONDS = 5 * 60L
+
 /**
  * Orchestrates the end-to-end encrypted location sharing protocol.
  * Unifies polling, decryption, ratchet rotation, and sending for all platforms.
@@ -22,6 +28,29 @@ open class LocationClient(
     constructor(baseUrl: String, store: E2eeManager) : this(baseUrl, store, KtorMailboxClient)
 
     private val service = MailboxService(baseUrl, mailbox)
+
+    // Shared by sendLocation(), sendStoppedSharing(), and sendRecoveryKeepalives() - a friend is
+    // eligible for any outbound traffic unless individually paused or stale.
+    private fun isActiveFriend(
+        friend: FriendEntry,
+        pausedFriendIds: Set<String>,
+    ): Boolean = friend.id !in pausedFriendIds && !friend.isStale
+
+    // Sending fresh GPS fixes every 30s is wasted radio/battery/server-write cost if this
+    // friend's client isn't alive to read them - automated keepalives (§5.3) mean any live
+    // client sends us *something* at least every UNRESPONSIVE_THRESHOLD_SECONDS regardless of
+    // their own sharing state, so silence beyond that is a reasonable proxy for "not currently
+    // reading." Throttle to UNRESPONSIVE_SEND_INTERVAL_SECONDS instead of stopping entirely -
+    // self-heals the moment they send anything (lastRecvTs updates, next call sees it fresh, no
+    // separate recovery/cooldown logic needed). Shared by sendLocation()'s activeFriends filter
+    // and sendRecoveryKeepalives() so the two throttle cadences can't drift apart.
+    private fun isSendDueForUnresponsiveFriend(
+        friend: FriendEntry,
+        now: Long,
+    ): Boolean {
+        val unresponsive = now - friend.lastRecvTs >= UNRESPONSIVE_THRESHOLD_SECONDS
+        return !unresponsive || now - friend.lastSentTs >= UNRESPONSIVE_SEND_INTERVAL_SECONDS
+    }
 
     private val friendMutexes = mutableMapOf<String, Mutex>()
     private val silentDropRetries = mutableMapOf<String, Int>()
@@ -44,6 +73,7 @@ open class LocationClient(
     suspend fun poll(
         isForeground: Boolean = true,
         pausedFriendIds: Set<String> = emptySet(),
+        sharingEnabled: Boolean = true,
     ): List<UserLocation> =
         coroutineScope {
             try {
@@ -87,7 +117,11 @@ open class LocationClient(
                                 if (alreadyPolling) return@async Pair(emptyList<UserLocation>(), null)
 
                                 try {
-                                    val updates = pollFriend(friend.id, friend.id in pausedFriendIds)
+                                    // "Paused" for pollFriend's purposes means "sendLocation isn't
+                                    // sending this friend anything" - true if they're individually
+                                    // paused, or if location sharing is off entirely.
+                                    val isPaused = !sharingEnabled || friend.id in pausedFriendIds
+                                    val updates = pollFriend(friend.id, isPaused)
                                     Pair(updates, null)
                                 } catch (e: Exception) {
                                     Pair(emptyList<UserLocation>(), e)
@@ -288,23 +322,40 @@ open class LocationClient(
             if (friendAfter != null) {
                 val now = currentTimeSeconds()
 
-                // Automated Keepalive Rules:
-                // 1. We haven't heard from them (lastRecvTs) for more than 30 seconds.
-                // Safety: only send if we have nothing else pending for them (outbox is empty).
-                val threshold = 30
-                val isFriendSilent = (now - friendAfter.lastRecvTs >= threshold)
+                // Automated Keepalive Rule: only when sendLocation() isn't the one responsible for
+                // this friend's traffic (isPaused - individually paused, or sharing off entirely).
+                // A friend we're actively sharing with never needs a keepalive on top: sendLocation's
+                // own cadence (including its unresponsive-friend throttle) already keeps them fed, and
+                // letting both fire independently is exactly the "who gets this slot" race this
+                // gate exists to avoid - a keepalive firing moments before a fresh location was about
+                // to go out would otherwise delay that real update by a full throttle interval.
+                //
+                // While paused, still throttle to UNRESPONSIVE_SEND_INTERVAL_SECONDS since our last
+                // send of ANYTHING (real or keepalive) - not more often. Deliberately independent of
+                // lastRecvTs/whether the friend is responsive - it must fire on the same cadence
+                // regardless of why we're not sending real content, so a passive observer of send
+                // timing can't distinguish "sharing paused/off" from "sharing but friend unresponsive"
+                // (§7.4/line 114 of the protocol spec - both are already bucketed together to prevent
+                // exactly this kind of traffic-analysis leak). It's also what lets a friend who only
+                // ever RECEIVES from us (never sends back) still periodically hear from us, instead of
+                // only firing when *they've* gone quiet - a one-way listener would otherwise never keep
+                // our lastRecvTs on their side fresh, and their record of this friendship would go
+                // stale after ACK_TIMEOUT_SECONDS. Evaluated opportunistically on whatever cadence this
+                // function is already called at (foreground polls, background location wake-ups) - no
+                // separate keepalive timer.
+                val weAreSilent = now - friendAfter.lastSentTs >= UNRESPONSIVE_SEND_INTERVAL_SECONDS
 
-                if (enableAutomatedKeepalives && isFriendSilent) {
-                    if (!friendAfter.isStale && friendAfter.isConfirmed) {
-                        // Check outbox to avoid redundant keepalives
-                        val outbox = store.getOutbox(friendId)
-                        if (outbox.isEmpty()) {
-                            try {
-                                sendMessageToFriendInternal(friendId, MessagePlaintext.Keepalive())
-                            } catch (e: Exception) {
-                                // Ignore
-                            }
-                        }
+                // Check outbox to avoid redundant keepalives.
+                val dueForAutomatedKeepalive =
+                    enableAutomatedKeepalives && isPaused && weAreSilent &&
+                        !friendAfter.isStale && friendAfter.isConfirmed &&
+                        store.getOutbox(friendId).isEmpty()
+
+                if (dueForAutomatedKeepalive) {
+                    try {
+                        sendMessageToFriendInternal(friendId, MessagePlaintext.Keepalive())
+                    } catch (e: Exception) {
+                        // Ignore
                     }
                 }
             }
@@ -312,17 +363,19 @@ open class LocationClient(
             resultLocations
         }
 
-    suspend fun syncNow() {
+    // Runs [block] for each friend in parallel, holding that friend's mutex, swallowing
+    // per-friend failures (but not cancellation) so one friend's error can't block the rest.
+    // Shared by syncNow(), processOutboxes(), sendStoppedSharing(), and sendRecoveryKeepalives().
+    private suspend fun forEachFriendParallel(
+        friends: List<FriendEntry>,
+        block: suspend (FriendEntry) -> Unit,
+    ) {
         coroutineScope {
-            val friends = store.listFriends()
             friends.map { friend ->
                 async {
                     try {
                         val mutex = getFriendMutex(friend.id)
-                        mutex.withLock {
-                            processOutbox(friend.id)
-                            pollFriend(friend.id)
-                        }
+                        mutex.withLock { block(friend) }
                     } catch (e: CancellationException) {
                         throw e
                     } catch (_: Exception) {
@@ -333,28 +386,20 @@ open class LocationClient(
         }
     }
 
-    suspend fun processOutboxes() {
-        coroutineScope {
-            val friends =
-                runCatching {
-                    store.listFriends()
-                }.getOrElse { return@coroutineScope }
-
-            friends.map { friend ->
-                async {
-                    try {
-                        val mutex = getFriendMutex(friend.id)
-                        mutex.withLock {
-                            processOutbox(friend.id)
-                        }
-                    } catch (e: CancellationException) {
-                        throw e
-                    } catch (_: Exception) {
-                        // ignore per-friend failures
-                    }
-                }
-            }.awaitAll()
+    suspend fun syncNow(
+        pausedFriendIds: Set<String> = emptySet(),
+        sharingEnabled: Boolean = true,
+    ) {
+        forEachFriendParallel(store.listFriends()) { friend ->
+            processOutbox(friend.id)
+            val isPaused = !sharingEnabled || friend.id in pausedFriendIds
+            pollFriend(friend.id, isPaused)
         }
+    }
+
+    suspend fun processOutboxes() {
+        val friends = runCatching { store.listFriends() }.getOrElse { return }
+        forEachFriendParallel(friends) { friend -> processOutbox(friend.id) }
     }
 
     /**
@@ -377,6 +422,28 @@ open class LocationClient(
         }
     }
 
+    // A friend whose outbox read fails is treated as not-stuck (falls through to the normal
+    // throttle check) rather than the exception aborting sendLocation() for every friend - this
+    // is per-friend I/O, so like the per-friend send path it must not take down the whole batch
+    // over one friend's store error.
+    private suspend fun isSendEligible(
+        friend: FriendEntry,
+        pausedFriendIds: Set<String>,
+        now: Long,
+    ): Boolean {
+        if (!isActiveFriend(friend, pausedFriendIds)) return false
+        // A message already stuck in this friend's outbox isn't "new" traffic to someone who
+        // isn't reading - it's retrying delivery of something already committed
+        // (encryptAndAdvance() already ran, ratchet already advanced). Always retry it at the
+        // normal cadence; the throttle below only gates the DECISION to generate a fresh ping
+        // for a quiet friend, not retries of one already generated. Without this, a single
+        // failed send to an unresponsive friend - a very likely combination - would wait a full
+        // UNRESPONSIVE_SEND_INTERVAL_SECONDS before even trying again, since lastSentTs is set
+        // at generation time regardless of delivery success.
+        val hasStuckOutbox = runCatching { store.getOutbox(friend.id) }.getOrNull()?.isNotEmpty() == true
+        return hasStuckOutbox || isSendDueForUnresponsiveFriend(friend, now)
+    }
+
     open suspend fun sendLocation(
         lat: Double,
         lng: Double,
@@ -384,9 +451,12 @@ open class LocationClient(
         stationary: Boolean = false,
     ) {
         coroutineScope {
-            val ts = currentTimeSeconds()
-            val payload = MessagePlaintext.Location(lat = lat, lng = lng, acc = 0.0, ts = ts, stationary = stationary)
-            val activeFriends = store.listFriends().filter { it.id !in pausedFriendIds && !it.isStale }
+            val now = currentTimeSeconds()
+            val payload = MessagePlaintext.Location(lat = lat, lng = lng, acc = 0.0, ts = now, stationary = stationary)
+            // Sequential: each friend's eligibility check is a local-DB read serialized behind
+            // E2eeStore's single storeLock anyway, so fanning these out via async/awaitAll (like
+            // the network send phase below) buys no real concurrency, just dispatch overhead.
+            val activeFriends = store.listFriends().filter { isSendEligible(it, pausedFriendIds, now) }
 
             // Parallel send to all active friends to minimize radio wake time.
             // Exceptions are caught per-friend so one failure doesn't block updates to others.
@@ -433,27 +503,9 @@ open class LocationClient(
      * Keepalives continue afterwards so the peer's session doesn't go stale.
      */
     open suspend fun sendStoppedSharing(pausedFriendIds: Set<String> = emptySet()) {
-        coroutineScope {
-            val ts = currentTimeSeconds()
-            val payload = MessagePlaintext.StoppedSharing(ts = ts)
-            val activeFriends = store.listFriends().filter { it.id !in pausedFriendIds && !it.isStale }
-            val deferreds =
-                activeFriends.map { friend ->
-                    async {
-                        try {
-                            val mutex = getFriendMutex(friend.id)
-                            mutex.withLock {
-                                sendMessageToFriendInternal(friend.id, payload)
-                            }
-                        } catch (e: CancellationException) {
-                            throw e
-                        } catch (_: Exception) {
-                            // ignore per-friend failures
-                        }
-                    }
-                }
-            deferreds.awaitAll()
-        }
+        val payload = MessagePlaintext.StoppedSharing(ts = currentTimeSeconds())
+        val activeFriends = store.listFriends().filter { isActiveFriend(it, pausedFriendIds) }
+        forEachFriendParallel(activeFriends) { friend -> sendMessageToFriendInternal(friend.id, payload) }
     }
 
     /**
@@ -481,6 +533,27 @@ open class LocationClient(
         }
     }
 
+    /**
+     * RECOVERY (§5.3): send a keepalive to every active (non-paused, non-stale) friend, e.g. when
+     * we have no GPS fix but are still sharing. Uses the same unresponsive-friend throttle as
+     * [sendLocation] so a silent friend doesn't get spammed every RECOVERY cycle, and skips
+     * friends with a non-empty outbox - a pending Location/Keepalive already covers this cycle's
+     * "let them know we're still there" duty, so generating a redundant Keepalive on top of it
+     * would just be belt-and-suspenders traffic.
+     */
+    suspend fun sendRecoveryKeepalives(pausedFriendIds: Set<String> = emptySet()) {
+        val now = currentTimeSeconds()
+        val activeFriends =
+            store.listFriends().filter {
+                isActiveFriend(it, pausedFriendIds) && isSendDueForUnresponsiveFriend(it, now)
+            }
+        forEachFriendParallel(activeFriends) { friend ->
+            if (store.getOutbox(friend.id).isEmpty()) {
+                sendMessageToFriendInternal(friend.id, MessagePlaintext.Keepalive())
+            }
+        }
+    }
+
     private suspend fun sendMessageToFriendInternal(
         friendId: String,
         payload: MessagePlaintext,
@@ -491,6 +564,9 @@ open class LocationClient(
         // still-stuck message propagates straight out of this function - callers (ultimately
         // LocationService.sendLocationIfNeeded) see the real failure instead of a silent
         // false success, and we never reach encryptAndAdvance() below for a new payload.
+        // This read is authoritative and must happen under getFriendMutex (held by our caller) -
+        // deliberately NOT reused from sendLocation()'s filter, which runs unlocked and can race
+        // with a concurrent poll()/keepalive enqueueing into this friend's outbox.
         if (store.getOutbox(friendId).isNotEmpty()) {
             processOutbox(friendId)
         }

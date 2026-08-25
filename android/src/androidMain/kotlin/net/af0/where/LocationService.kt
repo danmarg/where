@@ -246,7 +246,10 @@ class LocationService : Service() {
                     serviceScope.launch {
                         try {
                             try {
-                                locationClient.syncNow()
+                                locationClient.syncNow(
+                                    pausedFriendIds = userStore.effectivelyPausedIds(),
+                                    sharingEnabled = userStore.isSharingLocation.value,
+                                )
                                 logReliability(WakeSource.NETWORK, true)
                             } catch (e: CancellationException) {
                                 throw e
@@ -632,19 +635,21 @@ class LocationService : Service() {
                     // Force the heartbeat send. The pollLoop timing (5 mins) is already
                     // what we want for stationary updates, and 'force' ensures we bypass
                     // the internal 5-min de-duplication check which might be too tight.
+                    // Note: 'force' only bypasses this service-level dedup check, not
+                    // LocationClient.sendLocation()'s per-friend unresponsive-friend throttle -
+                    // a heartbeat to a friend who hasn't been heard from in 5 min is still
+                    // throttled the same as a regular send (intentional: no point forcing a
+                    // heartbeat to someone not reading either).
                     sendLocationIfNeeded(lastLoc.first, lastLoc.second, isHeartbeat = true, force = true, source = WakeSource.HEARTBEAT)
                 } else {
                     // RECOVERY (§5.3): If we have no GPS fix but are sharing, send a
                     // keepalive message to all active friends to keep the session alive
-                    // and let them know we're still there.
+                    // and let them know we're still there. Throttling (so an unresponsive
+                    // friend isn't spammed every RECOVERY cycle) and the outbox-redundancy
+                    // check live in LocationClient.sendRecoveryKeepalives, shared with
+                    // sendLocation()'s per-friend throttle.
                     try {
-                        val activeFriends =
-                            e2eeManager.listFriends().filter {
-                                it.id !in userStore.effectivelyPausedIds() && !it.isStale
-                            }
-                        for (friend in activeFriends) {
-                            locationClient.sendKeepalive(friend.id)
-                        }
+                        locationClient.sendRecoveryKeepalives(userStore.effectivelyPausedIds())
                         lastSentTime = now
                         logReliability(WakeSource.HEARTBEAT, true)
                     } catch (_: Exception) {
@@ -731,6 +736,7 @@ class LocationService : Service() {
                 locationClient.poll(
                     isForeground = locationSource.isAppInForeground.value,
                     pausedFriendIds = userStore.effectivelyPausedIds(),
+                    sharingEnabled = userStore.isSharingLocation.value,
                 )
             Log.d(TAG, "Got ${updates.size} location updates")
             withContext(Dispatchers.Main) {
