@@ -14,7 +14,6 @@ import kotlin.test.assertTrue
  * connection-status reporting depend on the exception actually propagating.
  */
 class OutboxFailurePropagationTest {
-
     init {
         initializeE2eeTests()
     }

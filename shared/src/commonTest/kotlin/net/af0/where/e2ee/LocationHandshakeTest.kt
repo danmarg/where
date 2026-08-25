@@ -6,7 +6,6 @@ import kotlin.test.*
 class LocationHandshakeTest {
     private val mailbox = MemoryMailboxClient()
 
-
     init {
         initializeE2eeTests()
     }

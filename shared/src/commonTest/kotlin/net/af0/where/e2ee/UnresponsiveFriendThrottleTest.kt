@@ -22,7 +22,6 @@ import kotlin.test.assertTrue
  */
 @OptIn(ExperimentalCoroutinesApi::class)
 class UnresponsiveFriendThrottleTest {
-
     init {
         initializeE2eeTests()
     }
