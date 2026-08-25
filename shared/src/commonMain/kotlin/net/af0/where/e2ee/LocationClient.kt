@@ -29,6 +29,22 @@ open class LocationClient(
 
     private val service = MailboxService(baseUrl, mailbox)
 
+    // Sending fresh GPS fixes every 30s is wasted radio/battery/server-write cost if this
+    // friend's client isn't alive to read them - automated keepalives (§5.3) mean any live
+    // client sends us *something* at least every UNRESPONSIVE_THRESHOLD_SECONDS regardless of
+    // their own sharing state, so silence beyond that is a reasonable proxy for "not currently
+    // reading." Throttle to UNRESPONSIVE_SEND_INTERVAL_SECONDS instead of stopping entirely -
+    // self-heals the moment they send anything (lastRecvTs updates, next call sees it fresh, no
+    // separate recovery/cooldown logic needed). Shared by sendLocation()'s activeFriends filter
+    // and sendRecoveryKeepalives() so the two throttle cadences can't drift apart.
+    private fun isSendDueForUnresponsiveFriend(
+        friend: FriendEntry,
+        now: Long,
+    ): Boolean {
+        val unresponsive = now - friend.lastRecvTs >= UNRESPONSIVE_THRESHOLD_SECONDS
+        return !unresponsive || now - friend.lastSentTs >= UNRESPONSIVE_SEND_INTERVAL_SECONDS
+    }
+
     private val friendMutexes = mutableMapOf<String, Mutex>()
     private val silentDropRetries = mutableMapOf<String, Int>()
     private val mutexLock = Mutex()
@@ -442,16 +458,7 @@ open class LocationClient(
                             ) {
                                 true
                             } else {
-                                // Sending fresh GPS fixes every 30s is wasted radio/battery/server-write cost
-                                // if this friend's client isn't alive to read them - automated keepalives
-                                // (§5.3) mean any live client sends us *something* at least every
-                                // UNRESPONSIVE_THRESHOLD_SECONDS regardless of their own sharing state, so
-                                // silence beyond that is a reasonable proxy for "not currently reading."
-                                // Throttle to UNRESPONSIVE_SEND_INTERVAL_SECONDS instead of stopping entirely
-                                // - self-heals the moment they send anything (lastRecvTs updates, next call
-                                // sees it fresh, no separate recovery/cooldown logic needed).
-                                val unresponsive = now - friend.lastRecvTs >= UNRESPONSIVE_THRESHOLD_SECONDS
-                                !unresponsive || now - friend.lastSentTs >= UNRESPONSIVE_SEND_INTERVAL_SECONDS
+                                isSendDueForUnresponsiveFriend(friend, now)
                             }
                         friend to isActive
                     }
@@ -547,6 +554,40 @@ open class LocationClient(
         val mutex = getFriendMutex(friendId)
         mutex.withLock {
             sendMessageToFriendInternal(friendId, MessagePlaintext.Keepalive())
+        }
+    }
+
+    /**
+     * RECOVERY (§5.3): send a keepalive to every active (non-paused, non-stale) friend, e.g. when
+     * we have no GPS fix but are still sharing. Uses the same unresponsive-friend throttle as
+     * [sendLocation] so a silent friend doesn't get spammed every RECOVERY cycle, and skips
+     * friends with a non-empty outbox - a pending Location/Keepalive already covers this cycle's
+     * "let them know we're still there" duty, so generating a redundant Keepalive on top of it
+     * would just be belt-and-suspenders traffic.
+     */
+    suspend fun sendRecoveryKeepalives(pausedFriendIds: Set<String> = emptySet()) {
+        coroutineScope {
+            val now = currentTimeSeconds()
+            val activeFriends =
+                store.listFriends().filter {
+                    it.id !in pausedFriendIds && !it.isStale && isSendDueForUnresponsiveFriend(it, now)
+                }
+            activeFriends.map { friend ->
+                async {
+                    try {
+                        val mutex = getFriendMutex(friend.id)
+                        mutex.withLock {
+                            if (store.getOutbox(friend.id).isEmpty()) {
+                                sendMessageToFriendInternal(friend.id, MessagePlaintext.Keepalive())
+                            }
+                        }
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (_: Exception) {
+                        // ignore per-friend failures
+                    }
+                }
+            }.awaitAll()
         }
     }
 
