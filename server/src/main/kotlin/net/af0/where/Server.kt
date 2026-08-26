@@ -18,6 +18,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonElement
@@ -922,6 +923,7 @@ class DualWriteMailboxState(
     // drain()/post() already filter on expires_at directly, so delaying the physical sweep is
     // correctness-neutral - only the row cleanup itself needs a much coarser cadence.
     private val secondaryEvictIntervalMs: Long = 30 * 60 * 1000L,
+    private val onMismatch: ((tokenHash: String, primaryCount: Int, secondaryCount: Int, onlyInPrimary: Int, onlyInSecondary: Int) -> Unit)? = null,
 ) : MailboxStore {
     private val lastSecondaryEvictAt = java.util.concurrent.atomic.AtomicLong(0)
 
@@ -1004,16 +1006,122 @@ class DualWriteMailboxState(
         if (primarySorted != secondarySorted) {
             val onlyInPrimary = primarySorted.toSet() - secondarySorted.toSet()
             val onlyInSecondary = secondarySorted.toSet() - primarySorted.toSet()
+            val hash = tokenHash(token)
             migrationLog.warn(
                 "drain mismatch token={} primaryCount={} secondaryCount={} onlyInPrimary={} onlyInSecondary={}",
-                tokenHash(token),
+                hash,
                 primarySorted.size,
                 secondarySorted.size,
                 onlyInPrimary.size,
                 onlyInSecondary.size,
             )
+            runCatching {
+                onMismatch?.invoke(hash, primarySorted.size, secondarySorted.size, onlyInPrimary.size, onlyInSecondary.size)
+            }.onFailure { migrationLog.warn("onMismatch callback failed", it) }
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Shadow-mismatch audit log (temporary — remove after DynamoDB cutover)
+// ---------------------------------------------------------------------------
+
+@Serializable
+data class MismatchRecord(
+    val timestamp: String,
+    val tokenHash: String,
+    val primaryCount: Int,
+    val secondaryCount: Int,
+    val onlyInPrimary: Int,
+    val onlyInSecondary: Int,
+)
+
+private val auditLog = LoggerFactory.getLogger("MismatchAuditLog")
+
+class MismatchAuditLog(
+    private val client: DynamoDbClient,
+    private val tableName: String = "where_shadow_mismatches",
+) {
+    init {
+        try {
+            client.describeTable { it.tableName(tableName) }
+        } catch (e: ResourceNotFoundException) {
+            try {
+                client.createTable(
+                    CreateTableRequest.builder()
+                        .tableName(tableName)
+                        .billingMode(BillingMode.PAY_PER_REQUEST)
+                        .attributeDefinitions(
+                            AttributeDefinition.builder().attributeName("pk").attributeType(ScalarAttributeType.S).build(),
+                            AttributeDefinition.builder().attributeName("sk").attributeType(ScalarAttributeType.S).build(),
+                        )
+                        .keySchema(
+                            KeySchemaElement.builder().attributeName("pk").keyType(KeyType.HASH).build(),
+                            KeySchemaElement.builder().attributeName("sk").keyType(KeyType.RANGE).build(),
+                        )
+                        .build(),
+                )
+                client.waiter().waitUntilTableExists { it.tableName(tableName) }
+                client.updateTimeToLive(
+                    UpdateTimeToLiveRequest.builder()
+                        .tableName(tableName)
+                        .timeToLiveSpecification(
+                            TimeToLiveSpecification.builder().attributeName("expiresAt").enabled(true).build(),
+                        )
+                        .build(),
+                )
+            } catch (e: ResourceInUseException) {
+                // Another process created it concurrently — fine.
+            }
+        }
+    }
+
+    fun record(tokenHash: String, primaryCount: Int, secondaryCount: Int, onlyInPrimary: Int, onlyInSecondary: Int) {
+        val now = java.time.Instant.now()
+        val sk = "${now}#${UUID.randomUUID().toString().take(8)}"
+        val expiresAt = now.epochSecond + 30L * 24 * 60 * 60
+        runCatching {
+            client.putItem(
+                PutItemRequest.builder()
+                    .tableName(tableName)
+                    .item(
+                        mapOf(
+                            "pk" to AttributeValue.fromS("mismatches"),
+                            "sk" to AttributeValue.fromS(sk),
+                            "tokenHash" to AttributeValue.fromS(tokenHash),
+                            "primaryCount" to AttributeValue.fromN(primaryCount.toString()),
+                            "secondaryCount" to AttributeValue.fromN(secondaryCount.toString()),
+                            "onlyInPrimary" to AttributeValue.fromN(onlyInPrimary.toString()),
+                            "onlyInSecondary" to AttributeValue.fromN(onlyInSecondary.toString()),
+                            "expiresAt" to AttributeValue.fromN(expiresAt.toString()),
+                        ),
+                    )
+                    .build(),
+            )
+        }.onFailure { auditLog.warn("Failed to record mismatch", it) }
+    }
+
+    fun queryRecent(limit: Int = 50): List<MismatchRecord> =
+        runCatching {
+            client.query(
+                QueryRequest.builder()
+                    .tableName(tableName)
+                    .keyConditionExpression("pk = :pk")
+                    .expressionAttributeValues(mapOf(":pk" to AttributeValue.fromS("mismatches")))
+                    .scanIndexForward(false)
+                    .limit(limit)
+                    .build(),
+            ).items().map { item ->
+                MismatchRecord(
+                    timestamp = item["sk"]!!.s().substringBefore('#'),
+                    tokenHash = item["tokenHash"]!!.s(),
+                    primaryCount = item["primaryCount"]!!.n().toInt(),
+                    secondaryCount = item["secondaryCount"]!!.n().toInt(),
+                    onlyInPrimary = item["onlyInPrimary"]!!.n().toInt(),
+                    onlyInSecondary = item["onlyInSecondary"]!!.n().toInt(),
+                )
+            }
+        }.getOrElse { auditLog.warn("Failed to query mismatches", it); emptyList() }
 }
 
 // ---------------------------------------------------------------------------
@@ -1024,9 +1132,8 @@ data class ServerState(
     val mailbox: MailboxStore = InMemoryMailboxState(),
     val trustProxy: Boolean = System.getenv("TRUST_PROXY")?.toBoolean() ?: false,
     val debug: Boolean = false,
+    val mismatchAuditLog: MismatchAuditLog? = null,
 )
-
-private data class DynamoConfig(val accessKeyId: String, val secretAccessKey: String, val region: String)
 
 /**
  * "redis" / "dynamodb": that store alone.
@@ -1036,23 +1143,19 @@ private data class DynamoConfig(val accessKeyId: String, val secretAccessKey: St
  */
 private fun buildMailboxStore(
     redisUrl: String?,
-    dynamoConfig: DynamoConfig?,
+    dynamoClient: DynamoDbClient?,
     storeMode: String,
+    onMismatch: ((String, Int, Int, Int, Int) -> Unit)? = null,
 ): MailboxStore {
     val redisStore = redisUrl?.let { RedisMailboxState(JedisPooled(it)) }
-    val dynamoStore =
-        dynamoConfig?.let {
-            DynamoMailboxState(createDynamoDbClient(it.accessKeyId, it.secretAccessKey, it.region))
-        }
+    val dynamoStore = dynamoClient?.let { DynamoMailboxState(it) }
 
     return when (storeMode) {
         "redis" ->
             redisStore?.also { println("Using Redis at ${URI(redisUrl).host}") }
                 ?: InMemoryMailboxState().also { println("Using in-memory store") }
         "dynamodb" -> {
-            requireNotNull(
-                dynamoStore,
-            ) { "AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY/AWS_REGION are required for MAILBOX_STORE_MODE=dynamodb" }
+            requireNotNull(dynamoStore) { "AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY/AWS_REGION are required for MAILBOX_STORE_MODE=dynamodb" }
             println("Using DynamoDB store")
             dynamoStore
         }
@@ -1060,15 +1163,13 @@ private fun buildMailboxStore(
             requireNotNull(redisStore) { "REDIS_URL is required for dual-write-redis-primary" }
             requireNotNull(dynamoStore) { "AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY/AWS_REGION are required for dual-write-redis-primary" }
             println("Using dual-write store (Redis primary, DynamoDB shadow)")
-            DualWriteMailboxState(primary = redisStore, secondary = dynamoStore)
+            DualWriteMailboxState(primary = redisStore, secondary = dynamoStore, onMismatch = onMismatch)
         }
         "dual-write-dynamodb-primary" -> {
             requireNotNull(redisStore) { "REDIS_URL is required for dual-write-dynamodb-primary" }
-            requireNotNull(
-                dynamoStore,
-            ) { "AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY/AWS_REGION are required for dual-write-dynamodb-primary" }
+            requireNotNull(dynamoStore) { "AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY/AWS_REGION are required for dual-write-dynamodb-primary" }
             println("Using dual-write store (DynamoDB primary, Redis shadow)")
-            DualWriteMailboxState(primary = dynamoStore, secondary = redisStore)
+            DualWriteMailboxState(primary = dynamoStore, secondary = redisStore, onMismatch = onMismatch)
         }
         else -> error("Unknown MAILBOX_STORE_MODE: $storeMode")
     }
@@ -1077,9 +1178,9 @@ private fun buildMailboxStore(
 fun main() {
     val port = System.getenv("PORT")?.toInt() ?: 8080
     val storeMode = System.getenv("MAILBOX_STORE_MODE") ?: "redis"
-    val dynamoConfig =
+    val dynamoClient =
         System.getenv("AWS_ACCESS_KEY_ID")?.let { accessKeyId ->
-            DynamoConfig(
+            createDynamoDbClient(
                 accessKeyId = accessKeyId,
                 secretAccessKey =
                     System.getenv("AWS_SECRET_ACCESS_KEY")
@@ -1087,8 +1188,11 @@ fun main() {
                 region = System.getenv("AWS_REGION") ?: error("AWS_REGION is required when AWS_ACCESS_KEY_ID is set"),
             )
         }
-    val mailbox = buildMailboxStore(System.getenv("REDIS_URL"), dynamoConfig, storeMode)
-    val state = ServerState(mailbox = mailbox)
+    val mismatchAuditLog = if (storeMode.startsWith("dual-write")) dynamoClient?.let { MismatchAuditLog(it) } else null
+    val mailbox = buildMailboxStore(System.getenv("REDIS_URL"), dynamoClient, storeMode, mismatchAuditLog?.let { log ->
+        { tokenHash, pc, sc, op, os -> log.record(tokenHash, pc, sc, op, os) }
+    })
+    val state = ServerState(mailbox = mailbox, mismatchAuditLog = mismatchAuditLog)
 
     embeddedServer(Netty, port = port, host = "0.0.0.0") {
         module(state)
@@ -1109,6 +1213,12 @@ fun Application.module(state: ServerState = ServerState()) {
 
     routing {
         get("/health") { call.respondText("ok") }
+
+        get("/debug/shadow-mismatches") {
+            val log = state.mismatchAuditLog
+                ?: return@get call.respond(HttpStatusCode.NotFound, "not in dual-write mode")
+            call.respondText(json.encodeToString(log.queryRecent()), ContentType.Application.Json)
+        }
 
         put("/inbox/{token}/{msgId}") {
             val token = call.parameters["token"] ?: return@put call.respond(HttpStatusCode.BadRequest)
