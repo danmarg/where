@@ -18,7 +18,6 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
-import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonElement
@@ -1026,16 +1025,6 @@ class DualWriteMailboxState(
 // Shadow-mismatch audit log (temporary — remove after DynamoDB cutover)
 // ---------------------------------------------------------------------------
 
-@Serializable
-data class MismatchRecord(
-    val timestamp: String,
-    val tokenHash: String,
-    val primaryCount: Int,
-    val secondaryCount: Int,
-    val onlyInPrimary: Int,
-    val onlyInSecondary: Int,
-)
-
 private val auditLog = LoggerFactory.getLogger("MismatchAuditLog")
 
 class MismatchAuditLog(
@@ -1044,41 +1033,53 @@ class MismatchAuditLog(
 ) {
     init {
         try {
-            client.describeTable { it.tableName(tableName) }
-        } catch (e: ResourceNotFoundException) {
-            try {
-                client.createTable(
-                    CreateTableRequest.builder()
-                        .tableName(tableName)
-                        .billingMode(BillingMode.PAY_PER_REQUEST)
-                        .attributeDefinitions(
-                            AttributeDefinition.builder().attributeName("pk").attributeType(ScalarAttributeType.S).build(),
-                            AttributeDefinition.builder().attributeName("sk").attributeType(ScalarAttributeType.S).build(),
-                        )
-                        .keySchema(
-                            KeySchemaElement.builder().attributeName("pk").keyType(KeyType.HASH).build(),
-                            KeySchemaElement.builder().attributeName("sk").keyType(KeyType.RANGE).build(),
-                        )
-                        .build(),
-                )
-                client.waiter().waitUntilTableExists { it.tableName(tableName) }
-                client.updateTimeToLive(
-                    UpdateTimeToLiveRequest.builder()
-                        .tableName(tableName)
-                        .timeToLiveSpecification(
-                            TimeToLiveSpecification.builder().attributeName("expiresAt").enabled(true).build(),
-                        )
-                        .build(),
-                )
-            } catch (e: ResourceInUseException) {
-                // Another process created it concurrently — fine.
-            }
+            ensureTable()
+        } catch (e: Exception) {
+            auditLog.warn("Failed to set up mismatch audit table; mismatch recording will be best-effort", e)
         }
+    }
+
+    private fun ensureTable() {
+        try {
+            client.describeTable { it.tableName(tableName) }
+            return
+        } catch (e: ResourceNotFoundException) {
+            // Falls through to create below.
+        }
+        try {
+            client.createTable(
+                CreateTableRequest.builder()
+                    .tableName(tableName)
+                    .billingMode(BillingMode.PAY_PER_REQUEST)
+                    .attributeDefinitions(
+                        AttributeDefinition.builder().attributeName("pk").attributeType(ScalarAttributeType.S).build(),
+                        AttributeDefinition.builder().attributeName("sk").attributeType(ScalarAttributeType.S).build(),
+                    )
+                    .keySchema(
+                        KeySchemaElement.builder().attributeName("pk").keyType(KeyType.HASH).build(),
+                        KeySchemaElement.builder().attributeName("sk").keyType(KeyType.RANGE).build(),
+                    )
+                    .build(),
+            )
+        } catch (e: ResourceInUseException) {
+            // Another process/run already created it between our describeTable and createTable -
+            // fall through to the waiter below, which is safe to call either way.
+        }
+        client.waiter().waitUntilTableExists { it.tableName(tableName) }
+        client.updateTimeToLive(
+            UpdateTimeToLiveRequest.builder()
+                .tableName(tableName)
+                .timeToLiveSpecification(
+                    TimeToLiveSpecification.builder().attributeName("expiresAt").enabled(true).build(),
+                )
+                .build(),
+        )
     }
 
     fun record(tokenHash: String, primaryCount: Int, secondaryCount: Int, onlyInPrimary: Int, onlyInSecondary: Int) {
         val now = java.time.Instant.now()
-        val sk = "${now}#${UUID.randomUUID().toString().take(8)}"
+        val sortableTimestamp = "%019d.%09d".format(now.epochSecond, now.nano)
+        val sk = "$sortableTimestamp#${UUID.randomUUID().toString().take(8)}"
         val expiresAt = now.epochSecond + 30L * 24 * 60 * 60
         runCatching {
             client.putItem(
@@ -1100,28 +1101,6 @@ class MismatchAuditLog(
             )
         }.onFailure { auditLog.warn("Failed to record mismatch", it) }
     }
-
-    fun queryRecent(limit: Int = 50): List<MismatchRecord> =
-        runCatching {
-            client.query(
-                QueryRequest.builder()
-                    .tableName(tableName)
-                    .keyConditionExpression("pk = :pk")
-                    .expressionAttributeValues(mapOf(":pk" to AttributeValue.fromS("mismatches")))
-                    .scanIndexForward(false)
-                    .limit(limit)
-                    .build(),
-            ).items().map { item ->
-                MismatchRecord(
-                    timestamp = item["sk"]!!.s().substringBefore('#'),
-                    tokenHash = item["tokenHash"]!!.s(),
-                    primaryCount = item["primaryCount"]!!.n().toInt(),
-                    secondaryCount = item["secondaryCount"]!!.n().toInt(),
-                    onlyInPrimary = item["onlyInPrimary"]!!.n().toInt(),
-                    onlyInSecondary = item["onlyInSecondary"]!!.n().toInt(),
-                )
-            }
-        }.getOrElse { auditLog.warn("Failed to query mismatches", it); emptyList() }
 }
 
 // ---------------------------------------------------------------------------
@@ -1213,12 +1192,6 @@ fun Application.module(state: ServerState = ServerState()) {
 
     routing {
         get("/health") { call.respondText("ok") }
-
-        get("/debug/shadow-mismatches") {
-            val log = state.mismatchAuditLog
-                ?: return@get call.respond(HttpStatusCode.NotFound, "not in dual-write mode")
-            call.respondText(json.encodeToString(log.queryRecent()), ContentType.Application.Json)
-        }
 
         put("/inbox/{token}/{msgId}") {
             val token = call.parameters["token"] ?: return@put call.respond(HttpStatusCode.BadRequest)
