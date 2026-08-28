@@ -191,6 +191,40 @@ class DualWriteMailboxStateTest {
     }
 
     @Test
+    fun `onMismatch fires with the correct counts on a drain mismatch`() {
+        val primary = FakeMailboxStore()
+        val secondary = FakeMailboxStore()
+        val events = mutableListOf<MismatchEvent>()
+        val dual = DualWriteMailboxState(primary, secondary, testScope, onMismatch = { events.add(it) })
+
+        primary.post("token", JsonPrimitive("primary-only"), "msg-1")
+        secondary.post("token", JsonPrimitive("secondary-only"), "msg-2")
+
+        dual.drain("token")
+
+        assertEquals(1, events.size)
+        val event = events.single()
+        assertEquals(1, event.primaryCount)
+        assertEquals(1, event.secondaryCount)
+        assertEquals(1, event.onlyInPrimary)
+        assertEquals(1, event.onlyInSecondary)
+        assertTrue(event.tokenHash.isNotBlank())
+    }
+
+    @Test
+    fun `onMismatch is not invoked when primary and secondary agree`() {
+        val primary = FakeMailboxStore()
+        val secondary = FakeMailboxStore()
+        val events = mutableListOf<MismatchEvent>()
+        val dual = DualWriteMailboxState(primary, secondary, testScope, onMismatch = { events.add(it) })
+
+        dual.post("token", JsonPrimitive("msg"), "msg-1")
+        dual.drain("token")
+
+        assertTrue(events.isEmpty())
+    }
+
+    @Test
     fun `mirrored deletes prevent false-positive mismatches`() {
         // Regression guard: if deletes were only applied to primary (not mirrored to secondary),
         // every subsequent drain() comparison would show a permanent false-positive mismatch once

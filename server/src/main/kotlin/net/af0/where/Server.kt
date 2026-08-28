@@ -1,6 +1,14 @@
 package net.af0.where
 
+import io.ktor.client.HttpClient
+import io.ktor.client.engine.HttpClientEngine
+import io.ktor.client.engine.cio.CIO
+import io.ktor.client.plugins.HttpTimeout
+import io.ktor.client.request.basicAuth
+import io.ktor.client.request.post
+import io.ktor.client.request.setBody
 import io.ktor.http.*
+import io.ktor.http.content.TextContent
 import io.ktor.serialization.kotlinx.json.*
 import io.ktor.server.application.*
 import io.ktor.server.engine.*
@@ -15,9 +23,11 @@ import io.ktor.server.routing.delete
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonElement
@@ -909,6 +919,15 @@ private fun tokenHash(token: String): String =
  * Postgres as secondary first, then flip once confident. "Zero WARN logs from this class" is the
  * proof of parity.
  */
+@Serializable
+data class MismatchEvent(
+    val tokenHash: String,
+    val primaryCount: Int,
+    val secondaryCount: Int,
+    val onlyInPrimary: Int,
+    val onlyInSecondary: Int,
+)
+
 class DualWriteMailboxState(
     private val primary: MailboxStore,
     private val secondary: MailboxStore,
@@ -922,6 +941,7 @@ class DualWriteMailboxState(
     // drain()/post() already filter on expires_at directly, so delaying the physical sweep is
     // correctness-neutral - only the row cleanup itself needs a much coarser cadence.
     private val secondaryEvictIntervalMs: Long = 30 * 60 * 1000L,
+    private val onMismatch: ((MismatchEvent) -> Unit)? = null,
 ) : MailboxStore {
     private val lastSecondaryEvictAt = java.util.concurrent.atomic.AtomicLong(0)
 
@@ -1004,15 +1024,104 @@ class DualWriteMailboxState(
         if (primarySorted != secondarySorted) {
             val onlyInPrimary = primarySorted.toSet() - secondarySorted.toSet()
             val onlyInSecondary = secondarySorted.toSet() - primarySorted.toSet()
+            val hash = tokenHash(token)
             migrationLog.warn(
                 "drain mismatch token={} primaryCount={} secondaryCount={} onlyInPrimary={} onlyInSecondary={}",
-                tokenHash(token),
+                hash,
                 primarySorted.size,
                 secondarySorted.size,
                 onlyInPrimary.size,
                 onlyInSecondary.size,
             )
+            runCatching {
+                onMismatch?.invoke(
+                    MismatchEvent(hash, primarySorted.size, secondarySorted.size, onlyInPrimary.size, onlyInSecondary.size),
+                )
+            }.onFailure { migrationLog.warn("onMismatch callback failed", it) }
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Shadow-mismatch audit log (temporary — remove after DynamoDB cutover)
+// ---------------------------------------------------------------------------
+
+private val auditLog = LoggerFactory.getLogger("MismatchAuditLog")
+
+@Serializable
+private data class LokiStream(val stream: Map<String, String>, val values: List<List<String>>)
+
+@Serializable
+private data class LokiPushRequest(val streams: List<LokiStream>)
+
+/**
+ * Pushes shadow-write mismatch events to Grafana Cloud Loki (push API: POST
+ * {lokiUrl}/loki/api/v1/push, basic auth with the Grafana Cloud stack user + API key). Best
+ * effort: a failed push only logs a warning here and never affects the request path - the
+ * mismatch is always visible in [migrationLog]'s warn line regardless.
+ */
+class MismatchAuditLog(
+    lokiUrl: String,
+    private val user: String,
+    private val apiKey: String,
+    engine: HttpClientEngine = CIO.create(),
+    // Bounded like DualWriteMailboxState's own mirror scope, so a mismatch storm can't fan out
+    // unbounded coroutines competing with the mailbox stores for the shared IO thread pool.
+    private val scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO.limitedParallelism(4)),
+    private val pushStartupHeartbeat: Boolean = true,
+) {
+    // Loki's push endpoint 404s on a double slash, which a trailing "/" in the configured URL
+    // would otherwise produce silently.
+    private val pushUrl = "${lokiUrl.trimEnd('/')}/loki/api/v1/push"
+
+    private val client =
+        HttpClient(engine) {
+            install(HttpTimeout) {
+                requestTimeoutMillis = 5_000
+                connectTimeoutMillis = 5_000
+            }
+        }
+
+    init {
+        if (pushStartupHeartbeat) {
+            pushLine("startup", "server booted with shadow-mismatch logging enabled")
+        }
+    }
+
+    fun record(event: MismatchEvent) {
+        pushLine("shadow_mismatch", Json.encodeToString(event))
+    }
+
+    private fun pushLine(
+        event: String,
+        line: String,
+    ) {
+        val nowNanos = java.time.Instant.now().let { it.epochSecond * 1_000_000_000L + it.nano }
+        val body =
+            LokiPushRequest(
+                streams =
+                    listOf(
+                        LokiStream(
+                            stream = mapOf("app" to "where-server", "event" to event),
+                            values = listOf(listOf(nowNanos.toString(), line)),
+                        ),
+                    ),
+            )
+        scope.launch {
+            runCatching {
+                val response =
+                    client.post(pushUrl) {
+                        basicAuth(user, apiKey)
+                        setBody(TextContent(Json.encodeToString(body), ContentType.Application.Json))
+                    }
+                check(response.status.isSuccess()) { "Loki push returned ${response.status}" }
+            }.onFailure { auditLog.warn("Failed to push '{}' to Loki", event, it) }
+        }
+    }
+
+    fun close() {
+        scope.cancel()
+        client.close()
     }
 }
 
@@ -1024,9 +1133,8 @@ data class ServerState(
     val mailbox: MailboxStore = InMemoryMailboxState(),
     val trustProxy: Boolean = System.getenv("TRUST_PROXY")?.toBoolean() ?: false,
     val debug: Boolean = false,
+    val mismatchAuditLog: MismatchAuditLog? = null,
 )
-
-private data class DynamoConfig(val accessKeyId: String, val secretAccessKey: String, val region: String)
 
 /**
  * "redis" / "dynamodb": that store alone.
@@ -1036,14 +1144,12 @@ private data class DynamoConfig(val accessKeyId: String, val secretAccessKey: St
  */
 private fun buildMailboxStore(
     redisUrl: String?,
-    dynamoConfig: DynamoConfig?,
+    dynamoClient: DynamoDbClient?,
     storeMode: String,
+    onMismatch: ((MismatchEvent) -> Unit)? = null,
 ): MailboxStore {
     val redisStore = redisUrl?.let { RedisMailboxState(JedisPooled(it)) }
-    val dynamoStore =
-        dynamoConfig?.let {
-            DynamoMailboxState(createDynamoDbClient(it.accessKeyId, it.secretAccessKey, it.region))
-        }
+    val dynamoStore = dynamoClient?.let { DynamoMailboxState(it) }
 
     return when (storeMode) {
         "redis" ->
@@ -1060,7 +1166,7 @@ private fun buildMailboxStore(
             requireNotNull(redisStore) { "REDIS_URL is required for dual-write-redis-primary" }
             requireNotNull(dynamoStore) { "AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY/AWS_REGION are required for dual-write-redis-primary" }
             println("Using dual-write store (Redis primary, DynamoDB shadow)")
-            DualWriteMailboxState(primary = redisStore, secondary = dynamoStore)
+            DualWriteMailboxState(primary = redisStore, secondary = dynamoStore, onMismatch = onMismatch)
         }
         "dual-write-dynamodb-primary" -> {
             requireNotNull(redisStore) { "REDIS_URL is required for dual-write-dynamodb-primary" }
@@ -1068,7 +1174,7 @@ private fun buildMailboxStore(
                 dynamoStore,
             ) { "AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY/AWS_REGION are required for dual-write-dynamodb-primary" }
             println("Using dual-write store (DynamoDB primary, Redis shadow)")
-            DualWriteMailboxState(primary = dynamoStore, secondary = redisStore)
+            DualWriteMailboxState(primary = dynamoStore, secondary = redisStore, onMismatch = onMismatch)
         }
         else -> error("Unknown MAILBOX_STORE_MODE: $storeMode")
     }
@@ -1077,9 +1183,9 @@ private fun buildMailboxStore(
 fun main() {
     val port = System.getenv("PORT")?.toInt() ?: 8080
     val storeMode = System.getenv("MAILBOX_STORE_MODE") ?: "redis"
-    val dynamoConfig =
+    val dynamoClient =
         System.getenv("AWS_ACCESS_KEY_ID")?.let { accessKeyId ->
-            DynamoConfig(
+            createDynamoDbClient(
                 accessKeyId = accessKeyId,
                 secretAccessKey =
                     System.getenv("AWS_SECRET_ACCESS_KEY")
@@ -1087,8 +1193,23 @@ fun main() {
                 region = System.getenv("AWS_REGION") ?: error("AWS_REGION is required when AWS_ACCESS_KEY_ID is set"),
             )
         }
-    val mailbox = buildMailboxStore(System.getenv("REDIS_URL"), dynamoConfig, storeMode)
-    val state = ServerState(mailbox = mailbox)
+    val mismatchAuditLog =
+        if (storeMode.startsWith("dual-write")) {
+            val lokiUrl = System.getenv("LOKI_URL")
+            val lokiUser = System.getenv("LOKI_USER")
+            val lokiApiKey = System.getenv("LOKI_API_KEY")
+            if (lokiUrl != null && lokiUser != null && lokiApiKey != null) {
+                MismatchAuditLog(lokiUrl, lokiUser, lokiApiKey)
+            } else {
+                auditLog.warn("LOKI_URL/LOKI_USER/LOKI_API_KEY not set; shadow mismatches will only appear in warn logs")
+                null
+            }
+        } else {
+            null
+        }
+    val mailbox =
+        buildMailboxStore(System.getenv("REDIS_URL"), dynamoClient, storeMode, mismatchAuditLog?.let { it::record })
+    val state = ServerState(mailbox = mailbox, mismatchAuditLog = mismatchAuditLog)
 
     embeddedServer(Netty, port = port, host = "0.0.0.0") {
         module(state)
@@ -1098,7 +1219,10 @@ fun main() {
 fun Application.module(state: ServerState = ServerState()) {
     install(ContentNegotiation) { json(json) }
     install(CallLogging)
-    monitor.subscribe(ApplicationStopped) { state.mailbox.close() }
+    monitor.subscribe(ApplicationStopped) {
+        state.mailbox.close()
+        state.mismatchAuditLog?.close()
+    }
 
     launch(Dispatchers.Default) {
         while (isActive) {
