@@ -313,4 +313,56 @@ class UnresponsiveFriendThrottleTest {
             val delivered = bobClient.poll(isForeground = true, pausedFriendIds = emptySet())
             assertEquals(1, delivered.size, "must resume full cadence right away once the friend is heard from again")
         }
+
+    @Test
+    fun `sendLocation logs a diagnostic event when every active friend is throttled, not a silent no-op`() =
+        runTest {
+            // Regression test for #347: sendLocation() returns normally (no exception) when
+            // activeFriends is empty, so LocationService.sendLocationIfNeeded previously logged
+            // "OK" and cleared its status for a send that reached nobody. A friend being paused
+            // or there being no friends yet is expected and must stay silent; a friend being
+            // throttled as unresponsive is operationally interesting and must be visible.
+            val mailbox = MemoryMailboxClient()
+            setVirtualTime(1_700_000_000_000L)
+
+            val aliceDriver = createTestSqlDriver()
+            val aliceManager = testE2eeManager(aliceDriver)
+            val aliceClient = LocationClient("http://localhost", aliceManager, mailbox)
+            val bobClient = pairNewFriend(aliceManager, aliceClient, mailbox, "Bob")
+
+            bobClient.sendLocation(0.0, 0.0, emptySet())
+            aliceClient.poll(isForeground = true, pausedFriendIds = emptySet())
+
+            // Nothing logged yet - Bob is still responsive.
+            assertTrue(aliceManager.diagnosticLog.value.none { it.contains("throttled as unresponsive") })
+
+            advanceTimeBy(250_000L) // t=250s: still responsive, sets lastSentTs=250.
+            aliceClient.sendLocation(1.0, 1.0, emptySet())
+            assertTrue(aliceManager.diagnosticLog.value.none { it.contains("throttled as unresponsive") })
+
+            advanceTimeBy(60_000L) // t=310s: unresponsive, and not yet due for a throttled retry.
+            aliceClient.sendLocation(2.0, 2.0, emptySet())
+            assertTrue(
+                aliceManager.diagnosticLog.value.any { it.contains("throttled as unresponsive") },
+                "must surface that this send reached nobody, not report a silent success",
+            )
+        }
+
+    @Test
+    fun `sendLocation stays silent when there are simply no active friends`() =
+        runTest {
+            val mailbox = MemoryMailboxClient()
+            setVirtualTime(1_700_000_000_000L)
+
+            val aliceDriver = createTestSqlDriver()
+            val aliceManager = testE2eeManager(aliceDriver)
+            val aliceClient = LocationClient("http://localhost", aliceManager, mailbox)
+            val bobClient = pairNewFriend(aliceManager, aliceClient, mailbox, "Bob")
+            bobClient.sendLocation(0.0, 0.0, emptySet())
+            aliceClient.poll(isForeground = true, pausedFriendIds = emptySet())
+
+            // Bob is explicitly paused, not unresponsive - this is a normal, expected no-op.
+            aliceClient.sendLocation(1.0, 1.0, pausedFriendIds = aliceManager.listFriends().map { it.id }.toSet())
+            assertTrue(aliceManager.diagnosticLog.value.none { it.contains("throttled as unresponsive") })
+        }
 }
