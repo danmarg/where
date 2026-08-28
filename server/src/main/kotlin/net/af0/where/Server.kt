@@ -1084,7 +1084,10 @@ class MismatchAuditLog(
         pushLine("shadow_mismatch", Json.encodeToString(event))
     }
 
-    private fun pushLine(event: String, line: String) {
+    private fun pushLine(
+        event: String,
+        line: String,
+    ) {
         val nowNanos = java.time.Instant.now().let { it.epochSecond * 1_000_000_000L + it.nano }
         val body =
             LokiPushRequest(
@@ -1145,7 +1148,9 @@ private fun buildMailboxStore(
             redisStore?.also { println("Using Redis at ${URI(redisUrl).host}") }
                 ?: InMemoryMailboxState().also { println("Using in-memory store") }
         "dynamodb" -> {
-            requireNotNull(dynamoStore) { "AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY/AWS_REGION are required for MAILBOX_STORE_MODE=dynamodb" }
+            requireNotNull(
+                dynamoStore,
+            ) { "AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY/AWS_REGION are required for MAILBOX_STORE_MODE=dynamodb" }
             println("Using DynamoDB store")
             dynamoStore
         }
@@ -1157,7 +1162,9 @@ private fun buildMailboxStore(
         }
         "dual-write-dynamodb-primary" -> {
             requireNotNull(redisStore) { "REDIS_URL is required for dual-write-dynamodb-primary" }
-            requireNotNull(dynamoStore) { "AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY/AWS_REGION are required for dual-write-dynamodb-primary" }
+            requireNotNull(
+                dynamoStore,
+            ) { "AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY/AWS_REGION are required for dual-write-dynamodb-primary" }
             println("Using dual-write store (DynamoDB primary, Redis shadow)")
             DualWriteMailboxState(primary = dynamoStore, secondary = redisStore, onMismatch = onMismatch)
         }
