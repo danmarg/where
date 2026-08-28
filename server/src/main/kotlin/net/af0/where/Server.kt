@@ -1,6 +1,12 @@
 package net.af0.where
 
+import io.ktor.client.HttpClient
+import io.ktor.client.engine.cio.CIO
+import io.ktor.client.request.basicAuth
+import io.ktor.client.request.post
+import io.ktor.client.request.setBody
 import io.ktor.http.*
+import io.ktor.http.content.TextContent
 import io.ktor.serialization.kotlinx.json.*
 import io.ktor.server.application.*
 import io.ktor.server.engine.*
@@ -18,6 +24,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonElement
@@ -1027,79 +1034,71 @@ class DualWriteMailboxState(
 
 private val auditLog = LoggerFactory.getLogger("MismatchAuditLog")
 
-class MismatchAuditLog(
-    private val client: DynamoDbClient,
-    private val tableName: String = "where_shadow_mismatches",
-) {
-    init {
-        try {
-            ensureTable()
-        } catch (e: Exception) {
-            auditLog.warn("Failed to set up mismatch audit table; mismatch recording will be best-effort", e)
-        }
-    }
+@Serializable
+private data class MismatchLogLine(
+    val tokenHash: String,
+    val primaryCount: Int,
+    val secondaryCount: Int,
+    val onlyInPrimary: Int,
+    val onlyInSecondary: Int,
+)
 
-    private fun ensureTable() {
-        try {
-            client.describeTable { it.tableName(tableName) }
-            return
-        } catch (e: ResourceNotFoundException) {
-            // Falls through to create below.
-        }
-        try {
-            client.createTable(
-                CreateTableRequest.builder()
-                    .tableName(tableName)
-                    .billingMode(BillingMode.PAY_PER_REQUEST)
-                    .attributeDefinitions(
-                        AttributeDefinition.builder().attributeName("pk").attributeType(ScalarAttributeType.S).build(),
-                        AttributeDefinition.builder().attributeName("sk").attributeType(ScalarAttributeType.S).build(),
-                    )
-                    .keySchema(
-                        KeySchemaElement.builder().attributeName("pk").keyType(KeyType.HASH).build(),
-                        KeySchemaElement.builder().attributeName("sk").keyType(KeyType.RANGE).build(),
-                    )
-                    .build(),
-            )
-        } catch (e: ResourceInUseException) {
-            // Another process/run already created it between our describeTable and createTable -
-            // fall through to the waiter below, which is safe to call either way.
-        }
-        client.waiter().waitUntilTableExists { it.tableName(tableName) }
-        client.updateTimeToLive(
-            UpdateTimeToLiveRequest.builder()
-                .tableName(tableName)
-                .timeToLiveSpecification(
-                    TimeToLiveSpecification.builder().attributeName("expiresAt").enabled(true).build(),
-                )
-                .build(),
-        )
+@Serializable
+private data class LokiStream(val stream: Map<String, String>, val values: List<List<String>>)
+
+@Serializable
+private data class LokiPushRequest(val streams: List<LokiStream>)
+
+/**
+ * Pushes shadow-write mismatch events to Grafana Cloud Loki (push API: POST
+ * {lokiUrl}/loki/api/v1/push, basic auth with the Grafana Cloud stack user + API key). Best
+ * effort: a failed push only logs a warning here and never affects the request path - the
+ * mismatch is always visible in [migrationLog]'s warn line regardless.
+ */
+class MismatchAuditLog(
+    private val lokiUrl: String,
+    private val user: String,
+    private val apiKey: String,
+) {
+    private val client = HttpClient(CIO)
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
+    init {
+        pushLine("startup", "server booted with shadow-mismatch logging enabled")
     }
 
     fun record(tokenHash: String, primaryCount: Int, secondaryCount: Int, onlyInPrimary: Int, onlyInSecondary: Int) {
-        val now = java.time.Instant.now()
-        val sortableTimestamp = "%019d.%09d".format(now.epochSecond, now.nano)
-        val sk = "$sortableTimestamp#${UUID.randomUUID().toString().take(8)}"
-        val expiresAt = now.epochSecond + 30L * 24 * 60 * 60
-        runCatching {
-            client.putItem(
-                PutItemRequest.builder()
-                    .tableName(tableName)
-                    .item(
-                        mapOf(
-                            "pk" to AttributeValue.fromS("mismatches"),
-                            "sk" to AttributeValue.fromS(sk),
-                            "tokenHash" to AttributeValue.fromS(tokenHash),
-                            "primaryCount" to AttributeValue.fromN(primaryCount.toString()),
-                            "secondaryCount" to AttributeValue.fromN(secondaryCount.toString()),
-                            "onlyInPrimary" to AttributeValue.fromN(onlyInPrimary.toString()),
-                            "onlyInSecondary" to AttributeValue.fromN(onlyInSecondary.toString()),
-                            "expiresAt" to AttributeValue.fromN(expiresAt.toString()),
+        val line =
+            Json.encodeToString(MismatchLogLine(tokenHash, primaryCount, secondaryCount, onlyInPrimary, onlyInSecondary))
+        pushLine("shadow_mismatch", line)
+    }
+
+    private fun pushLine(event: String, line: String) {
+        val nowNanos = java.time.Instant.now().let { it.epochSecond * 1_000_000_000L + it.nano }
+        val body =
+            LokiPushRequest(
+                streams =
+                    listOf(
+                        LokiStream(
+                            stream = mapOf("app" to "where-server", "event" to event),
+                            values = listOf(listOf(nowNanos.toString(), line)),
                         ),
-                    )
-                    .build(),
+                    ),
             )
-        }.onFailure { auditLog.warn("Failed to record mismatch", it) }
+        scope.launch {
+            runCatching {
+                val response =
+                    client.post("$lokiUrl/loki/api/v1/push") {
+                        basicAuth(user, apiKey)
+                        setBody(TextContent(Json.encodeToString(body), ContentType.Application.Json))
+                    }
+                check(response.status.isSuccess()) { "Loki push returned ${response.status}" }
+            }.onFailure { auditLog.warn("Failed to push '{}' to Loki", event, it) }
+        }
+    }
+
+    fun close() {
+        client.close()
     }
 }
 
@@ -1167,7 +1166,20 @@ fun main() {
                 region = System.getenv("AWS_REGION") ?: error("AWS_REGION is required when AWS_ACCESS_KEY_ID is set"),
             )
         }
-    val mismatchAuditLog = if (storeMode.startsWith("dual-write")) dynamoClient?.let { MismatchAuditLog(it) } else null
+    val mismatchAuditLog =
+        if (storeMode.startsWith("dual-write")) {
+            val lokiUrl = System.getenv("LOKI_URL")
+            val lokiUser = System.getenv("LOKI_USER")
+            val lokiApiKey = System.getenv("LOKI_API_KEY")
+            if (lokiUrl != null && lokiUser != null && lokiApiKey != null) {
+                MismatchAuditLog(lokiUrl, lokiUser, lokiApiKey)
+            } else {
+                println("LOKI_URL/LOKI_USER/LOKI_API_KEY not set; shadow mismatches will only appear in warn logs")
+                null
+            }
+        } else {
+            null
+        }
     val mailbox = buildMailboxStore(System.getenv("REDIS_URL"), dynamoClient, storeMode, mismatchAuditLog?.let { log ->
         { tokenHash, pc, sc, op, os -> log.record(tokenHash, pc, sc, op, os) }
     })
@@ -1181,7 +1193,10 @@ fun main() {
 fun Application.module(state: ServerState = ServerState()) {
     install(ContentNegotiation) { json(json) }
     install(CallLogging)
-    monitor.subscribe(ApplicationStopped) { state.mailbox.close() }
+    monitor.subscribe(ApplicationStopped) {
+        state.mailbox.close()
+        state.mismatchAuditLog?.close()
+    }
 
     launch(Dispatchers.Default) {
         while (isActive) {
