@@ -1,6 +1,7 @@
 package net.af0.where
 
 import io.ktor.client.HttpClient
+import io.ktor.client.engine.HttpClientEngine
 import io.ktor.client.engine.cio.CIO
 import io.ktor.client.plugins.HttpTimeout
 import io.ktor.client.request.basicAuth
@@ -22,6 +23,7 @@ import io.ktor.server.routing.delete
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
@@ -1059,25 +1061,31 @@ private data class LokiPushRequest(val streams: List<LokiStream>)
  * mismatch is always visible in [migrationLog]'s warn line regardless.
  */
 class MismatchAuditLog(
-    private val lokiUrl: String,
+    lokiUrl: String,
     private val user: String,
     private val apiKey: String,
+    engine: HttpClientEngine = CIO.create(),
+    // Bounded like DualWriteMailboxState's own mirror scope, so a mismatch storm can't fan out
+    // unbounded coroutines competing with the mailbox stores for the shared IO thread pool.
+    private val scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO.limitedParallelism(4)),
+    private val pushStartupHeartbeat: Boolean = true,
 ) {
+    // Loki's push endpoint 404s on a double slash, which a trailing "/" in the configured URL
+    // would otherwise produce silently.
+    private val pushUrl = "${lokiUrl.trimEnd('/')}/loki/api/v1/push"
+
     private val client =
-        HttpClient(CIO) {
+        HttpClient(engine) {
             install(HttpTimeout) {
                 requestTimeoutMillis = 5_000
                 connectTimeoutMillis = 5_000
             }
         }
 
-    // Bounded like DualWriteMailboxState's own mirror scope, so a mismatch storm can't fan out
-    // unbounded coroutines competing with the mailbox stores for the shared IO thread pool.
-    private val job = SupervisorJob()
-    private val scope = CoroutineScope(job + Dispatchers.IO.limitedParallelism(4))
-
     init {
-        pushLine("startup", "server booted with shadow-mismatch logging enabled")
+        if (pushStartupHeartbeat) {
+            pushLine("startup", "server booted with shadow-mismatch logging enabled")
+        }
     }
 
     fun record(event: MismatchEvent) {
@@ -1102,7 +1110,7 @@ class MismatchAuditLog(
         scope.launch {
             runCatching {
                 val response =
-                    client.post("$lokiUrl/loki/api/v1/push") {
+                    client.post(pushUrl) {
                         basicAuth(user, apiKey)
                         setBody(TextContent(Json.encodeToString(body), ContentType.Application.Json))
                     }
@@ -1112,7 +1120,7 @@ class MismatchAuditLog(
     }
 
     fun close() {
-        job.cancel()
+        scope.cancel()
         client.close()
     }
 }
