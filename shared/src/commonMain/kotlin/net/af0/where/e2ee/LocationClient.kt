@@ -15,6 +15,20 @@ const val UNRESPONSIVE_THRESHOLD_SECONDS = 5 * 60L
 const val UNRESPONSIVE_SEND_INTERVAL_SECONDS = 5 * 60L
 
 /**
+ * How long an actively-shared friend must go without ANY send (real or keepalive) before
+ * pollFriend's automated keepalive treats it as a stalled heartbeat trigger and steps in - see
+ * pollFriend(). Deliberately several multiples of UNRESPONSIVE_SEND_INTERVAL_SECONDS: doPoll()
+ * (which runs pollFriend) always precedes the heartbeat's sendLocation() call within the same
+ * service wake cycle, so if this used the same interval as sendLocation's own unresponsive-friend
+ * retry throttle, the keepalive would win that race on every single cycle - resetting lastSentTs
+ * moments before sendLocation's check runs, so the throttled retry looks "not due yet" forever and
+ * a real Location never gets through to a friend who's merely unresponsive (not actually stalled).
+ * This must stay well outside sendLocation's normal retry cadence so a functioning heartbeat
+ * trigger always gets several clean chances before the backstop ever engages.
+ */
+const val AUTOMATED_KEEPALIVE_BACKSTOP_SECONDS = 3 * UNRESPONSIVE_SEND_INTERVAL_SECONDS
+
+/**
  * Orchestrates the end-to-end encrypted location sharing protocol.
  * Unifies polling, decryption, ratchet rotation, and sending for all platforms.
  */
@@ -322,32 +336,37 @@ open class LocationClient(
             if (friendAfter != null) {
                 val now = currentTimeSeconds()
 
-                // Automated Keepalive Rule: only when sendLocation() isn't the one responsible for
-                // this friend's traffic (isPaused - individually paused, or sharing off entirely).
-                // A friend we're actively sharing with never needs a keepalive on top: sendLocation's
-                // own cadence (including its unresponsive-friend throttle) already keeps them fed, and
-                // letting both fire independently is exactly the "who gets this slot" race this
-                // gate exists to avoid - a keepalive firing moments before a fresh location was about
-                // to go out would otherwise delay that real update by a full throttle interval.
-                //
-                // While paused, still throttle to UNRESPONSIVE_SEND_INTERVAL_SECONDS since our last
-                // send of ANYTHING (real or keepalive) - not more often. Deliberately independent of
-                // lastRecvTs/whether the friend is responsive - it must fire on the same cadence
-                // regardless of why we're not sending real content, so a passive observer of send
-                // timing can't distinguish "sharing paused/off" from "sharing but friend unresponsive"
-                // (§7.4/line 114 of the protocol spec - both are already bucketed together to prevent
-                // exactly this kind of traffic-analysis leak). It's also what lets a friend who only
-                // ever RECEIVES from us (never sends back) still periodically hear from us, instead of
-                // only firing when *they've* gone quiet - a one-way listener would otherwise never keep
-                // our lastRecvTs on their side fresh, and their record of this friendship would go
-                // stale after ACK_TIMEOUT_SECONDS. Evaluated opportunistically on whatever cadence this
-                // function is already called at (foreground polls, background location wake-ups) - no
-                // separate keepalive timer.
+                // Automated Keepalive Rule: two cases, on two different clocks off the same
+                // lastSentTs field.
+                //  - Paused/not-sharing: sendLocation() never sends this friend anything, so this
+                //    is the sole source of their traffic. Paced to UNRESPONSIVE_SEND_INTERVAL_SECONDS
+                //    (same cadence as sendLocation's own unresponsive-friend retry) so a passive
+                //    observer of send timing can't distinguish "sharing paused/off" from "sharing
+                //    but friend unresponsive" (§7.4/line 114 of the protocol spec - both
+                //    deliberately bucketed together to avoid a traffic-analysis leak). Also what
+                //    lets a one-way listener (who only receives, never sends back) still keep
+                //    hearing from us, so their session doesn't go stale after ACK_TIMEOUT_SECONDS.
+                //  - Actively sharing: sendLocation() is normally the sole source of this friend's
+                //    traffic, so the keepalive must stay out of its way entirely under normal
+                //    operation - it only exists as a backstop for when the platform-side trigger
+                //    that's supposed to call sendLocation() on a heartbeat cadence stalls or is
+                //    delayed for multiple cycles (e.g. a stuck background wake source leaving a
+                //    stationary device silent for hours - see the "here since" background-
+                //    triggering investigation). This MUST use a materially longer threshold
+                //    (AUTOMATED_KEEPALIVE_BACKSTOP_SECONDS) than sendLocation's own retry interval:
+                //    doPoll() (which runs pollFriend) always precedes the heartbeat's
+                //    sendLocation() call within the same service wake cycle, so if both used the
+                //    same threshold, this keepalive would win that race on every single cycle -
+                //    resetting lastSentTs moments before sendLocation's own throttle check runs,
+                //    permanently starving a merely-unresponsive (not actually stalled) friend of
+                //    real Location updates in favor of empty Keepalives, forever.
                 val weAreSilent = now - friendAfter.lastSentTs >= UNRESPONSIVE_SEND_INTERVAL_SECONDS
+                val heartbeatTriggerStalled = now - friendAfter.lastSentTs >= AUTOMATED_KEEPALIVE_BACKSTOP_SECONDS
 
                 // Check outbox to avoid redundant keepalives.
                 val dueForAutomatedKeepalive =
-                    enableAutomatedKeepalives && isPaused && weAreSilent &&
+                    enableAutomatedKeepalives &&
+                        (if (isPaused) weAreSilent else heartbeatTriggerStalled) &&
                         !friendAfter.isStale && friendAfter.isConfirmed &&
                         store.getOutbox(friendId).isEmpty()
 
