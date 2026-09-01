@@ -110,6 +110,7 @@ open class LocationClient(
                 try {
                     store.listFriends()
                 } catch (e: Exception) {
+                    store.addDiagnosticEvent("listFriends() failed, skipping poll cycle: ${e.message}")
                     emptyList()
                 }
 
@@ -247,6 +248,7 @@ open class LocationClient(
                     try {
                         service.poll(currentToken)
                     } catch (e: Exception) {
+                        store.addDiagnosticEvent("poll($friendId) failed on $currentToken: ${e.message}")
                         emptyList()
                     }
 
@@ -259,6 +261,7 @@ open class LocationClient(
                 try {
                     val result = store.processBatch(friendId, currentToken, messages)
                     if (result == null) {
+                        store.addDiagnosticEvent("processBatch($friendId) rejected ${messages.size} message(s) on $currentToken")
                         stopPolling = true
                         continue
                     }
@@ -315,6 +318,7 @@ open class LocationClient(
                         }
                     }
                 } catch (e: Exception) {
+                    store.addDiagnosticEvent("pollFriend($friendId) failed processing batch on $currentToken: ${e.message}")
                     stopPolling = true
                 }
             }
