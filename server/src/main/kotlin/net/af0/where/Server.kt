@@ -942,6 +942,12 @@ class DualWriteMailboxState(
     // correctness-neutral - only the row cleanup itself needs a much coarser cadence.
     private val secondaryEvictIntervalMs: Long = 30 * 60 * 1000L,
     private val onMismatch: ((MismatchEvent) -> Unit)? = null,
+    // Deletes against the secondary are best-effort like every other mirrored write here, but
+    // unlike a failed post/evict, a failed delete leaves a permanent ghost row behind (nothing
+    // ever retries it), which is exactly what drives the drain() shadow-comparison's mismatch
+    // rate - surfaced separately so that rate is visible without conflating it with genuine
+    // primary/secondary divergence.
+    private val onSecondaryDeleteFailure: ((op: String, tokenHash: String, error: Throwable) -> Unit)? = null,
 ) : MailboxStore {
     private val lastSecondaryEvictAt = java.util.concurrent.atomic.AtomicLong(0)
 
@@ -980,7 +986,11 @@ class DualWriteMailboxState(
         val result = primary.deleteById(token, msgId)
         scope.launch {
             runCatching { secondary.deleteById(token, msgId) }
-                .onFailure { migrationLog.warn("secondary deleteById failed token={}", tokenHash(token), it) }
+                .onFailure {
+                    migrationLog.warn("secondary deleteById failed token={}", tokenHash(token), it)
+                    runCatching { onSecondaryDeleteFailure?.invoke("deleteById", tokenHash(token), it) }
+                        .onFailure { cbError -> migrationLog.warn("onSecondaryDeleteFailure callback failed", cbError) }
+                }
         }
         return result
     }
@@ -993,7 +1003,11 @@ class DualWriteMailboxState(
         if (msgIds.isNotEmpty()) {
             scope.launch {
                 runCatching { secondary.deleteByIds(token, msgIds) }
-                    .onFailure { migrationLog.warn("secondary deleteByIds failed token={}", tokenHash(token), it) }
+                    .onFailure {
+                        migrationLog.warn("secondary deleteByIds failed token={}", tokenHash(token), it)
+                        runCatching { onSecondaryDeleteFailure?.invoke("deleteByIds", tokenHash(token), it) }
+                            .onFailure { cbError -> migrationLog.warn("onSecondaryDeleteFailure callback failed", cbError) }
+                    }
             }
         }
         return result
@@ -1049,6 +1063,13 @@ class DualWriteMailboxState(
 private val auditLog = LoggerFactory.getLogger("MismatchAuditLog")
 
 @Serializable
+data class SecondaryDeleteFailureEvent(
+    val op: String,
+    val tokenHash: String,
+    val error: String,
+)
+
+@Serializable
 private data class LokiStream(val stream: Map<String, String>, val values: List<List<String>>)
 
 @Serializable
@@ -1090,6 +1111,17 @@ class MismatchAuditLog(
 
     fun record(event: MismatchEvent) {
         pushLine("shadow_mismatch", Json.encodeToString(event))
+    }
+
+    fun recordSecondaryDeleteFailure(
+        op: String,
+        tokenHash: String,
+        error: Throwable,
+    ) {
+        pushLine(
+            "secondary_delete_failure",
+            Json.encodeToString(SecondaryDeleteFailureEvent(op, tokenHash, error.message ?: error.toString())),
+        )
     }
 
     private fun pushLine(
@@ -1147,6 +1179,7 @@ private fun buildMailboxStore(
     dynamoClient: DynamoDbClient?,
     storeMode: String,
     onMismatch: ((MismatchEvent) -> Unit)? = null,
+    onSecondaryDeleteFailure: ((op: String, tokenHash: String, error: Throwable) -> Unit)? = null,
 ): MailboxStore {
     val redisStore = redisUrl?.let { RedisMailboxState(JedisPooled(it)) }
     val dynamoStore = dynamoClient?.let { DynamoMailboxState(it) }
@@ -1166,7 +1199,12 @@ private fun buildMailboxStore(
             requireNotNull(redisStore) { "REDIS_URL is required for dual-write-redis-primary" }
             requireNotNull(dynamoStore) { "AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY/AWS_REGION are required for dual-write-redis-primary" }
             println("Using dual-write store (Redis primary, DynamoDB shadow)")
-            DualWriteMailboxState(primary = redisStore, secondary = dynamoStore, onMismatch = onMismatch)
+            DualWriteMailboxState(
+                primary = redisStore,
+                secondary = dynamoStore,
+                onMismatch = onMismatch,
+                onSecondaryDeleteFailure = onSecondaryDeleteFailure,
+            )
         }
         "dual-write-dynamodb-primary" -> {
             requireNotNull(redisStore) { "REDIS_URL is required for dual-write-dynamodb-primary" }
@@ -1174,7 +1212,12 @@ private fun buildMailboxStore(
                 dynamoStore,
             ) { "AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY/AWS_REGION are required for dual-write-dynamodb-primary" }
             println("Using dual-write store (DynamoDB primary, Redis shadow)")
-            DualWriteMailboxState(primary = dynamoStore, secondary = redisStore, onMismatch = onMismatch)
+            DualWriteMailboxState(
+                primary = dynamoStore,
+                secondary = redisStore,
+                onMismatch = onMismatch,
+                onSecondaryDeleteFailure = onSecondaryDeleteFailure,
+            )
         }
         else -> error("Unknown MAILBOX_STORE_MODE: $storeMode")
     }
@@ -1208,7 +1251,13 @@ fun main() {
             null
         }
     val mailbox =
-        buildMailboxStore(System.getenv("REDIS_URL"), dynamoClient, storeMode, mismatchAuditLog?.let { it::record })
+        buildMailboxStore(
+            System.getenv("REDIS_URL"),
+            dynamoClient,
+            storeMode,
+            onMismatch = mismatchAuditLog?.let { it::record },
+            onSecondaryDeleteFailure = mismatchAuditLog?.let { it::recordSecondaryDeleteFailure },
+        )
     val state = ServerState(mailbox = mailbox, mismatchAuditLog = mismatchAuditLog)
 
     embeddedServer(Netty, port = port, host = "0.0.0.0") {
