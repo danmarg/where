@@ -98,6 +98,31 @@ class MismatchAuditLogTest {
     }
 
     @Test
+    fun `successfully pushes a secondary delete failure event to Loki`() {
+        val latch = CountDownLatch(1)
+        var captured: HttpRequestData? = null
+        val engine =
+            MockEngine { request ->
+                captured = request
+                latch.countDown()
+                respond("", HttpStatusCode.NoContent)
+            }
+        val log = MismatchAuditLog("https://logs.example.com", "user-1", "key-1", engine = engine, pushStartupHeartbeat = false)
+
+        log.recordSecondaryDeleteFailure("deleteById", "abc123", RuntimeException("boom"))
+
+        assertTrue(latch.await(5, TimeUnit.SECONDS), "push should complete")
+        val request = captured!!
+        val stream = Json.parseToJsonElement((request.body as TextContent).text).jsonObject["streams"]!!.jsonArray.single().jsonObject
+        assertEquals("secondary_delete_failure", stream["stream"]!!.jsonObject["event"]!!.jsonPrimitive.content)
+        val line = Json.parseToJsonElement(stream["values"]!!.jsonArray.single().jsonArray[1].jsonPrimitive.content).jsonObject
+        assertEquals("deleteById", line["op"]!!.jsonPrimitive.content)
+        assertEquals("abc123", line["tokenHash"]!!.jsonPrimitive.content)
+        assertEquals("boom", line["error"]!!.jsonPrimitive.content)
+        log.close()
+    }
+
+    @Test
     fun `logs a warning and does not throw when Loki returns a non-2xx status`() {
         val engine = MockEngine { respondError(HttpStatusCode.Unauthorized) }
         val log = MismatchAuditLog("https://logs.example.com", "user-1", "bad-key", engine = engine, pushStartupHeartbeat = false)

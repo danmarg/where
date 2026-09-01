@@ -225,6 +225,70 @@ class DualWriteMailboxStateTest {
     }
 
     @Test
+    fun `onSecondaryDeleteFailure fires with the op and token hash on a secondary deleteById failure`() {
+        val primary = FakeMailboxStore()
+        val secondary = FakeMailboxStore()
+        val failures = mutableListOf<Triple<String, String, Throwable>>()
+        val dual =
+            DualWriteMailboxState(
+                primary,
+                secondary,
+                testScope,
+                onSecondaryDeleteFailure = { op, tokenHash, error -> failures.add(Triple(op, tokenHash, error)) },
+            )
+        dual.post("token", JsonPrimitive("hi"), "msg-1")
+        secondary.failNext()
+
+        dual.deleteById("token", "msg-1")
+
+        assertEquals(1, failures.size)
+        val (op, tokenHash, error) = failures.single()
+        assertEquals("deleteById", op)
+        assertTrue(tokenHash.isNotBlank())
+        assertEquals("simulated failure", error.message)
+    }
+
+    @Test
+    fun `onSecondaryDeleteFailure fires on a secondary deleteByIds failure`() {
+        val primary = FakeMailboxStore()
+        val secondary = FakeMailboxStore()
+        val failures = mutableListOf<Triple<String, String, Throwable>>()
+        val dual =
+            DualWriteMailboxState(
+                primary,
+                secondary,
+                testScope,
+                onSecondaryDeleteFailure = { op, tokenHash, error -> failures.add(Triple(op, tokenHash, error)) },
+            )
+        dual.post("token", JsonPrimitive("hi"), "msg-1")
+        secondary.failNext()
+
+        dual.deleteByIds("token", listOf("msg-1"))
+
+        assertEquals(1, failures.size)
+        assertEquals("deleteByIds", failures.single().first)
+    }
+
+    @Test
+    fun `onSecondaryDeleteFailure is not invoked when the secondary delete succeeds`() {
+        val primary = FakeMailboxStore()
+        val secondary = FakeMailboxStore()
+        val failures = mutableListOf<Triple<String, String, Throwable>>()
+        val dual =
+            DualWriteMailboxState(
+                primary,
+                secondary,
+                testScope,
+                onSecondaryDeleteFailure = { op, tokenHash, error -> failures.add(Triple(op, tokenHash, error)) },
+            )
+        dual.post("token", JsonPrimitive("hi"), "msg-1")
+
+        dual.deleteById("token", "msg-1")
+
+        assertTrue(failures.isEmpty())
+    }
+
+    @Test
     fun `mirrored deletes prevent false-positive mismatches`() {
         // Regression guard: if deletes were only applied to primary (not mirrored to secondary),
         // every subsequent drain() comparison would show a permanent false-positive mismatch once
