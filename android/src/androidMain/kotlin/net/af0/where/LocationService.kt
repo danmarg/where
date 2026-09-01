@@ -150,10 +150,21 @@ class LocationService : Service() {
         source: WakeSource,
         success: Boolean,
         intervalMs: Long? = null,
+        wakeTrigger: WakeSource? = null,
     ) {
         val status = if (success) "OK" else "ERR"
         val prefix = "Wake: ${source.value} -> $status"
         var message = prefix
+        // wakeTrigger identifies what actually drove this pollLoop iteration (Alarm/Worker/Timer/
+        // etc.) when it differs from `source` itself (e.g. a HEARTBEAT send triggered by a
+        // WORKER-driven wake). Without this, every heartbeat/GPS-poll-failure event looks
+        // identical regardless of whether the doze alarm, the WorkManager fallback, or the
+        // service's own timer produced it - making it impossible to tell "the fallbacks are
+        // firing but the send is failing" from "the fallbacks never fired at all" during a
+        // multi-hour sync gap.
+        if (wakeTrigger != null && wakeTrigger != source) {
+            message += " [via ${wakeTrigger.value}]"
+        }
         if (intervalMs != null) {
             val mins = intervalMs / 60000
             val secs = (intervalMs % 60000) / 1000
@@ -640,7 +651,14 @@ class LocationService : Service() {
                     // a heartbeat to a friend who hasn't been heard from in 5 min is still
                     // throttled the same as a regular send (intentional: no point forcing a
                     // heartbeat to someone not reading either).
-                    sendLocationIfNeeded(lastLoc.first, lastLoc.second, isHeartbeat = true, force = true, source = WakeSource.HEARTBEAT)
+                    sendLocationIfNeeded(
+                        lastLoc.first,
+                        lastLoc.second,
+                        isHeartbeat = true,
+                        force = true,
+                        source = WakeSource.HEARTBEAT,
+                        wakeTrigger = source,
+                    )
                 } else {
                     // RECOVERY (§5.3): If we have no GPS fix but are sharing, send a
                     // keepalive message to all active friends to keep the session alive
@@ -651,7 +669,7 @@ class LocationService : Service() {
                     try {
                         locationClient.sendRecoveryKeepalives(userStore.effectivelyPausedIds())
                         lastSentTime = now
-                        logReliability(WakeSource.HEARTBEAT, true)
+                        logReliability(WakeSource.HEARTBEAT, true, wakeTrigger = source)
                     } catch (_: Exception) {
                     }
                 }
@@ -813,6 +831,7 @@ class LocationService : Service() {
         isHeartbeat: Boolean,
         force: Boolean = false,
         source: WakeSource = WakeSource.LOCATION_UPDATE,
+        wakeTrigger: WakeSource? = null,
     ) {
         if (!userStore.isSharingLocation.value) return
         val now = clock()
@@ -845,7 +864,7 @@ class LocationService : Service() {
             try {
                 locationClient.sendLocation(lat, lng, userStore.effectivelyPausedIds())
                 val sendCompleteTime = clock()
-                logReliability(source, true, interval)
+                logReliability(source, true, interval, wakeTrigger)
                 checkLateHeartbeat(interval)
                 lastSuccessfulSendTime = sendCompleteTime
                 updateStatus(null)
@@ -861,7 +880,7 @@ class LocationService : Service() {
         // All retries exhausted — restore lastSentTime so the next wake can retry.
         sendLock.withLock { lastSentTime = 0L }
         Log.e(TAG, "Failed to send location after $totalAttempts attempts: ${lastError?.message}")
-        logReliability(source, false, interval)
+        logReliability(source, false, interval, wakeTrigger)
         updateStatus(lastError ?: Exception("send failed"))
     }
 
