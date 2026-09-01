@@ -69,5 +69,5 @@ echo "✓ App installed"
 echo ""
 
 echo "=== Launching ==="
-run xcrun simctl launch "$SIMULATOR_ID" net.af0.where
+run xcrun simctl launch "$SIMULATOR_ID" net.af0.WhereApp
 echo "✓ App launched"
