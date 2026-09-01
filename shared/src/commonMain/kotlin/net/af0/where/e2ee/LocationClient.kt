@@ -479,7 +479,21 @@ open class LocationClient(
             // Sequential: each friend's eligibility check is a local-DB read serialized behind
             // E2eeStore's single storeLock anyway, so fanning these out via async/awaitAll (like
             // the network send phase below) buys no real concurrency, just dispatch overhead.
-            val activeFriends = store.listFriends().filter { isSendEligible(it, pausedFriendIds, now) }
+            val active = store.listFriends().filter { isActiveFriend(it, pausedFriendIds) }
+            val activeFriends = active.filter { isSendEligible(it, pausedFriendIds, now) }
+
+            // Distinct from "no active friends" (paused/no friends yet - expected, not worth a
+            // diagnostic event): every active friend was individually eligible for OUTBOUND
+            // traffic but got filtered out by the unresponsive-friend throttle. sendLocation()
+            // otherwise returns normally in this case (see below), which previously meant
+            // LocationService.sendLocationIfNeeded logged "OK" and cleared its status for a send
+            // that reached nobody - see #347.
+            if (active.isNotEmpty() && activeFriends.isEmpty()) {
+                store.addDiagnosticEvent(
+                    "sendLocation: all ${active.size} active friend(s) throttled as unresponsive - nothing sent",
+                    coalesceKey = "sendLocation: all",
+                )
+            }
 
             // Parallel send to all active friends to minimize radio wake time.
             // Exceptions are caught per-friend so one failure doesn't block updates to others.
