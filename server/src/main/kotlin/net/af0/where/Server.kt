@@ -5,6 +5,7 @@ import io.ktor.client.engine.HttpClientEngine
 import io.ktor.client.engine.cio.CIO
 import io.ktor.client.plugins.HttpTimeout
 import io.ktor.client.request.basicAuth
+import io.ktor.client.request.get
 import io.ktor.client.request.post
 import io.ktor.client.request.setBody
 import io.ktor.http.*
@@ -1206,7 +1207,17 @@ data class ServerState(
     val trustProxy: Boolean = System.getenv("TRUST_PROXY")?.toBoolean() ?: false,
     val debug: Boolean = false,
     val mismatchAuditLog: MismatchAuditLog? = null,
+    val healthcheckPingUrl: String? = null,
 )
+
+/**
+ * How often the process pings HEALTHCHECK_PING_URL (a Healthchecks.io-style dead-man's-switch
+ * URL) while it's alive and its event loop is responsive. Deliberately much shorter than
+ * whatever period/grace the check itself is configured with in Healthchecks.io (e.g. a 5min
+ * period / 2min grace) so a couple of missed pings from transient blips don't false-positive,
+ * while a real sustained outage (crash loop, hung process) is still caught within a few minutes.
+ */
+private const val HEALTHCHECK_PING_INTERVAL_MS = 60_000L
 
 /**
  * "redis" / "dynamodb": that store alone.
@@ -1298,7 +1309,11 @@ fun main() {
             onMismatch = mismatchAuditLog?.let { it::record },
             onSecondaryDeleteFailure = mismatchAuditLog?.let { it::recordSecondaryDeleteFailure },
         )
-    val state = ServerState(mailbox = mailbox, mismatchAuditLog = mismatchAuditLog)
+    val healthcheckPingUrl = System.getenv("HEALTHCHECK_PING_URL")
+    if (healthcheckPingUrl == null) {
+        auditLog.warn("HEALTHCHECK_PING_URL not set; no external uptime monitoring configured")
+    }
+    val state = ServerState(mailbox = mailbox, mismatchAuditLog = mismatchAuditLog, healthcheckPingUrl = healthcheckPingUrl)
 
     embeddedServer(Netty, port = port, host = "0.0.0.0") {
         module(state)
@@ -1317,6 +1332,24 @@ fun Application.module(state: ServerState = ServerState()) {
         while (isActive) {
             delay(RATE_LIMIT_WINDOW_MS)
             state.mailbox.evict()
+        }
+    }
+
+    if (state.healthcheckPingUrl != null) {
+        val healthcheckClient =
+            HttpClient(CIO) {
+                install(HttpTimeout) {
+                    requestTimeoutMillis = 10_000
+                    connectTimeoutMillis = 10_000
+                }
+            }
+        monitor.subscribe(ApplicationStopped) { healthcheckClient.close() }
+        launch(Dispatchers.Default) {
+            while (isActive) {
+                runCatching { healthcheckClient.get(state.healthcheckPingUrl) }
+                    .onFailure { auditLog.warn("Healthchecks.io ping failed", it) }
+                delay(HEALTHCHECK_PING_INTERVAL_MS)
+            }
         }
     }
 
