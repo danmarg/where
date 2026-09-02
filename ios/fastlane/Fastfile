@@ -1,5 +1,8 @@
 default_platform(:ios)
 
+opt_out_usage
+skip_docs
+
 # All signing assets and the App Store Connect API key live here (gitignored).
 SIGNING_DIR     = File.expand_path("signing", __dir__)
 KEYCHAIN_NAME   = "where-fastlane.keychain-db"
