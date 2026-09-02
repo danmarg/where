@@ -85,7 +85,7 @@ targets:
       CODE_SIGN_IDENTITY: Apple Development
       CODE_SIGN_STYLE: Automatic
       MARKETING_VERSION: "1.24"
-      CURRENT_PROJECT_VERSION: 32
+      CURRENT_PROJECT_VERSION: 33
 
   WhereTests:
     type: bundle.unit-test

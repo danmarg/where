@@ -99,7 +99,8 @@ platform :ios do
     updated = contents.sub(/^(\s*CURRENT_PROJECT_VERSION:\s*)\d+/, "\\1#{next_version}")
     File.write(project_yml, updated)
     UI.success("Bumped CURRENT_PROJECT_VERSION: #{current} -> #{next_version}")
-    sh("xcodegen generate", chdir: File.expand_path("..", __dir__))
+    ios_dir = File.expand_path("..", __dir__)
+    sh("xcodegen generate --spec \"#{project_yml}\" --project \"#{ios_dir}\"")
   end
 
   private_lane :prepare_signing do
