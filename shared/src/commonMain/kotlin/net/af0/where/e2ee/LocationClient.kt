@@ -249,6 +249,7 @@ open class LocationClient(
                 val currentToken = friend.session.recvToken.toHex()
 
                 val pollStartMs = currentTimeMillis()
+
                 fun recordPollFailure(e: Throwable) {
                     val elapsedMs = currentTimeMillis() - pollStartMs
                     store.addDiagnosticEvent(
@@ -256,6 +257,7 @@ open class LocationClient(
                     )
                     stopPolling = true
                 }
+
                 val messages =
                     try {
                         service.poll(currentToken)
