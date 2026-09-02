@@ -22,11 +22,15 @@ import io.ktor.server.routing.*
 import io.ktor.server.routing.delete
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
+import kotlinx.coroutines.joinAll
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
@@ -912,6 +916,11 @@ private fun tokenHash(token: String): String =
     MessageDigest.getInstance("SHA-256").digest(token.toByteArray())
         .joinToString("") { "%02x".format(it) }.take(12)
 
+// Fly's default kill_timeout (not overridden in fly.toml) is 5s between SIGINT and a hard
+// SIGKILL - kept well under that so there's still headroom for primary.close()/secondary.close()
+// to run afterward before the process is killed regardless.
+private const val SHUTDOWN_DRAIN_TIMEOUT_MS = 3_000L
+
 /**
  * Mirrors every mutation from [primary] to [secondary] best-effort (never fails the caller's
  * request if the mirror write fails), and diffs every drain() against a shadow read of
@@ -935,12 +944,6 @@ class DualWriteMailboxState(
     // can't cause unbounded coroutine fan-out under sustained request volume - each mirrored
     // operation still runs off the request path, just with a ceiling on how many run at once.
     private val scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO.limitedParallelism(4)),
-    // evict() is called every RATE_LIMIT_WINDOW_MS (60s) by the app's housekeeping loop. Running
-    // secondary.evict() on that cadence pings a serverless Postgres (Neon) far more often than its
-    // autosuspend idle window, keeping its compute billed as always-on instead of scale-to-zero.
-    // drain()/post() already filter on expires_at directly, so delaying the physical sweep is
-    // correctness-neutral - only the row cleanup itself needs a much coarser cadence.
-    private val secondaryEvictIntervalMs: Long = 30 * 60 * 1000L,
     private val onMismatch: ((MismatchEvent) -> Unit)? = null,
     // Deletes against the secondary are best-effort like every other mirrored write here, but
     // unlike a failed post/evict, a failed delete leaves a permanent ghost row behind (nothing
@@ -948,8 +951,17 @@ class DualWriteMailboxState(
     // rate - surfaced separately so that rate is visible without conflating it with genuine
     // primary/secondary divergence.
     private val onSecondaryDeleteFailure: ((op: String, tokenHash: String, error: Throwable) -> Unit)? = null,
+    private val shutdownDrainTimeoutMs: Long = SHUTDOWN_DRAIN_TIMEOUT_MS,
 ) : MailboxStore {
-    private val lastSecondaryEvictAt = java.util.concurrent.atomic.AtomicLong(0)
+    // Flipped at the start of close() so a mirror write racing shutdown (e.g. from a request
+    // still finishing out its grace period, or the periodic evict() housekeeping tick) doesn't
+    // launch new work onto a scope that's already being drained - see close()'s doc.
+    private val closing = java.util.concurrent.atomic.AtomicBoolean(false)
+
+    private fun launchMirror(block: suspend () -> Unit) {
+        if (closing.get()) return
+        scope.launch { block() }
+    }
 
     override fun checkIpRateLimit(ip: String) = primary.checkIpRateLimit(ip)
 
@@ -960,7 +972,7 @@ class DualWriteMailboxState(
     ): Boolean {
         val result = primary.post(token, payload, msgId)
         if (result) {
-            scope.launch {
+            launchMirror {
                 runCatching { secondary.post(token, payload, msgId) }
                     .onFailure { migrationLog.warn("secondary post failed token={}", tokenHash(token), it) }
             }
@@ -970,7 +982,7 @@ class DualWriteMailboxState(
 
     override fun drain(token: String): List<JsonElement>? {
         val result = primary.drain(token) ?: return null
-        scope.launch {
+        launchMirror {
             runCatching {
                 val secondaryResult = secondary.drain(token) ?: emptyList()
                 comparePayloads(token, result, secondaryResult)
@@ -984,7 +996,7 @@ class DualWriteMailboxState(
         msgId: String,
     ): Boolean {
         val result = primary.deleteById(token, msgId)
-        scope.launch {
+        launchMirror {
             runCatching { secondary.deleteById(token, msgId) }
                 .onFailure {
                     migrationLog.warn("secondary deleteById failed token={}", tokenHash(token), it)
@@ -1001,7 +1013,7 @@ class DualWriteMailboxState(
     ): Int {
         val result = primary.deleteByIds(token, msgIds)
         if (msgIds.isNotEmpty()) {
-            scope.launch {
+            launchMirror {
                 runCatching { secondary.deleteByIds(token, msgIds) }
                     .onFailure {
                         migrationLog.warn("secondary deleteByIds failed token={}", tokenHash(token), it)
@@ -1015,15 +1027,43 @@ class DualWriteMailboxState(
 
     override fun evict() {
         primary.evict()
-        val now = System.currentTimeMillis()
-        val last = lastSecondaryEvictAt.get()
-        if (now - last >= secondaryEvictIntervalMs && lastSecondaryEvictAt.compareAndSet(last, now)) {
-            runCatching { secondary.evict() }
-                .onFailure { migrationLog.warn("secondary evict failed", it) }
-        }
+        // Synchronous and unthrottled, unlike the write paths above: this only runs off the
+        // app's own 60s housekeeping loop (not the request path), and DynamoMailboxState.evict()
+        // does no I/O at all (see its own doc) - there's neither a latency reason to make this
+        // async nor a cost reason to throttle it the way the old Postgres/Neon secondary needed.
+        runCatching { secondary.evict() }
+            .onFailure { migrationLog.warn("secondary evict failed", it) }
     }
 
     override fun close() {
+        // Every mirrored write above is fire-and-forget on [scope], racing the caller's own
+        // return. Without waiting here, a graceful shutdown (a deploy, or - far more frequently -
+        // Fly's scale-to-zero auto_stop_machines cycling this app roughly every 10 minutes under
+        // its normal poll-heavy traffic) can close the secondary's client out from under a
+        // still-in-flight mirror write, silently dropping it with no exception and no WARN log:
+        // the primary write already succeeded and returned to the caller, so it just looks like a
+        // permanent shadow-comparison mismatch with no discoverable cause.
+        //
+        // closing=true stops new mirror work from being scheduled (see launchMirror), but a write
+        // already past that check - e.g. from a request still finishing out shutdown's grace
+        // period, or a concurrent evict() tick - can still land as a new child of [scope] after a
+        // single snapshot here would have been taken. So this re-snapshots children in a loop
+        // until none remain, rather than joining one fixed list, closing that gap; the whole loop
+        // is bounded so a genuinely wedged secondary call can't hang shutdown indefinitely.
+        closing.set(true)
+        runBlocking {
+            val allDrained =
+                withTimeoutOrNull(shutdownDrainTimeoutMs) {
+                    while (true) {
+                        val pending = scope.coroutineContext[Job]?.children?.toList().orEmpty()
+                        if (pending.isEmpty()) break
+                        pending.joinAll()
+                    }
+                } != null
+            if (!allDrained) {
+                migrationLog.warn("timed out after {}ms waiting for in-flight secondary mirror writes to finish", shutdownDrainTimeoutMs)
+            }
+        }
         primary.close()
         secondary.close()
     }
