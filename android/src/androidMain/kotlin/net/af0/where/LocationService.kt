@@ -492,11 +492,16 @@ class LocationService : Service() {
         lng: Double,
     ) {
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED) return
-        // Radius/re-centering policy is shared with iOS (GeofencePolicy, Kotlin commonMain) so
-        // the two platforms can't silently drift apart on "how big / how often" the way the
-        // automated-keepalive throttle once did. Larger while moving (we have live GPS truth
-        // anyway; fewer re-registrations needed), tighter once STILL (position isn't drifting,
-        // so a real departure should be caught fast).
+        // Radius sizing is shared with iOS (GeofencePolicy.radiusMeters(), Kotlin commonMain) so
+        // the two platforms can't silently drift apart on "how big" the way the automated-
+        // keepalive throttle once did: larger while moving (we have live GPS truth anyway;
+        // fewer re-registrations needed), tighter once STILL (position isn't drifting, so a
+        // real departure should be caught fast). Re-centering *cadence* is NOT shared - unlike
+        // iOS's proactive per-fix drift check (GeofencePolicy.shouldRecenter()), Android
+        // replants only on an ActivityRecognition STILL/MOVING transition or an actual
+        // GEOFENCE_TRANSITION_EXIT (see ACTION_GEOFENCE_EVENT below). That's still
+        // self-bounding - exiting the current fence is exactly what triggers the next
+        // replant - just a different mechanism, not a shared one.
         val radiusMeters = GeofencePolicy.radiusMeters(isMoving = !isStill).toFloat()
         if (locationProvider.setGeofenceAt(lat, lng, radiusMeters)) {
             // GMS: request submitted; actual confirmation logged by provider's Task listener.

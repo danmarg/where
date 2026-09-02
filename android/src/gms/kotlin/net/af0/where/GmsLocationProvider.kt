@@ -221,6 +221,12 @@ class GmsLocationProvider : LocationProvider {
     }
 
     override fun removeGeofence() {
+        // Drop any queued re-arm target - otherwise an in-flight add's completion could
+        // resurrect the geofence right after this call by draining a now-stale pending
+        // target (see onGeofenceRequestSettled()). An add already in flight when this is
+        // called can't be cancelled at this layer; a fresh setGeofenceAt() after removal
+        // still submits normally.
+        pendingGeofenceTarget = null
         geofencingClient.removeGeofences(getGeofencePendingIntent())
         Log.i(TAG, "Geofence removed")
     }

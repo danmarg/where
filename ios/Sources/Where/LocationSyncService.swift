@@ -426,8 +426,10 @@ final class LocationSyncService: ObservableObject {
         let locationIsStale = (locationProvider.lastLocation?.timestamp.timeIntervalSinceNow ?? -.infinity) < -Self.staleLocationThreshold
         if locationIsStale && locationProvider.isStationary {
             // Don't request a fresh fix when stationary: the position hasn't changed, and
-            // requestImmediateLocation() → didUpdateLocations → resumeHighFidelityTracking()
-            // would reset isStationary=false and send stationary:false to friends.
+            // requestImmediateLocation() → didUpdateLocations(_:) broadcasts a Location with
+            // its default stationary:false once the fix arrives (LocationManager doesn't
+            // know this call site's stationary context) — undoing the "here since" signal
+            // we already sent, even though it no longer touches isStationary directly.
             if let loc = bestAvailableLocation {
                 sendLocation(lat: loc.lat, lng: loc.lng, heading: loc.heading, force: true, source: .network, stationary: true)
             }
