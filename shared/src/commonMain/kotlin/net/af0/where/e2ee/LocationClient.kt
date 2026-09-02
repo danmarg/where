@@ -248,7 +248,20 @@ open class LocationClient(
                 val messages =
                     try {
                         service.poll(currentToken)
+                    } catch (e: WallClockTimeoutCancellationException) {
+                        // A wall-clock timeout is an ordinary, expected request failure (same role
+                        // as any other network exception) even though it's implemented as a
+                        // CancellationException - it must NOT propagate like a real structured-
+                        // concurrency cancellation would, or every routine timeout would skip this
+                        // friend's updateLastPollTs/processOutbox/keepalive-backstop check below.
+                        val elapsedMs = currentTimeMillis() - pollStartMs
+                        store.addDiagnosticEvent(
+                            "poll($friendId) failed on $currentToken after ${elapsedMs}ms: ${e.message}",
+                        )
+                        stopPolling = true
+                        continue
                     } catch (e: CancellationException) {
+                        // Any OTHER cancellation is a genuine outer shutdown signal - must propagate.
                         throw e
                     } catch (e: Exception) {
                         val elapsedMs = currentTimeMillis() - pollStartMs
