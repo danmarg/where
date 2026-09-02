@@ -961,6 +961,16 @@ class DualWriteMailboxState(
 ) : MailboxStore {
     private val lastSecondaryEvictAt = java.util.concurrent.atomic.AtomicLong(0)
 
+    // Flipped at the start of close() so a mirror write racing shutdown (e.g. from a request
+    // still finishing out its grace period, or the periodic evict() housekeeping tick) doesn't
+    // launch new work onto a scope that's already being drained - see close()'s doc.
+    private val closing = java.util.concurrent.atomic.AtomicBoolean(false)
+
+    private fun launchMirror(block: suspend () -> Unit) {
+        if (closing.get()) return
+        scope.launch { block() }
+    }
+
     override fun checkIpRateLimit(ip: String) = primary.checkIpRateLimit(ip)
 
     override fun post(
@@ -970,7 +980,7 @@ class DualWriteMailboxState(
     ): Boolean {
         val result = primary.post(token, payload, msgId)
         if (result) {
-            scope.launch {
+            launchMirror {
                 runCatching { secondary.post(token, payload, msgId) }
                     .onFailure { migrationLog.warn("secondary post failed token={}", tokenHash(token), it) }
             }
@@ -980,7 +990,7 @@ class DualWriteMailboxState(
 
     override fun drain(token: String): List<JsonElement>? {
         val result = primary.drain(token) ?: return null
-        scope.launch {
+        launchMirror {
             runCatching {
                 val secondaryResult = secondary.drain(token) ?: emptyList()
                 comparePayloads(token, result, secondaryResult)
@@ -994,7 +1004,7 @@ class DualWriteMailboxState(
         msgId: String,
     ): Boolean {
         val result = primary.deleteById(token, msgId)
-        scope.launch {
+        launchMirror {
             runCatching { secondary.deleteById(token, msgId) }
                 .onFailure {
                     migrationLog.warn("secondary deleteById failed token={}", tokenHash(token), it)
@@ -1011,7 +1021,7 @@ class DualWriteMailboxState(
     ): Int {
         val result = primary.deleteByIds(token, msgIds)
         if (msgIds.isNotEmpty()) {
-            scope.launch {
+            launchMirror {
                 runCatching { secondary.deleteByIds(token, msgIds) }
                     .onFailure {
                         migrationLog.warn("secondary deleteByIds failed token={}", tokenHash(token), it)
@@ -1040,12 +1050,25 @@ class DualWriteMailboxState(
         // its normal poll-heavy traffic) can close the secondary's client out from under a
         // still-in-flight mirror write, silently dropping it with no exception and no WARN log:
         // the primary write already succeeded and returned to the caller, so it just looks like a
-        // permanent shadow-comparison mismatch with no discoverable cause. Bounded so a wedged
-        // secondary call can't hang shutdown indefinitely.
-        val pendingJobs = scope.coroutineContext[Job]?.children?.toList().orEmpty()
+        // permanent shadow-comparison mismatch with no discoverable cause.
+        //
+        // closing=true stops new mirror work from being scheduled (see launchMirror), but a write
+        // already past that check - e.g. from a request still finishing out shutdown's grace
+        // period, or a concurrent evict() tick - can still land as a new child of [scope] after a
+        // single snapshot here would have been taken. So this re-snapshots children in a loop
+        // until none remain, rather than joining one fixed list, closing that gap; the whole loop
+        // is bounded so a genuinely wedged secondary call can't hang shutdown indefinitely.
+        closing.set(true)
         runBlocking {
-            val allJoined = withTimeoutOrNull(shutdownDrainTimeoutMs) { pendingJobs.joinAll() } != null
-            if (!allJoined) {
+            val allDrained =
+                withTimeoutOrNull(shutdownDrainTimeoutMs) {
+                    while (true) {
+                        val pending = scope.coroutineContext[Job]?.children?.toList().orEmpty()
+                        if (pending.isEmpty()) break
+                        pending.joinAll()
+                    }
+                } != null
+            if (!allDrained) {
                 migrationLog.warn("timed out after {}ms waiting for in-flight secondary mirror writes to finish", shutdownDrainTimeoutMs)
             }
         }

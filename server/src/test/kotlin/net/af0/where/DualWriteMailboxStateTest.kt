@@ -322,6 +322,23 @@ class DualWriteMailboxStateTest {
     }
 
     @Test
+    fun `mirror writes are not scheduled once close has begun`() {
+        // Regression guard: close() stops new mirror work from being launched onto the scope it's
+        // about to drain, rather than only joining whatever was already queued at a single point
+        // in time - otherwise a write racing shutdown (e.g. still finishing out a grace period)
+        // could land after the snapshot and get dropped exactly like the original bug.
+        val primary = FakeMailboxStore()
+        val secondary = FakeMailboxStore()
+        val dual = DualWriteMailboxState(primary, secondary, testScope)
+
+        dual.close()
+        dual.post("token", JsonPrimitive("late"), "msg-1")
+
+        assertEquals(1, primary.postCount, "primary should be unaffected by close()")
+        assertEquals(0, secondary.postCount, "no mirror write should be scheduled after close() has begun")
+    }
+
+    @Test
     fun `close gives up and logs a warning if a secondary mirror write exceeds the drain timeout`() {
         val primary = FakeMailboxStore()
         val secondary = FakeMailboxStore()
