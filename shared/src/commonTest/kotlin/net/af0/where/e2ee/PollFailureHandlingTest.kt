@@ -116,4 +116,23 @@ class PollFailureHandlingTest {
                 aliceClient.pollFriend(aliceFriend.id)
             }
         }
+
+    @Test
+    fun testGenuineCancellationPropagatesFromPoll() =
+        runTest {
+            // Same scenario as testGenuineCancellationPropagatesFromPollFriend, but through the
+            // real production call path (poll()'s per-friend async block) rather than calling
+            // pollFriend() directly - poll() has its own catch (e: Exception) around pollFriend()
+            // that would silently re-swallow a rethrown CancellationException if it weren't also
+            // narrowed to let CancellationException through.
+            val realMailbox = MemoryMailboxClient()
+            val faultyMailbox = FaultInjectingMailboxClient(realMailbox)
+            val (_, aliceClient, _) = setupFriendship(faultyMailbox)
+
+            faultyMailbox.pollExceptionAlways = CancellationException("simulated outer cancellation")
+
+            assertFailsWith<CancellationException> {
+                aliceClient.poll()
+            }
+        }
 }
