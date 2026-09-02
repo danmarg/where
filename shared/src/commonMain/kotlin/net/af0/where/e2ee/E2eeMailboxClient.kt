@@ -54,6 +54,16 @@ interface MailboxClient {
 }
 
 object KtorMailboxClient : MailboxClient {
+    /**
+     * Coarse suspension-recovery backstop for mailbox requests. Must stay comfortably above
+     * the underlying Ktor HttpClient's requestTimeoutMillis/socketTimeoutMillis (30s, see
+     * HttpClientFactory.kt) so that a genuine slow network trips the client's own, more specific
+     * timeout exception first. If this value is too close to the Ktor timeout, ordinary jitter
+     * races both timers to the same deadline and this generic wall-clock timeout wins instead,
+     * masking the real cause.
+     */
+    private const val MAILBOX_WALL_CLOCK_TIMEOUT_MS = 60_000L
+
     private val json =
         Json {
             classDiscriminator = "type"
@@ -75,7 +85,7 @@ object KtorMailboxClient : MailboxClient {
         payload: MailboxPayload,
     ) {
         try {
-            withWallClockTimeout(30_000) {
+            withWallClockTimeout(MAILBOX_WALL_CLOCK_TIMEOUT_MS) {
                 val url = "$baseUrl/inbox/$token/${payload.msgId}"
                 val response =
                     client.put(url) {
@@ -102,7 +112,7 @@ object KtorMailboxClient : MailboxClient {
         token: String,
     ): List<MailboxPayload> {
         try {
-            return withWallClockTimeout(30_000) {
+            return withWallClockTimeout(MAILBOX_WALL_CLOCK_TIMEOUT_MS) {
                 val response = client.get("$baseUrl/inbox/$token")
                 if (response.status != HttpStatusCode.OK) {
                     throw ServerException(response.status.value, "Failed to poll mailbox")
@@ -120,7 +130,7 @@ object KtorMailboxClient : MailboxClient {
         msgId: String,
     ) {
         try {
-            withWallClockTimeout(30_000) {
+            withWallClockTimeout(MAILBOX_WALL_CLOCK_TIMEOUT_MS) {
                 val response = client.delete("$baseUrl/inbox/$token/$msgId")
                 if (!response.status.isSuccess()) {
                     throw ServerException(response.status.value, "ACK failed for msgId $msgId")
@@ -138,7 +148,7 @@ object KtorMailboxClient : MailboxClient {
     ) {
         if (msgIds.isEmpty()) return
         try {
-            withWallClockTimeout(30_000) {
+            withWallClockTimeout(MAILBOX_WALL_CLOCK_TIMEOUT_MS) {
                 val response =
                     client.delete("$baseUrl/inbox/$token") {
                         parameter("ids", msgIds.joinToString(","))
