@@ -45,6 +45,14 @@ final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelega
     /// the radius/re-centering rules.
     var geofenceCenter: CLLocation? = nil
 
+    /// Whether the currently-armed geofence (if any) was sized for "moving" or
+    /// "stationary". Tracked separately from [geofenceCenter] so a moving→stationary (or
+    /// vice versa) transition always re-arms at the new radius, even when the device
+    /// hasn't drifted far enough from the old center for `shouldRecenter` to trigger on
+    /// distance alone — otherwise a device that stops shortly after the last re-center
+    /// could keep the larger moving-radius fence indefinitely, delaying wake-on-departure.
+    var geofenceIsMoving: Bool? = nil
+
     private static let lastLatKey = "location_last_lat"
     private static let lastLngKey = "location_last_lng"
 
@@ -106,6 +114,7 @@ final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelega
     func stopUpdating() {
         isStationary = false
         geofenceCenter = nil
+        geofenceIsMoving = nil
 
         updatesTask?.cancel()
         updatesTask = nil
@@ -158,6 +167,7 @@ final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelega
         // already running) - reset reliability-loop state and any stale fallback geofence.
         isStationary = false
         geofenceCenter = nil
+        geofenceIsMoving = nil
         for region in manager.monitoredRegions where region.identifier == stationaryGeofenceId {
             manager.stopMonitoring(for: region)
         }
@@ -265,12 +275,19 @@ final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelega
     /// GeofencePolicy (Shared) says drift is large enough, so we don't re-register the
     /// region - and reset the OS's boundary-crossing confirmation window - on every fix.
     private func armGeofenceIfNeeded(at loc: CLLocation, isMoving: Bool) {
+        // A moving/stationary mode change always re-arms, regardless of drift distance -
+        // otherwise a device that stops shortly after the last re-center could keep the
+        // larger moving-radius fence indefinitely, defeating the "tighten once stationary"
+        // policy. Distance-based `shouldRecenter` only governs re-centering *within* an
+        // unchanged mode.
+        let modeChanged = geofenceIsMoving != isMoving
         let distance = geofenceCenter.map { loc.distance(from: $0) } ?? .greatestFiniteMagnitude
-        let due = geofenceCenter == nil ||
+        let due = geofenceCenter == nil || modeChanged ||
             GeofencePolicy.shared.shouldRecenter(distanceFromCenterMeters: distance, isMoving: isMoving)
         guard due else { return }
 
         geofenceCenter = loc
+        geofenceIsMoving = isMoving
         guard let manager = manager else { return }
         let radius = GeofencePolicy.shared.radiusMeters(isMoving: isMoving)
         let region = CLCircularRegion(center: loc.coordinate, radius: radius, identifier: stationaryGeofenceId)
@@ -325,6 +342,7 @@ final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelega
                 LocationSyncService.shared.e2eeManager.addDiagnosticEvent(message: "Exited stationary geofence", coalesceKey: nil)
                 self.isStationary = false
                 self.geofenceCenter = nil
+                self.geofenceIsMoving = nil
                 self.startUpdating()
                 self.requestImmediateLocation()
             }

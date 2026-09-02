@@ -152,7 +152,30 @@ class GmsLocationProvider : LocationProvider {
         }
     }
 
+    // addGeofences() resolves asynchronously with no documented ordering guarantee between
+    // overlapping calls, and setGeofenceAt() can legitimately be called again (activity
+    // transition, geofence-exit rearm, cold start) before a prior call has resolved. Rather
+    // than rely on GMS's same-request-ID replacement to sort out whichever registration lands
+    // last, serialize explicitly: only one add is ever in flight, and a call arriving mid-flight
+    // just replaces the pending target rather than firing a second overlapping request. The
+    // in-flight call's own completion (success or failure) drains the latest pending target, if
+    // any changed while it was outstanding.
+    private var geofenceRequestInFlight = false
+    private var pendingGeofenceTarget: Triple<Double, Double, Float>? = null
+
     override fun setGeofenceAt(
+        lat: Double,
+        lng: Double,
+        radiusMeters: Float,
+    ): Boolean {
+        if (geofenceRequestInFlight) {
+            pendingGeofenceTarget = Triple(lat, lng, radiusMeters)
+            return true
+        }
+        return submitGeofence(lat, lng, radiusMeters)
+    }
+
+    private fun submitGeofence(
         lat: Double,
         lng: Double,
         radiusMeters: Float,
@@ -170,14 +193,31 @@ class GmsLocationProvider : LocationProvider {
                 .addGeofence(geofence)
                 .build()
         return try {
+            geofenceRequestInFlight = true
             geofencingClient.addGeofences(request, getGeofencePendingIntent())
-                .addOnSuccessListener { Log.i(TAG, "Geofence registered at $lat, $lng") }
-                .addOnFailureListener { e -> Log.w(TAG, "Geofence add failed (fence may not be active): ${e.message}") }
+                .addOnSuccessListener {
+                    Log.i(TAG, "Geofence registered at $lat, $lng")
+                    onGeofenceRequestSettled()
+                }
+                .addOnFailureListener { e ->
+                    Log.w(TAG, "Geofence add failed (fence may not be active): ${e.message}")
+                    onGeofenceRequestSettled()
+                }
             true
         } catch (e: SecurityException) {
             Log.w(TAG, "SecurityException setting geofence: ${e.message}")
+            geofenceRequestInFlight = false
             false
         }
+    }
+
+    // Task listeners run on the main looper by default (no Executor was supplied), matching
+    // every other call in this class — so this never races with setGeofenceAt() itself.
+    private fun onGeofenceRequestSettled() {
+        geofenceRequestInFlight = false
+        val next = pendingGeofenceTarget ?: return
+        pendingGeofenceTarget = null
+        submitGeofence(next.first, next.second, next.third)
     }
 
     override fun removeGeofence() {

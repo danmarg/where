@@ -160,6 +160,30 @@ class GmsLocationProviderTest {
         assertFalse(provider.setGeofenceAt(37.0, -122.0, 200f))
     }
 
+    @Test
+    fun setGeofenceAt_secondCallWhileInFlight_isQueuedThenDrainedOnCompletion() {
+        // Regression test: addGeofences() is asynchronous. A call arriving before the prior
+        // one resolves must not fire an overlapping request (whose completion order vs. the
+        // first is not guaranteed) - it should replace the pending target and only submit it
+        // once the in-flight call actually settles.
+        val successListeners = mutableListOf<OnSuccessListener<Void>>()
+        val taskMock = mockk<Task<Void>>(relaxed = true)
+        every { mockGeofencingClient.addGeofences(any(), any()) } returns taskMock
+        every { taskMock.addOnSuccessListener(any()) } answers {
+            successListeners.add(firstArg())
+            taskMock
+        }
+
+        assertTrue(provider.setGeofenceAt(1.0, 2.0, 200f))
+        verify(exactly = 1) { mockGeofencingClient.addGeofences(any(), any()) }
+
+        assertTrue(provider.setGeofenceAt(3.0, 4.0, 400f))
+        verify(exactly = 1) { mockGeofencingClient.addGeofences(any(), any()) }
+
+        successListeners.first().onSuccess(null)
+        verify(exactly = 2) { mockGeofencingClient.addGeofences(any(), any()) }
+    }
+
     // --- onDestroy ---
 
     @Test

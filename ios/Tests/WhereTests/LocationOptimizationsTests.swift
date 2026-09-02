@@ -52,6 +52,7 @@ class LocationOptimizationsTests: XCTestCase {
 
     private func resetLocationManagerShared() {
         LocationManager.shared.geofenceCenter = nil
+        LocationManager.shared.geofenceIsMoving = nil
         LocationManager.shared.isStationary = false
     }
 
@@ -167,6 +168,36 @@ class LocationOptimizationsTests: XCTestCase {
         XCTAssertTrue(locationManager.isStationary)
         XCTAssertEqual(locationManager.geofenceCenter?.coordinate.latitude, centerLat,
             "geofence center must not shift for a nearby subsequent stationary reading")
+    }
+
+    func testLocationManager_ModeChangeAlwaysRecentersGeofence_EvenWithoutDrift() async throws {
+        // Regression test: a moving -> stationary (or vice versa) transition must re-arm the
+        // geofence at the new radius immediately, even when the device hasn't drifted far
+        // enough from the old center for distance-based recentering to trigger on its own -
+        // otherwise a device that stops shortly after the last re-center could keep the
+        // larger moving-radius fence indefinitely, defeating "tighten once stationary".
+        let locationManager = LocationManager.shared
+        let movingLoc = CLLocation(
+            coordinate: CLLocationCoordinate2D(latitude: 37.7749, longitude: -122.4194),
+            altitude: 0, horizontalAccuracy: 10, verticalAccuracy: 10, timestamp: Date()
+        )
+        locationManager.handleStationarityUpdate(movingLoc, stationary: false)
+        XCTAssertEqual(locationManager.geofenceIsMoving, true)
+        XCTAssertNotNil(locationManager.geofenceCenter)
+
+        // Become stationary very close to the same spot - well under any drift threshold.
+        let nearbyLoc = CLLocation(
+            coordinate: CLLocationCoordinate2D(latitude: 37.77491, longitude: -122.4194),
+            altitude: 0, horizontalAccuracy: 10, verticalAccuracy: 10, timestamp: Date()
+        )
+        XCTAssertLessThan(nearbyLoc.distance(from: movingLoc), 50,
+            "Test precondition: nearby fix must be well under any recenter threshold")
+
+        locationManager.handleStationarityUpdate(nearbyLoc, stationary: true)
+
+        XCTAssertEqual(locationManager.geofenceIsMoving, false,
+            "geofence must re-arm at the stationary radius on a mode change, even without drift")
+        XCTAssertEqual(locationManager.geofenceCenter?.coordinate.latitude, nearbyLoc.coordinate.latitude)
     }
 
     func testSendLocation_SoftwareDistanceFilter() async throws {
