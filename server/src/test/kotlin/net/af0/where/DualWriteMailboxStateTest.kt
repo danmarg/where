@@ -289,6 +289,63 @@ class DualWriteMailboxStateTest {
     }
 
     @Test
+    fun `close waits for an in-flight secondary mirror write to finish before returning`() {
+        // Regression guard: close() used to close the secondary's client immediately, racing any
+        // mirror write still in flight on the async scope - dropping it silently with no exception
+        // and no WARN log, which is exactly what let ghost rows accumulate in DynamoDB under Fly's
+        // scale-to-zero cycling.
+        val primary = FakeMailboxStore()
+        val secondary = FakeMailboxStore()
+        val secondaryWriteFinished = java.util.concurrent.atomic.AtomicBoolean(false)
+        val slowSecondary =
+            object : MailboxStore by secondary {
+                override fun post(
+                    token: String,
+                    payload: JsonElement,
+                    msgId: String?,
+                ): Boolean {
+                    Thread.sleep(300)
+                    val result = secondary.post(token, payload, msgId)
+                    secondaryWriteFinished.set(true)
+                    return result
+                }
+            }
+        // A real dispatcher, not Unconfined - the mirror write needs to genuinely run in the
+        // background for this test to distinguish "close() waited" from "there was nothing to wait for".
+        val realScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+        val dual = DualWriteMailboxState(primary, slowSecondary, realScope)
+
+        dual.post("token", JsonPrimitive("hi"), "msg-1")
+        dual.close()
+
+        assertTrue(secondaryWriteFinished.get(), "close() should wait for the in-flight mirror write instead of racing it")
+    }
+
+    @Test
+    fun `close gives up and logs a warning if a secondary mirror write exceeds the drain timeout`() {
+        val primary = FakeMailboxStore()
+        val secondary = FakeMailboxStore()
+        val wedgedSecondary =
+            object : MailboxStore by secondary {
+                override fun post(
+                    token: String,
+                    payload: JsonElement,
+                    msgId: String?,
+                ): Boolean {
+                    Thread.sleep(500)
+                    return secondary.post(token, payload, msgId)
+                }
+            }
+        val realScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+        val dual = DualWriteMailboxState(primary, wedgedSecondary, realScope, shutdownDrainTimeoutMs = 50L)
+
+        dual.post("token", JsonPrimitive("hi"), "msg-1")
+        dual.close()
+
+        assertTrue(warnLogs().any { it.formattedMessage.contains("timed out") })
+    }
+
+    @Test
     fun `mirrored deletes prevent false-positive mismatches`() {
         // Regression guard: if deletes were only applied to primary (not mirrored to secondary),
         // every subsequent drain() comparison would show a permanent false-positive mismatch once

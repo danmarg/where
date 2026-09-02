@@ -22,11 +22,15 @@ import io.ktor.server.routing.*
 import io.ktor.server.routing.delete
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
+import kotlinx.coroutines.joinAll
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
@@ -912,6 +916,11 @@ private fun tokenHash(token: String): String =
     MessageDigest.getInstance("SHA-256").digest(token.toByteArray())
         .joinToString("") { "%02x".format(it) }.take(12)
 
+// Fly's default kill_timeout (not overridden in fly.toml) is 5s between SIGINT and a hard
+// SIGKILL - kept well under that so there's still headroom for primary.close()/secondary.close()
+// to run afterward before the process is killed regardless.
+private const val SHUTDOWN_DRAIN_TIMEOUT_MS = 3_000L
+
 /**
  * Mirrors every mutation from [primary] to [secondary] best-effort (never fails the caller's
  * request if the mirror write fails), and diffs every drain() against a shadow read of
@@ -948,6 +957,7 @@ class DualWriteMailboxState(
     // rate - surfaced separately so that rate is visible without conflating it with genuine
     // primary/secondary divergence.
     private val onSecondaryDeleteFailure: ((op: String, tokenHash: String, error: Throwable) -> Unit)? = null,
+    private val shutdownDrainTimeoutMs: Long = SHUTDOWN_DRAIN_TIMEOUT_MS,
 ) : MailboxStore {
     private val lastSecondaryEvictAt = java.util.concurrent.atomic.AtomicLong(0)
 
@@ -1024,6 +1034,21 @@ class DualWriteMailboxState(
     }
 
     override fun close() {
+        // Every mirrored write above is fire-and-forget on [scope], racing the caller's own
+        // return. Without waiting here, a graceful shutdown (a deploy, or - far more frequently -
+        // Fly's scale-to-zero auto_stop_machines cycling this app roughly every 10 minutes under
+        // its normal poll-heavy traffic) can close the secondary's client out from under a
+        // still-in-flight mirror write, silently dropping it with no exception and no WARN log:
+        // the primary write already succeeded and returned to the caller, so it just looks like a
+        // permanent shadow-comparison mismatch with no discoverable cause. Bounded so a wedged
+        // secondary call can't hang shutdown indefinitely.
+        val pendingJobs = scope.coroutineContext[Job]?.children?.toList().orEmpty()
+        runBlocking {
+            val allJoined = withTimeoutOrNull(shutdownDrainTimeoutMs) { pendingJobs.joinAll() } != null
+            if (!allJoined) {
+                migrationLog.warn("timed out after {}ms waiting for in-flight secondary mirror writes to finish", shutdownDrainTimeoutMs)
+            }
+        }
         primary.close()
         secondary.close()
     }
