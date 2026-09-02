@@ -196,6 +196,10 @@ class GmsLocationProviderTest {
         val failureListeners = mutableListOf<OnFailureListener>()
         val taskMock = mockk<Task<Void>>(relaxed = true)
         every { mockGeofencingClient.addGeofences(any(), any()) } returns taskMock
+        // addOnSuccessListener() is called first in the chain (submitGeofence()) - it must
+        // return taskMock itself, or the subsequent addOnFailureListener() call below lands
+        // on a different (relaxed-generated) mock instance and this stub never fires.
+        every { taskMock.addOnSuccessListener(any()) } returns taskMock
         every { taskMock.addOnFailureListener(any()) } answers {
             failureListeners.add(firstArg())
             taskMock
