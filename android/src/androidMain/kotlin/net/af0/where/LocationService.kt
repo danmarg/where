@@ -150,10 +150,21 @@ class LocationService : Service() {
         source: WakeSource,
         success: Boolean,
         intervalMs: Long? = null,
+        wakeTrigger: WakeSource? = null,
     ) {
         val status = if (success) "OK" else "ERR"
         val prefix = "Wake: ${source.value} -> $status"
         var message = prefix
+        // wakeTrigger identifies what actually drove this pollLoop iteration (Alarm/Worker/Timer/
+        // etc.) when it differs from `source` itself (e.g. a HEARTBEAT send triggered by a
+        // WORKER-driven wake). Without this, every heartbeat/GPS-poll-failure event looks
+        // identical regardless of whether the doze alarm, the WorkManager fallback, or the
+        // service's own timer produced it - making it impossible to tell "the fallbacks are
+        // firing but the send is failing" from "the fallbacks never fired at all" during a
+        // multi-hour sync gap.
+        if (wakeTrigger != null && wakeTrigger != source) {
+            message += " [via ${wakeTrigger.value}]"
+        }
         if (intervalMs != null) {
             val mins = intervalMs / 60000
             val secs = (intervalMs % 60000) / 1000
@@ -338,15 +349,13 @@ class LocationService : Service() {
                         }
                     }
                     val newPriority =
-                        when {
-                            event.type == ActivityType.STILL && deepSleepWhenStationary -> LocationAccuracy.PASSIVE
-                            event.type == ActivityType.STILL -> LocationAccuracy.LOW_POWER
+                        when (event.type) {
+                            ActivityType.STILL -> LocationAccuracy.LOW_POWER
                             else -> LocationAccuracy.HIGH
                         }
                     val newInterval =
-                        when {
-                            event.type == ActivityType.STILL && deepSleepWhenStationary -> 60_000L
-                            event.type == ActivityType.STILL -> HEARTBEAT_INTERVAL_MS
+                        when (event.type) {
+                            ActivityType.STILL -> HEARTBEAT_INTERVAL_MS
                             else -> 10_000L
                         }
 
@@ -356,14 +365,33 @@ class LocationService : Service() {
                         Log.i(TAG, "Updating location request: priority=$currentPriority, interval=$currentInterval")
                         logReliability(WakeSource.ACTIVITY_TRANSITION, true)
 
-                        isStill = event.type == ActivityType.STILL
+                        val enteringStill = event.type == ActivityType.STILL
+                        isStill = enteringStill
                         // Always maintain a geofence as a belt-and-suspenders restart trigger
                         // in case the foreground service is killed. On MOVING transitions we
                         // replant it at the current position rather than removing it so that
-                        // a 200m displacement still wakes us regardless of activity state.
+                        // real movement still wakes us regardless of activity state.
                         val loc = locationSource.lastLocation.value
                         if (loc != null) {
                             setGeofenceAt(loc.first, loc.second)
+                        }
+
+                        if (enteringStill && loc != null) {
+                            // Immediately tell peers we're stationary here, before we might go
+                            // dark - mirrors iOS's immediate send on first stationary detection.
+                            // Not debounced: the whole point is to warn the peer before a
+                            // possible suspension, so any delay defeats it. See the "here since"
+                            // background-triggering investigation.
+                            serviceScope.launch {
+                                sendLocationIfNeeded(
+                                    loc.first,
+                                    loc.second,
+                                    isHeartbeat = false,
+                                    force = true,
+                                    source = WakeSource.ACTIVITY_TRANSITION,
+                                    stationary = true,
+                                )
+                            }
                         }
 
                         // Force re-registration with new settings.
@@ -464,14 +492,36 @@ class LocationService : Service() {
         lng: Double,
     ) {
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED) return
-        if (locationProvider.setGeofenceAt(lat, lng)) {
-            // GMS: request submitted; actual confirmation logged by provider's Task listener.
-            Log.d(TAG, "Stationary: Geofence submitted at $lat, $lng")
-            e2eeManager.addDiagnosticEvent("Stationary: Geofence submitted")
-        } else {
-            // F-Droid build: geofencing unavailable (GMS-only). Movement-triggered restart
-            // is absent; the service relies solely on WorkManager and the alarm fallback.
-            Log.w(TAG, "Stationary: geofence not set — movement-triggered restart unavailable")
+        // Radius sizing is shared with iOS (GeofencePolicy.radiusMeters(), Kotlin commonMain) so
+        // the two platforms can't silently drift apart on "how big" the way the automated-
+        // keepalive throttle once did: larger while moving (we have live GPS truth anyway;
+        // fewer re-registrations needed), tighter once STILL (position isn't drifting, so a
+        // real departure should be caught fast). Re-centering *cadence* is NOT shared - unlike
+        // iOS's proactive per-fix drift check (GeofencePolicy.shouldRecenter()), Android
+        // replants only on an ActivityRecognition STILL/MOVING transition or an actual
+        // GEOFENCE_TRANSITION_EXIT (see ACTION_GEOFENCE_EVENT below). That's still
+        // self-bounding - exiting the current fence is exactly what triggers the next
+        // replant - just a different mechanism, not a shared one.
+        val radiusMeters = GeofencePolicy.radiusMeters(isMoving = !isStill).toFloat()
+        when (locationProvider.setGeofenceAt(lat, lng, radiusMeters)) {
+            GeofenceRequestResult.SUBMITTED -> {
+                // GMS: request submitted; actual confirmation logged by provider's Task listener.
+                Log.d(TAG, "Stationary: Geofence submitted at $lat, $lng")
+                e2eeManager.addDiagnosticEvent("Stationary: Geofence submitted")
+            }
+            GeofenceRequestResult.QUEUED -> {
+                // A prior request for a different target is still in flight; this one will
+                // submit once that settles (GmsLocationProvider). Logged distinctly from
+                // SUBMITTED so a diagnostics read of the event log doesn't claim this target
+                // was sent to GMS before it actually was.
+                Log.d(TAG, "Stationary: Geofence queued at $lat, $lng (prior request in flight)")
+                e2eeManager.addDiagnosticEvent("Stationary: Geofence queued")
+            }
+            GeofenceRequestResult.FAILED -> {
+                // F-Droid build: geofencing unavailable (GMS-only). Movement-triggered restart
+                // is absent; the service relies solely on WorkManager and the alarm fallback.
+                Log.w(TAG, "Stationary: geofence not set — movement-triggered restart unavailable")
+            }
         }
     }
 
@@ -640,7 +690,14 @@ class LocationService : Service() {
                     // a heartbeat to a friend who hasn't been heard from in 5 min is still
                     // throttled the same as a regular send (intentional: no point forcing a
                     // heartbeat to someone not reading either).
-                    sendLocationIfNeeded(lastLoc.first, lastLoc.second, isHeartbeat = true, force = true, source = WakeSource.HEARTBEAT)
+                    sendLocationIfNeeded(
+                        lastLoc.first,
+                        lastLoc.second,
+                        isHeartbeat = true,
+                        force = true,
+                        source = WakeSource.HEARTBEAT,
+                        wakeTrigger = source,
+                    )
                 } else {
                     // RECOVERY (§5.3): If we have no GPS fix but are sharing, send a
                     // keepalive message to all active friends to keep the session alive
@@ -651,7 +708,7 @@ class LocationService : Service() {
                     try {
                         locationClient.sendRecoveryKeepalives(userStore.effectivelyPausedIds())
                         lastSentTime = now
-                        logReliability(WakeSource.HEARTBEAT, true)
+                        logReliability(WakeSource.HEARTBEAT, true, wakeTrigger = source)
                     } catch (_: Exception) {
                     }
                 }
@@ -813,6 +870,8 @@ class LocationService : Service() {
         isHeartbeat: Boolean,
         force: Boolean = false,
         source: WakeSource = WakeSource.LOCATION_UPDATE,
+        wakeTrigger: WakeSource? = null,
+        stationary: Boolean = false,
     ) {
         if (!userStore.isSharingLocation.value) return
         val now = clock()
@@ -843,9 +902,9 @@ class LocationService : Service() {
                 if (!userStore.isSharingLocation.value) return
             }
             try {
-                locationClient.sendLocation(lat, lng, userStore.effectivelyPausedIds())
+                locationClient.sendLocation(lat, lng, userStore.effectivelyPausedIds(), stationary = stationary)
                 val sendCompleteTime = clock()
-                logReliability(source, true, interval)
+                logReliability(source, true, interval, wakeTrigger)
                 checkLateHeartbeat(interval)
                 lastSuccessfulSendTime = sendCompleteTime
                 updateStatus(null)
@@ -861,7 +920,7 @@ class LocationService : Service() {
         // All retries exhausted — restore lastSentTime so the next wake can retry.
         sendLock.withLock { lastSentTime = 0L }
         Log.e(TAG, "Failed to send location after $totalAttempts attempts: ${lastError?.message}")
-        logReliability(source, false, interval)
+        logReliability(source, false, interval, wakeTrigger)
         updateStatus(lastError ?: Exception("send failed"))
     }
 
@@ -1011,22 +1070,6 @@ class LocationService : Service() {
          * mis-classification when the phone is in a steady pocket while walking.
          */
         const val STILL_DISPLACEMENT_IGNORE_METERS = 100f
-
-        /**
-         * When true, on STILL transitions demote the FLP request to PRIORITY_PASSIVE
-         * (i.e. the GPS subsystem only piggybacks on other apps' fixes) and rely
-         * solely on the doze alarm + WorkManager periodic restart for heartbeat
-         * wakeups. Battery drops to near zero, but in deep Doze the alarm can be
-         * deferred to the next maintenance window (often >1h), so the heartbeat
-         * cadence collapses overnight.
-         *
-         * When false (default), on STILL transitions keep the FLP request alive
-         * at PRIORITY_LOW_POWER + 5-min interval. FLP satisfies these callbacks
-         * from wifi/cell/cached fixes without powering the GNSS chip, and — since
-         * the foreground service is `location` typed — the callbacks are exempt
-         * from Doze, giving us a deterministic ~5-min heartbeat wake source.
-         */
-        var deepSleepWhenStationary = false
 
         /** Overridable in tests. */
         var clock: () -> Long = { System.currentTimeMillis() }

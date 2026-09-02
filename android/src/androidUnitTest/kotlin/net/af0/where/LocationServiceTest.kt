@@ -507,4 +507,89 @@ class LocationServiceTest {
                 controller.destroy()
             }
         }
+
+    @Test
+    fun testActivityTransitionToStill_SendsImmediateStationaryLocation() =
+        runTest {
+            org.junit.Assume.assumeTrue(
+                "Activity recognition only enabled in full flavor",
+                BuildConfig.ACTIVITY_RECOGNITION_ENABLED,
+            )
+            val controller = Robolectric.buildService(LocationService::class.java)
+            val service = controller.get()
+
+            val mockClient = io.mockk.mockk<LocationClient>(relaxed = true)
+            service.locationClientOverride = mockClient
+            service.locationSourceOverride = fakeLocationSource
+
+            var nextEvents: List<ActivityTransitionEvent>? = null
+            service.activityHelperOverride =
+                object : ActivityHelper {
+                    override fun init(context: android.content.Context) {}
+
+                    override fun extractTransitionEvents(intent: Intent) = nextEvents
+
+                    override fun ensureRegistered(
+                        hasPermission: Boolean,
+                        isSharing: Boolean,
+                    ) {}
+
+                    override fun unregister() {}
+
+                    override fun onDestroy() {}
+                }
+            controller.create()
+            fakeLocationSource.onLocation(37.0, -122.0, null)
+
+            // Entering STILL must immediately send a stationary-flagged Location — not after
+            // any debounce — so a peer can render "here since HH:mm" before this device might
+            // go dark. See the "here since" background-triggering investigation.
+            nextEvents = listOf(ActivityTransitionEvent(ActivityType.STILL, TransitionType.ENTER))
+            val intent =
+                Intent(service, LocationService::class.java).apply {
+                    action = LocationService.ACTION_ACTIVITY_TRANSITION
+                }
+            controller.withIntent(intent).startCommand(0, 1)
+            advanceUntilIdle()
+
+            io.mockk.coVerify(exactly = 1) {
+                mockClient.sendLocation(37.0, -122.0, any(), stationary = true)
+            }
+        }
+
+    @Test
+    fun testSetGeofenceAt_logsDistinctDiagnosticsForSubmittedQueuedAndFailed() {
+        // Regression test: LocationService.setGeofenceAt() branches on GeofenceRequestResult
+        // to decide what diagnostic event to log. QUEUED must not be logged as "submitted" -
+        // this PR exists specifically to make multi-hour reliability diagnostics trustworthy,
+        // so a mislabeled event here would defeat that.
+        val controller = Robolectric.buildService(LocationService::class.java)
+        val service = controller.get()
+        val mockProvider = io.mockk.mockk<LocationProvider>(relaxed = true)
+        service.locationProviderOverride = mockProvider
+        val mockE2ee = io.mockk.mockk<net.af0.where.e2ee.E2eeManager>(relaxed = true)
+        service.e2eeManagerOverride = mockE2ee
+        controller.create()
+
+        val setGeofenceAt =
+            LocationService::class.java
+                .getDeclaredMethod("setGeofenceAt", java.lang.Double.TYPE, java.lang.Double.TYPE)
+                .apply { isAccessible = true }
+
+        io.mockk.every { mockProvider.setGeofenceAt(any(), any(), any()) } returns GeofenceRequestResult.SUBMITTED
+        setGeofenceAt.invoke(service, 1.0, 2.0)
+        io.mockk.verify(exactly = 1) { mockE2ee.addDiagnosticEvent("Stationary: Geofence submitted") }
+
+        io.mockk.every { mockProvider.setGeofenceAt(any(), any(), any()) } returns GeofenceRequestResult.QUEUED
+        setGeofenceAt.invoke(service, 3.0, 4.0)
+        io.mockk.verify(exactly = 1) { mockE2ee.addDiagnosticEvent("Stationary: Geofence queued") }
+        // Still exactly 1 - QUEUED must not also log "submitted".
+        io.mockk.verify(exactly = 1) { mockE2ee.addDiagnosticEvent("Stationary: Geofence submitted") }
+
+        io.mockk.every { mockProvider.setGeofenceAt(any(), any(), any()) } returns GeofenceRequestResult.FAILED
+        setGeofenceAt.invoke(service, 5.0, 6.0)
+        // FAILED logs neither - counts from the prior two cases must stay unchanged.
+        io.mockk.verify(exactly = 1) { mockE2ee.addDiagnosticEvent("Stationary: Geofence submitted") }
+        io.mockk.verify(exactly = 1) { mockE2ee.addDiagnosticEvent("Stationary: Geofence queued") }
+    }
 }
