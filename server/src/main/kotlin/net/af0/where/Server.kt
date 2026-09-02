@@ -944,12 +944,6 @@ class DualWriteMailboxState(
     // can't cause unbounded coroutine fan-out under sustained request volume - each mirrored
     // operation still runs off the request path, just with a ceiling on how many run at once.
     private val scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO.limitedParallelism(4)),
-    // evict() is called every RATE_LIMIT_WINDOW_MS (60s) by the app's housekeeping loop. Running
-    // secondary.evict() on that cadence pings a serverless Postgres (Neon) far more often than its
-    // autosuspend idle window, keeping its compute billed as always-on instead of scale-to-zero.
-    // drain()/post() already filter on expires_at directly, so delaying the physical sweep is
-    // correctness-neutral - only the row cleanup itself needs a much coarser cadence.
-    private val secondaryEvictIntervalMs: Long = 30 * 60 * 1000L,
     private val onMismatch: ((MismatchEvent) -> Unit)? = null,
     // Deletes against the secondary are best-effort like every other mirrored write here, but
     // unlike a failed post/evict, a failed delete leaves a permanent ghost row behind (nothing
@@ -959,8 +953,6 @@ class DualWriteMailboxState(
     private val onSecondaryDeleteFailure: ((op: String, tokenHash: String, error: Throwable) -> Unit)? = null,
     private val shutdownDrainTimeoutMs: Long = SHUTDOWN_DRAIN_TIMEOUT_MS,
 ) : MailboxStore {
-    private val lastSecondaryEvictAt = java.util.concurrent.atomic.AtomicLong(0)
-
     // Flipped at the start of close() so a mirror write racing shutdown (e.g. from a request
     // still finishing out its grace period, or the periodic evict() housekeeping tick) doesn't
     // launch new work onto a scope that's already being drained - see close()'s doc.
@@ -1035,12 +1027,12 @@ class DualWriteMailboxState(
 
     override fun evict() {
         primary.evict()
-        val now = System.currentTimeMillis()
-        val last = lastSecondaryEvictAt.get()
-        if (now - last >= secondaryEvictIntervalMs && lastSecondaryEvictAt.compareAndSet(last, now)) {
-            runCatching { secondary.evict() }
-                .onFailure { migrationLog.warn("secondary evict failed", it) }
-        }
+        // Synchronous and unthrottled, unlike the write paths above: this only runs off the
+        // app's own 60s housekeeping loop (not the request path), and DynamoMailboxState.evict()
+        // does no I/O at all (see its own doc) - there's neither a latency reason to make this
+        // async nor a cost reason to throttle it the way the old Postgres/Neon secondary needed.
+        runCatching { secondary.evict() }
+            .onFailure { migrationLog.warn("secondary evict failed", it) }
     }
 
     override fun close() {

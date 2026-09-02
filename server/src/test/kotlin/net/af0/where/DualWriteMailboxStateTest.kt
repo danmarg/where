@@ -163,31 +163,19 @@ class DualWriteMailboxStateTest {
     }
 
     @Test
-    fun `secondary evict is skipped when called again before the interval elapses`() {
-        // Regression test: evict() fires every 60s from the app's housekeeping loop, but pinging
-        // a serverless Postgres that often defeats its autosuspend billing - see secondaryEvictIntervalMs.
+    fun `evict runs on both stores every tick`() {
+        // Unlike the old Postgres/Neon secondary, DynamoMailboxState.evict() does no I/O (native
+        // TTL sweeps expired items in the background), so there's no cost reason to throttle it.
         val primary = FakeMailboxStore()
         val secondary = FakeMailboxStore()
-        val dual = DualWriteMailboxState(primary, secondary, scope = testScope, secondaryEvictIntervalMs = 60 * 60 * 1000L)
+        val dual = DualWriteMailboxState(primary, secondary, testScope)
 
         dual.evict()
         dual.evict()
         dual.evict()
 
-        assertEquals(1, secondary.evictCount, "secondary.evict() should only run once per interval, not on every tick")
-        assertEquals(3, primary.evictCount, "primary.evict() (cheap, in-process) should still run every tick")
-    }
-
-    @Test
-    fun `secondary evict interval of zero allows every tick`() {
-        val primary = FakeMailboxStore()
-        val secondary = FakeMailboxStore()
-        val dual = DualWriteMailboxState(primary, secondary, scope = testScope, secondaryEvictIntervalMs = 0L)
-
-        dual.evict()
-        dual.evict()
-
-        assertEquals(2, secondary.evictCount, "an interval of 0 means every tick is eligible to run")
+        assertEquals(3, secondary.evictCount, "secondary.evict() should run on every tick, not be throttled")
+        assertEquals(3, primary.evictCount)
     }
 
     @Test
