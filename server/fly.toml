@@ -32,4 +32,4 @@ primary_region = 'fra'
 
 [[vm]]
   cpus = 1
-  memory_mb = 256
+  memory_mb = 512
