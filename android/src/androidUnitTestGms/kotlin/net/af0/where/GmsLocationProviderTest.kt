@@ -148,16 +148,16 @@ class GmsLocationProviderTest {
     // --- setGeofenceAt ---
 
     @Test
-    fun setGeofenceAt_returnsTrueImmediately() {
-        // GMS geofencing is asynchronous; setGeofenceAt must return true as soon as the
+    fun setGeofenceAt_returnsSubmittedImmediately() {
+        // GMS geofencing is asynchronous; setGeofenceAt must report SUBMITTED as soon as the
         // request is submitted, before the Task result is known.
-        assertTrue(provider.setGeofenceAt(37.0, -122.0, 200f))
+        assertEquals(GeofenceRequestResult.SUBMITTED, provider.setGeofenceAt(37.0, -122.0, 200f))
     }
 
     @Test
-    fun setGeofenceAt_securityException_returnsFalse() {
+    fun setGeofenceAt_securityException_returnsFailed() {
         every { mockGeofencingClient.addGeofences(any(), any()) } throws SecurityException("denied")
-        assertFalse(provider.setGeofenceAt(37.0, -122.0, 200f))
+        assertEquals(GeofenceRequestResult.FAILED, provider.setGeofenceAt(37.0, -122.0, 200f))
     }
 
     @Test
@@ -174,10 +174,12 @@ class GmsLocationProviderTest {
             taskMock
         }
 
-        assertTrue(provider.setGeofenceAt(1.0, 2.0, 200f))
+        assertEquals(GeofenceRequestResult.SUBMITTED, provider.setGeofenceAt(1.0, 2.0, 200f))
         verify(exactly = 1) { mockGeofencingClient.addGeofences(any(), any()) }
 
-        assertTrue(provider.setGeofenceAt(3.0, 4.0, 400f))
+        // A second target arriving mid-flight must report QUEUED, not SUBMITTED - it hasn't
+        // actually been sent to GMS yet.
+        assertEquals(GeofenceRequestResult.QUEUED, provider.setGeofenceAt(3.0, 4.0, 400f))
         verify(exactly = 1) { mockGeofencingClient.addGeofences(any(), any()) }
 
         successListeners.first().onSuccess(null)

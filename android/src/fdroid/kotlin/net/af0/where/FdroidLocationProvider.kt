@@ -179,7 +179,7 @@ class FdroidLocationProvider : LocationProvider {
         lat: Double,
         lng: Double,
         radiusMeters: Float,
-    ): Boolean = false
+    ): GeofenceRequestResult = GeofenceRequestResult.FAILED
 
     override fun removeGeofence() {}
 

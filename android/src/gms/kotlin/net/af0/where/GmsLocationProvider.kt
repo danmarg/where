@@ -167,10 +167,10 @@ class GmsLocationProvider : LocationProvider {
         lat: Double,
         lng: Double,
         radiusMeters: Float,
-    ): Boolean {
+    ): GeofenceRequestResult {
         if (geofenceRequestInFlight) {
             pendingGeofenceTarget = Triple(lat, lng, radiusMeters)
-            return true
+            return GeofenceRequestResult.QUEUED
         }
         return submitGeofence(lat, lng, radiusMeters)
     }
@@ -179,7 +179,7 @@ class GmsLocationProvider : LocationProvider {
         lat: Double,
         lng: Double,
         radiusMeters: Float,
-    ): Boolean {
+    ): GeofenceRequestResult {
         val geofence =
             Geofence.Builder()
                 .setRequestId("stationary_fence")
@@ -203,11 +203,11 @@ class GmsLocationProvider : LocationProvider {
                     Log.w(TAG, "Geofence add failed (fence may not be active): ${e.message}")
                     onGeofenceRequestSettled()
                 }
-            true
+            GeofenceRequestResult.SUBMITTED
         } catch (e: SecurityException) {
             Log.w(TAG, "SecurityException setting geofence: ${e.message}")
             geofenceRequestInFlight = false
-            false
+            GeofenceRequestResult.FAILED
         }
     }
 

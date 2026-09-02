@@ -503,14 +503,25 @@ class LocationService : Service() {
         // self-bounding - exiting the current fence is exactly what triggers the next
         // replant - just a different mechanism, not a shared one.
         val radiusMeters = GeofencePolicy.radiusMeters(isMoving = !isStill).toFloat()
-        if (locationProvider.setGeofenceAt(lat, lng, radiusMeters)) {
-            // GMS: request submitted; actual confirmation logged by provider's Task listener.
-            Log.d(TAG, "Stationary: Geofence submitted at $lat, $lng")
-            e2eeManager.addDiagnosticEvent("Stationary: Geofence submitted")
-        } else {
-            // F-Droid build: geofencing unavailable (GMS-only). Movement-triggered restart
-            // is absent; the service relies solely on WorkManager and the alarm fallback.
-            Log.w(TAG, "Stationary: geofence not set — movement-triggered restart unavailable")
+        when (locationProvider.setGeofenceAt(lat, lng, radiusMeters)) {
+            GeofenceRequestResult.SUBMITTED -> {
+                // GMS: request submitted; actual confirmation logged by provider's Task listener.
+                Log.d(TAG, "Stationary: Geofence submitted at $lat, $lng")
+                e2eeManager.addDiagnosticEvent("Stationary: Geofence submitted")
+            }
+            GeofenceRequestResult.QUEUED -> {
+                // A prior request for a different target is still in flight; this one will
+                // submit once that settles (GmsLocationProvider). Logged distinctly from
+                // SUBMITTED so a diagnostics read of the event log doesn't claim this target
+                // was sent to GMS before it actually was.
+                Log.d(TAG, "Stationary: Geofence queued at $lat, $lng (prior request in flight)")
+                e2eeManager.addDiagnosticEvent("Stationary: Geofence queued")
+            }
+            GeofenceRequestResult.FAILED -> {
+                // F-Droid build: geofencing unavailable (GMS-only). Movement-triggered restart
+                // is absent; the service relies solely on WorkManager and the alarm fallback.
+                Log.w(TAG, "Stationary: geofence not set — movement-triggered restart unavailable")
+            }
         }
     }
 
