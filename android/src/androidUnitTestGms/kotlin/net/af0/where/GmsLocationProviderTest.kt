@@ -1,6 +1,7 @@
 package net.af0.where
 
 import android.app.Application
+import android.app.PendingIntent
 import android.location.Location
 import androidx.test.core.app.ApplicationProvider
 import com.google.android.gms.location.FusedLocationProviderClient
@@ -225,7 +226,7 @@ class GmsLocationProviderTest {
         assertEquals(GeofenceRequestResult.QUEUED, provider.setGeofenceAt(3.0, 4.0, 400f))
 
         provider.removeGeofence()
-        verify(exactly = 1) { mockGeofencingClient.removeGeofences(any()) }
+        verify(exactly = 1) { mockGeofencingClient.removeGeofences(any<PendingIntent>()) }
 
         // The in-flight add (already sent before removeGeofence() was called) now settles.
         // Its own effect can't be un-sent at this layer, but the queued target it would
