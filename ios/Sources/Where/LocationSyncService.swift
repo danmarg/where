@@ -687,6 +687,11 @@ final class LocationSyncService: ObservableObject {
         } catch {
             logger.error("Poll failed: \(error.localizedDescription)")
             updateStatus(error)
+            // The success path above is the only other place this refreshes - without this,
+            // a poll failure (the case you most want visibility into) leaves the Events log
+            // frozen on whatever it last showed, even though the underlying store just
+            // recorded a new diagnostic event for this exact failure.
+            repo.diagnosticLog = e2eeManager.diagnosticLogSnapshot()
         }
     }
 
