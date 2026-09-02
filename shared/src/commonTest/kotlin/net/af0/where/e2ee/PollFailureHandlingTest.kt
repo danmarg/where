@@ -135,4 +135,36 @@ class PollFailureHandlingTest {
                 aliceClient.poll()
             }
         }
+
+    @Test
+    fun testWallClockTimeoutHandledAsOrdinaryFailureNotPropagated() =
+        runTest {
+            // WallClockTimeoutCancellationException IS a CancellationException, but it's a
+            // self-inflicted, expected "this one request timed out" signal (E2eeMailboxClient
+            // wraps every mailbox call in withWallClockTimeout) - not a genuine structured-
+            // concurrency shutdown. Unlike the real-cancellation cases above, it must NOT
+            // propagate out of pollFriend(): doing so would skip updateLastPollTs()/
+            // processOutbox()/the automated keepalive backstop check for every routine timeout,
+            // which is the opposite of what's wanted since timeouts are the common case this
+            // whole investigation started from.
+            val realMailbox = MemoryMailboxClient()
+            val faultyMailbox = FaultInjectingMailboxClient(realMailbox)
+            val (aliceManager, aliceClient, aliceFriend) = setupFriendship(faultyMailbox)
+
+            assertEquals(0L, aliceManager.getFriend(aliceFriend.id)!!.lastPollTs, "Sanity check: no poll recorded yet")
+
+            faultyMailbox.pollExceptionOnce = WallClockTimeoutCancellationException()
+
+            // Must return normally (not throw) - a timeout is handled like any other failure.
+            val updates = aliceClient.pollFriend(aliceFriend.id)
+            assertTrue(updates.isEmpty(), "A timed-out poll should yield no updates")
+
+            val friendAfter = aliceManager.getFriend(aliceFriend.id)!!
+            assertFalse(friendAfter.isCaughtUp, "A timed-out poll must not be recorded as caught up")
+            assertTrue(
+                friendAfter.lastPollTs > 0L,
+                "Per-friend housekeeping (updateLastPollTs/processOutbox/keepalive backstop) must " +
+                    "still run after an ordinary wall-clock timeout, unlike a genuine cancellation",
+            )
+        }
 }
