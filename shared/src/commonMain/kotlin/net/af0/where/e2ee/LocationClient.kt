@@ -244,12 +244,19 @@ open class LocationClient(
                 val friend = store.getFriend(friendId) ?: break
                 val currentToken = friend.session.recvToken.toHex()
 
+                val pollStartMs = currentTimeMillis()
                 val messages =
                     try {
                         service.poll(currentToken)
+                    } catch (e: CancellationException) {
+                        throw e
                     } catch (e: Exception) {
-                        store.addDiagnosticEvent("poll($friendId) failed on $currentToken: ${e.message}")
-                        emptyList()
+                        val elapsedMs = currentTimeMillis() - pollStartMs
+                        store.addDiagnosticEvent(
+                            "poll($friendId) failed on $currentToken after ${elapsedMs}ms: ${e.message}",
+                        )
+                        stopPolling = true
+                        continue
                     }
 
                 if (messages.isEmpty()) {
