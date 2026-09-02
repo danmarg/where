@@ -349,15 +349,13 @@ class LocationService : Service() {
                         }
                     }
                     val newPriority =
-                        when {
-                            event.type == ActivityType.STILL && deepSleepWhenStationary -> LocationAccuracy.PASSIVE
-                            event.type == ActivityType.STILL -> LocationAccuracy.LOW_POWER
+                        when (event.type) {
+                            ActivityType.STILL -> LocationAccuracy.LOW_POWER
                             else -> LocationAccuracy.HIGH
                         }
                     val newInterval =
-                        when {
-                            event.type == ActivityType.STILL && deepSleepWhenStationary -> 60_000L
-                            event.type == ActivityType.STILL -> HEARTBEAT_INTERVAL_MS
+                        when (event.type) {
+                            ActivityType.STILL -> HEARTBEAT_INTERVAL_MS
                             else -> 10_000L
                         }
 
@@ -367,14 +365,33 @@ class LocationService : Service() {
                         Log.i(TAG, "Updating location request: priority=$currentPriority, interval=$currentInterval")
                         logReliability(WakeSource.ACTIVITY_TRANSITION, true)
 
-                        isStill = event.type == ActivityType.STILL
+                        val enteringStill = event.type == ActivityType.STILL
+                        isStill = enteringStill
                         // Always maintain a geofence as a belt-and-suspenders restart trigger
                         // in case the foreground service is killed. On MOVING transitions we
                         // replant it at the current position rather than removing it so that
-                        // a 200m displacement still wakes us regardless of activity state.
+                        // real movement still wakes us regardless of activity state.
                         val loc = locationSource.lastLocation.value
                         if (loc != null) {
                             setGeofenceAt(loc.first, loc.second)
+                        }
+
+                        if (enteringStill && loc != null) {
+                            // Immediately tell peers we're stationary here, before we might go
+                            // dark - mirrors iOS's immediate send on first stationary detection.
+                            // Not debounced: the whole point is to warn the peer before a
+                            // possible suspension, so any delay defeats it. See the "here since"
+                            // background-triggering investigation.
+                            serviceScope.launch {
+                                sendLocationIfNeeded(
+                                    loc.first,
+                                    loc.second,
+                                    isHeartbeat = false,
+                                    force = true,
+                                    source = WakeSource.ACTIVITY_TRANSITION,
+                                    stationary = true,
+                                )
+                            }
                         }
 
                         // Force re-registration with new settings.
@@ -475,7 +492,13 @@ class LocationService : Service() {
         lng: Double,
     ) {
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED) return
-        if (locationProvider.setGeofenceAt(lat, lng)) {
+        // Radius/re-centering policy is shared with iOS (GeofencePolicy, Kotlin commonMain) so
+        // the two platforms can't silently drift apart on "how big / how often" the way the
+        // automated-keepalive throttle once did. Larger while moving (we have live GPS truth
+        // anyway; fewer re-registrations needed), tighter once STILL (position isn't drifting,
+        // so a real departure should be caught fast).
+        val radiusMeters = GeofencePolicy.radiusMeters(isMoving = !isStill).toFloat()
+        if (locationProvider.setGeofenceAt(lat, lng, radiusMeters)) {
             // GMS: request submitted; actual confirmation logged by provider's Task listener.
             Log.d(TAG, "Stationary: Geofence submitted at $lat, $lng")
             e2eeManager.addDiagnosticEvent("Stationary: Geofence submitted")
@@ -832,6 +855,7 @@ class LocationService : Service() {
         force: Boolean = false,
         source: WakeSource = WakeSource.LOCATION_UPDATE,
         wakeTrigger: WakeSource? = null,
+        stationary: Boolean = false,
     ) {
         if (!userStore.isSharingLocation.value) return
         val now = clock()
@@ -862,7 +886,7 @@ class LocationService : Service() {
                 if (!userStore.isSharingLocation.value) return
             }
             try {
-                locationClient.sendLocation(lat, lng, userStore.effectivelyPausedIds())
+                locationClient.sendLocation(lat, lng, userStore.effectivelyPausedIds(), stationary = stationary)
                 val sendCompleteTime = clock()
                 logReliability(source, true, interval, wakeTrigger)
                 checkLateHeartbeat(interval)
@@ -1030,22 +1054,6 @@ class LocationService : Service() {
          * mis-classification when the phone is in a steady pocket while walking.
          */
         const val STILL_DISPLACEMENT_IGNORE_METERS = 100f
-
-        /**
-         * When true, on STILL transitions demote the FLP request to PRIORITY_PASSIVE
-         * (i.e. the GPS subsystem only piggybacks on other apps' fixes) and rely
-         * solely on the doze alarm + WorkManager periodic restart for heartbeat
-         * wakeups. Battery drops to near zero, but in deep Doze the alarm can be
-         * deferred to the next maintenance window (often >1h), so the heartbeat
-         * cadence collapses overnight.
-         *
-         * When false (default), on STILL transitions keep the FLP request alive
-         * at PRIORITY_LOW_POWER + 5-min interval. FLP satisfies these callbacks
-         * from wifi/cell/cached fixes without powering the GNSS chip, and — since
-         * the foreground service is `location` typed — the callbacks are exempt
-         * from Doze, giving us a deterministic ~5-min heartbeat wake source.
-         */
-        var deepSleepWhenStationary = false
 
         /** Overridable in tests. */
         var clock: () -> Long = { System.currentTimeMillis() }

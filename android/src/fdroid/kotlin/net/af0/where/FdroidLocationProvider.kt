@@ -178,6 +178,7 @@ class FdroidLocationProvider : LocationProvider {
     override fun setGeofenceAt(
         lat: Double,
         lng: Double,
+        radiusMeters: Float,
     ): Boolean = false
 
     override fun removeGeofence() {}

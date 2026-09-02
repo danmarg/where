@@ -151,13 +151,13 @@ class GmsLocationProviderTest {
     fun setGeofenceAt_returnsTrueImmediately() {
         // GMS geofencing is asynchronous; setGeofenceAt must return true as soon as the
         // request is submitted, before the Task result is known.
-        assertTrue(provider.setGeofenceAt(37.0, -122.0))
+        assertTrue(provider.setGeofenceAt(37.0, -122.0, 200f))
     }
 
     @Test
     fun setGeofenceAt_securityException_returnsFalse() {
         every { mockGeofencingClient.addGeofences(any(), any()) } throws SecurityException("denied")
-        assertFalse(provider.setGeofenceAt(37.0, -122.0))
+        assertFalse(provider.setGeofenceAt(37.0, -122.0, 200f))
     }
 
     // --- onDestroy ---

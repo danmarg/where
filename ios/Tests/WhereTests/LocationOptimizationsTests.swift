@@ -51,9 +51,7 @@ class LocationOptimizationsTests: XCTestCase {
     }
 
     private func resetLocationManagerShared() {
-        LocationManager.shared.stationaryTask?.cancel()
-        LocationManager.shared.stationaryTask = nil
-        LocationManager.shared.stationaryAnchor = nil
+        LocationManager.shared.geofenceCenter = nil
         LocationManager.shared.isStationary = false
     }
 
@@ -91,18 +89,18 @@ class LocationOptimizationsTests: XCTestCase {
         XCTAssertEqual(locationManager.location?.timestamp, now)
     }
 
-    func testLocationManager_StationaryDebounce_JitterDoesNotCancelTimer() async throws {
+    func testLocationManager_StationaryDebounce_JitterDoesNotMoveGeofence() async throws {
         let locationManager = LocationManager.shared
         let anchor = CLLocation(
             coordinate: CLLocationCoordinate2D(latitude: 37.7749, longitude: -122.4194),
             altitude: 0, horizontalAccuracy: 10, verticalAccuracy: 10, timestamp: Date()
         )
 
-        // Arm a stationary reading to set the anchor and start the timer.
+        // First stationary reading arms the fallback geofence immediately (no debounce).
         locationManager.handleStationarityUpdate(anchor, stationary: true)
-        XCTAssertNotNil(locationManager.stationaryTask, "stationaryTask must be created on first stationary reading")
         XCTAssertTrue(locationManager.isStationary)
-        let originalTask = locationManager.stationaryTask!
+        XCTAssertNotNil(locationManager.geofenceCenter, "geofence must be armed on first stationary reading")
+        let originalCenterLat = locationManager.geofenceCenter?.coordinate.latitude
 
         // Feed a non-stationary fix 50 m from the anchor — this is GPS jitter.
         let jitterFix = CLLocation(
@@ -114,27 +112,24 @@ class LocationOptimizationsTests: XCTestCase {
 
         locationManager.handleStationarityUpdate(jitterFix, stationary: false)
 
-        XCTAssertFalse(originalTask.isCancelled,
-            "stationaryTask must not be cancelled by a sub-200m jitter reading")
         XCTAssertTrue(locationManager.isStationary,
-            "isStationary must remain true for a jitter reading")
-        XCTAssertNotNil(locationManager.stationaryAnchor,
-            "stationaryAnchor must be preserved for a jitter reading")
+            "isStationary must remain true for a sub-200m jitter reading")
+        XCTAssertEqual(locationManager.geofenceCenter?.coordinate.latitude, originalCenterLat,
+            "geofence center must not shift for a jitter reading")
     }
 
-    func testLocationManager_StationaryDebounce_LargeMoveCancelsTimer() async throws {
+    func testLocationManager_StationaryDebounce_LargeMoveClearsStationaryAndRecenters() async throws {
         let locationManager = LocationManager.shared
         let anchor = CLLocation(
             coordinate: CLLocationCoordinate2D(latitude: 37.7749, longitude: -122.4194),
             altitude: 0, horizontalAccuracy: 10, verticalAccuracy: 10, timestamp: Date()
         )
 
-        // Arm stationary state.
         locationManager.handleStationarityUpdate(anchor, stationary: true)
-        XCTAssertNotNil(locationManager.stationaryTask)
-        let originalTask = locationManager.stationaryTask!
+        XCTAssertTrue(locationManager.isStationary)
 
-        // Feed a non-stationary fix 300 m away — genuine movement.
+        // Genuine movement, far enough to clear both the 200m jitter gate and the
+        // moving-radius recenter threshold.
         let farFix = CLLocation(
             coordinate: CLLocationCoordinate2D(latitude: 37.7776, longitude: -122.4194),
             altitude: 0, horizontalAccuracy: 10, verticalAccuracy: 10, timestamp: Date()
@@ -144,17 +139,13 @@ class LocationOptimizationsTests: XCTestCase {
 
         locationManager.handleStationarityUpdate(farFix, stationary: false)
 
-        XCTAssertTrue(originalTask.isCancelled,
-            "stationaryTask must be cancelled when movement >= 200m from anchor")
         XCTAssertFalse(locationManager.isStationary,
             "isStationary must be false after genuine movement")
-        XCTAssertNil(locationManager.stationaryAnchor,
-            "stationaryAnchor must be cleared after genuine movement")
-        XCTAssertNil(locationManager.stationaryTask,
-            "stationaryTask must be nil after genuine movement")
+        XCTAssertEqual(locationManager.geofenceCenter?.coordinate.latitude, farFix.coordinate.latitude,
+            "geofence must be re-centered at the new position after genuine movement")
     }
 
-    func testLocationManager_StationaryUpdate_SetsAnchorOnFirstStationaryReading() async throws {
+    func testLocationManager_StationaryUpdate_ArmsGeofenceOnFirstStationaryReading() async throws {
         let locationManager = LocationManager.shared
         let loc = CLLocation(
             coordinate: CLLocationCoordinate2D(latitude: 37.7749, longitude: -122.4194),
@@ -162,24 +153,20 @@ class LocationOptimizationsTests: XCTestCase {
         )
         locationManager.handleStationarityUpdate(loc, stationary: true)
 
-        XCTAssertNotNil(locationManager.stationaryTask, "stationaryTask must be started on first stationary reading")
-        XCTAssertNotNil(locationManager.stationaryAnchor, "stationaryAnchor must be set on first stationary reading")
+        XCTAssertNotNil(locationManager.geofenceCenter, "geofence must be armed on first stationary reading")
         XCTAssertTrue(locationManager.isStationary)
 
-        // A second stationary reading must not replace the existing task or anchor.
-        let anchor1Lat = locationManager.stationaryAnchor?.coordinate.latitude
+        // A second, nearby stationary reading must not need to move the geofence.
+        let centerLat = locationManager.geofenceCenter?.coordinate.latitude
         let loc2 = CLLocation(
             coordinate: CLLocationCoordinate2D(latitude: 37.7750, longitude: -122.4194),
             altitude: 0, horizontalAccuracy: 10, verticalAccuracy: 10, timestamp: Date()
         )
         locationManager.handleStationarityUpdate(loc2, stationary: true)
 
-        XCTAssertNotNil(locationManager.stationaryTask,
-            "stationaryTask must still exist after a second stationary reading")
-        XCTAssertFalse(locationManager.stationaryTask!.isCancelled,
-            "stationaryTask must not be cancelled by a second stationary reading")
-        XCTAssertEqual(locationManager.stationaryAnchor?.coordinate.latitude, anchor1Lat,
-            "stationaryAnchor must not shift on subsequent stationary readings")
+        XCTAssertTrue(locationManager.isStationary)
+        XCTAssertEqual(locationManager.geofenceCenter?.coordinate.latitude, centerLat,
+            "geofence center must not shift for a nearby subsequent stationary reading")
     }
 
     func testSendLocation_SoftwareDistanceFilter() async throws {

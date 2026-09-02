@@ -46,6 +46,7 @@ interface LocationProvider {
     fun setGeofenceAt(
         lat: Double,
         lng: Double,
+        radiusMeters: Float,
     ): Boolean
 
     fun removeGeofence()

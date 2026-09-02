@@ -507,4 +507,53 @@ class LocationServiceTest {
                 controller.destroy()
             }
         }
+
+    @Test
+    fun testActivityTransitionToStill_SendsImmediateStationaryLocation() =
+        runTest {
+            org.junit.Assume.assumeTrue(
+                "Activity recognition only enabled in full flavor",
+                BuildConfig.ACTIVITY_RECOGNITION_ENABLED,
+            )
+            val controller = Robolectric.buildService(LocationService::class.java)
+            val service = controller.get()
+
+            val mockClient = io.mockk.mockk<LocationClient>(relaxed = true)
+            service.locationClientOverride = mockClient
+            service.locationSourceOverride = fakeLocationSource
+
+            var nextEvents: List<ActivityTransitionEvent>? = null
+            service.activityHelperOverride =
+                object : ActivityHelper {
+                    override fun init(context: android.content.Context) {}
+
+                    override fun extractTransitionEvents(intent: Intent) = nextEvents
+
+                    override fun ensureRegistered(
+                        hasPermission: Boolean,
+                        isSharing: Boolean,
+                    ) {}
+
+                    override fun unregister() {}
+
+                    override fun onDestroy() {}
+                }
+            controller.create()
+            fakeLocationSource.onLocation(37.0, -122.0, null)
+
+            // Entering STILL must immediately send a stationary-flagged Location — not after
+            // any debounce — so a peer can render "here since HH:mm" before this device might
+            // go dark. See the "here since" background-triggering investigation.
+            nextEvents = listOf(ActivityTransitionEvent(ActivityType.STILL, TransitionType.ENTER))
+            val intent =
+                Intent(service, LocationService::class.java).apply {
+                    action = LocationService.ACTION_ACTIVITY_TRANSITION
+                }
+            controller.withIntent(intent).startCommand(0, 1)
+            advanceUntilIdle()
+
+            io.mockk.coVerify(exactly = 1) {
+                mockClient.sendLocation(37.0, -122.0, any(), stationary = true)
+            }
+        }
 }

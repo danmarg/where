@@ -1,6 +1,7 @@
 import CoreLocation
 import Combine
 import UIKit
+@preconcurrency import Shared
 
 private let stationaryGeofenceId = "stationary_fence"
 
@@ -36,29 +37,14 @@ final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelega
     private var backgroundActivity: CLBackgroundActivitySession?
     private var updatesTask: Task<Void, Never>?
 
-    // Reliability loop state
-    private var isLowPowerMode = false
-    var stationaryTask: Task<Void, Never>?  // internal for testability
-    /// Anchor set when the stationaryTask timer begins. Non-stationary fixes within
-    /// minimumReportingDistanceMeters of this anchor are treated as GPS jitter and
-    /// do not reset the 5-minute timer. Internal for testability.
-    var stationaryAnchor: CLLocation? = nil
     /// Cached stationarity flag readable by any send path without an async query.
     var isStationary: Bool = false
 
-    /// When true, fully tear down the background activity session and live-updates
-    /// stream once the user has been stationary for 5+ minutes. The app then relies
-    /// solely on geofence-exit, visit monitoring, and BGAppRefreshTask to wake up —
-    /// minimal battery, but heartbeat cadence becomes whatever iOS decides (often
-    /// nothing overnight).
-    ///
-    /// When false (default), keep `CLBackgroundActivitySession` and the
-    /// `CLLocationUpdate.liveUpdates()` stream alive while stationary so the
-    /// in-process 1Hz Timer keeps firing and `pollAll()` can send the 5-minute
-    /// heartbeat. The radio cost is modest because liveUpdates throttles itself
-    /// while the device is stationary, and stationary users are frequently
-    /// plugged in.
-    static var deepSleepWhenStationary = false
+    /// Center of the fallback "wake me if I leave" geofence currently armed with
+    /// CoreLocation, if any. Internal for testability. See GeofencePolicy (Shared) for
+    /// the radius/re-centering rules.
+    var geofenceCenter: CLLocation? = nil
+
     private static let lastLatKey = "location_last_lat"
     private static let lastLngKey = "location_last_lng"
 
@@ -118,11 +104,8 @@ final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelega
     }
 
     func stopUpdating() {
-        stationaryTask?.cancel()
-        stationaryTask = nil
-        stationaryAnchor = nil
         isStationary = false
-        isLowPowerMode = false
+        geofenceCenter = nil
 
         updatesTask?.cancel()
         updatesTask = nil
@@ -160,18 +143,6 @@ final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelega
     private func startUpdating() {
         guard let manager = manager else { return }
 
-        // Clean up reliability loop state before starting high-fidelity tracking
-        isLowPowerMode = false
-        isStationary = false
-        stationaryTask?.cancel()
-        stationaryTask = nil
-        stationaryAnchor = nil
-        for region in manager.monitoredRegions {
-            if region.identifier == stationaryGeofenceId {
-                manager.stopMonitoring(for: region)
-            }
-        }
-
         // Start background activity session to keep the app active for location updates.
         if #available(iOS 17.0, *), backgroundActivity == nil {
             backgroundActivity = CLBackgroundActivitySession()
@@ -182,6 +153,14 @@ final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelega
         manager.showsBackgroundLocationIndicator = (status == .authorizedAlways)
 
         guard updatesTask == nil else { return }
+
+        // Fresh start of the live-updates stream (not just a redundant call while it's
+        // already running) - reset reliability-loop state and any stale fallback geofence.
+        isStationary = false
+        geofenceCenter = nil
+        for region in manager.monitoredRegions where region.identifier == stationaryGeofenceId {
+            manager.stopMonitoring(for: region)
+        }
 
         // Main location updates loop using the modern async API.
         // Heartbeats are handled by LocationSyncService.pollAll() which is driven by
@@ -233,93 +212,71 @@ final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelega
     /// Extracted from the stream loop so tests can call it directly.
     func handleStationarityUpdate(_ loc: CLLocation, stationary: Bool) {
         if stationary {
-            if self.stationaryTask == nil {
-                self.stationaryAnchor = loc
-                self.stationaryTask = Task { @MainActor in
-                    do {
-                        try await Task.sleep(for: .seconds(5 * 60))
-                        if !Task.isCancelled {
-                            self.enterLowPowerMode(at: loc)
-                        }
-                    } catch {
-                        // Cancelled
-                    }
-                }
+            if !self.isStationary {
+                self.isStationary = true
+                LocationSyncService.shared.e2eeManager.addDiagnosticEvent(message: "Stationary (System)", coalesceKey: nil)
+                // Emit the stationary flag immediately, not after a debounce - the whole
+                // point is to warn the peer *before* we might go dark, so the recipient
+                // can render "here since HH:mm" instead of the ambiguous "last seen Xh
+                // ago" if we do get suspended. A previous version delayed this behind a
+                // live in-process 5-minute Task.sleep, which died silently (never firing
+                // the message at all) if the app was suspended before it completed - see
+                // the "here since" background-triggering investigation. A brief false
+                // positive here (if the system's own stationary signal flickers) costs
+                // one line in the peer's UI and self-corrects on the very next
+                // non-stationary reading below.
+                LocationSyncService.shared.sendLocation(
+                    lat: loc.coordinate.latitude,
+                    lng: loc.coordinate.longitude,
+                    force: true,
+                    source: .locationUpdate,
+                    stationary: true,
+                )
             }
-            self.isStationary = true
-            LocationSyncService.shared.e2eeManager.addDiagnosticEvent(message: "Stationary (System)", coalesceKey: nil)
+            armGeofenceIfNeeded(at: loc, isMoving: false)
         } else {
-            // Debounce: sub-200m fixes near the stationary anchor are GPS
-            // jitter — don't cancel the 5-minute timer for them.
+            // Debounce: sub-200m fixes near the last-known stationary center are GPS
+            // jitter — don't flip back to "moving" for them.
             let isJitter: Bool
-            if let anchor = self.stationaryAnchor {
-                isJitter = loc.distance(from: anchor) < LocationSyncService.minimumReportingDistanceMeters
+            if isStationary, let center = geofenceCenter {
+                isJitter = loc.distance(from: center) < LocationSyncService.minimumReportingDistanceMeters
             } else {
                 isJitter = false
             }
 
             if !isJitter {
                 self.isStationary = false
-                self.stationaryAnchor = nil
-                self.stationaryTask?.cancel()
-                self.stationaryTask = nil
-                if self.isLowPowerMode {
-                    self.resumeHighFidelityTracking()
-                }
 
                 let coordinate = loc.coordinate
                 if loc.horizontalAccuracy <= LocationSyncService.minBroadcastAccuracyMeters {
                     LocationSyncService.shared.sendLocation(lat: coordinate.latitude, lng: coordinate.longitude, heading: self.heading, source: .locationUpdate)
                 }
+                armGeofenceIfNeeded(at: loc, isMoving: true)
             }
         }
     }
 
-    private func enterLowPowerMode(at location: CLLocation) {
-        guard !isLowPowerMode else { return }
-        isLowPowerMode = true
+    /// Arms or re-centers the fallback "wake me if I leave" geofence. Unlike the old
+    /// stationary-only design, this is a standing backstop maintained on every fix
+    /// (moving or stationary) — CoreLocation watches it independent of our own process,
+    /// so it's the one wake source that survives us getting suspended entirely, including
+    /// mid-motion (not just after 5 confirmed-stationary minutes, which left a real gap:
+    /// a suspension while still moving had no backstop at all). Re-centers only when
+    /// GeofencePolicy (Shared) says drift is large enough, so we don't re-register the
+    /// region - and reset the OS's boundary-crossing confirmation window - on every fix.
+    private func armGeofenceIfNeeded(at loc: CLLocation, isMoving: Bool) {
+        let distance = geofenceCenter.map { loc.distance(from: $0) } ?? .greatestFiniteMagnitude
+        let due = geofenceCenter == nil ||
+            GeofencePolicy.shared.shouldRecenter(distanceFromCenterMeters: distance, isMoving: isMoving)
+        guard due else { return }
 
-        // Emit one final "stationary" Location before tearing anything down so the
-        // recipient can render "here since HH:mm" rather than the ambiguous
-        // "last seen Xh ago" while we're suspended.
-        LocationSyncService.shared.sendLocation(
-            lat: location.coordinate.latitude,
-            lng: location.coordinate.longitude,
-            force: true,
-            source: .locationUpdate,
-            stationary: true,
-        )
-
-        if let manager = manager {
-            let region = CLCircularRegion(center: location.coordinate, radius: 200, identifier: stationaryGeofenceId)
-            region.notifyOnEntry = false
-            region.notifyOnExit = true
-            manager.startMonitoring(for: region)
-        }
-
-        stationaryTask = nil
-
-        if Self.deepSleepWhenStationary {
-            LocationSyncService.shared.e2eeManager.addDiagnosticEvent(message: "Entering low-power mode (stationary > 5m, deep sleep)", coalesceKey: nil)
-            updatesTask?.cancel()
-            updatesTask = nil
-            backgroundActivity?.invalidate()
-            backgroundActivity = nil
-            manager?.stopMonitoringSignificantLocationChanges()
-        } else {
-            // Keep CLBackgroundActivitySession and the liveUpdates stream alive so
-            // the in-process Timer keeps ticking and pollAll() can fire the 5-minute
-            // heartbeat. The geofence above is redundant for movement detection in
-            // this mode but is retained as a fallback in case the OS suspends us
-            // anyway under memory pressure.
-            LocationSyncService.shared.e2eeManager.addDiagnosticEvent(message: "Entering low-power mode (stationary > 5m, keepalive)", coalesceKey: nil)
-        }
-    }
-
-    private func resumeHighFidelityTracking() {
-        guard isLowPowerMode else { return }
-        LocationSyncService.shared.e2eeManager.addDiagnosticEvent(message: "Resuming high-fidelity tracking", coalesceKey: nil)
-        startUpdating()
+        geofenceCenter = loc
+        guard let manager = manager else { return }
+        let radius = GeofencePolicy.shared.radiusMeters(isMoving: isMoving)
+        let region = CLCircularRegion(center: loc.coordinate, radius: radius, identifier: stationaryGeofenceId)
+        region.notifyOnEntry = false
+        region.notifyOnExit = true
+        manager.startMonitoring(for: region)
     }
 
     nonisolated func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
@@ -334,11 +291,9 @@ final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelega
                     UIApplication.shared.endBackgroundTask(identifier)
                 }
             }
-            if self.isLowPowerMode {
-                self.resumeHighFidelityTracking()
-            } else {
-                self.startUpdating()
-            }
+            // Idempotent while the live-updates stream is already running (guarded by
+            // `updatesTask == nil` inside) - just makes sure it's alive after a wake.
+            self.startUpdating()
             // Only broadcast if this fix was not already handled by liveUpdates.
             // requestLocation() results often have a very recent timestamp.
             if let lastLoc = self.location, loc.timestamp.timeIntervalSince(lastLoc.timestamp) <= 0 {
@@ -349,6 +304,10 @@ final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelega
             if loc.horizontalAccuracy <= LocationSyncService.minBroadcastAccuracyMeters {
                 LocationSyncService.shared.sendLocation(lat: coordinate.latitude, lng: coordinate.longitude, heading: self.heading, source: .locationUpdate)
             }
+            // Treat as "moving" conservatively — a real stationarity reading from the
+            // liveUpdates stream (handleStationarityUpdate) will tighten this back down
+            // once it resumes.
+            self.armGeofenceIfNeeded(at: loc, isMoving: true)
         }
     }
 
@@ -364,7 +323,10 @@ final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelega
                     }
                 }
                 LocationSyncService.shared.e2eeManager.addDiagnosticEvent(message: "Exited stationary geofence", coalesceKey: nil)
-                self.resumeHighFidelityTracking()
+                self.isStationary = false
+                self.geofenceCenter = nil
+                self.startUpdating()
+                self.requestImmediateLocation()
             }
         }
     }

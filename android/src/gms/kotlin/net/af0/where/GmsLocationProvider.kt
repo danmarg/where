@@ -155,11 +155,12 @@ class GmsLocationProvider : LocationProvider {
     override fun setGeofenceAt(
         lat: Double,
         lng: Double,
+        radiusMeters: Float,
     ): Boolean {
         val geofence =
             Geofence.Builder()
                 .setRequestId("stationary_fence")
-                .setCircularRegion(lat, lng, LocationService.MOVEMENT_RADIUS_THRESHOLD_METERS)
+                .setCircularRegion(lat, lng, radiusMeters)
                 .setExpirationDuration(Geofence.NEVER_EXPIRE)
                 .setTransitionTypes(Geofence.GEOFENCE_TRANSITION_EXIT)
                 .build()
