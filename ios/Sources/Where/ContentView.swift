@@ -120,6 +120,13 @@ struct ContentView: View {
                 },
                 diagnosticLog: syncService.repo.diagnosticLog
             )
+            .onAppear {
+                // diagnosticLog otherwise only refreshes after a poll cycle completes (success
+                // or, since the fix above, failure) - opening the sheet shouldn't have to wait
+                // for the next one, especially right after a stall when there may not be one
+                // for a while.
+                Task { try? await syncService.repo.refreshFromStore() }
+            }
         }
         .fullScreenCover(isPresented: $showScanner, onDismiss: {
             if let url = scannedUrl {
