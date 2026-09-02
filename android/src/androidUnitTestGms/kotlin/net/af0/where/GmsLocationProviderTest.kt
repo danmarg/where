@@ -8,6 +8,7 @@ import com.google.android.gms.location.GeofencingClient
 import com.google.android.gms.location.LocationCallback
 import com.google.android.gms.location.LocationRequest
 import com.google.android.gms.location.Priority
+import com.google.android.gms.tasks.OnFailureListener
 import com.google.android.gms.tasks.OnSuccessListener
 import com.google.android.gms.tasks.Task
 import io.mockk.every
@@ -184,6 +185,53 @@ class GmsLocationProviderTest {
 
         successListeners.first().onSuccess(null)
         verify(exactly = 2) { mockGeofencingClient.addGeofences(any(), any()) }
+    }
+
+    @Test
+    fun setGeofenceAt_queuedTargetIsDrainedAfterInFlightRequestFails() {
+        // The failure listener must drain a queued target too, not just the success
+        // listener - otherwise a target queued behind a request that ultimately fails
+        // would be silently dropped forever.
+        val failureListeners = mutableListOf<OnFailureListener>()
+        val taskMock = mockk<Task<Void>>(relaxed = true)
+        every { mockGeofencingClient.addGeofences(any(), any()) } returns taskMock
+        every { taskMock.addOnFailureListener(any()) } answers {
+            failureListeners.add(firstArg())
+            taskMock
+        }
+
+        assertEquals(GeofenceRequestResult.SUBMITTED, provider.setGeofenceAt(1.0, 2.0, 200f))
+        assertEquals(GeofenceRequestResult.QUEUED, provider.setGeofenceAt(3.0, 4.0, 400f))
+        verify(exactly = 1) { mockGeofencingClient.addGeofences(any(), any()) }
+
+        failureListeners.first().onFailure(SecurityException("denied"))
+        verify(exactly = 2) { mockGeofencingClient.addGeofences(any(), any()) }
+    }
+
+    @Test
+    fun removeGeofence_dropsQueuedTarget_soCompletingInFlightRequestDoesNotResurrectIt() {
+        // Regression test: setGeofenceAt() while a request is in flight queues a pending
+        // target; removeGeofence() must drop that queued target so its later completion
+        // can't re-add a geofence right after the caller explicitly removed it.
+        val successListeners = mutableListOf<OnSuccessListener<Void>>()
+        val taskMock = mockk<Task<Void>>(relaxed = true)
+        every { mockGeofencingClient.addGeofences(any(), any()) } returns taskMock
+        every { taskMock.addOnSuccessListener(any()) } answers {
+            successListeners.add(firstArg())
+            taskMock
+        }
+
+        assertEquals(GeofenceRequestResult.SUBMITTED, provider.setGeofenceAt(1.0, 2.0, 200f))
+        assertEquals(GeofenceRequestResult.QUEUED, provider.setGeofenceAt(3.0, 4.0, 400f))
+
+        provider.removeGeofence()
+        verify(exactly = 1) { mockGeofencingClient.removeGeofences(any()) }
+
+        // The in-flight add (already sent before removeGeofence() was called) now settles.
+        // Its own effect can't be un-sent at this layer, but the queued target it would
+        // otherwise have drained must not fire a second, resurrecting add.
+        successListeners.first().onSuccess(null)
+        verify(exactly = 1) { mockGeofencingClient.addGeofences(any(), any()) }
     }
 
     // --- onDestroy ---

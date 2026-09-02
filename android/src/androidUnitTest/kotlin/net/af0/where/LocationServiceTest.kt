@@ -556,4 +556,40 @@ class LocationServiceTest {
                 mockClient.sendLocation(37.0, -122.0, any(), stationary = true)
             }
         }
+
+    @Test
+    fun testSetGeofenceAt_logsDistinctDiagnosticsForSubmittedQueuedAndFailed() {
+        // Regression test: LocationService.setGeofenceAt() branches on GeofenceRequestResult
+        // to decide what diagnostic event to log. QUEUED must not be logged as "submitted" -
+        // this PR exists specifically to make multi-hour reliability diagnostics trustworthy,
+        // so a mislabeled event here would defeat that.
+        val controller = Robolectric.buildService(LocationService::class.java)
+        val service = controller.get()
+        val mockProvider = io.mockk.mockk<LocationProvider>(relaxed = true)
+        service.locationProviderOverride = mockProvider
+        val mockE2ee = io.mockk.mockk<net.af0.where.e2ee.E2eeManager>(relaxed = true)
+        service.e2eeManagerOverride = mockE2ee
+        controller.create()
+
+        val setGeofenceAt =
+            LocationService::class.java
+                .getDeclaredMethod("setGeofenceAt", java.lang.Double.TYPE, java.lang.Double.TYPE)
+                .apply { isAccessible = true }
+
+        io.mockk.every { mockProvider.setGeofenceAt(any(), any(), any()) } returns GeofenceRequestResult.SUBMITTED
+        setGeofenceAt.invoke(service, 1.0, 2.0)
+        io.mockk.verify(exactly = 1) { mockE2ee.addDiagnosticEvent("Stationary: Geofence submitted") }
+
+        io.mockk.every { mockProvider.setGeofenceAt(any(), any(), any()) } returns GeofenceRequestResult.QUEUED
+        setGeofenceAt.invoke(service, 3.0, 4.0)
+        io.mockk.verify(exactly = 1) { mockE2ee.addDiagnosticEvent("Stationary: Geofence queued") }
+        // Still exactly 1 - QUEUED must not also log "submitted".
+        io.mockk.verify(exactly = 1) { mockE2ee.addDiagnosticEvent("Stationary: Geofence submitted") }
+
+        io.mockk.every { mockProvider.setGeofenceAt(any(), any(), any()) } returns GeofenceRequestResult.FAILED
+        setGeofenceAt.invoke(service, 5.0, 6.0)
+        // FAILED logs neither - counts from the prior two cases must stay unchanged.
+        io.mockk.verify(exactly = 1) { mockE2ee.addDiagnosticEvent("Stationary: Geofence submitted") }
+        io.mockk.verify(exactly = 1) { mockE2ee.addDiagnosticEvent("Stationary: Geofence queued") }
+    }
 }
