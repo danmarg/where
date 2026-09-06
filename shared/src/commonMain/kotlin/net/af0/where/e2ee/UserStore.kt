@@ -111,6 +111,17 @@ class UserStore(private val storage: RawKeyValueStorage) {
         storage.putString(KEY_CAMERA_REQUESTED, requested.toString())
     }
 
+    private val _backgroundLocationRationaleShown =
+        MutableStateFlow(
+            storage.getString(KEY_BACKGROUND_LOCATION_RATIONALE_SHOWN)?.toBoolean() ?: false,
+        )
+    val backgroundLocationRationaleShown: StateFlow<Boolean> = _backgroundLocationRationaleShown.asStateFlow()
+
+    fun setBackgroundLocationRationaleShown(shown: Boolean) {
+        _backgroundLocationRationaleShown.value = shown
+        storage.putString(KEY_BACKGROUND_LOCATION_RATIONALE_SHOWN, shown.toString())
+    }
+
     // ---- Per-friend timed share ------------------------------------------------------------
 
     /**
@@ -172,6 +183,7 @@ class UserStore(private val storage: RawKeyValueStorage) {
         private const val KEY_LAST_LNG = "last_lng"
         private const val KEY_LAST_ZOOM = "last_zoom"
         private const val KEY_CAMERA_REQUESTED = "camera_requested"
+        private const val KEY_BACKGROUND_LOCATION_RATIONALE_SHOWN = "background_location_rationale_shown"
         private const val KEY_FRIEND_EXPIRES_AT = "friend_expires_at"
     }
 }

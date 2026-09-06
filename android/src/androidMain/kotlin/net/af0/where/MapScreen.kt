@@ -76,6 +76,7 @@ fun MapScreen(
         } else {
             null
         }
+    val backgroundRationaleContext = LocalContext.current
     var showBackgroundRationale by remember { mutableStateOf(false) }
 
     LaunchedEffect(Unit) {
@@ -88,7 +89,12 @@ fun MapScreen(
         if (locationPermissions.hasAnyLocationPermission) {
             onLocationPermissionGranted()
             // Show disclosure before requesting background location (required by Play Store).
-            if (backgroundLocationPermission != null && !backgroundLocationPermission.status.isGranted) {
+            // Only once per install — re-showing it on every resume after the user skips it
+            // is its own nag.
+            if (backgroundLocationPermission != null &&
+                !backgroundLocationPermission.status.isGranted &&
+                !UserPrefs.hasShownBackgroundLocationRationale(backgroundRationaleContext)
+            ) {
                 showBackgroundRationale = true
             }
         }
@@ -96,7 +102,10 @@ fun MapScreen(
 
     if (showBackgroundRationale) {
         AlertDialog(
-            onDismissRequest = { showBackgroundRationale = false },
+            onDismissRequest = {
+                showBackgroundRationale = false
+                UserPrefs.setBackgroundLocationRationaleShown(backgroundRationaleContext)
+            },
             title = { Text(stringResource(MR.strings.background_location_title)) },
             text = {
                 Text(stringResource(MR.strings.background_location_message))
@@ -104,11 +113,15 @@ fun MapScreen(
             confirmButton = {
                 TextButton(onClick = {
                     showBackgroundRationale = false
+                    UserPrefs.setBackgroundLocationRationaleShown(backgroundRationaleContext)
                     backgroundLocationPermission?.launchPermissionRequest()
                 }) { Text(stringResource(MR.strings.allow)) }
             },
             dismissButton = {
-                TextButton(onClick = { showBackgroundRationale = false }) { Text(stringResource(MR.strings.skip)) }
+                TextButton(onClick = {
+                    showBackgroundRationale = false
+                    UserPrefs.setBackgroundLocationRationaleShown(backgroundRationaleContext)
+                }) { Text(stringResource(MR.strings.skip)) }
             },
         )
     }
