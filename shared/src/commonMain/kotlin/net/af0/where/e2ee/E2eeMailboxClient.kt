@@ -16,6 +16,11 @@ import io.ktor.http.contentType
 import io.ktor.http.isSuccess
 import io.ktor.serialization.kotlinx.json.json
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.io.IOException
@@ -73,6 +78,14 @@ object KtorMailboxClient : MailboxClient {
             encodeDefaults = true
         }
 
+    // KtorMailboxClient was already a process-lifetime singleton object holding one HttpClient
+    // for the app's entire life (its transport identity is inherently global state, mutable or
+    // not). The fields below are a narrow, deliberate exception to the "no mutable global state"
+    // rule, in the same spirit as LocationRepository: self-healing a wedged connection requires
+    // swapping *which* HttpClient instance is live at runtime, and that swap has to happen
+    // somewhere. All of it is private and serialized behind resetLock except onConnectionReset,
+    // which exists solely for diagnostic visibility.
+
     /**
      * Consecutive mailbox-call failures (across post/poll/ack, any friend) before we assume the
      * underlying HTTP client's connection pool is wedged - e.g. a dead keep-alive connection that
@@ -85,11 +98,21 @@ object KtorMailboxClient : MailboxClient {
      */
     private const val CONSECUTIVE_FAILURE_RESET_THRESHOLD = 5
 
+    /**
+     * Grace period before actually closing a superseded HttpClient. A reset is decided from one
+     * friend's failure history, but the client is shared by every friend's concurrent calls -
+     * closing it immediately could abort another friend's unrelated, currently-healthy in-flight
+     * request on the same instance. Most real calls are fast, so this bounds (without fully
+     * eliminating) that collateral cancellation while still reclaiming the old client promptly.
+     */
+    private const val CLOSE_GRACE_PERIOD_MS = 5_000L
+
     @kotlin.concurrent.Volatile
     private var client = createHttpClient(json)
 
     private val resetLock = Mutex()
     private var consecutiveFailures = 0
+    private val backgroundScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
     /** Notified (best-effort) whenever [CONSECUTIVE_FAILURE_RESET_THRESHOLD] triggers an auto-reset. */
     var onConnectionReset: (() -> Unit)? = null
@@ -110,6 +133,17 @@ object KtorMailboxClient : MailboxClient {
             throw e
         } catch (e: CancellationException) {
             throw e
+        } catch (e: ServerException) {
+            // A real HTTP response - even an error one - proves the connection itself is not
+            // wedged; only a genuine transport-level hang/failure should count toward the reset
+            // threshold. Counting this would let one friend's permanently invalid token (e.g.
+            // after re-pairing, or 7-day mailbox expiry per the retention policy) keep forcing
+            // disruptive resets that do nothing to fix it and can abort other friends' healthy
+            // concurrent calls (see CLOSE_GRACE_PERIOD_MS).
+            if (consecutiveFailures != 0) {
+                resetLock.withLock { consecutiveFailures = 0 }
+            }
+            throw e
         } catch (e: Exception) {
             recordFailureAndMaybeReset()
             throw e
@@ -117,24 +151,29 @@ object KtorMailboxClient : MailboxClient {
     }
 
     private suspend fun recordFailureAndMaybeReset() {
-        val shouldReset =
+        // The increment-and-maybe-reset decision must be one atomic critical section: if it were
+        // check-then-act across two separate lock acquisitions, two callers racing past the
+        // threshold in close succession could each decide to reset, discarding a freshly created
+        // client and closing the old one twice for a single failure burst.
+        val old: HttpClient? =
             resetLock.withLock {
                 consecutiveFailures += 1
-                consecutiveFailures >= CONSECUTIVE_FAILURE_RESET_THRESHOLD
+                if (consecutiveFailures >= CONSECUTIVE_FAILURE_RESET_THRESHOLD) {
+                    consecutiveFailures = 0
+                    val previous = client
+                    client = createHttpClient(json)
+                    previous
+                } else {
+                    null
+                }
             }
-        if (shouldReset) resetConnection()
-    }
-
-    private suspend fun resetConnection() {
-        val old =
-            resetLock.withLock {
-                consecutiveFailures = 0
-                val previous = client
-                client = createHttpClient(json)
-                previous
+        if (old != null) {
+            backgroundScope.launch {
+                delay(CLOSE_GRACE_PERIOD_MS)
+                runCatching { old.close() }
             }
-        runCatching { old.close() }
-        runCatching { onConnectionReset?.invoke() }
+            runCatching { onConnectionReset?.invoke() }
+        }
     }
 
     /**
