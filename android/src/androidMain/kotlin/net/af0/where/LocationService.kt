@@ -672,7 +672,7 @@ class LocationService : Service() {
             // Runs regardless of foreground state so background location stays alive.
             if (isSharing) {
                 val now = clock()
-                val stillBackstopDue = isStill && now - lastStillForcedFixTime > STILL_MODE_FORCE_FIX_INTERVAL_MS
+                val stillBackstopDue = isStillBackstopDue(now)
                 val loc =
                     if (now - lastSentTime > STATIONARY_FORCE_UPDATE_THRESHOLD_MS) {
                         if (isStill && !stillBackstopDue) {
@@ -773,6 +773,10 @@ class LocationService : Service() {
         val pi = PendingIntent.getService(this, 0, intent, PendingIntent.FLAG_NO_CREATE or PendingIntent.FLAG_IMMUTABLE)
         if (pi != null) alarmManager.cancel(pi)
     }
+
+    /** See [STILL_MODE_FORCE_FIX_INTERVAL_MS]. Extracted for direct testability of the timing math. */
+    @VisibleForTesting
+    internal fun isStillBackstopDue(now: Long): Boolean = isStill && now - lastStillForcedFixTime > STILL_MODE_FORCE_FIX_INTERVAL_MS
 
     @VisibleForTesting
     internal fun pollInterval(

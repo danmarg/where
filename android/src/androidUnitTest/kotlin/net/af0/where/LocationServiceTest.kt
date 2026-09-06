@@ -509,6 +509,100 @@ class LocationServiceTest {
         }
 
     @Test
+    fun testIsStillBackstopDue_FalseWhenNotStill() {
+        var currentTime = 1_000_000_000L
+        LocationService.clock = { currentTime }
+        val service = Robolectric.buildService(LocationService::class.java).get()
+
+        service.isStill = false
+        service.lastStillForcedFixTime = 0L
+        currentTime += LocationService.STILL_MODE_FORCE_FIX_INTERVAL_MS * 10
+
+        assertFalse(
+            service.isStillBackstopDue(currentTime),
+            "Backstop must never fire while moving - only the STILL branch skips forcing a fresh fix",
+        )
+    }
+
+    @Test
+    fun testIsStillBackstopDue_FalseBeforeIntervalElapses() {
+        val service = Robolectric.buildService(LocationService::class.java).get()
+        service.isStill = true
+        service.lastStillForcedFixTime = 1_000_000_000L
+
+        assertFalse(
+            service.isStillBackstopDue(1_000_000_000L + LocationService.STILL_MODE_FORCE_FIX_INTERVAL_MS - 1_000L),
+            "Must preserve STILL-mode battery savings until the full backstop interval has elapsed",
+        )
+    }
+
+    @Test
+    fun testIsStillBackstopDue_TrueAfterIntervalElapses() {
+        val service = Robolectric.buildService(LocationService::class.java).get()
+        service.isStill = true
+        service.lastStillForcedFixTime = 1_000_000_000L
+
+        assertTrue(
+            service.isStillBackstopDue(1_000_000_000L + LocationService.STILL_MODE_FORCE_FIX_INTERVAL_MS + 1_000L),
+            "Regression test: a dead Activity-Recognition/geofence registration must not freeze " +
+                "location forever - a real GPS fix must eventually be forced even while classified STILL",
+        )
+    }
+
+    @Test
+    fun testActivityTransitionToStill_ResetsBackstopCountdown() =
+        runTest {
+            // Regression test: entering STILL must (re)start the backstop countdown from "now",
+            // not leave a stale lastStillForcedFixTime from a previous STILL period (which could
+            // make the backstop fire immediately on every re-entry into STILL instead of only
+            // after a genuine multi-hour stall).
+            org.junit.Assume.assumeTrue(
+                "Activity recognition only enabled in full flavor",
+                BuildConfig.ACTIVITY_RECOGNITION_ENABLED,
+            )
+            var currentTime = 1_000_000_000L
+            LocationService.clock = { currentTime }
+
+            val controller = Robolectric.buildService(LocationService::class.java)
+            val service = controller.get()
+
+            val mockClient = io.mockk.mockk<LocationClient>(relaxed = true)
+            service.locationClientOverride = mockClient
+            service.locationSourceOverride = fakeLocationSource
+
+            var nextEvents: List<ActivityTransitionEvent>? = null
+            service.activityHelperOverride =
+                object : ActivityHelper {
+                    override fun init(context: android.content.Context) {}
+
+                    override fun extractTransitionEvents(intent: Intent) = nextEvents
+
+                    override fun ensureRegistered(
+                        hasPermission: Boolean,
+                        isSharing: Boolean,
+                    ) {}
+
+                    override fun unregister() {}
+
+                    override fun onDestroy() {}
+                }
+            controller.create()
+            fakeLocationSource.onLocation(37.0, -122.0, null)
+
+            assertEquals(0L, service.lastStillForcedFixTime, "must start unset before any STILL transition")
+
+            nextEvents = listOf(ActivityTransitionEvent(ActivityType.STILL, TransitionType.ENTER))
+            val intent =
+                Intent(service, LocationService::class.java).apply {
+                    action = LocationService.ACTION_ACTIVITY_TRANSITION
+                }
+            controller.withIntent(intent).startCommand(0, 1)
+            advanceUntilIdle()
+
+            assertEquals(currentTime, service.lastStillForcedFixTime, "entering STILL must (re)start the backstop countdown at the current time")
+        }
+
+    @Test
     fun testActivityTransitionToStill_SendsImmediateStationaryLocation() =
         runTest {
             org.junit.Assume.assumeTrue(
