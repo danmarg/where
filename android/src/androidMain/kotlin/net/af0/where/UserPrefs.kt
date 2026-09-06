@@ -49,9 +49,7 @@ object UserPrefs {
 
     fun setCameraRequested(context: Context) = store(context).setCameraRequested(true)
 
-    fun hasShownBackgroundLocationRationale(context: Context): Boolean =
-        store(context).backgroundLocationRationaleShown.value
+    fun hasShownBackgroundLocationRationale(context: Context): Boolean = store(context).backgroundLocationRationaleShown.value
 
-    fun setBackgroundLocationRationaleShown(context: Context) =
-        store(context).setBackgroundLocationRationaleShown(true)
+    fun setBackgroundLocationRationaleShown(context: Context) = store(context).setBackgroundLocationRationaleShown(true)
 }
