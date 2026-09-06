@@ -112,6 +112,10 @@ kotlin {
             implementation(libs.ktor.server.content.negotiation)
             implementation(libs.ktor.serialization.kotlinx.json)
             implementation(libs.logback.classic)
+            // Verifies the OkHttp engine's close()-during-in-flight-request behavior against a
+            // real server (HttpClientCloseBehaviorTest) - the same engine used in production on
+            // JVM/Android (androidMain), not otherwise on the plain jvmTest classpath.
+            implementation(libs.ktor.client.okhttp)
         }
 
         jvmAndAndroidTest.dependencies {

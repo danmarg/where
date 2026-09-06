@@ -100,10 +100,15 @@ object KtorMailboxClient : MailboxClient {
 
     /**
      * Grace period before actually closing a superseded HttpClient. A reset is decided from one
-     * friend's failure history, but the client is shared by every friend's concurrent calls -
-     * closing it immediately could abort another friend's unrelated, currently-healthy in-flight
-     * request on the same instance. Most real calls are fast, so this bounds (without fully
-     * eliminating) that collateral cancellation while still reclaiming the old client promptly.
+     * friend's failure history, but the client is shared by every friend's concurrent calls.
+     * HttpClientCloseBehaviorTest confirms the OkHttp engine already handles this safely on its
+     * own: closing the wrapping client does not abort a request already dispatched on it - the
+     * underlying call keeps running on its own thread and completes normally (matches
+     * ExecutorService.shutdown(), not shutdownNow(), semantics), so another friend's concurrently
+     * in-flight, healthy call isn't collaterally cancelled. This delay is defense-in-depth for
+     * what that JVM-only test doesn't cover (the Darwin engine on iOS) and costs nothing, but per
+     * that test it isn't load-bearing for the specific "in-flight request gets aborted" risk it
+     * was originally written to guard against.
      */
     private const val CLOSE_GRACE_PERIOD_MS = 5_000L
 
