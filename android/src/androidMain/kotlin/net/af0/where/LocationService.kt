@@ -686,7 +686,8 @@ class LocationService : Service() {
                                 // true with no other path back to a real fix (see the isStill-gated
                                 // watchdog above). This is independent of that machinery: a plain
                                 // one-shot fix on its own timer, so a friend can't freeze forever.
-                                Log.d(TAG, "STILL backstop: forcing fresh GPS fix after ${STILL_MODE_FORCE_FIX_INTERVAL_MS / 60_000}min stationary.")
+                                val stillMinutes = STILL_MODE_FORCE_FIX_INTERVAL_MS / 60_000
+                                Log.d(TAG, "STILL backstop: forcing fresh GPS fix after ${stillMinutes}min stationary.")
                                 e2eeManager.addDiagnosticEvent("STILL backstop: forcing GPS fix")
                                 lastStillForcedFixTime = now
                             } else {

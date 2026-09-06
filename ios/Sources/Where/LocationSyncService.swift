@@ -122,6 +122,18 @@ final class LocationSyncService: ObservableObject {
     /// client in rapid (2s) polling. Bounds the impact of a friend who never shares (see #336) -
     /// long enough for a normal first exchange, short enough not to run rapid mode forever.
     private static let awaitingFirstUpdateTimeout: TimeInterval = 5 * 60
+    /// Even while stationary, force a real GPS fix at this interval instead of only re-reporting
+    /// the cached location. CoreMotion's stationary detection and the underlying CLLocationUpdate
+    /// stream/geofence (LocationManager) can each independently get stuck (mirrors the Android
+    /// isStill/Activity-Recognition backstop gap) with no other path back to a fresh fix - this
+    /// doesn't depend on either, so a friend's location can't freeze forever. Long enough to
+    /// preserve stationary battery savings; short enough that a stuck pipeline surfaces within
+    /// hours, not days.
+    static let stationaryForceFixInterval: TimeInterval = 2 * 60 * 60
+    /// Last time we forced a real GPS fix from the pollAll heartbeat (moving heartbeat or
+    /// stationary backstop). Starts at service init rather than the epoch so a fresh instance
+    /// gets one normal stationary cadence before the backstop can engage. internal for testing.
+    var lastForcedFixTime: Date = Date()
     var locationFixTimeout: TimeInterval = 10.0  // internal for testing
     /// Fixes with horizontalAccuracy above this threshold are cell/WiFi network fixes too noisy
     /// to broadcast; only sub-200m GPS fixes are sent to friends or used for heartbeats.
@@ -667,16 +679,28 @@ final class LocationSyncService: ObservableObject {
                     // Converge CoreMotion result into the provider's cached flag so
                     // background-entry and network-restore sends read a consistent value.
                     locationProvider.isStationary = stationary
-                    if stationary {
+                    let now = Date()
+                    // Backstop: if we haven't forced a real GPS fix in a long while - whether
+                    // because we've genuinely been stationary the whole time, or because
+                    // CoreMotion's stationary detection or the underlying CLLocationUpdate
+                    // stream/geofence got silently stuck - force one anyway. See
+                    // stationaryForceFixInterval.
+                    let backstopDue = now.timeIntervalSince(lastForcedFixTime) > Self.stationaryForceFixInterval
+                    if stationary && !backstopDue {
                         logger.info("pollAll: heartbeat due — stationary, re-reporting cached location")
                         if let loc = bestAvailableLocation {
                             sendLocation(lat: loc.lat, lng: loc.lng, heading: loc.heading, force: true, source: .heartbeat, stationary: true)
                         }
                     } else {
-                        logger.info("pollAll: heartbeat due — moving, requesting fresh fix")
+                        if backstopDue {
+                            logger.info("pollAll: heartbeat due — stationary backstop: forcing fresh GPS fix after \(Int(Self.stationaryForceFixInterval / 3600))h")
+                        } else {
+                            logger.info("pollAll: heartbeat due — moving, requesting fresh fix")
+                        }
+                        lastForcedFixTime = now
                         forceNextLocationUpdate = true
                         if let loc = bestAvailableLocation {
-                            sendLocation(lat: loc.lat, lng: loc.lng, heading: loc.heading, force: true, source: .heartbeat)
+                            sendLocation(lat: loc.lat, lng: loc.lng, heading: loc.heading, force: true, source: .heartbeat, stationary: stationary)
                         }
                         locationProvider.requestImmediateLocation()
                     }

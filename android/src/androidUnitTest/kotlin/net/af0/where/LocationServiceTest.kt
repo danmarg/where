@@ -599,7 +599,11 @@ class LocationServiceTest {
             controller.withIntent(intent).startCommand(0, 1)
             advanceUntilIdle()
 
-            assertEquals(currentTime, service.lastStillForcedFixTime, "entering STILL must (re)start the backstop countdown at the current time")
+            assertEquals(
+                currentTime,
+                service.lastStillForcedFixTime,
+                "entering STILL must (re)start the backstop countdown at the current time",
+            )
         }
 
     @Test
