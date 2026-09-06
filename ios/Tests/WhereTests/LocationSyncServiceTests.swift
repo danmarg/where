@@ -362,6 +362,67 @@ class LocationSyncServiceTests: XCTestCase {
         XCTAssertFalse(mockLocationProvider.requestImmediateLocationCalled, "Should NOT call requestImmediateLocation when heartbeat is NOT due")
     }
 
+    // Regression tests for the stationary backstop: CoreMotion's stationary detection and the
+    // underlying CLLocationUpdate stream/geofence (LocationManager) can each independently get
+    // stuck, mirroring the Android isStill/Activity-Recognition gap - without this, re-reporting
+    // the cached location forever would freeze a friend's view of us even though we're "healthy".
+
+    func testPollAllHeartbeat_StationaryBackstop_ForcesFreshFixAfterInterval() async throws {
+        let mockClient = MockLocationClient()
+        service = LocationSyncService(e2eeManager: service.e2eeManager, userStore: service.userStore, locationClient: mockClient, locationProvider: mockLocationProvider)
+        service.skipNetworkRestore = true
+        service.isSharingLocation = true
+        service.beginBackgroundTask = { _, _ in .invalid }
+        service.endBackgroundTask = { _ in }
+        service.lastSentTime = Date(timeIntervalSinceNow: -400) // heartbeat due
+        service.isStationaryQuery = { true }
+        // Well past stationaryForceFixInterval - simulates a stuck stationary pipeline.
+        service.lastForcedFixTime = Date(timeIntervalSinceNow: -(LocationSyncService.stationaryForceFixInterval + 1))
+        mockLocationProvider.location = CLLocation(
+            coordinate: CLLocationCoordinate2D(latitude: 37.7, longitude: -122.4),
+            altitude: 0, horizontalAccuracy: 50, verticalAccuracy: 50, timestamp: Date()
+        )
+
+        let expectation = XCTestExpectation(description: "Stationary backstop heartbeat send")
+        mockClient.sendLocationCallback = { expectation.fulfill() }
+
+        await service.pollAll(updateUi: false)
+        await service.currentSendTask?.value
+
+        await fulfillment(of: [expectation], timeout: 1.0)
+        XCTAssertTrue(mockLocationProvider.requestImmediateLocationCalled,
+            "Must force a fresh GPS fix once the backstop interval elapses, even while classified stationary")
+        XCTAssertEqual(mockClient.lastStationary, true,
+            "The backstop-forced send must still report stationary: true - the device genuinely is stationary")
+    }
+
+    func testPollAllHeartbeat_StationaryNoBackstop_DoesNotForceFixBeforeIntervalElapses() async throws {
+        let mockClient = MockLocationClient()
+        service = LocationSyncService(e2eeManager: service.e2eeManager, userStore: service.userStore, locationClient: mockClient, locationProvider: mockLocationProvider)
+        service.skipNetworkRestore = true
+        service.isSharingLocation = true
+        service.beginBackgroundTask = { _, _ in .invalid }
+        service.endBackgroundTask = { _ in }
+        service.lastSentTime = Date(timeIntervalSinceNow: -400) // heartbeat due
+        service.isStationaryQuery = { true }
+        // Well under stationaryForceFixInterval - must preserve stationary battery savings.
+        service.lastForcedFixTime = Date(timeIntervalSinceNow: -60)
+        mockLocationProvider.location = CLLocation(
+            coordinate: CLLocationCoordinate2D(latitude: 37.7, longitude: -122.4),
+            altitude: 0, horizontalAccuracy: 50, verticalAccuracy: 50, timestamp: Date()
+        )
+
+        let expectation = XCTestExpectation(description: "Stationary cached-location heartbeat send")
+        mockClient.sendLocationCallback = { expectation.fulfill() }
+
+        await service.pollAll(updateUi: false)
+        await service.currentSendTask?.value
+
+        await fulfillment(of: [expectation], timeout: 1.0)
+        XCTAssertFalse(mockLocationProvider.requestImmediateLocationCalled,
+            "Must NOT force a fresh fix before the backstop interval elapses - only re-report the cached location")
+    }
+
     // MARK: - Persistent Storage Tests
 
     func testDisplayNameStoredInKeychain() async throws {

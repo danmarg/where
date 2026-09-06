@@ -16,6 +16,13 @@ import io.ktor.http.contentType
 import io.ktor.http.isSuccess
 import io.ktor.serialization.kotlinx.json.json
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.io.IOException
 import kotlinx.serialization.json.Json
 
@@ -71,7 +78,108 @@ object KtorMailboxClient : MailboxClient {
             encodeDefaults = true
         }
 
-    private val client = createHttpClient(json)
+    // KtorMailboxClient was already a process-lifetime singleton object holding one HttpClient
+    // for the app's entire life (its transport identity is inherently global state, mutable or
+    // not). The fields below are a narrow, deliberate exception to the "no mutable global state"
+    // rule, in the same spirit as LocationRepository: self-healing a wedged connection requires
+    // swapping *which* HttpClient instance is live at runtime, and that swap has to happen
+    // somewhere. All of it is private and serialized behind resetLock except onConnectionReset,
+    // which exists solely for diagnostic visibility.
+
+    /**
+     * Consecutive mailbox-call failures (across post/poll/ack, any friend) before we assume the
+     * underlying HTTP client's connection pool is wedged - e.g. a dead keep-alive connection that
+     * keeps getting reused and keeps failing the same way - and force a fresh HttpClient. This is
+     * exactly what force-stopping and reopening the app was observed to fix (a stuck outbox that
+     * every poll cycle's diagnostics reported as healthy, since polling/receiving is an
+     * independent path from sending); this makes that recovery automatic instead of requiring a
+     * manual kill. A handful of *consecutive* failures (any success resets the counter) is well
+     * past what ordinary transient network blips produce.
+     */
+    private const val CONSECUTIVE_FAILURE_RESET_THRESHOLD = 5
+
+    /**
+     * Grace period before actually closing a superseded HttpClient. A reset is decided from one
+     * friend's failure history, but the client is shared by every friend's concurrent calls.
+     * HttpClientCloseBehaviorTest confirms the OkHttp engine already handles this safely on its
+     * own: closing the wrapping client does not abort a request already dispatched on it - the
+     * underlying call keeps running on its own thread and completes normally (matches
+     * ExecutorService.shutdown(), not shutdownNow(), semantics), so another friend's concurrently
+     * in-flight, healthy call isn't collaterally cancelled. This delay is defense-in-depth for
+     * what that JVM-only test doesn't cover (the Darwin engine on iOS) and costs nothing, but per
+     * that test it isn't load-bearing for the specific "in-flight request gets aborted" risk it
+     * was originally written to guard against.
+     */
+    private const val CLOSE_GRACE_PERIOD_MS = 5_000L
+
+    @kotlin.concurrent.Volatile
+    private var client = createHttpClient(json)
+
+    private val resetLock = Mutex()
+    private var consecutiveFailures = 0
+    private val backgroundScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+
+    /** Notified (best-effort) whenever [CONSECUTIVE_FAILURE_RESET_THRESHOLD] triggers an auto-reset. */
+    var onConnectionReset: (() -> Unit)? = null
+
+    private suspend fun <T> withFailureTracking(block: suspend () -> T): T {
+        try {
+            val result = block()
+            if (consecutiveFailures != 0) {
+                resetLock.withLock { consecutiveFailures = 0 }
+            }
+            return result
+        } catch (e: WallClockTimeoutCancellationException) {
+            // A wedged connection is exactly a hang that only surfaces as a wall-clock timeout -
+            // the scenario this whole mechanism exists for - so despite being implemented as a
+            // CancellationException (see withWallClockTimeout), it must count as an ordinary
+            // failure here, same as LocationClient's own handling of this exception type.
+            recordFailureAndMaybeReset()
+            throw e
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: ServerException) {
+            // A real HTTP response - even an error one - proves the connection itself is not
+            // wedged; only a genuine transport-level hang/failure should count toward the reset
+            // threshold. Counting this would let one friend's permanently invalid token (e.g.
+            // after re-pairing, or 7-day mailbox expiry per the retention policy) keep forcing
+            // disruptive resets that do nothing to fix it and can abort other friends' healthy
+            // concurrent calls (see CLOSE_GRACE_PERIOD_MS).
+            if (consecutiveFailures != 0) {
+                resetLock.withLock { consecutiveFailures = 0 }
+            }
+            throw e
+        } catch (e: Exception) {
+            recordFailureAndMaybeReset()
+            throw e
+        }
+    }
+
+    private suspend fun recordFailureAndMaybeReset() {
+        // The increment-and-maybe-reset decision must be one atomic critical section: if it were
+        // check-then-act across two separate lock acquisitions, two callers racing past the
+        // threshold in close succession could each decide to reset, discarding a freshly created
+        // client and closing the old one twice for a single failure burst.
+        val old: HttpClient? =
+            resetLock.withLock {
+                consecutiveFailures += 1
+                if (consecutiveFailures >= CONSECUTIVE_FAILURE_RESET_THRESHOLD) {
+                    consecutiveFailures = 0
+                    val previous = client
+                    client = createHttpClient(json)
+                    previous
+                } else {
+                    null
+                }
+            }
+        if (old != null) {
+            backgroundScope.launch {
+                delay(CLOSE_GRACE_PERIOD_MS)
+                runCatching { old.close() }
+            }
+            runCatching { onConnectionReset?.invoke() }
+        }
+    }
 
     /**
      * POST a message to a mailbox address.
@@ -85,15 +193,17 @@ object KtorMailboxClient : MailboxClient {
         payload: MailboxPayload,
     ) {
         try {
-            withWallClockTimeout(MAILBOX_WALL_CLOCK_TIMEOUT_MS) {
-                val url = "$baseUrl/inbox/$token/${payload.msgId}"
-                val response =
-                    client.put(url) {
-                        contentType(ContentType.Application.Json)
-                        setBody(payload)
+            withFailureTracking {
+                withWallClockTimeout(MAILBOX_WALL_CLOCK_TIMEOUT_MS) {
+                    val url = "$baseUrl/inbox/$token/${payload.msgId}"
+                    val response =
+                        client.put(url) {
+                            contentType(ContentType.Application.Json)
+                            setBody(payload)
+                        }
+                    if (response.status != HttpStatusCode.NoContent && response.status != HttpStatusCode.OK) {
+                        throw ServerException(response.status.value, "Failed to post to mailbox")
                     }
-                if (response.status != HttpStatusCode.NoContent && response.status != HttpStatusCode.OK) {
-                    throw ServerException(response.status.value, "Failed to post to mailbox")
                 }
             }
         } catch (e: Exception) {
@@ -112,12 +222,14 @@ object KtorMailboxClient : MailboxClient {
         token: String,
     ): List<MailboxPayload> {
         try {
-            return withWallClockTimeout(MAILBOX_WALL_CLOCK_TIMEOUT_MS) {
-                val response = client.get("$baseUrl/inbox/$token")
-                if (response.status != HttpStatusCode.OK) {
-                    throw ServerException(response.status.value, "Failed to poll mailbox")
+            return withFailureTracking {
+                withWallClockTimeout(MAILBOX_WALL_CLOCK_TIMEOUT_MS) {
+                    val response = client.get("$baseUrl/inbox/$token")
+                    if (response.status != HttpStatusCode.OK) {
+                        throw ServerException(response.status.value, "Failed to poll mailbox")
+                    }
+                    response.body()
                 }
-                response.body()
             }
         } catch (e: Exception) {
             throw mapException(e)
@@ -130,10 +242,12 @@ object KtorMailboxClient : MailboxClient {
         msgId: String,
     ) {
         try {
-            withWallClockTimeout(MAILBOX_WALL_CLOCK_TIMEOUT_MS) {
-                val response = client.delete("$baseUrl/inbox/$token/$msgId")
-                if (!response.status.isSuccess()) {
-                    throw ServerException(response.status.value, "ACK failed for msgId $msgId")
+            withFailureTracking {
+                withWallClockTimeout(MAILBOX_WALL_CLOCK_TIMEOUT_MS) {
+                    val response = client.delete("$baseUrl/inbox/$token/$msgId")
+                    if (!response.status.isSuccess()) {
+                        throw ServerException(response.status.value, "ACK failed for msgId $msgId")
+                    }
                 }
             }
         } catch (e: Exception) {
@@ -148,13 +262,15 @@ object KtorMailboxClient : MailboxClient {
     ) {
         if (msgIds.isEmpty()) return
         try {
-            withWallClockTimeout(MAILBOX_WALL_CLOCK_TIMEOUT_MS) {
-                val response =
-                    client.delete("$baseUrl/inbox/$token") {
-                        parameter("ids", msgIds.joinToString(","))
+            withFailureTracking {
+                withWallClockTimeout(MAILBOX_WALL_CLOCK_TIMEOUT_MS) {
+                    val response =
+                        client.delete("$baseUrl/inbox/$token") {
+                            parameter("ids", msgIds.joinToString(","))
+                        }
+                    if (!response.status.isSuccess()) {
+                        throw ServerException(response.status.value, "Batch ACK failed for token $token")
                     }
-                if (!response.status.isSuccess()) {
-                    throw ServerException(response.status.value, "Batch ACK failed for token $token")
                 }
             }
         } catch (e: Exception) {

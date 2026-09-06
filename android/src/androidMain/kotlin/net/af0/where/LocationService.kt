@@ -92,6 +92,9 @@ class LocationService : Service() {
     @VisibleForTesting
     internal var isStill = false
 
+    @VisibleForTesting
+    internal var lastStillForcedFixTime: Long = 0L
+
     private var lastSuccessfulSendTime: Long? = null
 
     @VisibleForTesting
@@ -219,6 +222,9 @@ class LocationService : Service() {
 
         e2eeManager = e2eeManagerOverride ?: app.e2eeManager
         locationClient = locationClientOverride ?: app.locationClient
+        net.af0.where.e2ee.KtorMailboxClient.onConnectionReset = {
+            e2eeManager.addDiagnosticEvent("Mailbox HTTP client auto-reset after repeated failures")
+        }
 
         locationProvider = locationProviderOverride ?: createLocationProvider()
         locationProvider.init(this) { lat, lng, bearing ->
@@ -367,6 +373,12 @@ class LocationService : Service() {
 
                         val enteringStill = event.type == ActivityType.STILL
                         isStill = enteringStill
+                        if (enteringStill) {
+                            // Start the STILL-mode force-fix countdown fresh so a device that
+                            // just settled doesn't immediately re-force a fix on top of the
+                            // stationary send below.
+                            lastStillForcedFixTime = clock()
+                        }
                         // Always maintain a geofence as a belt-and-suspenders restart trigger
                         // in case the foreground service is killed. On MOVING transitions we
                         // replant it at the current position rather than removing it so that
@@ -660,13 +672,27 @@ class LocationService : Service() {
             // Runs regardless of foreground state so background location stays alive.
             if (isSharing) {
                 val now = clock()
+                val stillBackstopDue = isStillBackstopDue(now)
                 val loc =
                     if (now - lastSentTime > STATIONARY_FORCE_UPDATE_THRESHOLD_MS) {
-                        if (isStill) {
+                        if (isStill && !stillBackstopDue) {
                             Log.d(TAG, "Stationary and STILL; skipping forced GPS fix, will re-report cached location.")
                             null
                         } else {
-                            Log.d(TAG, "Stationary threshold exceeded; forcing fresh location fix.")
+                            if (stillBackstopDue) {
+                                // Backstop: Activity Recognition and the geofence it plants are
+                                // both OS-driven signals that can silently die (missed transition
+                                // broadcasts, a geofence that never fires) leaving isStill stuck
+                                // true with no other path back to a real fix (see the isStill-gated
+                                // watchdog above). This is independent of that machinery: a plain
+                                // one-shot fix on its own timer, so a friend can't freeze forever.
+                                val stillMinutes = STILL_MODE_FORCE_FIX_INTERVAL_MS / 60_000
+                                Log.d(TAG, "STILL backstop: forcing fresh GPS fix after ${stillMinutes}min stationary.")
+                                e2eeManager.addDiagnosticEvent("STILL backstop: forcing GPS fix")
+                                lastStillForcedFixTime = now
+                            } else {
+                                Log.d(TAG, "Stationary threshold exceeded; forcing fresh location fix.")
+                            }
                             forceLocationUpdateAndGet()
                         }
                     } else {
@@ -748,6 +774,10 @@ class LocationService : Service() {
         val pi = PendingIntent.getService(this, 0, intent, PendingIntent.FLAG_NO_CREATE or PendingIntent.FLAG_IMMUTABLE)
         if (pi != null) alarmManager.cancel(pi)
     }
+
+    /** See [STILL_MODE_FORCE_FIX_INTERVAL_MS]. Extracted for direct testability of the timing math. */
+    @VisibleForTesting
+    internal fun isStillBackstopDue(now: Long): Boolean = isStill && now - lastStillForcedFixTime > STILL_MODE_FORCE_FIX_INTERVAL_MS
 
     @VisibleForTesting
     internal fun pollInterval(
@@ -1028,6 +1058,17 @@ class LocationService : Service() {
          * flow even when the OS throttles streaming updates in sleep mode.
          */
         const val STATIONARY_FORCE_UPDATE_THRESHOLD_MS = 5 * 60 * 1000L
+
+        /**
+         * Even while classified STILL, force a real one-shot GPS fix at this interval instead of
+         * only re-reporting the cached location. Activity Recognition transitions and the
+         * geofence they plant can both silently stop firing (missed broadcast, geofence that
+         * never triggers), leaving isStill stuck true indefinitely with no other recovery path -
+         * this backstop doesn't depend on either, so a friend's location can't freeze forever.
+         * Long enough to preserve STILL-mode battery savings; short enough that a stuck
+         * classifier surfaces within hours, not days.
+         */
+        const val STILL_MODE_FORCE_FIX_INTERVAL_MS = 2 * 60 * 60 * 1000L
 
         /** Minimum interval between non-heartbeat (movement-triggered) location sends. */
         const val MIN_SEND_INTERVAL_MS = 30_000L

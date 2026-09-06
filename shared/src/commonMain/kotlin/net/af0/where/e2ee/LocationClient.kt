@@ -354,11 +354,20 @@ open class LocationClient(
             } catch (e: Exception) {
             }
 
-            // Recovery: process any pending outbox messages for this friend
+            // Recovery: process any pending outbox messages for this friend. A message stuck
+            // here blocks encryptAndAdvance() (see sendMessageToFriendInternal) indefinitely -
+            // sendToken freezes while lastPollTs/lastRecvTs keep advancing normally via the
+            // unrelated incoming path above, so this failure must be logged, not swallowed
+            // silently: without it, a stuck outbox looks identical to a healthy friend in every
+            // diagnostic except recvTok/sendTok visibly diverging, and the previous behavior gave
+            // no signal at all that something needed a restart to unstick.
             try {
                 processOutbox(friendId)
             } catch (e: Exception) {
-                // Ignore
+                store.addDiagnosticEvent(
+                    "pollFriend($friendId): outbox recovery flush failed: ${e.message}",
+                    coalesceKey = "pollFriend($friendId): outbox recovery flush failed",
+                )
             }
 
             val friendAfter = store.getFriend(friendId)
