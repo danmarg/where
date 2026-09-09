@@ -696,10 +696,14 @@ class LocationService : Service() {
 
     // Recomputed after every doPoll()/sendLocationIfNeeded() attempt from the current
     // crossCycleBackoffMultiplier, so the gate always reflects the latest counter state
-    // regardless of which call last updated it.
-    private fun refreshBackoffGate() {
+    // regardless of which call last updated it. Uses the same mode-specific base as the poll
+    // loop's own scheduled cadence (pollInterval) rather than a fixed base - otherwise the gate
+    // and the scheduled backoff diverge and an out-of-band trigger (GPS fix, heartbeat tick,
+    // geofence event) can sail past a gate that's stretched far less than the actual cadence.
+    private suspend fun refreshBackoffGate() {
         val multiplier = locationClient.crossCycleBackoffMultiplier
-        nextAttemptAllowedAtMs = if (multiplier <= 1) 0L else clock() + crossCycleBackoffIntervalMs(MIN_SEND_INTERVAL_MS)
+        val base = pollInterval(isRapidPolling(), locationSource.isAppInForeground.value, userStore.isSharingLocation.value)
+        nextAttemptAllowedAtMs = if (multiplier <= 1) 0L else clock() + crossCycleBackoffIntervalMs(base)
     }
 
     private suspend fun pollLoop() {

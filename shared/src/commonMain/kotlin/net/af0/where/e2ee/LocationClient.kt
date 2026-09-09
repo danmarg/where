@@ -1,11 +1,13 @@
 package net.af0.where.e2ee
 
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 import net.af0.where.model.UserLocation
 
 /** Silence from a friend beyond this is treated as "not currently reading" - see sendLocation(). */
@@ -106,10 +108,13 @@ open class LocationClient(
     // ConnectException (DNS failure/connection refused/no route) reads as "device has no path to
     // the server at all" and is deliberately excluded even when isNetworkAvailable() lies - see
     // isNetworkAvailable's doc. A 429 ServerException is the unresponsive-friend throttle's
-    // problem (distinct per-friend semantic), not server health, so it's excluded too.
+    // problem (distinct per-friend semantic), not server health, so it's excluded too. Only 5xx
+    // is actually a server-health signal - any other 4xx (400/404/413/etc.) is a client-side bug
+    // or bad payload that backoff can never fix, and counting it here would throttle every device
+    // hitting that bug while masking the real cause as a server outage.
     private fun isBackoffWorthy(e: Throwable): Boolean =
         when (e) {
-            is ServerException -> e.statusCode != 429
+            is ServerException -> e.statusCode in 500..599
             // Timeouts (including the wall-clock hang backstop) are ambiguous by exception type
             // alone - could be an overloaded server, or a degraded connection that never
             // completes either way - so they only count when we know the device is online.
@@ -181,13 +186,23 @@ open class LocationClient(
                     if (success) aggregateSuccess = true else if (error != null) aggregateFailure = error
                 }
             }
-        val result = block(sink)
-        if (aggregateSuccess) {
-            recordCrossCycleResult(success = true)
-        } else if (aggregateFailure != null) {
-            recordCrossCycleResult(success = false, error = aggregateFailure)
+        try {
+            return block(sink)
+        } finally {
+            // Record whatever outcomes were aggregated before block() returned OR threw (e.g. a
+            // CancellationException propagating out of awaitAll() when the app is backgrounded
+            // mid-poll) - otherwise a cancelled cycle records nothing at all, leaving
+            // consecutiveCrossCycleFailures stale relative to what actually happened. Run under
+            // NonCancellable since recordCrossCycleResult's Mutex.withLock would otherwise throw
+            // immediately in an already-cancelled coroutine before it could record anything.
+            withContext(NonCancellable) {
+                if (aggregateSuccess) {
+                    recordCrossCycleResult(success = true)
+                } else if (aggregateFailure != null) {
+                    recordCrossCycleResult(success = false, error = aggregateFailure)
+                }
+            }
         }
-        return result
     }
 
     private suspend fun getFriendMutex(id: String): Mutex {
