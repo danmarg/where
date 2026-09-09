@@ -80,9 +80,9 @@ open class LocationClient(
     private val silentDropRetries = mutableMapOf<String, Int>()
     private val mutexLock = Mutex()
 
-    // Cross-cycle backoff (#346): a GLOBAL (not per-friend) consecutive-failure counter for
-    // repeated send/poll failures across wake cycles, distinct from #345's per-friend
-    // unresponsive-friend throttle - a server outage hits every friend at once, so per-friend
+    // Cross-cycle backoff: a GLOBAL (not per-friend) consecutive-failure counter for
+    // repeated send/poll failures across wake cycles, distinct from the per-friend
+    // unresponsive-friend throttle above - a server outage hits every friend at once, so per-friend
     // state doesn't fit this failure mode. The platform layer (LocationService) reads
     // [crossCycleBackoffMultiplier] to stretch its wake/doze-alarm interval; this class only
     // tracks the counter and decides what counts toward it.
@@ -97,7 +97,7 @@ open class LocationClient(
     /**
      * Reports whether the device currently has any network connectivity at all. Platform-
      * injected (see LocationService's ConnectivityManager check on Android); defaults to "always
-     * online" so platforms that don't wire this up see the pre-#346 ambiguous-timeout behavior
+     * online" so platforms that don't wire this up see the old ambiguous-timeout behavior
      * rather than silently losing backoff coverage. Used to distinguish a genuine server-side
      * problem from a device that has no path to the server at all - the latter is already
      * handled faster by the platform's network-available callback (syncNow()), and counting it
@@ -174,7 +174,7 @@ open class LocationClient(
      * recording immediately, then makes exactly ONE [recordCrossCycleResult] call once [block]
      * completes - success wins if any outcome succeeded. Shared by [poll] and [syncNow] so a
      * single wake fanning out to N friends can't inflate/thrash the counter N-fold depending on
-     * completion order (#346).
+     * completion order.
      */
     private suspend fun <T> withAggregatedCrossCycleResult(block: suspend (CrossCycleSink) -> T): T {
         val aggregateMutex = Mutex()
@@ -255,7 +255,7 @@ open class LocationClient(
 
             // Aggregates every friend's poll outcome (from pollFriend's crossCycleSink) into a
             // single recordCrossCycleResult call, instead of each of N parallel friends
-            // independently incrementing/resetting the global counter (#346).
+            // independently incrementing/resetting the global counter.
             val allUpdates = mutableListOf<UserLocation>()
             withAggregatedCrossCycleResult { aggregatingSink ->
                 val deferreds =
@@ -593,7 +593,7 @@ open class LocationClient(
         pausedFriendIds: Set<String> = emptySet(),
         sharingEnabled: Boolean = true,
     ) {
-        // Aggregated the same way as poll() (#346) - syncNow() fans out to every friend in
+        // Aggregated the same way as poll() - syncNow() fans out to every friend in
         // parallel just like poll() does, so it's exposed to the same N-fold inflation risk, and
         // it's also the call the network-available callback makes right after resetting the
         // counter to 0 - re-inflating it to N in one shot on a flapping connection would defeat
@@ -700,7 +700,7 @@ open class LocationClient(
                             // Rethrowing it here would cancel the whole coroutineScope (killing
                             // every OTHER friend's in-flight send too) and skip the aggregation
                             // below entirely, so a send-side hang would never count toward
-                            // cross-cycle backoff (#346). Any other CancellationException is a
+                            // cross-cycle backoff. Any other CancellationException is a
                             // genuine outer shutdown signal and must still propagate.
                             if (it is CancellationException && it !is WallClockTimeoutCancellationException) throw it
                         }
@@ -745,7 +745,7 @@ open class LocationClient(
     /**
      * Records a cross-cycle send/poll outcome on behalf of a caller running its own multi-attempt
      * retry loop across several [sendLocation] calls (each with `recordCrossCycleOutcome=false`) -
-     * e.g. LocationService.sendLocationIfNeeded's in-wake retry loop (#346). Exposed publicly
+     * e.g. LocationService.sendLocationIfNeeded's in-wake retry loop. Exposed publicly
      * since that retry loop lives in platform code, outside this class.
      */
     suspend fun recordCrossCycleAttempt(

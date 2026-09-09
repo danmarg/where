@@ -205,7 +205,7 @@ class LocationService : Service() {
             ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED
     }
 
-    // #346: live network state at the moment of a failure, distinct from the NetworkCallback
+    // Live network state at the moment of a failure, distinct from the NetworkCallback
     // above (which only fires on transitions) - LocationClient needs this at the moment it's
     // deciding whether an ambiguous timeout counts toward cross-cycle backoff.
     private fun isDeviceOnline(): Boolean {
@@ -261,7 +261,7 @@ class LocationService : Service() {
         net.af0.where.e2ee.KtorMailboxClient.onConnectionReset = {
             e2eeManager.addDiagnosticEvent("Mailbox HTTP client auto-reset after repeated failures")
         }
-        // #346: lets LocationClient distinguish a genuine server-side problem from a device with
+        // Lets LocationClient distinguish a genuine server-side problem from a device with
         // no path to the server at all - the latter shouldn't count toward cross-cycle backoff,
         // since the NetworkCallback below already handles that recovery path faster.
         locationClient.isNetworkAvailable = { isDeviceOnline() }
@@ -303,7 +303,7 @@ class LocationService : Service() {
                     serviceScope.launch {
                         try {
                             try {
-                                // #346: this is already a strong "try now" signal - don't make it
+                                // This is already a strong "try now" signal - don't make it
                                 // fight through a backoff computed before connectivity returned.
                                 locationClient.resetCrossCycleBackoff()
                                 nextAttemptAllowedAtMs = 0L
@@ -317,7 +317,7 @@ class LocationService : Service() {
                             } catch (_: Exception) {
                                 logReliability(WakeSource.NETWORK, false)
                             } finally {
-                                // #346: syncNow() can itself bump crossCycleBackoffMultiplier back
+                                // syncNow() can itself bump crossCycleBackoffMultiplier back
                                 // up if the server is still down even though connectivity
                                 // returned - without this, nextAttemptAllowedAtMs would stay stuck
                                 // at the 0L set above (stale) until the next scheduled
@@ -685,7 +685,7 @@ class LocationService : Service() {
     internal var lastSentTime: Long = 0L
     private val sendLock = Mutex()
 
-    // #346: gates ALL cross-cycle network attempts (doPoll's poll, sendLocationIfNeeded's send) -
+    // Gates ALL cross-cycle network attempts (doPoll's poll, sendLocationIfNeeded's send) -
     // not just the poll-loop's sleep length, which by itself would only bound the *scheduled*
     // timer/alarm cadence. A GPS-fix callback, ACTION_HEARTBEAT_TICK, or a geofence event can
     // each independently drive doPoll()/sendLocationIfNeeded() outside that schedule, so the sleep
@@ -820,7 +820,7 @@ class LocationService : Service() {
                     }
                 }
             }
-            // #346: stretch the normal cadence on repeated cross-cycle send/poll failures (e.g.
+            // Stretch the normal cadence on repeated cross-cycle send/poll failures (e.g.
             // a server outage) instead of retrying forever at the same rate. Skipped during rapid
             // polling - that mode exists for an active, time-sensitive pairing flow, and backing
             // it off would hurt UX for no real benefit (a pairing exchange isn't the correlated-
@@ -882,7 +882,7 @@ class LocationService : Service() {
         }
 
     /**
-     * Applies [LocationClient.crossCycleBackoffMultiplier] (#346) to [baseIntervalMs], capped at
+     * Applies [LocationClient.crossCycleBackoffMultiplier] to [baseIntervalMs], capped at
      * [MAX_BACKOFF_INTERVAL_MS] (staying under the 30min maintenance-tier ceiling in
      * [pollInterval]) with light jitter so a correlated small user base doesn't retry a real
      * server outage in lockstep.
@@ -918,7 +918,7 @@ class LocationService : Service() {
     internal var lastCleanupTime: Long = 0L
 
     internal suspend fun doPoll(source: WakeSource = WakeSource.TIMER) {
-        // #346: skip entirely while backed off, unless this is the responsiveness-critical rapid-
+        // Skip entirely while backed off, unless this is the responsiveness-critical rapid-
         // polling mode (active pairing flow) - see nextAttemptAllowedAtMs's doc. Recovery doesn't
         // depend on this call happening: the network-available callback resets the gate and
         // triggers its own syncNow() the moment connectivity actually returns.
@@ -1043,7 +1043,7 @@ class LocationService : Service() {
             }
         if (!shouldSend) return
 
-        // #346: skip while backed off, unless this is an explicit user-initiated action (force) -
+        // Skip while backed off, unless this is an explicit user-initiated action (force) -
         // see nextAttemptAllowedAtMs's doc. Restores lastSentTime like the retries-exhausted path
         // below, since we never actually attempted a send this wake.
         if (!force && clock() < nextAttemptAllowedAtMs) {
@@ -1067,7 +1067,7 @@ class LocationService : Service() {
                 if (!userStore.isSharingLocation.value) return
             }
             try {
-                // #346: recordCrossCycleOutcome=false - this loop can make up to $totalAttempts
+                // recordCrossCycleOutcome=false - this loop can make up to $totalAttempts
                 // separate sendLocation() calls for what is really ONE cross-cycle attempt: letting
                 // each one self-record would inflate the backoff counter by up to $totalAttempts
                 // per wake instead of the intended ~1. We record exactly once below instead, after
@@ -1230,7 +1230,7 @@ class LocationService : Service() {
         val SEND_RETRY_DELAYS_MS = longArrayOf(5_000L, 20_000L)
 
         /**
-         * Cap on [crossCycleBackoffIntervalMs] (#346) - deliberately under the 30min
+         * Cap on [crossCycleBackoffIntervalMs] - deliberately under the 30min
          * maintenance-tier ceiling in [pollInterval] so a prolonged outage still doesn't push
          * the effective cadence past what that ceiling already allows.
          */
