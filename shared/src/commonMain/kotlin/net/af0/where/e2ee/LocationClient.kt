@@ -576,7 +576,9 @@ open class LocationClient(
     open suspend fun sendStoppedSharing(pausedFriendIds: Set<String> = emptySet()) {
         val payload = MessagePlaintext.StoppedSharing(ts = currentTimeSeconds())
         val activeFriends = store.listFriends().filter { isActiveFriend(it, pausedFriendIds) }
-        forEachFriendParallel(activeFriends) { friend -> sendMessageToFriendInternal(friend.id, payload) }
+        forEachFriendParallel(activeFriends) { friend ->
+            sendMessageToFriendInternal(friend.id, payload, requireDrainedOutboxFirst = false)
+        }
     }
 
     /**
@@ -588,7 +590,7 @@ open class LocationClient(
         val mutex = getFriendMutex(friendId)
         mutex.withLock {
             try {
-                sendMessageToFriendInternal(friendId, payload)
+                sendMessageToFriendInternal(friendId, payload, requireDrainedOutboxFirst = false)
             } catch (e: CancellationException) {
                 throw e
             } catch (_: Exception) {
@@ -628,18 +630,22 @@ open class LocationClient(
     private suspend fun sendMessageToFriendInternal(
         friendId: String,
         payload: MessagePlaintext,
+        requireDrainedOutboxFirst: Boolean = true,
     ) {
-        // WAL Safety: If the outbox is not empty, we MUST NOT generate a new message.
-        // We instead retry the existing outbox. This bounds the queue and prevents nonce reuse.
-        // processOutbox() now throws on failure instead of swallowing it (see its doc), so a
-        // still-stuck message propagates straight out of this function - callers (ultimately
-        // LocationService.sendLocationIfNeeded) see the real failure instead of a silent
-        // false success, and we never reach encryptAndAdvance() below for a new payload.
-        // This read is authoritative and must happen under getFriendMutex (held by our caller) -
-        // deliberately NOT reused from sendLocation()'s filter, which runs unlocked and can race
-        // with a concurrent poll()/keepalive enqueueing into this friend's outbox.
+        // WAL Safety: by default (Location/Keepalive), a non-empty outbox blocks generating a new
+        // message - without this, a stuck friend during an outage would accumulate a fresh
+        // Location every send cycle instead of just retrying the one already queued.
+        // requireDrainedOutboxFirst=false (StoppedSharing) instead best-effort-drains but always
+        // proceeds to encryptAndAdvance, so a terminal signal isn't dropped just because an older
+        // message is stuck (#369) - safe here specifically because StoppedSharing has no routine
+        // cadence to flood the outbox with, and the receive side already takes the latest
+        // timestamp across duplicate/stale StoppedSharing messages (see E2eeProtocol).
         if (store.getOutbox(friendId).isNotEmpty()) {
-            processOutbox(friendId)
+            if (requireDrainedOutboxFirst) {
+                processOutbox(friendId)
+            } else {
+                runCatching { processOutbox(friendId) }
+            }
         }
 
         store.encryptAndAdvance(friendId, payload)

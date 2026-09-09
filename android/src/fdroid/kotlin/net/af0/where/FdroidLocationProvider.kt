@@ -5,6 +5,7 @@ import android.location.Location
 import android.location.LocationListener
 import android.location.LocationManager
 import android.os.Build
+import android.os.Bundle
 import android.os.CancellationSignal
 import android.os.Looper
 import android.util.Log
@@ -58,6 +59,26 @@ class FdroidLocationProvider : LocationProvider {
         }
     }
 
+    // LocationListener only gained default no-op implementations of onStatusChanged /
+    // onProviderEnabled / onProviderDisabled in API 30 (R). On API 26-29 (minSdk is 26) the
+    // platform interface has no defaults for those, so a listener that only implements
+    // onLocationChanged (e.g. via SAM conversion) throws AbstractMethodError the first time the
+    // framework invokes one of them. Implement all four explicitly so this works down to minSdk.
+    private fun createLocationListener(onLocation: (Location) -> Unit): LocationListener =
+        object : LocationListener {
+            override fun onLocationChanged(loc: Location) = onLocation(loc)
+
+            override fun onStatusChanged(
+                provider: String?,
+                status: Int,
+                extras: Bundle?,
+            ) {}
+
+            override fun onProviderEnabled(provider: String) {}
+
+            override fun onProviderDisabled(provider: String) {}
+        }
+
     private fun getBestLastKnownLocation(): Location? {
         val providers = listOf(LocationManager.GPS_PROVIDER, LocationManager.NETWORK_PROVIDER, LocationManager.PASSIVE_PROVIDER)
         return providers.mapNotNull { provider ->
@@ -93,7 +114,7 @@ class FdroidLocationProvider : LocationProvider {
         // don't receive a flood of fixes (PASSIVE is handled above and never reaches here).
         val minDistance = LocationService.MOVEMENT_RADIUS_THRESHOLD_METERS
         val listener =
-            LocationListener { loc ->
+            createLocationListener { loc ->
                 onLocationCallback?.invoke(loc.latitude, loc.longitude, if (loc.hasBearing()) loc.bearing.toDouble() else null)
             }
         // Mirror GmsLocationProvider's 10s floor to prevent excessive wakeups under fast
@@ -122,7 +143,7 @@ class FdroidLocationProvider : LocationProvider {
             return false
         }
         val listener =
-            LocationListener { loc ->
+            createLocationListener { loc ->
                 onLocationCallback?.invoke(loc.latitude, loc.longitude, if (loc.hasBearing()) loc.bearing.toDouble() else null)
             }
         return try {
