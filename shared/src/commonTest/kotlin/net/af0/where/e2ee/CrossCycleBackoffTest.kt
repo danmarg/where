@@ -145,6 +145,38 @@ class CrossCycleBackoffTest {
         }
 
     @Test
+    fun `a send-side wall-clock timeout counts toward backoff and surfaces as TimeoutException, not CancellationException`() =
+        runTest {
+            val (client, mailbox) = pairedClient()
+            mailbox.nextPostException = { WallClockTimeoutCancellationException() }
+            client.isNetworkAvailable = { true }
+
+            // Must NOT surface as a CancellationException - a platform caller with a reasonable
+            // `catch (e: CancellationException) { throw e }` (to avoid swallowing genuine
+            // structured-concurrency shutdown) would otherwise skip its own failure handling.
+            assertFailsWith<TimeoutException> { client.sendLocation(1.0, 2.0, emptySet()) }
+            assertEquals(2, client.crossCycleBackoffMultiplier, "a send-side hang must count toward backoff like any other timeout")
+        }
+
+    @Test
+    fun `sendLocation with recordCrossCycleOutcome=false lets the caller aggregate its own retry loop`() =
+        runTest {
+            val (client, mailbox) = pairedClient()
+            mailbox.nextPostException = { ServerException(500, "boom") }
+
+            // Three "manual retry loop" attempts, none self-recording.
+            repeat(3) {
+                assertFailsWith<ServerException> {
+                    client.sendLocation(1.0, 2.0, emptySet(), recordCrossCycleOutcome = false)
+                }
+            }
+            assertEquals(1, client.crossCycleBackoffMultiplier, "no attempt should have self-recorded")
+
+            client.recordCrossCycleAttempt(success = false, error = ServerException(500, "boom"))
+            assertEquals(2, client.crossCycleBackoffMultiplier, "the caller's single aggregated record must count exactly once")
+        }
+
+    @Test
     fun `resetCrossCycleBackoff clears the counter immediately without waiting for a success`() =
         runTest {
             val (client, mailbox) = pairedClient()

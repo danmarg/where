@@ -316,6 +316,16 @@ class LocationService : Service() {
                                 throw e
                             } catch (_: Exception) {
                                 logReliability(WakeSource.NETWORK, false)
+                            } finally {
+                                // #346: syncNow() can itself bump crossCycleBackoffMultiplier back
+                                // up if the server is still down even though connectivity
+                                // returned - without this, nextAttemptAllowedAtMs would stay stuck
+                                // at the 0L set above (stale) until the next scheduled
+                                // doPoll()/sendLocationIfNeeded() call happens to refresh it,
+                                // leaving an out-of-band trigger (GPS fix, heartbeat tick,
+                                // geofence event) firing in between unthrottled during exactly the
+                                // reconnect-storm scenario the jitter exists to protect against.
+                                refreshBackoffGate()
                             }
                         } finally {
                             if (pollWakeLock.isHeld) pollWakeLock.release()
@@ -1053,12 +1063,24 @@ class LocationService : Service() {
                 if (!userStore.isSharingLocation.value) return
             }
             try {
-                locationClient.sendLocation(lat, lng, userStore.effectivelyPausedIds(), stationary = stationary)
+                // #346: recordCrossCycleOutcome=false - this loop can make up to $totalAttempts
+                // separate sendLocation() calls for what is really ONE cross-cycle attempt: letting
+                // each one self-record would inflate the backoff counter by up to $totalAttempts
+                // per wake instead of the intended ~1. We record exactly once below instead, after
+                // the loop settles either way.
+                locationClient.sendLocation(
+                    lat,
+                    lng,
+                    userStore.effectivelyPausedIds(),
+                    stationary = stationary,
+                    recordCrossCycleOutcome = false,
+                )
                 val sendCompleteTime = clock()
                 logReliability(source, true, interval, wakeTrigger)
                 checkLateHeartbeat(interval)
                 lastSuccessfulSendTime = sendCompleteTime
                 updateStatus(null)
+                locationClient.recordCrossCycleAttempt(success = true)
                 refreshBackoffGate()
                 return
             } catch (e: CancellationException) {
@@ -1074,6 +1096,7 @@ class LocationService : Service() {
         Log.e(TAG, "Failed to send location after $totalAttempts attempts: ${lastError?.message}")
         logReliability(source, false, interval, wakeTrigger)
         updateStatus(lastError ?: Exception("send failed"))
+        lastError?.let { locationClient.recordCrossCycleAttempt(success = false, error = it) }
         refreshBackoffGate()
     }
 

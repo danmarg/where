@@ -148,11 +148,12 @@ open class LocationClient(
         backoffLock.withLock { consecutiveCrossCycleFailures = 0 }
     }
 
-    // Lets pollFriend() report its outcome without immediately recording it - poll() uses this to
-    // aggregate every friend's outcome into a single recordCrossCycleResult call (see poll()),
-    // instead of each of N parallel friends independently incrementing/resetting the counter.
-    // Direct pollFriend() callers (syncNow(), tests) get the default, which records immediately -
-    // syncNow() is already a single explicit "try now" action per friend, not a fan-out cycle.
+    // Lets pollFriend() report its outcome without immediately recording it - poll() and syncNow()
+    // both pass an aggregating sink (via withAggregatedCrossCycleResult) so every friend's outcome
+    // in one fan-out call collapses into a single recordCrossCycleResult call, instead of each of
+    // N parallel friends independently incrementing/resetting the counter. Direct pollFriend()
+    // callers that don't opt into aggregation (e.g. tests) get the default, which records
+    // immediately per call.
     internal fun interface CrossCycleSink {
         suspend fun record(
             success: Boolean,
@@ -639,6 +640,7 @@ open class LocationClient(
         lng: Double,
         pausedFriendIds: Set<String> = emptySet(),
         stationary: Boolean = false,
+        recordCrossCycleOutcome: Boolean = true,
     ) {
         coroutineScope {
             val now = currentTimeSeconds()
@@ -672,30 +674,66 @@ open class LocationClient(
                             mutex.withLock {
                                 sendMessageToFriendInternal(friend.id, payload)
                             }
-                        }.onFailure { if (it is CancellationException) throw it }
+                        }.onFailure {
+                            // A wall-clock timeout is an ordinary, expected request failure (same
+                            // role as any other network exception) even though it's implemented as
+                            // a CancellationException - see pollFriend's identical distinction.
+                            // Rethrowing it here would cancel the whole coroutineScope (killing
+                            // every OTHER friend's in-flight send too) and skip the aggregation
+                            // below entirely, so a send-side hang would never count toward
+                            // cross-cycle backoff (#346). Any other CancellationException is a
+                            // genuine outer shutdown signal and must still propagate.
+                            if (it is CancellationException && it !is WallClockTimeoutCancellationException) throw it
+                        }
                     }
                 }
 
             val results = deferreds.awaitAll()
-            // One recordCrossCycleResult call for the whole sendLocation() invocation, not one
-            // per friend - otherwise a single wake with N friends inflates the counter N-fold and
-            // the exact multiplier depends on parallel completion order. Any success at all means
-            // the server is reachable, so it wins over a co-occurring per-friend failure.
-            val anySuccess = results.any { it.isSuccess }
-            val representativeFailure = results.firstNotNullOfOrNull { it.exceptionOrNull() }
-            if (anySuccess) {
-                recordCrossCycleResult(success = true)
-            } else if (representativeFailure != null) {
-                recordCrossCycleResult(success = false, error = representativeFailure)
+            if (recordCrossCycleOutcome) {
+                // One recordCrossCycleResult call for the whole sendLocation() invocation, not one
+                // per friend - otherwise a single wake with N friends inflates the counter N-fold
+                // and the exact multiplier depends on parallel completion order. Any success at
+                // all means the server is reachable, so it wins over a co-occurring per-friend
+                // failure. Callers that make their own multi-attempt retry loop across several
+                // sendLocation() calls (e.g. LocationService.sendLocationIfNeeded) instead pass
+                // recordCrossCycleOutcome=false and aggregate across attempts themselves via
+                // [recordCrossCycleAttempt], so N retries don't inflate the counter N-fold either.
+                val anySuccess = results.any { it.isSuccess }
+                val representativeFailure = results.firstNotNullOfOrNull { it.exceptionOrNull() }
+                if (anySuccess) {
+                    recordCrossCycleResult(success = true)
+                } else if (representativeFailure != null) {
+                    recordCrossCycleResult(success = false, error = representativeFailure)
+                }
             }
             val successCount = results.count { it.isSuccess }
             val failCount = results.count { it.isFailure }
 
-            // If we failed to send to ANYONE but had at least one target, propagate the last error.
+            // If we failed to send to ANYONE but had at least one target, propagate the last
+            // error - converting a wall-clock timeout (still, at the type level, a
+            // CancellationException - see above) to the public TimeoutException it already stands
+            // in for, so a caller's `catch (e: CancellationException)` (a reasonable thing for
+            // platform code to have, to avoid swallowing genuine structured-concurrency shutdown)
+            // can't mistake it for one and skip its own failure handling - see
+            // LocationService.sendLocationIfNeeded.
             if (successCount == 0 && failCount > 0) {
-                throw results.first { it.isFailure }.exceptionOrNull()!!
+                val failure = results.first { it.isFailure }.exceptionOrNull()!!
+                throw if (failure is WallClockTimeoutCancellationException) TimeoutException("Wall-clock timeout", failure) else failure
             }
         }
+    }
+
+    /**
+     * Records a cross-cycle send/poll outcome on behalf of a caller running its own multi-attempt
+     * retry loop across several [sendLocation] calls (each with `recordCrossCycleOutcome=false`) -
+     * e.g. LocationService.sendLocationIfNeeded's in-wake retry loop (#346). Exposed publicly
+     * since that retry loop lives in platform code, outside this class.
+     */
+    suspend fun recordCrossCycleAttempt(
+        success: Boolean,
+        error: Throwable? = null,
+    ) {
+        recordCrossCycleResult(success, error)
     }
 
     suspend fun sendLocationToFriend(

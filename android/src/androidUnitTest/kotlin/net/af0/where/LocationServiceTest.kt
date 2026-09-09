@@ -463,7 +463,7 @@ class LocationServiceTest {
             controller.startCommand(0, 0)
             advanceUntilIdle()
 
-            io.mockk.coVerify { mockClient.sendLocation(any(), any(), any()) }
+            io.mockk.coVerify { mockClient.sendLocation(any(), any(), any(), any(), any()) }
         }
 
     @Test
@@ -478,7 +478,7 @@ class LocationServiceTest {
             val mockClient = io.mockk.mockk<LocationClient>(relaxed = true)
             // First call throws, second call succeeds.
             var sendCalls = 0
-            io.mockk.coEvery { mockClient.sendLocation(any(), any(), any()) } answers {
+            io.mockk.coEvery { mockClient.sendLocation(any(), any(), any(), any(), any()) } answers {
                 sendCalls += 1
                 if (sendCalls == 1) throw RuntimeException("simulated transient failure")
                 Unit
@@ -496,6 +496,40 @@ class LocationServiceTest {
                 advanceUntilIdle()
                 assertEquals(2, sendCalls, "Send should retry once after transient failure")
                 assertTrue(service.lastSentTime > 0L, "lastSentTime should remain set after eventual success")
+            } finally {
+                controller.destroy()
+            }
+        }
+
+    @Test
+    fun testSendLocationIfNeeded_RecordsCrossCycleOutcomeOnceAcrossAllRetries() =
+        runTest {
+            var currentTime = 1_000_000_000L
+            LocationService.clock = { currentTime }
+
+            val controller = Robolectric.buildService(LocationService::class.java)
+            val service = controller.get()
+
+            val mockClient = io.mockk.mockk<LocationClient>(relaxed = true)
+            // Every attempt fails - #346's retry loop must still record the cross-cycle outcome
+            // exactly once (not once per attempt) once retries are exhausted.
+            io.mockk.coEvery { mockClient.sendLocation(any(), any(), any(), any(), any()) } throws
+                RuntimeException("simulated persistent failure")
+            service.locationClientOverride = mockClient
+            service.locationSourceOverride = fakeLocationSource
+            service.e2eeManagerOverride = io.mockk.mockk(relaxed = true)
+
+            val app = context as TestWhereApplication
+            app.userStore.setSharing(true)
+            controller.create()
+
+            try {
+                service.sendLocationIfNeeded(1.0, 2.0, isHeartbeat = false, force = true)
+                advanceUntilIdle()
+
+                // 3 attempts, but every one passed recordCrossCycleOutcome=false.
+                io.mockk.coVerify(exactly = 3) { mockClient.sendLocation(any(), any(), any(), any(), eq(false)) }
+                io.mockk.coVerify(exactly = 1) { mockClient.recordCrossCycleAttempt(success = false, error = any()) }
             } finally {
                 controller.destroy()
             }
@@ -524,12 +558,12 @@ class LocationServiceTest {
                 service.nextAttemptAllowedAtMs = currentTime + 60_000L
                 service.sendLocationIfNeeded(1.0, 2.0, isHeartbeat = false)
                 advanceUntilIdle()
-                io.mockk.coVerify(exactly = 0) { mockClient.sendLocation(any(), any(), any()) }
+                io.mockk.coVerify(exactly = 0) { mockClient.sendLocation(any(), any(), any(), any(), any()) }
 
                 // An explicit user-initiated action (force=true) must bypass the gate.
                 service.sendLocationIfNeeded(1.0, 2.0, isHeartbeat = false, force = true)
                 advanceUntilIdle()
-                io.mockk.coVerify(exactly = 1) { mockClient.sendLocation(any(), any(), any()) }
+                io.mockk.coVerify(exactly = 1) { mockClient.sendLocation(any(), any(), any(), any(), any()) }
             } finally {
                 controller.destroy()
             }
@@ -766,7 +800,7 @@ class LocationServiceTest {
             advanceUntilIdle()
 
             io.mockk.coVerify(exactly = 1) {
-                mockClient.sendLocation(37.0, -122.0, any(), stationary = true)
+                mockClient.sendLocation(37.0, -122.0, any(), stationary = true, recordCrossCycleOutcome = any())
             }
         }
 
