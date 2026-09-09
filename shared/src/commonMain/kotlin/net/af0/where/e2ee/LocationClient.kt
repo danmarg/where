@@ -183,7 +183,11 @@ open class LocationClient(
         val sink =
             CrossCycleSink { success, error ->
                 aggregateMutex.withLock {
-                    if (success) aggregateSuccess = true else if (error != null) aggregateFailure = error
+                    if (success) {
+                        aggregateSuccess = true
+                    } else if (error != null) {
+                        aggregateFailure = error
+                    }
                 }
             }
         try {
