@@ -29,6 +29,14 @@ const val UNRESPONSIVE_SEND_INTERVAL_SECONDS = 5 * 60L
 const val AUTOMATED_KEEPALIVE_BACKSTOP_SECONDS = 3 * UNRESPONSIVE_SEND_INTERVAL_SECONDS
 
 /**
+ * Caps [LocationClient.crossCycleBackoffMultiplier] at 2^this (32x). The platform layer applies
+ * its own absolute ceiling on top of this (e.g. staying under the 30min maintenance-tier poll
+ * interval), so this only needs to bound the shift itself from growing unboundedly during a
+ * very long outage.
+ */
+private const val MAX_BACKOFF_SHIFT = 5
+
+/**
  * Orchestrates the end-to-end encrypted location sharing protocol.
  * Unifies polling, decryption, ratchet rotation, and sending for all platforms.
  */
@@ -69,6 +77,117 @@ open class LocationClient(
     private val friendMutexes = mutableMapOf<String, Mutex>()
     private val silentDropRetries = mutableMapOf<String, Int>()
     private val mutexLock = Mutex()
+
+    // Cross-cycle backoff (#346): a GLOBAL (not per-friend) consecutive-failure counter for
+    // repeated send/poll failures across wake cycles, distinct from #345's per-friend
+    // unresponsive-friend throttle - a server outage hits every friend at once, so per-friend
+    // state doesn't fit this failure mode. The platform layer (LocationService) reads
+    // [crossCycleBackoffMultiplier] to stretch its wake/doze-alarm interval; this class only
+    // tracks the counter and decides what counts toward it.
+    private val backoffLock = Mutex()
+
+    // Volatile: crossCycleBackoffMultiplier's getter reads this outside backoffLock (it's a cheap,
+    // frequently-polled read from the platform scheduler) - writes are still serialized by the
+    // lock, this only ensures a fresh value is visible across threads without acquiring it.
+    @kotlin.concurrent.Volatile
+    private var consecutiveCrossCycleFailures = 0
+
+    /**
+     * Reports whether the device currently has any network connectivity at all. Platform-
+     * injected (see LocationService's ConnectivityManager check on Android); defaults to "always
+     * online" so platforms that don't wire this up see the pre-#346 ambiguous-timeout behavior
+     * rather than silently losing backoff coverage. Used to distinguish a genuine server-side
+     * problem from a device that has no path to the server at all - the latter is already
+     * handled faster by the platform's network-available callback (syncNow()), and counting it
+     * here would just delay recovery once connectivity actually returns.
+     */
+    var isNetworkAvailable: () -> Boolean = { true }
+
+    // ConnectException (DNS failure/connection refused/no route) reads as "device has no path to
+    // the server at all" and is deliberately excluded even when isNetworkAvailable() lies - see
+    // isNetworkAvailable's doc. A 429 ServerException is the unresponsive-friend throttle's
+    // problem (distinct per-friend semantic), not server health, so it's excluded too.
+    private fun isBackoffWorthy(e: Throwable): Boolean =
+        when (e) {
+            is ServerException -> e.statusCode != 429
+            // Timeouts (including the wall-clock hang backstop) are ambiguous by exception type
+            // alone - could be an overloaded server, or a degraded connection that never
+            // completes either way - so they only count when we know the device is online.
+            is TimeoutException, is WallClockTimeoutCancellationException -> isNetworkAvailable()
+            else -> false
+        }
+
+    private suspend fun recordCrossCycleResult(
+        success: Boolean,
+        error: Throwable? = null,
+    ) {
+        backoffLock.withLock {
+            if (success) {
+                consecutiveCrossCycleFailures = 0
+            } else if (error != null && isBackoffWorthy(error)) {
+                consecutiveCrossCycleFailures = minOf(consecutiveCrossCycleFailures + 1, MAX_BACKOFF_SHIFT)
+            }
+        }
+    }
+
+    /**
+     * Multiplier the platform layer should apply to its normal poll-loop wake/doze-alarm
+     * interval - 1 means no backoff. Capping the underlying shift (not the multiplier itself)
+     * lets the platform layer apply its own absolute cap without this racing ahead unboundedly.
+     */
+    val crossCycleBackoffMultiplier: Int
+        get() = 1 shl consecutiveCrossCycleFailures
+
+    /**
+     * Resets the backoff counter immediately, without waiting for the next successful
+     * send/poll. Intended for a strong "try now" signal - e.g. the platform's network-available
+     * callback, which already triggers [syncNow] - so a real recovery isn't delayed by a stale
+     * backoff computed before connectivity returned.
+     */
+    suspend fun resetCrossCycleBackoff() {
+        backoffLock.withLock { consecutiveCrossCycleFailures = 0 }
+    }
+
+    // Lets pollFriend() report its outcome without immediately recording it - poll() uses this to
+    // aggregate every friend's outcome into a single recordCrossCycleResult call (see poll()),
+    // instead of each of N parallel friends independently incrementing/resetting the counter.
+    // Direct pollFriend() callers (syncNow(), tests) get the default, which records immediately -
+    // syncNow() is already a single explicit "try now" action per friend, not a fan-out cycle.
+    internal fun interface CrossCycleSink {
+        suspend fun record(
+            success: Boolean,
+            error: Throwable?,
+        )
+    }
+
+    private val directCrossCycleSink =
+        CrossCycleSink { success, error -> recordCrossCycleResult(success, error) }
+
+    /**
+     * Runs [block] with a [CrossCycleSink] that buffers every reported outcome instead of
+     * recording immediately, then makes exactly ONE [recordCrossCycleResult] call once [block]
+     * completes - success wins if any outcome succeeded. Shared by [poll] and [syncNow] so a
+     * single wake fanning out to N friends can't inflate/thrash the counter N-fold depending on
+     * completion order (#346).
+     */
+    private suspend fun <T> withAggregatedCrossCycleResult(block: suspend (CrossCycleSink) -> T): T {
+        val aggregateMutex = Mutex()
+        var aggregateSuccess = false
+        var aggregateFailure: Throwable? = null
+        val sink =
+            CrossCycleSink { success, error ->
+                aggregateMutex.withLock {
+                    if (success) aggregateSuccess = true else if (error != null) aggregateFailure = error
+                }
+            }
+        val result = block(sink)
+        if (aggregateSuccess) {
+            recordCrossCycleResult(success = true)
+        } else if (aggregateFailure != null) {
+            recordCrossCycleResult(success = false, error = aggregateFailure)
+        }
+        return result
+    }
 
     private suspend fun getFriendMutex(id: String): Mutex {
         mutexLock.withLock {
@@ -114,53 +233,58 @@ open class LocationClient(
                     emptyList()
                 }
 
-            val deferreds =
-                friends.map { friend ->
-                    async {
-                        try {
-                            val mutex = getFriendMutex(friend.id)
-                            mutex.withLock {
-                                val alreadyPolling =
-                                    inFlightMutex.withLock {
-                                        if (inFlightPolls.contains(friend.id)) {
-                                            true
-                                        } else {
-                                            inFlightPolls.add(friend.id)
-                                            false
+            // Aggregates every friend's poll outcome (from pollFriend's crossCycleSink) into a
+            // single recordCrossCycleResult call, instead of each of N parallel friends
+            // independently incrementing/resetting the global counter (#346).
+            val allUpdates = mutableListOf<UserLocation>()
+            withAggregatedCrossCycleResult { aggregatingSink ->
+                val deferreds =
+                    friends.map { friend ->
+                        async {
+                            try {
+                                val mutex = getFriendMutex(friend.id)
+                                mutex.withLock {
+                                    val alreadyPolling =
+                                        inFlightMutex.withLock {
+                                            if (inFlightPolls.contains(friend.id)) {
+                                                true
+                                            } else {
+                                                inFlightPolls.add(friend.id)
+                                                false
+                                            }
+                                        }
+                                    if (alreadyPolling) return@async Pair(emptyList<UserLocation>(), null)
+
+                                    try {
+                                        // "Paused" for pollFriend's purposes means "sendLocation
+                                        // isn't sending this friend anything" - true if they're
+                                        // individually paused, or if location sharing is off
+                                        // entirely.
+                                        val isPaused = !sharingEnabled || friend.id in pausedFriendIds
+                                        val updates = pollFriend(friend.id, isPaused, aggregatingSink)
+                                        Pair(updates, null)
+                                    } catch (e: CancellationException) {
+                                        throw e
+                                    } catch (e: Exception) {
+                                        Pair(emptyList<UserLocation>(), e)
+                                    } finally {
+                                        inFlightMutex.withLock {
+                                            inFlightPolls.remove(friend.id)
                                         }
                                     }
-                                if (alreadyPolling) return@async Pair(emptyList<UserLocation>(), null)
-
-                                try {
-                                    // "Paused" for pollFriend's purposes means "sendLocation isn't
-                                    // sending this friend anything" - true if they're individually
-                                    // paused, or if location sharing is off entirely.
-                                    val isPaused = !sharingEnabled || friend.id in pausedFriendIds
-                                    val updates = pollFriend(friend.id, isPaused)
-                                    Pair(updates, null)
-                                } catch (e: CancellationException) {
-                                    throw e
-                                } catch (e: Exception) {
-                                    Pair(emptyList<UserLocation>(), e)
-                                } finally {
-                                    inFlightMutex.withLock {
-                                        inFlightPolls.remove(friend.id)
-                                    }
                                 }
+                            } catch (e: CancellationException) {
+                                throw e
+                            } catch (e: Exception) {
+                                Pair(emptyList<UserLocation>(), e)
                             }
-                        } catch (e: CancellationException) {
-                            throw e
-                        } catch (e: Exception) {
-                            Pair(emptyList<UserLocation>(), e)
                         }
                     }
+
+                val results = deferreds.awaitAll()
+                for ((updates, _) in results) {
+                    allUpdates.addAll(updates)
                 }
-
-            val results = deferreds.awaitAll()
-            val allUpdates = mutableListOf<UserLocation>()
-
-            for ((updates, _) in results) {
-                allUpdates.addAll(updates)
             }
 
             // Ensure outboxes are processed even if some polls failed
@@ -235,6 +359,7 @@ open class LocationClient(
     internal suspend fun pollFriend(
         friendId: String,
         isPaused: Boolean = false,
+        crossCycleSink: CrossCycleSink = directCrossCycleSink,
     ): List<UserLocation> =
         coroutineScope {
             val resultLocations = mutableListOf<UserLocation>()
@@ -250,17 +375,18 @@ open class LocationClient(
 
                 val pollStartMs = currentTimeMillis()
 
-                fun recordPollFailure(e: Throwable) {
+                suspend fun recordPollFailure(e: Throwable) {
                     val elapsedMs = currentTimeMillis() - pollStartMs
                     store.addDiagnosticEvent(
                         "poll($friendId) failed on $currentToken after ${elapsedMs}ms: ${e.message}",
                     )
                     stopPolling = true
+                    crossCycleSink.record(false, e)
                 }
 
                 val messages =
                     try {
-                        service.poll(currentToken)
+                        service.poll(currentToken).also { crossCycleSink.record(true, null) }
                     } catch (e: WallClockTimeoutCancellationException) {
                         // A wall-clock timeout is an ordinary, expected request failure (same role
                         // as any other network exception) even though it's implemented as a
@@ -447,10 +573,17 @@ open class LocationClient(
         pausedFriendIds: Set<String> = emptySet(),
         sharingEnabled: Boolean = true,
     ) {
-        forEachFriendParallel(store.listFriends()) { friend ->
-            processOutbox(friend.id)
-            val isPaused = !sharingEnabled || friend.id in pausedFriendIds
-            pollFriend(friend.id, isPaused)
+        // Aggregated the same way as poll() (#346) - syncNow() fans out to every friend in
+        // parallel just like poll() does, so it's exposed to the same N-fold inflation risk, and
+        // it's also the call the network-available callback makes right after resetting the
+        // counter to 0 - re-inflating it to N in one shot on a flapping connection would defeat
+        // that reset.
+        withAggregatedCrossCycleResult { sink ->
+            forEachFriendParallel(store.listFriends()) { friend ->
+                processOutbox(friend.id)
+                val isPaused = !sharingEnabled || friend.id in pausedFriendIds
+                pollFriend(friend.id, isPaused, sink)
+            }
         }
     }
 
@@ -544,6 +677,17 @@ open class LocationClient(
                 }
 
             val results = deferreds.awaitAll()
+            // One recordCrossCycleResult call for the whole sendLocation() invocation, not one
+            // per friend - otherwise a single wake with N friends inflates the counter N-fold and
+            // the exact multiplier depends on parallel completion order. Any success at all means
+            // the server is reachable, so it wins over a co-occurring per-friend failure.
+            val anySuccess = results.any { it.isSuccess }
+            val representativeFailure = results.firstNotNullOfOrNull { it.exceptionOrNull() }
+            if (anySuccess) {
+                recordCrossCycleResult(success = true)
+            } else if (representativeFailure != null) {
+                recordCrossCycleResult(success = false, error = representativeFailure)
+            }
             val successCount = results.count { it.isSuccess }
             val failCount = results.count { it.isFailure }
 
