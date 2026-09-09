@@ -31,6 +31,11 @@ platform :android do
   end
 
   def bump_version(gradle_file)
+    # Require a clean tree beforehand so the commit we make below contains only
+    # the version bump, not unrelated work-in-progress swept in alongside it.
+    dirty = `git status --porcelain`.strip
+    UI.user_error!("Working tree has uncommitted changes — commit or stash them before bumping the version:\n#{dirty}") unless dirty.empty?
+
     today = Time.now.strftime("%Y.%m.%d")
     content = File.read(gradle_file)
     current_name = content.match(/versionName\s*=\s*"([^"]+)"/)[1]
@@ -45,6 +50,11 @@ platform :android do
     content.gsub!(/(versionName\s*=\s*)"[^"]+"/, "\\1\"#{new_version_name}\"")
     content.gsub!(/(versionCode\s*=\s*)\d+/, "\\1#{new_version_code}")
     File.write(gradle_file, content)
+
+    # Commit immediately so HEAD always reflects the version it claims to be —
+    # release_github_binaries tags whatever HEAD is, and requires a clean tree.
+    sh("git", "add", gradle_file)
+    sh("git", "commit", "-m", "Bump Android version to #{new_version_name} (#{new_version_code})")
   end
 
   desc "Build standard AAB (no activity recognition) and upload to Google Play (internal track)"
