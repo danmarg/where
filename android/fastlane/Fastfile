@@ -85,6 +85,12 @@ platform :android do
        "so HEAD is the exact commit you want the tag to point at. Requires signing env vars " \
        "and an authenticated `gh` CLI."
   lane :release_github_binaries do
+    # Guard against tagging HEAD with binaries built from a version bump that was
+    # never committed — see the docstring above: the tag must point at the exact
+    # commit whose build.gradle.kts matches what F-Droid will check out and rebuild.
+    dirty = `git status --porcelain`.strip
+    UI.user_error!("Working tree has uncommitted changes — commit them (especially any versionName/versionCode bump) before tagging:\n#{dirty}") unless dirty.empty?
+
     gradle_file = File.expand_path("../build.gradle.kts", __dir__)
     version_name = File.read(gradle_file).match(/versionName\s*=\s*"([^"]+)"/)[1]
     tag = "v#{version_name}"
