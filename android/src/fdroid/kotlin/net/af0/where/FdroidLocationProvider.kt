@@ -39,6 +39,25 @@ class FdroidLocationProvider : LocationProvider {
         callback(loc)
     }
 
+    // GPS preferred, NETWORK as fallback - but only among providers actually enabled on this
+    // device. Some AOSP/de-Googled builds (a demographic this build already targets - see
+    // requestActiveUpdates below) have no network location provider installed at all, and
+    // LocationManager throws IllegalArgumentException for a provider name it doesn't recognize
+    // (undocumented as a checked exception, but per the getLastKnownLocation/getCurrentLocation/
+    // requestLocationUpdates contract). isProviderEnabled() itself throws for an unrecognized
+    // name on some OEM builds, so we go through the enabled-providers list instead of probing
+    // GPS_PROVIDER/NETWORK_PROVIDER directly.
+    // FUSED_PROVIDER is intentionally excluded: it is a GMS-injected provider string not
+    // present in AOSP and absent on de-Googled devices.
+    private fun selectFallbackProvider(): String? {
+        val enabled = locationManager.getProviders(true)
+        return when {
+            enabled.contains(LocationManager.GPS_PROVIDER) -> LocationManager.GPS_PROVIDER
+            enabled.contains(LocationManager.NETWORK_PROVIDER) -> LocationManager.NETWORK_PROVIDER
+            else -> null
+        }
+    }
+
     private fun getBestLastKnownLocation(): Location? {
         val providers = listOf(LocationManager.GPS_PROVIDER, LocationManager.NETWORK_PROVIDER, LocationManager.PASSIVE_PROVIDER)
         return providers.mapNotNull { provider ->
@@ -65,15 +84,11 @@ class FdroidLocationProvider : LocationProvider {
             Log.i(TAG, "PASSIVE accuracy: active registration skipped; passive listener covers this (registered=$ok)")
             return ok
         }
-        // For real providers: GPS preferred, NETWORK as fallback.
-        // FUSED_PROVIDER is intentionally excluded: it is a GMS-injected provider string not
-        // present in AOSP and absent on de-Googled devices (GrapheneOS, CalyxOS, etc.).
-        val provider =
-            when {
-                locationManager.isProviderEnabled(LocationManager.GPS_PROVIDER) ->
-                    LocationManager.GPS_PROVIDER
-                else -> LocationManager.NETWORK_PROVIDER
-            }
+        val provider = selectFallbackProvider()
+        if (provider == null) {
+            Log.w(TAG, "No enabled location provider (GPS or NETWORK) available; active registration skipped")
+            return false
+        }
         // Use the same 200m distance filter as GmsLocationProvider so stationary users
         // don't receive a flood of fixes (PASSIVE is handled above and never reaches here).
         val minDistance = LocationService.MOVEMENT_RADIUS_THRESHOLD_METERS
@@ -92,6 +107,11 @@ class FdroidLocationProvider : LocationProvider {
             true
         } catch (e: SecurityException) {
             Log.w(TAG, "SecurityException requesting $provider updates: ${e.message}")
+            false
+        } catch (e: IllegalArgumentException) {
+            // Provider existed when selectFallbackProvider() checked but vanished before this
+            // call (TOCTOU) - defensive, since LocationManager throws for an unrecognized name.
+            Log.w(TAG, "$provider no longer available requesting updates: ${e.message}")
             false
         }
     }
@@ -145,22 +165,28 @@ class FdroidLocationProvider : LocationProvider {
                     // R == API 30; LocationManager.getCurrentLocation() was added in API 30.
                     // The else branch returns the best last-known fix, which may be stale.
                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-                        val signal = CancellationSignal()
-                        cont.invokeOnCancellation { signal.cancel() }
-                        val provider =
-                            if (locationManager.isProviderEnabled(LocationManager.GPS_PROVIDER)) {
-                                LocationManager.GPS_PROVIDER
-                            } else {
-                                LocationManager.NETWORK_PROVIDER
+                        val provider = selectFallbackProvider()
+                        if (provider == null) {
+                            Log.w(TAG, "No enabled location provider (GPS or NETWORK) available; falling back to last-known fix")
+                            cont.resume(getBestLastKnownLocation())
+                        } else {
+                            val signal = CancellationSignal()
+                            cont.invokeOnCancellation { signal.cancel() }
+                            locationManager.getCurrentLocation(provider, signal, Executors.newSingleThreadExecutor()) { loc ->
+                                cont.resume(loc)
                             }
-                        locationManager.getCurrentLocation(provider, signal, Executors.newSingleThreadExecutor()) { loc ->
-                            cont.resume(loc)
                         }
                     } else {
                         cont.resume(getBestLastKnownLocation())
                     }
                 } catch (e: SecurityException) {
                     Log.e(TAG, "SecurityException getting current location: ${e.message}")
+                    cont.resume(null)
+                } catch (e: IllegalArgumentException) {
+                    // Provider existed when selectFallbackProvider() checked but vanished before
+                    // this call (TOCTOU) - defensive, since LocationManager throws for an
+                    // unrecognized name.
+                    Log.w(TAG, "Provider no longer available getting current location: ${e.message}")
                     cont.resume(null)
                 }
             }
