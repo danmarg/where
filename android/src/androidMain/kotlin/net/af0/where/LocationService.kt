@@ -77,6 +77,11 @@ class LocationService : Service() {
     private lateinit var locationProvider: LocationProvider
     private lateinit var activityHelper: ActivityHelper
 
+    // Set when startForeground() throws in onCreate() (see there). Everything below that call
+    // in onCreate() — including the lateinit properties above — never gets initialized in that
+    // case, so onDestroy() must skip teardown entirely rather than dereference them.
+    private var startForegroundFailed = false
+
     @VisibleForTesting
     internal var isRegistered = false
 
@@ -211,7 +216,20 @@ class LocationService : Service() {
         userStore = app.userStore
 
         // Always call startForeground immediately to avoid ForegroundServiceDidNotStartInTimeException.
-        startForeground(NOTIFICATION_ID, buildNotification())
+        // This is declared foregroundServiceType="location" in the manifest, so on API 34+ the OS
+        // requires the location permission to already be held or this throws SecurityException.
+        // Callers are expected to check permission before starting us, but permission can be
+        // revoked between that check and this call (auto-revoke of unused permissions, or the
+        // user flipping it off in Settings while we're already scheduled to (re)start) — so this
+        // is a real, reachable race, not a defensive check against something that can't happen.
+        try {
+            startForeground(NOTIFICATION_ID, buildNotification())
+        } catch (e: SecurityException) {
+            Log.e(TAG, "startForeground failed: location permission not held; stopping service", e)
+            startForegroundFailed = true
+            stopSelf()
+            return
+        }
 
         alarmManager = getSystemService(AlarmManager::class.java)
         pollWakeLock =
@@ -604,6 +622,12 @@ class LocationService : Service() {
 
     override fun onDestroy() {
         Log.d(TAG, "onDestroy")
+        if (startForegroundFailed) {
+            // onCreate() bailed out before initializing anything below the startForeground()
+            // call, so there's nothing to tear down.
+            super.onDestroy()
+            return
+        }
         locationProvider.onDestroy()
         isRegistered = false
         isPassiveRegistered = false
