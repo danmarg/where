@@ -356,6 +356,15 @@ class LocationService : Service() {
         flags: Int,
         startId: Int,
     ): Int {
+        if (startForegroundFailed) {
+            // onCreate() bailed out before initializing anything below the startForeground()
+            // call (see there), so nothing below is safe to touch. A queued command can still
+            // reach us here — e.g. ACTION_HEARTBEAT_TICK from LocationServiceRestartWorker,
+            // which deliberately sends without a permission check — even after stopSelf(),
+            // since AOSP delivers start commands separately from service creation/destruction.
+            Log.w(TAG, "onStartCommand: startForeground previously failed; ignoring command")
+            return START_NOT_STICKY
+        }
         Log.d(TAG, "onStartCommand: isRegistered=$isRegistered")
         ensureLocationRegistration()
         if (BuildConfig.ACTIVITY_RECOGNITION_ENABLED) {

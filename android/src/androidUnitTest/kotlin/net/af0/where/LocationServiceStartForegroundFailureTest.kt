@@ -1,6 +1,7 @@
 package net.af0.where
 
 import android.app.Application
+import android.content.Intent
 import androidx.test.core.app.ApplicationProvider
 import io.mockk.mockk
 import kotlinx.coroutines.Dispatchers
@@ -80,6 +81,33 @@ class LocationServiceStartForegroundFailureTest {
         // Before the fix, this threw UninitializedPropertyAccessException because onCreate()
         // returned before initializing locationProvider/activityHelper/etc., and onDestroy()
         // unconditionally dereferenced them.
+        controller.destroy()
+    }
+
+    @Test
+    fun onStartCommand_doesNotCrash_afterStartForegroundThrew() {
+        val controller = Robolectric.buildService(LocationService::class.java)
+        val service = controller.get()
+
+        service.startForegroundOverride = { throw SecurityException("permission denied, simulating API 34+") }
+        service.locationSourceOverride = ServiceFakeLocationSource()
+        service.e2eeManagerOverride = mockk(relaxed = true)
+        service.locationClientOverride = mockk(relaxed = true)
+        service.uiStateStoreOverride = FakeUiStateStore()
+        service.locationProviderOverride = mockk(relaxed = true)
+        service.activityHelperOverride = mockk(relaxed = true)
+
+        controller.create()
+
+        // Simulates ACTION_HEARTBEAT_TICK from LocationServiceRestartWorker reaching a queued
+        // start command after stopSelf() — AOSP delivers start commands separately from
+        // service creation/destruction, so this can still arrive. Before the fix, this
+        // dereferenced pollWakeLock, which onCreate() never initialized.
+        val intent = Intent(LocationService.ACTION_HEARTBEAT_TICK)
+        val result = controller.get().onStartCommand(intent, 0, 1)
+
+        assertTrue(result == android.app.Service.START_NOT_STICKY, "Expected START_NOT_STICKY, got $result")
+
         controller.destroy()
     }
 }
