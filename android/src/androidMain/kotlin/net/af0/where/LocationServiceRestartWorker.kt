@@ -21,7 +21,9 @@ class LocationServiceRestartWorker(
         Log.i(TAG, "WorkManager heartbeat: ensuring LocationService is running + forcing tick")
         // Use ACTION_HEARTBEAT_TICK so an already-running but Doze-stalled service
         // gets nudged into running its poll/heartbeat path — startForegroundService
-        // alone is a no-op when the service is already up.
+        // alone is a no-op when the service is already up. Deliberately no permission check
+        // here: LocationService.onCreate() is the single choke point that decides whether it
+        // can actually run (and self-stops safely if not) — see the comment there.
         applicationContext.startForegroundService(
             Intent(applicationContext, LocationService::class.java).apply {
                 action = LocationService.ACTION_HEARTBEAT_TICK
