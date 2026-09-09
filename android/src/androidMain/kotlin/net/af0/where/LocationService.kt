@@ -72,6 +72,12 @@ class LocationService : Service() {
     @VisibleForTesting
     internal var uiStateStoreOverride: UiStateSource? = null
 
+    // Robolectric's ShadowService doesn't emulate the real platform's foregroundServiceType
+    // permission enforcement (startForeground() never throws there regardless of permission
+    // state), so this lets tests simulate the SecurityException the real OS throws on API 34+.
+    @VisibleForTesting
+    internal var startForegroundOverride: (() -> Unit)? = null
+
     private lateinit var alarmManager: AlarmManager
     private lateinit var pollWakeLock: PowerManager.WakeLock
     private lateinit var locationProvider: LocationProvider
@@ -223,7 +229,7 @@ class LocationService : Service() {
         // user flipping it off in Settings while we're already scheduled to (re)start) — so this
         // is a real, reachable race, not a defensive check against something that can't happen.
         try {
-            startForeground(NOTIFICATION_ID, buildNotification())
+            startForegroundOverride?.invoke() ?: startForeground(NOTIFICATION_ID, buildNotification())
         } catch (e: SecurityException) {
             Log.e(TAG, "startForeground failed: location permission not held; stopping service", e)
             startForegroundFailed = true
