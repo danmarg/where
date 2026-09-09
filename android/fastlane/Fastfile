@@ -102,7 +102,12 @@ platform :android do
       head    = `git rev-parse HEAD`.strip
       if current != head
         UI.message("Tag #{tag} exists but points to #{current[0,8]}, not HEAD (#{head[0,8]}); re-tagging.")
-        sh("git", "tag", "-f", "-a", tag, "-m", "Release #{version_name}")
+        # Lightweight (no -a/-m): an annotated tag's SHA-1 is the tag OBJECT, distinct from the
+        # commit it points to. F-Droid's Tags-based autoupdate (metadata/net.af0.where.yml)
+        # recorded that tag-object hash verbatim as the build "commit" instead of peeling it,
+        # producing a real (if harmless) provenance mismatch against what actually got built.
+        # A lightweight tag's SHA-1 IS the commit hash, so there's nothing to peel.
+        sh("git", "tag", "-f", tag)
         sh("git", "push", "origin", tag, "--force")
       else
         unless system("git", "ls-remote", "--exit-code", "--tags", "origin", tag, out: File::NULL)
@@ -111,7 +116,7 @@ platform :android do
       end
     else
       UI.message("Creating tag #{tag} at HEAD and pushing...")
-      sh("git", "tag", "-a", tag, "-m", "Release #{version_name}")
+      sh("git", "tag", tag)
       sh("git", "push", "origin", tag)
     end
 
