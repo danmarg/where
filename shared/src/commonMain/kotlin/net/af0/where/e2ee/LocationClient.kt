@@ -94,31 +94,19 @@ open class LocationClient(
     @kotlin.concurrent.Volatile
     private var consecutiveCrossCycleFailures = 0
 
-    /**
-     * Reports whether the device currently has any network connectivity at all. Platform-
-     * injected (see LocationService's ConnectivityManager check on Android); defaults to "always
-     * online" so platforms that don't wire this up see the old ambiguous-timeout behavior
-     * rather than silently losing backoff coverage. Used to distinguish a genuine server-side
-     * problem from a device that has no path to the server at all - the latter is already
-     * handled faster by the platform's network-available callback (syncNow()), and counting it
-     * here would just delay recovery once connectivity actually returns.
-     */
-    var isNetworkAvailable: () -> Boolean = { true }
-
     // ConnectException (DNS failure/connection refused/no route) reads as "device has no path to
-    // the server at all" and is deliberately excluded even when isNetworkAvailable() lies - see
-    // isNetworkAvailable's doc. A 429 ServerException is the unresponsive-friend throttle's
-    // problem (distinct per-friend semantic), not server health, so it's excluded too. Only 5xx
-    // is actually a server-health signal - any other 4xx (400/404/413/etc.) is a client-side bug
-    // or bad payload that backoff can never fix, and counting it here would throttle every device
-    // hitting that bug while masking the real cause as a server outage.
+    // the server at all" - already handled faster by the platform's network-available callback
+    // (syncNow()), and counting it here would just delay recovery once connectivity actually
+    // returns. A 429 ServerException is the unresponsive-friend throttle's problem (distinct
+    // per-friend semantic), not server health, so it's excluded too. Only 5xx is actually a
+    // server-health signal - any other 4xx (400/404/413/etc.) is a client-side bug or bad payload
+    // that backoff can never fix, and counting it here would throttle every device hitting that
+    // bug while masking the real cause as a server outage. Timeouts are excluded entirely: they're
+    // ambiguous between an overloaded server and a flaky connection that can't complete a request
+    // to this server specifically, and there's no reliable device-side signal to tell those apart.
     private fun isBackoffWorthy(e: Throwable): Boolean =
         when (e) {
             is ServerException -> e.statusCode in 500..599
-            // Timeouts (including the wall-clock hang backstop) are ambiguous by exception type
-            // alone - could be an overloaded server, or a degraded connection that never
-            // completes either way - so they only count when we know the device is online.
-            is TimeoutException, is WallClockTimeoutCancellationException -> isNetworkAvailable()
             else -> false
         }
 

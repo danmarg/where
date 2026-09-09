@@ -12,7 +12,6 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.ConnectivityManager
 import android.net.Network
-import android.net.NetworkCapabilities
 import android.os.IBinder
 import android.os.PowerManager
 import android.os.SystemClock
@@ -205,16 +204,6 @@ class LocationService : Service() {
             ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED
     }
 
-    // Live network state at the moment of a failure, distinct from the NetworkCallback
-    // above (which only fires on transitions) - LocationClient needs this at the moment it's
-    // deciding whether an ambiguous timeout counts toward cross-cycle backoff.
-    private fun isDeviceOnline(): Boolean {
-        val connectivityManager = getSystemService(ConnectivityManager::class.java) ?: return true
-        val network = connectivityManager.activeNetwork ?: return false
-        val capabilities = connectivityManager.getNetworkCapabilities(network) ?: return false
-        return capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
-    }
-
     private fun hasActivityPermission(): Boolean {
         return if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
             ContextCompat.checkSelfPermission(this, Manifest.permission.ACTIVITY_RECOGNITION) == PackageManager.PERMISSION_GRANTED
@@ -261,11 +250,6 @@ class LocationService : Service() {
         net.af0.where.e2ee.KtorMailboxClient.onConnectionReset = {
             e2eeManager.addDiagnosticEvent("Mailbox HTTP client auto-reset after repeated failures")
         }
-        // Lets LocationClient distinguish a genuine server-side problem from a device with
-        // no path to the server at all - the latter shouldn't count toward cross-cycle backoff,
-        // since the NetworkCallback below already handles that recovery path faster.
-        locationClient.isNetworkAvailable = { isDeviceOnline() }
-
         locationProvider = locationProviderOverride ?: createLocationProvider()
         locationProvider.init(this) { lat, lng, bearing ->
             lastLocationCallbackTime = clock()

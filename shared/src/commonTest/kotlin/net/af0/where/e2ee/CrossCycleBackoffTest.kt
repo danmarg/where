@@ -103,18 +103,16 @@ class CrossCycleBackoffTest {
         }
 
     @Test
-    fun `a TimeoutException only counts when the platform reports the device is online`() =
+    fun `a TimeoutException never counts toward backoff`() =
         runTest {
+            // A validated-connectivity check can't tell a genuine server outage apart from a
+            // flaky mobile connection that just can't complete a request to this server -
+            // counting timeouts here would throttle those devices' reporting for no server-health
+            // reason, so timeouts are excluded entirely.
             val (client, mailbox) = pairedClient()
-            client.isNetworkAvailable = { false }
             mailbox.nextPostException = { TimeoutException("timed out") }
             assertFailsWith<TimeoutException> { client.sendLocation(1.0, 2.0, emptySet()) }
-            assertEquals(1, client.crossCycleBackoffMultiplier, "offline device must not count toward backoff")
-
-            client.isNetworkAvailable = { true }
-            mailbox.nextPostException = { TimeoutException("timed out") }
-            assertFailsWith<TimeoutException> { client.sendLocation(1.0, 2.0, emptySet()) }
-            assertEquals(2, client.crossCycleBackoffMultiplier)
+            assertEquals(1, client.crossCycleBackoffMultiplier)
         }
 
     @Test
@@ -145,17 +143,16 @@ class CrossCycleBackoffTest {
         }
 
     @Test
-    fun `a send-side wall-clock timeout counts toward backoff and surfaces as TimeoutException, not CancellationException`() =
+    fun `a send-side wall-clock timeout surfaces as TimeoutException, not CancellationException, and does not count toward backoff`() =
         runTest {
             val (client, mailbox) = pairedClient()
             mailbox.nextPostException = { WallClockTimeoutCancellationException() }
-            client.isNetworkAvailable = { true }
 
             // Must NOT surface as a CancellationException - a platform caller with a reasonable
             // `catch (e: CancellationException) { throw e }` (to avoid swallowing genuine
             // structured-concurrency shutdown) would otherwise skip its own failure handling.
             assertFailsWith<TimeoutException> { client.sendLocation(1.0, 2.0, emptySet()) }
-            assertEquals(2, client.crossCycleBackoffMultiplier, "a send-side hang must count toward backoff like any other timeout")
+            assertEquals(1, client.crossCycleBackoffMultiplier, "timeouts (including the wall-clock backstop) never count toward backoff")
         }
 
     @Test
