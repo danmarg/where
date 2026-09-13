@@ -2,6 +2,7 @@ package net.af0.where
 
 import android.app.Application
 import android.content.SharedPreferences
+import androidx.annotation.VisibleForTesting
 import app.cash.sqldelight.driver.android.AndroidSqliteDriver
 import net.af0.where.e2ee.E2eeManager
 import net.af0.where.e2ee.LocationClient
@@ -26,5 +27,36 @@ open class WhereApplication : Application() {
         super.onCreate()
         initializeLibsodium()
         initMapLibre(this)
+        // EncryptedSharedPreferences/Keystore master-key creation (including the StrongBox
+        // provisioning attempt in SharedPrefsRawKeyValueStorage.buildMasterKey) can take
+        // hundreds of ms on cold start. Warm it on a background thread here so it's usually
+        // already done by the time LocationService.onCreate() or the ViewModel first touches
+        // userStore/encryptedPrefs on the main thread. `by lazy` is thread-safe (synchronized
+        // by default), so if the main thread gets there first it just blocks on the same
+        // computation instead of triggering a second one — no behavior change, just usually
+        // off the hot path that must call startForeground() in time.
+        Thread { warmUpEncryptedStorage() }.start()
+    }
+
+    /**
+     * Pre-computes [encryptedPrefs]/[userStore] off the main thread. Exposed (rather than
+     * inlined in onCreate()'s Thread) so a test can call it synchronously and verify the
+     * exception handling below without depending on background-thread timing.
+     */
+    @VisibleForTesting
+    internal fun warmUpEncryptedStorage() {
+        // Swallow any failure here: this thread exists purely to pre-compute the lazies before
+        // the main thread needs them. If Keystore/EncryptedSharedPreferences setup is actually
+        // broken, letting that exception escape this bare Thread would crash the process
+        // immediately via the runtime's default uncaught-exception handler — worse than today,
+        // where the same failure only surfaces (and crashes, identically) at the real call site
+        // on the main thread. Swallowing it here just means the main thread redoes the (still
+        // failing) computation and hits that same original failure path, unchanged.
+        try {
+            encryptedPrefs
+            userStore
+        } catch (_: Exception) {
+            // Deliberately ignored — see comment above.
+        }
     }
 }
