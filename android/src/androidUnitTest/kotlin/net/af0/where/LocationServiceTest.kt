@@ -715,6 +715,7 @@ class LocationServiceTest {
 
             val pollLoopJobField =
                 LocationService::class.java.getDeclaredField("pollLoopJob").apply { isAccessible = true }
+
             fun currentJob(): kotlinx.coroutines.Job? = pollLoopJobField.get(service) as kotlinx.coroutines.Job?
 
             controller.create()
