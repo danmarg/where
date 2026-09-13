@@ -638,7 +638,7 @@ class LocationSyncServiceTests: XCTestCase {
         service.onForegroundEntry()
         XCTAssertTrue(service.forceNextLocationUpdate, "should arm the flag while awaiting the requested fix")
 
-        await service.locationFixTimeoutTask?.value
+        await service.forceUpdateClearTimeoutTask?.value
 
         XCTAssertFalse(service.forceNextLocationUpdate, "timeout must clear the flag if the requested fix never arrives")
     }

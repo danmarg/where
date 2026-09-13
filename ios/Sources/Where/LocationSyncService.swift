@@ -68,6 +68,8 @@ final class LocationSyncService: ObservableObject {
                 forceNextLocationUpdate = false
                 locationFixTimeoutTask?.cancel()
                 locationFixTimeoutTask = nil
+                forceUpdateClearTimeoutTask?.cancel()
+                forceUpdateClearTimeoutTask = nil
             } else if !oldValue {
                 // Master toggle off→on: broadcast our current location immediately to every
                 // (non-paused) friend so peers don't wait for the next regular tick. Also
@@ -163,6 +165,12 @@ final class LocationSyncService: ObservableObject {
     var forceNextLocationUpdate: Bool = false
     var skipNetworkRestore: Bool = false  // internal for testing
     var locationFixTimeoutTask: Task<Void, Never>? = nil  // internal for testing
+    // Separate from locationFixTimeoutTask: that one belongs exclusively to
+    // handleNetworkRestored()'s stale-fallback-send timeout. Sharing a single task field
+    // between the two meant armForceLocationUpdateTimeout() (called from three other sites)
+    // could cancel and replace an in-flight network-restore fallback before it fired,
+    // silently dropping the send that was supposed to update friends after an outage.
+    var forceUpdateClearTimeoutTask: Task<Void, Never>? = nil  // internal for testing
     var currentSendTask: Task<Void, Never>? = nil  // internal for testing
     // Injectable sleep used for the GPS-fix fallback timeout. Tests replace this
     // with an instant or controllable variant so they don't wait real walltime.
@@ -432,12 +440,14 @@ final class LocationSyncService: ObservableObject {
     /// the 30s send throttle. Callers here (sharing turned on, foreground entry, the
     /// stationary backstop) already send a fallback location immediately themselves, so
     /// unlike handleNetworkRestored's own timeout handling this just resets the flag rather
-    /// than also sending a stale fix. Cancels any previously armed timeout, since only one
+    /// than also sending a stale fix. Cancels any previously armed timeout of its own
+    /// (forceUpdateClearTimeoutTask, distinct from handleNetworkRestored's
+    /// locationFixTimeoutTask — see that field's comment), since only one
     /// requestImmediateLocation() is ever meaningfully pending at a time.
     private func armForceLocationUpdateTimeout() {
-        locationFixTimeoutTask?.cancel()
+        forceUpdateClearTimeoutTask?.cancel()
         let sleep = sleepForFixTimeout
-        locationFixTimeoutTask = Task { [weak self] in
+        forceUpdateClearTimeoutTask = Task { [weak self] in
             do {
                 guard let timeout = self?.locationFixTimeout else { return }
                 try await sleep(timeout)
