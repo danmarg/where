@@ -115,6 +115,14 @@ final class LocationSyncService: ObservableObject {
     var isInForeground: () -> Bool = { UIApplication.shared.applicationState == .active }
     private static let rapidPollInterval: TimeInterval = 2.0
     private static let foregroundPollInterval: TimeInterval = 10.0
+    // Target cadence while sharing and backgrounded. NOTE: this is only actually enforced by
+    // a running timer while foregrounded (see startPolling()/tick()) — iOS suspends the run
+    // loop once backgrounded, so tick() simply stops firing. In the background, this value is
+    // consulted only where it's read directly (the heartbeat check in pollAll(), driven by
+    // whatever wakes the process — a BGAppRefreshTask or a CoreLocation callback). Real
+    // background cadence is therefore bounded by those wake sources' own scheduling, which
+    // the OS can and does throttle well past 5 minutes; this constant is a target, not a
+    // guarantee.
     private static let normalPollInterval: TimeInterval = 300.0 // 5 min (background sharing)
     private static let maintenancePollInterval: TimeInterval = 30 * 60  // ack-only when not sharing
     private static let staleLocationThreshold: TimeInterval = 60.0
@@ -539,6 +547,11 @@ final class LocationSyncService: ObservableObject {
 
     var foregroundPollTask: Task<Void, Never>? = nil  // internal for testing
 
+    /// Drives poll cadence only while the run loop is active — i.e. only while foregrounded.
+    /// iOS suspends this timer on backgrounding rather than merely slowing it, so tick() simply
+    /// stops firing; it resumes on the next onForegroundEntry() → startPolling() call. Background
+    /// cadence instead depends entirely on BGAppRefreshTask and CoreLocation wake sources (see
+    /// normalPollInterval's comment) — this timer contributes nothing there.
     func startPolling() {
         pollTimer?.invalidate()
         // 1Hz, matching rapidPollInterval's timescale but deliberately not equal to it: ticking
