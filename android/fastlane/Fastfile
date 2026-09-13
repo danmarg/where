@@ -73,25 +73,13 @@ platform :android do
     upload_to_play_store(track: "internal", skip_upload_apk: true, aab: aab_path)
   end
 
-  desc "Build full AAB (with activity recognition) and upload to Google Play (internal track)"
-  lane :deploy_full do
-    bump_version("../build.gradle.kts")
-    gradle(
-      project_dir: "../",
-      task: ":android:bundleFullGmsRelease",
-    )
-    aab_path = Dir[File.expand_path("../build/outputs/bundle/fullGmsRelease/*.aab", __dir__)].first
-    UI.user_error!("fullGmsRelease AAB not found — did the gradle bundle task fail silently?") unless aab_path
-    upload_to_play_store(track: "internal", skip_upload_apk: true, aab: aab_path)
-  end
-
   desc "Build signed standardGms (universal) + standardFdroid (per-ABI split) release APKs " \
        "for the current versionName and publish them as assets on a GitHub Release tagged " \
        "v<versionName>. The standardFdroid APKs are the signed reference binaries F-Droid's " \
        "Reproducible Builds feature diffs its own build against (see the per-Build `binary:` " \
        "fields in metadata/net.af0.where.yml upstream — one per ABI). " \
        "Signing stays local — nothing here touches GitHub Actions or CI secrets. " \
-       "Run this after committing the versionName/versionCode bump (e.g. from deploy/deploy_full) " \
+       "Run this after committing the versionName/versionCode bump (e.g. from deploy) " \
        "so HEAD is the exact commit you want the tag to point at. Requires signing env vars " \
        "and an authenticated `gh` CLI."
   lane :release_github_binaries do

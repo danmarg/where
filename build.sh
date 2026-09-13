@@ -21,7 +21,7 @@ IOS_TARGET="device"  # device or simulator
 SKIP_IOS=false
 SKIP_ANDROID=false
 DEPLOY_IOS=""        # "" | "beta" | "release"
-DEPLOY_ANDROID=""    # "" | "internal" | "internal-full" | "promote-alpha" | "promote-production"
+DEPLOY_ANDROID=""    # "" | "internal" | "promote-alpha" | "promote-production"
 while [[ $# -gt 0 ]]; do
   case $1 in
     --server-url)
@@ -76,10 +76,6 @@ while [[ $# -gt 0 ]]; do
       DEPLOY_ANDROID="internal"
       shift
       ;;
-    --deploy-android-internal-full)
-      DEPLOY_ANDROID="internal-full"
-      shift
-      ;;
     --deploy-android-promote-alpha)
       DEPLOY_ANDROID="promote-alpha"
       shift
@@ -105,7 +101,6 @@ if [[ -n "$DEPLOY_IOS" || -n "$DEPLOY_ANDROID" ]]; then
   if [[ -n "$DEPLOY_ANDROID" ]]; then
     case "$DEPLOY_ANDROID" in
       internal)            ANDROID_LANE="deploy" ;;
-      internal-full)       ANDROID_LANE="deploy_full" ;;
       promote-alpha)       ANDROID_LANE="promote_to_closed" ;;
       promote-production)  ANDROID_LANE="promote_to_production" ;;
       github-binaries)     ANDROID_LANE="release_github_binaries" ;;
