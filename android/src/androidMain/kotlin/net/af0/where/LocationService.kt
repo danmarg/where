@@ -673,6 +673,11 @@ class LocationService : Service() {
         pendingFriendSends.close()
         cancelDozeAlarm()
         serviceScope.cancel()
+        // pollLoop() is the only other place this is released; if the Service is torn down
+        // while a wake is in flight (or after pollLoop has already died — see the
+        // pollLoopJob recovery logic in onStartCommand), nothing else would ever release it,
+        // holding a full-power partial wakelock for its 120s timeout.
+        if (pollWakeLock.isHeld) pollWakeLock.release()
         super.onDestroy()
     }
 
