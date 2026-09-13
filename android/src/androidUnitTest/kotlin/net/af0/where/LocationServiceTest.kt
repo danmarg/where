@@ -690,4 +690,71 @@ class LocationServiceTest {
         io.mockk.verify(exactly = 1) { mockE2ee.addDiagnosticEvent("Stationary: Geofence submitted") }
         io.mockk.verify(exactly = 1) { mockE2ee.addDiagnosticEvent("Stationary: Geofence queued") }
     }
+
+    /**
+     * Regression for the zombie-service race: pollLoop() calls stopSelf() and returns
+     * permanently when there are no friends/invites. stopSelf() is asynchronous — a
+     * startForegroundService() call can race it and land before Android actually tears the
+     * Service down, in which case onCreate()/onDestroy() never re-run and nothing would
+     * otherwise ever relaunch pollLoop. onStartCommand() must detect this and relaunch it.
+     */
+    @Test
+    fun onStartCommand_relaunchesPollLoop_afterItStoppedItselfOnNoFriendsPath() =
+        runTest {
+            val controller = Robolectric.buildService(LocationService::class.java)
+            val service = controller.get()
+
+            val mockClient = io.mockk.mockk<LocationClient>(relaxed = true)
+            service.locationClientOverride = mockClient
+            service.locationSourceOverride = fakeLocationSource
+            val mockStore = io.mockk.mockk<net.af0.where.e2ee.E2eeManager>(relaxed = true)
+            service.e2eeManagerOverride = mockStore
+            io.mockk.coEvery { mockStore.listFriends() } returns emptyList()
+            io.mockk.coEvery { mockStore.listPendingInvites() } returns emptyList()
+            io.mockk.coEvery { mockClient.pollPendingInvites() } returns emptyList()
+
+            val pollLoopJobField =
+                LocationService::class.java.getDeclaredField("pollLoopJob").apply { isAccessible = true }
+            fun currentJob(): kotlinx.coroutines.Job? = pollLoopJobField.get(service) as kotlinx.coroutines.Job?
+
+            controller.create()
+            advanceUntilIdle()
+
+            // No friends/invites: pollLoop() must have called stopSelf() and returned,
+            // completing its own coroutine Job.
+            assertTrue(shadowOf(service).isStoppedBySelf, "expected stopSelf() on the no-friends path")
+            val jobAfterStop = currentJob()
+            assertTrue(jobAfterStop != null && jobAfterStop.isCompleted, "pollLoop's Job should have completed")
+
+            // Now a friend gets added — mirroring the real scenario, where
+            // LocationViewModel.manageForegroundService reacts to the new friend by calling
+            // startForegroundService() again. The friend is added BEFORE that start command so
+            // the relaunched loop has real work to do instead of immediately re-hitting the
+            // same no-friends stopSelf() path.
+            val friend = io.mockk.mockk<net.af0.where.e2ee.FriendEntry>(relaxed = true)
+            io.mockk.every { friend.id } returns "friend1"
+            fakeLocationSource.onFriendsUpdated(listOf(friend))
+            io.mockk.coEvery { mockClient.poll(any()) } returns emptyList()
+
+            // Simulate the race: a startForegroundService() call lands before Android has
+            // actually torn the Service down (stopSelf() is async). onDestroy() is deliberately
+            // NOT called here — before the fix, nothing would ever relaunch pollLoop in this case.
+            controller.startCommand(0, 1)
+            advanceUntilIdle()
+
+            val jobAfterRestart = currentJob()
+            assertTrue(
+                jobAfterRestart != null && jobAfterRestart.isActive && jobAfterRestart !== jobAfterStop,
+                "onStartCommand should have relaunched pollLoop after detecting it had stopped",
+            )
+
+            // Prove the relaunched loop is actually functional: waking the poll should drive
+            // a real poll cycle rather than sitting dead forever.
+            fakeLocationSource.wakePoll()
+            advanceUntilIdle()
+
+            io.mockk.coVerify(atLeast = 1) { mockClient.poll(any()) }
+
+            controller.destroy()
+        }
 }

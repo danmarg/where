@@ -21,6 +21,7 @@ import androidx.core.content.ContextCompat
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.channels.Channel
@@ -157,6 +158,22 @@ class LocationService : Service() {
     private val pendingFriendSends = Channel<String>(Channel.UNLIMITED)
 
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
+
+    // Tracks pollLoop()'s coroutine so onStartCommand can detect and recover from the case
+    // where the loop has exited (e.g. via its own stopSelf() on the no-friends path) but this
+    // Service instance is still alive because a racing startForegroundService() call landed
+    // before Android finished tearing it down. stopSelf() is asynchronous and can be
+    // superseded by a later start command; when that happens onCreate()/onDestroy() never
+    // re-run, so nothing else would ever relaunch pollLoop.
+    private var pollLoopJob: Job? = null
+
+    private fun ensurePollLoopRunning() {
+        val job = pollLoopJob
+        if (job == null || job.isCompleted) {
+            Log.w(TAG, "pollLoop not running (job=$job); relaunching")
+            pollLoopJob = serviceScope.launch { pollLoop() }
+        }
+    }
 
     private lateinit var e2eeManager: E2eeManager
 
@@ -318,7 +335,7 @@ class LocationService : Service() {
             locationSource.allPendingInvites.collect { ensureLocationRegistration() }
         }
 
-        serviceScope.launch { pollLoop() }
+        pollLoopJob = serviceScope.launch { pollLoop() }
         serviceScope.launch {
             locationSource.lastLocation.collect { loc ->
                 if (loc != null) {
@@ -366,6 +383,7 @@ class LocationService : Service() {
             return START_NOT_STICKY
         }
         Log.d(TAG, "onStartCommand: isRegistered=$isRegistered")
+        ensurePollLoopRunning()
         ensureLocationRegistration()
         if (BuildConfig.ACTIVITY_RECOGNITION_ENABLED) {
             activityHelper.ensureRegistered(hasActivityPermission(), userStore.isSharingLocation.value)
