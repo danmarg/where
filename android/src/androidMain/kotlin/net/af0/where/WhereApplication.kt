@@ -26,5 +26,17 @@ open class WhereApplication : Application() {
         super.onCreate()
         initializeLibsodium()
         initMapLibre(this)
+        // EncryptedSharedPreferences/Keystore master-key creation (including the StrongBox
+        // provisioning attempt in SharedPrefsRawKeyValueStorage.buildMasterKey) can take
+        // hundreds of ms on cold start. Warm it on a background thread here so it's usually
+        // already done by the time LocationService.onCreate() or the ViewModel first touches
+        // userStore/encryptedPrefs on the main thread. `by lazy` is thread-safe (synchronized
+        // by default), so if the main thread gets there first it just blocks on the same
+        // computation instead of triggering a second one — no behavior change, just usually
+        // off the hot path that must call startForeground() in time.
+        Thread {
+            encryptedPrefs
+            userStore
+        }.start()
     }
 }
