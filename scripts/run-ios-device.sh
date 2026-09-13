@@ -40,6 +40,11 @@ fi
 
 echo "=== Target device: $DEVICE_ID ==="
 
+echo "=== Generating Xcode project ==="
+(cd ios && run xcodegen generate)
+echo "✓ Xcode project generated"
+echo ""
+
 echo "=== Building KMP shared framework ==="
 run ./gradlew :shared:assembleSharedDebugXCFramework
 echo "✓ KMP shared framework built"

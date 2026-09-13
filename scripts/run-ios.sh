@@ -39,6 +39,11 @@ fi
 # Open Simulator.app so the window appears
 open -a Simulator
 
+echo "=== Generating Xcode project ==="
+(cd ios && run xcodegen generate)
+echo "✓ Xcode project generated"
+echo ""
+
 echo "=== Building KMP shared framework ==="
 run ./gradlew :shared:assembleSharedDebugXCFramework
 echo "✓ KMP shared framework built"
