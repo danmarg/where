@@ -13,6 +13,8 @@ val localProperties =
         rootProject.file("local.properties").takeIf { it.exists() }?.inputStream()?.use(props::load)
     }
 
+val mapsApiKey: String = localProperties.getProperty("MAPS_API_KEY") ?: System.getenv("MAPS_API_KEY") ?: ""
+
 kotlin {
     targets.all {
         compilations.all {
@@ -61,8 +63,8 @@ android {
         applicationId = "net.af0.where"
         minSdk = 26
         targetSdk = 36
-        versionCode = 132
-        versionName = "2026.09.09.4"
+        versionCode = 133
+        versionName = "2026.09.13.1"
 
         // JNA (a transitive dep of the libsodium bindings) ships dispatch stubs for
         // legacy ABIs no Android device has used in years (armeabi, mips, mips64),
@@ -142,7 +144,7 @@ android {
         }
         create("gms") {
             dimension = "store"
-            manifestPlaceholders["MAPS_API_KEY"] = localProperties.getProperty("MAPS_API_KEY") ?: System.getenv("MAPS_API_KEY") ?: ""
+            manifestPlaceholders["MAPS_API_KEY"] = mapsApiKey
         }
         create("fdroid") {
             dimension = "store"
@@ -169,6 +171,31 @@ android {
                 "\"${localProperties.getProperty("SERVER_HTTP_URL") ?: "http://10.0.2.2:8080"}\"",
             )
         }
+    }
+}
+
+// Fail fast if a gms-flavor build/install actually runs without a Maps API key. Google Maps
+// silently renders a blank map with no tiles and no obvious error when the key is missing or
+// empty, which is easy to mistake for an app bug rather than a missing local.properties entry.
+//
+// Checked once the task graph is ready (before any task executes), not via doFirst on the
+// matched tasks themselves: `assemble`/`bundle`/`install` are aggregate tasks that run last,
+// after everything they depend on, so a doFirst there would only fail once the entire app had
+// already been compiled — the opposite of fail-fast. whenReady fires immediately, before any
+// compilation starts, and still only when a gms-flavor build/install is actually requested —
+// unrelated invocations (`clean`, unit tests, ktlint, IDE sync) aren't affected.
+gradle.taskGraph.whenReady {
+    if (mapsApiKey.isBlank() &&
+        allTasks.any { task ->
+            task.name.contains("Gms") &&
+                (task.name.startsWith("assemble") || task.name.startsWith("bundle") || task.name.startsWith("install"))
+        }
+    ) {
+        throw GradleException(
+            "MAPS_API_KEY is not set, but the 'gms' flavor requires it (Google Maps otherwise " +
+                "renders a blank map with no tiles and no obvious error). Add it to " +
+                "local.properties: echo \"MAPS_API_KEY=your_key\" >> local.properties",
+        )
     }
 }
 
