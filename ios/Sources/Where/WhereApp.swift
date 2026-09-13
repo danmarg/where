@@ -16,13 +16,13 @@ struct WhereApp: App {
             forTaskWithIdentifier: "net.af0.where.heartbeat",
             using: nil
         ) { task in
-            task.expirationHandler = {
-                task.setTaskCompleted(success: false)
-            }
-            Task { @MainActor in
+            // See BGTaskCompletionCoordinator for why this needs its own type: BGTask has no
+            // public initializer, so the completion/reschedule logic has to live somewhere
+            // testable rather than inline in this closure.
+            let coordinator = BGTaskCompletionCoordinator(task: task, scheduleNext: scheduleHeartbeatTask)
+            task.expirationHandler = { coordinator.expire() }
+            coordinator.start {
                 await LocationSyncService.shared.pollAll(updateUi: false, source: .backgroundTask)
-                task.setTaskCompleted(success: true)
-                scheduleHeartbeatTask()
             }
         }
         scheduleHeartbeatTask()
