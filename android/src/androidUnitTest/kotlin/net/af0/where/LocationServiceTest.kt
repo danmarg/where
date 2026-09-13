@@ -758,4 +758,37 @@ class LocationServiceTest {
 
             controller.destroy()
         }
+
+    /**
+     * Regression: pollWakeLock is acquired unconditionally by ACTION_POLL_ALARM/
+     * ACTION_HEARTBEAT_TICK/ACTION_GEOFENCE_EVENT in onStartCommand, but was only ever
+     * released inside pollLoop() itself. If the Service is torn down while a wake is in
+     * flight (or after pollLoop has already stopped), nothing released it, holding a
+     * full-power partial wakelock for its full 120s timeout on every subsequent wake.
+     */
+    @Test
+    fun onDestroy_releasesPollWakeLock_ifStillHeld() {
+        val controller = Robolectric.buildService(LocationService::class.java)
+        val service = controller.get()
+        service.locationSourceOverride = fakeLocationSource
+        service.e2eeManagerOverride = io.mockk.mockk(relaxed = true)
+        service.locationClientOverride = io.mockk.mockk(relaxed = true)
+
+        controller.create()
+
+        val pollWakeLockField =
+            LocationService::class.java.getDeclaredField("pollWakeLock").apply { isAccessible = true }
+
+        fun isWakeLockHeld(): Boolean = (pollWakeLockField.get(service) as android.os.PowerManager.WakeLock).isHeld
+
+        // Simulate a wake arriving (e.g. the doze alarm) that acquires the lock but never
+        // gets a chance to release it before the Service is destroyed.
+        val intent = Intent(service, LocationService::class.java).apply { action = LocationService.ACTION_POLL_ALARM }
+        controller.withIntent(intent).startCommand(0, 1)
+        assertTrue(isWakeLockHeld(), "expected onStartCommand to acquire pollWakeLock for ACTION_POLL_ALARM")
+
+        controller.destroy()
+
+        assertFalse(isWakeLockHeld(), "onDestroy must release pollWakeLock if still held")
+    }
 }
