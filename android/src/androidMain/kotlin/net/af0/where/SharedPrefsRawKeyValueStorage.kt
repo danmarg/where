@@ -20,8 +20,14 @@ class SharedPrefsRawKeyValueStorage(context: Context) : RawKeyValueStorage {
         key: String,
         value: String,
     ) {
-        val ok = prefs.edit().putString(key, value).commit()
-        if (!ok) throw Exception("SharedPreferences commit failed for key=$key")
+        // apply() queues the write and returns immediately; commit() blocked the calling
+        // thread on disk I/O, which mattered here because every UserStore setter
+        // (setDisplayName, setSharing, setFriendExpiry, togglePauseFriend, ...) is called
+        // directly from the main thread. This storage only ever holds simple UI-level
+        // settings, not the E2EE session state or outbox WAL (those are SQLite-backed via
+        // E2eeManager and have their own durability guarantees), so apply()'s eventual-write
+        // semantics are an acceptable tradeoff for not blocking the UI on every toggle.
+        prefs.edit().putString(key, value).apply()
     }
 
     companion object {
