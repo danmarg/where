@@ -1,6 +1,7 @@
 package net.af0.where.e2ee
 
 import kotlin.test.Test
+import kotlin.test.assertFailsWith
 import kotlin.test.fail
 
 /**
@@ -56,6 +57,45 @@ class X25519LowOrderPointTest {
                 }
             if (outcome == "THREW" || outcome == "ZERO") continue
             fail("X25519 returned a usable shared secret for low-order point $hex -> $outcome")
+        }
+    }
+
+    /**
+     * Protocol-level regression for §4.3: low-order rejection must apply at every DH
+     * ratchet step, not just at bootstrap SK derivation. This drives a real session
+     * through Session.decryptMessage with a header whose dh_pub is a low-order point
+     * (as if a malicious peer sent it), and asserts the ratchet step is rejected
+     * rather than silently collapsing the root key to a known constant.
+     */
+    @Test
+    fun decryptMessageRejectsLowOrderRatchetKey() {
+        for (hex in lowOrderPoints) {
+            val (qr, aliceEkPriv) = KeyExchange.aliceCreateQrPayload("Alice")
+            val (msg, bobSession) = KeyExchange.bobProcessQr(qr, "Bob")
+            val aliceSession = KeyExchange.aliceProcessInit(msg, aliceEkPriv, qr.ekPub)
+
+            val (_, encrypted) =
+                Session.encryptMessage(aliceSession, MessagePlaintext.Location(1.0, 2.0, 3.0, 4L))
+
+            val maliciousHeader =
+                Session.DecryptedHeader(
+                    dhPub = hex.hexToByteArray(),
+                    ackRemoteDhPub = aliceSession.remoteDhPub,
+                    seq = 1L,
+                    pn = 0L,
+                )
+
+            // Either our explicit requireNonZeroSharedSecret() check throws
+            // AuthenticationException, or the underlying X25519 primitive itself throws
+            // for this point (as it does on some platforms/points, e.g. libsodium on
+            // the JVM) — both are valid rejections. What must never happen is the call
+            // returning normally, which would mean the ratchet silently adopted an
+            // attacker-known root key.
+            assertFailsWith<Throwable>(
+                "expected low-order dh_pub $hex to be rejected during the DH ratchet step",
+            ) {
+                Session.decryptMessage(bobSession, encrypted, maliciousHeader)
+            }
         }
     }
 }

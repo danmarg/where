@@ -576,6 +576,7 @@ class E2eeManager(
             if (pending == null) return@withMetadataLock null
             val sk = x25519(pending.aliceEkPriv, bobEkPub)
             try {
+                KeyExchange.requireNonZeroSharedSecret(sk)
                 KeyExchange.decryptSuggestedName(sk, aliceEkPub, bobEkPub, encryptedName)
             } catch (e: Exception) {
                 addDiagnosticEvent("decryptSuggestedName failed: ${e.message}")
