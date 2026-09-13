@@ -588,11 +588,6 @@ class LocationService : Service() {
         }
     }
 
-    private fun removeGeofence() {
-        locationProvider.removeGeofence()
-        Log.i(TAG, "Moving: Geofence removed")
-    }
-
     private fun ensureLocationRegistration() {
         val hasPermission = hasLocationPermission()
         val isSharing = userStore.isSharingLocation.value

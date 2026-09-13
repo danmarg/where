@@ -228,8 +228,6 @@ class FdroidLocationProvider : LocationProvider {
         radiusMeters: Float,
     ): GeofenceRequestResult = GeofenceRequestResult.FAILED
 
-    override fun removeGeofence() {}
-
     override fun onDestroy() {
         removeActiveUpdates()
         removePassiveUpdates()
