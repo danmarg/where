@@ -152,13 +152,7 @@ object KeyExchange {
             // This generates A1, which Alice will send in her first location message.
             // Bob will see A1 != A0 and ratchet his own side.
             val newLocalDh = generateX25519KeyPair()
-            val dhOut = x25519(newLocalDh.priv, msg.ekPub)
-            val rkStep =
-                try {
-                    kdfRk(session.rootKey, dhOut)
-                } finally {
-                    dhOut.zeroize()
-                }
+            val rkStep = dhRatchetSubStep(newLocalDh.priv, msg.ekPub, session.rootKey)
 
             // Tokens also rotate when the rootKey changes.
             val newSendToken = deriveRoutingToken(rkStep.newRootKey, aliceFp, bobFp)

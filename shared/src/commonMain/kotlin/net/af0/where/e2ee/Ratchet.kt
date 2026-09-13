@@ -40,6 +40,33 @@ internal fun kdfRk(
     }
 }
 
+/**
+ * One DH-then-KDF_RK sub-step (§8.3/§4.4): computes the DH output against remotePub using
+ * localPriv, validates it isn't a low-order-point collapse (§4.3), derives the next
+ * root/chain/header key from currentRootKey, and zeroizes the intermediate DH output.
+ *
+ * This is the arithmetic shared by all three places a DH ratchet sub-step happens:
+ * Session.performDhRatchet's receive sub-step (localPriv = the existing session key),
+ * its send sub-step (localPriv = a freshly generated key), and Alice's bootstrap eager
+ * ratchet in KeyExchange.aliceProcessInit (also a freshly generated key). Only this
+ * inner step is shared — the surrounding state wiring (header keys, tokens, pn/pr,
+ * epoch-0 vs epoch-1 field handling) differs enough between call sites that unifying
+ * it would obscure more than it simplifies.
+ */
+internal fun dhRatchetSubStep(
+    localPriv: ByteArray,
+    remotePub: ByteArray,
+    currentRootKey: ByteArray,
+): RatchetStep {
+    val dhOut = x25519(localPriv, remotePub)
+    KeyExchange.requireNonZeroSharedSecret(dhOut)
+    return try {
+        kdfRk(currentRootKey, dhOut)
+    } finally {
+        dhOut.zeroize()
+    }
+}
+
 internal fun kdfCk(chainKey: ByteArray): ChainStep {
     val messageKey = hmacSha256(chainKey, byteArrayOf(0x01))
     val newChainKey = hmacSha256(chainKey, byteArrayOf(0x02))
