@@ -24,7 +24,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
-import androidx.compose.runtime.collectAsState
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -135,28 +135,28 @@ class MainActivity : ComponentActivity() {
 
         setContent {
             MaterialTheme {
-                val ownLocation by viewModel.ownLocation.collectAsState()
-                val ownHeading by viewModel.ownHeading.collectAsState()
-                val users by viewModel.visibleUsers.collectAsState()
-                val friends by viewModel.friends.collectAsState()
-                val pendingInvites by viewModel.allPendingInvites.collectAsState()
-                val displayName by viewModel.displayName.collectAsState()
-                val pausedFriendIds by viewModel.pausedFriendIds.collectAsState()
-                val friendLastPing by viewModel.friendLastPing.collectAsState()
-                val isSharing by viewModel.isSharingLocation.collectAsState()
-                val friendExpiresAt by viewModel.friendExpiresAt.collectAsState()
-                val inviteState by viewModel.inviteState.collectAsState()
+                val ownLocation by viewModel.ownLocation.collectAsStateWithLifecycle()
+                val ownHeading by viewModel.ownHeading.collectAsStateWithLifecycle()
+                val users by viewModel.visibleUsers.collectAsStateWithLifecycle()
+                val friends by viewModel.friends.collectAsStateWithLifecycle()
+                val pendingInvites by viewModel.allPendingInvites.collectAsStateWithLifecycle()
+                val displayName by viewModel.displayName.collectAsStateWithLifecycle()
+                val pausedFriendIds by viewModel.pausedFriendIds.collectAsStateWithLifecycle()
+                val friendLastPing by viewModel.friendLastPing.collectAsStateWithLifecycle()
+                val isSharing by viewModel.isSharingLocation.collectAsStateWithLifecycle()
+                val friendExpiresAt by viewModel.friendExpiresAt.collectAsStateWithLifecycle()
+                val inviteState by viewModel.inviteState.collectAsStateWithLifecycle()
                 val isInviteActive = inviteState is InviteState.Pending
                 androidx.compose.runtime.LaunchedEffect(isInviteActive) {
                     viewModel.setInviteSheetShowing(isInviteActive)
                 }
-                val pendingQrForNaming by viewModel.pendingQrForNaming.collectAsState()
-                val pendingInitPayload by viewModel.pendingInitPayload.collectAsState()
-                val multipleScansDetected by viewModel.multipleScansDetected.collectAsState()
-                val isExchanging by viewModel.isExchanging.collectAsState()
-                val connectionStatus by viewModel.connectionStatus.collectAsState()
-                val diagnosticLog by viewModel.diagnosticLog.collectAsState()
-                val isInviteSheetShowing by viewModel.isInviteSheetShowing.collectAsState()
+                val pendingQrForNaming by viewModel.pendingQrForNaming.collectAsStateWithLifecycle()
+                val pendingInitPayload by viewModel.pendingInitPayload.collectAsStateWithLifecycle()
+                val multipleScansDetected by viewModel.multipleScansDetected.collectAsStateWithLifecycle()
+                val isExchanging by viewModel.isExchanging.collectAsStateWithLifecycle()
+                val connectionStatus by viewModel.connectionStatus.collectAsStateWithLifecycle()
+                val diagnosticLog by viewModel.diagnosticLog.collectAsStateWithLifecycle()
+                val isInviteSheetShowing by viewModel.isInviteSheetShowing.collectAsStateWithLifecycle()
 
                 var showSimulatorScanner by remember { mutableStateOf(false) }
                 var showCameraRationale by remember { mutableStateOf(false) }
@@ -260,7 +260,7 @@ class MainActivity : ComponentActivity() {
                     )
                 }
 
-                val showBatteryOptimizationDialog by viewModel.showBatteryOptimizationDialog.collectAsState()
+                val showBatteryOptimizationDialog by viewModel.showBatteryOptimizationDialog.collectAsStateWithLifecycle()
                 if (showBatteryOptimizationDialog) {
                     AlertDialog(
                         onDismissRequest = { viewModel.dismissBatteryOptimizationDialog() },
