@@ -505,7 +505,12 @@ final class LocationSyncService: ObservableObject {
 
     func startPolling() {
         pollTimer?.invalidate()
-        pollTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
+        // Tick at rapidPollInterval — the shortest interval targetPollInterval() can ever
+        // return — rather than 1s. A 1Hz tick only bought responsiveness against a target
+        // interval that's usually 10s (foreground) or more; ticking at 2s gives the same
+        // effective responsiveness (worst case, one tick's worth of extra latency) for half
+        // the wakeups.
+        pollTimer = Timer.scheduledTimer(withTimeInterval: Self.rapidPollInterval, repeats: true) { [weak self] _ in
             guard let self = self else { return }
             Task { @MainActor in
                 self.tick()
