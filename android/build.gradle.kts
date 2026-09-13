@@ -182,14 +182,18 @@ android {
 // matched tasks themselves: `assemble`/`bundle`/`install` are aggregate tasks that run last,
 // after everything they depend on, so a doFirst there would only fail once the entire app had
 // already been compiled — the opposite of fail-fast. whenReady fires immediately, before any
-// compilation starts, and still only when a gms-flavor build/install is actually requested —
-// unrelated invocations (`clean`, unit tests, ktlint, IDE sync) aren't affected.
+// compilation starts, and still only when a gms-flavor build/install is actually requested.
+//
+// Matched against exact umbrella task names only (e.g. `assembleFullGmsRelease`), not a bare
+// substring match: AGP names plenty of internal, non-app-producing tasks with the same
+// "assemble"/"bundle" + "Gms" substrings — e.g. `bundleFullGmsDebugClassesToRuntimeJar` and
+// `assembleFullGmsDebugUnitTest`, both pulled into the graph by an ordinary unit test run
+// (unitTests.isIncludeAndroidResources = true). A substring match trips on those too, breaking
+// `./gradlew :android:testFullGmsDebugUnitTest` even though no app is actually being packaged.
+val realAppOutputTask = Regex("(assemble|bundle|install)(Standard|Full)Gms(Debug|Release)?")
 gradle.taskGraph.whenReady {
     if (mapsApiKey.isBlank() &&
-        allTasks.any { task ->
-            task.name.contains("Gms") &&
-                (task.name.startsWith("assemble") || task.name.startsWith("bundle") || task.name.startsWith("install"))
-        }
+        allTasks.any { task -> realAppOutputTask.matches(task.name) }
     ) {
         throw GradleException(
             "MAPS_API_KEY is not set, but the 'gms' flavor requires it (Google Maps otherwise " +
