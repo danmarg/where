@@ -18,11 +18,15 @@ object KeyExchange {
     /**
      * X25519 returns an all-zero shared secret (rather than throwing) for canonical
      * low-order public keys on at least one supported platform (see
-     * X25519LowOrderPointTest). An attacker-chosen low-order EK_pub would otherwise
-     * force SK to this known constant while key_confirmation — an HMAC keyed off SK —
-     * still verifies, since it's derived from the same attacker-known value.
+     * X25519LowOrderPointTest). An attacker-chosen low-order public key would otherwise
+     * force the DH output to this known constant, independent of the caller's own
+     * private key — collapsing confidentiality of that channel to "anyone can decrypt,"
+     * not just the attacker who supplied the bad key. Per §4.3 this check is required
+     * at bootstrap SK derivation AND at every later DH ratchet step, so this is
+     * `internal` rather than `private`: Session.performDhRatchet and
+     * E2eeManager.decryptSuggestedName also call it.
      */
-    private fun requireNonZeroSharedSecret(sk: ByteArray) {
+    internal fun requireNonZeroSharedSecret(sk: ByteArray) {
         if (sk.all { it == 0.toByte() }) {
             sk.zeroize()
             throw AuthenticationException("X25519 produced an all-zero shared secret, rejecting low-order public key")

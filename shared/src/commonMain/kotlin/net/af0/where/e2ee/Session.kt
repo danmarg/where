@@ -345,11 +345,13 @@ object Session {
     ): SessionState {
         // DH ratchet step
         val dhOutRecv = x25519(state.localDhPriv, remoteDhPub)
+        KeyExchange.requireNonZeroSharedSecret(dhOutRecv)
         val stepRecv = kdfRk(state.rootKey, dhOutRecv)
         dhOutRecv.zeroize()
 
         val newLocalDh = generateX25519KeyPair()
         val dhOutSend = x25519(newLocalDh.priv, remoteDhPub)
+        KeyExchange.requireNonZeroSharedSecret(dhOutSend)
         val stepSend = kdfRk(stepRecv.newRootKey, dhOutSend)
         dhOutSend.zeroize()
 
