@@ -445,7 +445,7 @@ final class LocationSyncService: ObservableObject {
                 return
             }
             guard let self, self.forceNextLocationUpdate else { return }
-            self.logger.info("forceNextLocationUpdate timeout: clearing stuck flag")
+            logger.info("forceNextLocationUpdate timeout: clearing stuck flag")
             self.forceNextLocationUpdate = false
         }
     }
