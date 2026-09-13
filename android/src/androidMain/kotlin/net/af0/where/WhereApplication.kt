@@ -34,9 +34,20 @@ open class WhereApplication : Application() {
         // by default), so if the main thread gets there first it just blocks on the same
         // computation instead of triggering a second one — no behavior change, just usually
         // off the hot path that must call startForeground() in time.
+        // Swallow any failure here: this thread exists purely to pre-compute the lazies before
+        // the main thread needs them. If Keystore/EncryptedSharedPreferences setup is actually
+        // broken, letting that exception escape this bare Thread would crash the process
+        // immediately via the runtime's default uncaught-exception handler — worse than today,
+        // where the same failure only surfaces (and crashes, identically) at the real call site
+        // on the main thread. Swallowing it here just means the main thread redoes the (still
+        // failing) computation and hits that same original failure path, unchanged.
         Thread {
-            encryptedPrefs
-            userStore
+            try {
+                encryptedPrefs
+                userStore
+            } catch (_: Exception) {
+                // Deliberately ignored — see comment above.
+            }
         }.start()
     }
 }
