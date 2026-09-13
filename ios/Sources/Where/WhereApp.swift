@@ -1,5 +1,6 @@
 import BackgroundTasks
 import SwiftUI
+import os
 
 @main
 struct WhereApp: App {
@@ -16,13 +17,32 @@ struct WhereApp: App {
             forTaskWithIdentifier: "net.af0.where.heartbeat",
             using: nil
         ) { task in
-            task.expirationHandler = {
-                task.setTaskCompleted(success: false)
+            // setTaskCompleted must be called exactly once per task. Without this guard, if
+            // pollAll() finishes right as the task expires, both the expiration handler and
+            // the Task below could call it — a documented logic error. The lock also lets us
+            // cancel the still-running poll on expiration instead of letting it keep working
+            // past the background budget the OS just reclaimed.
+            let completedLock = OSAllocatedUnfairLock(initialState: false)
+            func completeOnce(success: Bool) {
+                let alreadyCompleted = completedLock.withLock { completed in
+                    let was = completed
+                    completed = true
+                    return was
+                }
+                if !alreadyCompleted {
+                    task.setTaskCompleted(success: success)
+                }
             }
-            Task { @MainActor in
+
+            let pollTask = Task { @MainActor in
                 await LocationSyncService.shared.pollAll(updateUi: false, source: .backgroundTask)
-                task.setTaskCompleted(success: true)
+                guard !Task.isCancelled else { return }
+                completeOnce(success: true)
                 scheduleHeartbeatTask()
+            }
+            task.expirationHandler = {
+                pollTask.cancel()
+                completeOnce(success: false)
             }
         }
         scheduleHeartbeatTask()
