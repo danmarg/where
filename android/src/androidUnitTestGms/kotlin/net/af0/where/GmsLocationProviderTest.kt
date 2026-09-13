@@ -1,7 +1,6 @@
 package net.af0.where
 
 import android.app.Application
-import android.app.PendingIntent
 import android.location.Location
 import androidx.test.core.app.ApplicationProvider
 import com.google.android.gms.location.FusedLocationProviderClient
@@ -211,32 +210,6 @@ class GmsLocationProviderTest {
 
         failureListeners.first().onFailure(SecurityException("denied"))
         verify(exactly = 2) { mockGeofencingClient.addGeofences(any(), any()) }
-    }
-
-    @Test
-    fun removeGeofence_dropsQueuedTarget_soCompletingInFlightRequestDoesNotResurrectIt() {
-        // Regression test: setGeofenceAt() while a request is in flight queues a pending
-        // target; removeGeofence() must drop that queued target so its later completion
-        // can't re-add a geofence right after the caller explicitly removed it.
-        val successListeners = mutableListOf<OnSuccessListener<Void>>()
-        val taskMock = mockk<Task<Void>>(relaxed = true)
-        every { mockGeofencingClient.addGeofences(any(), any()) } returns taskMock
-        every { taskMock.addOnSuccessListener(any()) } answers {
-            successListeners.add(firstArg())
-            taskMock
-        }
-
-        assertEquals(GeofenceRequestResult.SUBMITTED, provider.setGeofenceAt(1.0, 2.0, 200f))
-        assertEquals(GeofenceRequestResult.QUEUED, provider.setGeofenceAt(3.0, 4.0, 400f))
-
-        provider.removeGeofence()
-        verify(exactly = 1) { mockGeofencingClient.removeGeofences(any<PendingIntent>()) }
-
-        // The in-flight add (already sent before removeGeofence() was called) now settles.
-        // Its own effect can't be un-sent at this layer, but the queued target it would
-        // otherwise have drained must not fire a second, resurrecting add.
-        successListeners.first().onSuccess(null)
-        verify(exactly = 1) { mockGeofencingClient.addGeofences(any(), any()) }
     }
 
     // --- onDestroy ---

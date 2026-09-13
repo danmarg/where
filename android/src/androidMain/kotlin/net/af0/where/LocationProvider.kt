@@ -59,7 +59,5 @@ interface LocationProvider {
         radiusMeters: Float,
     ): GeofenceRequestResult
 
-    fun removeGeofence()
-
     fun onDestroy()
 }
