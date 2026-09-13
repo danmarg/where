@@ -1,18 +1,22 @@
 import XCTest
+import os
 @testable import Where
 
 final class BGTaskCompletionCoordinatorTests: XCTestCase {
-    final class FakeBGTask: CompletableBGTask {
-        private(set) var completions: [Bool] = []
+    final class FakeBGTask: CompletableBGTask, @unchecked Sendable {
+        private let lock = OSAllocatedUnfairLock(initialState: [Bool]())
+        var completions: [Bool] { lock.withLock { $0 } }
         func markTaskCompleted(success: Bool) {
-            completions.append(success)
+            lock.withLock { $0.append(success) }
         }
     }
 
     func testSuccessfulWork_completesOnceAndReschedules() async throws {
         let fakeTask = FakeBGTask()
-        var rescheduleCount = 0
-        let coordinator = BGTaskCompletionCoordinator(task: fakeTask) { rescheduleCount += 1 }
+        let rescheduleCount = OSAllocatedUnfairLock(initialState: 0)
+        let coordinator = BGTaskCompletionCoordinator(task: fakeTask) {
+            rescheduleCount.withLock { $0 += 1 }
+        }
 
         let workDone = XCTestExpectation(description: "work ran")
         coordinator.start {
@@ -23,13 +27,15 @@ final class BGTaskCompletionCoordinatorTests: XCTestCase {
         try await Task.sleep(for: .milliseconds(50))
 
         XCTAssertEqual(fakeTask.completions, [true], "should complete successfully exactly once")
-        XCTAssertEqual(rescheduleCount, 1, "must reschedule the next task exactly once")
+        XCTAssertEqual(rescheduleCount.withLock { $0 }, 1, "must reschedule the next task exactly once")
     }
 
     func testExpirationDuringWork_cancelsAndCompletesUnsuccessfullyOnce() async throws {
         let fakeTask = FakeBGTask()
-        var rescheduleCount = 0
-        let coordinator = BGTaskCompletionCoordinator(task: fakeTask) { rescheduleCount += 1 }
+        let rescheduleCount = OSAllocatedUnfairLock(initialState: 0)
+        let coordinator = BGTaskCompletionCoordinator(task: fakeTask) {
+            rescheduleCount.withLock { $0 += 1 }
+        }
 
         let workStarted = XCTestExpectation(description: "work started")
         let workObservedCancellation = XCTestExpectation(description: "work observed cancellation")
@@ -50,13 +56,15 @@ final class BGTaskCompletionCoordinatorTests: XCTestCase {
         // Regression: this is the exact bug found in review — the original code only
         // rescheduled on the success path, so an expired task never resubmitted its
         // successor and background heartbeat polling stopped permanently.
-        XCTAssertEqual(rescheduleCount, 1, "must reschedule the next task exactly once, even on expiration")
+        XCTAssertEqual(rescheduleCount.withLock { $0 }, 1, "must reschedule the next task exactly once, even on expiration")
     }
 
     func testExpirationAfterWorkAlreadySucceeded_doesNotDoubleComplete() async throws {
         let fakeTask = FakeBGTask()
-        var rescheduleCount = 0
-        let coordinator = BGTaskCompletionCoordinator(task: fakeTask) { rescheduleCount += 1 }
+        let rescheduleCount = OSAllocatedUnfairLock(initialState: 0)
+        let coordinator = BGTaskCompletionCoordinator(task: fakeTask) {
+            rescheduleCount.withLock { $0 += 1 }
+        }
 
         let workDone = XCTestExpectation(description: "work ran")
         coordinator.start {
@@ -70,6 +78,6 @@ final class BGTaskCompletionCoordinatorTests: XCTestCase {
         coordinator.expire()
 
         XCTAssertEqual(fakeTask.completions, [true], "success must win the race; expire() after success must not double-complete")
-        XCTAssertEqual(rescheduleCount, 1, "must not reschedule a second time either")
+        XCTAssertEqual(rescheduleCount.withLock { $0 }, 1, "must not reschedule a second time either")
     }
 }
