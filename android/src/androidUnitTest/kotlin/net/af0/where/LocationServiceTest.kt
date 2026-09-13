@@ -778,6 +778,7 @@ class LocationServiceTest {
 
         val pollWakeLockField =
             LocationService::class.java.getDeclaredField("pollWakeLock").apply { isAccessible = true }
+
         fun isWakeLockHeld(): Boolean = (pollWakeLockField.get(service) as android.os.PowerManager.WakeLock).isHeld
 
         // Simulate a wake arriving (e.g. the doze alarm) that acquires the lock but never
