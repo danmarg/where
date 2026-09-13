@@ -623,6 +623,26 @@ class LocationSyncServiceTests: XCTestCase {
             "sendLocation() updates lastSentTime synchronously, so pollAll's heartbeat must not fire a second send")
     }
 
+    func testOnForegroundEntry_ClearsStuckForceFlagAfterTimeout() async throws {
+        // Regression: forceNextLocationUpdate previously had no timeout at this call site,
+        // so a stalled CoreLocation fix (e.g. GPS briefly unavailable) would leave it stuck
+        // true forever, forcing whatever unrelated future GPS fix arrives next to bypass the
+        // 30s send throttle.
+        let mockClient = MockLocationClient()
+        service = LocationSyncService(e2eeManager: service.e2eeManager, userStore: service.userStore, locationClient: mockClient, locationProvider: mockLocationProvider)
+        service.skipNetworkRestore = true
+        service.beginBackgroundTask = { _, _ in .invalid }
+        service.endBackgroundTask = { _ in }
+        service.sleepForFixTimeout = { _ in }  // fire timeout instantly, no walltime
+
+        service.onForegroundEntry()
+        XCTAssertTrue(service.forceNextLocationUpdate, "should arm the flag while awaiting the requested fix")
+
+        await service.forceUpdateClearTimeoutTask?.value
+
+        XCTAssertFalse(service.forceNextLocationUpdate, "timeout must clear the flag if the requested fix never arrives")
+    }
+
     func testOnForegroundEntry_FiresImmediatePollBypassingInterval() async throws {
         let mockClient = MockLocationClient()
         service = LocationSyncService(e2eeManager: service.e2eeManager, userStore: service.userStore, locationClient: mockClient, locationProvider: mockLocationProvider)

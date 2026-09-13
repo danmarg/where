@@ -68,6 +68,8 @@ final class LocationSyncService: ObservableObject {
                 forceNextLocationUpdate = false
                 locationFixTimeoutTask?.cancel()
                 locationFixTimeoutTask = nil
+                forceUpdateClearTimeoutTask?.cancel()
+                forceUpdateClearTimeoutTask = nil
             } else if !oldValue {
                 // Master toggle off→on: broadcast our current location immediately to every
                 // (non-paused) friend so peers don't wait for the next regular tick. Also
@@ -77,6 +79,7 @@ final class LocationSyncService: ObservableObject {
                 }
                 forceNextLocationUpdate = true
                 locationProvider.requestImmediateLocation()
+                armForceLocationUpdateTimeout()
             }
         }
     }
@@ -162,6 +165,12 @@ final class LocationSyncService: ObservableObject {
     var forceNextLocationUpdate: Bool = false
     var skipNetworkRestore: Bool = false  // internal for testing
     var locationFixTimeoutTask: Task<Void, Never>? = nil  // internal for testing
+    // Separate from locationFixTimeoutTask: that one belongs exclusively to
+    // handleNetworkRestored()'s stale-fallback-send timeout. Sharing a single task field
+    // between the two meant armForceLocationUpdateTimeout() (called from three other sites)
+    // could cancel and replace an in-flight network-restore fallback before it fired,
+    // silently dropping the send that was supposed to update friends after an outage.
+    var forceUpdateClearTimeoutTask: Task<Void, Never>? = nil  // internal for testing
     var currentSendTask: Task<Void, Never>? = nil  // internal for testing
     // Injectable sleep used for the GPS-fix fallback timeout. Tests replace this
     // with an instant or controllable variant so they don't wait real walltime.
@@ -425,6 +434,32 @@ final class LocationSyncService: ObservableObject {
         awaitingFirstUpdateIds.removeAll()
     }
 
+    /// Clears forceNextLocationUpdate after locationFixTimeout if the requested fix never
+    /// arrives, so a stalled CoreLocation pipeline can't leave the flag stuck indefinitely -
+    /// which would silently force whatever unrelated future GPS fix arrives next to bypass
+    /// the 30s send throttle. Callers here (sharing turned on, foreground entry, the
+    /// stationary backstop) already send a fallback location immediately themselves, so
+    /// unlike handleNetworkRestored's own timeout handling this just resets the flag rather
+    /// than also sending a stale fix. Cancels any previously armed timeout of its own
+    /// (forceUpdateClearTimeoutTask, distinct from handleNetworkRestored's
+    /// locationFixTimeoutTask — see that field's comment), since only one
+    /// requestImmediateLocation() is ever meaningfully pending at a time.
+    private func armForceLocationUpdateTimeout() {
+        forceUpdateClearTimeoutTask?.cancel()
+        let sleep = sleepForFixTimeout
+        forceUpdateClearTimeoutTask = Task { [weak self] in
+            do {
+                guard let timeout = self?.locationFixTimeout else { return }
+                try await sleep(timeout)
+            } catch {
+                return
+            }
+            guard let self, self.forceNextLocationUpdate else { return }
+            logger.info("forceNextLocationUpdate timeout: clearing stuck flag")
+            self.forceNextLocationUpdate = false
+        }
+    }
+
     // Extracted for testability. Called from pathMonitor handler and directly in tests.
     func handleNetworkRestored() async {
         do {
@@ -494,6 +529,7 @@ final class LocationSyncService: ObservableObject {
         // Request a fresh high-accuracy fix; result arrives via didUpdateLocations.
         forceNextLocationUpdate = true
         locationProvider.requestImmediateLocation()
+        armForceLocationUpdateTimeout()
         // Fire a poll directly rather than through the timer to minimize foreground latency.
         // Tracked so tests can await the poll completion without sleeping.
         foregroundPollTask = Task { @MainActor in
@@ -709,6 +745,7 @@ final class LocationSyncService: ObservableObject {
                             sendLocation(lat: loc.lat, lng: loc.lng, heading: loc.heading, force: true, source: .heartbeat, stationary: stationary)
                         }
                         locationProvider.requestImmediateLocation()
+                        armForceLocationUpdateTimeout()
                     }
                 }
             }
