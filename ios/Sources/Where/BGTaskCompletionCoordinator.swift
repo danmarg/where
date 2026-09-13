@@ -32,7 +32,7 @@ final class BGTaskCompletionCoordinator {
     }
 
     /// Starts `work`. If it completes before `expire()` cancels it, marks the task successful.
-    func start(work: @escaping () async -> Void) {
+    func start(work: @escaping @Sendable () async -> Void) {
         workTask = Task { [weak self] in
             await work()
             guard !Task.isCancelled, let self else { return }
