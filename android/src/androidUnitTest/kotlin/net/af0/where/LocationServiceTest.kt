@@ -242,6 +242,62 @@ class LocationServiceTest {
     }
 
     @Test
+    fun testCrossCycleBackoff_NoFailures_ReturnsBaseInterval() {
+        val controller = Robolectric.buildService(LocationService::class.java)
+        val service = controller.get()
+        val mockClient = io.mockk.mockk<LocationClient>(relaxed = true)
+        io.mockk.every { mockClient.crossCycleBackoffMultiplier } returns 1
+        service.locationClientOverride = mockClient
+        controller.create()
+        try {
+            assertEquals(5 * 60 * 1000L, service.crossCycleBackoffIntervalMs(5 * 60 * 1000L))
+        } finally {
+            controller.destroy()
+        }
+    }
+
+    @Test
+    fun testCrossCycleBackoff_AppliesMultiplierWithinCap() {
+        val controller = Robolectric.buildService(LocationService::class.java)
+        val service = controller.get()
+        val mockClient = io.mockk.mockk<LocationClient>(relaxed = true)
+        io.mockk.every { mockClient.crossCycleBackoffMultiplier } returns 4
+        service.locationClientOverride = mockClient
+        controller.create()
+        try {
+            val base = 60_000L
+            val result = service.crossCycleBackoffIntervalMs(base)
+            val expectedUnjittered = base * 4
+            val jitterRange = (expectedUnjittered * LocationService.BACKOFF_JITTER_FRACTION).toLong()
+            assertTrue(
+                result in (expectedUnjittered - jitterRange)..(expectedUnjittered + jitterRange),
+                "expected ~${expectedUnjittered}ms +/-${jitterRange}ms, got ${result}ms",
+            )
+        } finally {
+            controller.destroy()
+        }
+    }
+
+    @Test
+    fun testCrossCycleBackoff_CapsAtMaxBackoffInterval() {
+        val controller = Robolectric.buildService(LocationService::class.java)
+        val service = controller.get()
+        val mockClient = io.mockk.mockk<LocationClient>(relaxed = true)
+        io.mockk.every { mockClient.crossCycleBackoffMultiplier } returns 32
+        service.locationClientOverride = mockClient
+        controller.create()
+        try {
+            // 30-min maintenance base * 32x would blow past the cap without it - the multiplier
+            // must never push the effective interval beyond MAX_BACKOFF_INTERVAL_MS, which stays
+            // under the existing 30min maintenance-tier ceiling (#346).
+            val result = service.crossCycleBackoffIntervalMs(30 * 60 * 1000L)
+            assertTrue(result <= LocationService.MAX_BACKOFF_INTERVAL_MS, "backoff interval $result exceeded the cap")
+        } finally {
+            controller.destroy()
+        }
+    }
+
+    @Test
     fun testRapidPollResetAfterFirstLocationUpdate() =
         runTest {
             var currentTime = 1_000_000_000L
@@ -407,7 +463,7 @@ class LocationServiceTest {
             controller.startCommand(0, 0)
             advanceUntilIdle()
 
-            io.mockk.coVerify { mockClient.sendLocation(any(), any(), any()) }
+            io.mockk.coVerify { mockClient.sendLocation(any(), any(), any(), any(), any()) }
         }
 
     @Test
@@ -422,7 +478,7 @@ class LocationServiceTest {
             val mockClient = io.mockk.mockk<LocationClient>(relaxed = true)
             // First call throws, second call succeeds.
             var sendCalls = 0
-            io.mockk.coEvery { mockClient.sendLocation(any(), any(), any()) } answers {
+            io.mockk.coEvery { mockClient.sendLocation(any(), any(), any(), any(), any()) } answers {
                 sendCalls += 1
                 if (sendCalls == 1) throw RuntimeException("simulated transient failure")
                 Unit
@@ -440,6 +496,99 @@ class LocationServiceTest {
                 advanceUntilIdle()
                 assertEquals(2, sendCalls, "Send should retry once after transient failure")
                 assertTrue(service.lastSentTime > 0L, "lastSentTime should remain set after eventual success")
+            } finally {
+                controller.destroy()
+            }
+        }
+
+    @Test
+    fun testSendLocationIfNeeded_RecordsCrossCycleOutcomeOnceAcrossAllRetries() =
+        runTest {
+            var currentTime = 1_000_000_000L
+            LocationService.clock = { currentTime }
+
+            val controller = Robolectric.buildService(LocationService::class.java)
+            val service = controller.get()
+
+            val mockClient = io.mockk.mockk<LocationClient>(relaxed = true)
+            // Every attempt fails - #346's retry loop must still record the cross-cycle outcome
+            // exactly once (not once per attempt) once retries are exhausted.
+            io.mockk.coEvery { mockClient.sendLocation(any(), any(), any(), any(), any()) } throws
+                RuntimeException("simulated persistent failure")
+            service.locationClientOverride = mockClient
+            service.locationSourceOverride = fakeLocationSource
+            service.e2eeManagerOverride = io.mockk.mockk(relaxed = true)
+
+            val app = context as TestWhereApplication
+            app.userStore.setSharing(true)
+            controller.create()
+
+            try {
+                service.sendLocationIfNeeded(1.0, 2.0, isHeartbeat = false, force = true)
+                advanceUntilIdle()
+
+                // 3 attempts, but every one passed recordCrossCycleOutcome=false.
+                io.mockk.coVerify(exactly = 3) { mockClient.sendLocation(any(), any(), any(), any(), eq(false)) }
+                io.mockk.coVerify(exactly = 1) { mockClient.recordCrossCycleAttempt(success = false, error = any()) }
+            } finally {
+                controller.destroy()
+            }
+        }
+
+    @Test
+    fun testSendLocationIfNeeded_SkipsWhileBackedOff() =
+        runTest {
+            var currentTime = 1_000_000_000L
+            LocationService.clock = { currentTime }
+
+            val controller = Robolectric.buildService(LocationService::class.java)
+            val service = controller.get()
+
+            val mockClient = io.mockk.mockk<LocationClient>(relaxed = true)
+            service.locationClientOverride = mockClient
+            service.locationSourceOverride = fakeLocationSource
+            service.e2eeManagerOverride = io.mockk.mockk(relaxed = true)
+            val app = context as TestWhereApplication
+            app.userStore.setSharing(true)
+            controller.create()
+
+            try {
+                // #346: a gate in the future must suppress the attempt entirely - this is what
+                // makes backoff apply to a GPS-fix-triggered send, not just the poll-loop's sleep.
+                service.nextAttemptAllowedAtMs = currentTime + 60_000L
+                service.sendLocationIfNeeded(1.0, 2.0, isHeartbeat = false)
+                advanceUntilIdle()
+                io.mockk.coVerify(exactly = 0) { mockClient.sendLocation(any(), any(), any(), any(), any()) }
+
+                // An explicit user-initiated action (force=true) must bypass the gate.
+                service.sendLocationIfNeeded(1.0, 2.0, isHeartbeat = false, force = true)
+                advanceUntilIdle()
+                io.mockk.coVerify(exactly = 1) { mockClient.sendLocation(any(), any(), any(), any(), any()) }
+            } finally {
+                controller.destroy()
+            }
+        }
+
+    @Test
+    fun testDoPoll_SkipsWhileBackedOff() =
+        runTest {
+            val controller = Robolectric.buildService(LocationService::class.java)
+            val service = controller.get()
+
+            val mockClient = io.mockk.mockk<LocationClient>(relaxed = true)
+            service.locationClientOverride = mockClient
+            service.locationSourceOverride = fakeLocationSource
+            service.e2eeManagerOverride = io.mockk.mockk(relaxed = true)
+            io.mockk.coEvery { mockClient.pollPendingInvites() } returns emptyList()
+            val app = context as TestWhereApplication
+            app.userStore.setSharing(true)
+            controller.create()
+
+            try {
+                service.nextAttemptAllowedAtMs = LocationService.clock() + 60_000L
+                service.doPoll()
+                advanceUntilIdle()
+                io.mockk.coVerify(exactly = 0) { mockClient.poll(any(), any(), any()) }
             } finally {
                 controller.destroy()
             }
@@ -651,7 +800,7 @@ class LocationServiceTest {
             advanceUntilIdle()
 
             io.mockk.coVerify(exactly = 1) {
-                mockClient.sendLocation(37.0, -122.0, any(), stationary = true)
+                mockClient.sendLocation(37.0, -122.0, any(), stationary = true, recordCrossCycleOutcome = any())
             }
         }
 

@@ -108,7 +108,7 @@ class LocationSyncServiceTests: XCTestCase {
             return _pollCallCount
         }
         var lastStationary: Bool? = nil
-        func sendLocation(lat: Double, lng: Double, pausedFriendIds: Set<String>, stationary: Bool) async throws {
+        func sendLocation(lat: Double, lng: Double, pausedFriendIds: Set<String>, stationary: Bool, recordCrossCycleOutcome: Bool) async throws {
             lastStationary = stationary
             sendLocationCallback?()
         }

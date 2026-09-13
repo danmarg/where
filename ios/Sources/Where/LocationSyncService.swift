@@ -17,7 +17,7 @@ private class RawStringDesc: NSObject, Shared.ResourcesStringDesc {
 
 @MainActor
 protocol LocationClientProtocol: AnyObject, Sendable {
-    func sendLocation(lat: Double, lng: Double, pausedFriendIds: Set<String>, stationary: Bool) async throws
+    func sendLocation(lat: Double, lng: Double, pausedFriendIds: Set<String>, stationary: Bool, recordCrossCycleOutcome: Bool) async throws
     func sendLocationToFriend(friendId: String, lat: Double, lng: Double, stationary: Bool) async throws
     func sendStoppedSharing(pausedFriendIds: Set<String>) async throws
     func sendStoppedSharingToFriend(friendId: String) async throws
@@ -1015,7 +1015,7 @@ final class LocationSyncService: ObservableObject {
                 }
             }
             do {
-                try await locationClient.sendLocation(lat: lat, lng: lng, pausedFriendIds: effectivelyPausedIds(), stationary: stationary)
+                try await locationClient.sendLocation(lat: lat, lng: lng, pausedFriendIds: effectivelyPausedIds(), stationary: stationary, recordCrossCycleOutcome: true)
                 if !Task.isCancelled && gen == self.sendTaskGeneration {
                     logger.info("sendLocation: succeeded (lat=\(lat), lng=\(lng), source=\(source.rawValue))")
                     logReliability(source: source, success: true, interval: interval)

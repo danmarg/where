@@ -34,6 +34,7 @@ import net.af0.where.e2ee.E2eeManager
 import net.af0.where.e2ee.LocationClient
 import net.af0.where.e2ee.UserStore
 import net.af0.where.shared.MR
+import kotlin.random.Random
 
 private const val TAG = "LocationService"
 
@@ -249,7 +250,6 @@ class LocationService : Service() {
         net.af0.where.e2ee.KtorMailboxClient.onConnectionReset = {
             e2eeManager.addDiagnosticEvent("Mailbox HTTP client auto-reset after repeated failures")
         }
-
         locationProvider = locationProviderOverride ?: createLocationProvider()
         locationProvider.init(this) { lat, lng, bearing ->
             lastLocationCallbackTime = clock()
@@ -287,6 +287,10 @@ class LocationService : Service() {
                     serviceScope.launch {
                         try {
                             try {
+                                // This is already a strong "try now" signal - don't make it
+                                // fight through a backoff computed before connectivity returned.
+                                locationClient.resetCrossCycleBackoff()
+                                nextAttemptAllowedAtMs = 0L
                                 locationClient.syncNow(
                                     pausedFriendIds = userStore.effectivelyPausedIds(),
                                     sharingEnabled = userStore.isSharingLocation.value,
@@ -296,6 +300,16 @@ class LocationService : Service() {
                                 throw e
                             } catch (_: Exception) {
                                 logReliability(WakeSource.NETWORK, false)
+                            } finally {
+                                // syncNow() can itself bump crossCycleBackoffMultiplier back
+                                // up if the server is still down even though connectivity
+                                // returned - without this, nextAttemptAllowedAtMs would stay stuck
+                                // at the 0L set above (stale) until the next scheduled
+                                // doPoll()/sendLocationIfNeeded() call happens to refresh it,
+                                // leaving an out-of-band trigger (GPS fix, heartbeat tick,
+                                // geofence event) firing in between unthrottled during exactly the
+                                // reconnect-storm scenario the jitter exists to protect against.
+                                refreshBackoffGate()
                             }
                         } finally {
                             if (pollWakeLock.isHeld) pollWakeLock.release()
@@ -664,6 +678,27 @@ class LocationService : Service() {
     internal var lastSentTime: Long = 0L
     private val sendLock = Mutex()
 
+    // Gates ALL cross-cycle network attempts (doPoll's poll, sendLocationIfNeeded's send) -
+    // not just the poll-loop's sleep length, which by itself would only bound the *scheduled*
+    // timer/alarm cadence. A GPS-fix callback, ACTION_HEARTBEAT_TICK, or a geofence event can
+    // each independently drive doPoll()/sendLocationIfNeeded() outside that schedule, so the sleep
+    // length alone can't cap the real retry rate during an outage. force=true (an explicit user
+    // action, e.g. ACTION_FORCE_PUBLISH) bypasses this - see sendLocationIfNeeded.
+    @VisibleForTesting
+    internal var nextAttemptAllowedAtMs: Long = 0L
+
+    // Recomputed after every doPoll()/sendLocationIfNeeded() attempt from the current
+    // crossCycleBackoffMultiplier, so the gate always reflects the latest counter state
+    // regardless of which call last updated it. Uses the same mode-specific base as the poll
+    // loop's own scheduled cadence (pollInterval) rather than a fixed base - otherwise the gate
+    // and the scheduled backoff diverge and an out-of-band trigger (GPS fix, heartbeat tick,
+    // geofence event) can sail past a gate that's stretched far less than the actual cadence.
+    private suspend fun refreshBackoffGate() {
+        val multiplier = locationClient.crossCycleBackoffMultiplier
+        val base = pollInterval(isRapidPolling(), locationSource.isAppInForeground.value, userStore.isSharingLocation.value)
+        nextAttemptAllowedAtMs = if (multiplier <= 1) 0L else clock() + crossCycleBackoffIntervalMs(base)
+    }
+
     private suspend fun pollLoop() {
         // On cold/headless restart the StateFlow starts empty — hydrate once before the
         // first iteration so we don't stopSelf() before sending anything.
@@ -778,7 +813,15 @@ class LocationService : Service() {
                     }
                 }
             }
-            val interval = pollInterval(rapid, inForeground, isSharing)
+            // Stretch the normal cadence on repeated cross-cycle send/poll failures (e.g.
+            // a server outage) instead of retrying forever at the same rate. Skipped during rapid
+            // polling - that mode exists for an active, time-sensitive pairing flow, and backing
+            // it off would hurt UX for no real benefit (a pairing exchange isn't the correlated-
+            // small-user-base lockstep-retry risk this exists for).
+            val interval =
+                pollInterval(rapid, inForeground, isSharing).let {
+                    if (rapid) it else crossCycleBackoffIntervalMs(it)
+                }
             // Schedule the doze alarm above the platform's ~9-min minimum for
             // setExactAndAllowWhileIdle. Scheduling below that causes silent deferral to the
             // next maintenance window — often hours on Samsung in deep Doze.
@@ -831,6 +874,23 @@ class LocationService : Service() {
             else -> 30 * 60 * 1000L // maintenance-only (Ratchet keepalives and Acks). Required for DH sync during global pause.
         }
 
+    /**
+     * Applies [LocationClient.crossCycleBackoffMultiplier] to [baseIntervalMs], capped at
+     * [MAX_BACKOFF_INTERVAL_MS] (staying under the 30min maintenance-tier ceiling in
+     * [pollInterval]) with light jitter so a correlated small user base doesn't retry a real
+     * server outage in lockstep.
+     */
+    @VisibleForTesting
+    internal fun crossCycleBackoffIntervalMs(baseIntervalMs: Long): Long {
+        val multiplier = locationClient.crossCycleBackoffMultiplier
+        if (multiplier <= 1) return baseIntervalMs
+        val backedOff = baseIntervalMs * multiplier
+        val jitterRange = (backedOff * BACKOFF_JITTER_FRACTION).toLong()
+        val jittered = if (jitterRange > 0) backedOff + Random.nextLong(-jitterRange, jitterRange + 1) else backedOff
+        // Cap applied after jitter so the cap is a real ceiling, not just a pre-jitter target.
+        return minOf(jittered, MAX_BACKOFF_INTERVAL_MS)
+    }
+
     @VisibleForTesting
     internal suspend fun isRapidPolling(): Boolean {
         // We consider it rapid if the share sheet is open, or we're in key exchange naming.
@@ -851,6 +911,20 @@ class LocationService : Service() {
     internal var lastCleanupTime: Long = 0L
 
     internal suspend fun doPoll(source: WakeSource = WakeSource.TIMER) {
+        // Skip entirely while backed off, unless this is the responsiveness-critical rapid-
+        // polling mode (active pairing flow) - see nextAttemptAllowedAtMs's doc. Recovery doesn't
+        // depend on this call happening: the network-available callback resets the gate and
+        // triggers its own syncNow() the moment connectivity actually returns.
+        if (!isRapidPolling() && clock() < nextAttemptAllowedAtMs) {
+            Log.d(TAG, "doPoll: skipped (source=${source.value}), backed off until $nextAttemptAllowedAtMs")
+            // Coalesced (not per-skip) - a device silently going quiet for the whole backoff
+            // window with nothing explaining why is exactly the shape of bug that produced #363.
+            e2eeManager.addDiagnosticEvent(
+                "Cross-cycle backoff: suppressing poll (${source.value}) until $nextAttemptAllowedAtMs",
+                coalesceKey = "cross-cycle backoff: suppressed poll",
+            )
+            return
+        }
         try {
             Log.d(TAG, "Polling for location updates (source=${source.value})")
             val now = clock()
@@ -883,6 +957,8 @@ class LocationService : Service() {
         } catch (e: Exception) {
             Log.e(TAG, "Poll failed: ${e.message}")
             updateStatus(e)
+        } finally {
+            refreshBackoffGate()
         }
     }
 
@@ -960,6 +1036,19 @@ class LocationService : Service() {
             }
         if (!shouldSend) return
 
+        // Skip while backed off, unless this is an explicit user-initiated action (force) -
+        // see nextAttemptAllowedAtMs's doc. Restores lastSentTime like the retries-exhausted path
+        // below, since we never actually attempted a send this wake.
+        if (!force && clock() < nextAttemptAllowedAtMs) {
+            Log.d(TAG, "sendLocationIfNeeded: skipped (source=${source.value}), backed off until $nextAttemptAllowedAtMs")
+            e2eeManager.addDiagnosticEvent(
+                "Cross-cycle backoff: suppressing send (${source.value}) until $nextAttemptAllowedAtMs",
+                coalesceKey = "cross-cycle backoff: suppressed send",
+            )
+            sendLock.withLock { lastSentTime = 0L }
+            return
+        }
+
         // Retry transient send failures within the same wake; otherwise a single
         // network blip during a 5-min heartbeat tick costs us another full poll
         // interval (5 min background) before the next attempt, stacking gaps fast.
@@ -971,12 +1060,25 @@ class LocationService : Service() {
                 if (!userStore.isSharingLocation.value) return
             }
             try {
-                locationClient.sendLocation(lat, lng, userStore.effectivelyPausedIds(), stationary = stationary)
+                // recordCrossCycleOutcome=false - this loop can make up to $totalAttempts
+                // separate sendLocation() calls for what is really ONE cross-cycle attempt: letting
+                // each one self-record would inflate the backoff counter by up to $totalAttempts
+                // per wake instead of the intended ~1. We record exactly once below instead, after
+                // the loop settles either way.
+                locationClient.sendLocation(
+                    lat,
+                    lng,
+                    userStore.effectivelyPausedIds(),
+                    stationary = stationary,
+                    recordCrossCycleOutcome = false,
+                )
                 val sendCompleteTime = clock()
                 logReliability(source, true, interval, wakeTrigger)
                 checkLateHeartbeat(interval)
                 lastSuccessfulSendTime = sendCompleteTime
                 updateStatus(null)
+                locationClient.recordCrossCycleAttempt(success = true)
+                refreshBackoffGate()
                 return
             } catch (e: CancellationException) {
                 throw e
@@ -991,6 +1093,8 @@ class LocationService : Service() {
         Log.e(TAG, "Failed to send location after $totalAttempts attempts: ${lastError?.message}")
         logReliability(source, false, interval, wakeTrigger)
         updateStatus(lastError ?: Exception("send failed"))
+        lastError?.let { locationClient.recordCrossCycleAttempt(success = false, error = it) }
+        refreshBackoffGate()
     }
 
     private fun checkLateHeartbeat(intervalMs: Long?) {
@@ -1117,6 +1221,16 @@ class LocationService : Service() {
 
         /** Backoff delays for in-wake send retries on transient network failure. */
         val SEND_RETRY_DELAYS_MS = longArrayOf(5_000L, 20_000L)
+
+        /**
+         * Cap on [crossCycleBackoffIntervalMs] - deliberately under the 30min
+         * maintenance-tier ceiling in [pollInterval] so a prolonged outage still doesn't push
+         * the effective cadence past what that ceiling already allows.
+         */
+        const val MAX_BACKOFF_INTERVAL_MS = 15 * 60 * 1000L
+
+        /** Jitter fraction (±) applied in [crossCycleBackoffIntervalMs]. */
+        const val BACKOFF_JITTER_FRACTION = 0.1
 
         /**
          * Wake lock timeout. Long enough to cover a GPS fix (~10 s) plus a network send on a
