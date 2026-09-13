@@ -98,67 +98,51 @@ data class SessionState(
             nextHeaderKey = nextHeaderKey.copyOf(),
         )
 
+    /**
+     * Every ByteArray field declared in the primary constructor, in declaration order.
+     * equals()/hashCode() fold over this instead of each maintaining its own hand-written
+     * field list, so a field added to the constructor but missed here fails loudly (wrong
+     * equals/hashCode breaks tests immediately) instead of silently. deepCopy() above still
+     * needs its own per-field .copyOf() call, since Kotlin's data class copy() requires named
+     * arguments and can't be driven from a list — SessionStateDeepCopyTest guards that one
+     * against the same field-added-but-missed risk instead.
+     */
+    private fun byteArrayFields(): Array<ByteArray> =
+        arrayOf(
+            rootKey, sendChainKey, recvChainKey, sendToken, recvToken,
+            localDhPriv, localDhPub, remoteDhPub, aliceEkPub, bobEkPub,
+            aliceFp, bobFp, localFp, remoteFp, prevSendToken,
+            prevSendHeaderKey, headerKey, sendHeaderKey, nextHeaderKey,
+        )
+
     override fun equals(other: Any?): Boolean {
         if (other !is SessionState) return false
-        return rootKey.contentEquals(other.rootKey) &&
-            sendChainKey.contentEquals(other.sendChainKey) &&
-            recvChainKey.contentEquals(other.recvChainKey) &&
-            sendToken.contentEquals(other.sendToken) &&
-            recvToken.contentEquals(other.recvToken) &&
+        val fields = byteArrayFields()
+        val otherFields = other.byteArrayFields()
+        return fields.indices.all { i -> fields[i].contentEquals(otherFields[i]) } &&
             sendSeq == other.sendSeq &&
             recvSeq == other.recvSeq &&
-            localDhPriv.contentEquals(other.localDhPriv) &&
-            localDhPub.contentEquals(other.localDhPub) &&
-            remoteDhPub.contentEquals(other.remoteDhPub) &&
-            aliceEkPub.contentEquals(other.aliceEkPub) &&
-            bobEkPub.contentEquals(other.bobEkPub) &&
-            aliceFp.contentEquals(other.aliceFp) &&
-            bobFp.contentEquals(other.bobFp) &&
-            localFp.contentEquals(other.localFp) &&
-            remoteFp.contentEquals(other.remoteFp) &&
-            prevSendToken.contentEquals(other.prevSendToken) &&
-            prevSendHeaderKey.contentEquals(other.prevSendHeaderKey) &&
             isAlice == other.isAlice &&
             skippedMessageKeys.size == other.skippedMessageKeys.size &&
             skippedMessageKeys.all { (k, v) -> other.skippedMessageKeys[k]?.contentEquals(v) == true } &&
             pn == other.pn &&
             pr == other.pr &&
-            needsRatchet == other.needsRatchet &&
-            headerKey.contentEquals(other.headerKey) &&
-            sendHeaderKey.contentEquals(other.sendHeaderKey) &&
-            nextHeaderKey.contentEquals(other.nextHeaderKey)
+            needsRatchet == other.needsRatchet
     }
 
     override fun hashCode(): Int {
-        var h = rootKey.contentHashCode()
-        h = 31 * h + sendChainKey.contentHashCode()
-        h = 31 * h + recvChainKey.contentHashCode()
-        h = 31 * h + sendToken.contentHashCode()
-        h = 31 * h + recvToken.contentHashCode()
+        var h = 0
+        for (field in byteArrayFields()) h = 31 * h + field.contentHashCode()
         h = 31 * h + sendSeq.hashCode()
         h = 31 * h + recvSeq.hashCode()
-        h = 31 * h + localDhPriv.contentHashCode()
-        h = 31 * h + localDhPub.contentHashCode()
-        h = 31 * h + remoteDhPub.contentHashCode()
-        h = 31 * h + aliceEkPub.contentHashCode()
-        h = 31 * h + bobEkPub.contentHashCode()
-        h = 31 * h + aliceFp.contentHashCode()
-        h = 31 * h + bobFp.contentHashCode()
-        h = 31 * h + localFp.contentHashCode()
-        h = 31 * h + remoteFp.contentHashCode()
-        h = 31 * h + prevSendToken.contentHashCode()
-        h = 31 * h + prevSendHeaderKey.contentHashCode()
         h = 31 * h + isAlice.hashCode()
-        // Content-based hash for collections containing ByteArrays
+        // Content-based hash for the collection containing ByteArrays
         var skipHash = 0
         skippedMessageKeys.forEach { (k, v) -> skipHash += 31 * k.hashCode() + v.contentHashCode() }
         h = 31 * h + skipHash
         h = 31 * h + pn.hashCode()
         h = 31 * h + pr.hashCode()
         h = 31 * h + needsRatchet.hashCode()
-        h = 31 * h + headerKey.contentHashCode()
-        h = 31 * h + sendHeaderKey.contentHashCode()
-        h = 31 * h + nextHeaderKey.contentHashCode()
         return h
     }
 }
