@@ -505,6 +505,12 @@ final class LocationSyncService: ObservableObject {
 
     func startPolling() {
         pollTimer?.invalidate()
+        // 1Hz, matching rapidPollInterval's timescale but deliberately not equal to it: ticking
+        // at exactly the same interval as the shortest target interval this drives against
+        // aliases against tick()'s elapsed-time check (the two timestamps are offset by an
+        // async hop's worth of delay), causing the check to miss roughly half the time and
+        // degrading rapid-poll (QR pairing) cadence from ~2s to ~3-4s in practice. A 1Hz tick
+        // avoids that by staying well under every target interval.
         pollTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
             guard let self = self else { return }
             Task { @MainActor in
