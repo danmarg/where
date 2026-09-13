@@ -83,6 +83,12 @@ class MainActivity : ComponentActivity() {
             }
         }
 
+    // No rationale needed here per Android guidance: POST_NOTIFICATIONS is low-friction
+    // (it only gates the persistent foreground-service notification, not any functionality),
+    // so we just ask once directly.
+    private val requestNotificationPermissionLauncher =
+        registerForActivityResult(ActivityResultContracts.RequestPermission()) {}
+
     private fun launchScanner() {
         scanLauncher.launch(
             ScanOptions().apply {
@@ -103,6 +109,14 @@ class MainActivity : ComponentActivity() {
                 ) == PackageManager.PERMISSION_GRANTED
         if (hasPermission) {
             startForegroundService(Intent(this, LocationService::class.java))
+        }
+        // Without this, the persistent notification that's supposed to warn the user when
+        // sharing is failing or paused (see LocationService.ensureLocationRegistration) is
+        // simply invisible on API 33+ until the user happens to grant it some other way.
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU &&
+            ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+        ) {
+            requestNotificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
         }
     }
 
