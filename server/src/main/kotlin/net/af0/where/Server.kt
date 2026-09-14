@@ -25,6 +25,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
@@ -982,12 +983,28 @@ class DualWriteMailboxState(
     }
 
     override fun drain(token: String): List<JsonElement>? {
-        val result = primary.drain(token) ?: return null
+        // Starts the secondary read concurrently with primary rather than only after primary
+        // already returned (closing most of the TOCTOU gap a fully-sequential fire-and-forget
+        // secondary read leaves open - see the mailbox migration notes), but - unlike an earlier
+        // version of this method - never blocks the caller on it. drain() is called synchronously
+        // from the suspend GET /inbox/{token} handler; blocking that coroutine's thread (e.g. via
+        // runBlocking) to await the secondary ties up a Netty call-handling thread for
+        // max(primary, secondary) latency, which under this app's poll-heavy traffic risks
+        // queueing/timeouts server-wide, not just on this endpoint. So the comparison itself
+        // still happens off-thread once the secondary read resolves, same as the other mirrored
+        // operations above - this only changes *when* the secondary read starts, not whether the
+        // client waits for it (it doesn't). Explicit Dispatchers.IO override for the same reason
+        // as elsewhere: don't queue behind [scope]'s write-mirror throttle.
+        val secondaryDeferred = scope.async(Dispatchers.IO) { secondary.drain(token) ?: emptyList() }
+        val result = primary.drain(token)
+        if (result == null) {
+            secondaryDeferred.cancel()
+            return null
+        }
         launchMirror {
-            runCatching {
-                val secondaryResult = secondary.drain(token) ?: emptyList()
-                comparePayloads(token, result, secondaryResult)
-            }.onFailure { migrationLog.warn("secondary drain failed token={}", tokenHash(token), it) }
+            runCatching { secondaryDeferred.await() }
+                .onSuccess { comparePayloads(token, result, it) }
+                .onFailure { migrationLog.warn("secondary drain failed token={}", tokenHash(token), it) }
         }
         return result
     }
