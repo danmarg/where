@@ -6,5 +6,3 @@ Where is designed so the server learns as little as possible:
 * End-to-end encrypted by default. Location payloads are encrypted with a Double Ratchet protocol before they leave the device. The server routes opaque ciphertext and cannot read coordinates.
 * No social graph. Routing uses pairwise anonymous tokens; the server cannot reconstruct who is sharing with whom.
 * Forward secrecy. Automated keepalives advance the ratchet even when only one party is sharing, so past sessions cannot be decrypted if a key is later compromised.
-
-This build uses MapLibre and Android's built-in location APIs instead of Google Maps and Play Services. Map tiles are fetched from tiles.openfreemap.org, which sees the map area you view (but not your identity or shared locations).
