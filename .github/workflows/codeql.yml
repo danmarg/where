@@ -50,7 +50,7 @@ jobs:
         - language: ruby
           build-mode: none
         - language: swift
-          build-mode: autobuild
+          build-mode: manual
         # CodeQL supports the following values keywords for 'language': 'actions', 'c-cpp', 'csharp', 'go', 'java-kotlin', 'javascript-typescript', 'python', 'ruby', 'rust', 'swift'
         # Use `c-cpp` to analyze code written in C, C++ or both
         # Use 'java-kotlin' to analyze code written in Java, Kotlin or both
@@ -67,7 +67,7 @@ jobs:
     # This includes steps like installing compilers or runtimes (`actions/setup-node`
     # or others). This is typically only required for manual builds.
     - name: Set up JDK
-      if: matrix.language == 'java-kotlin'
+      if: matrix.language == 'java-kotlin' || matrix.language == 'swift'
       uses: actions/setup-java@v4
       with:
         distribution: temurin
@@ -91,6 +91,24 @@ jobs:
         sudo apt-get update
         sudo apt-get install -y libsodium-dev
 
+    - name: Setup Xcode
+      if: matrix.language == 'swift'
+      run: sudo xcode-select --switch /Applications/Xcode.app/Contents/Developer
+
+    - name: Install XcodeGen
+      if: matrix.language == 'swift'
+      run: brew install xcodegen
+
+    - name: Create Local.xcconfig
+      if: matrix.language == 'swift'
+      run: touch ios/Local.xcconfig
+
+    - name: Generate Xcode project
+      if: matrix.language == 'swift'
+      run: |
+        touch ios/Local.xcconfig
+        cd ios && xcodegen
+
     # Initializes the CodeQL tools for scanning.
     - name: Initialize CodeQL
       uses: github/codeql-action/init@v4
@@ -110,14 +128,31 @@ jobs:
     # to build your code.
     # ℹ️ Command-line programs to run using the OS shell.
     # 📚 See https://docs.github.com/en/actions/using-workflows/workflow-syntax-for-github-actions#jobsjob_idstepsrun
-    - name: Run manual build steps
-      if: matrix.build-mode == 'manual'
+    - name: Run manual build steps (java-kotlin)
+      if: matrix.language == 'java-kotlin'
       shell: bash
       env:
         LD_LIBRARY_PATH: /usr/lib/x86_64-linux-gnu
       run: |
         ./gradlew :shared:compileKotlinJvm :shared:compileDebugKotlinAndroid \
           :android:assembleStandardFdroidDebug :server:compileKotlin :cli:compileKotlin
+
+    - name: Run manual build steps (swift)
+      if: matrix.language == 'swift'
+      shell: bash
+      run: |
+        ./gradlew :shared:assembleSharedDebugXCFramework
+        cd ios
+        xcodebuild build \
+          -scheme Where \
+          -configuration Debug \
+          -sdk iphonesimulator \
+          -derivedDataPath build \
+          ONLY_ACTIVE_ARCH=YES \
+          ARCHS=arm64 \
+          CODE_SIGNING_ALLOWED=NO \
+          CODE_SIGNING_REQUIRED=NO \
+          CODE_SIGN_IDENTITY=""
 
     - name: Perform CodeQL Analysis
       uses: github/codeql-action/analyze@v4
