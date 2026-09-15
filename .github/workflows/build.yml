@@ -37,16 +37,19 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libsodium-dev
 
+      # assembleDebug pulls in the gms-flavor variants too, which fail fast without a
+      # MAPS_API_KEY (intentionally — see android/build.gradle.kts). CI has no such secret
+      # by design, so build the fdroid flavor, which doesn't need one.
       - name: Build debug APK
         env:
           LD_LIBRARY_PATH: /usr/lib/x86_64-linux-gnu
-        run: ./gradlew :android:assembleDebug
+        run: ./gradlew :android:assembleStandardFdroidDebug
 
       - name: Upload debug APK
         uses: actions/upload-artifact@v4
         with:
           name: android-debug-apk
-          path: android/build/outputs/apk/debug/*.apk
+          path: android/build/outputs/apk/standardFdroid/debug/*.apk
           retention-days: 14
 
   build-ios:

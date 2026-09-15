@@ -117,7 +117,7 @@ jobs:
         LD_LIBRARY_PATH: /usr/lib/x86_64-linux-gnu
       run: |
         ./gradlew :shared:compileKotlinJvm :shared:compileDebugKotlinAndroid \
-          :android:assembleDebug :server:compileKotlin :cli:compileKotlin
+          :android:assembleStandardFdroidDebug :server:compileKotlin :cli:compileKotlin
 
     - name: Perform CodeQL Analysis
       uses: github/codeql-action/analyze@v4
