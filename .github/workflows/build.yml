@@ -22,11 +22,15 @@ jobs:
           java-version: 21
           cache: gradle
 
-      - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
-
-      - name: Set ANDROID_HOME
-        run: echo "ANDROID_HOME=$ANDROID_SDK_ROOT" >> $GITHUB_ENV
+      # ubuntu-latest runners ship with an Android SDK preinstalled (ANDROID_HOME
+      # already set). android-actions/setup-android@v3 unconditionally tries to
+      # install the legacy "tools" package, which Google has removed from the
+      # SDK repository, so it fails outright. Use the preinstalled SDK instead
+      # and just fetch the platform we build against.
+      - name: Install Android SDK platform
+        run: |
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platform-tools" "platforms;android-36"
 
       - name: Install libsodium
         run: |
