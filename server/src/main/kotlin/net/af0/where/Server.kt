@@ -21,6 +21,7 @@ import io.ktor.server.request.*
 import io.ktor.server.response.*
 import io.ktor.server.routing.*
 import io.ktor.server.routing.delete
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -954,6 +955,11 @@ class DualWriteMailboxState(
     // primary/secondary divergence.
     private val onSecondaryDeleteFailure: ((op: String, tokenHash: String, error: Throwable) -> Unit)? = null,
     private val shutdownDrainTimeoutMs: Long = SHUTDOWN_DRAIN_TIMEOUT_MS,
+    // The secondary read in drain() below is deliberately pinned to this rather than inheriting
+    // [scope]'s dispatcher, so it never queues behind [scope]'s write-mirror throttle (see there).
+    // Exposed only so tests can substitute a dispatcher that runs inline instead of on a real
+    // thread pool, making the fire-and-forget comparison it kicks off deterministic to assert on.
+    private val secondaryReadDispatcher: CoroutineDispatcher = Dispatchers.IO,
 ) : MailboxStore {
     // Flipped at the start of close() so a mirror write racing shutdown (e.g. from a request
     // still finishing out its grace period, or the periodic evict() housekeeping tick) doesn't
@@ -995,7 +1001,7 @@ class DualWriteMailboxState(
         // operations above - this only changes *when* the secondary read starts, not whether the
         // client waits for it (it doesn't). Explicit Dispatchers.IO override for the same reason
         // as elsewhere: don't queue behind [scope]'s write-mirror throttle.
-        val secondaryDeferred = scope.async(Dispatchers.IO) { secondary.drain(token) ?: emptyList() }
+        val secondaryDeferred = scope.async(secondaryReadDispatcher) { secondary.drain(token) ?: emptyList() }
         val result = primary.drain(token)
         if (result == null) {
             secondaryDeferred.cancel()

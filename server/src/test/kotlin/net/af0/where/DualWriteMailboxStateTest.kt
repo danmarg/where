@@ -110,7 +110,7 @@ class DualWriteMailboxStateTest {
     fun `secondary post failure does not fail the request`() {
         val primary = FakeMailboxStore()
         val secondary = FakeMailboxStore(failNextWrite = true)
-        val dual = DualWriteMailboxState(primary, secondary, testScope)
+        val dual = DualWriteMailboxState(primary, secondary, testScope, secondaryReadDispatcher = Dispatchers.Unconfined)
 
         val result = dual.post("token", JsonPrimitive("hi"), "msg-1")
 
@@ -123,7 +123,7 @@ class DualWriteMailboxStateTest {
     fun `secondary delete failure does not fail the request`() {
         val primary = FakeMailboxStore()
         val secondary = FakeMailboxStore()
-        val dual = DualWriteMailboxState(primary, secondary, testScope)
+        val dual = DualWriteMailboxState(primary, secondary, testScope, secondaryReadDispatcher = Dispatchers.Unconfined)
         dual.post("token", JsonPrimitive("hi"), "msg-1")
         secondary.failNext()
 
@@ -137,7 +137,7 @@ class DualWriteMailboxStateTest {
     fun `drain always reflects primary even when secondary disagrees`() {
         val primary = FakeMailboxStore()
         val secondary = FakeMailboxStore()
-        val dual = DualWriteMailboxState(primary, secondary, testScope)
+        val dual = DualWriteMailboxState(primary, secondary, testScope, secondaryReadDispatcher = Dispatchers.Unconfined)
 
         primary.post("token", JsonPrimitive("only-in-primary"), "msg-1")
         // secondary never got this write - simulates a real mirroring gap.
@@ -151,7 +151,7 @@ class DualWriteMailboxStateTest {
     fun `payload mismatch between stores logs a WARN`() {
         val primary = FakeMailboxStore()
         val secondary = FakeMailboxStore()
-        val dual = DualWriteMailboxState(primary, secondary, testScope)
+        val dual = DualWriteMailboxState(primary, secondary, testScope, secondaryReadDispatcher = Dispatchers.Unconfined)
 
         primary.post("token", JsonPrimitive("primary-only"), "msg-1")
         // Deliberately diverge: secondary has a different payload for this token.
@@ -168,7 +168,7 @@ class DualWriteMailboxStateTest {
         // TTL sweeps expired items in the background), so there's no cost reason to throttle it.
         val primary = FakeMailboxStore()
         val secondary = FakeMailboxStore()
-        val dual = DualWriteMailboxState(primary, secondary, testScope)
+        val dual = DualWriteMailboxState(primary, secondary, testScope, secondaryReadDispatcher = Dispatchers.Unconfined)
 
         dual.evict()
         dual.evict()
@@ -183,7 +183,14 @@ class DualWriteMailboxStateTest {
         val primary = FakeMailboxStore()
         val secondary = FakeMailboxStore()
         val events = mutableListOf<MismatchEvent>()
-        val dual = DualWriteMailboxState(primary, secondary, testScope, onMismatch = { events.add(it) })
+        val dual =
+            DualWriteMailboxState(
+                primary,
+                secondary,
+                testScope,
+                onMismatch = { events.add(it) },
+                secondaryReadDispatcher = Dispatchers.Unconfined,
+            )
 
         primary.post("token", JsonPrimitive("primary-only"), "msg-1")
         secondary.post("token", JsonPrimitive("secondary-only"), "msg-2")
@@ -204,7 +211,14 @@ class DualWriteMailboxStateTest {
         val primary = FakeMailboxStore()
         val secondary = FakeMailboxStore()
         val events = mutableListOf<MismatchEvent>()
-        val dual = DualWriteMailboxState(primary, secondary, testScope, onMismatch = { events.add(it) })
+        val dual =
+            DualWriteMailboxState(
+                primary,
+                secondary,
+                testScope,
+                onMismatch = { events.add(it) },
+                secondaryReadDispatcher = Dispatchers.Unconfined,
+            )
 
         dual.post("token", JsonPrimitive("msg"), "msg-1")
         dual.drain("token")
@@ -223,6 +237,7 @@ class DualWriteMailboxStateTest {
                 secondary,
                 testScope,
                 onSecondaryDeleteFailure = { op, tokenHash, error -> failures.add(Triple(op, tokenHash, error)) },
+                secondaryReadDispatcher = Dispatchers.Unconfined,
             )
         dual.post("token", JsonPrimitive("hi"), "msg-1")
         secondary.failNext()
@@ -247,6 +262,7 @@ class DualWriteMailboxStateTest {
                 secondary,
                 testScope,
                 onSecondaryDeleteFailure = { op, tokenHash, error -> failures.add(Triple(op, tokenHash, error)) },
+                secondaryReadDispatcher = Dispatchers.Unconfined,
             )
         dual.post("token", JsonPrimitive("hi"), "msg-1")
         secondary.failNext()
@@ -268,6 +284,7 @@ class DualWriteMailboxStateTest {
                 secondary,
                 testScope,
                 onSecondaryDeleteFailure = { op, tokenHash, error -> failures.add(Triple(op, tokenHash, error)) },
+                secondaryReadDispatcher = Dispatchers.Unconfined,
             )
         dual.post("token", JsonPrimitive("hi"), "msg-1")
 
@@ -317,7 +334,7 @@ class DualWriteMailboxStateTest {
         // could land after the snapshot and get dropped exactly like the original bug.
         val primary = FakeMailboxStore()
         val secondary = FakeMailboxStore()
-        val dual = DualWriteMailboxState(primary, secondary, testScope)
+        val dual = DualWriteMailboxState(primary, secondary, testScope, secondaryReadDispatcher = Dispatchers.Unconfined)
 
         dual.close()
         dual.post("token", JsonPrimitive("late"), "msg-1")
@@ -357,7 +374,7 @@ class DualWriteMailboxStateTest {
         // a message is delivered and deleted, even though nothing is actually wrong.
         val primary = FakeMailboxStore()
         val secondary = FakeMailboxStore()
-        val dual = DualWriteMailboxState(primary, secondary, testScope)
+        val dual = DualWriteMailboxState(primary, secondary, testScope, secondaryReadDispatcher = Dispatchers.Unconfined)
 
         dual.post("token", JsonPrimitive("msg"), "msg-1")
         dual.deleteById("token", "msg-1")
