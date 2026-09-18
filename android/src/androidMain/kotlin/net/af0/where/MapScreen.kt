@@ -34,12 +34,6 @@ import net.af0.where.shared.MR
 private val MultiplePermissionsState.hasAnyLocationPermission: Boolean
     get() = permissions.any { it.status.isGranted }
 
-private fun isLocationServicesEnabled(context: Context): Boolean {
-    val locationManager = context.getSystemService(LocationManager::class.java) ?: return false
-    return locationManager.isProviderEnabled(LocationManager.GPS_PROVIDER) ||
-        locationManager.isProviderEnabled(LocationManager.NETWORK_PROVIDER)
-}
-
 private val MultiplePermissionsState.hasFineLocationPermission: Boolean
     get() = permissions.find { it.permission == android.Manifest.permission.ACCESS_FINE_LOCATION }?.status?.isGranted == true
 
@@ -152,7 +146,7 @@ fun MapScreen(
 
     val context = LocalContext.current
 
-    var locationServicesEnabled by remember { mutableStateOf(isLocationServicesEnabled(context)) }
+    var locationServicesEnabled by remember { mutableStateOf(context.hasLocationServicesEnabled()) }
     DisposableEffect(context) {
         val receiver =
             object : BroadcastReceiver() {
@@ -160,7 +154,7 @@ fun MapScreen(
                     receiverContext: Context,
                     intent: Intent,
                 ) {
-                    locationServicesEnabled = isLocationServicesEnabled(context)
+                    locationServicesEnabled = context.hasLocationServicesEnabled()
                 }
             }
         context.registerReceiver(receiver, IntentFilter(LocationManager.PROVIDERS_CHANGED_ACTION))
@@ -178,6 +172,7 @@ fun MapScreen(
         }
         return
     }
+
     var showFriends by remember { mutableStateOf(false) }
     var zoomToUserId by remember { mutableStateOf<String?>(null) }
     var showErrorAlert by remember { mutableStateOf(false) }
