@@ -326,6 +326,9 @@ class LocationService : Service() {
             }
         connectivityManager?.registerDefaultNetworkCallback(networkCallback!!)
 
+        // MapScreen.kt registers an equivalent PROVIDERS_CHANGED_ACTION receiver to gate its own
+        // UI (independent of whether this service is even running yet, e.g. before sharing is
+        // first turned on). Keep both receivers' logic in sync if this one changes.
         locationProvidersChangedReceiver =
             object : BroadcastReceiver() {
                 override fun onReceive(

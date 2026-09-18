@@ -147,6 +147,10 @@ fun MapScreen(
 
     val context = LocalContext.current
 
+    // LocationService.kt registers an equivalent PROVIDERS_CHANGED_ACTION receiver to refresh
+    // its own notification/registration state. This one is separate because it must gate the UI
+    // even when that service isn't running yet (e.g. before sharing is first turned on). Keep
+    // both receivers' logic in sync if this one changes.
     var locationServicesEnabled by remember { mutableStateOf(context.hasLocationServicesEnabled()) }
     DisposableEffect(context) {
         val receiver =
