@@ -12,6 +12,8 @@
     <string name="skip">Skip</string>
     <string name="location_permission_required">Location permission is required</string>
     <string name="grant_permission">Grant Permission</string>
+    <string name="location_services_required">Location services are turned off</string>
+    <string name="enable_location_services">Enable Location Services</string>
     <string name="friends">Friends</string>
     <string name="invite">Invite</string>
     <string name="scan">Scan</string>
@@ -61,8 +63,10 @@
     <string name="me">Me</string>
     <string name="location_sharing_paused">Location sharing is paused</string>
     <string name="location_sharing_paused_no_permission">Paused · Permission missing</string>
+    <string name="location_sharing_paused_no_location_services">Paused · Location off</string>
     <string name="sharing_your_location">Sharing your location</string>
     <string name="location_permission_missing">Location permission missing</string>
+    <string name="location_services_disabled">Location services are off</string>
     <string name="where_location">Where Location</string>
     <string name="approximate">Approximate</string>
     <string name="invalid_qr_code">Invalid QR code</string>

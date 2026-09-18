@@ -10,6 +10,7 @@ import android.app.Service
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.location.LocationManager
 import android.net.ConnectivityManager
 import android.net.Network
 import android.os.IBinder
@@ -218,6 +219,12 @@ class LocationService : Service() {
     private fun hasLocationPermission(): Boolean {
         return ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED ||
             ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED
+    }
+
+    private fun hasLocationServicesEnabled(): Boolean {
+        val locationManager = getSystemService(LocationManager::class.java) ?: return false
+        return locationManager.isProviderEnabled(LocationManager.GPS_PROVIDER) ||
+            locationManager.isProviderEnabled(LocationManager.NETWORK_PROVIDER)
     }
 
     private fun hasActivityPermission(): Boolean {
@@ -590,13 +597,16 @@ class LocationService : Service() {
 
     private fun ensureLocationRegistration() {
         val hasPermission = hasLocationPermission()
+        val servicesEnabled = hasLocationServicesEnabled()
         val isSharing = userStore.isSharingLocation.value
 
-        if (!hasPermission || !isSharing) {
+        if (!hasPermission || !servicesEnabled || !isSharing) {
             if (isRegistered) {
                 Log.i(
                     TAG,
-                    "Location registration no longer needed (permission=$hasPermission, sharing=$isSharing); resetting registration state.",
+                    "Location registration no longer needed " +
+                        "(permission=$hasPermission, servicesEnabled=$servicesEnabled, sharing=$isSharing); " +
+                        "resetting registration state.",
                 )
                 locationProvider.removeActiveUpdates()
                 isRegistered = false
@@ -1073,10 +1083,13 @@ class LocationService : Service() {
         // Note: onCreate ensures this is initialised from UserPrefs before the first call.
         val sharing = userStore.isSharingLocation.value
         val hasPermission = hasLocationPermission()
+        val servicesEnabled = hasLocationServicesEnabled()
         val text =
             when {
                 sharing && !hasPermission -> stringResource(MR.strings.location_permission_missing)
                 !sharing && !hasPermission -> stringResource(MR.strings.location_sharing_paused_no_permission)
+                sharing && !servicesEnabled -> stringResource(MR.strings.location_services_disabled)
+                !sharing && !servicesEnabled -> stringResource(MR.strings.location_sharing_paused_no_location_services)
                 sharing -> stringResource(MR.strings.sharing_your_location)
                 else -> stringResource(MR.strings.location_sharing_paused)
             }

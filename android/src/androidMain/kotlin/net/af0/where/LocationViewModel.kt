@@ -5,6 +5,7 @@ import android.app.Application
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.location.LocationManager
 import android.os.Looper
 import android.os.PowerManager
 import android.util.Log
@@ -603,8 +604,15 @@ class LocationViewModel(
                 PackageManager.PERMISSION_GRANTED ||
                 ContextCompat.checkSelfPermission(getApplication(), Manifest.permission.ACCESS_COARSE_LOCATION) ==
                 PackageManager.PERMISSION_GRANTED
+        val locationManager = getApplication<Application>().getSystemService(LocationManager::class.java)
+        val hasLocationServicesEnabled =
+            locationManager != null &&
+                (
+                    locationManager.isProviderEnabled(LocationManager.GPS_PROVIDER) ||
+                        locationManager.isProviderEnabled(LocationManager.NETWORK_PROVIDER)
+                )
         val hasRelationships = friends.value.isNotEmpty() || locationSource.allPendingInvites.value.isNotEmpty()
-        if ((sharing && hasLocationPermission && hasRelationships) || inForeground) {
+        if ((sharing && hasLocationPermission && hasLocationServicesEnabled && hasRelationships) || inForeground) {
             getApplication<Application>().startForegroundService(intent)
             try {
                 WorkManager.getInstance(getApplication()).enqueueUniquePeriodicWork(

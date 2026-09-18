@@ -2,7 +2,13 @@
 
 package net.af0.where
 
+import android.content.BroadcastReceiver
+import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
+import android.location.LocationManager
 import android.os.Build
+import android.provider.Settings
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
@@ -27,6 +33,12 @@ import net.af0.where.shared.MR
 
 private val MultiplePermissionsState.hasAnyLocationPermission: Boolean
     get() = permissions.any { it.status.isGranted }
+
+private fun isLocationServicesEnabled(context: Context): Boolean {
+    val locationManager = context.getSystemService(LocationManager::class.java) ?: return false
+    return locationManager.isProviderEnabled(LocationManager.GPS_PROVIDER) ||
+        locationManager.isProviderEnabled(LocationManager.NETWORK_PROVIDER)
+}
 
 private val MultiplePermissionsState.hasFineLocationPermission: Boolean
     get() = permissions.find { it.permission == android.Manifest.permission.ACCESS_FINE_LOCATION }?.status?.isGranted == true
@@ -139,6 +151,33 @@ fun MapScreen(
     }
 
     val context = LocalContext.current
+
+    var locationServicesEnabled by remember { mutableStateOf(isLocationServicesEnabled(context)) }
+    DisposableEffect(context) {
+        val receiver =
+            object : BroadcastReceiver() {
+                override fun onReceive(
+                    receiverContext: Context,
+                    intent: Intent,
+                ) {
+                    locationServicesEnabled = isLocationServicesEnabled(context)
+                }
+            }
+        context.registerReceiver(receiver, IntentFilter(LocationManager.PROVIDERS_CHANGED_ACTION))
+        onDispose { context.unregisterReceiver(receiver) }
+    }
+
+    if (!locationServicesEnabled) {
+        Box(modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+            Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Text(stringResource(MR.strings.location_services_required))
+                Button(onClick = { context.startActivity(Intent(Settings.ACTION_LOCATION_SOURCE_SETTINGS)) }) {
+                    Text(stringResource(MR.strings.enable_location_services))
+                }
+            }
+        }
+        return
+    }
     var showFriends by remember { mutableStateOf(false) }
     var zoomToUserId by remember { mutableStateOf<String?>(null) }
     var showErrorAlert by remember { mutableStateOf(false) }
