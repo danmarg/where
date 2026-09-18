@@ -24,6 +24,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import androidx.core.content.ContextCompat
 import com.google.accompanist.permissions.*
 import dev.icerock.moko.resources.compose.stringResource
 import net.af0.where.e2ee.ConnectionStatus
@@ -157,7 +158,12 @@ fun MapScreen(
                     locationServicesEnabled = context.hasLocationServicesEnabled()
                 }
             }
-        context.registerReceiver(receiver, IntentFilter(LocationManager.PROVIDERS_CHANGED_ACTION))
+        ContextCompat.registerReceiver(
+            context,
+            receiver,
+            IntentFilter(LocationManager.PROVIDERS_CHANGED_ACTION),
+            ContextCompat.RECEIVER_NOT_EXPORTED,
+        )
         onDispose { context.unregisterReceiver(receiver) }
     }
 

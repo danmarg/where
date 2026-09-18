@@ -7,9 +7,12 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
+import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.PackageManager
+import android.location.LocationManager
 import android.net.ConnectivityManager
 import android.net.Network
 import android.os.IBinder
@@ -214,6 +217,7 @@ class LocationService : Service() {
     private lateinit var uiStateStore: UiStateSource
 
     private var networkCallback: ConnectivityManager.NetworkCallback? = null
+    private var locationProvidersChangedReceiver: BroadcastReceiver? = null
 
     private fun hasLocationPermission(): Boolean {
         return ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED ||
@@ -321,6 +325,25 @@ class LocationService : Service() {
                 }
             }
         connectivityManager?.registerDefaultNetworkCallback(networkCallback!!)
+
+        locationProvidersChangedReceiver =
+            object : BroadcastReceiver() {
+                override fun onReceive(
+                    receiverContext: Context,
+                    intent: Intent,
+                ) {
+                    Log.d(TAG, "Location providers changed, refreshing registration and notification")
+                    ensureLocationRegistration()
+                    updateNotification()
+                }
+            }.also {
+                ContextCompat.registerReceiver(
+                    this,
+                    it,
+                    IntentFilter(LocationManager.PROVIDERS_CHANGED_ACTION),
+                    ContextCompat.RECEIVER_NOT_EXPORTED,
+                )
+            }
 
         serviceScope.launch {
             userStore.isSharingLocation.collect {
@@ -667,6 +690,7 @@ class LocationService : Service() {
         }
         val connectivityManager = getSystemService(ConnectivityManager::class.java)
         networkCallback?.let { connectivityManager?.unregisterNetworkCallback(it) }
+        locationProvidersChangedReceiver?.let { unregisterReceiver(it) }
         isRegistered = false
         pendingFriendSends.close()
         cancelDozeAlarm()
