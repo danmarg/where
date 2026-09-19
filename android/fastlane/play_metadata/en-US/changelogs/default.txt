@@ -1,1 +1,1 @@
-Bug fixes and improvements.
+Fixed error conditions on devices that don't support location.
