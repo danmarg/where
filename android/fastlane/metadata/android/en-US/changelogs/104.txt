@@ -1,2 +1,0 @@
-- Replace Google Maps/Play Services with MapLibre and Android's built-in location APIs for the F-Droid build.
-- Fix release build failing without a signing keystore configured.

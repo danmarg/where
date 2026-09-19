@@ -33,5 +33,8 @@ ios/Where.xcodeproj/
 cli/where_cli_state.json
 *.swp
 *.txt
-!android/fastlane/metadata/**/*.txt
+!android/fastlane/play_metadata/**/*.txt
+!android/src/main/play/**/*.txt
+!android/src/fdroid/play/**/*.txt
+!ios/fastlane/metadata/**/*.txt
 .log
