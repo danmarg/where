@@ -70,7 +70,18 @@ platform :android do
     # silently pick the wrong flavor's stale AAB.
     aab_path = Dir[File.expand_path("../build/outputs/bundle/standardGmsRelease/*.aab", __dir__)].first
     UI.user_error!("standardGmsRelease AAB not found — did the gradle bundle task fail silently?") unless aab_path
-    upload_to_play_store(track: "internal", skip_upload_apk: true, aab: aab_path)
+    # metadata_path is explicit because the default (fastlane/metadata/android) is also the
+    # path F-Droid's build server auto-scans for Fastlane-format store listing text (see
+    # https://f-droid.org/docs/All_About_Descriptions_Graphics_and_Screenshots/) — leaving
+    # this at that path would put two different metadata conventions (this one and the
+    # Triple-T one under src/main/play, used so the F-Droid listing can differ from Play's)
+    # in front of F-Droid's scanner at once.
+    upload_to_play_store(
+      track: "internal",
+      skip_upload_apk: true,
+      aab: aab_path,
+      metadata_path: File.expand_path("play_metadata", __dir__),
+    )
   end
 
   desc "Build signed standardGms (universal) + standardFdroid (per-ABI split) release APKs " \

@@ -65,6 +65,7 @@ platform :ios do
     build_release_ipa
     upload_to_testflight(
       api_key: api_key,
+      changelog: release_notes,
       skip_waiting_for_build_processing: true,
     )
   end
@@ -77,7 +78,10 @@ platform :ios do
     build_release_ipa
     upload_to_app_store(
       api_key: api_key,
-      skip_metadata: true,
+      # Not skip_metadata: true - this uploads fastlane/metadata/en-US/release_notes.txt (the
+      # only metadata file present). deliver only pushes fields it finds a file for and leaves
+      # everything else (name, description, keywords, ...) - still managed manually in App
+      # Store Connect - untouched; see deliver's upload_metadata.rb load_from_filesystem.
       skip_screenshots: true,
       submit_for_review: false,
       precheck_include_in_app_purchases: false,
@@ -85,6 +89,16 @@ platform :ios do
   end
 
   # --- helpers -------------------------------------------------------------
+
+  # "What's new" text for the release currently being deployed - edit this file before running
+  # `beta` or `release`. deliver (used by `release`) reads it from the same metadata directory
+  # directly; pilot (used by `beta`) has no file-based convention of its own, so read it here
+  # and pass it through explicitly.
+  private_lane :release_notes do
+    path = File.expand_path("metadata/en-US/release_notes.txt", __dir__)
+    UI.user_error!("No release notes at #{path}") unless File.exist?(path)
+    File.read(path).strip
+  end
 
   # project.yml (xcodegen's source of truth) is checked in with a static
   # CURRENT_PROJECT_VERSION. Bumping only the generated .xcodeproj (e.g. via
