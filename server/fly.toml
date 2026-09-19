@@ -12,7 +12,7 @@ primary_region = 'fra'
   # shadow-read-compared on every drain(), off the request path - a DynamoDB failure can
   # only produce a WARN log, never affect a client response. "Zero WARN lines" over the
   # wait-out-TTL period is the parity signal before flipping to dual-write-dynamodb-primary.
-  MAILBOX_STORE_MODE = 'dual-write-redis-primary'
+  MAILBOX_STORE_MODE = 'dual-write-dynamodb-primary'
 
 [http_service]
   internal_port = 8080
