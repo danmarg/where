@@ -12,8 +12,11 @@ import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
 
+// This test does not grant location permission, so MapScreen returns before composing the
+// real (flavor-specific) map view — see androidUnitTestGms/MapScreenLocationServicesTest.kt for
+// the tests that do grant permission and therefore only run against the GMS flavor.
 @RunWith(RobolectricTestRunner::class)
-@Config(sdk = [33])
+@Config(sdk = [33], qualifiers = "en")
 class MapScreenTest {
     @get:Rule
     val composeTestRule = createAndroidComposeRule<TestActivity>()

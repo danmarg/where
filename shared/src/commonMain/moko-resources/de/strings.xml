@@ -12,6 +12,8 @@
     <string name="skip">Überspringen</string>
     <string name="location_permission_required">Standortberechtigung erforderlich</string>
     <string name="grant_permission">Berechtigung erteilen</string>
+    <string name="location_services_required">Standortdienste sind ausgeschaltet</string>
+    <string name="enable_location_services">Standortdienste aktivieren</string>
     <string name="friends">Freunde</string>
     <string name="invite">Einladen</string>
     <string name="scan">Scannen</string>
@@ -61,8 +63,10 @@
     <string name="me">Ich</string>
     <string name="location_sharing_paused">Standortfreigabe pausiert</string>
     <string name="location_sharing_paused_no_permission">Pausiert · Berechtigung fehlt</string>
+    <string name="location_sharing_paused_no_location_services">Pausiert · Standort aus</string>
     <string name="sharing_your_location">Standort wird geteilt</string>
     <string name="location_permission_missing">Standortberechtigung fehlt</string>
+    <string name="location_services_disabled">Standortdienste sind ausgeschaltet</string>
     <string name="where_location">Where-Standort</string>
     <string name="approximate">Ungefähr</string>
     <string name="invalid_qr_code">Ungültiger QR-Code</string>

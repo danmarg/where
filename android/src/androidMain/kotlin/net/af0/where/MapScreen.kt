@@ -2,7 +2,13 @@
 
 package net.af0.where
 
+import android.content.BroadcastReceiver
+import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
+import android.location.LocationManager
 import android.os.Build
+import android.provider.Settings
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
@@ -18,6 +24,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import androidx.core.content.ContextCompat
 import com.google.accompanist.permissions.*
 import dev.icerock.moko.resources.compose.stringResource
 import net.af0.where.e2ee.ConnectionStatus
@@ -139,6 +146,31 @@ fun MapScreen(
     }
 
     val context = LocalContext.current
+
+    // LocationService.kt registers an equivalent PROVIDERS_CHANGED_ACTION receiver to refresh
+    // its own notification/registration state. This one is separate because it must gate the UI
+    // even when that service isn't running yet (e.g. before sharing is first turned on). Keep
+    // both receivers' logic in sync if this one changes.
+    var locationServicesEnabled by remember { mutableStateOf(context.hasLocationServicesEnabled()) }
+    DisposableEffect(context) {
+        val receiver =
+            object : BroadcastReceiver() {
+                override fun onReceive(
+                    receiverContext: Context,
+                    intent: Intent,
+                ) {
+                    locationServicesEnabled = context.hasLocationServicesEnabled()
+                }
+            }
+        ContextCompat.registerReceiver(
+            context,
+            receiver,
+            IntentFilter(LocationManager.PROVIDERS_CHANGED_ACTION),
+            ContextCompat.RECEIVER_NOT_EXPORTED,
+        )
+        onDispose { context.unregisterReceiver(receiver) }
+    }
+
     var showFriends by remember { mutableStateOf(false) }
     var zoomToUserId by remember { mutableStateOf<String?>(null) }
     var showErrorAlert by remember { mutableStateOf(false) }
@@ -157,6 +189,38 @@ fun MapScreen(
             onSelectedUserIdChange = onSelectedUserIdChange,
             modifier = Modifier.fillMaxSize(),
         )
+
+        // Location-services-off warning. Unlike the missing-permission screen this doesn't
+        // replace the whole map: friends' locations keep arriving and rendering even while our
+        // own GPS is unavailable (LocationService only tears down *our* registration, not
+        // polling), so hiding the friend list/invite UI here would be a functional regression,
+        // not just cosmetic. This only warns about the misleading own-sharing-state problem.
+        if (!locationServicesEnabled) {
+            Surface(
+                modifier =
+                    Modifier
+                        .align(Alignment.TopCenter)
+                        .statusBarsPadding()
+                        .padding(12.dp),
+                shape = MaterialTheme.shapes.medium,
+                color = Color(0xFFB71C1C).copy(alpha = 0.9f),
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    Text(
+                        text = stringResource(MR.strings.location_services_required),
+                        color = Color.White,
+                        style = MaterialTheme.typography.labelMedium,
+                    )
+                    TextButton(onClick = { context.startActivity(Intent(Settings.ACTION_LOCATION_SOURCE_SETTINGS)) }) {
+                        Text(stringResource(MR.strings.enable_location_services), color = Color.White)
+                    }
+                }
+            }
+        }
 
         // Bottom controls row
         Row(
