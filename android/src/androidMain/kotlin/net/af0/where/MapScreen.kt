@@ -171,18 +171,6 @@ fun MapScreen(
         onDispose { context.unregisterReceiver(receiver) }
     }
 
-    if (!locationServicesEnabled) {
-        Box(modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-            Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                Text(stringResource(MR.strings.location_services_required))
-                Button(onClick = { context.startActivity(Intent(Settings.ACTION_LOCATION_SOURCE_SETTINGS)) }) {
-                    Text(stringResource(MR.strings.enable_location_services))
-                }
-            }
-        }
-        return
-    }
-
     var showFriends by remember { mutableStateOf(false) }
     var zoomToUserId by remember { mutableStateOf<String?>(null) }
     var showErrorAlert by remember { mutableStateOf(false) }
@@ -201,6 +189,38 @@ fun MapScreen(
             onSelectedUserIdChange = onSelectedUserIdChange,
             modifier = Modifier.fillMaxSize(),
         )
+
+        // Location-services-off warning. Unlike the missing-permission screen this doesn't
+        // replace the whole map: friends' locations keep arriving and rendering even while our
+        // own GPS is unavailable (LocationService only tears down *our* registration, not
+        // polling), so hiding the friend list/invite UI here would be a functional regression,
+        // not just cosmetic. This only warns about the misleading own-sharing-state problem.
+        if (!locationServicesEnabled) {
+            Surface(
+                modifier =
+                    Modifier
+                        .align(Alignment.TopCenter)
+                        .statusBarsPadding()
+                        .padding(12.dp),
+                shape = MaterialTheme.shapes.medium,
+                color = Color(0xFFB71C1C).copy(alpha = 0.9f),
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    Text(
+                        text = stringResource(MR.strings.location_services_required),
+                        color = Color.White,
+                        style = MaterialTheme.typography.labelMedium,
+                    )
+                    TextButton(onClick = { context.startActivity(Intent(Settings.ACTION_LOCATION_SOURCE_SETTINGS)) }) {
+                        Text(stringResource(MR.strings.enable_location_services), color = Color.White)
+                    }
+                }
+            }
+        }
 
         // Bottom controls row
         Row(
