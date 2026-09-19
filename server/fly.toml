@@ -7,12 +7,11 @@ app = 'where-api'
 primary_region = 'fra'
 
 [env]
-  # Phase A of the Redis -> DynamoDB mailbox store migration (PR #340): Redis stays
-  # authoritative for every request. DynamoDB mirrors every write best-effort and gets
-  # shadow-read-compared on every drain(), off the request path - a DynamoDB failure can
-  # only produce a WARN log, never affect a client response. "Zero WARN lines" over the
-  # wait-out-TTL period is the parity signal before flipping to dual-write-dynamodb-primary.
-  MAILBOX_STORE_MODE = 'dual-write-dynamodb-primary'
+  # Redis -> DynamoDB mailbox store migration (PR #340) complete: DynamoDB alone is
+  # authoritative. Ran as dual-write-redis-primary then dual-write-dynamodb-primary for
+  # several weeks first, validated via shadow-read comparison on every drain() - see
+  # docs/e2ee-location-sync.md and the migration history in git log for server/fly.toml.
+  MAILBOX_STORE_MODE = 'dynamodb'
 
 [http_service]
   internal_port = 8080
