@@ -377,7 +377,7 @@ class LocationService : Service() {
                         if (!userStore.isSharingLocation.value) break
                         launch {
                             try {
-                                locationClient.sendLocationToFriend(friendId, loc.first, loc.second)
+                                locationClient.sendLocationToFriend(friendId, loc.first, loc.second, stationary = isStill)
                             } catch (e: Exception) {
                                 Log.e(TAG, "Failed to send deferred location to $friendId: ${e.message}")
                             }
@@ -549,7 +549,7 @@ class LocationService : Service() {
                     if (loc != null) {
                         serviceScope.launch {
                             try {
-                                locationClient.sendLocationToFriend(friendId, loc.first, loc.second)
+                                locationClient.sendLocationToFriend(friendId, loc.first, loc.second, stationary = isStill)
                             } catch (e: Exception) {
                                 Log.e(TAG, "Failed to send forced location to $friendId: ${e.message}")
                             }
@@ -784,7 +784,30 @@ class LocationService : Service() {
                             } else {
                                 Log.d(TAG, "Stationary threshold exceeded; forcing fresh location fix.")
                             }
-                            forceLocationUpdateAndGet()
+                            val cachedLoc = locationSource.lastLocation.value
+                            val freshLoc = forceLocationUpdateAndGet()
+                            // The backstop exists precisely because isStill can be stuck true with
+                            // no other path back to reality (see comment above) - so when it forces
+                            // a fix, cross-check displacement the same way the STILL-enter transition
+                            // handler does, and correct the stuck flag if we actually moved. Without
+                            // this, a friend would see a frozen "here since" timestamp on top of a
+                            // silently-updating position.
+                            if (stillBackstopDue && freshLoc != null && cachedLoc != null) {
+                                val results = FloatArray(1)
+                                android.location.Location.distanceBetween(
+                                    cachedLoc.first,
+                                    cachedLoc.second,
+                                    freshLoc.latitude,
+                                    freshLoc.longitude,
+                                    results,
+                                )
+                                if (results[0] > STILL_DISPLACEMENT_IGNORE_METERS) {
+                                    Log.i(TAG, "STILL backstop: moved ${results[0].toInt()}m since last fix; correcting stuck isStill flag.")
+                                    e2eeManager.addDiagnosticEvent("STILL backstop: moved ${results[0].toInt()}m, correcting isStill")
+                                    isStill = false
+                                }
+                            }
+                            freshLoc
                         }
                     } else {
                         null
