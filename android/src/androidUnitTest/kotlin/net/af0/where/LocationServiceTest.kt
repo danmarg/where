@@ -436,7 +436,7 @@ class LocationServiceTest {
             controller.create()
 
             try {
-                service.sendLocationIfNeeded(1.0, 2.0, isHeartbeat = false, force = true)
+                service.sendLocationIfNeeded(1.0, 2.0, isHeartbeat = false, force = true, stationary = false)
                 advanceUntilIdle()
                 assertEquals(2, sendCalls, "Send should retry once after transient failure")
                 assertTrue(service.lastSentTime > 0L, "lastSentTime should remain set after eventual success")

@@ -569,6 +569,7 @@ class LocationService : Service() {
                                 isHeartbeat = false,
                                 force = true,
                                 source = WakeSource.LOCATION_UPDATE,
+                                stationary = isStill,
                             )
                         }
                     }
@@ -988,6 +989,9 @@ class LocationService : Service() {
         }
     }
 
+    // No default for `stationary`: every call site must decide explicitly. A silent
+    // `= false` default caused several "here since" regressions where a call site omitted
+    // it and unknowingly asserted "moving" - see the "here since" investigation.
     internal suspend fun sendLocationIfNeeded(
         lat: Double,
         lng: Double,
@@ -995,7 +999,7 @@ class LocationService : Service() {
         force: Boolean = false,
         source: WakeSource = WakeSource.LOCATION_UPDATE,
         wakeTrigger: WakeSource? = null,
-        stationary: Boolean = false,
+        stationary: Boolean,
     ) {
         if (!userStore.isSharingLocation.value) return
         val now = clock()
