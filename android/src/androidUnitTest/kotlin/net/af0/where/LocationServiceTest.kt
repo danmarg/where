@@ -656,6 +656,85 @@ class LocationServiceTest {
         }
 
     @Test
+    fun testRoutineLocationUpdate_PreservesStationaryFlagWhileStill() =
+        runTest {
+            // Regression test: the "here since" investigation found that this call site
+            // (locationSource.lastLocation.collect -> sendLocationIfNeeded) omitted the
+            // stationary argument entirely, defaulting to false and clobbering a peer's
+            // "here since" display within one routine location update after STILL was set.
+            val controller = Robolectric.buildService(LocationService::class.java)
+            val service = controller.get()
+
+            val mockClient = io.mockk.mockk<LocationClient>(relaxed = true)
+            service.locationClientOverride = mockClient
+            service.locationSourceOverride = fakeLocationSource
+            val mockE2ee = io.mockk.mockk<net.af0.where.e2ee.E2eeManager>(relaxed = true)
+            service.e2eeManagerOverride = mockE2ee
+            io.mockk.coEvery { mockClient.pollPendingInvites() } returns emptyList()
+
+            val friend = io.mockk.mockk<net.af0.where.e2ee.FriendEntry>(relaxed = true)
+            io.mockk.every { friend.id } returns "friend1"
+            fakeLocationSource.onFriendsUpdated(listOf(friend))
+
+            controller.create()
+            advanceUntilIdle()
+
+            service.isStill = true
+            fakeLocationSource.onLocation(37.5, -122.5, null)
+            advanceUntilIdle()
+
+            io.mockk.coVerify(atLeast = 1) {
+                mockClient.sendLocation(37.5, -122.5, any(), stationary = true)
+            }
+            io.mockk.coVerify(exactly = 0) {
+                mockClient.sendLocation(37.5, -122.5, any(), stationary = false)
+            }
+        }
+
+    @Test
+    fun testHeartbeat_PreservesStationaryFlagWhileStill() =
+        runTest {
+            // Regression test: the pollLoop() heartbeat exists specifically to keep peers
+            // updated "every 5 minutes when stationary" (see its own comment), but omitted
+            // the stationary argument and so defaulted to false — clobbering a peer's
+            // "here since" display on every single heartbeat tick.
+            var currentTime = 1_000_000_000L
+            LocationService.clock = { currentTime }
+
+            val controller = Robolectric.buildService(LocationService::class.java)
+            val service = controller.get()
+
+            val mockClient = io.mockk.mockk<LocationClient>(relaxed = true)
+            service.locationClientOverride = mockClient
+            service.locationSourceOverride = fakeLocationSource
+            val mockE2ee = io.mockk.mockk<net.af0.where.e2ee.E2eeManager>(relaxed = true)
+            service.e2eeManagerOverride = mockE2ee
+            io.mockk.coEvery { mockClient.pollPendingInvites() } returns emptyList()
+
+            val friend = io.mockk.mockk<net.af0.where.e2ee.FriendEntry>(relaxed = true)
+            io.mockk.every { friend.id } returns "friend1"
+            fakeLocationSource.onFriendsUpdated(listOf(friend))
+            fakeLocationSource.onLocation(37.0, -122.0, null)
+
+            controller.create()
+
+            // Simulate a device that has already settled into STILL, with the backstop
+            // countdown fresh so the heartbeat re-reports the cached fix rather than
+            // forcing a new GPS request.
+            service.isStill = true
+            service.lastStillForcedFixTime = currentTime
+
+            advanceUntilIdle()
+
+            io.mockk.coVerify(atLeast = 1) {
+                mockClient.sendLocation(37.0, -122.0, any(), stationary = true)
+            }
+            io.mockk.coVerify(exactly = 0) {
+                mockClient.sendLocation(37.0, -122.0, any(), stationary = false)
+            }
+        }
+
+    @Test
     fun testSetGeofenceAt_logsDistinctDiagnosticsForSubmittedQueuedAndFailed() {
         // Regression test: LocationService.setGeofenceAt() branches on GeofenceRequestResult
         // to decide what diagnostic event to log. QUEUED must not be logged as "submitted" -

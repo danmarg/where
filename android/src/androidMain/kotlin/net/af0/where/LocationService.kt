@@ -366,7 +366,10 @@ class LocationService : Service() {
             locationSource.lastLocation.collect { loc ->
                 if (loc != null) {
                     if (userStore.isSharingLocation.value) {
-                        sendLocationIfNeeded(loc.first, loc.second, isHeartbeat = false, source = WakeSource.LOCATION_UPDATE)
+                        // Preserve current stationarity here too, for the same reason as the
+                        // heartbeat above: a routine fix delivered while still STILL must not
+                        // clobber an in-progress "here since" signal by defaulting to false.
+                        sendLocationIfNeeded(loc.first, loc.second, isHeartbeat = false, source = WakeSource.LOCATION_UPDATE, stationary = isStill)
                     }
 
                     while (true) {
@@ -810,6 +813,10 @@ class LocationService : Service() {
                         force = true,
                         source = WakeSource.HEARTBEAT,
                         wakeTrigger = source,
+                        // Preserve current stationarity: this heartbeat is the mechanism that's
+                        // supposed to keep "here since" alive every 5 min while stationary, so it
+                        // must not clobber that signal by defaulting to false.
+                        stationary = isStill,
                     )
                 } else {
                     // RECOVERY (§5.3): If we have no GPS fix but are sharing, send a
