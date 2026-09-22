@@ -53,6 +53,12 @@ final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelega
     /// could keep the larger moving-radius fence indefinitely, delaying wake-on-departure.
     var geofenceIsMoving: Bool? = nil
 
+    /// Test seam: when set, `broadcastLocation` routes through this closure instead of the
+    /// real `LocationSyncService.shared`, so tests can assert the stationary flag threaded
+    /// through a delegate callback without touching the network. Nil (the default) in
+    /// production.
+    var sendLocationOverride: ((_ lat: Double, _ lng: Double, _ heading: Double?, _ stationary: Bool) -> Void)?
+
     private static let lastLatKey = "location_last_lat"
     private static let lastLngKey = "location_last_lng"
 
@@ -266,6 +272,14 @@ final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelega
         }
     }
 
+    private func broadcastLocation(lat: Double, lng: Double, heading: Double?, force: Bool = false, source: WakeSource, stationary: Bool) {
+        if let override = sendLocationOverride {
+            override(lat, lng, heading, stationary)
+            return
+        }
+        LocationSyncService.shared.sendLocation(lat: lat, lng: lng, heading: heading, force: force, source: source, stationary: stationary)
+    }
+
     /// Arms or re-centers the fallback "wake me if I leave" geofence. Unlike the old
     /// stationary-only design, this is a standing backstop maintained on every fix
     /// (moving or stationary) — CoreLocation watches it independent of our own process,
@@ -322,7 +336,7 @@ final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelega
                 // Preserve current stationarity: a forced re-fix (e.g. requestImmediateLocation()
                 // on foreground entry) must not clobber an in-progress "here since" signal by
                 // defaulting to false, same as the heading-update fix above.
-                LocationSyncService.shared.sendLocation(lat: coordinate.latitude, lng: coordinate.longitude, heading: self.heading, source: .locationUpdate, stationary: self.isStationary)
+                broadcastLocation(lat: coordinate.latitude, lng: coordinate.longitude, heading: self.heading, source: .locationUpdate, stationary: self.isStationary)
             }
             // Treat as "moving" conservatively — a real stationarity reading from the
             // liveUpdates stream (handleStationarityUpdate) will tighten this back down
@@ -386,13 +400,20 @@ final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelega
                     UIApplication.shared.endBackgroundTask(identifier)
                 }
             }
-            self.heading = trueHeading >= 0 ? trueHeading : magneticHeading
-            if let loc = self.location {
-                // Preserve the current stationarity: a heading-only update (fired
-                // continuously by compass jitter, even while stationary) must not
-                // clobber an in-progress "here since" signal by defaulting to false.
-                LocationSyncService.shared.sendLocation(lat: loc.coordinate.latitude, lng: loc.coordinate.longitude, heading: self.heading, source: .locationUpdate, stationary: self.isStationary)
-            }
+            self.handleHeadingUpdate(trueHeading: trueHeading, magneticHeading: magneticHeading)
+        }
+    }
+
+    /// Processes one heading reading. Extracted from the delegate callback so tests can
+    /// call it directly — CLHeading has no public initializer, so the callback itself
+    /// isn't directly testable.
+    func handleHeadingUpdate(trueHeading: Double, magneticHeading: Double) {
+        self.heading = trueHeading >= 0 ? trueHeading : magneticHeading
+        if let loc = self.location {
+            // Preserve the current stationarity: a heading-only update (fired
+            // continuously by compass jitter, even while stationary) must not
+            // clobber an in-progress "here since" signal by defaulting to false.
+            broadcastLocation(lat: loc.coordinate.latitude, lng: loc.coordinate.longitude, heading: self.heading, source: .locationUpdate, stationary: self.isStationary)
         }
     }
 
