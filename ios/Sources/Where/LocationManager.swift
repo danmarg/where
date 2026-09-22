@@ -385,7 +385,10 @@ final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelega
             }
             self.heading = trueHeading >= 0 ? trueHeading : magneticHeading
             if let loc = self.location {
-                LocationSyncService.shared.sendLocation(lat: loc.coordinate.latitude, lng: loc.coordinate.longitude, heading: self.heading, source: .locationUpdate)
+                // Preserve the current stationarity: a heading-only update (fired
+                // continuously by compass jitter, even while stationary) must not
+                // clobber an in-progress "here since" signal by defaulting to false.
+                LocationSyncService.shared.sendLocation(lat: loc.coordinate.latitude, lng: loc.coordinate.longitude, heading: self.heading, source: .locationUpdate, stationary: self.isStationary)
             }
         }
     }
