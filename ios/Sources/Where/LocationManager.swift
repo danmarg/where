@@ -241,13 +241,7 @@ final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelega
                 // positive here (if the system's own stationary signal flickers) costs
                 // one line in the peer's UI and self-corrects on the very next
                 // non-stationary reading below.
-                LocationSyncService.shared.sendLocation(
-                    lat: loc.coordinate.latitude,
-                    lng: loc.coordinate.longitude,
-                    force: true,
-                    source: .locationUpdate,
-                    stationary: true,
-                )
+                broadcastLocation(lat: loc.coordinate.latitude, lng: loc.coordinate.longitude, heading: nil, force: true, source: .locationUpdate)
             }
             armGeofenceIfNeeded(at: loc, isMoving: false)
         } else {
@@ -265,19 +259,24 @@ final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelega
 
                 let coordinate = loc.coordinate
                 if loc.horizontalAccuracy <= LocationSyncService.minBroadcastAccuracyMeters {
-                    LocationSyncService.shared.sendLocation(lat: coordinate.latitude, lng: coordinate.longitude, heading: self.heading, source: .locationUpdate)
+                    broadcastLocation(lat: coordinate.latitude, lng: coordinate.longitude, heading: self.heading, source: .locationUpdate)
                 }
                 armGeofenceIfNeeded(at: loc, isMoving: true)
             }
         }
     }
 
-    private func broadcastLocation(lat: Double, lng: Double, heading: Double?, force: Bool = false, source: WakeSource, stationary: Bool) {
+    /// Single funnel for every location broadcast this class makes. Always reads
+    /// `self.isStationary` — the one authoritative, continuously-maintained flag — rather
+    /// than accepting stationarity as a parameter, so no call site (present or future) can
+    /// pass a stale or forgotten value. See the "here since" investigation: every prior bug
+    /// in this file was a call site independently defaulting `stationary` to false.
+    private func broadcastLocation(lat: Double, lng: Double, heading: Double?, force: Bool = false, source: WakeSource) {
         if let override = sendLocationOverride {
-            override(lat, lng, heading, stationary)
+            override(lat, lng, heading, self.isStationary)
             return
         }
-        LocationSyncService.shared.sendLocation(lat: lat, lng: lng, heading: heading, force: force, source: source, stationary: stationary)
+        LocationSyncService.shared.sendLocation(lat: lat, lng: lng, heading: heading, force: force, source: source, stationary: self.isStationary)
     }
 
     /// Arms or re-centers the fallback "wake me if I leave" geofence. Unlike the old
@@ -333,10 +332,7 @@ final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelega
             self.location = loc
             let coordinate = loc.coordinate
             if loc.horizontalAccuracy <= LocationSyncService.minBroadcastAccuracyMeters {
-                // Preserve current stationarity: a forced re-fix (e.g. requestImmediateLocation()
-                // on foreground entry) must not clobber an in-progress "here since" signal by
-                // defaulting to false, same as the heading-update fix above.
-                broadcastLocation(lat: coordinate.latitude, lng: coordinate.longitude, heading: self.heading, source: .locationUpdate, stationary: self.isStationary)
+                broadcastLocation(lat: coordinate.latitude, lng: coordinate.longitude, heading: self.heading, source: .locationUpdate)
             }
             // Treat as "moving" conservatively — a real stationarity reading from the
             // liveUpdates stream (handleStationarityUpdate) will tighten this back down
@@ -377,9 +373,16 @@ final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelega
                     UIApplication.shared.endBackgroundTask(identifier)
                 }
             }
-            LocationSyncService.shared.sendLocation(lat: coordinate.latitude, lng: coordinate.longitude, heading: self.heading, source: .visit)
+            self.handleVisitUpdate(lat: coordinate.latitude, lng: coordinate.longitude)
             await LocationSyncService.shared.pollAll(updateUi: false, source: .visit)
         }
+    }
+
+    /// Processes one CLVisit reading. Extracted from the delegate callback so tests can
+    /// call it directly — CLVisit has no public initializer, so the callback itself isn't
+    /// directly testable.
+    func handleVisitUpdate(lat: Double, lng: Double) {
+        broadcastLocation(lat: lat, lng: lng, heading: self.heading, source: .visit)
     }
 
     nonisolated func locationManager(_ manager: CLLocationManager, didFailWithError error: Error) {
@@ -410,10 +413,7 @@ final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelega
     func handleHeadingUpdate(trueHeading: Double, magneticHeading: Double) {
         self.heading = trueHeading >= 0 ? trueHeading : magneticHeading
         if let loc = self.location {
-            // Preserve the current stationarity: a heading-only update (fired
-            // continuously by compass jitter, even while stationary) must not
-            // clobber an in-progress "here since" signal by defaulting to false.
-            broadcastLocation(lat: loc.coordinate.latitude, lng: loc.coordinate.longitude, heading: self.heading, source: .locationUpdate, stationary: self.isStationary)
+            broadcastLocation(lat: loc.coordinate.latitude, lng: loc.coordinate.longitude, heading: self.heading, source: .locationUpdate)
         }
     }
 

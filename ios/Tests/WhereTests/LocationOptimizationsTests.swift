@@ -264,22 +264,22 @@ class LocationOptimizationsTests: XCTestCase {
         service.lastSentTime = Date(timeIntervalSinceNow: -60) // Not throttled by time
 
         // 1. Initial send (no lastSentLocation yet)
-        service.sendLocation(lat: 37.0, lng: -122.0)
+        service.sendLocation(lat: 37.0, lng: -122.0, stationary: false)
         await service.currentSendTask?.value
         XCTAssertEqual(mockClient.sendLocationCallCount, 1)
 
         // 2. Send location 10m away -> Should be filtered (returns sync, no task to await)
-        service.sendLocation(lat: 37.00009, lng: -122.0) // ~10m North
+        service.sendLocation(lat: 37.00009, lng: -122.0, stationary: false) // ~10m North
         XCTAssertEqual(mockClient.sendLocationCallCount, 1, "Should filter 10m move")
 
         // 3. Send location 250m away -> Should be sent
         service.lastSentTime = Date(timeIntervalSinceNow: -60) // reset throttle window
-        service.sendLocation(lat: 37.0023, lng: -122.0) // ~255m North
+        service.sendLocation(lat: 37.0023, lng: -122.0, stationary: false) // ~255m North
         await service.currentSendTask?.value
         XCTAssertEqual(mockClient.sendLocationCallCount, 2, "Should allow 250m move")
 
         // 4. Forced heartbeat with 0m move -> Should be sent
-        service.sendLocation(lat: 37.0023, lng: -122.0, force: true)
+        service.sendLocation(lat: 37.0023, lng: -122.0, force: true, stationary: false)
         await service.currentSendTask?.value
         XCTAssertEqual(mockClient.sendLocationCallCount, 3, "Should allow forced 0m move")
     }
