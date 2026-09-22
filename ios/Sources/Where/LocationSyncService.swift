@@ -75,7 +75,7 @@ final class LocationSyncService: ObservableObject {
                 // (non-paused) friend so peers don't wait for the next regular tick. Also
                 // request a fresh fix so the next update sends an up-to-date position.
                 if let loc = bestAvailableLocation {
-                    sendLocation(lat: loc.lat, lng: loc.lng, heading: loc.heading, force: true, source: .manual)
+                    sendLocation(lat: loc.lat, lng: loc.lng, heading: loc.heading, force: true, source: .manual, stationary: locationProvider.isStationary)
                 }
                 forceNextLocationUpdate = true
                 locationProvider.requestImmediateLocation()
@@ -532,7 +532,7 @@ final class LocationSyncService: ObservableObject {
         // sendLocation() updates lastSentTime synchronously, so pollAll()'s heartbeat guard
         // (elapsed >= 300s) will not fire a second send even if a heartbeat was overdue.
         if isSharingLocation, let loc = bestAvailableLocation {
-            sendLocation(lat: loc.lat, lng: loc.lng, heading: loc.heading, source: .manual)
+            sendLocation(lat: loc.lat, lng: loc.lng, heading: loc.heading, source: .manual, stationary: locationProvider.isStationary)
         }
         // Request a fresh high-accuracy fix; result arrives via didUpdateLocations.
         forceNextLocationUpdate = true
@@ -1001,7 +1001,10 @@ final class LocationSyncService: ObservableObject {
         sendLocation(lat: loc.lat, lng: loc.lng, source: .backgroundEntry, stationary: locationProvider.isStationary)
     }
 
-    func sendLocation(lat: Double, lng: Double, heading: Double? = nil, force: Bool = false, source: WakeSource = .locationUpdate, stationary: Bool = false) {
+    // No default for `stationary`: every call site must decide explicitly. A silent
+    // `= false` default caused several "here since" regressions where a call site
+    // omitted it and unknowingly asserted "moving" - see the "here since" investigation.
+    func sendLocation(lat: Double, lng: Double, heading: Double? = nil, force: Bool = false, source: WakeSource = .locationUpdate, stationary: Bool) {
         guard isSharingLocation else { return }
         let now = Date()
 

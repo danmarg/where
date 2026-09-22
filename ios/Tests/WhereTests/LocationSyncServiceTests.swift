@@ -77,7 +77,7 @@ class LocationSyncServiceTests: XCTestCase {
         // Initial send. Reset state to ensure clean start for throttle test.
         service.forceNextLocationUpdate = false
         service.lastSentTime = Date(timeIntervalSince1970: 0)
-        service.sendLocation(lat: lat, lng: lng)
+        service.sendLocation(lat: lat, lng: lng, stationary: false)
         await fulfillment(of: [expectation1], timeout: 2.0)
 
         // Immediate second send should be throttled
@@ -86,7 +86,7 @@ class LocationSyncServiceTests: XCTestCase {
         mockClient.sendLocationCallback = {
             expectation2.fulfill()
         }
-        service.sendLocation(lat: lat + 0.1, lng: lng + 0.1)
+        service.sendLocation(lat: lat + 0.1, lng: lng + 0.1, stationary: false)
         await fulfillment(of: [expectation2], timeout: 0.1)
 
         // Forced send should bypass throttle
@@ -94,7 +94,7 @@ class LocationSyncServiceTests: XCTestCase {
         mockClient.sendLocationCallback = {
             expectation3.fulfill()
         }
-        service.sendLocation(lat: lat + 0.2, lng: lng + 0.2, force: true)
+        service.sendLocation(lat: lat + 0.2, lng: lng + 0.2, force: true, stationary: false)
         await fulfillment(of: [expectation3], timeout: 1.0)
     }
 
@@ -555,7 +555,7 @@ class LocationSyncServiceTests: XCTestCase {
         service.endBackgroundTask = { _ in }
         // No GPS fix
         // Simulate a prior send having happened
-        service.sendLocation(lat: 37.1, lng: -122.1)
+        service.sendLocation(lat: 37.1, lng: -122.1, stationary: false)
         // Advance lastSentTime so throttle doesn't block next call
         service.lastSentTime = Date(timeIntervalSinceNow: -60)
 
@@ -906,7 +906,7 @@ class LocationSyncServiceTests: XCTestCase {
             expectation.fulfill()
         }
 
-        service.sendLocation(lat: 37.0, lng: -122.0)
+        service.sendLocation(lat: 37.0, lng: -122.0, stationary: false)
         await fulfillment(of: [expectation], timeout: 1.0)
 
         XCTAssertEqual(capturedFriendIdBox.get(), expectedFriendId,

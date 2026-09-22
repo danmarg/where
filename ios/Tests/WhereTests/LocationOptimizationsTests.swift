@@ -54,6 +54,7 @@ class LocationOptimizationsTests: XCTestCase {
         LocationManager.shared.geofenceCenter = nil
         LocationManager.shared.geofenceIsMoving = nil
         LocationManager.shared.isStationary = false
+        LocationManager.shared.sendLocationOverride = nil
     }
 
     func testHeartbeat_CallsRequestImmediateLocation() async throws {
@@ -88,6 +89,62 @@ class LocationOptimizationsTests: XCTestCase {
         // loc1 should remain as the current location, and no duplicate broadcast should happen.
         // We can't easily verify the broadcast without more mocking, but we verify it doesn't crash.
         XCTAssertEqual(locationManager.location?.timestamp, now)
+    }
+
+    // Regression test: didUpdateLocations() used to call sendLocation() without a
+    // `stationary` argument, defaulting to false and clobbering an in-progress "here
+    // since" signal whenever a forced re-fix (e.g. requestImmediateLocation() on
+    // foreground entry) arrived while the device was genuinely stationary.
+    func testLocationManager_DidUpdateLocations_PreservesStationaryFlag() async throws {
+        let locationManager = LocationManager.shared
+        let manager = CLLocationManager()
+
+        let earlier = CLLocation(
+            coordinate: CLLocationCoordinate2D(latitude: 1, longitude: 1),
+            altitude: 0, horizontalAccuracy: 10, verticalAccuracy: 10, timestamp: Date(timeIntervalSinceNow: -60)
+        )
+        locationManager.location = earlier
+        locationManager.isStationary = true
+
+        var capturedStationary: Bool?
+        locationManager.sendLocationOverride = { _, _, _, stationary in
+            capturedStationary = stationary
+        }
+
+        let fresh = CLLocation(
+            coordinate: CLLocationCoordinate2D(latitude: 37.7749, longitude: -122.4194),
+            altitude: 0, horizontalAccuracy: 10, verticalAccuracy: 10, timestamp: Date()
+        )
+        locationManager.locationManager(manager, didUpdateLocations: [fresh])
+
+        try await Task.sleep(nanoseconds: 200_000_000)
+
+        XCTAssertEqual(capturedStationary, true,
+            "A forced re-fix delivered via didUpdateLocations while stationary must not clobber the stationary flag")
+    }
+
+    // Regression test: didUpdateHeading() (via handleHeadingUpdate) used to call
+    // sendLocation() without a `stationary` argument, defaulting to false. Heading updates
+    // fire continuously from compass jitter even while stationary, so this clobbered a
+    // peer's "here since" display within moments of it being set.
+    func testLocationManager_HeadingUpdate_PreservesStationaryFlag() {
+        let locationManager = LocationManager.shared
+        let loc = CLLocation(
+            coordinate: CLLocationCoordinate2D(latitude: 37.7749, longitude: -122.4194),
+            altitude: 0, horizontalAccuracy: 10, verticalAccuracy: 10, timestamp: Date()
+        )
+        locationManager.location = loc
+        locationManager.isStationary = true
+
+        var capturedStationary: Bool?
+        locationManager.sendLocationOverride = { _, _, _, stationary in
+            capturedStationary = stationary
+        }
+
+        locationManager.handleHeadingUpdate(trueHeading: 42.0, magneticHeading: 42.0)
+
+        XCTAssertEqual(capturedStationary, true,
+            "A heading-only update while stationary must not clobber the stationary flag")
     }
 
     func testLocationManager_StationaryDebounce_JitterDoesNotMoveGeofence() async throws {
@@ -207,22 +264,22 @@ class LocationOptimizationsTests: XCTestCase {
         service.lastSentTime = Date(timeIntervalSinceNow: -60) // Not throttled by time
 
         // 1. Initial send (no lastSentLocation yet)
-        service.sendLocation(lat: 37.0, lng: -122.0)
+        service.sendLocation(lat: 37.0, lng: -122.0, stationary: false)
         await service.currentSendTask?.value
         XCTAssertEqual(mockClient.sendLocationCallCount, 1)
 
         // 2. Send location 10m away -> Should be filtered (returns sync, no task to await)
-        service.sendLocation(lat: 37.00009, lng: -122.0) // ~10m North
+        service.sendLocation(lat: 37.00009, lng: -122.0, stationary: false) // ~10m North
         XCTAssertEqual(mockClient.sendLocationCallCount, 1, "Should filter 10m move")
 
         // 3. Send location 250m away -> Should be sent
         service.lastSentTime = Date(timeIntervalSinceNow: -60) // reset throttle window
-        service.sendLocation(lat: 37.0023, lng: -122.0) // ~255m North
+        service.sendLocation(lat: 37.0023, lng: -122.0, stationary: false) // ~255m North
         await service.currentSendTask?.value
         XCTAssertEqual(mockClient.sendLocationCallCount, 2, "Should allow 250m move")
 
         // 4. Forced heartbeat with 0m move -> Should be sent
-        service.sendLocation(lat: 37.0023, lng: -122.0, force: true)
+        service.sendLocation(lat: 37.0023, lng: -122.0, force: true, stationary: false)
         await service.currentSendTask?.value
         XCTAssertEqual(mockClient.sendLocationCallCount, 3, "Should allow forced 0m move")
     }
