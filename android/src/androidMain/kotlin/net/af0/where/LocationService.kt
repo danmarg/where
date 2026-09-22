@@ -365,8 +365,22 @@ class LocationService : Service() {
         serviceScope.launch {
             locationSource.lastLocation.collect { loc ->
                 if (loc != null) {
+                    // Snapshot once: isStill is a mutable var another coroutine (an activity
+                    // transition, the backstop) could flip between here and when an async
+                    // launch{} below actually runs, which would otherwise describe this same
+                    // location event inconsistently depending on scheduling luck.
+                    val stationary = isStill
                     if (userStore.isSharingLocation.value) {
-                        sendLocationIfNeeded(loc.first, loc.second, isHeartbeat = false, source = WakeSource.LOCATION_UPDATE)
+                        // Preserve current stationarity here too, for the same reason as the
+                        // heartbeat above: a routine fix delivered while still STILL must not
+                        // clobber an in-progress "here since" signal by defaulting to false.
+                        sendLocationIfNeeded(
+                            loc.first,
+                            loc.second,
+                            isHeartbeat = false,
+                            source = WakeSource.LOCATION_UPDATE,
+                            stationary = stationary,
+                        )
                     }
 
                     while (true) {
@@ -374,7 +388,7 @@ class LocationService : Service() {
                         if (!userStore.isSharingLocation.value) break
                         launch {
                             try {
-                                locationClient.sendLocationToFriend(friendId, loc.first, loc.second)
+                                locationClient.sendLocationToFriend(friendId, loc.first, loc.second, stationary = stationary)
                             } catch (e: Exception) {
                                 Log.e(TAG, "Failed to send deferred location to $friendId: ${e.message}")
                             }
@@ -544,9 +558,11 @@ class LocationService : Service() {
                 if (friendId != null) {
                     val loc = locationSource.lastLocation.value
                     if (loc != null) {
+                        // Snapshot: isStill could change between launch{} and execution.
+                        val stationary = isStill
                         serviceScope.launch {
                             try {
-                                locationClient.sendLocationToFriend(friendId, loc.first, loc.second)
+                                locationClient.sendLocationToFriend(friendId, loc.first, loc.second, stationary = stationary)
                             } catch (e: Exception) {
                                 Log.e(TAG, "Failed to send forced location to $friendId: ${e.message}")
                             }
@@ -559,6 +575,8 @@ class LocationService : Service() {
                     // so peers see us without waiting for the next regular location tick.
                     val loc = locationSource.lastLocation.value
                     if (loc != null) {
+                        // Snapshot: isStill could change between launch{} and execution.
+                        val stationary = isStill
                         serviceScope.launch {
                             sendLocationIfNeeded(
                                 loc.first,
@@ -566,6 +584,7 @@ class LocationService : Service() {
                                 isHeartbeat = false,
                                 force = true,
                                 source = WakeSource.LOCATION_UPDATE,
+                                stationary = stationary,
                             )
                         }
                     }
@@ -780,7 +799,33 @@ class LocationService : Service() {
                             } else {
                                 Log.d(TAG, "Stationary threshold exceeded; forcing fresh location fix.")
                             }
-                            forceLocationUpdateAndGet()
+                            val cachedLoc = locationSource.lastLocation.value
+                            val freshLoc = forceLocationUpdateAndGet()
+                            // The backstop exists precisely because isStill can be stuck true with
+                            // no other path back to reality (see comment above) - so when it forces
+                            // a fix, cross-check displacement the same way the STILL-enter transition
+                            // handler does, and correct the stuck flag if we actually moved. Without
+                            // this, a friend would see a frozen "here since" timestamp on top of a
+                            // silently-updating position.
+                            if (stillBackstopDue && freshLoc != null && cachedLoc != null) {
+                                val results = FloatArray(1)
+                                android.location.Location.distanceBetween(
+                                    cachedLoc.first,
+                                    cachedLoc.second,
+                                    freshLoc.latitude,
+                                    freshLoc.longitude,
+                                    results,
+                                )
+                                if (results[0] > STILL_DISPLACEMENT_IGNORE_METERS) {
+                                    Log.i(
+                                        TAG,
+                                        "STILL backstop: moved ${results[0].toInt()}m since last fix; correcting stuck isStill flag.",
+                                    )
+                                    e2eeManager.addDiagnosticEvent("STILL backstop: moved ${results[0].toInt()}m, correcting isStill")
+                                    isStill = false
+                                }
+                            }
+                            freshLoc
                         }
                     } else {
                         null
@@ -810,6 +855,10 @@ class LocationService : Service() {
                         force = true,
                         source = WakeSource.HEARTBEAT,
                         wakeTrigger = source,
+                        // Preserve current stationarity: this heartbeat is the mechanism that's
+                        // supposed to keep "here since" alive every 5 min while stationary, so it
+                        // must not clobber that signal by defaulting to false.
+                        stationary = isStill,
                     )
                 } else {
                     // RECOVERY (§5.3): If we have no GPS fix but are sharing, send a
@@ -981,6 +1030,9 @@ class LocationService : Service() {
         }
     }
 
+    // No default for `stationary`: every call site must decide explicitly. A silent
+    // `= false` default caused several "here since" regressions where a call site omitted
+    // it and unknowingly asserted "moving" - see the "here since" investigation.
     internal suspend fun sendLocationIfNeeded(
         lat: Double,
         lng: Double,
@@ -988,7 +1040,7 @@ class LocationService : Service() {
         force: Boolean = false,
         source: WakeSource = WakeSource.LOCATION_UPDATE,
         wakeTrigger: WakeSource? = null,
-        stationary: Boolean = false,
+        stationary: Boolean,
     ) {
         if (!userStore.isSharingLocation.value) return
         val now = clock()

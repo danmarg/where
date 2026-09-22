@@ -436,7 +436,7 @@ class LocationServiceTest {
             controller.create()
 
             try {
-                service.sendLocationIfNeeded(1.0, 2.0, isHeartbeat = false, force = true)
+                service.sendLocationIfNeeded(1.0, 2.0, isHeartbeat = false, force = true, stationary = false)
                 advanceUntilIdle()
                 assertEquals(2, sendCalls, "Send should retry once after transient failure")
                 assertTrue(service.lastSentTime > 0L, "lastSentTime should remain set after eventual success")
@@ -638,6 +638,12 @@ class LocationServiceTest {
                 }
             controller.create()
             fakeLocationSource.onLocation(37.0, -122.0, null)
+            // Drain the routine locationSource.lastLocation.collect reaction to this location
+            // (correctly stationary: false, since isStill is still false at this point) before
+            // triggering the STILL transition below, so that send can't overlap with - and get
+            // conflated with - the one under test.
+            advanceUntilIdle()
+            io.mockk.clearMocks(mockClient, answers = false)
 
             // Entering STILL must immediately send a stationary-flagged Location — not after
             // any debounce — so a peer can render "here since HH:mm" before this device might
@@ -652,6 +658,88 @@ class LocationServiceTest {
 
             io.mockk.coVerify(exactly = 1) {
                 mockClient.sendLocation(37.0, -122.0, any(), stationary = true)
+            }
+        }
+
+    @Test
+    fun testRoutineLocationUpdate_PreservesStationaryFlagWhileStill() =
+        runTest {
+            // Regression test: the "here since" investigation found that this call site
+            // (locationSource.lastLocation.collect -> sendLocationIfNeeded) omitted the
+            // stationary argument entirely, defaulting to false and clobbering a peer's
+            // "here since" display within one routine location update after STILL was set.
+            val controller = Robolectric.buildService(LocationService::class.java)
+            val service = controller.get()
+
+            val mockClient = io.mockk.mockk<LocationClient>(relaxed = true)
+            service.locationClientOverride = mockClient
+            service.locationSourceOverride = fakeLocationSource
+            val mockE2ee = io.mockk.mockk<net.af0.where.e2ee.E2eeManager>(relaxed = true)
+            service.e2eeManagerOverride = mockE2ee
+            io.mockk.coEvery { mockClient.pollPendingInvites() } returns emptyList()
+
+            // Deliberately leave friends/pending-invites empty: this test only exercises the
+            // locationSource.lastLocation.collect -> sendLocationIfNeeded path, not pollLoop's
+            // heartbeat. With friends populated, pollLoop's first iteration would race a real
+            // forceLocationUpdateAndGet() call (genuinely async under Robolectric, not driven by
+            // the virtual test clock) against this test's own assertion, which was flaky. With
+            // friends empty, pollLoop stops itself on its "no friends" path before ever reaching
+            // that code, so lastSentTime stays untouched and the throttle in sendLocationIfNeeded
+            // can't race with anything.
+            controller.create()
+
+            service.isStill = true
+            fakeLocationSource.onLocation(37.5, -122.5, null)
+            advanceUntilIdle()
+
+            io.mockk.coVerify(atLeast = 1) {
+                mockClient.sendLocation(37.5, -122.5, any(), stationary = true)
+            }
+            io.mockk.coVerify(exactly = 0) {
+                mockClient.sendLocation(37.5, -122.5, any(), stationary = false)
+            }
+        }
+
+    @Test
+    fun testHeartbeat_PreservesStationaryFlagWhileStill() =
+        runTest {
+            // Regression test: the pollLoop() heartbeat exists specifically to keep peers
+            // updated "every 5 minutes when stationary" (see its own comment), but omitted
+            // the stationary argument and so defaulted to false — clobbering a peer's
+            // "here since" display on every single heartbeat tick.
+            var currentTime = 1_000_000_000L
+            LocationService.clock = { currentTime }
+
+            val controller = Robolectric.buildService(LocationService::class.java)
+            val service = controller.get()
+
+            val mockClient = io.mockk.mockk<LocationClient>(relaxed = true)
+            service.locationClientOverride = mockClient
+            service.locationSourceOverride = fakeLocationSource
+            val mockE2ee = io.mockk.mockk<net.af0.where.e2ee.E2eeManager>(relaxed = true)
+            service.e2eeManagerOverride = mockE2ee
+            io.mockk.coEvery { mockClient.pollPendingInvites() } returns emptyList()
+
+            val friend = io.mockk.mockk<net.af0.where.e2ee.FriendEntry>(relaxed = true)
+            io.mockk.every { friend.id } returns "friend1"
+            fakeLocationSource.onFriendsUpdated(listOf(friend))
+            fakeLocationSource.onLocation(37.0, -122.0, null)
+
+            controller.create()
+
+            // Simulate a device that has already settled into STILL, with the backstop
+            // countdown fresh so the heartbeat re-reports the cached fix rather than
+            // forcing a new GPS request.
+            service.isStill = true
+            service.lastStillForcedFixTime = currentTime
+
+            advanceUntilIdle()
+
+            io.mockk.coVerify(atLeast = 1) {
+                mockClient.sendLocation(37.0, -122.0, any(), stationary = true)
+            }
+            io.mockk.coVerify(exactly = 0) {
+                mockClient.sendLocation(37.0, -122.0, any(), stationary = false)
             }
         }
 
