@@ -369,7 +369,13 @@ class LocationService : Service() {
                         // Preserve current stationarity here too, for the same reason as the
                         // heartbeat above: a routine fix delivered while still STILL must not
                         // clobber an in-progress "here since" signal by defaulting to false.
-                        sendLocationIfNeeded(loc.first, loc.second, isHeartbeat = false, source = WakeSource.LOCATION_UPDATE, stationary = isStill)
+                        sendLocationIfNeeded(
+                            loc.first,
+                            loc.second,
+                            isHeartbeat = false,
+                            source = WakeSource.LOCATION_UPDATE,
+                            stationary = isStill,
+                        )
                     }
 
                     while (true) {
@@ -802,7 +808,10 @@ class LocationService : Service() {
                                     results,
                                 )
                                 if (results[0] > STILL_DISPLACEMENT_IGNORE_METERS) {
-                                    Log.i(TAG, "STILL backstop: moved ${results[0].toInt()}m since last fix; correcting stuck isStill flag.")
+                                    Log.i(
+                                        TAG,
+                                        "STILL backstop: moved ${results[0].toInt()}m since last fix; correcting stuck isStill flag.",
+                                    )
                                     e2eeManager.addDiagnosticEvent("STILL backstop: moved ${results[0].toInt()}m, correcting isStill")
                                     isStill = false
                                 }
