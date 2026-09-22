@@ -319,7 +319,10 @@ final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelega
             self.location = loc
             let coordinate = loc.coordinate
             if loc.horizontalAccuracy <= LocationSyncService.minBroadcastAccuracyMeters {
-                LocationSyncService.shared.sendLocation(lat: coordinate.latitude, lng: coordinate.longitude, heading: self.heading, source: .locationUpdate)
+                // Preserve current stationarity: a forced re-fix (e.g. requestImmediateLocation()
+                // on foreground entry) must not clobber an in-progress "here since" signal by
+                // defaulting to false, same as the heading-update fix above.
+                LocationSyncService.shared.sendLocation(lat: coordinate.latitude, lng: coordinate.longitude, heading: self.heading, source: .locationUpdate, stationary: self.isStationary)
             }
             // Treat as "moving" conservatively — a real stationarity reading from the
             // liveUpdates stream (handleStationarityUpdate) will tighten this back down
