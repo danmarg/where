@@ -650,7 +650,13 @@ class LocationServiceTest {
             controller.withIntent(intent).startCommand(0, 1)
             advanceUntilIdle()
 
-            io.mockk.coVerify(exactly = 1) {
+            // atLeast rather than exactly: the routine locationSource.lastLocation.collect
+            // send (fixed to also preserve stationary = isStill, see
+            // testRoutineLocationUpdate_PreservesStationaryFlagWhileStill below) can now
+            // legitimately fire its own correct stationary: true send in the same tick if
+            // it happens to run after isStill flips - the test's actual intent is just that
+            // the immediate STILL-transition send isn't missing or wrongly flagged false.
+            io.mockk.coVerify(atLeast = 1) {
                 mockClient.sendLocation(37.0, -122.0, any(), stationary = true)
             }
         }
