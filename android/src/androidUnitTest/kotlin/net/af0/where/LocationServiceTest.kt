@@ -672,12 +672,15 @@ class LocationServiceTest {
             service.e2eeManagerOverride = mockE2ee
             io.mockk.coEvery { mockClient.pollPendingInvites() } returns emptyList()
 
-            val friend = io.mockk.mockk<net.af0.where.e2ee.FriendEntry>(relaxed = true)
-            io.mockk.every { friend.id } returns "friend1"
-            fakeLocationSource.onFriendsUpdated(listOf(friend))
-
+            // Deliberately leave friends/pending-invites empty: this test only exercises the
+            // locationSource.lastLocation.collect -> sendLocationIfNeeded path, not pollLoop's
+            // heartbeat. With friends populated, pollLoop's first iteration would race a real
+            // forceLocationUpdateAndGet() call (genuinely async under Robolectric, not driven by
+            // the virtual test clock) against this test's own assertion, which was flaky. With
+            // friends empty, pollLoop stops itself on its "no friends" path before ever reaching
+            // that code, so lastSentTime stays untouched and the throttle in sendLocationIfNeeded
+            // can't race with anything.
             controller.create()
-            advanceUntilIdle()
 
             service.isStill = true
             fakeLocationSource.onLocation(37.5, -122.5, null)
