@@ -365,6 +365,17 @@ class LocationService : Service() {
         serviceScope.launch {
             locationSource.lastLocation.collect { loc ->
                 if (loc != null) {
+                    // Cross-check the same way the STILL-enter transition and the STILL
+                    // backstop do: isStill can get stuck true if Activity Recognition dies
+                    // silently, so don't trust it blindly for an arbitrary routine fix either.
+                    if (isStill) {
+                        val displacement = maxRecentDisplacementMeters()
+                        if (displacement > STILL_DISPLACEMENT_IGNORE_METERS) {
+                            Log.i(TAG, "Routine update: moved ${displacement.toInt()}m while isStill; correcting stuck flag.")
+                            e2eeManager.addDiagnosticEvent("Routine update: moved ${displacement.toInt()}m, correcting isStill")
+                            isStill = false
+                        }
+                    }
                     if (userStore.isSharingLocation.value) {
                         // Preserve current stationarity here too, for the same reason as the
                         // heartbeat above: a routine fix delivered while still STILL must not
