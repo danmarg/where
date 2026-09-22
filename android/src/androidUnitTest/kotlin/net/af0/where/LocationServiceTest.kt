@@ -638,6 +638,12 @@ class LocationServiceTest {
                 }
             controller.create()
             fakeLocationSource.onLocation(37.0, -122.0, null)
+            // Drain the routine locationSource.lastLocation.collect reaction to this location
+            // (correctly stationary: false, since isStill is still false at this point) before
+            // triggering the STILL transition below, so that send can't overlap with - and get
+            // conflated with - the one under test.
+            advanceUntilIdle()
+            io.mockk.clearMocks(mockClient, answers = false)
 
             // Entering STILL must immediately send a stationary-flagged Location — not after
             // any debounce — so a peer can render "here since HH:mm" before this device might
@@ -650,13 +656,7 @@ class LocationServiceTest {
             controller.withIntent(intent).startCommand(0, 1)
             advanceUntilIdle()
 
-            // atLeast rather than exactly: the routine locationSource.lastLocation.collect
-            // send (fixed to also preserve stationary = isStill, see
-            // testRoutineLocationUpdate_PreservesStationaryFlagWhileStill below) can now
-            // legitimately fire its own correct stationary: true send in the same tick if
-            // it happens to run after isStill flips - the test's actual intent is just that
-            // the immediate STILL-transition send isn't missing or wrongly flagged false.
-            io.mockk.coVerify(atLeast = 1) {
+            io.mockk.coVerify(exactly = 1) {
                 mockClient.sendLocation(37.0, -122.0, any(), stationary = true)
             }
         }

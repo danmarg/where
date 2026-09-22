@@ -365,17 +365,11 @@ class LocationService : Service() {
         serviceScope.launch {
             locationSource.lastLocation.collect { loc ->
                 if (loc != null) {
-                    // Cross-check the same way the STILL-enter transition and the STILL
-                    // backstop do: isStill can get stuck true if Activity Recognition dies
-                    // silently, so don't trust it blindly for an arbitrary routine fix either.
-                    if (isStill) {
-                        val displacement = maxRecentDisplacementMeters()
-                        if (displacement > STILL_DISPLACEMENT_IGNORE_METERS) {
-                            Log.i(TAG, "Routine update: moved ${displacement.toInt()}m while isStill; correcting stuck flag.")
-                            e2eeManager.addDiagnosticEvent("Routine update: moved ${displacement.toInt()}m, correcting isStill")
-                            isStill = false
-                        }
-                    }
+                    // Snapshot once: isStill is a mutable var another coroutine (an activity
+                    // transition, the backstop) could flip between here and when an async
+                    // launch{} below actually runs, which would otherwise describe this same
+                    // location event inconsistently depending on scheduling luck.
+                    val stationary = isStill
                     if (userStore.isSharingLocation.value) {
                         // Preserve current stationarity here too, for the same reason as the
                         // heartbeat above: a routine fix delivered while still STILL must not
@@ -385,7 +379,7 @@ class LocationService : Service() {
                             loc.second,
                             isHeartbeat = false,
                             source = WakeSource.LOCATION_UPDATE,
-                            stationary = isStill,
+                            stationary = stationary,
                         )
                     }
 
@@ -394,7 +388,7 @@ class LocationService : Service() {
                         if (!userStore.isSharingLocation.value) break
                         launch {
                             try {
-                                locationClient.sendLocationToFriend(friendId, loc.first, loc.second, stationary = isStill)
+                                locationClient.sendLocationToFriend(friendId, loc.first, loc.second, stationary = stationary)
                             } catch (e: Exception) {
                                 Log.e(TAG, "Failed to send deferred location to $friendId: ${e.message}")
                             }
@@ -564,9 +558,11 @@ class LocationService : Service() {
                 if (friendId != null) {
                     val loc = locationSource.lastLocation.value
                     if (loc != null) {
+                        // Snapshot: isStill could change between launch{} and execution.
+                        val stationary = isStill
                         serviceScope.launch {
                             try {
-                                locationClient.sendLocationToFriend(friendId, loc.first, loc.second, stationary = isStill)
+                                locationClient.sendLocationToFriend(friendId, loc.first, loc.second, stationary = stationary)
                             } catch (e: Exception) {
                                 Log.e(TAG, "Failed to send forced location to $friendId: ${e.message}")
                             }
@@ -579,6 +575,8 @@ class LocationService : Service() {
                     // so peers see us without waiting for the next regular location tick.
                     val loc = locationSource.lastLocation.value
                     if (loc != null) {
+                        // Snapshot: isStill could change between launch{} and execution.
+                        val stationary = isStill
                         serviceScope.launch {
                             sendLocationIfNeeded(
                                 loc.first,
@@ -586,7 +584,7 @@ class LocationService : Service() {
                                 isHeartbeat = false,
                                 force = true,
                                 source = WakeSource.LOCATION_UPDATE,
-                                stationary = isStill,
+                                stationary = stationary,
                             )
                         }
                     }
