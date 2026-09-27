@@ -8,7 +8,7 @@ import net.af0.where.e2ee.FriendEntry
  * Precedence (highest first):
  *   1. StoppedAt within the dim window  → dimmed pin, "stopped sharing at HH:mm"
  *   2. StoppedAt outside the dim window → no pin, "stopped sharing on <date>"
- *   3. StationarySince                  → normal pin, "here since HH:mm"
+ *   3. StationarySince                  → normal pin, "here since HH:mm" (or short date if >24h)
  *   4. fallback                         → normal pin, "last seen Xh ago"
  *
  * All timestamps are epoch-seconds.
