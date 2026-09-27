@@ -48,7 +48,9 @@ func peerSubtitleText(_ display: Shared.PeerDisplay) -> String {
     }
     if let stationary = display as? Shared.PeerDisplay.StationarySince {
         let d = Date(timeIntervalSince1970: TimeInterval(stationary.timestampSeconds))
-        return MR.strings().peer_here_since.localized(args: [shortTimeFormatter.string(from: d) as NSString])
+        let ageSeconds = Date().timeIntervalSince(d)
+        let formatted = ageSeconds < 86400 ? shortTimeFormatter.string(from: d) : shortDateFormatter.string(from: d)
+        return MR.strings().peer_here_since.localized(args: [formatted as NSString])
     }
     if let lastSeen = display as? Shared.PeerDisplay.LastSeen {
         if let ts = lastSeen.timestampSeconds?.int64Value {

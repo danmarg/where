@@ -33,6 +33,10 @@ fun peerSubtitleText(display: PeerDisplay): String =
     when (display) {
         is PeerDisplay.StoppedRecently -> stringResource(MR.strings.peer_stopped_at, formatLocalTime(display.timestampSeconds))
         is PeerDisplay.StoppedLongAgo -> stringResource(MR.strings.peer_stopped_on, formatLocalDate(display.timestampSeconds))
-        is PeerDisplay.StationarySince -> stringResource(MR.strings.peer_here_since, formatLocalTime(display.timestampSeconds))
+        is PeerDisplay.StationarySince -> {
+            val ageSeconds = (System.currentTimeMillis() / 1000) - display.timestampSeconds
+            val formatted = if (ageSeconds < 86400) formatLocalTime(display.timestampSeconds) else formatLocalDate(display.timestampSeconds)
+            stringResource(MR.strings.peer_here_since, formatted)
+        }
         is PeerDisplay.LastSeen -> timeAgoStringFromSeconds(display.timestampSeconds)
     }
