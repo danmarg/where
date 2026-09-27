@@ -84,6 +84,7 @@ open class LocationClient(
     /**
      * Poll all friends and all pending invites.
      */
+    @Throws(Exception::class)
     suspend fun poll(
         isForeground: Boolean = true,
         pausedFriendIds: Set<String> = emptySet(),
@@ -173,6 +174,7 @@ open class LocationClient(
             allUpdates
         }
 
+    @Throws(Exception::class)
     suspend fun pollPendingInvites(): List<PendingInviteResult> =
         coroutineScope {
             val pending = store.listPendingInvites()
@@ -220,6 +222,7 @@ open class LocationClient(
             }.awaitAll().filterNotNull()
         }
 
+    @Throws(Exception::class)
     suspend fun postKeyExchangeInit(
         friendId: String,
         qr: QrPayload,
@@ -443,6 +446,7 @@ open class LocationClient(
         }
     }
 
+    @Throws(Exception::class)
     suspend fun syncNow(
         pausedFriendIds: Set<String> = emptySet(),
         sharingEnabled: Boolean = true,
@@ -454,6 +458,7 @@ open class LocationClient(
         }
     }
 
+    @Throws(Exception::class)
     suspend fun processOutboxes() {
         val friends = runCatching { store.listFriends() }.getOrElse { return }
         forEachFriendParallel(friends) { friend -> processOutbox(friend.id) }
@@ -501,6 +506,7 @@ open class LocationClient(
         return hasStuckOutbox || isSendDueForUnresponsiveFriend(friend, now)
     }
 
+    @Throws(Exception::class)
     open suspend fun sendLocation(
         lat: Double,
         lng: Double,
@@ -554,6 +560,7 @@ open class LocationClient(
         }
     }
 
+    @Throws(Exception::class)
     suspend fun sendLocationToFriend(
         friendId: String,
         lat: Double,
@@ -573,6 +580,7 @@ open class LocationClient(
      * This only writes to the WAL outbox; the existing processOutboxes loop handles delivery.
      * Keepalives continue afterwards so the peer's session doesn't go stale.
      */
+    @Throws(Exception::class)
     open suspend fun sendStoppedSharing(pausedFriendIds: Set<String> = emptySet()) {
         val payload = MessagePlaintext.StoppedSharing(ts = currentTimeSeconds())
         val activeFriends = store.listFriends().filter { isActiveFriend(it, pausedFriendIds) }
@@ -585,6 +593,7 @@ open class LocationClient(
      * Enqueue a StoppedSharing message to a single friend (used by the per-friend expiry watcher).
      * Same WAL-outbox semantics as [sendStoppedSharing]; Keepalives continue afterwards.
      */
+    @Throws(Exception::class)
     open suspend fun sendStoppedSharingToFriend(friendId: String) {
         val payload = MessagePlaintext.StoppedSharing(ts = currentTimeSeconds())
         val mutex = getFriendMutex(friendId)
@@ -599,6 +608,7 @@ open class LocationClient(
         }
     }
 
+    @Throws(Exception::class)
     suspend fun sendKeepalive(friendId: String) {
         val mutex = getFriendMutex(friendId)
         mutex.withLock {
@@ -614,6 +624,7 @@ open class LocationClient(
      * "let them know we're still there" duty, so generating a redundant Keepalive on top of it
      * would just be belt-and-suspenders traffic.
      */
+    @Throws(Exception::class)
     suspend fun sendRecoveryKeepalives(pausedFriendIds: Set<String> = emptySet()) {
         val now = currentTimeSeconds()
         val activeFriends =
