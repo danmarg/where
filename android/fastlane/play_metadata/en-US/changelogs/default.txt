@@ -1,1 +1,1 @@
-Fixed error conditions on devices that don't support location.
+Improved UX for "here since..."

@@ -1,1 +1,1 @@
-Bug fixes and improvements.
+Fixed a crash in some cases of network errors. Improved UX for "here since..."
