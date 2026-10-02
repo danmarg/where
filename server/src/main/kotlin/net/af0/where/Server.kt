@@ -1,15 +1,10 @@
 package net.af0.where
 
+import io.ktor.client.request.get
 import io.ktor.client.HttpClient
-import io.ktor.client.engine.HttpClientEngine
 import io.ktor.client.engine.cio.CIO
 import io.ktor.client.plugins.HttpTimeout
-import io.ktor.client.request.basicAuth
-import io.ktor.client.request.get
-import io.ktor.client.request.post
-import io.ktor.client.request.setBody
 import io.ktor.http.*
-import io.ktor.http.content.TextContent
 import io.ktor.serialization.kotlinx.json.*
 import io.ktor.server.application.*
 import io.ktor.server.engine.*
@@ -21,26 +16,16 @@ import io.ktor.server.request.*
 import io.ktor.server.response.*
 import io.ktor.server.routing.*
 import io.ktor.server.routing.delete
-import kotlinx.coroutines.CoroutineDispatcher
-import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
-import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.async
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
-import kotlinx.coroutines.joinAll
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.runBlocking
-import kotlinx.coroutines.withTimeoutOrNull
-import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import org.slf4j.LoggerFactory
-import redis.clients.jedis.JedisPooled
 import software.amazon.awssdk.auth.credentials.AwsBasicCredentials
 import software.amazon.awssdk.auth.credentials.StaticCredentialsProvider
 import software.amazon.awssdk.regions.Region
@@ -75,7 +60,6 @@ import software.amazon.awssdk.services.dynamodb.model.TransactionCanceledExcepti
 import software.amazon.awssdk.services.dynamodb.model.UpdateTimeToLiveRequest
 import software.amazon.awssdk.services.dynamodb.model.WriteRequest
 import java.net.URI
-import java.security.MessageDigest
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.ConcurrentLinkedQueue
@@ -94,14 +78,6 @@ private const val RATE_LIMIT_WINDOW_MS = 60 * 1000L
 private const val POLL_BASELINE_LATENCY_MS = 50L
 private const val MAILBOX_TTL_MS = 7 * 24 * 60 * 60 * 1000L
 
-/**
- * Extra headroom added to the TTL when refreshing mailbox keys in Redis. Keys are only
- * re-EXPIREd once their remaining TTL drops below MAILBOX_TTL_MS, so a chatty mailbox doesn't
- * issue an EXPIRE on every single write. This means data can live up to this long past the
- * 7-day floor (acceptable: it's encrypted at rest) but never expires earlier than 7 days.
- */
-private const val TTL_REFRESH_PADDING_SEC = 2 * 24 * 60 * 60L
-
 /** Maximum messages retained per token. Prevents unbounded memory growth from floods. */
 private const val MAX_QUEUE_DEPTH = 10000
 
@@ -117,14 +93,13 @@ internal const val RATE_LIMIT_MAX_POSTS = 1000
 internal const val RATE_LIMIT_MAX_GETS = 2000
 
 // ---------------------------------------------------------------------------
-// In-process rate limiter (shared by both store implementations)
+// In-process rate limiter (used by the in-memory store)
 // ---------------------------------------------------------------------------
 
 /**
  * Tracks per-token POST/GET counts and per-IP POST counts entirely in the JVM
- * process. This avoids storing short-lived rate-limit keys in Redis, which
- * caused ~50 % of all observed Redis commands (INCR + EXPIRE per request,
- * plus constant TTL-expiry EVICTs for the 60-second windows).
+ * process. Rate-limit counters are short-lived,
+ * so keeping them out of the persistent store avoids a write per request.
  *
  * Thread-safe via ConcurrentHashMap + ConcurrentLinkedQueue; no locking needed
  * because we only need approximate counts (a few extra requests past the limit
@@ -213,7 +188,7 @@ fun MailboxStore.evictForTest(rateLimitWindowMs: Long) {
 }
 
 // ---------------------------------------------------------------------------
-// In-memory implementation (tests / no Redis)
+// In-memory implementation (tests / local dev)
 // ---------------------------------------------------------------------------
 
 private data class MailboxEntry(val payload: JsonElement, val expiresAt: Long, val msgId: String? = null)
@@ -310,150 +285,6 @@ class InMemoryMailboxState(
                 }
             }
         }
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Redis implementation
-// ---------------------------------------------------------------------------
-
-class RedisMailboxState(
-    val jedis: JedisPooled,
-    private val limiter: InProcessRateLimiter = InProcessRateLimiter(),
-) : MailboxStore {
-    // Rate limiting is handled in-process by InProcessRateLimiter; these scripts
-    // are pure mailbox operations with no INCR/EXPIRE rate-limit keys. This
-    // eliminates the two biggest Redis cost drivers: the constant short-TTL key
-    // churn (one INCR + one EXPIRE per request) and the resulting EVICT spam from
-    // 60-second windows expiring dozens of times per minute.
-    private val postScript =
-        """
-        local inboxKey = KEYS[1]
-        local receivedIdsKey = KEYS[2]
-        local dataKey = KEYS[3]
-
-        local maxQueueDepth = tonumber(ARGV[1])
-        local payload = ARGV[2]
-        local ttlSec = tonumber(ARGV[3])
-        local msgId = ARGV[4]
-        local score = tonumber(ARGV[5])
-        local paddedTtlSec = tonumber(ARGV[6])
-
-        -- Idempotency check: drop retransmits we have already stored.
-        if msgId ~= "" then
-            if redis.call('SISMEMBER', receivedIdsKey, msgId) == 1 then
-                return 1
-            end
-        end
-
-        -- Queue depth guard.
-        if redis.call('ZCARD', inboxKey) >= maxQueueDepth then
-            return 0
-        end
-
-        -- Store payload.
-        redis.call('HSET', dataKey, msgId, payload)
-        redis.call('ZADD', inboxKey, score, msgId)
-        if msgId ~= "" then
-            redis.call('SADD', receivedIdsKey, msgId)
-        end
-
-        -- Only re-EXPIRE once the TTL has decayed below the floor, padding back up above it.
-        -- Avoids an EXPIRE (x2-3) on every write while guaranteeing keys never expire before
-        -- ttlSec of remaining life. inboxKey/dataKey/receivedIdsKey are always refreshed
-        -- together, so a single TTL check on dataKey is enough to gate all three. SADD above
-        -- must run first so receivedIdsKey already exists by the time EXPIRE targets it.
-        local ttl = redis.call('TTL', dataKey)
-        if ttl < ttlSec then
-            redis.call('EXPIRE', inboxKey, paddedTtlSec)
-            redis.call('EXPIRE', dataKey, paddedTtlSec)
-            if msgId ~= "" then
-                redis.call('EXPIRE', receivedIdsKey, paddedTtlSec)
-            end
-        end
-
-        return 1
-        """.trimIndent()
-
-    private val drainScript =
-        """
-        local inboxKey = KEYS[1]
-        local dataKey = KEYS[2]
-
-        local ids = redis.call('ZRANGE', inboxKey, 0, tonumber(ARGV[1]) - 1)
-        if #ids == 0 then return {} end
-
-        local payloads = redis.call('HMGET', dataKey, unpack(ids))
-        for i, payload in ipairs(payloads) do
-            if not payload then
-                redis.call('ZREM', inboxKey, ids[i])
-            end
-        end
-        return payloads
-        """.trimIndent()
-
-    override fun checkIpRateLimit(ip: String) = limiter.checkIp(ip)
-
-    override fun post(
-        token: String,
-        payload: JsonElement,
-        msgId: String?,
-    ): Boolean {
-        if (!limiter.checkPost(token)) return false
-        val result =
-            jedis.eval(
-                postScript,
-                listOf("inbox:$token", "receivedIds:$token", "inbox-data:$token"),
-                listOf(
-                    MAX_QUEUE_DEPTH.toString(),
-                    payload.toString(),
-                    (MAILBOX_TTL_MS / 1000).toString(),
-                    msgId ?: "",
-                    System.currentTimeMillis().toString(),
-                    (MAILBOX_TTL_MS / 1000 + TTL_REFRESH_PADDING_SEC).toString(),
-                ),
-            )
-        return result == 1L
-    }
-
-    override fun drain(token: String): List<JsonElement>? {
-        if (!limiter.checkGet(token)) return null
-        @Suppress("UNCHECKED_CAST")
-        val result =
-            jedis.eval(
-                drainScript,
-                listOf("inbox:$token", "inbox-data:$token"),
-                listOf(MAX_MESSAGES_PER_POLL.toString()),
-            ) as? List<*> ?: return emptyList()
-        return result.filterNotNull().map { item ->
-            val str = if (item is ByteArray) item.decodeToString() else item.toString()
-            json.parseToJsonElement(str)
-        }
-    }
-
-    override fun deleteById(
-        token: String,
-        msgId: String,
-    ): Boolean {
-        jedis.zrem("inbox:$token", msgId)
-        jedis.hdel("inbox-data:$token", msgId)
-        return true
-    }
-
-    override fun deleteByIds(
-        token: String,
-        msgIds: List<String>,
-    ): Int {
-        if (msgIds.isEmpty()) return 0
-        jedis.zrem("inbox:$token", *msgIds.toTypedArray())
-        jedis.hdel("inbox-data:$token", *msgIds.toTypedArray())
-        return msgIds.size
-    }
-
-    override fun evict() = limiter.evict()
-
-    override fun close() {
-        jedis.close()
     }
 }
 
@@ -622,7 +453,7 @@ class DynamoMailboxState(
                             .build(),
                     )
                 if (existing.hasItem()) {
-                    // Already seen: idempotent no-op, matches RedisMailboxState's SISMEMBER check.
+                    // Already seen: idempotent no-op, matches DynamoMailboxState's receivedIds dedup check.
                     return true
                 }
             }
@@ -910,326 +741,15 @@ class DynamoMailboxState(
 }
 
 // ---------------------------------------------------------------------------
-// Dual-write wrapper - Redis -> Postgres migration aid, removed once cutover completes
-// ---------------------------------------------------------------------------
-
-private val migrationLog = LoggerFactory.getLogger("MailboxMigration")
-
-private fun tokenHash(token: String): String =
-    MessageDigest.getInstance("SHA-256").digest(token.toByteArray())
-        .joinToString("") { "%02x".format(it) }.take(12)
-
-// Fly's default kill_timeout (not overridden in fly.toml) is 5s between SIGINT and a hard
-// SIGKILL - kept well under that so there's still headroom for primary.close()/secondary.close()
-// to run afterward before the process is killed regardless.
-private const val SHUTDOWN_DRAIN_TIMEOUT_MS = 3_000L
-
-/**
- * Mirrors every mutation from [primary] to [secondary] best-effort (never fails the caller's
- * request if the mirror write fails), and diffs every drain() against a shadow read of
- * [secondary]. Used during the Redis -> Postgres migration: deploy with Redis as primary and
- * Postgres as secondary first, then flip once confident. "Zero WARN logs from this class" is the
- * proof of parity.
- */
-@Serializable
-data class MismatchEvent(
-    val tokenHash: String,
-    val primaryCount: Int,
-    val secondaryCount: Int,
-    val onlyInPrimary: Int,
-    val onlyInSecondary: Int,
-)
-
-class DualWriteMailboxState(
-    private val primary: MailboxStore,
-    private val secondary: MailboxStore,
-    // Capped so a slow secondary (e.g. Postgres under load, bounded by its own small Hikari pool)
-    // can't cause unbounded coroutine fan-out under sustained request volume - each mirrored
-    // operation still runs off the request path, just with a ceiling on how many run at once.
-    private val scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO.limitedParallelism(4)),
-    private val onMismatch: ((MismatchEvent) -> Unit)? = null,
-    // Deletes against the secondary are best-effort like every other mirrored write here, but
-    // unlike a failed post/evict, a failed delete leaves a permanent ghost row behind (nothing
-    // ever retries it), which is exactly what drives the drain() shadow-comparison's mismatch
-    // rate - surfaced separately so that rate is visible without conflating it with genuine
-    // primary/secondary divergence.
-    private val onSecondaryDeleteFailure: ((op: String, tokenHash: String, error: Throwable) -> Unit)? = null,
-    private val shutdownDrainTimeoutMs: Long = SHUTDOWN_DRAIN_TIMEOUT_MS,
-    // The secondary read in drain() below is deliberately pinned to this rather than inheriting
-    // [scope]'s dispatcher, so it never queues behind [scope]'s write-mirror throttle (see there).
-    // Exposed only so tests can substitute a dispatcher that runs inline instead of on a real
-    // thread pool, making the fire-and-forget comparison it kicks off deterministic to assert on.
-    private val secondaryReadDispatcher: CoroutineDispatcher = Dispatchers.IO,
-) : MailboxStore {
-    // Flipped at the start of close() so a mirror write racing shutdown (e.g. from a request
-    // still finishing out its grace period, or the periodic evict() housekeeping tick) doesn't
-    // launch new work onto a scope that's already being drained - see close()'s doc.
-    private val closing = java.util.concurrent.atomic.AtomicBoolean(false)
-
-    private fun launchMirror(block: suspend () -> Unit) {
-        if (closing.get()) return
-        scope.launch { block() }
-    }
-
-    override fun checkIpRateLimit(ip: String) = primary.checkIpRateLimit(ip)
-
-    override fun post(
-        token: String,
-        payload: JsonElement,
-        msgId: String?,
-    ): Boolean {
-        val result = primary.post(token, payload, msgId)
-        if (result) {
-            launchMirror {
-                runCatching { secondary.post(token, payload, msgId) }
-                    .onFailure { migrationLog.warn("secondary post failed token={}", tokenHash(token), it) }
-            }
-        }
-        return result
-    }
-
-    override fun drain(token: String): List<JsonElement>? {
-        // Starts the secondary read concurrently with primary rather than only after primary
-        // already returned (closing most of the TOCTOU gap a fully-sequential fire-and-forget
-        // secondary read leaves open - see the mailbox migration notes), but - unlike an earlier
-        // version of this method - never blocks the caller on it. drain() is called synchronously
-        // from the suspend GET /inbox/{token} handler; blocking that coroutine's thread (e.g. via
-        // runBlocking) to await the secondary ties up a Netty call-handling thread for
-        // max(primary, secondary) latency, which under this app's poll-heavy traffic risks
-        // queueing/timeouts server-wide, not just on this endpoint. So the comparison itself
-        // still happens off-thread once the secondary read resolves, same as the other mirrored
-        // operations above - this only changes *when* the secondary read starts, not whether the
-        // client waits for it (it doesn't). Explicit Dispatchers.IO override for the same reason
-        // as elsewhere: don't queue behind [scope]'s write-mirror throttle.
-        val secondaryDeferred = scope.async(secondaryReadDispatcher) { secondary.drain(token) ?: emptyList() }
-        val result = primary.drain(token)
-        if (result == null) {
-            secondaryDeferred.cancel()
-            return null
-        }
-        launchMirror {
-            runCatching { secondaryDeferred.await() }
-                .onSuccess { comparePayloads(token, result, it) }
-                .onFailure { migrationLog.warn("secondary drain failed token={}", tokenHash(token), it) }
-        }
-        return result
-    }
-
-    override fun deleteById(
-        token: String,
-        msgId: String,
-    ): Boolean {
-        val result = primary.deleteById(token, msgId)
-        launchMirror {
-            runCatching { secondary.deleteById(token, msgId) }
-                .onFailure {
-                    migrationLog.warn("secondary deleteById failed token={}", tokenHash(token), it)
-                    runCatching { onSecondaryDeleteFailure?.invoke("deleteById", tokenHash(token), it) }
-                        .onFailure { cbError -> migrationLog.warn("onSecondaryDeleteFailure callback failed", cbError) }
-                }
-        }
-        return result
-    }
-
-    override fun deleteByIds(
-        token: String,
-        msgIds: List<String>,
-    ): Int {
-        val result = primary.deleteByIds(token, msgIds)
-        if (msgIds.isNotEmpty()) {
-            launchMirror {
-                runCatching { secondary.deleteByIds(token, msgIds) }
-                    .onFailure {
-                        migrationLog.warn("secondary deleteByIds failed token={}", tokenHash(token), it)
-                        runCatching { onSecondaryDeleteFailure?.invoke("deleteByIds", tokenHash(token), it) }
-                            .onFailure { cbError -> migrationLog.warn("onSecondaryDeleteFailure callback failed", cbError) }
-                    }
-            }
-        }
-        return result
-    }
-
-    override fun evict() {
-        primary.evict()
-        // Synchronous and unthrottled, unlike the write paths above: this only runs off the
-        // app's own 60s housekeeping loop (not the request path), and DynamoMailboxState.evict()
-        // does no I/O at all (see its own doc) - there's neither a latency reason to make this
-        // async nor a cost reason to throttle it the way the old Postgres/Neon secondary needed.
-        runCatching { secondary.evict() }
-            .onFailure { migrationLog.warn("secondary evict failed", it) }
-    }
-
-    override fun close() {
-        // Every mirrored write above is fire-and-forget on [scope], racing the caller's own
-        // return. Without waiting here, a graceful shutdown (a deploy, or - far more frequently -
-        // Fly's scale-to-zero auto_stop_machines cycling this app roughly every 10 minutes under
-        // its normal poll-heavy traffic) can close the secondary's client out from under a
-        // still-in-flight mirror write, silently dropping it with no exception and no WARN log:
-        // the primary write already succeeded and returned to the caller, so it just looks like a
-        // permanent shadow-comparison mismatch with no discoverable cause.
-        //
-        // closing=true stops new mirror work from being scheduled (see launchMirror), but a write
-        // already past that check - e.g. from a request still finishing out shutdown's grace
-        // period, or a concurrent evict() tick - can still land as a new child of [scope] after a
-        // single snapshot here would have been taken. So this re-snapshots children in a loop
-        // until none remain, rather than joining one fixed list, closing that gap; the whole loop
-        // is bounded so a genuinely wedged secondary call can't hang shutdown indefinitely.
-        closing.set(true)
-        runBlocking {
-            val allDrained =
-                withTimeoutOrNull(shutdownDrainTimeoutMs) {
-                    while (true) {
-                        val pending = scope.coroutineContext[Job]?.children?.toList().orEmpty()
-                        if (pending.isEmpty()) break
-                        pending.joinAll()
-                    }
-                } != null
-            if (!allDrained) {
-                migrationLog.warn("timed out after {}ms waiting for in-flight secondary mirror writes to finish", shutdownDrainTimeoutMs)
-            }
-        }
-        primary.close()
-        secondary.close()
-    }
-
-    private fun comparePayloads(
-        token: String,
-        primaryPayloads: List<JsonElement>,
-        secondaryPayloads: List<JsonElement>,
-    ) {
-        val primarySorted = primaryPayloads.map { it.toString() }.sorted()
-        val secondarySorted = secondaryPayloads.map { it.toString() }.sorted()
-        if (primarySorted != secondarySorted) {
-            val onlyInPrimary = primarySorted.toSet() - secondarySorted.toSet()
-            val onlyInSecondary = secondarySorted.toSet() - primarySorted.toSet()
-            val hash = tokenHash(token)
-            migrationLog.warn(
-                "drain mismatch token={} primaryCount={} secondaryCount={} onlyInPrimary={} onlyInSecondary={}",
-                hash,
-                primarySorted.size,
-                secondarySorted.size,
-                onlyInPrimary.size,
-                onlyInSecondary.size,
-            )
-            runCatching {
-                onMismatch?.invoke(
-                    MismatchEvent(hash, primarySorted.size, secondarySorted.size, onlyInPrimary.size, onlyInSecondary.size),
-                )
-            }.onFailure { migrationLog.warn("onMismatch callback failed", it) }
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Shadow-mismatch audit log (temporary — remove after DynamoDB cutover)
-// ---------------------------------------------------------------------------
-
-private val auditLog = LoggerFactory.getLogger("MismatchAuditLog")
-
-@Serializable
-data class SecondaryDeleteFailureEvent(
-    val op: String,
-    val tokenHash: String,
-    val error: String,
-)
-
-@Serializable
-private data class LokiStream(val stream: Map<String, String>, val values: List<List<String>>)
-
-@Serializable
-private data class LokiPushRequest(val streams: List<LokiStream>)
-
-/**
- * Pushes shadow-write mismatch events to Grafana Cloud Loki (push API: POST
- * {lokiUrl}/loki/api/v1/push, basic auth with the Grafana Cloud stack user + API key). Best
- * effort: a failed push only logs a warning here and never affects the request path - the
- * mismatch is always visible in [migrationLog]'s warn line regardless.
- */
-class MismatchAuditLog(
-    lokiUrl: String,
-    private val user: String,
-    private val apiKey: String,
-    engine: HttpClientEngine = CIO.create(),
-    // Bounded like DualWriteMailboxState's own mirror scope, so a mismatch storm can't fan out
-    // unbounded coroutines competing with the mailbox stores for the shared IO thread pool.
-    private val scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO.limitedParallelism(4)),
-    private val pushStartupHeartbeat: Boolean = true,
-) {
-    // Loki's push endpoint 404s on a double slash, which a trailing "/" in the configured URL
-    // would otherwise produce silently.
-    private val pushUrl = "${lokiUrl.trimEnd('/')}/loki/api/v1/push"
-
-    private val client =
-        HttpClient(engine) {
-            install(HttpTimeout) {
-                requestTimeoutMillis = 5_000
-                connectTimeoutMillis = 5_000
-            }
-        }
-
-    init {
-        if (pushStartupHeartbeat) {
-            pushLine("startup", "server booted with shadow-mismatch logging enabled")
-        }
-    }
-
-    fun record(event: MismatchEvent) {
-        pushLine("shadow_mismatch", Json.encodeToString(event))
-    }
-
-    fun recordSecondaryDeleteFailure(
-        op: String,
-        tokenHash: String,
-        error: Throwable,
-    ) {
-        pushLine(
-            "secondary_delete_failure",
-            Json.encodeToString(SecondaryDeleteFailureEvent(op, tokenHash, error.message ?: error.toString())),
-        )
-    }
-
-    private fun pushLine(
-        event: String,
-        line: String,
-    ) {
-        val nowNanos = java.time.Instant.now().let { it.epochSecond * 1_000_000_000L + it.nano }
-        val body =
-            LokiPushRequest(
-                streams =
-                    listOf(
-                        LokiStream(
-                            stream = mapOf("app" to "where-server", "event" to event),
-                            values = listOf(listOf(nowNanos.toString(), line)),
-                        ),
-                    ),
-            )
-        scope.launch {
-            runCatching {
-                val response =
-                    client.post(pushUrl) {
-                        basicAuth(user, apiKey)
-                        setBody(TextContent(Json.encodeToString(body), ContentType.Application.Json))
-                    }
-                check(response.status.isSuccess()) { "Loki push returned ${response.status}" }
-            }.onFailure { auditLog.warn("Failed to push '{}' to Loki", event, it) }
-        }
-    }
-
-    fun close() {
-        scope.cancel()
-        client.close()
-    }
-}
-
-// ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
+
+private val auditLog = LoggerFactory.getLogger("Server")
 
 data class ServerState(
     val mailbox: MailboxStore = InMemoryMailboxState(),
     val trustProxy: Boolean = System.getenv("TRUST_PROXY")?.toBoolean() ?: false,
     val debug: Boolean = false,
-    val mismatchAuditLog: MismatchAuditLog? = null,
     val healthcheckPingUrl: String? = null,
 )
 
@@ -1242,101 +762,27 @@ data class ServerState(
  */
 private const val HEALTHCHECK_PING_INTERVAL_MS = 60_000L
 
-/**
- * "redis" / "dynamodb": that store alone.
- * "dual-write-redis-primary" / "dual-write-dynamodb-primary": both stores, mirroring every
- * mutation from the primary to the secondary, used during the Redis -> DynamoDB migration.
- * Requires both REDIS_URL and the AWS_* credentials.
- */
-private fun buildMailboxStore(
-    redisUrl: String?,
-    dynamoClient: DynamoDbClient?,
-    storeMode: String,
-    onMismatch: ((MismatchEvent) -> Unit)? = null,
-    onSecondaryDeleteFailure: ((op: String, tokenHash: String, error: Throwable) -> Unit)? = null,
-): MailboxStore {
-    val redisStore = redisUrl?.let { RedisMailboxState(JedisPooled(it)) }
-    val dynamoStore = dynamoClient?.let { DynamoMailboxState(it) }
-
-    return when (storeMode) {
-        "redis" ->
-            redisStore?.also { println("Using Redis at ${URI(redisUrl).host}") }
-                ?: InMemoryMailboxState().also { println("Using in-memory store") }
-        "dynamodb" -> {
-            requireNotNull(
-                dynamoStore,
-            ) { "AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY/AWS_REGION are required for MAILBOX_STORE_MODE=dynamodb" }
-            println("Using DynamoDB store")
-            dynamoStore
-        }
-        "dual-write-redis-primary" -> {
-            requireNotNull(redisStore) { "REDIS_URL is required for dual-write-redis-primary" }
-            requireNotNull(dynamoStore) { "AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY/AWS_REGION are required for dual-write-redis-primary" }
-            println("Using dual-write store (Redis primary, DynamoDB shadow)")
-            DualWriteMailboxState(
-                primary = redisStore,
-                secondary = dynamoStore,
-                onMismatch = onMismatch,
-                onSecondaryDeleteFailure = onSecondaryDeleteFailure,
-            )
-        }
-        "dual-write-dynamodb-primary" -> {
-            requireNotNull(redisStore) { "REDIS_URL is required for dual-write-dynamodb-primary" }
-            requireNotNull(
-                dynamoStore,
-            ) { "AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY/AWS_REGION are required for dual-write-dynamodb-primary" }
-            println("Using dual-write store (DynamoDB primary, Redis shadow)")
-            DualWriteMailboxState(
-                primary = dynamoStore,
-                secondary = redisStore,
-                onMismatch = onMismatch,
-                onSecondaryDeleteFailure = onSecondaryDeleteFailure,
-            )
-        }
-        else -> error("Unknown MAILBOX_STORE_MODE: $storeMode")
-    }
-}
-
 fun main() {
     val port = System.getenv("PORT")?.toInt() ?: 8080
-    val storeMode = System.getenv("MAILBOX_STORE_MODE") ?: "redis"
-    val dynamoClient =
-        System.getenv("AWS_ACCESS_KEY_ID")?.let { accessKeyId ->
-            createDynamoDbClient(
-                accessKeyId = accessKeyId,
-                secretAccessKey =
-                    System.getenv("AWS_SECRET_ACCESS_KEY")
-                        ?: error("AWS_SECRET_ACCESS_KEY is required when AWS_ACCESS_KEY_ID is set"),
-                region = System.getenv("AWS_REGION") ?: error("AWS_REGION is required when AWS_ACCESS_KEY_ID is set"),
-            )
-        }
-    val mismatchAuditLog =
-        if (storeMode.startsWith("dual-write")) {
-            val lokiUrl = System.getenv("LOKI_URL")
-            val lokiUser = System.getenv("LOKI_USER")
-            val lokiApiKey = System.getenv("LOKI_API_KEY")
-            if (lokiUrl != null && lokiUser != null && lokiApiKey != null) {
-                MismatchAuditLog(lokiUrl, lokiUser, lokiApiKey)
-            } else {
-                auditLog.warn("LOKI_URL/LOKI_USER/LOKI_API_KEY not set; shadow mismatches will only appear in warn logs")
-                null
-            }
-        } else {
-            null
-        }
+    // DynamoDB when AWS credentials are configured; otherwise an in-memory store (local dev).
     val mailbox =
-        buildMailboxStore(
-            System.getenv("REDIS_URL"),
-            dynamoClient,
-            storeMode,
-            onMismatch = mismatchAuditLog?.let { it::record },
-            onSecondaryDeleteFailure = mismatchAuditLog?.let { it::recordSecondaryDeleteFailure },
-        )
+        System.getenv("AWS_ACCESS_KEY_ID")?.let { accessKeyId ->
+            println("Using DynamoDB store")
+            DynamoMailboxState(
+                createDynamoDbClient(
+                    accessKeyId = accessKeyId,
+                    secretAccessKey =
+                        System.getenv("AWS_SECRET_ACCESS_KEY")
+                            ?: error("AWS_SECRET_ACCESS_KEY is required when AWS_ACCESS_KEY_ID is set"),
+                    region = System.getenv("AWS_REGION") ?: error("AWS_REGION is required when AWS_ACCESS_KEY_ID is set"),
+                ),
+            )
+        } ?: InMemoryMailboxState().also { println("Using in-memory store") }
     val healthcheckPingUrl = System.getenv("HEALTHCHECK_PING_URL")
     if (healthcheckPingUrl == null) {
         auditLog.warn("HEALTHCHECK_PING_URL not set; no external uptime monitoring configured")
     }
-    val state = ServerState(mailbox = mailbox, mismatchAuditLog = mismatchAuditLog, healthcheckPingUrl = healthcheckPingUrl)
+    val state = ServerState(mailbox = mailbox, healthcheckPingUrl = healthcheckPingUrl)
 
     embeddedServer(Netty, port = port, host = "0.0.0.0") {
         module(state)
@@ -1348,7 +794,6 @@ fun Application.module(state: ServerState = ServerState()) {
     install(CallLogging)
     monitor.subscribe(ApplicationStopped) {
         state.mailbox.close()
-        state.mismatchAuditLog?.close()
     }
 
     launch(Dispatchers.Default) {

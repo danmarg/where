@@ -17,7 +17,6 @@ kotlinx-coroutines-play-services = "1.10.1"
 accompanist-permissions = "0.37.3"
 zxing-core = "3.5.3"
 zxing-android = "4.3.0"
-jedis = "5.2.0"
 testcontainers = "2.0.2"
 awssdk = "2.44.1"
 libsodium = "0.9.5"
@@ -88,8 +87,6 @@ work-runtime-ktx = { module = "androidx.work:work-runtime-ktx", version.ref = "w
 # MapLibre (F-Droid map)
 maplibre = { module = "org.maplibre.gl:android-sdk", version.ref = "maplibre" }
 
-# Redis
-jedis = { module = "redis.clients:jedis", version.ref = "jedis" }
 
 # DynamoDB
 awssdk-dynamodb = { module = "software.amazon.awssdk:dynamodb", version.ref = "awssdk" }
