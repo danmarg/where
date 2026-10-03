@@ -20,7 +20,6 @@ dependencies {
     implementation(libs.ktor.serialization.kotlinx.json)
     implementation(libs.ktor.server.call.logging)
     implementation(libs.kotlinx.serialization.json)
-    implementation(libs.jedis)
     implementation(libs.awssdk.dynamodb)
     implementation(libs.logback.classic)
     implementation(libs.ktor.client.core)
