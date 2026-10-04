@@ -46,14 +46,14 @@ Where is designed so the server learns as little as possible:
 | `shared/` | KMP library — data models, Double Ratchet E2EE, `LocationClient` |
 | `android/` | Android app — Jetpack Compose UI, FusedLocation foreground service, Google Maps |
 | `ios/` | iOS app — SwiftUI, MapKit, CoreLocation |
-| `server/` | Ktor server — Anonymous Mailbox API, Redis-backed message store |
+| `server/` | Ktor server — Anonymous Mailbox API, DynamoDB-backed message store |
 | `cli/` | Command-line tool for scripting and testing |
 
 ## Getting started
 
 ### Server
 
-Requires Redis.
+Uses an in-memory store by default; set `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` and `AWS_REGION` to use DynamoDB.
 
 ```bash
 ./gradlew :server:run

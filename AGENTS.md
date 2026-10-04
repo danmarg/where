@@ -14,7 +14,7 @@
 |---|---|
 | `shared/` | KMP library — data models, E2EE crypto implementations (Double Ratchet), `LocationClient` / `E2eeMailboxClient` |
 | `android/` | Android app — Compose UI, FusedLocation foreground service, Google Maps |
-| `server/` | Ktor server — Anonymous Mailbox API, Redis-backed persistent mailbox store |
+| `server/` | Ktor server — Anonymous Mailbox API, DynamoDB-backed persistent mailbox store |
 | `ios/` | iOS app — SwiftUI + MapKit + CoreLocation, native HTTP polling |
 | `cli/` | Kotlin JVM CLI — utility tool for management and testing |
 
@@ -64,7 +64,7 @@ Uses a standard, bidirectional Double Ratchet protocol with X25519 ephemeral key
 - **iOS**: `distanceFilter = 50m` + `desiredAccuracy = kCLLocationAccuracyHundredMeters`; `startMonitoringSignificantLocationChanges()` when backgrounded.
 
 ### Server state
-- Mailboxes are persisted in Redis. State survives restarts.
+- Mailboxes are persisted in DynamoDB (on-demand, TTL-expired). State survives restarts.
 - Messages are retained for 7 days, aligning with the client re-pair timeout.
 
 ---

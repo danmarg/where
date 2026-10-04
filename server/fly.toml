@@ -6,13 +6,6 @@
 app = 'where-api'
 primary_region = 'fra'
 
-[env]
-  # Redis -> DynamoDB mailbox store migration (PR #340) complete: DynamoDB alone is
-  # authoritative. Ran as dual-write-redis-primary then dual-write-dynamodb-primary for
-  # several weeks first, validated via shadow-read comparison on every drain() - see
-  # docs/e2ee-location-sync.md and the migration history in git log for server/fly.toml.
-  MAILBOX_STORE_MODE = 'dynamodb'
-
 [http_service]
   internal_port = 8080
   force_https = true
