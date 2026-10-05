@@ -1,0 +1,4 @@
+"NSCameraUsageDescription" = "O Where precisa da câmera para escanear os códigos QR de convite de amigos.";
+"NSLocationAlwaysAndWhenInUseUsageDescription" = "O Where precisa da sua localização em segundo plano para continuar compartilhando-a.";
+"NSLocationWhenInUseUsageDescription" = "O Where precisa da sua localização para exibi-la no mapa.";
+"NSMotionUsageDescription" = "O Where usa dados de movimento para otimizar a bateria reduzindo a atividade do GPS quando você está parado.";
