@@ -133,17 +133,9 @@ fun MapScreen(
         )
     }
 
-    if (!locationPermissions.hasAnyLocationPermission) {
-        Box(modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-            Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                Text(stringResource(MR.strings.location_permission_required))
-                Button(onClick = { locationPermissions.launchMultiplePermissionRequest() }) {
-                    Text(stringResource(MR.strings.grant_permission))
-                }
-            }
-        }
-        return
-    }
+    // No early return without permission: receive-only use (pairing, seeing friends, keepalives)
+    // doesn't need our own location. Only our own location layer and sharing depend on it.
+    val hasLocationPermission = locationPermissions.hasAnyLocationPermission
 
     val context = LocalContext.current
 
@@ -195,7 +187,33 @@ fun MapScreen(
         // own GPS is unavailable (LocationService only tears down *our* registration, not
         // polling), so hiding the friend list/invite UI here would be a functional regression,
         // not just cosmetic. This only warns about the misleading own-sharing-state problem.
-        if (!locationServicesEnabled) {
+        if (!hasLocationPermission) {
+            Surface(
+                modifier =
+                    Modifier
+                        .align(Alignment.TopCenter)
+                        .statusBarsPadding()
+                        .padding(12.dp),
+                shape = MaterialTheme.shapes.medium,
+                color = Color(0xFF37474F).copy(alpha = 0.92f),
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    Text(
+                        text = stringResource(MR.strings.location_permission_needed_to_share),
+                        color = Color.White,
+                        style = MaterialTheme.typography.labelMedium,
+                        modifier = Modifier.weight(1f, fill = false),
+                    )
+                    TextButton(onClick = { locationPermissions.launchMultiplePermissionRequest() }) {
+                        Text(stringResource(MR.strings.grant_permission), color = Color.White)
+                    }
+                }
+            }
+        } else if (!locationServicesEnabled) {
             Surface(
                 modifier =
                     Modifier
@@ -234,18 +252,24 @@ fun MapScreen(
             verticalAlignment = Alignment.CenterVertically,
         ) {
             // Master sharing toggle. Per-friend timers live in FriendsSheet.
-            val sharingLabel = if (isSharing) stringResource(MR.strings.sharing) else stringResource(MR.strings.paused)
+            // Sharing needs permission: without it we're receive-only and the toggle is disabled
+            // (the banner above is the way to grant it).
+            val effectiveSharing = isSharing && hasLocationPermission
+            val sharingLabel = if (effectiveSharing) stringResource(MR.strings.sharing) else stringResource(MR.strings.paused)
 
             FilledTonalButton(
                 onClick = { onSetSharing(!isSharing) },
+                enabled = hasLocationPermission,
                 colors =
                     ButtonDefaults.filledTonalButtonColors(
-                        containerColor = if (isSharing) Color(0xFF1565C0) else Color(0xFF555555),
+                        containerColor = if (effectiveSharing) Color(0xFF1565C0) else Color(0xFF555555),
                         contentColor = Color.White,
+                        disabledContainerColor = Color(0xFF555555).copy(alpha = 0.5f),
+                        disabledContentColor = Color.White.copy(alpha = 0.6f),
                     ),
             ) {
                 Icon(
-                    if (isSharing) Icons.Default.LocationOn else Icons.Default.LocationOff,
+                    if (effectiveSharing) Icons.Default.LocationOn else Icons.Default.LocationOff,
                     contentDescription = null,
                     modifier = Modifier.size(16.dp),
                 )
@@ -292,7 +316,7 @@ fun MapScreen(
                                 color = Color.White,
                                 style = MaterialTheme.typography.labelSmall,
                             )
-                            if (locationPermissions.hasAnyLocationPermission && !locationPermissions.hasFineLocationPermission) {
+                            if (hasLocationPermission && !locationPermissions.hasFineLocationPermission) {
                                 Text(
                                     text = "(" + stringResource(MR.strings.approximate) + ")",
                                     color = Color.White.copy(alpha = 0.6f),

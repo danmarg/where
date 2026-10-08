@@ -3,8 +3,11 @@ package net.af0.where
 import android.content.Context
 import android.content.Intent
 import android.location.LocationManager
+import androidx.compose.ui.test.assertIsEnabled
+import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onNodeWithText
+import androidx.compose.ui.test.performClick
 import androidx.test.core.app.ApplicationProvider
 import dev.icerock.moko.resources.desc.Resource
 import dev.icerock.moko.resources.desc.StringDesc
@@ -17,11 +20,11 @@ import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.Shadows.shadowOf
 import org.robolectric.annotation.Config
+import kotlin.test.assertEquals
+import kotlin.test.assertTrue
 
-// These tests grant location permission, which reaches MapScreen's real MapComposable — the
-// MapLibre-backed fdroid variant JNI-loads a native lib that isn't present under Robolectric,
-// so they only run against the GMS flavor. See androidUnitTest/MapScreenTest.kt for the
-// permission-gated tests that run everywhere.
+// MapScreen always composes the real MapComposable — the MapLibre-backed fdroid variant JNI-loads
+// a native lib that isn't present under Robolectric, so these only run against the GMS flavor.
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [33], qualifiers = "en")
 class MapScreenLocationServicesTest {
@@ -42,7 +45,10 @@ class MapScreenLocationServicesTest {
         )
     }
 
-    private fun setContent() {
+    private fun setContent(
+        isSharing: Boolean = true,
+        onSetSharing: (Boolean) -> Unit = {},
+    ) {
         val users = listOf(UserLocation("friend1", 1.0, 1.0, 1000L))
         val ownLocation = UserLocation("me", 0.0, 0.0, 1000L)
         composeTestRule.setContent {
@@ -57,8 +63,8 @@ class MapScreenLocationServicesTest {
                 pausedFriendIds = emptySet(),
                 onTogglePause = {},
                 onCancelInvite = {},
-                isSharing = true,
-                onSetSharing = {},
+                isSharing = isSharing,
+                onSetSharing = onSetSharing,
                 connectionStatus = ConnectionStatus.Ok,
                 onCreateInvite = {},
                 onScanQr = {},
@@ -109,5 +115,62 @@ class MapScreenLocationServicesTest {
         composeTestRule
             .onNodeWithText(StringDesc.Resource(MR.strings.location_services_required).toString(context))
             .assertExists()
+    }
+
+    private fun text(res: dev.icerock.moko.resources.StringResource): String =
+        StringDesc.Resource(res).toString(ApplicationProvider.getApplicationContext<Context>())
+
+    @Test
+    fun testMapScreen_WithoutPermission_IsReceiveOnly_NotBlocked() {
+        setLocationServicesEnabled(true)
+        setContent(isSharing = true)
+        composeTestRule.waitForIdle()
+
+        // Non-blocking prompt, not a full-page wall.
+        composeTestRule.onNodeWithText(text(MR.strings.location_permission_needed_to_share)).assertExists()
+        composeTestRule.onNodeWithText(text(MR.strings.grant_permission)).assertExists()
+        // Friends/invite UI is still there (the friends button shows the count).
+        composeTestRule.onNodeWithText("0").assertExists()
+        // A stored "sharing on" is shown as paused and cannot be toggled.
+        composeTestRule.onNodeWithText(text(MR.strings.paused)).assertExists().assertIsNotEnabled()
+        composeTestRule.onNodeWithText(text(MR.strings.sharing)).assertDoesNotExist()
+    }
+
+    @Test
+    fun testMapScreen_WithoutPermission_SharingToggleDoesNothing() {
+        setLocationServicesEnabled(true)
+        val calls = mutableListOf<Boolean>()
+        setContent(isSharing = false, onSetSharing = { calls += it })
+        composeTestRule.waitForIdle()
+
+        composeTestRule.onNodeWithText(text(MR.strings.paused)).performClick()
+        composeTestRule.waitForIdle()
+
+        assertTrue(calls.isEmpty(), "disabled toggle must not enable sharing, got $calls")
+    }
+
+    @Test
+    fun testMapScreen_WithPermission_NoBannerAndToggleWorks() {
+        grantLocationPermission()
+        setLocationServicesEnabled(true)
+        val calls = mutableListOf<Boolean>()
+        setContent(isSharing = true, onSetSharing = { calls += it })
+        composeTestRule.waitForIdle()
+
+        composeTestRule.onNodeWithText(text(MR.strings.location_permission_needed_to_share)).assertDoesNotExist()
+        composeTestRule.onNodeWithText(text(MR.strings.sharing)).assertExists().assertIsEnabled().performClick()
+        composeTestRule.waitForIdle()
+
+        assertEquals(listOf(false), calls)
+    }
+
+    @Test
+    fun testMapScreen_WithoutPermission_ShowsPermissionBannerInsteadOfServicesWarning() {
+        setLocationServicesEnabled(false)
+        setContent()
+        composeTestRule.waitForIdle()
+
+        composeTestRule.onNodeWithText(text(MR.strings.location_permission_needed_to_share)).assertExists()
+        composeTestRule.onNodeWithText(text(MR.strings.location_services_required)).assertDoesNotExist()
     }
 }

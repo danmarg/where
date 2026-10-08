@@ -12,6 +12,7 @@
     <string name="skip">Überspringen</string>
     <string name="location_permission_required">Standortberechtigung erforderlich</string>
     <string name="grant_permission">Berechtigung erteilen</string>
+    <string name="location_permission_needed_to_share">Zum Teilen deines Standorts ist die Standortberechtigung nötig. Du kannst weiterhin Freunde sehen, die ihren Standort mit dir teilen.</string>
     <string name="location_services_required">Standortdienste sind ausgeschaltet</string>
     <string name="enable_location_services">Standortdienste aktivieren</string>
     <string name="friends">Freunde</string>

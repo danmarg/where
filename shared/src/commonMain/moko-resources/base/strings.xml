@@ -12,6 +12,7 @@
     <string name="skip">Skip</string>
     <string name="location_permission_required">Location permission is required</string>
     <string name="grant_permission">Grant Permission</string>
+    <string name="location_permission_needed_to_share">Location permission is needed to share your location. You can still see friends who share with you.</string>
     <string name="location_services_required">Location services are turned off</string>
     <string name="enable_location_services">Enable Location Services</string>
     <string name="friends">Friends</string>

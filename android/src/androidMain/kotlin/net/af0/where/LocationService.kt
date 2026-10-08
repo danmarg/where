@@ -930,6 +930,7 @@ class LocationService : Service() {
             locationClient, e2eeManager, userStore, locationSource, uiStateStore,
             clock = { clock() },
             gate = (application as? WhereApplication)?.pollGate ?: PollGate(),
+            canShare = { hasLocationPermission() },
         )
     }
 

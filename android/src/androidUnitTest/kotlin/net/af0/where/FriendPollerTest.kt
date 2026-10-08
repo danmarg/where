@@ -355,4 +355,26 @@ class FriendPollerTest {
 
             coVerify(exactly = 2) { manager.cleanupExpiredInvites(any()) }
         }
+
+    @Test
+    fun poll_treatsSharingAsOffWithoutPermission() =
+        runTest {
+            userStore.setSharing(true)
+            val receiveOnly = FriendPoller(client, manager, userStore, source, ui, clock = { now }, canShare = { false })
+
+            receiveOnly.poll()
+
+            coVerify { client.poll(isForeground = any(), pausedFriendIds = any(), sharingEnabled = false) }
+        }
+
+    @Test
+    fun poll_sharingFollowsToggleWhenPermitted() =
+        runTest {
+            userStore.setSharing(true)
+            val sharing = FriendPoller(client, manager, userStore, source, ui, clock = { now }, canShare = { true })
+
+            sharing.poll()
+
+            coVerify { client.poll(isForeground = any(), pausedFriendIds = any(), sharingEnabled = true) }
+        }
 }

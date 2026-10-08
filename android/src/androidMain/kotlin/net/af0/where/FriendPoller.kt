@@ -58,6 +58,8 @@ internal class FriendPoller(
     private val uiStateStore: UiStateSource,
     private val clock: () -> Long = { System.currentTimeMillis() },
     private val gate: PollGate = PollGate(),
+    // Sharing needs location permission; without it we're receive-only whatever the stored toggle says.
+    private val canShare: () -> Boolean = { true },
 ) {
     suspend fun poll(source: WakeSource = WakeSource.TIMER) {
         gate.mutex.withLock { pollLocked(source) }
@@ -75,7 +77,7 @@ internal class FriendPoller(
                 locationClient.poll(
                     isForeground = locationSource.isAppInForeground.value,
                     pausedFriendIds = userStore.effectivelyPausedIds(),
-                    sharingEnabled = userStore.isSharingLocation.value,
+                    sharingEnabled = userStore.isSharingLocation.value && canShare(),
                 )
             Log.d(TAG, "Got ${updates.size} location updates")
             withContext(Dispatchers.Main) {

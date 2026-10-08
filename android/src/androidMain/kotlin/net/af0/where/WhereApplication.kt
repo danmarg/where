@@ -24,7 +24,15 @@ open class WhereApplication : Application() {
     open val uiStateStore: UiStateSource by lazy { UiStateStore() }
     internal val pollGate: PollGate by lazy { PollGate() }
     internal open val friendPoller: FriendPoller by lazy {
-        FriendPoller(locationClient, e2eeManager, userStore, locationSource, uiStateStore, gate = pollGate)
+        FriendPoller(
+            locationClient,
+            e2eeManager,
+            userStore,
+            locationSource,
+            uiStateStore,
+            gate = pollGate,
+            canShare = { hasLocationPermission() },
+        )
     }
 
     override fun onCreate() {
