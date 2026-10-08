@@ -39,6 +39,7 @@ import net.af0.where.e2ee.PendingInviteView
 import net.af0.where.e2ee.QrPayload
 import net.af0.where.e2ee.RawKeyValueStorage
 import net.af0.where.e2ee.SessionState
+import net.af0.where.e2ee.UserStore
 import net.af0.where.model.UserLocation
 import org.junit.After
 import org.junit.Before
@@ -1093,5 +1094,181 @@ class LocationViewModelTest {
                 "a failed scan must not be silent",
             )
             assertFalse(vm.isExchanging.value, "isExchanging must be cleared after failure")
+        }
+
+    private fun sharingVm(
+        source: TestFakeLocationSource,
+        client: LocationClient,
+    ): Pair<LocationViewModel, UserStore> {
+        val userStore = UserStore(FakeRawKeyValueStorage())
+        val vm =
+            LocationViewModel(
+                app,
+                e2eeManagerParam = E2eeManager(createTestSqlDriver(), UnconfinedTestDispatcher()),
+                userStoreParam = userStore,
+                locationClientParam = client,
+                startPolling = false,
+                locationSourceParam = source,
+                uiStateStoreParam = FakeUiStateStore(),
+            )
+        userStore.setSharing(false) // UserStore defaults to on; tests opt in explicitly
+        return vm to userStore
+    }
+
+    @Test
+    fun setSharing_withoutPermission_isIgnored() =
+        runTest {
+            val (vm, userStore) = sharingVm(TestFakeLocationSource(), mockPollingClient())
+            viewModel = vm
+
+            vm.setSharing(true)
+            advanceUntilIdle()
+
+            assertFalse(userStore.isSharingLocation.value, "sharing must not be enabled without location permission")
+        }
+
+    @Test
+    fun setSharing_withPermission_enablesSharing() =
+        runTest {
+            shadowOf(app).grantPermissions(Manifest.permission.ACCESS_COARSE_LOCATION)
+            val (vm, userStore) = sharingVm(TestFakeLocationSource(), mockPollingClient())
+            viewModel = vm
+
+            vm.setSharing(true)
+            advanceUntilIdle()
+
+            assertTrue(userStore.isSharingLocation.value)
+        }
+
+    @Test
+    fun setSharing_off_withoutPermission_stillAllowed() =
+        runTest {
+            val (vm, userStore) = sharingVm(TestFakeLocationSource(), mockPollingClient())
+            viewModel = vm
+            userStore.setSharing(true) // stale "on" left over from before permission was lost
+
+            vm.setSharing(false)
+            advanceUntilIdle()
+
+            assertFalse(userStore.isSharingLocation.value)
+        }
+
+    @Test
+    fun permissionLostWhileSharing_tellsPeersOncePerLoss() =
+        runTest {
+            val source = TestFakeLocationSource()
+            val client = mockPollingClient()
+            val (vm, userStore) = sharingVm(source, client)
+            viewModel = vm
+            userStore.setSharing(true) // sharing was on; permission is not held
+
+            source.setAppForeground(true)
+            advanceUntilIdle()
+            io.mockk.coVerify(exactly = 1) { client.sendStoppedSharing(any()) }
+
+            source.setAppForeground(false)
+            advanceUntilIdle()
+            source.setAppForeground(true)
+            advanceUntilIdle()
+            io.mockk.coVerify(exactly = 1) { client.sendStoppedSharing(any()) }
+        }
+
+    @Test
+    fun permissionLost_butNotSharing_tellsNoOne() =
+        runTest {
+            val source = TestFakeLocationSource()
+            val client = mockPollingClient()
+            val (vm, _) = sharingVm(source, client)
+            viewModel = vm
+
+            source.setAppForeground(true)
+            advanceUntilIdle()
+
+            io.mockk.coVerify(exactly = 0) { client.sendStoppedSharing(any()) }
+        }
+
+    @Test
+    fun permissionRegained_resumesSharingAndRearmsNotification() =
+        runTest {
+            val source = TestFakeLocationSource()
+            val client = mockPollingClient()
+            val (vm, userStore) = sharingVm(source, client)
+            viewModel = vm
+            userStore.setSharing(true)
+            source.setAppForeground(true)
+            advanceUntilIdle()
+            while (shadowOf(app).nextStartedService != null) { /* drain */ }
+
+            shadowOf(app).grantPermissions(Manifest.permission.ACCESS_FINE_LOCATION)
+            source.setAppForeground(false)
+            advanceUntilIdle()
+            source.setAppForeground(true)
+            advanceUntilIdle()
+
+            var forced = false
+            while (true) {
+                val i = shadowOf(app).nextStartedService ?: break
+                if (i.action == LocationService.ACTION_FORCE_PUBLISH) forced = true
+            }
+            assertTrue(forced, "regaining permission while sharing must republish our location")
+
+            // A second loss is a new event and must notify again.
+            shadowOf(app).denyPermissions(Manifest.permission.ACCESS_FINE_LOCATION)
+            source.setAppForeground(false)
+            advanceUntilIdle()
+            source.setAppForeground(true)
+            advanceUntilIdle()
+            io.mockk.coVerify(exactly = 2) { client.sendStoppedSharing(any()) }
+        }
+
+    @Test
+    fun permissionLoss_notificationFailure_isRetriedNextTime() =
+        runTest {
+            val source = TestFakeLocationSource()
+            val client = mockPollingClient()
+            io.mockk.coEvery { client.sendStoppedSharing(any()) } throws RuntimeException("offline") andThen Unit
+            val (vm, userStore) = sharingVm(source, client)
+            viewModel = vm
+            userStore.setSharing(true)
+
+            source.setAppForeground(true)
+            advanceUntilIdle()
+            source.setAppForeground(false)
+            advanceUntilIdle()
+            source.setAppForeground(true)
+            advanceUntilIdle()
+            // third time: it succeeded on the retry, so no more sends
+            source.setAppForeground(false)
+            advanceUntilIdle()
+            source.setAppForeground(true)
+            advanceUntilIdle()
+
+            io.mockk.coVerify(exactly = 2) { client.sendStoppedSharing(any()) }
+        }
+
+    @Test
+    fun onLocationPermissionChanged_withoutForegroundFlip_resumesSharing() =
+        runTest {
+            val source = TestFakeLocationSource()
+            val client = mockPollingClient()
+            val (vm, userStore) = sharingVm(source, client)
+            viewModel = vm
+            userStore.setSharing(true)
+            source.setAppForeground(true)
+            advanceUntilIdle()
+            io.mockk.coVerify(exactly = 1) { client.sendStoppedSharing(any()) }
+            while (shadowOf(app).nextStartedService != null) { /* drain */ }
+
+            // Granted through the in-app flow: the app never leaves the foreground.
+            shadowOf(app).grantPermissions(Manifest.permission.ACCESS_FINE_LOCATION)
+            vm.onLocationPermissionChanged()
+            advanceUntilIdle()
+
+            var forced = false
+            while (true) {
+                val i = shadowOf(app).nextStartedService ?: break
+                if (i.action == LocationService.ACTION_FORCE_PUBLISH) forced = true
+            }
+            assertTrue(forced, "granting in-app must republish our location without a foreground flip")
         }
 }

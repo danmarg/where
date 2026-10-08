@@ -100,13 +100,7 @@ class MainActivity : ComponentActivity() {
     }
 
     fun startLocationService() {
-        val hasPermission =
-            ContextCompat.checkSelfPermission(
-                this, Manifest.permission.ACCESS_FINE_LOCATION,
-            ) == PackageManager.PERMISSION_GRANTED ||
-                ContextCompat.checkSelfPermission(
-                    this, Manifest.permission.ACCESS_COARSE_LOCATION,
-                ) == PackageManager.PERMISSION_GRANTED
+        val hasPermission = hasLocationPermission()
         if (hasPermission) {
             startForegroundService(Intent(this, LocationService::class.java))
         }
@@ -215,7 +209,10 @@ class MainActivity : ComponentActivity() {
                     onRemoveFriend = { viewModel.removeFriend(it) },
                     selectedUserId = selectedUserId,
                     onSelectedUserIdChange = { selectedUserId = it },
-                    onLocationPermissionGranted = ::startLocationService,
+                    onLocationPermissionGranted = {
+                        startLocationService()
+                        viewModel.onLocationPermissionChanged()
+                    },
                 )
 
                 if (showCameraRationale) {

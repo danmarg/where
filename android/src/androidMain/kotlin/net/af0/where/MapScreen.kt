@@ -7,6 +7,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.location.LocationManager
+import android.net.Uri
 import android.os.Build
 import android.provider.Settings
 import androidx.compose.foundation.background
@@ -38,6 +39,8 @@ private val MultiplePermissionsState.hasAnyLocationPermission: Boolean
 private val MultiplePermissionsState.hasFineLocationPermission: Boolean
     get() = permissions.find { it.permission == android.Manifest.permission.ACCESS_FINE_LOCATION }?.status?.isGranted == true
 
+private const val KEY_LOCATION_PERMISSION_REQUESTED = "location_permission_requested"
+
 @OptIn(ExperimentalPermissionsApi::class, ExperimentalMaterial3Api::class)
 @Composable
 fun MapScreen(
@@ -68,12 +71,18 @@ fun MapScreen(
     onLocationPermissionGranted: () -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
+    val permissionPrefs = LocalContext.current.getSharedPreferences("where_prefs", Context.MODE_PRIVATE)
+    var permissionRequested by remember { mutableStateOf(permissionPrefs.getBoolean(KEY_LOCATION_PERMISSION_REQUESTED, false)) }
     val locationPermissions =
         rememberMultiplePermissionsState(
             listOf(
                 android.Manifest.permission.ACCESS_FINE_LOCATION,
                 android.Manifest.permission.ACCESS_COARSE_LOCATION,
             ),
+            onPermissionsResult = {
+                permissionPrefs.edit().putBoolean(KEY_LOCATION_PERMISSION_REQUESTED, true).apply()
+                permissionRequested = true
+            },
         )
 
     // Background location must be requested separately on Android 10+.
@@ -133,17 +142,12 @@ fun MapScreen(
         )
     }
 
-    if (!locationPermissions.hasAnyLocationPermission) {
-        Box(modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-            Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                Text(stringResource(MR.strings.location_permission_required))
-                Button(onClick = { locationPermissions.launchMultiplePermissionRequest() }) {
-                    Text(stringResource(MR.strings.grant_permission))
-                }
-            }
-        }
-        return
-    }
+    // No early return without permission: receive-only use (pairing, seeing friends, keepalives)
+    // doesn't need our own location. Only our own location layer and sharing depend on it.
+    val hasLocationPermission = locationPermissions.hasAnyLocationPermission
+    // Asked before, still denied, and Android won't offer the dialog again (no rationale to show).
+    val permanentlyDenied =
+        permissionRequested && !hasLocationPermission && locationPermissions.permissions.none { it.status.shouldShowRationale }
 
     val context = LocalContext.current
 
@@ -190,12 +194,55 @@ fun MapScreen(
             modifier = Modifier.fillMaxSize(),
         )
 
-        // Location-services-off warning. Unlike the missing-permission screen this doesn't
-        // replace the whole map: friends' locations keep arriving and rendering even while our
-        // own GPS is unavailable (LocationService only tears down *our* registration, not
-        // polling), so hiding the friend list/invite UI here would be a functional regression,
-        // not just cosmetic. This only warns about the misleading own-sharing-state problem.
-        if (!locationServicesEnabled) {
+        // Missing permission means receive-only, not a blocked app: friends and pairing keep
+        // working, so this is a banner rather than a wall. Location-services-off (below) is the
+        // same idea for the case where permission is held but the system toggle is off. Neither
+        // may hide friend-related UI: friends' locations keep arriving even while our own GPS
+        // is unavailable.
+        if (!hasLocationPermission) {
+            Surface(
+                modifier =
+                    Modifier
+                        .align(Alignment.TopCenter)
+                        .statusBarsPadding()
+                        .padding(12.dp),
+                shape = MaterialTheme.shapes.medium,
+                color = Color(0xFF37474F).copy(alpha = 0.92f),
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    Text(
+                        text = stringResource(MR.strings.location_permission_needed_to_share),
+                        color = Color.White,
+                        style = MaterialTheme.typography.labelMedium,
+                        modifier = Modifier.weight(1f, fill = false),
+                    )
+                    TextButton(
+                        onClick = {
+                            if (permanentlyDenied) {
+                                // Android shows no dialog any more; Settings is the only way.
+                                context.startActivity(
+                                    Intent(
+                                        Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                                        Uri.fromParts("package", context.packageName, null),
+                                    ),
+                                )
+                            } else {
+                                locationPermissions.launchMultiplePermissionRequest()
+                            }
+                        },
+                    ) {
+                        Text(
+                            stringResource(if (permanentlyDenied) MR.strings.open_settings else MR.strings.grant_permission),
+                            color = Color.White,
+                        )
+                    }
+                }
+            }
+        } else if (!locationServicesEnabled) {
             Surface(
                 modifier =
                     Modifier
@@ -234,18 +281,24 @@ fun MapScreen(
             verticalAlignment = Alignment.CenterVertically,
         ) {
             // Master sharing toggle. Per-friend timers live in FriendsSheet.
-            val sharingLabel = if (isSharing) stringResource(MR.strings.sharing) else stringResource(MR.strings.paused)
+            // Sharing needs permission: without it we're receive-only and the toggle is disabled
+            // (the banner above is the way to grant it).
+            val effectiveSharing = isSharing && hasLocationPermission
+            val sharingLabel = if (effectiveSharing) stringResource(MR.strings.sharing) else stringResource(MR.strings.paused)
 
             FilledTonalButton(
                 onClick = { onSetSharing(!isSharing) },
+                enabled = hasLocationPermission,
                 colors =
                     ButtonDefaults.filledTonalButtonColors(
-                        containerColor = if (isSharing) Color(0xFF1565C0) else Color(0xFF555555),
+                        containerColor = if (effectiveSharing) Color(0xFF1565C0) else Color(0xFF555555),
                         contentColor = Color.White,
+                        disabledContainerColor = Color(0xFF555555).copy(alpha = 0.5f),
+                        disabledContentColor = Color.White.copy(alpha = 0.6f),
                     ),
             ) {
                 Icon(
-                    if (isSharing) Icons.Default.LocationOn else Icons.Default.LocationOff,
+                    if (effectiveSharing) Icons.Default.LocationOn else Icons.Default.LocationOff,
                     contentDescription = null,
                     modifier = Modifier.size(16.dp),
                 )
@@ -292,7 +345,7 @@ fun MapScreen(
                                 color = Color.White,
                                 style = MaterialTheme.typography.labelSmall,
                             )
-                            if (locationPermissions.hasAnyLocationPermission && !locationPermissions.hasFineLocationPermission) {
+                            if (hasLocationPermission && !locationPermissions.hasFineLocationPermission) {
                                 Text(
                                     text = "(" + stringResource(MR.strings.approximate) + ")",
                                     color = Color.White.copy(alpha = 0.6f),

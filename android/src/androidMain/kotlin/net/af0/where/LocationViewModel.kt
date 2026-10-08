@@ -15,6 +15,7 @@ import androidx.work.WorkManager
 import app.cash.sqldelight.driver.android.AndroidSqliteDriver
 import dev.icerock.moko.resources.desc.Resource
 import dev.icerock.moko.resources.desc.StringDesc
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -43,6 +44,7 @@ import net.af0.where.shared.MR
 import java.util.concurrent.TimeUnit
 
 private const val TAG = "LocationViewModel"
+private const val KEY_STOPPED_FOR_MISSING_PERMISSION = "stopped_sharing_for_missing_permission"
 
 class LocationViewModel(
     app: Application,
@@ -92,6 +94,7 @@ class LocationViewModel(
             uiStateStore,
             clock,
             gate = (app as? WhereApplication)?.pollGate ?: PollGate(),
+            canShare = { app.hasLocationPermission() },
         )
 
     val isSharingLocation: StateFlow<Boolean> = userStore.isSharingLocation
@@ -164,6 +167,7 @@ class LocationViewModel(
             locationSource.isAppInForeground.collect { inForeground ->
                 manageForegroundService(isSharingLocation.value, inForeground)
                 updateForegroundPolling(inForeground)
+                if (inForeground) reconcileSharingWithPermission()
             }
         }
 
@@ -237,6 +241,9 @@ class LocationViewModel(
      */
     fun setSharing(sharing: Boolean) {
         check(Looper.myLooper() == Looper.getMainLooper()) { "setSharing must be called on the main thread" }
+        // Sharing requires location permission; without it we're receive-only. The UI disables the
+        // control, this keeps every other caller honest too.
+        if (sharing && !getApplication<Application>().hasLocationPermission()) return
         val wasSharing = isSharingLocation.value
         userStore.setSharing(sharing)
         if (wasSharing && !sharing) {
@@ -597,6 +604,58 @@ class LocationViewModel(
         getApplication<Application>()
             .getSharedPreferences("where_prefs", Context.MODE_PRIVATE)
             .edit().putBoolean("battery_opt_asked", true).apply()
+    }
+
+    /**
+     * Call when location permission may have changed while the app stays in the foreground (the
+     * in-app grant flow doesn't flip [LocationSource.isAppInForeground]): hands polling between
+     * this ViewModel and the service, and reconciles sharing state with peers.
+     */
+    @MainThread
+    fun onLocationPermissionChanged() {
+        val inForeground = locationSource.isAppInForeground.value
+        manageForegroundService(isSharingLocation.value, inForeground)
+        updateForegroundPolling(inForeground)
+        reconcileSharingWithPermission()
+    }
+
+    private var stoppedSharingInFlight = false
+
+    /**
+     * Keeps peers' view honest across permission changes. If the user had sharing on and lost
+     * location permission (Settings, auto-revoke), we can't send locations: tell peers once so
+     * they see "stopped sharing" instead of a stale pin. When permission returns, resume.
+     * The "already told them" flag is persisted, and only set once the send succeeded, so it
+     * fires once per loss but is retried after a failure.
+     */
+    private fun reconcileSharingWithPermission() {
+        val app = getApplication<Application>()
+        val prefs = app.getSharedPreferences("where_prefs", Context.MODE_PRIVATE)
+        val notified = prefs.getBoolean(KEY_STOPPED_FOR_MISSING_PERMISSION, false)
+        val hasPermission = app.hasLocationPermission()
+        if (isSharingLocation.value && !hasPermission && !notified) {
+            if (stoppedSharingInFlight) return
+            stoppedSharingInFlight = true
+            viewModelScope.launch {
+                try {
+                    locationClient.sendStoppedSharing(pausedFriendIds = userStore.effectivelyPausedIds())
+                    prefs.edit().putBoolean(KEY_STOPPED_FOR_MISSING_PERMISSION, true).apply()
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    Log.w(TAG, "sendStoppedSharing (permission lost) failed, will retry: ${e.message}")
+                } finally {
+                    stoppedSharingInFlight = false
+                }
+            }
+        } else if (hasPermission && notified) {
+            prefs.edit().putBoolean(KEY_STOPPED_FOR_MISSING_PERMISSION, false).apply()
+            if (isSharingLocation.value) {
+                app.startForegroundService(
+                    Intent(app, LocationService::class.java).apply { action = LocationService.ACTION_FORCE_PUBLISH },
+                )
+            }
+        }
     }
 
     /**
