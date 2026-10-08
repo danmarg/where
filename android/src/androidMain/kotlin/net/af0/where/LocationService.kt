@@ -926,7 +926,11 @@ class LocationService : Service() {
         }
 
     private val friendPoller: FriendPoller by lazy {
-        friendPollerOverride ?: FriendPoller(locationClient, e2eeManager, userStore, locationSource, uiStateStore, clock = { clock() })
+        friendPollerOverride ?: FriendPoller(
+            locationClient, e2eeManager, userStore, locationSource, uiStateStore,
+            clock = { clock() },
+            gate = (application as? WhereApplication)?.pollGate ?: PollGate(),
+        )
     }
 
     @VisibleForTesting

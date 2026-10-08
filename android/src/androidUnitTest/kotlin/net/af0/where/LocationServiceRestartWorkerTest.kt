@@ -80,7 +80,7 @@ class LocationServiceRestartWorkerTest {
             assertNotNull(started)
             assertEquals(LocationService::class.java.name, started.component?.className)
             assertEquals(LocationService.ACTION_HEARTBEAT_TICK, started.action)
-            coVerify(exactly = 1) { poller.poll(WakeSource.HEARTBEAT) }
+            coVerify(exactly = 0) { poller.poll(any()) } // the nudged service polls; don't double it
         }
 
     @Test
@@ -108,6 +108,6 @@ class LocationServiceRestartWorkerTest {
             val started = shadowOf(app).nextStartedService
             assertNotNull(started, "before API 34 the service can run without permission")
             assertEquals(LocationService.ACTION_HEARTBEAT_TICK, started.action)
-            coVerify(exactly = 1) { poller.poll(WakeSource.HEARTBEAT) }
+            coVerify(exactly = 0) { poller.poll(any()) }
         }
 }

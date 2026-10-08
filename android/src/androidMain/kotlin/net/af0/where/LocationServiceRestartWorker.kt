@@ -22,23 +22,20 @@ class LocationServiceRestartWorker(
             Log.i(TAG, "No friends or pending invites; skipping service restart")
             return Result.success()
         }
-        // Always poll here rather than relying on LocationService: acks, keepalives and pairing
-        // handshakes are what keep a session from expiring (ACK_TIMEOUT_SECONDS), and they must
-        // keep happening when the service can't run - no location permission on API 34+, or only
-        // "while in use" permission so Android refuses to start a location foreground service
-        // from the background - or has simply been killed. FriendPoller serializes with the
-        // service's own polling, so doing this while the service is healthy is just a cheap no-op.
-        app.friendPoller.poll(WakeSource.HEARTBEAT)
-
+        // Acks, keepalives and pairing handshakes are what keep a session from expiring
+        // (ACK_TIMEOUT_SECONDS), so they must keep happening when LocationService can't do them:
+        // no location permission on API 34+, or Android refusing to start a location foreground
+        // service from the background (e.g. only "while in use" permission). When the service is
+        // startable, nudging it is enough - it polls itself, and polling here too would double
+        // the background request rate.
         if (!applicationContext.canRunLocationService()) {
-            Log.i(TAG, "LocationService cannot run (no location permission); polled directly")
+            Log.i(TAG, "LocationService cannot run (no location permission); polling directly")
+            app.friendPoller.poll(WakeSource.HEARTBEAT)
             return Result.success()
         }
         Log.i(TAG, "WorkManager heartbeat: ensuring LocationService is running + forcing tick")
-        // Best effort: ACTION_HEARTBEAT_TICK nudges an already-running but Doze-stalled service
-        // (startForegroundService alone is a no-op when it is up) and restarts a killed one for
-        // location sharing. Starting a foreground service from the background can be refused
-        // (ForegroundServiceStartNotAllowedException), which must not fail the work.
+        // ACTION_HEARTBEAT_TICK nudges an already-running but Doze-stalled service (a plain
+        // startForegroundService is a no-op when it is up) and restarts a killed one.
         try {
             startService(
                 Intent(applicationContext, LocationService::class.java).apply {
@@ -46,7 +43,10 @@ class LocationServiceRestartWorker(
                 },
             )
         } catch (e: Exception) {
-            Log.w(TAG, "Could not start LocationService from background: ${e.message}")
+            // Typically ForegroundServiceStartNotAllowedException; must not fail the work, and the
+            // service isn't going to poll, so do it here.
+            Log.w(TAG, "Could not start LocationService from background (${e.message}); polling directly")
+            app.friendPoller.poll(WakeSource.HEARTBEAT)
         }
         return Result.success()
     }
