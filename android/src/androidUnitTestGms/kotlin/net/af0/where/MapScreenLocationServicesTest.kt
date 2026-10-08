@@ -173,4 +173,31 @@ class MapScreenLocationServicesTest {
         composeTestRule.onNodeWithText(text(MR.strings.location_permission_needed_to_share)).assertExists()
         composeTestRule.onNodeWithText(text(MR.strings.location_services_required)).assertDoesNotExist()
     }
+
+    @Test
+    fun testMapScreen_PermissionPreviouslyRequestedAndDenied_OffersAppSettings() {
+        val app: android.app.Application = ApplicationProvider.getApplicationContext()
+        app.getSharedPreferences("where_prefs", Context.MODE_PRIVATE)
+            .edit().putBoolean("location_permission_requested", true).commit()
+        setLocationServicesEnabled(true)
+        setContent()
+        composeTestRule.waitForIdle()
+
+        composeTestRule.onNodeWithText(text(MR.strings.grant_permission)).assertDoesNotExist()
+        composeTestRule.onNodeWithText(text(MR.strings.open_settings)).performClick()
+        composeTestRule.waitForIdle()
+
+        val started = shadowOf(app).nextStartedActivity
+        assertEquals(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS, started?.action)
+    }
+
+    @Test
+    fun testMapScreen_PermissionNeverRequested_OffersGrant() {
+        setLocationServicesEnabled(true)
+        setContent()
+        composeTestRule.waitForIdle()
+
+        composeTestRule.onNodeWithText(text(MR.strings.grant_permission)).assertExists()
+        composeTestRule.onNodeWithText(text(MR.strings.open_settings)).assertDoesNotExist()
+    }
 }

@@ -7,6 +7,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.location.LocationManager
+import android.net.Uri
 import android.os.Build
 import android.provider.Settings
 import androidx.compose.foundation.background
@@ -38,6 +39,8 @@ private val MultiplePermissionsState.hasAnyLocationPermission: Boolean
 private val MultiplePermissionsState.hasFineLocationPermission: Boolean
     get() = permissions.find { it.permission == android.Manifest.permission.ACCESS_FINE_LOCATION }?.status?.isGranted == true
 
+private const val KEY_LOCATION_PERMISSION_REQUESTED = "location_permission_requested"
+
 @OptIn(ExperimentalPermissionsApi::class, ExperimentalMaterial3Api::class)
 @Composable
 fun MapScreen(
@@ -68,12 +71,18 @@ fun MapScreen(
     onLocationPermissionGranted: () -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
+    val permissionPrefs = LocalContext.current.getSharedPreferences("where_prefs", Context.MODE_PRIVATE)
+    var permissionRequested by remember { mutableStateOf(permissionPrefs.getBoolean(KEY_LOCATION_PERMISSION_REQUESTED, false)) }
     val locationPermissions =
         rememberMultiplePermissionsState(
             listOf(
                 android.Manifest.permission.ACCESS_FINE_LOCATION,
                 android.Manifest.permission.ACCESS_COARSE_LOCATION,
             ),
+            onPermissionsResult = {
+                permissionPrefs.edit().putBoolean(KEY_LOCATION_PERMISSION_REQUESTED, true).apply()
+                permissionRequested = true
+            },
         )
 
     // Background location must be requested separately on Android 10+.
@@ -136,6 +145,9 @@ fun MapScreen(
     // No early return without permission: receive-only use (pairing, seeing friends, keepalives)
     // doesn't need our own location. Only our own location layer and sharing depend on it.
     val hasLocationPermission = locationPermissions.hasAnyLocationPermission
+    // Asked before, still denied, and Android won't offer the dialog again (no rationale to show).
+    val permanentlyDenied =
+        permissionRequested && !hasLocationPermission && locationPermissions.permissions.none { it.status.shouldShowRationale }
 
     val context = LocalContext.current
 
@@ -182,11 +194,11 @@ fun MapScreen(
             modifier = Modifier.fillMaxSize(),
         )
 
-        // Location-services-off warning. Unlike the missing-permission screen this doesn't
-        // replace the whole map: friends' locations keep arriving and rendering even while our
-        // own GPS is unavailable (LocationService only tears down *our* registration, not
-        // polling), so hiding the friend list/invite UI here would be a functional regression,
-        // not just cosmetic. This only warns about the misleading own-sharing-state problem.
+        // Missing permission means receive-only, not a blocked app: friends and pairing keep
+        // working, so this is a banner rather than a wall. Location-services-off (below) is the
+        // same idea for the case where permission is held but the system toggle is off. Neither
+        // may hide friend-related UI: friends' locations keep arriving even while our own GPS
+        // is unavailable.
         if (!hasLocationPermission) {
             Surface(
                 modifier =
@@ -208,8 +220,25 @@ fun MapScreen(
                         style = MaterialTheme.typography.labelMedium,
                         modifier = Modifier.weight(1f, fill = false),
                     )
-                    TextButton(onClick = { locationPermissions.launchMultiplePermissionRequest() }) {
-                        Text(stringResource(MR.strings.grant_permission), color = Color.White)
+                    TextButton(
+                        onClick = {
+                            if (permanentlyDenied) {
+                                // Android shows no dialog any more; Settings is the only way.
+                                context.startActivity(
+                                    Intent(
+                                        Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                                        Uri.fromParts("package", context.packageName, null),
+                                    ),
+                                )
+                            } else {
+                                locationPermissions.launchMultiplePermissionRequest()
+                            }
+                        },
+                    ) {
+                        Text(
+                            stringResource(if (permanentlyDenied) MR.strings.open_settings else MR.strings.grant_permission),
+                            color = Color.White,
+                        )
                     }
                 }
             }

@@ -1220,4 +1220,55 @@ class LocationViewModelTest {
             advanceUntilIdle()
             io.mockk.coVerify(exactly = 2) { client.sendStoppedSharing(any()) }
         }
+
+    @Test
+    fun permissionLoss_notificationFailure_isRetriedNextTime() =
+        runTest {
+            val source = TestFakeLocationSource()
+            val client = mockPollingClient()
+            io.mockk.coEvery { client.sendStoppedSharing(any()) } throws RuntimeException("offline") andThen Unit
+            val (vm, userStore) = sharingVm(source, client)
+            viewModel = vm
+            userStore.setSharing(true)
+
+            source.setAppForeground(true)
+            advanceUntilIdle()
+            source.setAppForeground(false)
+            advanceUntilIdle()
+            source.setAppForeground(true)
+            advanceUntilIdle()
+            // third time: it succeeded on the retry, so no more sends
+            source.setAppForeground(false)
+            advanceUntilIdle()
+            source.setAppForeground(true)
+            advanceUntilIdle()
+
+            io.mockk.coVerify(exactly = 2) { client.sendStoppedSharing(any()) }
+        }
+
+    @Test
+    fun onLocationPermissionChanged_withoutForegroundFlip_resumesSharing() =
+        runTest {
+            val source = TestFakeLocationSource()
+            val client = mockPollingClient()
+            val (vm, userStore) = sharingVm(source, client)
+            viewModel = vm
+            userStore.setSharing(true)
+            source.setAppForeground(true)
+            advanceUntilIdle()
+            io.mockk.coVerify(exactly = 1) { client.sendStoppedSharing(any()) }
+            while (shadowOf(app).nextStartedService != null) { /* drain */ }
+
+            // Granted through the in-app flow: the app never leaves the foreground.
+            shadowOf(app).grantPermissions(Manifest.permission.ACCESS_FINE_LOCATION)
+            vm.onLocationPermissionChanged()
+            advanceUntilIdle()
+
+            var forced = false
+            while (true) {
+                val i = shadowOf(app).nextStartedService ?: break
+                if (i.action == LocationService.ACTION_FORCE_PUBLISH) forced = true
+            }
+            assertTrue(forced, "granting in-app must republish our location without a foreground flip")
+        }
 }
