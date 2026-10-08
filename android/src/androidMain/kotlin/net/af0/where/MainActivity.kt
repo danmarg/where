@@ -332,7 +332,7 @@ class MainActivity : ComponentActivity() {
                         qrPayload = state.qr,
                         displayName = displayName,
                         onDisplayNameChange = { viewModel.setDisplayName(it) },
-                        onDismiss = { viewModel.clearInviteIfNotExported() },
+                        onDismiss = { viewModel.dismissInvite() },
                         onExportedIntent = { ekPub ->
                             val intent =
                                 Intent("net.af0.where.ACTION_INVITE_EXPORTED").apply {

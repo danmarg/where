@@ -400,15 +400,9 @@ class LocationViewModel(
         uiStateStore.setInviteSheetShowing(false)
 
         val qrWithName = qr.copy(suggestedName = friendName)
-        val currentInvite = _inviteState.value
         _isExchanging.value = true
         viewModelScope.launch {
             try {
-                // Bob: clear his own persistent outgoing invite from the store if he's currently showing one.
-                if (currentInvite is InviteState.Pending) {
-                    e2eeManager.clearInvite(currentInvite.qr.ekPub)
-                }
-
                 val (initPayload, bobEntry) = e2eeManager.processScannedQr(qrWithName, displayName.value)
                 val sendToken = bobEntry.session.sendToken.toHex()
                 Log.d(
@@ -554,41 +548,19 @@ class LocationViewModel(
         }
     }
 
-    fun clearInviteIfNotExported() {
+    /**
+     * Closes the invite sheet without deleting the invite.
+     *
+     * Showing a QR in person never marks it exported, and the scan can arrive after the sheet is
+     * gone (swiped away, or closed to scan the other person's QR). Deleting the invite here would
+     * discard its private key and silently drop that scan, leaving the scanner "Pending" forever.
+     * Unused invites are cleaned up by [E2eeManager.cleanupExpiredInvites] or cancelled explicitly
+     * from the friends list.
+     */
+    fun dismissInvite() {
         uiStateStore.setInviteSheetShowing(false)
-        val current = _inviteState.value
-
-        // Reset UI state immediately
         locationSource.resetRapidPoll()
         _inviteState.value = InviteState.None
-
-        if (current is InviteState.Pending && locationSource.pendingInitPayload.value == null) {
-            viewModelScope.launch {
-                // Refresh list from store to check exportedAt
-                val invites = e2eeManager.listPendingInvites()
-                val match = invites.find { it.qrPayload.ekPub.contentEquals(current.qr.ekPub) }
-                if (match != null && match.exportedAt == null) {
-                    e2eeManager.clearInvite(current.qr.ekPub)
-                }
-            }
-        }
-    }
-
-    fun clearInvite() {
-        uiStateStore.setInviteSheetShowing(false)
-        val current = _inviteState.value
-
-        // Reset UI state immediately
-        locationSource.resetRapidPoll()
-        _inviteState.value = InviteState.None
-
-        // If the user dismisses the "Share Invite" sheet, we clear that specific invite
-        // from the store to match previous behavior (though it's now multi-invite).
-        if (current is InviteState.Pending && locationSource.pendingInitPayload.value == null) {
-            viewModelScope.launch {
-                e2eeManager.clearInvite(current.qr.ekPub)
-            }
-        }
     }
 
     private fun updateStatus(e: Throwable?) {
