@@ -369,7 +369,7 @@ class LocationServiceTest {
                 fakeLocationSource.onPendingInit(payload, aliceEkPub = byteArrayOf(0))
                 assertTrue(service.isRapidPolling(), "An unconfirmed pending invite should force rapid polling")
 
-                currentTime += LocationService.PENDING_INIT_RAPID_TIMEOUT_MS - 1
+                currentTime += FriendPoller.PENDING_INIT_RAPID_TIMEOUT_MS - 1
                 assertTrue(
                     service.isRapidPolling(),
                     "Rapid polling should still hold just under the timeout",

@@ -18,11 +18,11 @@ class LocationServiceRestartWorker(
             Log.i(TAG, "No friends or pending invites; skipping service restart")
             return Result.success()
         }
-        if (!applicationContext.hasLocationPermission()) {
-            // The location foreground service can't run without the permission (it self-stops in
-            // onCreate), so poll directly: this is the only background path that still receives
+        if (!applicationContext.canRunLocationService()) {
+            // On API 34+ the location foreground service can't run without the permission (it
+            // self-stops in onCreate), so poll directly: this is the only background path that still receives
             // pairing handshakes and advances the ratchet (acks, keepalives) for this user.
-            Log.i(TAG, "No location permission; polling directly instead of starting LocationService")
+            Log.i(TAG, "LocationService cannot run (no location permission); polling directly instead of starting LocationService")
             app.friendPoller.poll(WakeSource.HEARTBEAT)
             return Result.success()
         }

@@ -1,15 +1,12 @@
 package net.af0.where
 
-import android.Manifest
 import android.app.Application
 import android.content.Context
 import android.content.Intent
-import android.content.pm.PackageManager
 import android.os.Looper
 import android.os.PowerManager
 import android.util.Log
 import androidx.annotation.MainThread
-import androidx.core.content.ContextCompat
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import androidx.work.ExistingPeriodicWorkPolicy
@@ -329,13 +326,7 @@ class LocationViewModel(
                     // Ensure the service is running so it polls the discovery mailbox.
                     // Only start if location permission is granted; without it the service
                     // would immediately enter the "permission missing" notification state.
-                    val hasPermission =
-                        ContextCompat.checkSelfPermission(
-                            getApplication(), Manifest.permission.ACCESS_FINE_LOCATION,
-                        ) == PackageManager.PERMISSION_GRANTED ||
-                            ContextCompat.checkSelfPermission(
-                                getApplication(), Manifest.permission.ACCESS_COARSE_LOCATION,
-                            ) == PackageManager.PERMISSION_GRANTED
+                    val hasPermission = getApplication<Application>().hasLocationPermission()
                     if (hasPermission) {
                         val svcIntent = Intent(getApplication(), LocationService::class.java)
                         getApplication<Application>().startForegroundService(svcIntent)
@@ -595,18 +586,28 @@ class LocationViewModel(
     }
 
     /**
-     * Without location permission the foreground service can't run, so nothing would poll for
-     * pairing handshakes or friend updates. While the app is visible, poll from here instead.
-     * The loop ends when the app backgrounds, or the permission is granted (the service takes over).
+     * Where [LocationService] can't run (no location permission on API 34+), nothing would poll
+     * for pairing handshakes or friend updates. While the app is visible, poll from here instead.
+     * Ends when the app backgrounds, or when the service becomes runnable (permission granted):
+     * the service is then (re)started to take over.
      */
     private fun updateForegroundPolling(inForeground: Boolean) {
         foregroundPollJob?.cancel()
         foregroundPollJob = null
-        if (!inForeground || getApplication<Application>().hasLocationPermission()) return
+        val app = getApplication<Application>()
+        if (!inForeground || app.canRunLocationService()) return
         foregroundPollJob =
             viewModelScope.launch {
-                while (!getApplication<Application>().hasLocationPermission() && locationSource.isAppInForeground.value) {
-                    friendPoller.poll(WakeSource.TIMER)
+                while (locationSource.isAppInForeground.value) {
+                    if (app.canRunLocationService()) {
+                        manageForegroundService(isSharingLocation.value, inForeground = true)
+                        return@launch
+                    }
+                    // Mirror the service's idle behavior: nothing to talk to, nothing to poll. Read the
+                    // store, not the UI state, which is only populated by a poll.
+                    if (e2eeManager.listFriends().isNotEmpty() || e2eeManager.listPendingInvites().isNotEmpty()) {
+                        friendPoller.poll(WakeSource.TIMER)
+                    }
                     val interval =
                         if (friendPoller.isRapidPolling()) {
                             FriendPoller.RAPID_POLL_INTERVAL_MS
@@ -625,11 +626,7 @@ class LocationViewModel(
     ) {
         check(Looper.myLooper() == Looper.getMainLooper())
         val intent = Intent(getApplication(), LocationService::class.java)
-        val hasLocationPermission =
-            ContextCompat.checkSelfPermission(getApplication(), Manifest.permission.ACCESS_FINE_LOCATION) ==
-                PackageManager.PERMISSION_GRANTED ||
-                ContextCompat.checkSelfPermission(getApplication(), Manifest.permission.ACCESS_COARSE_LOCATION) ==
-                PackageManager.PERMISSION_GRANTED
+        val hasLocationPermission = getApplication<Application>().hasLocationPermission()
         val hasRelationships = friends.value.isNotEmpty() || locationSource.allPendingInvites.value.isNotEmpty()
         if ((sharing && hasLocationPermission && hasRelationships) || inForeground) {
             getApplication<Application>().startForegroundService(intent)

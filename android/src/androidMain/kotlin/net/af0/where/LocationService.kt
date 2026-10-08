@@ -221,11 +221,6 @@ class LocationService : Service() {
     private var networkCallback: ConnectivityManager.NetworkCallback? = null
     private var locationProvidersChangedReceiver: BroadcastReceiver? = null
 
-    private fun hasLocationPermission(): Boolean {
-        return ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED ||
-            ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED
-    }
-
     private fun hasActivityPermission(): Boolean {
         return if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
             ContextCompat.checkSelfPermission(this, Manifest.permission.ACTIVITY_RECOGNITION) == PackageManager.PERMISSION_GRANTED
@@ -1165,15 +1160,8 @@ class LocationService : Service() {
 
         /** Overridable in tests. */
         var clock: () -> Long = { System.currentTimeMillis() }
-        internal const val PENDING_INIT_RAPID_TIMEOUT_MS = FriendPoller.PENDING_INIT_RAPID_TIMEOUT_MS
 
         private const val CHANNEL_ID = "where_location"
         private const val NOTIFICATION_ID = 1
-
-        /**
-         * How long an unconfirmed incoming invite keeps the client in rapid (2s) polling.
-         * Bounds the impact of an invite the user never acts on (see #336) - long enough
-         * to notice and respond to a notification, short enough not to run rapid mode forever.
-         */
     }
 }

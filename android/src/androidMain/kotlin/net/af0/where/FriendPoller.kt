@@ -3,6 +3,7 @@ package net.af0.where
 import android.Manifest
 import android.content.Context
 import android.content.pm.PackageManager
+import android.os.Build
 import android.util.Log
 import androidx.core.content.ContextCompat
 import kotlinx.coroutines.CancellationException
@@ -18,6 +19,14 @@ import net.af0.where.e2ee.UserStore
 internal fun Context.hasLocationPermission(): Boolean =
     ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED ||
         ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED
+
+/**
+ * Whether [LocationService] can actually run. On API 34+ the OS refuses a `location` foreground
+ * service without the permission, so it self-stops; before that it stays alive regardless
+ * (maintenance polling while sharing is paused), so the service is already polling.
+ */
+internal fun Context.canRunLocationService(): Boolean =
+    hasLocationPermission() || Build.VERSION.SDK_INT < Build.VERSION_CODES.UPSIDE_DOWN_CAKE
 
 /**
  * One friend/invite poll cycle: fetch friend updates, surface incoming pairing handshakes, and
@@ -154,6 +163,12 @@ internal class FriendPoller(
 
     companion object {
         private const val TAG = "FriendPoller"
+
+        /**
+         * How long an unconfirmed incoming invite keeps the client in rapid (2s) polling.
+         * Bounds the impact of an invite the user never acts on (see #336) - long enough
+         * to notice and respond to a notification, short enough not to run rapid mode forever.
+         */
         internal const val PENDING_INIT_RAPID_TIMEOUT_MS = 5 * 60 * 1000L
         internal const val RAPID_POLL_INTERVAL_MS = 2_000L
         internal const val FOREGROUND_POLL_INTERVAL_MS = 10_000L

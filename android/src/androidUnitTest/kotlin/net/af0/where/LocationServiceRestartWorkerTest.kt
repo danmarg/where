@@ -57,7 +57,8 @@ class LocationServiceRestartWorkerTest {
         }
 
     @Test
-    fun noLocationPermission_pollsDirectlyInsteadOfStartingService() =
+    @Config(sdk = [34])
+    fun noLocationPermission_api34_pollsDirectlyInsteadOfStartingService() =
         runTest {
             addPendingInvite()
 
@@ -78,6 +79,20 @@ class LocationServiceRestartWorkerTest {
             val started = shadowOf(app).nextStartedService
             assertNotNull(started)
             assertEquals(LocationService::class.java.name, started.component?.className)
+            assertEquals(LocationService.ACTION_HEARTBEAT_TICK, started.action)
+            coVerify(exactly = 0) { poller.poll(any()) }
+        }
+
+    @Test
+    @Config(sdk = [33])
+    fun noLocationPermission_beforeApi34_stillNudgesService() =
+        runTest {
+            addPendingInvite()
+
+            assertEquals(ListenableWorker.Result.success(), worker().doWork())
+
+            val started = shadowOf(app).nextStartedService
+            assertNotNull(started, "before API 34 the service can run without permission and is already polling")
             assertEquals(LocationService.ACTION_HEARTBEAT_TICK, started.action)
             coVerify(exactly = 0) { poller.poll(any()) }
         }

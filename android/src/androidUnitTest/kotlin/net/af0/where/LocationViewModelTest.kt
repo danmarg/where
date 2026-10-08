@@ -34,6 +34,7 @@ import net.af0.where.e2ee.KeyExchangeInitPayload
 import net.af0.where.e2ee.KtorMailboxClient
 import net.af0.where.e2ee.LocationClient
 import net.af0.where.e2ee.PROTOCOL_VERSION
+import net.af0.where.e2ee.PendingInviteView
 import net.af0.where.e2ee.QrPayload
 import net.af0.where.e2ee.RawKeyValueStorage
 import net.af0.where.e2ee.SessionState
@@ -857,17 +858,23 @@ class LocationViewModelTest {
             assertEquals(LocationService::class.java.name, started.component?.className)
         }
 
-    private fun foregroundPollVm(
+    /** A ViewModel whose store holds one pending invite (a relationship worth polling for) unless [withInvite] is false. */
+    private suspend fun foregroundPollVm(
         source: TestFakeLocationSource,
         client: LocationClient,
-    ) = LocationViewModel(
-        app,
-        e2eeManagerParam = E2eeManager(createTestSqlDriver(), UnconfinedTestDispatcher()),
-        locationClientParam = client,
-        startPolling = false,
-        locationSourceParam = source,
-        uiStateStoreParam = FakeUiStateStore(),
-    )
+        withInvite: Boolean = true,
+    ): LocationViewModel {
+        val store = E2eeManager(createTestSqlDriver(), UnconfinedTestDispatcher())
+        if (withInvite) store.createInvite("Me")
+        return LocationViewModel(
+            app,
+            e2eeManagerParam = store,
+            locationClientParam = client,
+            startPolling = false,
+            locationSourceParam = source,
+            uiStateStoreParam = FakeUiStateStore(),
+        )
+    }
 
     private fun mockPollingClient(): LocationClient =
         mockk<LocationClient>(relaxed = true).also {
@@ -876,6 +883,7 @@ class LocationViewModelTest {
         }
 
     @Test
+    @Config(sdk = [34])
     fun foregroundWithoutLocationPermission_pollsFromViewModel() =
         runTest {
             val source = TestFakeLocationSource()
@@ -889,6 +897,7 @@ class LocationViewModelTest {
         }
 
     @Test
+    @Config(sdk = [34])
     fun foregroundPolling_continuesEachWake() =
         runTest {
             val source = TestFakeLocationSource()
@@ -904,6 +913,7 @@ class LocationViewModelTest {
         }
 
     @Test
+    @Config(sdk = [34])
     fun foregroundWithLocationPermission_leavesPollingToService() =
         runTest {
             shadowOf(app).grantPermissions(Manifest.permission.ACCESS_FINE_LOCATION)
@@ -918,6 +928,7 @@ class LocationViewModelTest {
         }
 
     @Test
+    @Config(sdk = [34])
     fun backgrounding_stopsForegroundPolling() =
         runTest {
             val source = TestFakeLocationSource()
@@ -937,6 +948,7 @@ class LocationViewModelTest {
         }
 
     @Test
+    @Config(sdk = [34])
     fun neverForegrounded_doesNotPoll() =
         runTest {
             val source = TestFakeLocationSource()
@@ -948,6 +960,7 @@ class LocationViewModelTest {
         }
 
     @Test
+    @Config(sdk = [34])
     fun foregroundPolling_stopsWhenPermissionGranted() =
         runTest {
             val source = TestFakeLocationSource()
@@ -965,5 +978,53 @@ class LocationViewModelTest {
             advanceUntilIdle()
 
             io.mockk.coVerify(exactly = 0) { client.poll(any(), any(), any()) }
+        }
+
+    @Test
+    @Config(sdk = [34])
+    fun foregroundWithoutRelationships_doesNotPoll() =
+        runTest {
+            val source = TestFakeLocationSource()
+            val client = mockPollingClient()
+            viewModel = foregroundPollVm(source, client, withInvite = false)
+
+            source.setAppForeground(true)
+            advanceUntilIdle()
+
+            io.mockk.coVerify(exactly = 0) { client.poll(any(), any(), any()) }
+        }
+
+    @Test
+    @Config(sdk = [33])
+    fun foregroundBeforeApi34_serviceRunsSoViewModelDoesNotPoll() =
+        runTest {
+            val source = TestFakeLocationSource()
+            val client = mockPollingClient()
+            viewModel = foregroundPollVm(source, client)
+
+            source.setAppForeground(true)
+            advanceUntilIdle()
+
+            io.mockk.coVerify(exactly = 0) { client.poll(any(), any(), any()) }
+        }
+
+    @Test
+    @Config(sdk = [34])
+    fun permissionGrantedWhileForegrounded_startsServiceAndStopsViewModelPolling() =
+        runTest {
+            val source = TestFakeLocationSource()
+            val client = mockPollingClient()
+            viewModel = foregroundPollVm(source, client)
+            source.setAppForeground(true)
+            advanceUntilIdle()
+            while (shadowOf(app).nextStartedService != null) { /* drain services started so far */ }
+
+            shadowOf(app).grantPermissions(Manifest.permission.ACCESS_FINE_LOCATION)
+            source.wakePoll()
+            advanceUntilIdle()
+
+            val started = shadowOf(app).nextStartedService
+            assertNotNull(started, "granting permission while foregrounded must hand polling to LocationService")
+            assertEquals(LocationService::class.java.name, started.component?.className)
         }
 }
