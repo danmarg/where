@@ -13,6 +13,8 @@ import androidx.work.ExistingPeriodicWorkPolicy
 import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkManager
 import app.cash.sqldelight.driver.android.AndroidSqliteDriver
+import dev.icerock.moko.resources.desc.Resource
+import dev.icerock.moko.resources.desc.StringDesc
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -37,6 +39,7 @@ import net.af0.where.e2ee.QrPayload
 import net.af0.where.e2ee.UserStore
 import net.af0.where.e2ee.toHex
 import net.af0.where.model.UserLocation
+import net.af0.where.shared.MR
 import java.util.concurrent.TimeUnit
 
 private const val TAG = "LocationViewModel"
@@ -347,6 +350,7 @@ class LocationViewModel(
         val qr =
             QrPayload.fromUrl(url) ?: run {
                 Log.e(TAG, "processQrUrl: failed to parse URL")
+                locationSource.onConnectionStatus(ConnectionStatus.Error(StringDesc.Resource(MR.strings.invalid_qr_code)))
                 return false
             }
         Log.d(TAG, "processQrUrl: parsed qr, suggestedName=${qr.suggestedName}")
@@ -433,6 +437,7 @@ class LocationViewModel(
                 }
             } catch (e: Exception) {
                 Log.e(TAG, "confirmQrScan: processScannedQr failed", e)
+                updateStatus(e)
                 _isExchanging.value = false
             }
         }
