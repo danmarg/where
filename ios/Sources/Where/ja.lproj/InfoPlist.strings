@@ -1,0 +1,4 @@
+"NSCameraUsageDescription" = "友だちの招待 QR コードをスキャンするために、Where はカメラを使用します。";
+"NSLocationAlwaysAndWhenInUseUsageDescription" = "位置情報の共有を続けるために、Where はバックグラウンドで位置情報を使用します。";
+"NSLocationWhenInUseUsageDescription" = "地図に現在地を表示するために、Where は位置情報を使用します。";
+"NSMotionUsageDescription" = "Where はモーションデータを使用し、静止中は GPS の動作を減らしてバッテリー消費を最適化します。";

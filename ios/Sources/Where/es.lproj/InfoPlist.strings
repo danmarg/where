@@ -1,0 +1,4 @@
+"NSCameraUsageDescription" = "Where necesita la cámara para escanear los códigos QR de invitación de amigos.";
+"NSLocationAlwaysAndWhenInUseUsageDescription" = "Where necesita tu ubicación en segundo plano para seguir compartiéndola.";
+"NSLocationWhenInUseUsageDescription" = "Where necesita tu ubicación para mostrarla en el mapa.";
+"NSMotionUsageDescription" = "Where usa los datos de movimiento para optimizar el consumo de batería reduciendo la actividad del GPS cuando estás quieto.";

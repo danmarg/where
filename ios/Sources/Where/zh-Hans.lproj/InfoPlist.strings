@@ -1,0 +1,4 @@
+"NSCameraUsageDescription" = "Where 需要使用相机来扫描朋友的邀请二维码。";
+"NSLocationAlwaysAndWhenInUseUsageDescription" = "Where 需要在后台使用你的位置以持续共享。";
+"NSLocationWhenInUseUsageDescription" = "Where 需要使用你的位置以在地图上显示。";
+"NSMotionUsageDescription" = "Where 使用运动数据，在你静止时减少 GPS 活动，以优化电池使用。";
