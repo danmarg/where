@@ -6,6 +6,8 @@ import android.content.pm.PackageManager
 import android.os.Build
 import android.util.Log
 import androidx.core.content.ContextCompat
+import dev.icerock.moko.resources.desc.Resource
+import dev.icerock.moko.resources.desc.StringDesc
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.sync.Mutex
@@ -15,6 +17,7 @@ import net.af0.where.e2ee.ConnectionStatus
 import net.af0.where.e2ee.E2eeManager
 import net.af0.where.e2ee.LocationClient
 import net.af0.where.e2ee.UserStore
+import net.af0.where.shared.MR
 
 internal fun Context.hasLocationPermission(): Boolean =
     ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED ||
@@ -86,10 +89,11 @@ internal class FriendPoller(
                     // Persistence: use the timestamp from the update payload.
                     e2eeManager.updateLastLocation(update.userId, update.lat, update.lng, update.timestamp)
                 }
-                pollPendingInvites()
+                val reportedError = pollPendingInvites()
                 locationSource.onFriendsUpdated(e2eeManager.listFriends())
                 locationSource.onPendingInvitesUpdated(e2eeManager.listPendingInvites())
-                updateStatus(null)
+                // Don't mask an error pollPendingInvites just reported (e.g. a failed handshake).
+                if (!reportedError) updateStatus(null)
             }
         } catch (e: CancellationException) {
             throw e
@@ -117,10 +121,11 @@ internal class FriendPoller(
         return isSheetShowing || hasFreshPendingInit || recentlyTriggered || isNaming
     }
 
-    private suspend fun pollPendingInvites() {
+    /** Surfaces incoming handshakes. Returns true if it reported an error to the UI. */
+    private suspend fun pollPendingInvites(): Boolean {
         try {
             val results = locationClient.pollPendingInvites()
-            if (results.isEmpty()) return
+            if (results.isEmpty()) return false
 
             val pendingInvites = e2eeManager.listPendingInvites()
             val filteredResults =
@@ -130,7 +135,7 @@ internal class FriendPoller(
 
             if (filteredResults.isEmpty()) {
                 Log.d(TAG, "pollPendingInvites: received ${results.size} results, but none match active pending invites. Ignoring.")
-                return
+                return false
             }
 
             // If we already have a naming dialog up, don't overwrite it, but the UI
@@ -140,9 +145,9 @@ internal class FriendPoller(
                 if (result.pairingError != null) {
                     withContext(Dispatchers.Main) {
                         uiStateStore.setInviteSheetShowing(false)
-                        updateStatus(Exception(result.pairingError))
+                        locationSource.onConnectionStatus(ConnectionStatus.Error(StringDesc.Resource(MR.strings.pairing_failed)))
                     }
-                    return
+                    return true
                 }
                 val initPayload = result.payload
                 Log.d(
@@ -157,10 +162,12 @@ internal class FriendPoller(
                     updateStatus(null)
                 }
             }
+            return false
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
             updateStatus(e)
+            return true
         }
     }
 
