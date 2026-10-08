@@ -9,6 +9,7 @@ import androidx.test.core.app.ApplicationProvider
 import app.cash.sqldelight.db.SqlDriver
 import app.cash.sqldelight.driver.android.AndroidSqliteDriver
 import dev.icerock.moko.resources.desc.Raw
+import dev.icerock.moko.resources.desc.Resource
 import dev.icerock.moko.resources.desc.StringDesc
 import io.mockk.every
 import io.mockk.mockk
@@ -1026,5 +1027,71 @@ class LocationViewModelTest {
             val started = shadowOf(app).nextStartedService
             assertNotNull(started, "granting permission while foregrounded must hand polling to LocationService")
             assertEquals(LocationService::class.java.name, started.component?.className)
+        }
+
+    private fun newVm(source: TestFakeLocationSource): LocationViewModel =
+        LocationViewModel(
+            app,
+            e2eeManagerParam = E2eeManager(createTestSqlDriver(), UnconfinedTestDispatcher()),
+            locationClientParam = mockk<LocationClient>(relaxed = true),
+            startPolling = false,
+            locationSourceParam = source,
+            uiStateStoreParam = FakeUiStateStore(),
+        )
+
+    @Test
+    fun processQrUrl_unparseableUrl_returnsFalseAndSurfacesInvalidQrError() =
+        runTest {
+            val source = TestFakeLocationSource()
+            val vm = newVm(source)
+
+            assertFalse(vm.processQrUrl("not a where invite"))
+
+            val status = source.connectionStatus.value
+            assertTrue(status is ConnectionStatus.Error, "bad QR must surface an error, was $status")
+            assertEquals(
+                StringDesc.Resource(net.af0.where.shared.MR.strings.invalid_qr_code),
+                (status as ConnectionStatus.Error).message,
+            )
+        }
+
+    @Test
+    fun processQrUrl_validUrl_doesNotSetError() =
+        runTest {
+            val source = TestFakeLocationSource()
+            val vm = newVm(source)
+            val qr =
+                QrPayload(
+                    protocolVersion = PROTOCOL_VERSION,
+                    ekPub = ByteArray(32) { 1 },
+                    suggestedName = "Alice",
+                    discoverySecret = ByteArray(32),
+                )
+
+            assertTrue(vm.processQrUrl(qr.toUrl()))
+            assertEquals(ConnectionStatus.Ok, source.connectionStatus.value)
+        }
+
+    @Test
+    fun confirmQrScan_processScannedQrFails_surfacesErrorAndClearsExchanging() =
+        runTest {
+            val source = TestFakeLocationSource()
+            val vm = newVm(source)
+            val badVersionQr =
+                QrPayload(
+                    protocolVersion = PROTOCOL_VERSION + 100,
+                    ekPub = ByteArray(32) { 1 },
+                    suggestedName = "Alice",
+                    discoverySecret = ByteArray(32),
+                )
+
+            vm.confirmQrScan(badVersionQr, "Alice")
+            advanceUntilIdle()
+
+            assertTrue(
+                source.connectionStatus.value is ConnectionStatus.Error,
+                "a failed scan must not be silent",
+            )
+            assertFalse(vm.isExchanging.value, "isExchanging must be cleared after failure")
         }
 }
