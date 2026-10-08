@@ -172,6 +172,10 @@ class FriendPollerTest {
 
             assertNull(source.pendingInitPayload.value)
             assertFalse(ui.isInviteSheetShowing.value)
+            assertTrue(
+                source.connectionStatus.value is ConnectionStatus.Error,
+                "a failed handshake must stay visible, not be overwritten by the end-of-cycle Ok",
+            )
         }
 
     @Test
@@ -198,6 +202,23 @@ class FriendPollerTest {
             poller.poll()
 
             assertEquals(update, source.friendLocations.value["f1"])
+            assertTrue(
+                source.connectionStatus.value is ConnectionStatus.Error,
+                "the discovery-mailbox failure must stay visible, not be overwritten by Ok",
+            )
+        }
+
+    @Test
+    fun poll_handshakeErrorThenCleanCycle_clearsError() =
+        runTest {
+            val ek = byteArrayOf(1, 2, 3)
+            coEvery { client.pollPendingInvites() } returns listOf(result(ek, error = "bad handshake")) andThen emptyList()
+            coEvery { manager.listPendingInvites() } returns listOf(inviteWith(ek))
+
+            poller.poll()
+            poller.poll()
+
+            assertEquals(ConnectionStatus.Ok, source.connectionStatus.value)
         }
 
     @Test
