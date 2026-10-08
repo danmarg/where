@@ -620,8 +620,9 @@ final class LocationSyncService: ObservableObject {
     /// Showing a QR in person never marks it exported, and the scan can arrive after the sheet is
     /// gone (swiped away, or closed to scan the other person's QR). Deleting the invite here would
     /// discard its private key and silently drop that scan, leaving the scanner "Pending" forever.
-    /// Unused invites are cleaned up by `cleanupExpiredInvites` or cancelled from the friends list.
+    /// Unused invites are cleaned up by `cleanupExpiredInvites`.
     func dismissInvite() {
+        inviteTask?.cancel()
         resetRapidPoll()
         repo.inviteState = Shared.InviteState.None()
         isInviteSheetShowing = false

@@ -108,7 +108,12 @@ class E2eeManager(
     suspend fun createInvite(suggestedName: String): QrPayload =
         persistence.withMetadataLock {
             if (pendingInvites.size >= MAX_PENDING_INVITES) {
-                pendingInvites = pendingInvites.sortedBy { it.createdAt }.drop(1)
+                // Evict an unexported invite first: an exported one has been handed to someone
+                // and is likely still awaiting its scan.
+                val victim =
+                    pendingInvites.filter { it.exportedAt == null }.minByOrNull { it.createdAt }
+                        ?: pendingInvites.minByOrNull { it.createdAt }
+                pendingInvites = pendingInvites.filter { it !== victim }
             }
             val (qr, priv) = KeyExchange.aliceCreateQrPayload(suggestedName)
             pendingInvites = pendingInvites + PendingInvite(qr, priv)

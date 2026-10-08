@@ -554,10 +554,10 @@ class LocationViewModel(
      * Showing a QR in person never marks it exported, and the scan can arrive after the sheet is
      * gone (swiped away, or closed to scan the other person's QR). Deleting the invite here would
      * discard its private key and silently drop that scan, leaving the scanner "Pending" forever.
-     * Unused invites are cleaned up by [E2eeManager.cleanupExpiredInvites] or cancelled explicitly
-     * from the friends list.
+     * Unused invites are cleaned up by [E2eeManager.cleanupExpiredInvites].
      */
     fun dismissInvite() {
+        inviteJob?.cancel()
         uiStateStore.setInviteSheetShowing(false)
         locationSource.resetRapidPoll()
         _inviteState.value = InviteState.None
