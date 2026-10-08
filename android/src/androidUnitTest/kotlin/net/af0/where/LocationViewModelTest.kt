@@ -856,4 +856,114 @@ class LocationViewModelTest {
             assertNotNull(started, "createInvite must start LocationService so discovery mailbox is polled")
             assertEquals(LocationService::class.java.name, started.component?.className)
         }
+
+    private fun foregroundPollVm(
+        source: TestFakeLocationSource,
+        client: LocationClient,
+    ) = LocationViewModel(
+        app,
+        e2eeManagerParam = E2eeManager(createTestSqlDriver(), UnconfinedTestDispatcher()),
+        locationClientParam = client,
+        startPolling = false,
+        locationSourceParam = source,
+        uiStateStoreParam = FakeUiStateStore(),
+    )
+
+    private fun mockPollingClient(): LocationClient =
+        mockk<LocationClient>(relaxed = true).also {
+            io.mockk.coEvery { it.poll(any(), any(), any()) } returns emptyList()
+            io.mockk.coEvery { it.pollPendingInvites() } returns emptyList()
+        }
+
+    @Test
+    fun foregroundWithoutLocationPermission_pollsFromViewModel() =
+        runTest {
+            val source = TestFakeLocationSource()
+            val client = mockPollingClient()
+            viewModel = foregroundPollVm(source, client)
+
+            source.setAppForeground(true)
+            advanceUntilIdle()
+
+            io.mockk.coVerify(atLeast = 1) { client.poll(any(), any(), any()) }
+        }
+
+    @Test
+    fun foregroundPolling_continuesEachWake() =
+        runTest {
+            val source = TestFakeLocationSource()
+            val client = mockPollingClient()
+            viewModel = foregroundPollVm(source, client)
+
+            source.setAppForeground(true)
+            advanceUntilIdle()
+            source.wakePoll()
+            advanceUntilIdle()
+
+            io.mockk.coVerify(atLeast = 2) { client.poll(any(), any(), any()) }
+        }
+
+    @Test
+    fun foregroundWithLocationPermission_leavesPollingToService() =
+        runTest {
+            shadowOf(app).grantPermissions(Manifest.permission.ACCESS_FINE_LOCATION)
+            val source = TestFakeLocationSource()
+            val client = mockPollingClient()
+            viewModel = foregroundPollVm(source, client)
+
+            source.setAppForeground(true)
+            advanceUntilIdle()
+
+            io.mockk.coVerify(exactly = 0) { client.poll(any(), any(), any()) }
+        }
+
+    @Test
+    fun backgrounding_stopsForegroundPolling() =
+        runTest {
+            val source = TestFakeLocationSource()
+            val client = mockPollingClient()
+            viewModel = foregroundPollVm(source, client)
+
+            source.setAppForeground(true)
+            advanceUntilIdle()
+            source.setAppForeground(false)
+            advanceUntilIdle()
+            io.mockk.clearMocks(client, answers = false)
+
+            source.wakePoll()
+            advanceUntilIdle()
+
+            io.mockk.coVerify(exactly = 0) { client.poll(any(), any(), any()) }
+        }
+
+    @Test
+    fun neverForegrounded_doesNotPoll() =
+        runTest {
+            val source = TestFakeLocationSource()
+            val client = mockPollingClient()
+            viewModel = foregroundPollVm(source, client)
+            advanceUntilIdle()
+
+            io.mockk.coVerify(exactly = 0) { client.poll(any(), any(), any()) }
+        }
+
+    @Test
+    fun foregroundPolling_stopsWhenPermissionGranted() =
+        runTest {
+            val source = TestFakeLocationSource()
+            val client = mockPollingClient()
+            viewModel = foregroundPollVm(source, client)
+
+            source.setAppForeground(true)
+            advanceUntilIdle()
+            shadowOf(app).grantPermissions(Manifest.permission.ACCESS_FINE_LOCATION)
+            io.mockk.clearMocks(client, answers = false)
+
+            source.wakePoll() // loop re-checks permission, exits, and leaves polling to the service
+            advanceUntilIdle()
+            source.wakePoll()
+            advanceUntilIdle()
+
+            io.mockk.coVerify(exactly = 0) { client.poll(any(), any(), any()) }
+        }
 }

@@ -66,6 +66,7 @@ class LocationViewModel(
             ?: E2eeManager(
                 AndroidSqliteDriver(net.af0.where.db.WhereDatabase.Schema, app, "where.db"),
             )
+    private var foregroundPollJob: Job? = null
     private val userStore: UserStore =
         userStoreParam
             ?: (app as? WhereApplication)?.userStore
@@ -82,6 +83,7 @@ class LocationViewModel(
         uiStateStoreParam
             ?: (app as? WhereApplication)?.uiStateStore
             ?: UiStateStore()
+    private val friendPoller = FriendPoller(locationClient, e2eeManager, userStore, locationSource, uiStateStore, clock)
 
     val isSharingLocation: StateFlow<Boolean> = userStore.isSharingLocation
 
@@ -152,6 +154,7 @@ class LocationViewModel(
         viewModelScope.launch {
             locationSource.isAppInForeground.collect { inForeground ->
                 manageForegroundService(isSharingLocation.value, inForeground)
+                updateForegroundPolling(inForeground)
             }
         }
 
@@ -589,6 +592,30 @@ class LocationViewModel(
         getApplication<Application>()
             .getSharedPreferences("where_prefs", Context.MODE_PRIVATE)
             .edit().putBoolean("battery_opt_asked", true).apply()
+    }
+
+    /**
+     * Without location permission the foreground service can't run, so nothing would poll for
+     * pairing handshakes or friend updates. While the app is visible, poll from here instead.
+     * The loop ends when the app backgrounds, or the permission is granted (the service takes over).
+     */
+    private fun updateForegroundPolling(inForeground: Boolean) {
+        foregroundPollJob?.cancel()
+        foregroundPollJob = null
+        if (!inForeground || getApplication<Application>().hasLocationPermission()) return
+        foregroundPollJob =
+            viewModelScope.launch {
+                while (!getApplication<Application>().hasLocationPermission() && locationSource.isAppInForeground.value) {
+                    friendPoller.poll(WakeSource.TIMER)
+                    val interval =
+                        if (friendPoller.isRapidPolling()) {
+                            FriendPoller.RAPID_POLL_INTERVAL_MS
+                        } else {
+                            FriendPoller.FOREGROUND_POLL_INTERVAL_MS
+                        }
+                    locationSource.awaitPollWake(interval)
+                }
+            }
     }
 
     @MainThread

@@ -32,7 +32,6 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
-import kotlinx.coroutines.withContext
 import net.af0.where.e2ee.ConnectionStatus
 import net.af0.where.e2ee.E2eeManager
 import net.af0.where.e2ee.LocationClient
@@ -75,6 +74,9 @@ class LocationService : Service() {
 
     @VisibleForTesting
     internal var uiStateStoreOverride: UiStateSource? = null
+
+    @VisibleForTesting
+    internal var friendPollerOverride: FriendPoller? = null
 
     // Robolectric's ShadowService doesn't emulate the real platform's foregroundServiceType
     // permission enforcement (startForeground() never throws there regardless of permission
@@ -922,113 +924,20 @@ class LocationService : Service() {
         isSharingLocation: Boolean = true,
     ): Long =
         when {
-            rapid -> 2_000L
-            inForeground -> 10_000L
+            rapid -> FriendPoller.RAPID_POLL_INTERVAL_MS
+            inForeground -> FriendPoller.FOREGROUND_POLL_INTERVAL_MS
             isSharingLocation -> 5 * 60 * 1000L // heartbeat + friend poll
             else -> 30 * 60 * 1000L // maintenance-only (Ratchet keepalives and Acks). Required for DH sync during global pause.
         }
 
-    @VisibleForTesting
-    internal suspend fun isRapidPolling(): Boolean {
-        // We consider it rapid if the share sheet is open, or we're in key exchange naming.
-        val now = clock()
-        val recentlyTriggered = now - locationSource.lastRapidPollTrigger.value < 60_000L
-        val isSheetShowing = uiStateStore.isInviteSheetShowing.value
-        // Also check if Bob is on the naming screen.
-        val isNaming = uiStateStore.pendingQrForNaming.value != null
-        // Bounded: an incoming invite that's never confirmed or cancelled (app backgrounded,
-        // notification ignored, etc.) must not pin the client at the 2s rapid interval forever.
-        val setAt = locationSource.pendingInitPayloadSetAt.value
-        val hasFreshPendingInit =
-            locationSource.pendingInitPayload.value != null && setAt != 0L && now - setAt < PENDING_INIT_RAPID_TIMEOUT_MS
-        return isSheetShowing || hasFreshPendingInit || recentlyTriggered || isNaming
+    private val friendPoller: FriendPoller by lazy {
+        friendPollerOverride ?: FriendPoller(locationClient, e2eeManager, userStore, locationSource, uiStateStore, clock = { clock() })
     }
 
     @VisibleForTesting
-    internal var lastCleanupTime: Long = 0L
+    internal suspend fun isRapidPolling(): Boolean = friendPoller.isRapidPolling()
 
-    internal suspend fun doPoll(source: WakeSource = WakeSource.TIMER) {
-        try {
-            Log.d(TAG, "Polling for location updates (source=${source.value})")
-            val now = clock()
-            if (now - lastCleanupTime > 3600_000L) {
-                e2eeManager.cleanupExpiredInvites(48 * 3600L)
-                lastCleanupTime = now
-            }
-            val updates =
-                locationClient.poll(
-                    isForeground = locationSource.isAppInForeground.value,
-                    pausedFriendIds = userStore.effectivelyPausedIds(),
-                    sharingEnabled = userStore.isSharingLocation.value,
-                )
-            Log.d(TAG, "Got ${updates.size} location updates")
-            withContext(Dispatchers.Main) {
-                val now = System.currentTimeMillis()
-                for (update in updates) {
-                    locationSource.onFriendUpdate(update, now)
-                    locationSource.onFriendLocationReceived(update.userId)
-                    // Persistence: use the timestamp from the update payload.
-                    e2eeManager.updateLastLocation(update.userId, update.lat, update.lng, update.timestamp)
-                }
-                pollPendingInvites()
-                locationSource.onFriendsUpdated(e2eeManager.listFriends())
-                locationSource.onPendingInvitesUpdated(e2eeManager.listPendingInvites())
-                updateStatus(null)
-            }
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            Log.e(TAG, "Poll failed: ${e.message}")
-            updateStatus(e)
-        }
-    }
-
-    private suspend fun pollPendingInvites() {
-        try {
-            val results = locationClient.pollPendingInvites()
-            if (results.isEmpty()) return
-
-            val pendingInvites = e2eeManager.listPendingInvites()
-            val filteredResults =
-                results.filter { result ->
-                    pendingInvites.any { it.qrPayload.ekPub.contentEquals(result.inviteEkPub) }
-                }
-
-            if (filteredResults.isEmpty()) {
-                Log.d(TAG, "pollPendingInvites: received ${results.size} results, but none match active pending invites. Ignoring.")
-                return
-            }
-
-            // If we already have a naming dialog up, don't overwrite it, but the UI
-            // will now be able to see all pending invites via allPendingInvites.
-            if (locationSource.pendingInitPayload.value == null) {
-                val result = filteredResults.first()
-                if (result.pairingError != null) {
-                    withContext(Dispatchers.Main) {
-                        uiStateStore.setInviteSheetShowing(false)
-                        updateStatus(Exception(result.pairingError))
-                    }
-                    return
-                }
-                val initPayload = result.payload
-                Log.d(
-                    TAG,
-                    "pollPendingInvites: received KeyExchangeInit from ${initPayload.suggestedName} " +
-                        "(multipleScans=${result.multipleScansDetected})",
-                )
-                withContext(Dispatchers.Main) {
-                    uiStateStore.setMultipleScansDetected(result.multipleScansDetected)
-                    uiStateStore.setInviteSheetShowing(false)
-                    locationSource.onPendingInit(initPayload, result.inviteEkPub) // THE FIX: Pass our own EK
-                    updateStatus(null)
-                }
-            }
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            updateStatus(e)
-        }
-    }
+    internal suspend fun doPoll(source: WakeSource = WakeSource.TIMER) = friendPoller.poll(source)
 
     // No default for `stationary`: every call site must decide explicitly. A silent
     // `= false` default caused several "here since" regressions where a call site omitted
@@ -1256,6 +1165,7 @@ class LocationService : Service() {
 
         /** Overridable in tests. */
         var clock: () -> Long = { System.currentTimeMillis() }
+        internal const val PENDING_INIT_RAPID_TIMEOUT_MS = FriendPoller.PENDING_INIT_RAPID_TIMEOUT_MS
 
         private const val CHANNEL_ID = "where_location"
         private const val NOTIFICATION_ID = 1
@@ -1265,6 +1175,5 @@ class LocationService : Service() {
          * Bounds the impact of an invite the user never acts on (see #336) - long enough
          * to notice and respond to a notification, short enough not to run rapid mode forever.
          */
-        internal const val PENDING_INIT_RAPID_TIMEOUT_MS = 5 * 60 * 1000L
     }
 }

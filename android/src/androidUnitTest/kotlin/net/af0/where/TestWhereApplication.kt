@@ -52,4 +52,11 @@ class TestWhereApplication : WhereApplication() {
      * In-memory is sufficient for unit testing the higher-level logic.
      */
     override val userStore: UserStore by lazy { UserStore(inMemoryStorage) }
+
+    private val realFriendPoller by lazy { FriendPoller(locationClient, e2eeManager, userStore, locationSource, uiStateStore) }
+
+    /** Tests can swap the poller to observe what [LocationServiceRestartWorker] does. */
+    internal var friendPollerOverride: FriendPoller? = null
+
+    override val friendPoller: FriendPoller get() = friendPollerOverride ?: realFriendPoller
 }

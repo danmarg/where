@@ -169,4 +169,34 @@ class LocationHandshakeTest {
                     "staying isConfirmed=false causes Android to show the friend as pending forever",
             )
         }
+
+    /**
+     * Issue #405: pairing must complete even when Alice has location sharing off. Alice sends no
+     * Location, so Bob's confirmation has to come from the automated Keepalive in Alice's poll.
+     */
+    @Test
+    fun testBobConfirmedWhenAliceSharingDisabled() =
+        runTest {
+            val aliceManager = testE2eeManager(createTestSqlDriver())
+            val aliceClient = LocationClient("http://localhost", aliceManager, mailbox)
+            val qr = aliceManager.createInvite("Alice")
+
+            val bobManager = testE2eeManager(createTestSqlDriver())
+            val bobClient = LocationClient("http://localhost", bobManager, mailbox)
+
+            val (initPayload, bobEntry) = bobManager.processScannedQr(qr, "Bob")
+            bobClient.postKeyExchangeInit(bobEntry.id, qr, initPayload)
+
+            val pending = aliceClient.pollPendingInvites()
+            aliceManager.processKeyExchangeInit(pending[0].payload, "Bob", pending[0].inviteEkPub)
+
+            // Alice polls with sharing off (what the service does after confirmPendingInit).
+            aliceClient.poll(isForeground = true, pausedFriendIds = emptySet(), sharingEnabled = false)
+
+            bobClient.poll(isForeground = true, pausedFriendIds = emptySet())
+            assertTrue(
+                bobManager.listFriends().any { it.id == bobEntry.id && it.isConfirmed },
+                "Bob must be confirmed by Alice's keepalive even though Alice is not sharing",
+            )
+        }
 }
