@@ -105,7 +105,7 @@ echo ""
 
 # AGP names the APK file in kebab-case (e.g. standardFdroid → standard-fdroid)
 FLAVOR_KEBAB="$(echo "$FLAVOR" | sed 's/\([A-Z]\)/-\1/g' | tr '[:upper:]' '[:lower:]')"
-APK_PATH="${BUILD_DIR}/outputs/apk/${FLAVOR}/debug/android-${FLAVOR_KEBAB}-debug.apk"
+APK_PATH="${BUILD_DIR}/outputs/apk/${FLAVOR}/debug/android-${FLAVOR_KEBAB}-universal-debug.apk"
 echo "=== Installing ==="
 run adb -s "$EMU_SERIAL" install -r "$APK_PATH"
 echo "✓ APK installed"
