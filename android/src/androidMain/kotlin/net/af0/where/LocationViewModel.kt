@@ -83,7 +83,16 @@ class LocationViewModel(
         uiStateStoreParam
             ?: (app as? WhereApplication)?.uiStateStore
             ?: UiStateStore()
-    private val friendPoller = FriendPoller(locationClient, e2eeManager, userStore, locationSource, uiStateStore, clock)
+    private val friendPoller =
+        FriendPoller(
+            locationClient,
+            e2eeManager,
+            userStore,
+            locationSource,
+            uiStateStore,
+            clock,
+            gate = (app as? WhereApplication)?.pollGate ?: PollGate(),
+        )
 
     val isSharingLocation: StateFlow<Boolean> = userStore.isSharingLocation
 

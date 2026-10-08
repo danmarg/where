@@ -22,8 +22,9 @@ open class WhereApplication : Application() {
     val locationClient: LocationClient by lazy { LocationClient(BuildConfig.SERVER_HTTP_URL, e2eeManager) }
     open val locationSource: LocationSource by lazy { LocationRepository(userStore) }
     open val uiStateStore: UiStateSource by lazy { UiStateStore() }
+    internal val pollGate: PollGate by lazy { PollGate() }
     internal open val friendPoller: FriendPoller by lazy {
-        FriendPoller(locationClient, e2eeManager, userStore, locationSource, uiStateStore)
+        FriendPoller(locationClient, e2eeManager, userStore, locationSource, uiStateStore, gate = pollGate)
     }
 
     override fun onCreate() {

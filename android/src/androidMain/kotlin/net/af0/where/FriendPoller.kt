@@ -29,14 +29,26 @@ internal fun Context.canRunLocationService(): Boolean =
     hasLocationPermission() || Build.VERSION.SDK_INT < Build.VERSION_CODES.UPSIDE_DOWN_CAKE
 
 /**
+ * Serializes poll cycles and holds the hourly invite-cleanup timestamp. One instance is shared by
+ * every [FriendPoller] in the app (see [WhereApplication.pollGate]) so the service, worker and
+ * foreground loop don't surface the same handshake twice or repeat cleanup; tests get their own.
+ */
+internal class PollGate {
+    val mutex = Mutex()
+
+    @Volatile
+    var lastCleanupTime: Long = 0L
+}
+
+/**
  * One friend/invite poll cycle: fetch friend updates, surface incoming pairing handshakes, and
  * refresh the UI state. Independent of [LocationService] so it can also run where the
  * foreground service can't (no location permission): from the app's foreground loop and from
  * [LocationServiceRestartWorker]. Without it, pairing and ratchet maintenance would not happen
  * at all for a user who hasn't granted location permission.
  *
- * Cycles are serialized process-wide so the service, the worker and the foreground loop can
- * overlap without surfacing the same handshake twice.
+ * Cycles are serialized through a shared [PollGate] so the service, the worker and the foreground
+ * loop can overlap without surfacing the same handshake twice.
  */
 internal class FriendPoller(
     private val locationClient: LocationClient,
@@ -45,20 +57,19 @@ internal class FriendPoller(
     private val locationSource: LocationSource,
     private val uiStateStore: UiStateSource,
     private val clock: () -> Long = { System.currentTimeMillis() },
+    private val gate: PollGate = PollGate(),
 ) {
-    private var lastCleanupTime: Long = 0L
-
     suspend fun poll(source: WakeSource = WakeSource.TIMER) {
-        pollMutex.withLock { pollLocked(source) }
+        gate.mutex.withLock { pollLocked(source) }
     }
 
     private suspend fun pollLocked(source: WakeSource) {
         try {
             Log.d(TAG, "Polling for location updates (source=${source.value})")
             val now = clock()
-            if (now - lastCleanupTime > 3600_000L) {
+            if (now - gate.lastCleanupTime > 3600_000L) {
                 e2eeManager.cleanupExpiredInvites(48 * 3600L)
-                lastCleanupTime = now
+                gate.lastCleanupTime = now
             }
             val updates =
                 locationClient.poll(
@@ -172,7 +183,5 @@ internal class FriendPoller(
         internal const val PENDING_INIT_RAPID_TIMEOUT_MS = 5 * 60 * 1000L
         internal const val RAPID_POLL_INTERVAL_MS = 2_000L
         internal const val FOREGROUND_POLL_INTERVAL_MS = 10_000L
-
-        private val pollMutex = Mutex()
     }
 }

@@ -330,4 +330,29 @@ class FriendPollerTest {
         shadowOf(app).grantPermissions(Manifest.permission.ACCESS_FINE_LOCATION)
         assertTrue(app.hasLocationPermission())
     }
+
+    @Test
+    fun pollersSharingAGate_serializeAndShareCleanupThrottle() =
+        runTest {
+            val gate = PollGate()
+            val a = FriendPoller(client, manager, userStore, source, ui, clock = { now }, gate = gate)
+            val b = FriendPoller(client, manager, userStore, source, ui, clock = { now }, gate = gate)
+
+            a.poll()
+            b.poll()
+
+            coVerify(exactly = 1) { manager.cleanupExpiredInvites(any()) }
+        }
+
+    @Test
+    fun pollersWithSeparateGates_doNotShareState() =
+        runTest {
+            val a = FriendPoller(client, manager, userStore, source, ui, clock = { now }, gate = PollGate())
+            val b = FriendPoller(client, manager, userStore, source, ui, clock = { now }, gate = PollGate())
+
+            a.poll()
+            b.poll()
+
+            coVerify(exactly = 2) { manager.cleanupExpiredInvites(any()) }
+        }
 }

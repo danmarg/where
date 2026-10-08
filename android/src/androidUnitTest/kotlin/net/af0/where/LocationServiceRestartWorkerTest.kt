@@ -80,7 +80,21 @@ class LocationServiceRestartWorkerTest {
             assertNotNull(started)
             assertEquals(LocationService::class.java.name, started.component?.className)
             assertEquals(LocationService.ACTION_HEARTBEAT_TICK, started.action)
-            coVerify(exactly = 0) { poller.poll(any()) }
+            coVerify(exactly = 0) { poller.poll(any()) } // the nudged service polls; don't double it
+        }
+
+    @Test
+    @Config(sdk = [34])
+    fun withLocationPermission_serviceStartRefused_stillPollsAndSucceeds() =
+        runTest {
+            shadowOf(app).grantPermissions(Manifest.permission.ACCESS_COARSE_LOCATION)
+            addPendingInvite()
+            val w = worker()
+            w.startService = { throw IllegalStateException("ForegroundServiceStartNotAllowedException") }
+
+            assertEquals(ListenableWorker.Result.success(), w.doWork())
+
+            coVerify(exactly = 1) { poller.poll(WakeSource.HEARTBEAT) }
         }
 
     @Test
@@ -92,7 +106,7 @@ class LocationServiceRestartWorkerTest {
             assertEquals(ListenableWorker.Result.success(), worker().doWork())
 
             val started = shadowOf(app).nextStartedService
-            assertNotNull(started, "before API 34 the service can run without permission and is already polling")
+            assertNotNull(started, "before API 34 the service can run without permission")
             assertEquals(LocationService.ACTION_HEARTBEAT_TICK, started.action)
             coVerify(exactly = 0) { poller.poll(any()) }
         }

@@ -3,6 +3,7 @@ package net.af0.where
 import android.content.Context
 import android.content.Intent
 import android.util.Log
+import androidx.annotation.VisibleForTesting
 import androidx.work.CoroutineWorker
 import androidx.work.WorkerParameters
 
@@ -10,6 +11,9 @@ class LocationServiceRestartWorker(
     context: Context,
     params: WorkerParameters,
 ) : CoroutineWorker(context, params) {
+    @VisibleForTesting
+    internal var startService: (Intent) -> Unit = { applicationContext.startForegroundService(it) }
+
     override suspend fun doWork(): Result {
         val app = applicationContext as? WhereApplication ?: return Result.success()
         val friends = app.e2eeManager.listFriends()
@@ -18,25 +22,32 @@ class LocationServiceRestartWorker(
             Log.i(TAG, "No friends or pending invites; skipping service restart")
             return Result.success()
         }
+        // Acks, keepalives and pairing handshakes are what keep a session from expiring
+        // (ACK_TIMEOUT_SECONDS), so they must keep happening when LocationService can't do them:
+        // no location permission on API 34+, or Android refusing to start a location foreground
+        // service from the background (e.g. only "while in use" permission). When the service is
+        // startable, nudging it is enough - it polls itself, and polling here too would double
+        // the background request rate.
         if (!applicationContext.canRunLocationService()) {
-            // On API 34+ the location foreground service can't run without the permission (it
-            // self-stops in onCreate), so poll directly: this is the only background path that still receives
-            // pairing handshakes and advances the ratchet (acks, keepalives) for this user.
-            Log.i(TAG, "LocationService cannot run (no location permission); polling directly instead of starting LocationService")
+            Log.i(TAG, "LocationService cannot run (no location permission); polling directly")
             app.friendPoller.poll(WakeSource.HEARTBEAT)
             return Result.success()
         }
         Log.i(TAG, "WorkManager heartbeat: ensuring LocationService is running + forcing tick")
-        // Use ACTION_HEARTBEAT_TICK so an already-running but Doze-stalled service
-        // gets nudged into running its poll/heartbeat path — startForegroundService
-        // alone is a no-op when the service is already up. Deliberately no permission check
-        // here: LocationService.onCreate() is the single choke point that decides whether it
-        // can actually run (and self-stops safely if not) — see the comment there.
-        applicationContext.startForegroundService(
-            Intent(applicationContext, LocationService::class.java).apply {
-                action = LocationService.ACTION_HEARTBEAT_TICK
-            },
-        )
+        // ACTION_HEARTBEAT_TICK nudges an already-running but Doze-stalled service (a plain
+        // startForegroundService is a no-op when it is up) and restarts a killed one.
+        try {
+            startService(
+                Intent(applicationContext, LocationService::class.java).apply {
+                    action = LocationService.ACTION_HEARTBEAT_TICK
+                },
+            )
+        } catch (e: Exception) {
+            // Typically ForegroundServiceStartNotAllowedException; must not fail the work, and the
+            // service isn't going to poll, so do it here.
+            Log.w(TAG, "Could not start LocationService from background (${e.message}); polling directly")
+            app.friendPoller.poll(WakeSource.HEARTBEAT)
+        }
         return Result.success()
     }
 
