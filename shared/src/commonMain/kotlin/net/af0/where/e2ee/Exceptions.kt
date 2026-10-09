@@ -36,6 +36,9 @@ class ReplayException(message: String) : ProtocolException(message)
 /** Thrown when a ratchet gap is too large to process (§8.3.1). */
 class ProtocolGapException(message: String) : ProtocolException(message)
 
+/** Thrown when a scanned invite is past its `expires_at`. */
+class InviteExpiredException() : WhereException("This invite has expired")
+
 /** Thrown when trying to pair with yourself. */
 class SelfPairingException() : WhereException("Cannot pair with yourself")
 

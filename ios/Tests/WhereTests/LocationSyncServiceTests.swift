@@ -740,6 +740,46 @@ class LocationSyncServiceTests: XCTestCase {
         )
     }
 
+    /// An invite past its `expires_at` is rejected at scan time with a clear error, not a naming dialog.
+    func testProcessQrUrl_expiredInvite_isRejected() async throws {
+        let created = try await service.e2eeManager.createInvite(suggestedName: "Alice")
+        let expired = Shared.QrPayload(
+            protocolVersion: created.protocolVersion,
+            ekPub: created.ekPub,
+            suggestedName: created.suggestedName,
+            discoverySecret: created.discoverySecret,
+            expiresAt: KotlinLong(value: Int64(Date().timeIntervalSince1970) - 3600)
+        )
+
+        XCTAssertFalse(service.processQrUrl(expired.toUrl()))
+        XCTAssertNil(service.repo.pendingQrForNaming)
+    }
+
+    /// An invite from an older client has no `expires_at` and must still be accepted.
+    func testProcessQrUrl_inviteWithoutExpiry_isAccepted() async throws {
+        let created = try await service.e2eeManager.createInvite(suggestedName: "Alice")
+        let legacy = Shared.QrPayload(
+            protocolVersion: created.protocolVersion,
+            ekPub: created.ekPub,
+            suggestedName: created.suggestedName,
+            discoverySecret: created.discoverySecret,
+            expiresAt: nil
+        )
+
+        XCTAssertTrue(service.processQrUrl(legacy.toUrl()))
+        XCTAssertNotNil(service.repo.pendingQrForNaming)
+    }
+
+    /// Regenerating the shown invite (name edit) replaces it instead of piling up invites.
+    func testCreateInvite_whileShowingOne_replacesIt() async throws {
+        await service.createInvite()
+        await service.createInvite()
+        await service.createInvite()
+
+        let invites = try await service.e2eeManager.listPendingInvites()
+        XCTAssertEqual(invites.count, 1)
+    }
+
     func testUiStateSynchronization_DismissalFlows() async throws {
         let qr = try await service.e2eeManager.createInvite(suggestedName: "Alice")
 

@@ -184,13 +184,24 @@ Alice's private key `EK_A.priv` is deleted immediately after `SK` is computed an
 Alice opens "Add Friend" and generates a fresh ephemeral key pair `EK_A` and a fresh random 32-byte `discovery_secret`. She displays a QR code encoding:
 ```
 {
+  "protocol_version":  1,
   "ek_pub":            base64(Alice.EK_A.pub),  // X25519 ephemeral public key (32 bytes)
   "suggested_name":    "Alice",
-  "discovery_secret":  base64(random_32_bytes)   // fresh per QR; HKDF IKM for discovery token
+  "discovery_secret":  base64(random_32_bytes), // fresh per QR; HKDF IKM for discovery token
+  "expires_at":        1798761600               // OPTIONAL: Unix seconds; see below
 }
 ```
 
 No long-term keys, no signatures. The QR is intentionally minimal.
+
+**`expires_at` (optional).** Alice sets this to her creation time plus 48 hours. It lets a scanner say "this invite has expired" instead of silently posting a `KeyExchangeInit` that Alice may no longer be listening for. Rules:
+
+- **Unit and type:** a JSON integer, Unix epoch seconds. Any other type makes the payload malformed.
+- **Missing means no expiry.** Payloads from clients that predate the field omit it and MUST keep working; a scanner MUST NOT reject them as expired.
+- **Unknown fields are ignored.** Clients that predate `expires_at` ignore it, so the field is backward compatible in both directions and does not change `protocol_version`.
+- **Scanner check:** Bob rejects the invite if `now > expires_at + 300` s. The 300 s grace absorbs clock skew between the two devices.
+- **Inviter retention:** Alice MUST keep the invite, and its private key, until at least `expires_at + 300` s, so an invite a scanner still accepts is never one Alice has already dropped. She MAY keep it longer.
+- **Not a security control.** The field is unauthenticated and does not enter any key derivation or the discovery token. Anyone who can alter the QR can already substitute `ek_pub` (the TOFU risk in §2.1), so tampering with `expires_at` adds nothing. Treat it as UX metadata.
 
 Note the asymmetry: Alice's `suggested_name` above is sent in the clear, because the QR itself is the out-of-band channel (§2.1, MITM row) — there is no `SK` yet to encrypt it under. Bob's reciprocal suggested name, sent later in `KeyExchangeInit` over the (untrusted, server-relayed) discovery mailbox, is instead AEAD-encrypted as `encrypted_name` under a key derived from `SK` (§4.4, §9.3) rather than sent as plaintext.
 
@@ -209,7 +220,7 @@ Using a random secret (rather than `EK_A.pub`) as HKDF IKM ensures that only som
 - Alice begins polling `GET /inbox/{hex(discovery_token_A)}` immediately.
 - Bob derives the same `discovery_token_A` from the scanned `discovery_secret` and POSTs his `KeyExchangeInit` there.
 - Alice processes **all** `KeyExchangeInit` messages received during the discovery window, establishing one fully independent session per scanner. Each scanner's `EK_B` is fresh and produces a distinct `SK`, so sessions are cryptographically isolated from one another.
-- The discovery window closes when Alice dismisses the Add Friend UI (or an implementation-defined timeout). The discovery token MUST be discarded at that point.
+- The discovery window closes when the invite expires (`expires_at` plus the 300 s grace) or Alice explicitly cancels it. Closing the Add Friend UI does NOT close the window: a scanner's `KeyExchangeInit` can arrive after the UI is gone, and discarding the invite then would silently drop it, leaving the scanner "Pending" forever. The discovery token MUST be discarded when the window closes.
 - **Multiple-init UX:** When more than one `KeyExchangeInit` is processed in a single discovery window, Alice's UI SHOULD make this visible (e.g. "Added 3 friends from this QR") and SHOULD prompt Safety Number verification for each resulting session. This ensures that a rogue init — which Alice cannot distinguish cryptographically from a legitimate one — produces a visible, verifiable event rather than a silent side-session.
 - **Security note:** A malicious server controlling GET response ordering cannot displace a legitimate scanner under this model, because all inits in the mailbox are processed. The server can still withhold a specific `KeyExchangeInit` entirely (DoS — see §2.3), but it cannot cause Alice to silently pair with an attacker *instead of* a legitimate scanner.
 
@@ -218,7 +229,7 @@ Using a random secret (rather than `EK_A.pub`) as HKDF IKM ensures that only som
 For situations where QR scanning is impossible (e.g., remote setup over a secure chat), Alice can encode the setup payload as a string URL.
 
 **Format:**
-The payload is identical to the QR content defined in §4.2. Alice shares this setup payload via a secure out-of-band channel, typically encoded into a URL. The application supports various URL formats for sharing, including:
+The payload is identical to the QR content defined in §4.2, including the optional `expires_at`. Alice shares this setup payload via a secure out-of-band channel, typically encoded into a URL. The application supports various URL formats for sharing, including:
 
 - **Custom URI Scheme:** `where://invite?q=<encoded-payload>`
 - **Web Link (App Linking):** A dedicated website URL that can trigger app linking (e.g., `https://where.af0.net/invite#<encoded-payload>`).

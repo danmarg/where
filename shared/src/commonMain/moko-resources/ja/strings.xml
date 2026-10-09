@@ -70,6 +70,7 @@
     <string name="where_location">Where の位置情報</string>
     <string name="approximate">おおよその位置</string>
     <string name="invalid_qr_code">無効な QR コード</string>
+    <string name="invite_expired">この招待は期限切れです。新しい招待を送ってもらってください。</string>
     <string name="pairing_failed">ペアリングに失敗しました：無効な応答</string>
     <string name="error_no_connection">接続なし：サーバーに接続できませんでした。</string>
     <string name="error_timeout">リクエストがタイムアウトしました。もう一度お試しください。</string>

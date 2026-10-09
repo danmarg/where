@@ -427,7 +427,13 @@ final class LocationSyncService: ObservableObject {
             return
         }
         do {
-            let qr = try await e2eeManager.createInvite(suggestedName: displayName)
+            // Regenerating the shown invite (e.g. on a name edit) replaces it rather than piling up.
+            let qr: Shared.QrPayload
+            if let shown = (repo.inviteState as? Shared.InviteState.Pending)?.qr {
+                qr = try await e2eeManager.replaceInvite(replacing: shown.ekPub, suggestedName: displayName)
+            } else {
+                qr = try await e2eeManager.createInvite(suggestedName: displayName)
+            }
             repo.inviteState = Shared.InviteState.Pending(qr: qr)
             isInviteSheetShowing = true
             triggerRapidPoll()
@@ -836,6 +842,10 @@ final class LocationSyncService: ObservableObject {
             updateStatus(NSError(domain: "Where", code: 400, userInfo: [NSLocalizedDescriptionKey: MR.strings().invalid_qr_code.localized()]))
             return false
         }
+        if qr.isExpired() {
+            updateStatus(NSError(domain: "Where", code: 410, userInfo: [NSLocalizedDescriptionKey: MR.strings().invite_expired.localized()]))
+            return false
+        }
         repo.inviteState = Shared.InviteState.None()
         isInviteSheetShowing = false
         repo.pendingQrForNaming = qr
@@ -851,7 +861,8 @@ final class LocationSyncService: ObservableObject {
         let qrWithName = Shared.QrPayload(protocolVersion: Shared.ProtocolConstantsKt.PROTOCOL_VERSION,
             ekPub: qr.ekPub,
             suggestedName: friendName,
-            discoverySecret: qr.discoverySecret
+            discoverySecret: qr.discoverySecret,
+            expiresAt: qr.expiresAt
         )
         debugLog { "Scanning QR: discovery=\(qrWithName.discoveryToken().toHex()), friendName=\(friendName)" }
         inviteTask?.cancel()

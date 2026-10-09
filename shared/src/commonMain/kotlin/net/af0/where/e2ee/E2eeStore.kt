@@ -331,6 +331,8 @@ internal class E2eeStore(
                     suggestedName = suggestedName,
                     ekPub = ekPub,
                     discoverySecret = discoverySecret,
+                    // Not persisted: re-derived from creation time, same as at creation.
+                    expiresAt = createdAt + INVITE_LIFETIME_SECONDS,
                 ),
             aliceEkPriv = privKeyBlob,
             createdAt = createdAt,

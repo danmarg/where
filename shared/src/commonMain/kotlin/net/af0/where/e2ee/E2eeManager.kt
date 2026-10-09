@@ -105,8 +105,27 @@ class E2eeManager(
 
     fun diagnosticLogSnapshot(): List<String> = diagnosticLog.value
 
-    suspend fun createInvite(suggestedName: String): QrPayload =
+    suspend fun createInvite(suggestedName: String): QrPayload = createInviteInternal(suggestedName, replacing = null)
+
+    /**
+     * Like [createInvite], but first drops the invite [replacing] unless it has been shared as a
+     * link. Used when the shown invite is regenerated (e.g. the user edits their name in the invite
+     * sheet), so each edit doesn't leave a live, polled invite behind.
+     */
+    suspend fun replaceInvite(
+        replacing: ByteArray,
+        suggestedName: String,
+    ): QrPayload = createInviteInternal(suggestedName, replacing)
+
+    private suspend fun createInviteInternal(
+        suggestedName: String,
+        replacing: ByteArray?,
+    ): QrPayload =
         persistence.withMetadataLock {
+            if (replacing != null) {
+                pendingInvites =
+                    pendingInvites.filterNot { it.exportedAt == null && it.qrPayload.ekPub.contentEquals(replacing) }
+            }
             if (pendingInvites.size >= MAX_PENDING_INVITES) {
                 // Evict an unexported invite first: an exported one has been handed to someone
                 // and is likely still awaiting its scan.
@@ -210,13 +229,13 @@ class E2eeManager(
                 val expired =
                     pendingInvites.filter {
                         val baseTime = it.exportedAt ?: it.createdAt
-                        now - baseTime > expirySeconds
+                        now - baseTime > expirySeconds + INVITE_EXPIRY_GRACE_SECONDS
                     }
                 if (expired.isNotEmpty()) {
                     pendingInvites =
                         pendingInvites.filter {
                             val baseTime = it.exportedAt ?: it.createdAt
-                            now - baseTime <= expirySeconds
+                            now - baseTime <= expirySeconds + INVITE_EXPIRY_GRACE_SECONDS
                         }
                 }
 

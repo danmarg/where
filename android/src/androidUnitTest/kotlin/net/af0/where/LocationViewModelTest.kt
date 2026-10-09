@@ -40,6 +40,8 @@ import net.af0.where.e2ee.QrPayload
 import net.af0.where.e2ee.RawKeyValueStorage
 import net.af0.where.e2ee.SessionState
 import net.af0.where.e2ee.UserStore
+import net.af0.where.e2ee.currentTimeSeconds
+import net.af0.where.e2ee.toHex
 import net.af0.where.model.UserLocation
 import org.junit.After
 import org.junit.Before
@@ -1088,6 +1090,74 @@ class LocationViewModelTest {
                 StringDesc.Resource(net.af0.where.shared.MR.strings.invalid_qr_code),
                 (status as ConnectionStatus.Error).message,
             )
+        }
+
+    @Test
+    fun processQrUrl_expiredInvite_returnsFalseAndSurfacesExpiredError() =
+        runTest {
+            val source = TestFakeLocationSource()
+            val vm = newVm(source)
+            val qr =
+                QrPayload(
+                    protocolVersion = PROTOCOL_VERSION,
+                    ekPub = ByteArray(32) { 1 },
+                    suggestedName = "Alice",
+                    discoverySecret = ByteArray(32),
+                    expiresAt = currentTimeSeconds() - 3600,
+                )
+
+            assertFalse(vm.processQrUrl(qr.toUrl()))
+
+            val status = source.connectionStatus.value
+            assertTrue(status is ConnectionStatus.Error, "expired invite must surface an error, was $status")
+            assertEquals(
+                StringDesc.Resource(net.af0.where.shared.MR.strings.invite_expired),
+                (status as ConnectionStatus.Error).message,
+            )
+        }
+
+    @Test
+    fun processQrUrl_unexpiredInvite_isAccepted() =
+        runTest {
+            val source = TestFakeLocationSource()
+            val vm = newVm(source)
+            val qr =
+                QrPayload(
+                    protocolVersion = PROTOCOL_VERSION,
+                    ekPub = ByteArray(32) { 1 },
+                    suggestedName = "Alice",
+                    discoverySecret = ByteArray(32),
+                    expiresAt = currentTimeSeconds() + 3600,
+                )
+
+            assertTrue(vm.processQrUrl(qr.toUrl()))
+            assertEquals(ConnectionStatus.Ok, source.connectionStatus.value)
+        }
+
+    @Test
+    fun createInvite_whileShowingOne_replacesItInsteadOfAccumulating() =
+        runTest {
+            val store = E2eeManager(createTestSqlDriver(), UnconfinedTestDispatcher())
+            val vm =
+                LocationViewModel(
+                    app,
+                    e2eeManagerParam = store,
+                    startPolling = false,
+                    locationSourceParam = TestFakeLocationSource(),
+                    uiStateStoreParam = FakeUiStateStore(),
+                )
+            vm.createInvite()
+            advanceUntilIdle()
+            val first = (vm.inviteState.value as InviteState.Pending).qr
+
+            // e.g. the user edits their name in the invite sheet.
+            vm.createInvite()
+            advanceUntilIdle()
+            val second = (vm.inviteState.value as InviteState.Pending).qr
+
+            assertFalse(first.ekPub.contentEquals(second.ekPub))
+            val stored = store.listPendingInvites().map { it.qrPayload.ekPub.toHex() }
+            assertEquals(listOf(second.ekPub.toHex()), stored)
         }
 
     @Test

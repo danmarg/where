@@ -340,7 +340,14 @@ class LocationViewModel(
         inviteJob =
             viewModelScope.launch {
                 try {
-                    val qr = e2eeManager.createInvite(displayName.value)
+                    // Regenerating the shown invite (e.g. on a name edit) replaces it rather than piling up.
+                    val shown = (_inviteState.value as? InviteState.Pending)?.qr?.ekPub
+                    val qr =
+                        if (shown != null) {
+                            e2eeManager.replaceInvite(shown, displayName.value)
+                        } else {
+                            e2eeManager.createInvite(displayName.value)
+                        }
                     _inviteState.value = InviteState.Pending(qr)
                     // Ensure the service is running so it polls the discovery mailbox.
                     // Only start if location permission is granted; without it the service
@@ -369,6 +376,11 @@ class LocationViewModel(
                 locationSource.onConnectionStatus(ConnectionStatus.Error(StringDesc.Resource(MR.strings.invalid_qr_code)))
                 return false
             }
+        if (qr.isExpired()) {
+            Log.e(TAG, "processQrUrl: invite expired")
+            locationSource.onConnectionStatus(ConnectionStatus.Error(StringDesc.Resource(MR.strings.invite_expired)))
+            return false
+        }
         Log.d(TAG, "processQrUrl: parsed qr, suggestedName=${qr.suggestedName}")
 
         // If we were showing our own invite sheet, dismiss it immediately to make room for the naming dialog.
