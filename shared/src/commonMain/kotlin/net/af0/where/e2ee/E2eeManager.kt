@@ -116,7 +116,9 @@ class E2eeManager(
                 pendingInvites = pendingInvites.filter { it !== victim }
             }
             val (qr, priv) = KeyExchange.aliceCreateQrPayload(suggestedName)
-            pendingInvites = pendingInvites + PendingInvite(qr, priv)
+            // createdAt is tied to the advertised expiry, so a reloaded invite derives the same expires_at.
+            val createdAt = qr.expiresAt?.minus(INVITE_LIFETIME_SECONDS) ?: currentTimeSeconds()
+            pendingInvites = pendingInvites + PendingInvite(qr, priv, createdAt)
             qr
         }
 
@@ -179,6 +181,23 @@ class E2eeManager(
         return entry
     }
 
+    /**
+     * Changes the name shown in an existing invite, keeping its keys, discovery secret and expiry.
+     * Used when the user edits their name while the invite is on screen. A scan of the QR as it was
+     * displayed a moment ago still pairs, and nothing is minted per edit. Returns null if the invite
+     * no longer exists.
+     */
+    suspend fun updateInviteName(
+        ekPub: ByteArray,
+        suggestedName: String,
+    ): QrPayload? =
+        persistence.withMetadataLock {
+            val old = pendingInvites.find { it.qrPayload.ekPub.contentEquals(ekPub) } ?: return@withMetadataLock null
+            val updated = old.copy(qrPayload = old.qrPayload.copy(suggestedName = suggestedName))
+            pendingInvites = pendingInvites.map { if (it === old) updated else it }
+            updated.qrPayload
+        }
+
     suspend fun listPendingInvites(): List<PendingInviteView> =
         persistence.withMetadataLock {
             pendingInvites.map { it.toView() }
@@ -203,20 +222,20 @@ class E2eeManager(
         }
     }
 
-    suspend fun cleanupExpiredInvites(expirySeconds: Long = 48 * 3600L) {
+    suspend fun cleanupExpiredInvites(expirySeconds: Long = INVITE_LIFETIME_SECONDS) {
         val now = currentTimeSeconds()
         val toRemove =
             persistence.withMetadataLock {
                 val expired =
                     pendingInvites.filter {
                         val baseTime = it.exportedAt ?: it.createdAt
-                        now - baseTime > expirySeconds
+                        now - baseTime > expirySeconds + INVITE_EXPIRY_GRACE_SECONDS
                     }
                 if (expired.isNotEmpty()) {
                     pendingInvites =
                         pendingInvites.filter {
                             val baseTime = it.exportedAt ?: it.createdAt
-                            now - baseTime <= expirySeconds
+                            now - baseTime <= expirySeconds + INVITE_EXPIRY_GRACE_SECONDS
                         }
                 }
 

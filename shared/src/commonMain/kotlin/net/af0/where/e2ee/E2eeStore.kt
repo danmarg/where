@@ -331,6 +331,8 @@ internal class E2eeStore(
                     suggestedName = suggestedName,
                     ekPub = ekPub,
                     discoverySecret = discoverySecret,
+                    // Not persisted: re-derived from creation time, same as at creation.
+                    expiresAt = createdAt + INVITE_LIFETIME_SECONDS,
                 ),
             aliceEkPriv = privKeyBlob,
             createdAt = createdAt,
@@ -416,7 +418,12 @@ internal class E2eeStore(
                 val value = newPendingInvites
                 val current = this@E2eeStore.pendingInvites
                 value.forEach { invite ->
-                    if (current.none { it.qrPayload.ekPub.contentEquals(invite.qrPayload.ekPub) }) {
+                    val existing = current.find { it.qrPayload.ekPub.contentEquals(invite.qrPayload.ekPub) }
+                    // New, or an existing invite whose name / shared-at time changed (INSERT OR REPLACE).
+                    if (existing == null ||
+                        existing.qrPayload.suggestedName != invite.qrPayload.suggestedName ||
+                        existing.exportedAt != invite.exportedAt
+                    ) {
                         database.invitesQueries.insertPendingInvite(
                             ekPub = invite.qrPayload.ekPub,
                             suggestedName = invite.qrPayload.suggestedName,

@@ -70,6 +70,7 @@
     <string name="where_location">Position Where</string>
     <string name="approximate">Approximative</string>
     <string name="invalid_qr_code">Code QR invalide</string>
+    <string name="invite_expired">Cette invitation a expiré. Demandez-en une nouvelle.</string>
     <string name="pairing_failed">Échec de l\'appairage : réponse invalide</string>
     <string name="error_no_connection">Pas de connexion : impossible de joindre le serveur.</string>
     <string name="error_timeout">La requête a expiré. Veuillez réessayer.</string>

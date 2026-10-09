@@ -202,11 +202,21 @@ data class QrPayload(
     // Fresh random 32-byte secret; HKDF IKM for the discovery token (§4.2).
     @SerialName("discovery_secret")
     @Serializable(with = ByteArrayBase64Serializer::class) val discoverySecret: ByteArray,
+    // Epoch seconds after which the inviter may have dropped this invite. Optional: payloads from
+    // older clients omit it (never expires), and older clients ignore it. UX metadata only; it is
+    // unauthenticated and not a security control (see docs/e2ee-location-sync.md §4.2).
+    @SerialName("expires_at")
+    val expiresAt: Long? = null,
 ) {
+    /** True if [expiresAt] is set and [nowSeconds] is past it by more than the clock-skew grace. */
+    fun isExpired(nowSeconds: Long): Boolean = expiresAt != null && nowSeconds - INVITE_EXPIRY_GRACE_SECONDS > expiresAt
+
+    fun isExpired(): Boolean = isExpired(currentTimeSeconds())
+
     override fun equals(other: Any?): Boolean {
         if (other !is QrPayload) return false
         return protocolVersion == other.protocolVersion && ekPub.contentEquals(other.ekPub) && suggestedName == other.suggestedName &&
-            discoverySecret.contentEquals(other.discoverySecret)
+            discoverySecret.contentEquals(other.discoverySecret) && expiresAt == other.expiresAt
     }
 
     override fun hashCode(): Int {
@@ -214,6 +224,7 @@ data class QrPayload(
         h = 31 * h + ekPub.contentHashCode()
         h = 31 * h + suggestedName.hashCode()
         h = 31 * h + discoverySecret.contentHashCode()
+        h = 31 * h + (expiresAt?.hashCode() ?: 0)
         return h
     }
 

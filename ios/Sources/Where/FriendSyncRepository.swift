@@ -48,7 +48,7 @@ final class FriendSyncRepository: ObservableObject {
     /// Initial hydration from persistent store. Called once during `LocationSyncService` init.
     func loadInitialState() async {
         do {
-            try await e2eeManager.cleanupExpiredInvites(expirySeconds: 48 * 3600)
+            try await e2eeManager.cleanupExpiredInvites(expirySeconds: Shared.ProtocolConstantsKt.INVITE_LIFETIME_SECONDS)
             self.friends = try await e2eeManager.listFriends()
             self.pendingInvites = try await e2eeManager.listPendingInvites()
         } catch {

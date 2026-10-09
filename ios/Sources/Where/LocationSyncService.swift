@@ -427,7 +427,15 @@ final class LocationSyncService: ObservableObject {
             return
         }
         do {
-            let qr = try await e2eeManager.createInvite(suggestedName: displayName)
+            // A name edit while an invite is showing renames it in place (same keys), so a scan of
+            // the QR as shown a moment ago still pairs and edits don't mint invites.
+            let qr: Shared.QrPayload
+            if let shown = (repo.inviteState as? Shared.InviteState.Pending)?.qr,
+               let renamed = try await e2eeManager.updateInviteName(ekPub: shown.ekPub, suggestedName: displayName) {
+                qr = renamed
+            } else {
+                qr = try await e2eeManager.createInvite(suggestedName: displayName)
+            }
             repo.inviteState = Shared.InviteState.Pending(qr: qr)
             isInviteSheetShowing = true
             triggerRapidPoll()
@@ -670,7 +678,7 @@ final class LocationSyncService: ObservableObject {
 
         if Date().timeIntervalSince(lastCleanupTime) > 3600 {
             do {
-                try await e2eeManager.cleanupExpiredInvites(expirySeconds: 48 * 3600)
+                try await e2eeManager.cleanupExpiredInvites(expirySeconds: Shared.ProtocolConstantsKt.INVITE_LIFETIME_SECONDS)
                 lastCleanupTime = Date()
             } catch {
                 logger.error("Failed to cleanup expired invites: \(error.localizedDescription)")
@@ -836,6 +844,10 @@ final class LocationSyncService: ObservableObject {
             updateStatus(NSError(domain: "Where", code: 400, userInfo: [NSLocalizedDescriptionKey: MR.strings().invalid_qr_code.localized()]))
             return false
         }
+        if qr.isExpired() {
+            updateStatus(NSError(domain: "Where", code: 410, userInfo: [NSLocalizedDescriptionKey: MR.strings().invite_expired.localized()]))
+            return false
+        }
         repo.inviteState = Shared.InviteState.None()
         isInviteSheetShowing = false
         repo.pendingQrForNaming = qr
@@ -851,7 +863,8 @@ final class LocationSyncService: ObservableObject {
         let qrWithName = Shared.QrPayload(protocolVersion: Shared.ProtocolConstantsKt.PROTOCOL_VERSION,
             ekPub: qr.ekPub,
             suggestedName: friendName,
-            discoverySecret: qr.discoverySecret
+            discoverySecret: qr.discoverySecret,
+            expiresAt: qr.expiresAt
         )
         debugLog { "Scanning QR: discovery=\(qrWithName.discoveryToken().toHex()), friendName=\(friendName)" }
         inviteTask?.cancel()

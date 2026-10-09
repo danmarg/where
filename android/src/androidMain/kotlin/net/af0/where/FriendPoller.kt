@@ -15,6 +15,7 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import net.af0.where.e2ee.ConnectionStatus
 import net.af0.where.e2ee.E2eeManager
+import net.af0.where.e2ee.INVITE_LIFETIME_SECONDS
 import net.af0.where.e2ee.LocationClient
 import net.af0.where.e2ee.UserStore
 import net.af0.where.shared.MR
@@ -73,7 +74,7 @@ internal class FriendPoller(
             Log.d(TAG, "Polling for location updates (source=${source.value})")
             val now = clock()
             if (now - gate.lastCleanupTime > 3600_000L) {
-                e2eeManager.cleanupExpiredInvites(48 * 3600L)
+                e2eeManager.cleanupExpiredInvites(INVITE_LIFETIME_SECONDS)
                 gate.lastCleanupTime = now
             }
             val updates =

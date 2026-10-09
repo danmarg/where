@@ -70,6 +70,7 @@
     <string name="where_location">Where 位置</string>
     <string name="approximate">大致位置</string>
     <string name="invalid_qr_code">无效的二维码</string>
+    <string name="invite_expired">此邀请已过期。请让对方发送新的邀请。</string>
     <string name="pairing_failed">配对失败：响应无效</string>
     <string name="error_no_connection">无连接：无法连接到服务器。</string>
     <string name="error_timeout">请求超时。请重试。</string>

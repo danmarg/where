@@ -40,6 +40,7 @@ import net.af0.where.e2ee.QrPayload
 import net.af0.where.e2ee.RawKeyValueStorage
 import net.af0.where.e2ee.SessionState
 import net.af0.where.e2ee.UserStore
+import net.af0.where.e2ee.currentTimeSeconds
 import net.af0.where.model.UserLocation
 import org.junit.After
 import org.junit.Before
@@ -389,14 +390,10 @@ class LocationViewModelTest {
                 )
             val vm = viewModel!!
 
-            // 1. Create two invites
-            vm.createInvite()
-            advanceUntilIdle()
-            val qr1 = store.listPendingInvites().first().qrPayload
-
-            vm.createInvite()
-            advanceUntilIdle()
-            val qr2 = store.listPendingInvites().last().qrPayload
+            // 1. Create two independent invites. (Via the store: calling vm.createInvite() twice
+            // regenerates the shown invite, replacing it rather than adding a second one.)
+            val qr1 = store.createInvite("Me")
+            val qr2 = store.createInvite("Me")
 
             assertEquals(2, store.listPendingInvites().size)
 
@@ -1088,6 +1085,73 @@ class LocationViewModelTest {
                 StringDesc.Resource(net.af0.where.shared.MR.strings.invalid_qr_code),
                 (status as ConnectionStatus.Error).message,
             )
+        }
+
+    @Test
+    fun processQrUrl_expiredInvite_returnsFalseAndSurfacesExpiredError() =
+        runTest {
+            val source = TestFakeLocationSource()
+            val vm = newVm(source)
+            val qr =
+                QrPayload(
+                    protocolVersion = PROTOCOL_VERSION,
+                    ekPub = ByteArray(32) { 1 },
+                    suggestedName = "Alice",
+                    discoverySecret = ByteArray(32),
+                    expiresAt = currentTimeSeconds() - 3600,
+                )
+
+            assertFalse(vm.processQrUrl(qr.toUrl()))
+
+            val status = source.connectionStatus.value
+            assertTrue(status is ConnectionStatus.Error, "expired invite must surface an error, was $status")
+            assertEquals(
+                StringDesc.Resource(net.af0.where.shared.MR.strings.invite_expired),
+                (status as ConnectionStatus.Error).message,
+            )
+        }
+
+    @Test
+    fun processQrUrl_unexpiredInvite_isAccepted() =
+        runTest {
+            val source = TestFakeLocationSource()
+            val vm = newVm(source)
+            val qr =
+                QrPayload(
+                    protocolVersion = PROTOCOL_VERSION,
+                    ekPub = ByteArray(32) { 1 },
+                    suggestedName = "Alice",
+                    discoverySecret = ByteArray(32),
+                    expiresAt = currentTimeSeconds() + 3600,
+                )
+
+            assertTrue(vm.processQrUrl(qr.toUrl()))
+            assertEquals(ConnectionStatus.Ok, source.connectionStatus.value)
+        }
+
+    @Test
+    fun createInvite_whileShowingOne_renamesItInPlace() =
+        runTest {
+            val store = E2eeManager(createTestSqlDriver(), UnconfinedTestDispatcher())
+            val vm =
+                LocationViewModel(
+                    app,
+                    e2eeManagerParam = store,
+                    startPolling = false,
+                    locationSourceParam = TestFakeLocationSource(),
+                    uiStateStoreParam = FakeUiStateStore(),
+                )
+            vm.createInvite()
+            advanceUntilIdle()
+            val first = (vm.inviteState.value as InviteState.Pending).qr
+
+            // e.g. the user edits their name in the invite sheet.
+            vm.createInvite()
+            advanceUntilIdle()
+            val second = (vm.inviteState.value as InviteState.Pending).qr
+
+            assertTrue(first.ekPub.contentEquals(second.ekPub), "a name edit must keep the shown invite's keys")
+            assertEquals(1, store.listPendingInvites().size)
         }
 
     @Test

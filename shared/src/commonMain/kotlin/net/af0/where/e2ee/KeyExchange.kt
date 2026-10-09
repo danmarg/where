@@ -44,6 +44,7 @@ object KeyExchange {
                 ekPub = ek.pub.copyOf(),
                 suggestedName = suggestedName,
                 discoverySecret = randomBytes(32),
+                expiresAt = currentTimeSeconds() + INVITE_LIFETIME_SECONDS,
             )
         return payload to ek.priv
     }
@@ -62,6 +63,7 @@ object KeyExchange {
         if (qr.protocolVersion > SUPPORTED_MAX_VERSION) {
             throw ProtocolVersionException("Unsupported protocol version ${qr.protocolVersion}")
         }
+        if (qr.isExpired()) throw InviteExpiredException()
 
         val ekB = generateX25519KeyPair()
         val sk = x25519(ekB.priv, qr.ekPub)
