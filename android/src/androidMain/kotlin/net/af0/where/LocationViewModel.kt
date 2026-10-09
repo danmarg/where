@@ -557,7 +557,6 @@ class LocationViewModel(
      * Unused invites are cleaned up by [E2eeManager.cleanupExpiredInvites].
      */
     fun dismissInvite() {
-        inviteJob?.cancel()
         uiStateStore.setInviteSheetShowing(false)
         locationSource.resetRapidPoll()
         _inviteState.value = InviteState.None

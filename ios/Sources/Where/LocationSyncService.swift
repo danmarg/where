@@ -622,7 +622,6 @@ final class LocationSyncService: ObservableObject {
     /// discard its private key and silently drop that scan, leaving the scanner "Pending" forever.
     /// Unused invites are cleaned up by `cleanupExpiredInvites`.
     func dismissInvite() {
-        inviteTask?.cancel()
         resetRapidPoll()
         repo.inviteState = Shared.InviteState.None()
         isInviteSheetShowing = false
