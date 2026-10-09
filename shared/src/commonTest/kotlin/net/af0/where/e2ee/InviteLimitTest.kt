@@ -48,4 +48,23 @@ class InviteLimitTest {
             // The 11th one should still be there
             // (We can't easily test this without a real KeyExchangeInitPayload that matches eleventhQr)
         }
+
+    @Test
+    fun testInviteLimitEvictsUnexportedBeforeExported() =
+        runTest {
+            val manager = testE2eeManager(createTestSqlDriver())
+
+            // The oldest invite has been handed out (e.g. shared as a link); the rest haven't.
+            val exportedQr = manager.createInvite("Exported")
+            manager.markInviteExported(exportedQr.ekPub)
+            val unexportedQr = manager.createInvite("Unexported")
+            repeat(8) { manager.createInvite("Filler-$it") }
+
+            manager.createInvite("Overflow")
+
+            val kept = manager.listPendingInvites().map { it.qrPayload.ekPub.toHex() }
+            assertEquals(10, kept.size)
+            assertTrue(exportedQr.ekPub.toHex() in kept, "an exported invite must outlive unexported ones")
+            assertFalse(unexportedQr.ekPub.toHex() in kept, "the oldest unexported invite is the one evicted")
+        }
 }

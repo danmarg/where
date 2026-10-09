@@ -722,6 +722,24 @@ class LocationSyncServiceTests: XCTestCase {
         }
     }
 
+    /// Regression for #405: dismissing the invite sheet must keep an unexported invite, otherwise a
+    /// scan that arrives after the sheet closes is dropped and the scanner stays "Pending" forever.
+    func testDismissInvite_keepsUnexportedInvite() async throws {
+        let qr = try await service.e2eeManager.createInvite(suggestedName: "Alice")
+        service.isInviteSheetShowing = true
+        service.repo.inviteState = Shared.InviteState.Pending(qr: qr)
+
+        service.dismissInvite()
+
+        XCTAssertFalse(service.isInviteSheetShowing)
+        XCTAssertTrue(service.repo.inviteState is Shared.InviteState.None)
+        let invites = try await service.e2eeManager.listPendingInvites()
+        XCTAssertTrue(
+            invites.contains { toSwiftData($0.qrPayload.ekPub) == toSwiftData(qr.ekPub) },
+            "dismissing the sheet must not delete an unexported invite"
+        )
+    }
+
     func testUiStateSynchronization_DismissalFlows() async throws {
         let qr = try await service.e2eeManager.createInvite(suggestedName: "Alice")
 

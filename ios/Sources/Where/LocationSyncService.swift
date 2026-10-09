@@ -615,21 +615,16 @@ final class LocationSyncService: ObservableObject {
         }
     }
 
-    func clearInviteIfNotExported() async {
-        guard let pending = repo.inviteState as? Shared.InviteState.Pending else { return }
-        
-        // Refresh repo.pendingInvites to get latest exportedAt state
-        do {
-            let list = try await e2eeManager.listPendingInvites()
-            if let current = list.first(where: { toSwiftData($0.qrPayload.ekPub) == toSwiftData(pending.qr.ekPub) }) {
-                if current.exportedAt == nil {
-                    await clearInvite(ekPub: toSwiftData(pending.qr.ekPub))
-                }
-            }
-        } catch {
-            logger.error("Failed to check if invite was exported: \(error.localizedDescription)")
-        }
+    /// Closes the invite sheet without deleting the invite.
+    ///
+    /// Showing a QR in person never marks it exported, and the scan can arrive after the sheet is
+    /// gone (swiped away, or closed to scan the other person's QR). Deleting the invite here would
+    /// discard its private key and silently drop that scan, leaving the scanner "Pending" forever.
+    /// Unused invites are cleaned up by `cleanupExpiredInvites`.
+    func dismissInvite() {
+        resetRapidPoll()
         repo.inviteState = Shared.InviteState.None()
+        isInviteSheetShowing = false
     }
 
     private func onFriendLocationReceived(friendId: String) {

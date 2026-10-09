@@ -66,9 +66,7 @@ struct ContentView: View {
                         get: { syncService.isInviteSheetShowing },
                         set: { if !$0 {
                             syncService.isInviteSheetShowing = false
-                            if syncService.repo.pendingInitPayload == nil {
-                                Task { await syncService.clearInviteIfNotExported() }
-                            }
+                            syncService.dismissInvite()
                         } else {
                             syncService.isInviteSheetShowing = true
                         } }
@@ -77,7 +75,7 @@ struct ContentView: View {
                             InviteSheet(
                                 qrPayload: pending.qr,
                                 displayName: $syncService.displayName,
-                                onDismiss: { Task { await syncService.clearInviteIfNotExported() } },
+                                onDismiss: { syncService.dismissInvite() },
                                 onExported: { Task { await syncService.markCurrentInviteExported() } }
                             )
                         }

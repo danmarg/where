@@ -686,11 +686,11 @@ class LocationViewModelTest {
             uiStateStore.setInviteSheetShowing(true)
             (vm.inviteState as MutableStateFlow).value = InviteState.Pending(qr)
 
-            vm.clearInvite()
+            vm.dismissInvite()
             advanceUntilIdle()
 
-            assertFalse(uiStateStore.isInviteSheetShowing.value, "clearInvite should dismiss the invite sheet")
-            assertEquals(InviteState.None, vm.inviteState.value, "clearInvite should reset inviteState")
+            assertFalse(uiStateStore.isInviteSheetShowing.value, "dismissInvite should dismiss the invite sheet")
+            assertEquals(InviteState.None, vm.inviteState.value, "dismissInvite should reset inviteState")
         }
 
     /**
@@ -828,6 +828,40 @@ class LocationViewModelTest {
             assertFalse(friendId in userStore.friendExpiresAt.value, "elapsed timer must be cleared")
             assertTrue(friendId in userStore.pausedFriendIds.value, "expired friend must be paused")
             io.mockk.coVerify(exactly = 1) { mockClient.sendStoppedSharingToFriend(friendId) }
+        }
+
+    /**
+     * Regression for #405: an invite shown in person is never "exported", and the scan can land
+     * after the sheet is closed (e.g. to scan the other person's QR). Dismissing must keep the
+     * invite and its key, or that scan is dropped and the scanner stays "Pending" forever.
+     */
+    @Test
+    fun dismissInvite_keepsUnexportedInviteInStore() =
+        runTest {
+            val store = E2eeManager(createTestSqlDriver(), UnconfinedTestDispatcher())
+            val uiStateStore = FakeUiStateStore()
+            viewModel =
+                LocationViewModel(
+                    app,
+                    e2eeManagerParam = store,
+                    startPolling = false,
+                    locationSourceParam = TestFakeLocationSource(),
+                    uiStateStoreParam = uiStateStore,
+                )
+            viewModel!!.createInvite()
+            advanceUntilIdle()
+            val pending = viewModel!!.inviteState.value as InviteState.Pending
+            uiStateStore.setInviteSheetShowing(true)
+
+            viewModel!!.dismissInvite()
+            advanceUntilIdle()
+
+            assertEquals(InviteState.None, viewModel!!.inviteState.value)
+            assertFalse(uiStateStore.isInviteSheetShowing.value)
+            assertTrue(
+                store.listPendingInvites().any { it.qrPayload.ekPub.contentEquals(pending.qr.ekPub) },
+                "dismissing the sheet must not delete an unexported invite",
+            )
         }
 
     @Test
