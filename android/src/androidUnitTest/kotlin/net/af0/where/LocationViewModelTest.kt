@@ -391,14 +391,10 @@ class LocationViewModelTest {
                 )
             val vm = viewModel!!
 
-            // 1. Create two invites
-            vm.createInvite()
-            advanceUntilIdle()
-            val qr1 = store.listPendingInvites().first().qrPayload
-
-            vm.createInvite()
-            advanceUntilIdle()
-            val qr2 = store.listPendingInvites().last().qrPayload
+            // 1. Create two independent invites. (Via the store: calling vm.createInvite() twice
+            // regenerates the shown invite, replacing it rather than adding a second one.)
+            val qr1 = store.createInvite("Me")
+            val qr2 = store.createInvite("Me")
 
             assertEquals(2, store.listPendingInvites().size)
 
