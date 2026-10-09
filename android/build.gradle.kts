@@ -63,8 +63,8 @@ android {
         applicationId = "net.af0.where"
         minSdk = 26
         targetSdk = 36
-        versionCode = 142
-        versionName = "2026.09.28.1"
+        versionCode = 143
+        versionName = "2026.10.09.1"
 
         // JNA (a transitive dep of the libsodium bindings) ships dispatch stubs for
         // legacy ABIs no Android device has used in years (armeabi, mips, mips64),
