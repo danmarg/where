@@ -200,7 +200,7 @@ No long-term keys, no signatures. The QR is intentionally minimal.
 - **Missing means no expiry.** Payloads from clients that predate the field omit it and MUST keep working; a scanner MUST NOT reject them as expired.
 - **Unknown fields are ignored.** Clients that predate `expires_at` ignore it, so the field is backward compatible in both directions and does not change `protocol_version`.
 - **Scanner check:** Bob rejects the invite if `now > expires_at + 300` s. The 300 s grace absorbs clock skew between the two devices.
-- **Inviter retention:** Alice MUST keep the invite, and its private key, until at least `expires_at + 300` s, so an invite a scanner still accepts is never one Alice has already dropped. She MAY keep it longer.
+- **Inviter retention:** Alice MUST NOT drop the invite, or its private key, before `expires_at + 300` s, so an invite a scanner still accepts is never one Alice has already dropped. The one exception is an implementation's cap on outstanding invites, which evicts the oldest. Alice MAY keep an invite longer.
 - **Not a security control.** The field is unauthenticated and does not enter any key derivation or the discovery token. Anyone who can alter the QR can already substitute `ek_pub` (the TOFU risk in §2.1), so tampering with `expires_at` adds nothing. Treat it as UX metadata.
 
 Note the asymmetry: Alice's `suggested_name` above is sent in the clear, because the QR itself is the out-of-band channel (§2.1, MITM row) — there is no `SK` yet to encrypt it under. Bob's reciprocal suggested name, sent later in `KeyExchangeInit` over the (untrusted, server-relayed) discovery mailbox, is instead AEAD-encrypted as `encrypted_name` under a key derived from `SK` (§4.4, §9.3) rather than sent as plaintext.

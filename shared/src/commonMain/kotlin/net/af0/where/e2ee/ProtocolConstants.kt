@@ -31,7 +31,7 @@ internal const val MAX_KEY_AGE_MS = 604_800_000L // 7 days in milliseconds
 const val PROTOCOL_VERSION = 1
 
 /** How long an invite (QR or link) is valid for, from creation. Advertised to scanners as `expires_at`. */
-internal const val INVITE_LIFETIME_SECONDS = 48 * 3600L
+const val INVITE_LIFETIME_SECONDS = 48 * 3600L
 
 /**
  * Slack applied on both sides of an invite's expiry: scanners accept up to this long after

@@ -105,27 +105,8 @@ class E2eeManager(
 
     fun diagnosticLogSnapshot(): List<String> = diagnosticLog.value
 
-    suspend fun createInvite(suggestedName: String): QrPayload = createInviteInternal(suggestedName, replacing = null)
-
-    /**
-     * Like [createInvite], but first drops the invite [replacing] unless it has been shared as a
-     * link. Used when the shown invite is regenerated (e.g. the user edits their name in the invite
-     * sheet), so each edit doesn't leave a live, polled invite behind.
-     */
-    suspend fun replaceInvite(
-        replacing: ByteArray,
-        suggestedName: String,
-    ): QrPayload = createInviteInternal(suggestedName, replacing)
-
-    private suspend fun createInviteInternal(
-        suggestedName: String,
-        replacing: ByteArray?,
-    ): QrPayload =
+    suspend fun createInvite(suggestedName: String): QrPayload =
         persistence.withMetadataLock {
-            if (replacing != null) {
-                pendingInvites =
-                    pendingInvites.filterNot { it.exportedAt == null && it.qrPayload.ekPub.contentEquals(replacing) }
-            }
             if (pendingInvites.size >= MAX_PENDING_INVITES) {
                 // Evict an unexported invite first: an exported one has been handed to someone
                 // and is likely still awaiting its scan.
@@ -135,7 +116,9 @@ class E2eeManager(
                 pendingInvites = pendingInvites.filter { it !== victim }
             }
             val (qr, priv) = KeyExchange.aliceCreateQrPayload(suggestedName)
-            pendingInvites = pendingInvites + PendingInvite(qr, priv)
+            // createdAt is tied to the advertised expiry, so a reloaded invite derives the same expires_at.
+            val createdAt = qr.expiresAt?.minus(INVITE_LIFETIME_SECONDS) ?: currentTimeSeconds()
+            pendingInvites = pendingInvites + PendingInvite(qr, priv, createdAt)
             qr
         }
 
@@ -198,6 +181,23 @@ class E2eeManager(
         return entry
     }
 
+    /**
+     * Changes the name shown in an existing invite, keeping its keys, discovery secret and expiry.
+     * Used when the user edits their name while the invite is on screen. A scan of the QR as it was
+     * displayed a moment ago still pairs, and nothing is minted per edit. Returns null if the invite
+     * no longer exists.
+     */
+    suspend fun updateInviteName(
+        ekPub: ByteArray,
+        suggestedName: String,
+    ): QrPayload? =
+        persistence.withMetadataLock {
+            val old = pendingInvites.find { it.qrPayload.ekPub.contentEquals(ekPub) } ?: return@withMetadataLock null
+            val updated = old.copy(qrPayload = old.qrPayload.copy(suggestedName = suggestedName))
+            pendingInvites = pendingInvites.map { if (it === old) updated else it }
+            updated.qrPayload
+        }
+
     suspend fun listPendingInvites(): List<PendingInviteView> =
         persistence.withMetadataLock {
             pendingInvites.map { it.toView() }
@@ -222,7 +222,7 @@ class E2eeManager(
         }
     }
 
-    suspend fun cleanupExpiredInvites(expirySeconds: Long = 48 * 3600L) {
+    suspend fun cleanupExpiredInvites(expirySeconds: Long = INVITE_LIFETIME_SECONDS) {
         val now = currentTimeSeconds()
         val toRemove =
             persistence.withMetadataLock {

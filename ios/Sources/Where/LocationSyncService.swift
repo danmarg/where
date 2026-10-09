@@ -427,10 +427,12 @@ final class LocationSyncService: ObservableObject {
             return
         }
         do {
-            // Regenerating the shown invite (e.g. on a name edit) replaces it rather than piling up.
+            // A name edit while an invite is showing renames it in place (same keys), so a scan of
+            // the QR as shown a moment ago still pairs and edits don't mint invites.
             let qr: Shared.QrPayload
-            if let shown = (repo.inviteState as? Shared.InviteState.Pending)?.qr {
-                qr = try await e2eeManager.replaceInvite(replacing: shown.ekPub, suggestedName: displayName)
+            if let shown = (repo.inviteState as? Shared.InviteState.Pending)?.qr,
+               let renamed = try await e2eeManager.updateInviteName(ekPub: shown.ekPub, suggestedName: displayName) {
+                qr = renamed
             } else {
                 qr = try await e2eeManager.createInvite(suggestedName: displayName)
             }
@@ -676,7 +678,7 @@ final class LocationSyncService: ObservableObject {
 
         if Date().timeIntervalSince(lastCleanupTime) > 3600 {
             do {
-                try await e2eeManager.cleanupExpiredInvites(expirySeconds: 48 * 3600)
+                try await e2eeManager.cleanupExpiredInvites(expirySeconds: Shared.ProtocolConstantsKt.INVITE_LIFETIME_SECONDS)
                 lastCleanupTime = Date()
             } catch {
                 logger.error("Failed to cleanup expired invites: \(error.localizedDescription)")

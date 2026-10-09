@@ -340,14 +340,12 @@ class LocationViewModel(
         inviteJob =
             viewModelScope.launch {
                 try {
-                    // Regenerating the shown invite (e.g. on a name edit) replaces it rather than piling up.
+                    // A name edit while an invite is showing renames it in place (same keys), so a
+                    // scan of the QR as shown a moment ago still pairs and edits don't mint invites.
                     val shown = (_inviteState.value as? InviteState.Pending)?.qr?.ekPub
                     val qr =
-                        if (shown != null) {
-                            e2eeManager.replaceInvite(shown, displayName.value)
-                        } else {
-                            e2eeManager.createInvite(displayName.value)
-                        }
+                        shown?.let { e2eeManager.updateInviteName(it, displayName.value) }
+                            ?: e2eeManager.createInvite(displayName.value)
                     _inviteState.value = InviteState.Pending(qr)
                     // Ensure the service is running so it polls the discovery mailbox.
                     // Only start if location permission is granted; without it the service

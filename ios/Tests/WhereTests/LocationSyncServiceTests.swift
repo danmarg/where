@@ -771,7 +771,7 @@ class LocationSyncServiceTests: XCTestCase {
     }
 
     /// Regenerating the shown invite (name edit) replaces it instead of piling up invites.
-    func testCreateInvite_whileShowingOne_replacesIt() async throws {
+    func testCreateInvite_whileShowingOne_renamesItInPlace() async throws {
         await service.createInvite()
         await service.createInvite()
         await service.createInvite()

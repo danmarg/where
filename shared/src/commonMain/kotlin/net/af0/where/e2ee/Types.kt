@@ -209,7 +209,7 @@ data class QrPayload(
     val expiresAt: Long? = null,
 ) {
     /** True if [expiresAt] is set and [nowSeconds] is past it by more than the clock-skew grace. */
-    fun isExpired(nowSeconds: Long): Boolean = expiresAt != null && nowSeconds > expiresAt + INVITE_EXPIRY_GRACE_SECONDS
+    fun isExpired(nowSeconds: Long): Boolean = expiresAt != null && nowSeconds - INVITE_EXPIRY_GRACE_SECONDS > expiresAt
 
     fun isExpired(): Boolean = isExpired(currentTimeSeconds())
 

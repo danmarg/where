@@ -211,7 +211,8 @@ class QrPayloadCompatTest {
         assertTrue(qr.isExpired(exp + INVITE_EXPIRY_GRACE_SECONDS + 1))
         assertTrue(qr.copy(expiresAt = 0L).isExpired(INVITE_EXPIRY_GRACE_SECONDS + 1))
         assertTrue(qr.copy(expiresAt = -5L).isExpired(INVITE_EXPIRY_GRACE_SECONDS))
-        assertFalse(qr.copy(expiresAt = Long.MAX_VALUE - INVITE_EXPIRY_GRACE_SECONDS).isExpired(Long.MAX_VALUE - 1))
+        assertFalse(qr.copy(expiresAt = Long.MAX_VALUE).isExpired(Long.MAX_VALUE), "a huge expires_at must not overflow into expired")
+        assertFalse(qr.copy(expiresAt = Long.MAX_VALUE).isExpired(1_800_000_000L))
     }
 
     @Test
@@ -296,35 +297,64 @@ class QrPayloadCompatTest {
             }
         }
 
-    // ---- replacing the shown invite ---------------------------------------------------------------
+    // ---- renaming the shown invite ----------------------------------------------------------------
 
     @Test
-    fun replaceInvite_swapsAnUnsharedInviteForTheNewOne() =
+    fun updateInviteName_keepsKeysSecretAndExpiry() =
         runTest {
             val alice = testE2eeManager(createTestSqlDriver())
             val first = alice.createInvite("A")
-            val second = alice.replaceInvite(first.ekPub, "Al")
-            val keys = alice.listPendingInvites().map { it.qrPayload.ekPub.toHex() }
-            assertEquals(listOf(second.ekPub.toHex()), keys)
+            val renamed = assertNotNull(alice.updateInviteName(first.ekPub, "Alice B"))
+
+            assertEquals("Alice B", renamed.suggestedName)
+            assertContentEquals(first.ekPub, renamed.ekPub)
+            assertContentEquals(first.discoverySecret, renamed.discoverySecret)
+            assertEquals(first.expiresAt, renamed.expiresAt)
+            assertEquals(1, alice.listPendingInvites().size)
         }
 
     @Test
-    fun replaceInvite_keepsAnInviteThatWasShared() =
+    fun scanOfTheQrAsShownBeforeARename_stillPairs() =
         runTest {
             val alice = testE2eeManager(createTestSqlDriver())
-            val first = alice.createInvite("A")
-            alice.markInviteExported(first.ekPub)
-            val second = alice.replaceInvite(first.ekPub, "Al")
-            val keys = alice.listPendingInvites().map { it.qrPayload.ekPub.toHex() }.toSet()
-            assertEquals(setOf(first.ekPub.toHex(), second.ekPub.toHex()), keys)
+            val bob = testE2eeManager(createTestSqlDriver())
+            val shown = alice.createInvite("A")
+            val (init, _) = bob.processScannedQr(shown, "Bob")
+
+            // Alice edits her name before polling the scan in.
+            alice.updateInviteName(shown.ekPub, "Alice B")
+
+            assertNotNull(alice.processKeyExchangeInit(init, "Bob", shown.ekPub), "a rename must not drop an in-flight scan")
         }
 
     @Test
     fun repeatedNameEdits_doNotAccumulateInvites() =
         runTest {
             val alice = testE2eeManager(createTestSqlDriver())
-            var shown = alice.createInvite("A")
-            repeat(15) { shown = alice.replaceInvite(shown.ekPub, "A$it") }
+            val shown = alice.createInvite("A")
+            repeat(15) { assertNotNull(alice.updateInviteName(shown.ekPub, "A$it")) }
             assertEquals(1, alice.listPendingInvites().size)
+        }
+
+    @Test
+    fun updateInviteName_unknownInvite_returnsNull() =
+        runTest {
+            val alice = testE2eeManager(createTestSqlDriver())
+            assertNull(alice.updateInviteName(ByteArray(32) { 9 }, "x"))
+        }
+
+    @Test
+    fun renameAndShareTime_surviveARestart() =
+        runTest {
+            val driver = createTestSqlDriver()
+            val alice = testE2eeManager(driver)
+            val shown = alice.createInvite("A")
+            alice.updateInviteName(shown.ekPub, "Renamed")
+            alice.markInviteExported(shown.ekPub)
+
+            val reloaded = testE2eeManager(driver).listPendingInvites().single()
+            assertEquals("Renamed", reloaded.qrPayload.suggestedName)
+            assertNotNull(reloaded.exportedAt, "the shared-at time must be persisted")
+            assertEquals(shown.expiresAt, reloaded.qrPayload.expiresAt, "expires_at must derive identically after a reload")
         }
 }

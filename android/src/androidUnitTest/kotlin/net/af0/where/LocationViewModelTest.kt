@@ -41,7 +41,6 @@ import net.af0.where.e2ee.RawKeyValueStorage
 import net.af0.where.e2ee.SessionState
 import net.af0.where.e2ee.UserStore
 import net.af0.where.e2ee.currentTimeSeconds
-import net.af0.where.e2ee.toHex
 import net.af0.where.model.UserLocation
 import org.junit.After
 import org.junit.Before
@@ -1131,7 +1130,7 @@ class LocationViewModelTest {
         }
 
     @Test
-    fun createInvite_whileShowingOne_replacesItInsteadOfAccumulating() =
+    fun createInvite_whileShowingOne_renamesItInPlace() =
         runTest {
             val store = E2eeManager(createTestSqlDriver(), UnconfinedTestDispatcher())
             val vm =
@@ -1151,9 +1150,8 @@ class LocationViewModelTest {
             advanceUntilIdle()
             val second = (vm.inviteState.value as InviteState.Pending).qr
 
-            assertFalse(first.ekPub.contentEquals(second.ekPub))
-            val stored = store.listPendingInvites().map { it.qrPayload.ekPub.toHex() }
-            assertEquals(listOf(second.ekPub.toHex()), stored)
+            assertTrue(first.ekPub.contentEquals(second.ekPub), "a name edit must keep the shown invite's keys")
+            assertEquals(1, store.listPendingInvites().size)
         }
 
     @Test
