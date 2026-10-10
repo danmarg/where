@@ -164,6 +164,25 @@ class ReceiveRatchetFailureTest {
         converse(alice, bob)
     }
 
+    /**
+     * Sessions persisted by older builds may carry `"needsRatchet": true` (set by the buggy
+     * soft-fail path). The field is gone; such a blob must still load and must NOT trigger an
+     * extra send-side ratchet, so a session that hadn't sent since the bug recovers.
+     */
+    @Test
+    fun legacyNeedsRatchetFlagIsIgnoredOnLoad() {
+        var (alice, bob) = pair()
+        val (a1, tampered) = Session.encryptMessage(alice, loc(1))
+        alice = a1
+        bob = expectSoftFail(bob, tamper(tampered))
+
+        val blob = E2eeStore.json.encodeToString(SessionState.serializer(), bob)
+        val legacyBlob = blob.replaceFirst("{", "{\"needsRatchet\":true,")
+        bob = E2eeStore.json.decodeFromString(SessionState.serializer(), legacyBlob)
+
+        converse(alice, bob)
+    }
+
     /** A dropped new-epoch frame must heal the same way a corrupted one does. */
     @Test
     fun droppedNewEpochFrameDoesNotBrickSession() {

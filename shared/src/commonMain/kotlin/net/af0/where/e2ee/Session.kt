@@ -31,11 +31,9 @@ object Session {
     ): Pair<SessionState, EncryptedMessagePayload> {
         if (state.sendSeq == Long.MAX_VALUE) throw SessionBrickedException("sequence number overflow")
 
-        var currentState = state
-
-        if (currentState.needsRatchet) {
-            currentState = performDhRatchet(currentState, currentState.remoteDhPub)
-        }
+        // No lazy send-side ratchet here: performDhRatchet runs both sub-steps as soon as a new
+        // peer DH key is received, so the send chain is always current.
+        val currentState = state
 
         // DOUBLE RATCHET TRANSITION PROTECTION (§4.3)
         // The first message in a new epoch (seq == 1) is the transition message.
@@ -58,7 +56,6 @@ object Session {
             currentState.copy(
                 sendChainKey = step.newChainKey,
                 sendSeq = seqToUse,
-                needsRatchet = false,
             )
 
         // Seal the metadata into an envelope (#186)
@@ -358,7 +355,6 @@ object Session {
                 localDhPub = newLocalDh.pub.copyOf(),
                 remoteDhPub = remoteDhPub.copyOf(),
                 prevSendToken = state.sendToken.copyOf(),
-                needsRatchet = false,
             )
 
         // Memory Hygiene

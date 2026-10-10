@@ -62,8 +62,7 @@ data class SessionState(
     // Previous send and receive chain lengths (§4.4) - used to bind sequence numbers across epochs in AAD.
     val pn: Long = 0,
     val pr: Long = 0,
-    // Set to true if we've received a new DH key but haven't ratcheted our send chain yet.
-    val needsRatchet: Boolean = false,
+    // (A former `needsRatchet` flag is ignored when loading old blobs: ignoreUnknownKeys.)
     // HEADER ENCRYPTION (#186)
     @Serializable(with = ByteArrayBase64Serializer::class) val headerKey: ByteArray = ByteArray(0),
     @Serializable(with = ByteArrayBase64Serializer::class) val sendHeaderKey: ByteArray = ByteArray(0),
@@ -126,8 +125,7 @@ data class SessionState(
             skippedMessageKeys.size == other.skippedMessageKeys.size &&
             skippedMessageKeys.all { (k, v) -> other.skippedMessageKeys[k]?.contentEquals(v) == true } &&
             pn == other.pn &&
-            pr == other.pr &&
-            needsRatchet == other.needsRatchet
+            pr == other.pr
     }
 
     override fun hashCode(): Int {
@@ -142,7 +140,6 @@ data class SessionState(
         h = 31 * h + skipHash
         h = 31 * h + pn.hashCode()
         h = 31 * h + pr.hashCode()
-        h = 31 * h + needsRatchet.hashCode()
         return h
     }
 }
