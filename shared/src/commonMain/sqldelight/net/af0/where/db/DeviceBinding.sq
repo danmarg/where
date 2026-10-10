@@ -1,0 +1,12 @@
+-- One random marker shared with a device-bound store (iOS: a ThisDeviceOnly keychain item).
+-- A database whose marker doesn't match came from another device or install.
+CREATE TABLE DeviceBinding (
+    id INTEGER NOT NULL PRIMARY KEY CHECK (id = 0),
+    marker TEXT NOT NULL
+);
+
+getMarker:
+SELECT marker FROM DeviceBinding WHERE id = 0;
+
+setMarker:
+INSERT OR REPLACE INTO DeviceBinding(id, marker) VALUES (0, ?);

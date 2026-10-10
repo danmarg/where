@@ -95,4 +95,6 @@
     <string name="more_options">Plus d\'options</string>
     <string name="open_source_licenses">Licences open source</string>
     <string name="close">Fermer</string>
+    <string name="discarded_sessions_title">Associez à nouveau vos amis</string>
+    <string name="discarded_sessions_message">Les données de cet appareil proviennent d\'un autre téléphone ou d\'une sauvegarde : vos connexions avec %s ne peuvent pas être utilisées en toute sécurité et ont été supprimées. Demandez-leur de nouvelles invitations pour partager à nouveau vos positions.</string>
 </resources>

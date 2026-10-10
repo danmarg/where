@@ -57,6 +57,11 @@ final class LocationSyncService: ObservableObject {
 
     @Published var connectionStatus: Shared.ConnectionStatus = Shared.ConnectionStatus.Ok()
     @Published var isDataLoaded: Bool = false
+    /// Friends whose sessions were discarded because the database came from another device or
+    /// install; shown once so the user knows to re-pair. Persisted until dismissed, since the
+    /// discard may happen during a background relaunch.
+    @Published private(set) var discardedSessionNames: [String] = []
+    static let discardedSessionNamesKey = "discarded_session_names"
     /// Mirror of `userStore.isSharingLocation` for SwiftUI binding. Read freely, but to
     /// STOP sharing callers must use `stopSharing()` rather than assignment — that path
     /// also enqueues the StoppedSharing fan-out. didSet handles only state mirroring.
@@ -242,12 +247,51 @@ final class LocationSyncService: ObservableObject {
         return queue
     }()
 
+    /// Opens the on-disk database, discarding its sessions first if it was restored or
+    /// transferred from elsewhere (spec §5.5), and checks it is excluded from backup.
+    private static func openDatabase() -> Shared.E2eeManager {
+        let name = "where.db"
+        let driver = IosSqlDriverKt.createIosSqlDriver(name: name)
+        let binding = DeviceBindingKt.reconcileDeviceBinding(sqlDriver: driver, deviceStore: DeviceMarkerKeychain())
+        let store = Shared.E2eeManager(sqlDriver: driver)
+
+        if !binding.checked {
+            logger.warning("Device binding check skipped: device marker unavailable")
+            store.addDiagnosticEvent(message: "Device binding check skipped: keychain unavailable", coalesceKey: "Device binding check skipped")
+        }
+        let discarded = binding.discardedFriendNames
+        if !discarded.isEmpty {
+            logger.error("Discarded \(discarded.count) session(s) from a database restored or transferred from another device")
+            store.addDiagnosticEvent(message: "Discarded \(discarded.count) session(s): database came from another device", coalesceKey: nil)
+            let defaults = UserDefaults.standard
+            let pending = defaults.stringArray(forKey: discardedSessionNamesKey) ?? []
+            defaults.set(pending + discarded, forKey: discardedSessionNamesKey)
+        }
+
+        let dir = IosSqlDriverKt.iosDatabaseDirectory(name: name)
+        if !isExcludedFromBackup(path: dir) {
+            logger.error("Database directory is not excluded from backup: \(dir, privacy: .public)")
+            store.addDiagnosticEvent(message: "Database directory is not excluded from backup", coalesceKey: "Database directory is not excluded")
+        }
+        return store
+    }
+
+    /// Reads the attribute through a fresh URL: a URL that set a resource value caches it.
+    nonisolated static func isExcludedFromBackup(path: String) -> Bool {
+        let values = try? URL(fileURLWithPath: path).resourceValues(forKeys: [.isExcludedFromBackupKey])
+        return values?.isExcludedFromBackup == true
+    }
+
+    func dismissDiscardedSessionsNotice() {
+        UserDefaults.standard.removeObject(forKey: Self.discardedSessionNamesKey)
+        discardedSessionNames = []
+    }
+
     init(e2eeManager: Shared.E2eeManager? = nil, userStore: Shared.UserStore? = nil, locationClient: LocationClientProtocol? = nil, locationProvider: LocationProviding? = nil) {
         logger.debug("LocationSyncService init: serverUrl=\(ServerConfig.httpBaseUrl)")
 
         let keychain = KeychainRawKeyValueStorage()
-        let driver = IosSqlDriverKt.createIosSqlDriver()
-        let store = e2eeManager ?? Shared.E2eeManager(sqlDriver: driver)
+        let store = e2eeManager ?? Self.openDatabase()
         self.e2eeManager = store
         let userStoreValue = userStore ?? Shared.UserStore(storage: keychain)
         self.userStore = userStoreValue
@@ -256,6 +300,7 @@ final class LocationSyncService: ObservableObject {
         let repoValue = FriendSyncRepository(e2eeManager: store, userStore: userStoreValue)
         self.repo = repoValue
 
+        self.discardedSessionNames = UserDefaults.standard.stringArray(forKey: Self.discardedSessionNamesKey) ?? []
         self.isSharingLocation = (userStoreValue.isSharingLocation.value as? Shared.KotlinBoolean)?.boolValue ?? true
         self.displayName = userStoreValue.displayName.value as? String ?? ""
 
