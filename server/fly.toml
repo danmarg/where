@@ -6,6 +6,10 @@
 app = 'where-api'
 primary_region = 'fra'
 
+[env]
+  # Use Fly's edge-set Fly-Client-IP header for per-IP rate limiting (see Server.kt clientIp).
+  TRUST_PROXY = 'true'
+
 [http_service]
   internal_port = 8080
   force_https = true

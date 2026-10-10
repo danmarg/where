@@ -4,10 +4,20 @@ import kotlinx.serialization.json.JsonPrimitive
 import org.testcontainers.containers.GenericContainer
 import org.testcontainers.containers.wait.strategy.Wait
 import org.testcontainers.utility.DockerImageName
+import software.amazon.awssdk.services.dynamodb.model.AttributeDefinition
 import software.amazon.awssdk.services.dynamodb.model.AttributeValue
+import software.amazon.awssdk.services.dynamodb.model.BillingMode
 import software.amazon.awssdk.services.dynamodb.model.CancellationReason
+import software.amazon.awssdk.services.dynamodb.model.CreateTableRequest
 import software.amazon.awssdk.services.dynamodb.model.GetItemRequest
+import software.amazon.awssdk.services.dynamodb.model.GlobalSecondaryIndex
+import software.amazon.awssdk.services.dynamodb.model.KeySchemaElement
+import software.amazon.awssdk.services.dynamodb.model.KeyType
+import software.amazon.awssdk.services.dynamodb.model.Projection
+import software.amazon.awssdk.services.dynamodb.model.ProjectionType
 import software.amazon.awssdk.services.dynamodb.model.PutItemRequest
+import software.amazon.awssdk.services.dynamodb.model.ScalarAttributeType
+import software.amazon.awssdk.services.dynamodb.model.TimeToLiveStatus
 import software.amazon.awssdk.services.dynamodb.model.TransactionCanceledException
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
@@ -504,6 +514,68 @@ class DynamoMailboxStateTest {
         assertTrue(state.post(token, JsonPrimitive("a"), "after-1"))
         assertTrue(state.post(token, JsonPrimitive("b"), "after-2"))
         assertFalse(state.post(token, JsonPrimitive("c"), "after-3"))
+    }
+
+    @Test
+    fun `deleteByIds with duplicate ids deletes once and frees one slot each`() {
+        val state = store()
+        val token = freshToken()
+        seedFullQueue(token)
+
+        // DynamoDB rejects batch requests with duplicate keys; the store must dedupe.
+        assertEquals(1, state.deleteByIds(token, listOf("seed-0", "seed-0", "seed-0")))
+        assertTrue(state.post(token, JsonPrimitive("a"), "after-1"))
+        assertFalse(state.post(token, JsonPrimitive("b"), "after-2"))
+    }
+
+    @Test
+    fun `TTL is enabled on a pre-existing table that lacks it`() {
+        val client = createDynamoDbClient("test", "test", "us-east-1", endpoint())
+        val suffix = "preexisting_" + java.util.UUID.randomUUID().toString().take(8)
+        val messages = "test_messages_$suffix"
+        val received = "test_received_$suffix"
+        for (table in listOf(messages, received)) {
+            client.createTable(
+                CreateTableRequest.builder()
+                    .tableName(table)
+                    .billingMode(BillingMode.PAY_PER_REQUEST)
+                    .attributeDefinitions(
+                        AttributeDefinition.builder().attributeName("token").attributeType(ScalarAttributeType.S).build(),
+                        AttributeDefinition.builder().attributeName("msgId").attributeType(ScalarAttributeType.S).build(),
+                        AttributeDefinition.builder().attributeName("postedAt").attributeType(ScalarAttributeType.N).build(),
+                    )
+                    .keySchema(
+                        KeySchemaElement.builder().attributeName("token").keyType(KeyType.HASH).build(),
+                        KeySchemaElement.builder().attributeName("msgId").keyType(KeyType.RANGE).build(),
+                    )
+                    .apply {
+                        if (table == messages) {
+                            globalSecondaryIndexes(
+                                GlobalSecondaryIndex.builder()
+                                    .indexName("postedAt-index")
+                                    .keySchema(
+                                        KeySchemaElement.builder().attributeName("token").keyType(KeyType.HASH).build(),
+                                        KeySchemaElement.builder().attributeName("postedAt").keyType(KeyType.RANGE).build(),
+                                    )
+                                    .projection(Projection.builder().projectionType(ProjectionType.ALL).build())
+                                    .build(),
+                            )
+                        } else {
+                            attributeDefinitions(
+                                AttributeDefinition.builder().attributeName("token").attributeType(ScalarAttributeType.S).build(),
+                                AttributeDefinition.builder().attributeName("msgId").attributeType(ScalarAttributeType.S).build(),
+                            )
+                        }
+                    }
+                    .build(),
+            )
+        }
+        stores += DynamoMailboxState(client, messagesTable = messages, receivedIdsTable = received)
+
+        for (table in listOf(messages, received)) {
+            val status = client.describeTimeToLive { it.tableName(table) }.timeToLiveDescription().timeToLiveStatus()
+            assertTrue(status == TimeToLiveStatus.ENABLED || status == TimeToLiveStatus.ENABLING, "$table TTL is $status")
+        }
     }
 
     @Test

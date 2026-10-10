@@ -25,7 +25,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Setup Flyctl
-        uses: superfly/flyctl-actions/setup-flyctl@master
+        # Pinned to a commit (tag 1.6): this job holds FLY_API_TOKEN, so a moving ref is a supply-chain risk.
+        uses: superfly/flyctl-actions/setup-flyctl@ed8efb33836e8b2096c7fd3ba1c8afe303ebbff1
       - name: Deploy to Fly.io
         run: flyctl deploy --remote-only --config server/fly.toml --dockerfile server/Dockerfile
         env:
