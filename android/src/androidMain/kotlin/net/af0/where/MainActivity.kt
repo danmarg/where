@@ -431,6 +431,8 @@ class MainActivity : ComponentActivity() {
         super.onResume()
         (application as WhereApplication).locationSource.setAppForeground(true)
         (application as WhereApplication).locationSource.wakePoll()
+        // Foreground now, so service starts the ViewModel was refused in the background succeed.
+        viewModel.retryDeferredServiceStarts()
     }
 
     override fun onPause() {

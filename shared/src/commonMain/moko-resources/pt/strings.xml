@@ -72,6 +72,7 @@
     <string name="approximate">Aproximada</string>
     <string name="invalid_qr_code">Código QR inválido</string>
     <string name="invite_expired">Este convite expirou. Peça que enviem um novo.</string>
+    <string name="invite_already_used">Você já aceitou este convite. Peça um novo para parear novamente.</string>
     <string name="pairing_failed">Falha no pareamento: resposta inválida</string>
     <string name="error_no_connection">Sem conexão: não foi possível alcançar o servidor.</string>
     <string name="error_timeout">A solicitação expirou. Tente novamente.</string>

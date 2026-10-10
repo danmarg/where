@@ -125,7 +125,7 @@ class LocationServiceSharingPauseTest {
             advanceUntilIdle()
 
             verify(exactly = 1) { mockLocationProvider.removeGeofence() }
-            assertFalse(service.geofencePlanted)
+            assertFalse(service.geofenceMayBeRegistered)
             controller.destroy()
         }
 
@@ -145,9 +145,64 @@ class LocationServiceSharingPauseTest {
             service.onStartCommand(geofenceEvent(), 0, 1)
             advanceUntilIdle()
 
-            verify(exactly = 1) { mockLocationProvider.removeGeofence() }
+            // At least once: startup reconciliation may already have removed it (see below).
+            verify(atLeast = 1) { mockLocationProvider.removeGeofence() }
             verify(exactly = 0) { mockLocationProvider.setGeofenceAt(any(), any(), any()) }
             verify(exactly = 0) { mockLocationProvider.requestActiveUpdates(any(), any(), any()) }
+            controller.destroy()
+        }
+
+    @Test
+    fun serviceStartedWhileNotSharingRemovesFenceLeftByPreviousProcessOnce() =
+        runTest {
+            // A NEVER_EXPIRE fence outlives the process that planted it, and a fresh process has
+            // no record of it - so with sharing off, startup must remove it without waiting for
+            // its exit event, and later reconciliations must not keep re-issuing the remove.
+            val app = context as TestWhereApplication
+            app.userStore.setSharing(false)
+
+            val controller = Robolectric.buildService(LocationService::class.java)
+            val service = controller.get()
+            service.locationProviderOverride = mockLocationProvider
+            service.locationClientOverride = mockk(relaxed = true)
+            service.e2eeManagerOverride = mockk(relaxed = true)
+            service.locationSourceOverride = fakeLocationSource
+            controller.create()
+            advanceUntilIdle()
+
+            verify(exactly = 1) { mockLocationProvider.removeGeofence() }
+            assertFalse(service.geofenceMayBeRegistered)
+
+            service.onStartCommand(android.content.Intent(context, LocationService::class.java), 0, 1)
+            advanceUntilIdle()
+            verify(exactly = 1) { mockLocationProvider.removeGeofence() }
+            controller.destroy()
+        }
+
+    @Test
+    fun failedGeofenceAddIsNotTreatedAsRegistered() =
+        runTest {
+            val app = context as TestWhereApplication
+            app.userStore.setSharing(true)
+            io.mockk.every { mockLocationProvider.setGeofenceAt(any(), any(), any()) } returns GeofenceRequestResult.FAILED
+
+            val controller = Robolectric.buildService(LocationService::class.java)
+            val service = controller.get()
+            service.locationProviderOverride = mockLocationProvider
+            service.locationClientOverride = mockk(relaxed = true)
+            service.e2eeManagerOverride = mockk(relaxed = true)
+            service.locationSourceOverride = fakeLocationSource
+            controller.create()
+            advanceUntilIdle()
+            // Pause once so the startup "may be registered" state is resolved by a remove.
+            app.userStore.setSharing(false)
+            advanceUntilIdle()
+            app.userStore.setSharing(true)
+            advanceUntilIdle()
+            service.onStartCommand(geofenceEvent(), 0, 1)
+            advanceUntilIdle()
+            verify(atLeast = 1) { mockLocationProvider.setGeofenceAt(any(), any(), any()) }
+            assertFalse(service.geofenceMayBeRegistered, "a FAILED add must not mark a fence as possibly registered")
             controller.destroy()
         }
 }

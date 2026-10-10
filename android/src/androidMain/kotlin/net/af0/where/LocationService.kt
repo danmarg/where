@@ -101,11 +101,14 @@ class LocationService : Service() {
     @VisibleForTesting
     internal var isPassiveRegistered = false
 
-    // True once this process has submitted a geofence; cleared when it's removed because
-    // sharing/permission went away. (A fence left by a previous process is removed when its
-    // exit event arrives while not sharing - see ACTION_GEOFENCE_EVENT.)
+    // "A fence may be registered", NOT "a fence is confirmed registered": set when an add is
+    // requested (GMS may still fail it), cleared once a remove has been requested. Starts TRUE
+    // because a NEVER_EXPIRE fence from a previous process outlives it, so the first time this
+    // process sees sharing/permission off it removes one unconditionally (removal is
+    // idempotent). A fence's exit event while not sharing also removes it - see
+    // ACTION_GEOFENCE_EVENT.
     @VisibleForTesting
-    internal var geofencePlanted = false
+    internal var geofenceMayBeRegistered = true
 
     @VisibleForTesting
     internal var currentPriority = LocationAccuracy.BALANCED
@@ -644,7 +647,7 @@ class LocationService : Service() {
         if (!userStore.isSharingLocation.value) return
         val radiusMeters = GeofencePolicy.radiusMeters(isMoving = !isStill).toFloat()
         val result = locationProvider.setGeofenceAt(lat, lng, radiusMeters)
-        if (result != GeofenceRequestResult.FAILED) geofencePlanted = true
+        if (result != GeofenceRequestResult.FAILED) geofenceMayBeRegistered = true
         when (result) {
             GeofenceRequestResult.SUBMITTED -> {
                 // GMS: request submitted; actual confirmation logged by provider's Task listener.
@@ -687,9 +690,9 @@ class LocationService : Service() {
                 locationProvider.removePassiveUpdates()
                 isPassiveRegistered = false
             }
-            if (geofencePlanted) {
+            if (geofenceMayBeRegistered) {
                 locationProvider.removeGeofence()
-                geofencePlanted = false
+                geofenceMayBeRegistered = false
             }
             // Note: We don't call stopSelf() here even if permissions are missing or sharing is paused.
             // This is intentional:

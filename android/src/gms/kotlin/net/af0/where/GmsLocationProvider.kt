@@ -153,16 +153,23 @@ class GmsLocationProvider : LocationProvider {
         }
     }
 
-    // addGeofences() resolves asynchronously with no documented ordering guarantee between
-    // overlapping calls, and setGeofenceAt() can legitimately be called again (activity
-    // transition, geofence-exit rearm, cold start) before a prior call has resolved. Rather
-    // than rely on GMS's same-request-ID replacement to sort out whichever registration lands
-    // last, serialize explicitly: only one add is ever in flight, and a call arriving mid-flight
-    // just replaces the pending target rather than firing a second overlapping request. The
-    // in-flight call's own completion (success or failure) drains the latest pending target, if
-    // any changed while it was outstanding.
+    // addGeofences()/removeGeofences() resolve asynchronously with no documented ordering
+    // guarantee between overlapping calls, and setGeofenceAt() can legitimately be called again
+    // (activity transition, geofence-exit rearm, cold start) before a prior call has resolved.
+    // Rather than rely on GMS to sort out whichever request lands last, serialize explicitly:
+    // only one add *or remove* is ever in flight, and a call arriving mid-flight just replaces
+    // the pending operation rather than firing a second overlapping request. The in-flight
+    // call's own completion (success or failure) drains the latest pending operation, so the
+    // last operation requested is always the last one GMS applies - in particular a remove
+    // requested while an add is outstanding runs after that add settles, never before it.
+    private sealed interface GeofenceOp {
+        data class Add(val lat: Double, val lng: Double, val radiusMeters: Float) : GeofenceOp
+
+        data object Remove : GeofenceOp
+    }
+
     private var geofenceRequestInFlight = false
-    private var pendingGeofenceTarget: Triple<Double, Double, Float>? = null
+    private var pendingGeofenceOp: GeofenceOp? = null
 
     override fun setGeofenceAt(
         lat: Double,
@@ -170,7 +177,7 @@ class GmsLocationProvider : LocationProvider {
         radiusMeters: Float,
     ): GeofenceRequestResult {
         if (geofenceRequestInFlight) {
-            pendingGeofenceTarget = Triple(lat, lng, radiusMeters)
+            pendingGeofenceOp = GeofenceOp.Add(lat, lng, radiusMeters)
             return GeofenceRequestResult.QUEUED
         }
         return submitGeofence(lat, lng, radiusMeters)
@@ -212,20 +219,42 @@ class GmsLocationProvider : LocationProvider {
         }
     }
 
+    // Idempotent: removing a fence that isn't registered is harmless, so callers that don't know
+    // whether one exists (e.g. after process death) can always call this.
     override fun removeGeofence() {
-        // Drop any queued re-plant so an in-flight add's completion doesn't re-add it.
-        pendingGeofenceTarget = null
-        geofencingClient.removeGeofences(listOf(GEOFENCE_ID))
-            .addOnFailureListener { e -> Log.w(TAG, "Geofence remove failed: ${e.message}") }
+        if (geofenceRequestInFlight) {
+            // Replaces any queued re-plant, and runs once the in-flight add settles - so a late
+            // add completion can't leave a live fence behind after sharing stops.
+            pendingGeofenceOp = GeofenceOp.Remove
+            return
+        }
+        submitRemoveGeofence()
+    }
+
+    private fun submitRemoveGeofence() {
+        try {
+            geofenceRequestInFlight = true
+            geofencingClient.removeGeofences(listOf(GEOFENCE_ID))
+                .addOnCompleteListener { task ->
+                    if (!task.isSuccessful) Log.w(TAG, "Geofence remove failed: ${task.exception?.message}")
+                    onGeofenceRequestSettled()
+                }
+        } catch (e: RuntimeException) {
+            Log.w(TAG, "Geofence remove threw: ${e.message}")
+            geofenceRequestInFlight = false
+        }
     }
 
     // Task listeners run on the main looper by default (no Executor was supplied), matching
     // every other call in this class — so this never races with setGeofenceAt() itself.
     private fun onGeofenceRequestSettled() {
         geofenceRequestInFlight = false
-        val next = pendingGeofenceTarget ?: return
-        pendingGeofenceTarget = null
-        submitGeofence(next.first, next.second, next.third)
+        val next = pendingGeofenceOp ?: return
+        pendingGeofenceOp = null
+        when (next) {
+            is GeofenceOp.Add -> submitGeofence(next.lat, next.lng, next.radiusMeters)
+            GeofenceOp.Remove -> submitRemoveGeofence()
+        }
     }
 
     override fun onDestroy() {

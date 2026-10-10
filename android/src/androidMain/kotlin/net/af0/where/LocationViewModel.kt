@@ -7,6 +7,7 @@ import android.os.Looper
 import android.os.PowerManager
 import android.util.Log
 import androidx.annotation.MainThread
+import androidx.annotation.VisibleForTesting
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import androidx.work.ExistingPeriodicWorkPolicy
@@ -215,19 +216,43 @@ class LocationViewModel(
         }
     }
 
+    @VisibleForTesting
+    internal var consumedInvites = ConsumedInvites(app.getSharedPreferences(ConsumedInvites.PREFS_NAME, Context.MODE_PRIVATE))
+
+    @VisibleForTesting
+    internal var serviceStarter: (Intent) -> Unit = { getApplication<Application>().startForegroundService(it) }
+
+    // Service starts Android refused because the app was not foreground-eligible, keyed by
+    // (action, friend) so repeated refusals of the same request collapse to one retry.
+    private val deferredServiceStarts = LinkedHashMap<Pair<String?, String?>, Intent>()
+
     /**
      * startForegroundService() throws ForegroundServiceStartNotAllowedException (Android 12+)
      * if the app is no longer foreground-eligible - e.g. a call made after a network await
      * while the user switched away. Uncaught in viewModelScope that crashed the app or
-     * skipped the rest of the caller. The service then starts on the next foreground resume.
+     * skipped the rest of the caller. Instead the request is kept and re-sent by
+     * [retryDeferredServiceStarts] when the activity next resumes, so e.g. turning sharing on
+     * still starts the service and broadcasts without the user toggling it again.
      */
     private fun startLocationService(intent: Intent) {
         try {
-            getApplication<Application>().startForegroundService(intent)
+            serviceStarter(intent)
         } catch (e: IllegalStateException) {
             if (!isBackgroundStartNotAllowed(e)) throw e
-            Log.w(TAG, "Could not start LocationService (${intent.action}): ${e.message}")
+            Log.w(TAG, "Could not start LocationService (${intent.action}); retrying on next resume: ${e.message}")
+            deferredServiceStarts[intent.action to intent.getStringExtra(LocationService.EXTRA_FRIEND_ID)] = intent
         }
+    }
+
+    /** Called from MainActivity.onResume(), when a foreground-service start is permitted. */
+    fun retryDeferredServiceStarts() {
+        check(Looper.myLooper() == Looper.getMainLooper()) { "retryDeferredServiceStarts must be called on the main thread" }
+        if (deferredServiceStarts.isEmpty()) return
+        val pending = deferredServiceStarts.values.toList()
+        deferredServiceStarts.clear()
+        // A request made stale by a later state change is harmless: LocationService ignores
+        // ACTION_FORCE_PUBLISH while not sharing.
+        pending.forEach { startLocationService(it) }
     }
 
     private fun triggerRapidPoll() {
@@ -394,6 +419,15 @@ class LocationViewModel(
             locationSource.onConnectionStatus(ConnectionStatus.Error(StringDesc.Resource(MR.strings.invite_expired)))
             return false
         }
+        // Idempotent per invite: accepting one pairs with fresh keys, so a redelivered or
+        // re-opened link for an invite we already accepted must not pair a second time.
+        if (consumedInvites.contains(qr)) {
+            Log.w(TAG, "processQrUrl: invite already accepted")
+            locationSource.onConnectionStatus(ConnectionStatus.Error(StringDesc.Resource(MR.strings.invite_already_used)))
+            return false
+        }
+        // Already showing the naming dialog for this exact invite: nothing to do.
+        if (pendingQrForNaming.value == qr) return true
         Log.d(TAG, "processQrUrl: parsed qr, suggestedName=${qr.suggestedName}")
 
         // If we were showing our own invite sheet, dismiss it immediately to make room for the naming dialog.
@@ -417,6 +451,15 @@ class LocationViewModel(
     ) {
         Log.d(TAG, "confirmQrScan: friendName=$friendName")
         uiStateStore.onPendingQrForNaming(null)
+        if (consumedInvites.contains(qr)) {
+            Log.w(TAG, "confirmQrScan: invite already accepted")
+            locationSource.onConnectionStatus(ConnectionStatus.Error(StringDesc.Resource(MR.strings.invite_already_used)))
+            return
+        }
+        // Marked before the async exchange so a duplicate confirm can't start a second one.
+        // Kept even if the mailbox post fails: the pairing is already persisted and its init
+        // message stays queued in the outbox for retry.
+        consumedInvites.add(qr)
         locationSource.confirmQrScan()
 
         // Reset our own invite state immediately.
@@ -467,6 +510,8 @@ class LocationViewModel(
                 }
             } catch (e: Exception) {
                 Log.e(TAG, "confirmQrScan: processScannedQr failed", e)
+                // No pairing was created, so the invite may be tried again.
+                consumedInvites.remove(qr)
                 updateStatus(e)
                 _isExchanging.value = false
             }
