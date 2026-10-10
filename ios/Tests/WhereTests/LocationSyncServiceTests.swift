@@ -1157,6 +1157,10 @@ class LocationSyncServiceTests: XCTestCase {
     }
 
     func testPollAllBackgroundTaskEndsOnceEvenIfExpirationFiresLate() async throws {
+        // Hermetic: no real network client or CoreMotion query.
+        service = LocationSyncService(e2eeManager: service.e2eeManager, userStore: service.userStore, locationClient: MockLocationClient(), locationProvider: mockLocationProvider)
+        service.skipNetworkRestore = true
+        service.isStationaryQuery = { false }
         let recorder = BackgroundTaskRecorder()
         service.beginBackgroundTask = { _, handler in recorder.begin(handler) }
         service.endBackgroundTask = { id in recorder.end(id) }
