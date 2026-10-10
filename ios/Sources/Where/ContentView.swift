@@ -26,6 +26,9 @@ struct ContentView: View {
         case .denied, .restricted:
             return MR.strings().location_permission_missing.localized()
         default:
+            if locationManager.accuracyAuthorization == .reducedAccuracy {
+                return MR.strings().precise_location_off.localized()
+            }
             return MR.strings().sharing.localized()
         }
     }
@@ -38,7 +41,7 @@ struct ContentView: View {
         case .denied, .restricted:
             return Color.red.opacity(0.85)
         default:
-            return Color.blue.opacity(0.85)
+            return locationManager.accuracyAuthorization == .reducedAccuracy ? Color.orange.opacity(0.85) : Color.blue.opacity(0.85)
         }
     }
 

@@ -105,6 +105,8 @@ class LocationOptimizationsTests: XCTestCase {
         )
         locationManager.location = earlier
         locationManager.isStationary = true
+        locationManager.isTrackingOverride = true
+        defer { locationManager.isTrackingOverride = nil }
 
         var capturedStationary: Bool?
         locationManager.sendLocationOverride = { _, _, _, stationary in
@@ -121,6 +123,37 @@ class LocationOptimizationsTests: XCTestCase {
 
         XCTAssertEqual(capturedStationary, true,
             "A forced re-fix delivered via didUpdateLocations while stationary must not clobber the stationary flag")
+    }
+
+    // H6 regression: one-shot fixes from requestImmediateLocation() (foreground entry,
+    // heartbeat) arrive via didUpdateLocations even while sharing is paused. When tracking is
+    // off (and the DB has loaded), they must not be broadcast or start tracking/geofencing.
+    func testLocationManager_DidUpdateLocations_DoesNotBroadcastWhenNotTracking() async throws {
+        let locationManager = LocationManager.shared
+        guard LocationSyncService.shared.isDataLoaded else {
+            throw XCTSkip("Shared service hasn't loaded its DB; the pre-load path intentionally broadcasts")
+        }
+        locationManager.location = CLLocation(
+            coordinate: CLLocationCoordinate2D(latitude: 1, longitude: 1),
+            altitude: 0, horizontalAccuracy: 10, verticalAccuracy: 10, timestamp: Date(timeIntervalSinceNow: -60)
+        )
+        locationManager.isTrackingOverride = false
+        locationManager.geofenceCenter = nil
+        defer { locationManager.isTrackingOverride = nil }
+
+        var broadcasts = 0
+        locationManager.sendLocationOverride = { _, _, _, _ in broadcasts += 1 }
+        defer { locationManager.sendLocationOverride = nil }
+
+        let fresh = CLLocation(
+            coordinate: CLLocationCoordinate2D(latitude: 37.7749, longitude: -122.4194),
+            altitude: 0, horizontalAccuracy: 10, verticalAccuracy: 10, timestamp: Date()
+        )
+        locationManager.locationManager(CLLocationManager(), didUpdateLocations: [fresh])
+        try await Task.sleep(nanoseconds: 200_000_000)
+
+        XCTAssertEqual(broadcasts, 0, "A one-shot fix while not tracking must not be broadcast")
+        XCTAssertNil(locationManager.geofenceCenter, "...nor arm the fallback geofence")
     }
 
     // Regression test: didUpdateHeading() (via handleHeadingUpdate) used to call

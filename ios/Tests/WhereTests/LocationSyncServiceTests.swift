@@ -1118,4 +1118,71 @@ class LocationSyncServiceTests: XCTestCase {
 
         XCTAssertEqual(sendCount.getCount(), 1, "Rapid network flap should not produce duplicate sends")
     }
+
+    // MARK: - Background task expiration
+
+    /// Records begin/end calls; the expiration handler is kept so tests can fire it.
+    final class BackgroundTaskRecorder: @unchecked Sendable {
+        private let lock = NSLock()
+        private var handler: (@Sendable () -> Void)?
+        private var _ended: [UIBackgroundTaskIdentifier] = []
+        var ended: [UIBackgroundTaskIdentifier] { lock.withLock { _ended } }
+
+        func begin(_ handler: @escaping @Sendable () -> Void) -> UIBackgroundTaskIdentifier {
+            lock.withLock { self.handler = handler }
+            return UIBackgroundTaskIdentifier(rawValue: 42)
+        }
+
+        func end(_ id: UIBackgroundTaskIdentifier) { lock.withLock { _ended.append(id) } }
+
+        func fireExpiration() { lock.withLock { handler }?() }
+    }
+
+    func testSendLocationExpirationHandlerEndsBackgroundTaskExactlyOnce() async throws {
+        let mockClient = MockLocationClient()
+        service = LocationSyncService(e2eeManager: service.e2eeManager, userStore: service.userStore, locationClient: mockClient, locationProvider: mockLocationProvider)
+        service.skipNetworkRestore = true
+        service.isSharingLocation = true
+        let recorder = BackgroundTaskRecorder()
+        service.beginBackgroundTask = { _, handler in recorder.begin(handler) }
+        service.endBackgroundTask = { id in recorder.end(id) }
+
+        service.sendLocation(lat: 37.7, lng: -122.4, force: true, stationary: false)
+        // iOS expires the task before the send finishes: the handler must end it...
+        recorder.fireExpiration()
+        XCTAssertEqual(recorder.ended, [UIBackgroundTaskIdentifier(rawValue: 42)])
+        // ...and normal completion afterwards must not end it a second time.
+        await service.currentSendTask?.value
+        XCTAssertEqual(recorder.ended, [UIBackgroundTaskIdentifier(rawValue: 42)])
+    }
+
+    func testPollAllBackgroundTaskEndsOnceEvenIfExpirationFiresLate() async throws {
+        // Hermetic: no real network client or CoreMotion query.
+        service = LocationSyncService(e2eeManager: service.e2eeManager, userStore: service.userStore, locationClient: MockLocationClient(), locationProvider: mockLocationProvider)
+        service.skipNetworkRestore = true
+        service.isStationaryQuery = { false }
+        let recorder = BackgroundTaskRecorder()
+        service.beginBackgroundTask = { _, handler in recorder.begin(handler) }
+        service.endBackgroundTask = { id in recorder.end(id) }
+
+        await service.pollAll(updateUi: false)
+        XCTAssertEqual(recorder.ended, [UIBackgroundTaskIdentifier(rawValue: 42)])
+        recorder.fireExpiration()
+        XCTAssertEqual(recorder.ended, [UIBackgroundTaskIdentifier(rawValue: 42)])
+    }
+
+    // MARK: - Restored location
+
+    func testRestoredLocationKeepsOriginalTimestampAndAccuracy() {
+        let ts = Date().addingTimeInterval(-3 * 24 * 3600).timeIntervalSince1970
+        let loc = LocationManager.restoredLocation(lat: 1, lng: 2, timestamp: ts, accuracy: 35)
+        XCTAssertEqual(loc.timestamp.timeIntervalSince1970, ts, accuracy: 0.001)
+        XCTAssertEqual(loc.horizontalAccuracy, 35)
+    }
+
+    func testRestoredLocationWithoutMetadataIsTreatedAsStaleAndImprecise() {
+        let loc = LocationManager.restoredLocation(lat: 1, lng: 2, timestamp: nil, accuracy: nil)
+        XCTAssertEqual(loc.timestamp, .distantPast)
+        XCTAssertGreaterThan(loc.horizontalAccuracy, LocationSyncService.minBroadcastAccuracyMeters)
+    }
 }

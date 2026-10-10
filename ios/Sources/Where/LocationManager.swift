@@ -30,6 +30,9 @@ final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelega
         $location.eraseToAnyPublisher()
     }
     @Published var authorizationStatus: CLAuthorizationStatus = .notDetermined
+    /// With Precise Location off, fixes are km-scale and every broadcast accuracy gate drops
+    /// them, so nothing is sent. Surfaced in the UI rather than silently showing "Sharing".
+    @Published var accuracyAuthorization: CLAccuracyAuthorization = .fullAccuracy
 
     internal var manager: CLLocationManager?
 
@@ -61,6 +64,24 @@ final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelega
 
     private static let lastLatKey = "location_last_lat"
     private static let lastLngKey = "location_last_lng"
+    private static let lastTimestampKey = "location_last_ts"
+    private static let lastAccuracyKey = "location_last_acc"
+
+    /// Rebuilds the persisted last fix with its ORIGINAL timestamp and accuracy.
+    /// `CLLocation(latitude:longitude:)` stamps the fix "now" with accuracy 0, which made the
+    /// genuinely fresh fix that woke the app look older than the restored one (so
+    /// didUpdateLocations dropped it as already handled) and made timestamp-based staleness
+    /// checks (e.g. handleNetworkRestored) treat a days-old position as fresh.
+    /// Values saved before these keys existed are treated as infinitely old and imprecise.
+    static func restoredLocation(lat: Double, lng: Double, timestamp: Double?, accuracy: Double?) -> CLLocation {
+        CLLocation(
+            coordinate: CLLocationCoordinate2D(latitude: lat, longitude: lng),
+            altitude: 0,
+            horizontalAccuracy: accuracy ?? 100_000,
+            verticalAccuracy: -1,
+            timestamp: timestamp.map { Date(timeIntervalSince1970: $0) } ?? .distantPast
+        )
+    }
 
     override init() {
         if NSClassFromString("XCTestCase") != nil {
@@ -74,11 +95,17 @@ final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelega
         let lat = UserDefaults.standard.double(forKey: Self.lastLatKey)
         let lng = UserDefaults.standard.double(forKey: Self.lastLngKey)
         if lat != 0 || lng != 0 {
-            self.location = CLLocation(latitude: lat, longitude: lng)
+            self.location = Self.restoredLocation(
+                lat: lat,
+                lng: lng,
+                timestamp: UserDefaults.standard.object(forKey: Self.lastTimestampKey) as? Double,
+                accuracy: UserDefaults.standard.object(forKey: Self.lastAccuracyKey) as? Double
+            )
         }
         super.init()
         m.delegate = self
         self.authorizationStatus = m.authorizationStatus
+        self.accuracyAuthorization = m.accuracyAuthorization
         m.desiredAccuracy = kCLLocationAccuracyNearestTenMeters
         m.distanceFilter = LocationSyncService.minimumReportingDistanceMeters
         m.headingFilter = 5
@@ -116,6 +143,13 @@ final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelega
             stopUpdating()
         }
     }
+
+    /// True while the live-updates stream (and its background monitoring) is running.
+    var isTracking: Bool { isTrackingOverride ?? (updatesTask != nil) }
+
+    /// Test seam: tracking can't actually start under XCTest (no CLLocationManager), so tests
+    /// set this to exercise the tracking / not-tracking branches of the delegate callbacks.
+    var isTrackingOverride: Bool? = nil
 
     func stopUpdating() {
         isStationary = false
@@ -195,6 +229,8 @@ final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelega
                         let coordinate = loc.coordinate
                         UserDefaults.standard.set(coordinate.latitude, forKey: Self.lastLatKey)
                         UserDefaults.standard.set(coordinate.longitude, forKey: Self.lastLngKey)
+                        UserDefaults.standard.set(loc.timestamp.timeIntervalSince1970, forKey: Self.lastTimestampKey)
+                        UserDefaults.standard.set(loc.horizontalAccuracy, forKey: Self.lastAccuracyKey)
 
                         let stationary: Bool
                         if #available(iOS 18.0, *) {
@@ -312,24 +348,24 @@ final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelega
     nonisolated func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
         // Still called by requestLocation() or other legacy components.
         guard let loc = locations.last else { return }
-        let identifier = MainActor.assumeIsolated {
-            UIApplication.shared.beginBackgroundTask(withName: "LocationUpdate") { }
-        }
+        let task = MainActor.assumeIsolated { BackgroundTaskToken(name: "LocationUpdate") }
         Task { @MainActor in
-            defer {
-                if identifier != .invalid {
-                    UIApplication.shared.endBackgroundTask(identifier)
-                }
-            }
-            // Idempotent while the live-updates stream is already running (guarded by
-            // `updatesTask == nil` inside) - just makes sure it's alive after a wake.
-            self.startUpdating()
+            defer { task.end() }
+            // Make sure tracking is alive after a wake - but only if it should be. One-shot
+            // fixes also arrive here from requestImmediateLocation() (foreground entry,
+            // heartbeat) while sharing is paused; starting tracking unconditionally used to
+            // turn on liveUpdates, background activity, significant-change/visit monitoring
+            // and a geofence until the next sharing change.
+            self.updateRegistration()
             // Only broadcast if this fix was not already handled by liveUpdates.
             // requestLocation() results often have a very recent timestamp.
             if let lastLoc = self.location, loc.timestamp.timeIntervalSince(lastLoc.timestamp) <= 0 {
                 return
             }
             self.location = loc
+            // Before the DB has loaded (background relaunch) we can't know yet; handle the
+            // fix as before - the post-load sharingStateChanged() stops tracking if needed.
+            guard self.isTracking || !LocationSyncService.shared.isDataLoaded else { return }
             let coordinate = loc.coordinate
             if loc.horizontalAccuracy <= LocationSyncService.minBroadcastAccuracyMeters {
                 broadcastLocation(lat: coordinate.latitude, lng: coordinate.longitude, heading: self.heading, source: .locationUpdate)
@@ -343,20 +379,21 @@ final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelega
 
     nonisolated func locationManager(_ manager: CLLocationManager, didExitRegion region: CLRegion) {
         if region.identifier == stationaryGeofenceId {
-            let identifier = MainActor.assumeIsolated {
-                UIApplication.shared.beginBackgroundTask(withName: "GeofenceExit") { }
-            }
+            let task = MainActor.assumeIsolated { BackgroundTaskToken(name: "GeofenceExit") }
             Task { @MainActor in
-                defer {
-                    if identifier != .invalid {
-                        UIApplication.shared.endBackgroundTask(identifier)
-                    }
-                }
+                defer { task.end() }
                 LocationSyncService.shared.e2eeManager.addDiagnosticEvent(message: "Exited stationary geofence", coalesceKey: nil)
                 self.isStationary = false
                 self.geofenceCenter = nil
                 self.geofenceIsMoving = nil
-                self.startUpdating()
+                // A fence left over from a previous sharing session must not restart tracking.
+                self.updateRegistration()
+                guard self.isTracking || !LocationSyncService.shared.isDataLoaded else {
+                    for r in self.manager?.monitoredRegions ?? [] where r.identifier == stationaryGeofenceId {
+                        self.manager?.stopMonitoring(for: r)
+                    }
+                    return
+                }
                 self.requestImmediateLocation()
             }
         }
@@ -364,15 +401,9 @@ final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelega
 
     nonisolated func locationManager(_ manager: CLLocationManager, didVisit visit: CLVisit) {
         let coordinate = visit.coordinate
-        let identifier = MainActor.assumeIsolated {
-            UIApplication.shared.beginBackgroundTask(withName: "VisitUpdate") { }
-        }
+        let task = MainActor.assumeIsolated { BackgroundTaskToken(name: "VisitUpdate") }
         Task { @MainActor in
-            defer {
-                if identifier != .invalid {
-                    UIApplication.shared.endBackgroundTask(identifier)
-                }
-            }
+            defer { task.end() }
             self.handleVisitUpdate(lat: coordinate.latitude, lng: coordinate.longitude)
             await LocationSyncService.shared.pollAll(updateUi: false, source: .visit)
         }
@@ -394,15 +425,9 @@ final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelega
     nonisolated func locationManager(_ manager: CLLocationManager, didUpdateHeading newHeading: CLHeading) {
         let trueHeading = newHeading.trueHeading
         let magneticHeading = newHeading.magneticHeading
-        let identifier = MainActor.assumeIsolated {
-            UIApplication.shared.beginBackgroundTask(withName: "HeadingUpdate") { }
-        }
+        let task = MainActor.assumeIsolated { BackgroundTaskToken(name: "HeadingUpdate") }
         Task { @MainActor in
-            defer {
-                if identifier != .invalid {
-                    UIApplication.shared.endBackgroundTask(identifier)
-                }
-            }
+            defer { task.end() }
             self.handleHeadingUpdate(trueHeading: trueHeading, magneticHeading: magneticHeading)
         }
     }
@@ -419,8 +444,10 @@ final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelega
 
     nonisolated func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
         let status = manager.authorizationStatus
+        let accuracy = manager.accuracyAuthorization
         Task { @MainActor in
             self.authorizationStatus = status
+            self.accuracyAuthorization = accuracy
             self.manager?.allowsBackgroundLocationUpdates = (status == .authorizedAlways)
             self.manager?.showsBackgroundLocationIndicator = (status == .authorizedAlways)
             self.updateRegistration()

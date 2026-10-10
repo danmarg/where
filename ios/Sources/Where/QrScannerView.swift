@@ -1,3 +1,4 @@
+import AVFoundation
 import SwiftUI
 import VisionKit
 import Shared
@@ -5,12 +6,48 @@ import Shared
 struct QrScannerView: View {
     let onScan: (String) -> Void
     let onDismiss: () -> Void
+    @State private var cameraStatus = AVCaptureDevice.authorizationStatus(for: .video)
 
     var body: some View {
         #if targetEnvironment(simulator)
         SimulatorQrScannerView(onScan: onScan, onDismiss: onDismiss)
         #else
-        DataScannerRepresentable(onScan: onScan, onDismiss: onDismiss)
+        // Presented as a fullScreenCover, which can't be swiped away, so it needs its own
+        // Cancel. isAvailable is false when camera access is denied or restricted; without
+        // this check the user was left on a black screen with no way out.
+        NavigationStack {
+            Group {
+                switch cameraStatus {
+                case .notDetermined:
+                    // isAvailable is false until access is granted, so prompt first.
+                    ProgressView()
+                case .authorized where DataScannerViewController.isSupported && DataScannerViewController.isAvailable:
+                    DataScannerRepresentable(onScan: onScan, onDismiss: onDismiss)
+                        .ignoresSafeArea()
+                case .authorized:
+                    Text(MR.strings().camera_unavailable_emulator.localized())
+                        .multilineTextAlignment(.center)
+                        .padding()
+                default:
+                    Text(MR.strings().camera_permission_settings_rationale.localized())
+                        .multilineTextAlignment(.center)
+                        .padding()
+                }
+            }
+            .task {
+                if cameraStatus == .notDetermined {
+                    _ = await AVCaptureDevice.requestAccess(for: .video)
+                    cameraStatus = AVCaptureDevice.authorizationStatus(for: .video)
+                }
+            }
+            .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button(MR.strings().cancel.localized()) {
+                        onDismiss()
+                    }
+                }
+            }
+        }
         #endif
     }
 }
