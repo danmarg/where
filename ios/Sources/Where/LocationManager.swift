@@ -145,7 +145,11 @@ final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelega
     }
 
     /// True while the live-updates stream (and its background monitoring) is running.
-    var isTracking: Bool { updatesTask != nil }
+    var isTracking: Bool { isTrackingOverride ?? (updatesTask != nil) }
+
+    /// Test seam: tracking can't actually start under XCTest (no CLLocationManager), so tests
+    /// set this to exercise the tracking / not-tracking branches of the delegate callbacks.
+    var isTrackingOverride: Bool? = nil
 
     func stopUpdating() {
         isStationary = false
