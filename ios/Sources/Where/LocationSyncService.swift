@@ -1060,11 +1060,16 @@ final class LocationSyncService: ObservableObject {
         // receives our location even if the throttle would otherwise suppress the broadcast.
         if let friendId = pendingForcedSendFriendId {
             pendingForcedSendFriendId = nil
-            Task {
-                do {
-                    try await locationClient.sendLocationToFriend(friendId: friendId, lat: lat, lng: lng, stationary: false)
-                } catch {
-                    logger.error("Failed forced pairing send to \(friendId): \(error.localizedDescription)")
+            // The friend may have been paused while this send waited for a fix.
+            if effectivelyPausedIds().contains(friendId) {
+                logger.info("Skipping forced pairing send: \(friendId) is paused")
+            } else {
+                Task {
+                    do {
+                        try await locationClient.sendLocationToFriend(friendId: friendId, lat: lat, lng: lng, stationary: false)
+                    } catch {
+                        logger.error("Failed forced pairing send to \(friendId): \(error.localizedDescription)")
+                    }
                 }
             }
         }

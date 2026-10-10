@@ -404,6 +404,9 @@ class LocationService : Service() {
                     while (true) {
                         val friendId = pendingFriendSends.tryReceive().getOrNull() ?: break
                         if (!userStore.isSharingLocation.value) break
+                        // The friend may have been paused (or their timed share expired) while
+                        // this send sat queued waiting for a fix.
+                        if (friendId in userStore.effectivelyPausedIds()) continue
                         launch {
                             try {
                                 locationClient.sendLocationToFriend(friendId, loc.first, loc.second, stationary = stationary)
@@ -578,7 +581,9 @@ class LocationService : Service() {
         if (intent?.action == ACTION_FORCE_PUBLISH) {
             val friendId = intent.getStringExtra(EXTRA_FRIEND_ID)
             if (userStore.isSharingLocation.value) {
-                if (friendId != null) {
+                if (friendId != null && friendId in userStore.effectivelyPausedIds()) {
+                    Log.d(TAG, "ACTION_FORCE_PUBLISH: $friendId is paused; not sending")
+                } else if (friendId != null) {
                     val loc = locationSource.lastLocation.value
                     if (loc != null) {
                         // Snapshot: isStill could change between launch{} and execution.
