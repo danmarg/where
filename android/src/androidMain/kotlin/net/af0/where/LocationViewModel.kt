@@ -38,7 +38,6 @@ import net.af0.where.e2ee.LocationClient
 import net.af0.where.e2ee.PendingInviteView
 import net.af0.where.e2ee.QrPayload
 import net.af0.where.e2ee.UserStore
-import net.af0.where.e2ee.toHex
 import net.af0.where.model.UserLocation
 import net.af0.where.shared.MR
 import java.util.concurrent.TimeUnit
@@ -367,7 +366,8 @@ class LocationViewModel(
     }
 
     fun processQrUrl(url: String): Boolean {
-        Log.d(TAG, "processQrUrl: url=$url")
+        // The URL fragment carries the invite's discovery secret and key material; never log it.
+        Log.d(TAG, "processQrUrl")
         val qr =
             QrPayload.fromUrl(url) ?: run {
                 Log.e(TAG, "processQrUrl: failed to parse URL")
@@ -414,13 +414,8 @@ class LocationViewModel(
         viewModelScope.launch {
             try {
                 val (initPayload, bobEntry) = e2eeManager.processScannedQr(qrWithName, displayName.value)
-                val sendToken = bobEntry.session.sendToken.toHex()
-                Log.d(
-                    TAG,
-                    "confirmQrScan: processScannedQr succeeded, friendId=${bobEntry.id}, fingerprint=${bobEntry.id.take(
-                        8,
-                    )}, sendToken=$sendToken",
-                )
+                // Never log routing tokens: they are mailbox read/delete capabilities.
+                Log.d(TAG, "confirmQrScan: processScannedQr succeeded, fingerprint=${bobEntry.id.take(8)}")
                 withContext(Dispatchers.Main.immediate) {
                     locationSource.onFriendsUpdated(e2eeManager.listFriends())
                     locationSource.onPendingInvitesUpdated(e2eeManager.listPendingInvites())

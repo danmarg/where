@@ -377,7 +377,9 @@ class E2eeManager(
 
         val entry =
             FriendEntry(
-                name = qr.suggestedName,
+                // Same sanitization as every other name path (callers put the user's chosen name
+                // here, falling back to the inviter's QR-supplied one).
+                name = sanitizeName(qr.suggestedName, fallback = "Friend"),
                 session = session,
                 isInitiator = false,
                 lastRecvTs = currentTimeSeconds(),
@@ -461,7 +463,22 @@ class E2eeManager(
             // Peer activity = any frame authenticated as theirs, even one whose body was lost
             // (soft-fail). Delivery (locations, anySuccess) is tracked separately.
             val hadActivity = result.decryptedLocations.isNotEmpty() || (result.anyAuthenticated && result.finalSession != entry.session)
-            val lastLocation = result.decryptedLocations.lastOrNull()
+            // A peer's ts is self-reported (authenticated, but not trustworthy as a clock). A ts
+            // more than the allowed skew ahead is replaced by our receive time, and a stored
+            // lastTs that far ahead is ignored, so a single far-future value (bad clock or
+            // malicious friend) can't freeze the pin: later honest updates are only applied
+            // when their ts >= the stored one. (Clamping to now + skew instead would still
+            // block honest updates for the whole skew window.)
+            val nowTs = currentTimeSeconds()
+            val maxTs = nowTs + MAX_PEER_CLOCK_SKEW_SECONDS
+
+            fun clampTs(ts: Long) = if (ts > maxTs) nowTs else ts
+            // Clamped values are also what callers see (PollBatchResult -> UserLocation ->
+            // updateLastLocation), so the raw ts never reaches storage or the UI.
+            val decryptedLocations = result.decryptedLocations.map { it.copy(ts = clampTs(it.ts)) }
+            val stoppedSharingTs = result.stoppedSharingTs?.let { clampTs(it) }
+            val lastLocation = decryptedLocations.lastOrNull()
+            val storedLastTs = entry.lastTs?.takeIf { it <= maxTs } ?: 0
 
             val hadStateUpdate =
                 result.finalSession.recvSeq > entry.session.recvSeq ||
@@ -485,17 +502,17 @@ class E2eeManager(
             // (clear stopped); a StoppedSharing implies they paused (clear stationary).
             // Within a stationary run we preserve the original "since" timestamp.
             val lastLocTs = lastLocation?.ts ?: Long.MIN_VALUE
-            val stopTs = result.stoppedSharingTs ?: Long.MIN_VALUE
+            val stopTs = stoppedSharingTs ?: Long.MIN_VALUE
             val newStationarySinceTs: Long?
             val newStoppedAtTs: Long?
             when {
-                lastLocation == null && result.stoppedSharingTs == null -> {
+                lastLocation == null && stoppedSharingTs == null -> {
                     newStationarySinceTs = entry.stationarySinceTs
                     newStoppedAtTs = entry.stoppedAtTs
                 }
                 stopTs > lastLocTs -> {
                     newStationarySinceTs = null
-                    newStoppedAtTs = result.stoppedSharingTs
+                    newStoppedAtTs = stoppedSharingTs
                 }
                 else -> {
                     newStoppedAtTs = null
@@ -513,9 +530,9 @@ class E2eeManager(
                     session = result.finalSession,
                     isConfirmed = entry.isConfirmed || result.anyAuthenticated,
                     lastRecvTs = if (hadActivity) currentTimeSeconds() else entry.lastRecvTs,
-                    lastLat = if (lastLocation != null && (lastLocation.ts >= (entry.lastTs ?: 0))) lastLocation.lat else entry.lastLat,
-                    lastLng = if (lastLocation != null && (lastLocation.ts >= (entry.lastTs ?: 0))) lastLocation.lng else entry.lastLng,
-                    lastTs = if (lastLocation != null && (lastLocation.ts >= (entry.lastTs ?: 0))) lastLocation.ts else entry.lastTs,
+                    lastLat = if (lastLocation != null && (lastLocation.ts >= storedLastTs)) lastLocation.lat else entry.lastLat,
+                    lastLng = if (lastLocation != null && (lastLocation.ts >= storedLastTs)) lastLocation.lng else entry.lastLng,
+                    lastTs = if (lastLocation != null && (lastLocation.ts >= storedLastTs)) lastLocation.ts else entry.lastTs,
                     lastPollTs = currentTimeSeconds(),
                     stationarySinceTs = newStationarySinceTs,
                     stoppedAtTs = newStoppedAtTs,
@@ -536,7 +553,7 @@ class E2eeManager(
 
             PersistenceAction.Update(updatedEntry) to
                 PollBatchResult(
-                    decryptedLocations = result.decryptedLocations,
+                    decryptedLocations = decryptedLocations,
                     anySuccess = result.anySuccess,
                     hadSilentDrops = result.silentDrops > 0 || (messages.size > (encryptedMessages.size + nonEncryptedIds.size)),
                     processedIds = idsToAck,
@@ -556,7 +573,10 @@ class E2eeManager(
         ts: Long,
     ) {
         persistence.withFriendAndMetadataLock(id) { entry, _ ->
-            if (entry != null) {
+            val maxTs = currentTimeSeconds() + MAX_PEER_CLOCK_SKEW_SECONDS
+            val storedTs = entry?.lastTs?.takeIf { it <= maxTs } ?: 0
+            // Same rules as processBatch: never store a far-future ts, never go backwards.
+            if (entry != null && ts <= maxTs && ts >= storedTs) {
                 PersistenceAction.Update(entry.copy(lastLat = lat, lastLng = lng, lastTs = ts)) to Unit
             } else {
                 PersistenceAction.None to Unit
@@ -611,10 +631,28 @@ class E2eeManager(
         }
     }
 
-    private fun sanitizeName(name: String): String =
-        normalizeName(name).take(32).filter { it.isLetterOrDigit() || it.isWhitespace() || it in "-_'." }.trim()
+    /**
+     * Strips control and format characters (incl. bidi overrides and zero-width marks) and
+     * limits length, without dropping emoji or other symbols users pick as names. Falls back to
+     * [fallback] if nothing printable remains.
+     */
+    private fun sanitizeName(
+        name: String,
+        fallback: String = "",
+    ): String {
+        val cleaned =
+            normalizeName(name)
+                .filterNot { it.category == CharCategory.CONTROL || it.category == CharCategory.FORMAT }
+                .take(32)
+                .let { if (it.isNotEmpty() && it.last().isHighSurrogate()) it.dropLast(1) else it }
+                .trim()
+        return cleaned.ifEmpty { fallback }
+    }
 
     companion object {
         const val MAX_PENDING_INVITES = 10
+
+        /** How far a peer's self-reported location ts may run ahead of our clock. */
+        const val MAX_PEER_CLOCK_SKEW_SECONDS = 10 * 60L
     }
 }

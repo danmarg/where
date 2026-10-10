@@ -159,9 +159,13 @@ internal class E2eeStore(
     suspend fun listFriends(): List<FriendEntry> = storeLock.withLock { friends.values.toList() }
 
     fun addDiagnosticEvent(
-        message: String,
+        rawMessage: String,
         coalesceKey: String? = null,
     ) {
+        // Diagnostics are persisted, shown in the debug UI and shared in bug reports; routing
+        // tokens in them (and in exception messages that embed request URLs) are mailbox
+        // read/delete capabilities.
+        val message = redactSecrets(rawMessage)
         val t = currentTimeSeconds()
         val latest = if (coalesceKey != null) database.diagnosticEventsQueries.getLatestEvent().executeAsOneOrNull() else null
         if (coalesceKey != null && latest != null && latest.message.startsWith(coalesceKey)) {
@@ -459,3 +463,16 @@ internal class E2eeStore(
         }
     }
 }
+
+private val INBOX_PATH = Regex("/inbox/[^/\\s?#\\]\"']+(/[^/\\s?#\\]\"']+)?")
+private val ROUTING_TOKEN_HEX = Regex("\\b[0-9a-fA-F]{32}\\b")
+
+/**
+ * Strips mailbox capabilities from free-form text: `/inbox/<token>[/<msgId>]` URL paths and
+ * bare 32-hex-digit routing tokens (16 bytes, see deriveRoutingToken), keeping a short token
+ * prefix so log lines for the same mailbox can still be correlated.
+ */
+internal fun redactSecrets(text: String): String =
+    text
+        .replace(INBOX_PATH, "/inbox/<redacted>")
+        .replace(ROUTING_TOKEN_HEX) { it.value.take(6) + "…" }
