@@ -78,7 +78,7 @@ class UnresponsiveFriendThrottleTest {
     }
 
     @Test
-    fun `a failed send to an unresponsive friend retries at the next normal cycle, not the full throttle interval`() =
+    fun `a failed send to an unresponsive friend retries at the next normal cycle - not the full throttle interval`() =
         runTest {
             val realMailbox = MemoryMailboxClient()
             val mailbox = ChaosMailboxClient(realMailbox)
@@ -176,7 +176,7 @@ class UnresponsiveFriendThrottleTest {
         }
 
     @Test
-    fun `send to an unresponsive friend is throttled, then allowed once the interval elapses`() =
+    fun `send to an unresponsive friend is throttled - then allowed once the interval elapses`() =
         runTest {
             val mailbox = MemoryMailboxClient()
             setVirtualTime(1_700_000_000_000L)
@@ -204,7 +204,7 @@ class UnresponsiveFriendThrottleTest {
         }
 
     @Test
-    fun `while paused, repeated background polling sends periodic keepalives, not one per poll - and resuming sharing still sends`() =
+    fun `while paused - repeated background polling sends periodic keepalives - not one per poll - and resuming sharing still sends`() =
         runTest {
             // Regression test for the automated keepalive (pollFriend): while paused/not-sharing,
             // it must self-pace to UNRESPONSIVE_SEND_INTERVAL_SECONDS via the shared lastSentTs
@@ -281,7 +281,7 @@ class UnresponsiveFriendThrottleTest {
         }
 
     @Test
-    fun `an unresponsive-but-actively-shared friend still gets real Locations, not just Keepalives forever`() =
+    fun `an unresponsive-but-actively-shared friend still gets real Locations - not just Keepalives forever`() =
         runTest {
             // Regression test for a starvation bug in the initial version of the backstop fix
             // above: pollFriend (driven by doPoll) and sendLocation's own unresponsive-friend
@@ -326,7 +326,7 @@ class UnresponsiveFriendThrottleTest {
         }
 
     @Test
-    fun `responsiveness recovers immediately once the friend sends anything, no extra cooldown`() =
+    fun `responsiveness recovers immediately once the friend sends anything - no extra cooldown`() =
         runTest {
             val mailbox = MemoryMailboxClient()
             setVirtualTime(1_700_000_000_000L)
@@ -350,7 +350,7 @@ class UnresponsiveFriendThrottleTest {
         }
 
     @Test
-    fun `sendLocation logs a diagnostic event when every active friend is throttled, not a silent no-op`() =
+    fun `sendLocation logs a diagnostic event when every active friend is throttled - not a silent no-op`() =
         runTest {
             // Regression test for #347: sendLocation() returns normally (no exception) when
             // activeFriends is empty, so LocationService.sendLocationIfNeeded previously logged

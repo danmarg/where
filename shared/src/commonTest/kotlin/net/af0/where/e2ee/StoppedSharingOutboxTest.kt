@@ -54,7 +54,7 @@ class StoppedSharingOutboxTest {
     }
 
     @Test
-    fun `a StoppedSharing behind a stuck outbox entry is persisted, not dropped`() =
+    fun `a StoppedSharing behind a stuck outbox entry is persisted - not dropped`() =
         runTest {
             val paired = pairedClients()
             val (aliceClient, bobClient, bobManager, bobFriendId, chaosMailbox) = paired
@@ -88,7 +88,7 @@ class StoppedSharingOutboxTest {
         }
 
     @Test
-    fun `sendStoppedSharing (master toggle-off fan-out) also persists behind a stuck outbox entry`() =
+    fun `sendStoppedSharing - master toggle-off fan-out also persists behind a stuck outbox entry`() =
         runTest {
             val paired = pairedClients()
             val (aliceClient, bobClient, bobManager, _, chaosMailbox) = paired

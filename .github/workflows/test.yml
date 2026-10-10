@@ -77,6 +77,12 @@ jobs:
       - name: Install libsodium (macOS)
         run: brew install libsodium
 
+      # commonTest (crypto vectors, ratchet, store, client) otherwise only runs on the JVM; this
+      # exercises the iOS actuals (CryptoPrimitivesImpl, Normalization, TimeProviderImpl, SQLite
+      # driver) that the app actually ships.
+      - name: Run shared tests (iOS simulator)
+        run: ./gradlew :shared:iosSimulatorArm64Test
+
       - name: Build shared framework (Debug)
         run: ./gradlew :shared:assembleSharedDebugXCFramework --quiet
 
@@ -116,5 +122,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: ios-test-results
-          path: ios/TestResults.xcresult.zip
+          path: |
+            ios/TestResults.xcresult.zip
+            shared/build/reports/tests/iosSimulatorArm64Test/
           retention-days: 7
