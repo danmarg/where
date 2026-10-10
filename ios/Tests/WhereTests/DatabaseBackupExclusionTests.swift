@@ -10,10 +10,14 @@ final class DatabaseBackupExclusionTests: XCTestCase {
         let driver = Shared.IosSqlDriverKt.createIosSqlDriver(name: name)
         defer { driver.close() }
 
+        // The driver opens lazily; loading the store forces SQLite to create the file.
+        _ = Shared.E2eeManager(sqlDriver: driver)
+
         let dir = Shared.IosSqlDriverKt.iosDatabaseDirectory(name: name)
-        // The file SQLite actually created (the schema is applied on open) is in the directory
-        // the app excludes and verifies, so the check isn't just the helper agreeing with itself.
-        XCTAssertTrue(FileManager.default.fileExists(atPath: "\(dir)/\(name)"))
+        // The file SQLite actually created is in the directory the app excludes and verifies,
+        // so the check isn't just the helper agreeing with itself.
+        let contents = (try? FileManager.default.contentsOfDirectory(atPath: dir)) ?? []
+        XCTAssertTrue(FileManager.default.fileExists(atPath: "\(dir)/\(name)"), "\(dir) contains \(contents)")
         XCTAssertTrue(LocationSyncService.isExcludedFromBackup(path: dir))
     }
 }
