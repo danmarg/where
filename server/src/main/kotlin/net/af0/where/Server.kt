@@ -12,6 +12,7 @@ import io.ktor.server.netty.*
 import io.ktor.server.plugins.*
 import io.ktor.server.plugins.calllogging.*
 import io.ktor.server.plugins.contentnegotiation.*
+import io.ktor.server.plugins.statuspages.*
 import io.ktor.server.request.*
 import io.ktor.server.response.*
 import io.ktor.server.routing.*
@@ -745,6 +746,25 @@ class DynamoMailboxState(
 
 private val auditLog = LoggerFactory.getLogger("Server")
 
+/**
+ * Redacts a raw request path for logging so logs never contain routing tokens or msgIds.
+ * `/inbox/...` keeps only its shape; any other path except the allowlisted `/health` is
+ * collapsed entirely. The first segment is URL-decoded because routing matches decoded
+ * segments (`/%69nbox/...` is served by the inbox routes).
+ */
+internal fun redactPath(path: String): String {
+    if (path == "/health") return path
+    val segments = path.trimStart('/').split('/')
+    val first = runCatching { segments.first().decodeURLPart() }.getOrNull()
+    if (first != "inbox") return "/<other>"
+    return buildString {
+        append("/inbox")
+        if (segments.size > 1) append("/:token")
+        if (segments.size > 2) append("/:msgId")
+        if (segments.size > 3) append("/...")
+    }
+}
+
 data class ServerState(
     val mailbox: MailboxStore = InMemoryMailboxState(),
     val trustProxy: Boolean = System.getenv("TRUST_PROXY")?.toBoolean() ?: false,
@@ -790,7 +810,22 @@ fun main() {
 
 fun Application.module(state: ServerState = ServerState()) {
     install(ContentNegotiation) { json(json) }
-    install(CallLogging)
+    install(CallLogging) {
+        // The default format logs the full URI, which carries routing tokens (bearer
+        // capabilities: anyone holding one can read/delete that mailbox) and msgIds.
+        format { call ->
+            "${call.response.status()?.value ?: "-"} ${call.request.httpMethod.value} ${redactPath(call.request.path())}"
+        }
+    }
+    install(StatusPages) {
+        // Without a handler, Ktor logs uncaught route exceptions as "Unhandled: METHOD - <raw path>",
+        // leaking the token. Log only the redacted path and the exception type (store exception
+        // messages may echo key values).
+        exception<Throwable> { call, cause ->
+            auditLog.error("500 ${call.request.httpMethod.value} ${redactPath(call.request.path())}: ${cause::class.simpleName}")
+            call.respond(HttpStatusCode.InternalServerError)
+        }
+    }
     monitor.subscribe(ApplicationStopped) {
         state.mailbox.close()
     }
@@ -814,7 +849,9 @@ fun Application.module(state: ServerState = ServerState()) {
         launch(Dispatchers.Default) {
             while (isActive) {
                 runCatching { healthcheckClient.get(state.healthcheckPingUrl) }
-                    .onFailure { auditLog.warn("Healthchecks.io ping failed", it) }
+                    // Log only the exception type: Ktor client exception messages embed the
+                    // request URL, and the ping URL is itself a secret.
+                    .onFailure { auditLog.warn("Healthchecks.io ping failed: ${it::class.simpleName}") }
                 delay(HEALTHCHECK_PING_INTERVAL_MS)
             }
         }
