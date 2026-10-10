@@ -222,6 +222,21 @@ class ReceiveRatchetFailureTest {
         alice = Session.decryptMessage(alice, reply).first
         val (_, m5) = Session.encryptMessage(alice, loc(5))
         assertInputUnchanged(bob) { Session.decryptMessage(it, m5) }
+        // The new-epoch result must not alias any of the input's buffers (wiping one later
+        // must never affect the other).
+        val ratcheted = Session.decryptMessage(bob, m5).first
+        val inputBuffers =
+            listOf(
+                bob.rootKey, bob.sendChainKey, bob.recvChainKey, bob.localDhPriv, bob.headerKey,
+                bob.sendHeaderKey, bob.nextHeaderKey, bob.prevSendHeaderKey, bob.aliceFp, bob.localFp,
+            ) + bob.skippedMessageKeys.values
+        val outputBuffers =
+            listOf(
+                ratcheted.rootKey, ratcheted.sendChainKey, ratcheted.recvChainKey, ratcheted.localDhPriv,
+                ratcheted.headerKey, ratcheted.sendHeaderKey, ratcheted.nextHeaderKey,
+                ratcheted.prevSendHeaderKey, ratcheted.aliceFp, ratcheted.localFp,
+            ) + ratcheted.skippedMessageKeys.values
+        assertTrue(outputBuffers.none { out -> inputBuffers.any { it === out } }, "new-epoch state aliases input buffers")
         assertInputUnchanged(bob) { runCatching { Session.decryptMessage(it, tamper(m5)) } }
     }
 

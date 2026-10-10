@@ -360,22 +360,33 @@ object Session {
     ): SessionState {
         // DH ratchet step
         val stepRecv = dhRatchetSubStep(state.localDhPriv, remoteDhPub, state.rootKey)
-
         val newLocalDh = generateX25519KeyPair()
-        val stepSend = dhRatchetSubStep(newLocalDh.priv, remoteDhPub, stepRecv.newRootKey)
+        val stepSend =
+            try {
+                dhRatchetSubStep(newLocalDh.priv, remoteDhPub, stepRecv.newRootKey)
+            } catch (e: Exception) {
+                stepRecv.newRootKey.zeroize()
+                stepRecv.newChainKey.zeroize()
+                stepRecv.newHeaderKey.zeroize()
+                newLocalDh.priv.zeroize()
+                throw e
+            }
 
         // Derive new tokens
         val newRecvToken = deriveRoutingToken(stepRecv.newRootKey, state.remoteFp, state.localFp)
         val newSendToken = deriveRoutingToken(stepSend.newRootKey, state.localFp, state.remoteFp)
 
+        // Every buffer in the result is fresh and not shared with `state`: freshly derived ones
+        // are moved in (not copied, so no stray copies are left unwiped), and the carried-over
+        // fields are copied. Keep this covering every ByteArray field (see SessionState).
         val newState =
-            state.deepCopy().copy(
-                rootKey = stepSend.newRootKey.copyOf(),
-                recvChainKey = stepRecv.newChainKey.copyOf(),
-                sendChainKey = stepSend.newChainKey.copyOf(),
+            state.copy(
+                rootKey = stepSend.newRootKey,
+                recvChainKey = stepRecv.newChainKey,
+                sendChainKey = stepSend.newChainKey,
                 headerKey = state.nextHeaderKey.copyOf(),
-                sendHeaderKey = stepRecv.newHeaderKey.copyOf(),
-                nextHeaderKey = stepSend.newHeaderKey.copyOf(),
+                sendHeaderKey = stepRecv.newHeaderKey,
+                nextHeaderKey = stepSend.newHeaderKey,
                 sendToken = newSendToken,
                 recvToken = newRecvToken,
                 prevSendHeaderKey = state.sendHeaderKey.copyOf(),
@@ -383,19 +394,21 @@ object Session {
                 recvSeq = 0L,
                 pn = state.sendSeq,
                 pr = state.recvSeq,
-                localDhPriv = newLocalDh.priv.copyOf(),
-                localDhPub = newLocalDh.pub.copyOf(),
+                localDhPriv = newLocalDh.priv,
+                localDhPub = newLocalDh.pub,
                 remoteDhPub = remoteDhPub.copyOf(),
                 prevSendToken = state.sendToken.copyOf(),
+                aliceEkPub = state.aliceEkPub.copyOf(),
+                bobEkPub = state.bobEkPub.copyOf(),
+                aliceFp = state.aliceFp.copyOf(),
+                bobFp = state.bobFp.copyOf(),
+                localFp = state.localFp.copyOf(),
+                remoteFp = state.remoteFp.copyOf(),
+                skippedMessageKeys = state.skippedMessageKeys.mapValues { it.value.copyOf() },
             )
 
-        // Memory Hygiene
+        // Only used as KDF input for the send sub-step; not part of the new state.
         stepRecv.newRootKey.zeroize()
-        stepRecv.newChainKey.zeroize()
-        stepRecv.newHeaderKey.zeroize()
-        stepSend.newRootKey.zeroize()
-        stepSend.newChainKey.zeroize()
-        stepSend.newHeaderKey.zeroize()
 
         return newState
     }
