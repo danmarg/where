@@ -4,11 +4,15 @@ import kotlinx.serialization.json.JsonPrimitive
 import org.testcontainers.containers.GenericContainer
 import org.testcontainers.containers.wait.strategy.Wait
 import org.testcontainers.utility.DockerImageName
+import software.amazon.awssdk.services.dynamodb.DynamoDbClient
 import software.amazon.awssdk.services.dynamodb.model.AttributeDefinition
 import software.amazon.awssdk.services.dynamodb.model.AttributeValue
+import software.amazon.awssdk.services.dynamodb.model.BatchWriteItemRequest
+import software.amazon.awssdk.services.dynamodb.model.BatchWriteItemResponse
 import software.amazon.awssdk.services.dynamodb.model.BillingMode
 import software.amazon.awssdk.services.dynamodb.model.CancellationReason
 import software.amazon.awssdk.services.dynamodb.model.CreateTableRequest
+import software.amazon.awssdk.services.dynamodb.model.DeleteItemRequest
 import software.amazon.awssdk.services.dynamodb.model.GetItemRequest
 import software.amazon.awssdk.services.dynamodb.model.GlobalSecondaryIndex
 import software.amazon.awssdk.services.dynamodb.model.KeySchemaElement
@@ -22,9 +26,11 @@ import software.amazon.awssdk.services.dynamodb.model.TransactionCanceledExcepti
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.TimeoutException
 import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
@@ -58,8 +64,8 @@ class DynamoMailboxStateTest {
     // Fresh table pair per store (rather than a fresh token, as PostgresMailboxStateTest used) -
     // DynamoDB table creation is cheap against Local and this keeps each test's queue-depth-guard
     // and TTL-seeding assertions fully isolated from any other test's items.
-    private fun store(): DynamoMailboxState {
-        val client = createDynamoDbClient("test", "test", "us-east-1", endpoint())
+    private fun store(wrap: (DynamoDbClient) -> DynamoDbClient = { it }): DynamoMailboxState {
+        val client = wrap(createDynamoDbClient("test", "test", "us-east-1", endpoint()))
         val suffix = tableCounter++
         return DynamoMailboxState(
             client,
@@ -67,6 +73,27 @@ class DynamoMailboxStateTest {
             receivedIdsTable = "test_received_$suffix",
         ).also { stores.add(it) }
     }
+
+    /**
+     * Wraps [real] so [override] can replace individual calls (by method name, request-object
+     * overloads only); returning null passes the call through. A dynamic proxy rather than Kotlin
+     * `by` delegation, which doesn't forward the SDK interface's Java default methods.
+     */
+    private fun intercepting(
+        real: DynamoDbClient,
+        override: (String, Array<Any?>) -> Any?,
+    ): DynamoDbClient =
+        java.lang.reflect.Proxy.newProxyInstance(
+            DynamoDbClient::class.java.classLoader,
+            arrayOf(DynamoDbClient::class.java),
+        ) { _, method, args ->
+            val a = args ?: emptyArray()
+            override(method.name, a) ?: try {
+                method.invoke(real, *a)
+            } catch (e: java.lang.reflect.InvocationTargetException) {
+                throw e.targetException
+            }
+        } as DynamoDbClient
 
     private fun freshToken() = "test-" + java.util.UUID.randomUUID().toString().take(12)
 
@@ -514,6 +541,63 @@ class DynamoMailboxStateTest {
         assertTrue(state.post(token, JsonPrimitive("a"), "after-1"))
         assertTrue(state.post(token, JsonPrimitive("b"), "after-2"))
         assertFalse(state.post(token, JsonPrimitive("c"), "after-3"))
+    }
+
+    @Test
+    fun `deleteByIds that fails after a partial batch still frees the deleted slots`() {
+        // First BatchWriteItem chunk (25 ids) lands; every later call comes back fully
+        // unprocessed until the retry budget runs out. The 25 deleted messages are really gone,
+        // so post() must see that capacity rather than a stale cached count of 10000.
+        var writeCalls = 0
+        val state =
+            store { real ->
+                intercepting(real) { name, args ->
+                    if (name != "batchWriteItem" || writeCalls++ == 0) return@intercepting null
+                    val request = args[0] as BatchWriteItemRequest
+                    BatchWriteItemResponse.builder().unprocessedItems(request.requestItems()).build()
+                }
+            }
+        val token = freshToken()
+        seedFullQueue(token)
+        assertFalse(state.post(token, JsonPrimitive("overflow"), "overflow-msg")) // seeds the cache
+
+        assertFailsWith<IllegalStateException> { state.deleteByIds(token, (0 until 30).map { "seed-$it" }) }
+
+        repeat(25) { assertTrue(state.post(token, JsonPrimitive(it), "after-$it"), "slot ${it + 1} of 25 freed") }
+        assertFalse(state.post(token, JsonPrimitive("full"), "after-full"))
+    }
+
+    @Test
+    fun `a post that re-seeds the depth cache mid-delete does not cause an undercount`() {
+        // The delete has committed in DynamoDB but deleteById hasn't returned yet. A post() at
+        // that moment on a cold cache must not re-seed from the reduced count and then have the
+        // delete's decrement subtract the same message again, which would admit an extra post
+        // past MAX_QUEUE_DEPTH. Holding the token lock across the delete makes the post wait.
+        val pool = Executors.newSingleThreadExecutor()
+        lateinit var state: DynamoMailboxState
+        val token = freshToken()
+        var racedPost: java.util.concurrent.Future<Boolean>? = null
+        state =
+            store { real ->
+                intercepting(real) { name, args ->
+                    if (name != "deleteItem") return@intercepting null
+                    real.deleteItem(args[0] as DeleteItemRequest).also {
+                        val f = pool.submit<Boolean> { state.post(token, JsonPrimitive("raced"), "raced") }
+                        racedPost = f
+                        try {
+                            f.get(2, TimeUnit.SECONDS) // completes here only if post() isn't blocked
+                        } catch (_: TimeoutException) {
+                        }
+                    }
+                }
+            }
+        seedFullQueue(token) // depth cache stays cold: nothing has posted yet
+
+        state.deleteById(token, "seed-0")
+        assertTrue(racedPost!!.get(30, TimeUnit.SECONDS), "the raced post fills the one freed slot")
+        pool.shutdown()
+
+        assertFalse(state.post(token, JsonPrimitive("extra"), "extra"), "queue is full again at MAX_QUEUE_DEPTH")
     }
 
     @Test

@@ -625,6 +625,13 @@ class DynamoMailboxState(
      * re-scanned the entire, growing backlog just to confirm it's still under the limit. The
      * cache turns that into one scan per token per process lifetime instead of one per post.
      *
+     * Locking: every read or write of [depthCounts] *and* every DynamoDB write that changes
+     * [token]'s live count (post's insert, deleteById/deleteByIds) runs under [getLock] for
+     * [token]. Holding the lock across the delete itself (not just the decrement) matters: if a
+     * delete committed in DynamoDB but decremented later, a post() in between could re-seed from
+     * the already-reduced count and the late decrement would then subtract it a second time - an
+     * undercount, which lets post() exceed MAX_QUEUE_DEPTH.
+     *
      * Invariant: this cache is exact for the supported 7-day mailbox lifetime - within that
      * window every delete goes through deleteById/deleteByIds, which decrement it, so it can
      * never diverge from the true live count. It is *not* guaranteed exact past that window: a
@@ -731,16 +738,16 @@ class DynamoMailboxState(
         // again. Unlike the TTL-drift case, an undercount here is unsafe in the wrong direction:
         // it lets post() accept messages past MAX_QUEUE_DEPTH instead of just rejecting slightly
         // early.
-        val response =
-            client.deleteItem(
-                DeleteItemRequest.builder()
-                    .tableName(messagesTable)
-                    .key(mapOf("token" to AttributeValue.fromS(token), "msgId" to AttributeValue.fromS(msgId)))
-                    .returnValues(ReturnValue.ALL_OLD)
-                    .build(),
-            )
-        if (response.hasAttributes()) {
-            synchronized(getLock(token)) { decrementDepth(token, 1) }
+        withDepthLock(token) {
+            val response =
+                client.deleteItem(
+                    DeleteItemRequest.builder()
+                        .tableName(messagesTable)
+                        .key(mapOf("token" to AttributeValue.fromS(token), "msgId" to AttributeValue.fromS(msgId)))
+                        .returnValues(ReturnValue.ALL_OLD)
+                        .build(),
+                )
+            if (response.hasAttributes()) decrementDepth(token, 1)
         }
         return true
     }
@@ -757,62 +764,84 @@ class DynamoMailboxState(
         // BatchGetItem/BatchWriteItem reject a request containing duplicate keys outright
         // (ValidationException), which would fail the whole ack.
         val ids = msgIds.distinct()
-        var existingCount = 0
-        ids.chunked(100).forEach { chunk ->
-            var keysToCheck =
-                chunk.map { msgId ->
-                    mapOf("token" to AttributeValue.fromS(token), "msgId" to AttributeValue.fromS(msgId))
-                }
-            var attempt = 0
-            while (keysToCheck.isNotEmpty()) {
-                backoffBeforeRetry(attempt++)
-                val response =
-                    client.batchGetItem(
-                        BatchGetItemRequest.builder()
-                            .requestItems(
-                                mapOf(
-                                    messagesTable to
-                                        KeysAndAttributes.builder()
-                                            .keys(keysToCheck)
-                                            .projectionExpression("msgId")
-                                            .consistentRead(true)
-                                            .build(),
-                                ),
-                            )
-                            .build(),
-                    )
-                existingCount += response.responses()[messagesTable]?.size ?: 0
-                keysToCheck = response.unprocessedKeys()[messagesTable]?.keys() ?: emptyList()
-            }
-        }
-
-        // BatchWriteItem caps at 25 requests per call and doesn't guarantee all of them land -
-        // unprocessed ones come back in the response and get retried until none remain.
-        ids.chunked(25).forEach { chunk ->
-            var requests =
-                chunk.map { msgId ->
-                    WriteRequest.builder()
-                        .deleteRequest(
-                            DeleteRequest.builder()
-                                .key(mapOf("token" to AttributeValue.fromS(token), "msgId" to AttributeValue.fromS(msgId)))
+        withDepthLock(token) {
+            var existingCount = 0
+            ids.chunked(100).forEach { chunk ->
+                var keysToCheck =
+                    chunk.map { msgId ->
+                        mapOf("token" to AttributeValue.fromS(token), "msgId" to AttributeValue.fromS(msgId))
+                    }
+                var attempt = 0
+                while (keysToCheck.isNotEmpty()) {
+                    backoffBeforeRetry(attempt++)
+                    val response =
+                        client.batchGetItem(
+                            BatchGetItemRequest.builder()
+                                .requestItems(
+                                    mapOf(
+                                        messagesTable to
+                                            KeysAndAttributes.builder()
+                                                .keys(keysToCheck)
+                                                .projectionExpression("msgId")
+                                                .consistentRead(true)
+                                                .build(),
+                                    ),
+                                )
                                 .build(),
                         )
-                        .build()
+                    existingCount += response.responses()[messagesTable]?.size ?: 0
+                    keysToCheck = response.unprocessedKeys()[messagesTable]?.keys() ?: emptyList()
                 }
-            var attempt = 0
-            while (requests.isNotEmpty()) {
-                backoffBeforeRetry(attempt++)
-                val response =
-                    client.batchWriteItem(
-                        BatchWriteItemRequest.builder()
-                            .requestItems(mapOf(messagesTable to requests))
-                            .build(),
-                    )
-                requests = response.unprocessedItems()[messagesTable] ?: emptyList()
+            }
+
+            // BatchWriteItem caps at 25 requests per call and doesn't guarantee all of them land -
+            // unprocessed ones come back in the response and get retried until none remain.
+            ids.chunked(25).forEach { chunk ->
+                var requests =
+                    chunk.map { msgId ->
+                        WriteRequest.builder()
+                            .deleteRequest(
+                                DeleteRequest.builder()
+                                    .key(mapOf("token" to AttributeValue.fromS(token), "msgId" to AttributeValue.fromS(msgId)))
+                                    .build(),
+                            )
+                            .build()
+                    }
+                var attempt = 0
+                while (requests.isNotEmpty()) {
+                    backoffBeforeRetry(attempt++)
+                    val response =
+                        client.batchWriteItem(
+                            BatchWriteItemRequest.builder()
+                                .requestItems(mapOf(messagesTable to requests))
+                                .build(),
+                        )
+                    requests = response.unprocessedItems()[messagesTable] ?: emptyList()
+                }
+            }
+            decrementDepth(token, existingCount)
+        }
+        return ids.size
+    }
+
+    /**
+     * Runs a delete of [token]'s messages under its lock (see currentDepth()'s doc). If [block]
+     * fails, some of its deletes may already have committed (e.g. one BatchWriteItem chunk landed
+     * and a later one exhausted its retries), so the cached count can no longer be trusted: drop
+     * it, and the next post() re-seeds it from DynamoDB with one exact count query.
+     */
+    private inline fun withDepthLock(
+        token: String,
+        block: () -> Unit,
+    ) {
+        synchronized(getLock(token)) {
+            try {
+                block()
+            } catch (e: Throwable) {
+                depthCounts.remove(token)
+                throw e
             }
         }
-        synchronized(getLock(token)) { decrementDepth(token, existingCount) }
-        return ids.size
     }
 
     /**
@@ -829,9 +858,10 @@ class DynamoMailboxState(
         // Both tables use native DynamoDB TTL, which sweeps expired items in the background at
         // no extra cost (see the class doc), so only in-process state needs trimming here.
         limiter.evict()
-        // depthCounts is a cache of an exact, re-seedable count (see currentDepth), so dropping
-        // entries is always safe - it only costs one count query on that token's next post. Bound
-        // it so tokens that stop posting (their messages expired by TTL) don't accumulate forever.
+        // depthCounts is a cache of an exact, re-seedable count (see currentDepth), so dropping an
+        // entry under its token's lock is safe: no delete for that token can be mid-flight (they
+        // hold the same lock), so the next post re-seeds an exact count. Bound it so tokens that
+        // stop posting (their messages expired by TTL) don't accumulate forever.
         if (depthCounts.size > MAX_DEPTH_CACHE_ENTRIES) {
             for (token in depthCounts.keys) synchronized(getLock(token)) { depthCounts.remove(token) }
         }
