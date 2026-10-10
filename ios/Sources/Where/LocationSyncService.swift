@@ -222,12 +222,8 @@ final class LocationSyncService: ObservableObject {
     /// gets the app killed once the budget runs out, e.g. a long multi-friend poll on a BGTask
     /// wake). Returns an idempotent closure for the normal completion path.
     private func beginExpiringBackgroundTask(_ name: String) -> @MainActor @Sendable () -> Void {
-        let box = BackgroundTaskBox()
-        let end = self.endBackgroundTask
-        box.identifier = self.beginBackgroundTask(name) {
-            MainActor.assumeIsolated { box.end(using: end) }
-        }
-        return { box.end(using: end) }
+        let token = BackgroundTaskToken(name: name, begin: beginBackgroundTask, end: endBackgroundTask)
+        return { token.end() }
     }
 
     let e2eeManager: Shared.E2eeManager
@@ -1146,18 +1142,5 @@ final class LocationSyncService: ObservableObject {
             updates.append(Shared.UserLocation(userId: friend.id, lat: lat, lng: lng, timestamp: ts))
         }
         visibleUsers = updates
-    }
-}
-
-/// Holds a background task id so the expiration handler and the normal completion path
-/// end it exactly once between them.
-@MainActor
-private final class BackgroundTaskBox {
-    var identifier: UIBackgroundTaskIdentifier = .invalid
-
-    func end(using endBackgroundTask: (UIBackgroundTaskIdentifier) -> Void) {
-        guard identifier != .invalid else { return }
-        endBackgroundTask(identifier)
-        identifier = .invalid
     }
 }

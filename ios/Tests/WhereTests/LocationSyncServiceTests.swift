@@ -1171,6 +1171,57 @@ class LocationSyncServiceTests: XCTestCase {
         XCTAssertEqual(recorder.ended, [UIBackgroundTaskIdentifier(rawValue: 42)])
     }
 
+    /// Expiration delivered while normal completion is already ending the task (here: from
+    /// inside endBackgroundTask itself, the tightest interleaving the main actor allows) must not
+    /// end it a second time.
+    func testBackgroundTaskExpirationDuringCompletionEndsOnce() async throws {
+        let recorder = BackgroundTaskRecorder()
+        let token = BackgroundTaskToken(
+            name: "Test",
+            begin: { _, handler in recorder.begin(handler) },
+            end: { id in
+                recorder.end(id)
+                recorder.fireExpiration()
+            }
+        )
+        token.end()
+        token.end()
+        XCTAssertEqual(recorder.ended, [UIBackgroundTaskIdentifier(rawValue: 42)])
+    }
+
+    /// When iOS refuses a background task (.invalid), the send still runs (unprotected from
+    /// suspension) and nothing tries to end a task that was never granted.
+    func testSendLocationStillRunsWhenBackgroundTaskIsRefused() async throws {
+        let mockClient = MockLocationClient()
+        service = LocationSyncService(e2eeManager: service.e2eeManager, userStore: service.userStore, locationClient: mockClient, locationProvider: mockLocationProvider)
+        service.skipNetworkRestore = true
+        service.isSharingLocation = true
+        let sendCount = SendCountBox()
+        mockClient.sendLocationCallback = { sendCount.increment() }
+        let ended = BackgroundTaskRecorder()
+        service.beginBackgroundTask = { _, _ in .invalid }
+        service.endBackgroundTask = { id in ended.end(id) }
+
+        service.sendLocation(lat: 37.7, lng: -122.4, force: true, stationary: false)
+        await service.currentSendTask?.value
+
+        XCTAssertEqual(sendCount.getCount(), 1)
+        XCTAssertEqual(ended.ended, [])
+    }
+
+    // MARK: - Sharing status
+
+    func testSharingStatus_ReducedAccuracyOnlyWarnsWhenItBlocksSending() {
+        typealias S = ContentView.SharingStatus
+        let usable = LocationSyncService.minBroadcastAccuracyMeters
+        XCTAssertEqual(S.derive(isSharing: false, authorization: .authorizedAlways, accuracyAuthorization: .reducedAccuracy, lastFixAccuracy: nil), .paused)
+        XCTAssertEqual(S.derive(isSharing: true, authorization: .denied, accuracyAuthorization: .reducedAccuracy, lastFixAccuracy: nil), .permissionMissing)
+        XCTAssertEqual(S.derive(isSharing: true, authorization: .authorizedAlways, accuracyAuthorization: .reducedAccuracy, lastFixAccuracy: 1500), .preciseLocationOff)
+        XCTAssertEqual(S.derive(isSharing: true, authorization: .authorizedAlways, accuracyAuthorization: .reducedAccuracy, lastFixAccuracy: nil), .preciseLocationOff)
+        XCTAssertEqual(S.derive(isSharing: true, authorization: .authorizedAlways, accuracyAuthorization: .reducedAccuracy, lastFixAccuracy: usable), .sharing)
+        XCTAssertEqual(S.derive(isSharing: true, authorization: .authorizedAlways, accuracyAuthorization: .fullAccuracy, lastFixAccuracy: nil), .sharing)
+    }
+
     // MARK: - Restored location
 
     func testRestoredLocationKeepsOriginalTimestampAndAccuracy() {

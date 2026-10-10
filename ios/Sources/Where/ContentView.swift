@@ -18,30 +18,50 @@ struct ContentView: View {
 
     @State private var newFriendName: String = ""
 
-    private var sharingStatusText: String {
-        if !syncService.isSharingLocation {
-            return MR.strings().paused.localized()
+    /// What the status pill shows. Reduced (approximate) accuracy only matters when it actually
+    /// stops us sending: an approximate fix inside `minBroadcastAccuracyMeters` is still broadcast,
+    /// so it's shown as normal sharing rather than as a failure.
+    enum SharingStatus: Equatable {
+        case paused, permissionMissing, preciseLocationOff, sharing
+
+        static func derive(
+            isSharing: Bool,
+            authorization: CLAuthorizationStatus,
+            accuracyAuthorization: CLAccuracyAuthorization,
+            lastFixAccuracy: CLLocationAccuracy?
+        ) -> SharingStatus {
+            if !isSharing { return .paused }
+            if authorization == .denied || authorization == .restricted { return .permissionMissing }
+            let fixUsable = lastFixAccuracy.map { $0 >= 0 && $0 <= LocationSyncService.minBroadcastAccuracyMeters } ?? false
+            if accuracyAuthorization == .reducedAccuracy && !fixUsable { return .preciseLocationOff }
+            return .sharing
         }
-        switch locationManager.authorizationStatus {
-        case .denied, .restricted:
-            return MR.strings().location_permission_missing.localized()
-        default:
-            if locationManager.accuracyAuthorization == .reducedAccuracy {
-                return MR.strings().precise_location_off.localized()
-            }
-            return MR.strings().sharing.localized()
+    }
+
+    private var sharingStatus: SharingStatus {
+        SharingStatus.derive(
+            isSharing: syncService.isSharingLocation,
+            authorization: locationManager.authorizationStatus,
+            accuracyAuthorization: locationManager.accuracyAuthorization,
+            lastFixAccuracy: locationManager.location?.horizontalAccuracy
+        )
+    }
+
+    private var sharingStatusText: String {
+        switch sharingStatus {
+        case .paused: return MR.strings().paused.localized()
+        case .permissionMissing: return MR.strings().location_permission_missing.localized()
+        case .preciseLocationOff: return MR.strings().precise_location_off.localized()
+        case .sharing: return MR.strings().sharing.localized()
         }
     }
 
     private var sharingStatusColor: Color {
-        if !syncService.isSharingLocation {
-            return Color.gray.opacity(0.85)
-        }
-        switch locationManager.authorizationStatus {
-        case .denied, .restricted:
-            return Color.red.opacity(0.85)
-        default:
-            return locationManager.accuracyAuthorization == .reducedAccuracy ? Color.orange.opacity(0.85) : Color.blue.opacity(0.85)
+        switch sharingStatus {
+        case .paused: return Color.gray.opacity(0.85)
+        case .permissionMissing: return Color.red.opacity(0.85)
+        case .preciseLocationOff: return Color.orange.opacity(0.85)
+        case .sharing: return Color.blue.opacity(0.85)
         }
     }
 
