@@ -458,7 +458,9 @@ class E2eeManager(
 
             val failCount = result.softFailCount + result.hardFailCount
 
-            val hadActivity = result.decryptedLocations.isNotEmpty() || (result.anySuccess && result.finalSession != entry.session)
+            // Peer activity = any frame authenticated as theirs, even one whose body was lost
+            // (soft-fail). Delivery (locations, anySuccess) is tracked separately.
+            val hadActivity = result.decryptedLocations.isNotEmpty() || (result.anyAuthenticated && result.finalSession != entry.session)
             val lastLocation = result.decryptedLocations.lastOrNull()
 
             val hadStateUpdate =
@@ -509,7 +511,7 @@ class E2eeManager(
             val updatedEntry =
                 entry.copy(
                     session = result.finalSession,
-                    isConfirmed = entry.isConfirmed || result.anySuccess,
+                    isConfirmed = entry.isConfirmed || result.anyAuthenticated,
                     lastRecvTs = if (hadActivity) currentTimeSeconds() else entry.lastRecvTs,
                     lastLat = if (lastLocation != null && (lastLocation.ts >= (entry.lastTs ?: 0))) lastLocation.lat else entry.lastLat,
                     lastLng = if (lastLocation != null && (lastLocation.ts >= (entry.lastTs ?: 0))) lastLocation.lng else entry.lastLng,

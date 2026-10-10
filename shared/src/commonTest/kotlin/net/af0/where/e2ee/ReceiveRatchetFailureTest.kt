@@ -183,6 +183,65 @@ class ReceiveRatchetFailureTest {
         converse(alice, bob)
     }
 
+    /**
+     * Ownership invariant: decryptMessage never mutates buffers reachable from its input state,
+     * on any path (success, soft-fail, or the stale-key purge). The caller (and the store's
+     * cached copy) may keep using that state.
+     */
+    @Test
+    fun decryptNeverMutatesTheInputState() {
+        var (alice, bob) = pair()
+        val (a1, m1) = Session.encryptMessage(alice, loc(1))
+        val (a2, m2) = Session.encryptMessage(a1, loc(2)) // skipped: its key gets cached
+        val (a3, m3) = Session.encryptMessage(a2, loc(3))
+        alice = a3
+        bob = Session.decryptMessage(bob, m1).first
+
+        // Success that derives (and caches) a skipped key.
+        assertInputUnchanged(bob) { Session.decryptMessage(it, m3) }
+        bob = Session.decryptMessage(bob, m3).first
+        assertEquals(1, bob.skippedMessageKeys.size, "m2's key should be cached")
+
+        // Soft-fail.
+        val (_, m4) = Session.encryptMessage(alice, loc(4))
+        assertInputUnchanged(bob) { runCatching { Session.decryptMessage(it, tamper(m4)) } }
+
+        // Stale-key purge: once m2's cached key is older than MAX_KEY_AGE_MS, the next decrypt
+        // drops it from the new state but must not wipe the input's copy.
+        TimeSource.setProvider(OffsetTimeProvider(MAX_KEY_AGE_MS + 60_000))
+        try {
+            assertInputUnchanged(bob) { Session.decryptMessage(it, m4) }
+            assertTrue(Session.decryptMessage(bob, m4).first.skippedMessageKeys.isEmpty(), "stale key purged from new state")
+        } finally {
+            TimeSource.setProvider(DefaultTimeProvider)
+        }
+
+        // New-epoch success (performDhRatchet path) and new-epoch soft-fail.
+        val (b1, reply) = Session.encryptMessage(bob, loc(100))
+        bob = b1
+        alice = Session.decryptMessage(alice, reply).first
+        val (_, m5) = Session.encryptMessage(alice, loc(5))
+        assertInputUnchanged(bob) { Session.decryptMessage(it, m5) }
+        assertInputUnchanged(bob) { runCatching { Session.decryptMessage(it, tamper(m5)) } }
+    }
+
+    private fun assertInputUnchanged(
+        state: SessionState,
+        block: (SessionState) -> Unit,
+    ) {
+        val snapshot = state.deepCopy()
+        block(state)
+        assertEquals(snapshot, state, "decryptMessage mutated its input state")
+    }
+
+    private class OffsetTimeProvider(private val offsetMs: Long) : TimeProvider {
+        override fun currentTimeMillis() = DefaultTimeProvider.currentTimeMillis() + offsetMs
+
+        override fun currentTimeSeconds() = currentTimeMillis() / 1000
+
+        override fun formatLocalTime(seconds: Long) = DefaultTimeProvider.formatLocalTime(seconds)
+    }
+
     /** A dropped new-epoch frame must heal the same way a corrupted one does. */
     @Test
     fun droppedNewEpochFrameDoesNotBrickSession() {

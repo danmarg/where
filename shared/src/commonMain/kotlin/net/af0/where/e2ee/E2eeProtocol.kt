@@ -8,7 +8,14 @@ internal object E2eeProtocol {
     data class DecryptionResult(
         val finalSession: SessionState,
         val decryptedLocations: List<LocationPlaintext>,
+        /** At least one message was decrypted and delivered to the application. */
         val anySuccess: Boolean,
+        /**
+         * At least one frame authenticated as coming from the peer, including soft-failed frames
+         * (header authenticated, body corrupted or malformed). This is the peer-activity signal
+         * (confirmation, lastRecvTs); [anySuccess] is the delivery signal.
+         */
+        val anyAuthenticated: Boolean,
         val anyReplay: Boolean,
         val processedIds: List<String>,
         val replayedIds: List<String>,
@@ -72,6 +79,7 @@ internal object E2eeProtocol {
         var currentSession = initialSession
         val decryptedLocations = mutableListOf<LocationPlaintext>()
         var anySuccess = false
+        var anyAuthenticated = false
         var anyReplay = false
         var softFailCount = 0
         var hardFailCount = 0
@@ -85,6 +93,7 @@ internal object E2eeProtocol {
                 val (newSession, pt) = Session.decryptMessage(currentSession, msg, header)
                 currentSession = newSession
                 anySuccess = true
+                anyAuthenticated = true
                 processedIds.add(msg.msgId)
                 if (pt is MessagePlaintext.Location) {
                     decryptedLocations.add(
@@ -110,6 +119,11 @@ internal object E2eeProtocol {
                     // ratcheted session state to prevent permanent DH desync (§5.5).
                     currentSession = e.newState
                     softFailCount++
+                    anyAuthenticated = true
+                    // ACKed (deleted from the mailbox) even though nothing was delivered: the
+                    // ciphertext can never be decrypted and its key is spent. Mailbox ACKs are
+                    // transport cleanup only; senders never observe them (they don't read the
+                    // receiver's mailbox), so this is indistinguishable from a server-side drop.
                     processedIds.add(msg.msgId)
                 } else {
                     hardFailCount++
@@ -121,6 +135,7 @@ internal object E2eeProtocol {
             finalSession = currentSession,
             decryptedLocations = decryptedLocations,
             anySuccess = anySuccess,
+            anyAuthenticated = anyAuthenticated,
             anyReplay = anyReplay,
             processedIds = processedIds,
             replayedIds = replayedIds,

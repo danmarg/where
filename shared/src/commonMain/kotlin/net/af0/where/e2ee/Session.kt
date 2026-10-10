@@ -93,7 +93,9 @@ object Session {
             val v = entry.value
             // Format: [MK (32) || Nonce (12) || Timestamp (8)]
             if (v.size >= 52 && (now - bytesToLong(v.copyOfRange(44, 52))) > MAX_KEY_AGE_MS) {
-                v.zeroize()
+                // Dropped, not wiped: this buffer is still referenced by the caller's input
+                // state (see the ownership rule below). It disappears from storage when the
+                // new state is persisted.
                 it.remove()
                 modified = true
             }
@@ -173,8 +175,15 @@ object Session {
             return newState to decoded
         }
 
-        // 3. Speculatively perform DH and symmetric ratchet
-        // We do NOT mutate the original 'state' or commit anything until decryption succeeds.
+        // 3. Speculatively perform DH and symmetric ratchet.
+        //
+        // Buffer ownership rule for everything below:
+        //  - Never mutate (zeroize) a buffer reachable from the input `state`. The caller keeps
+        //    using it after a hard failure, and the store's cached copy is the same object
+        //    until the new state is persisted.
+        //  - Every buffer created here is either moved into the state this call commits
+        //    (returned, or attached to DecryptionExceptionWithState) or zeroized on exit.
+        // `committed` flips exactly once, when ownership moves to `newState`.
         var speculativeState = cleanState
 
         if (isNewDhEpoch) {
@@ -183,53 +192,59 @@ object Session {
             // tryDecryptHeader only ever holds the current + next receive header keys
             // (see §2.2, §8.3.1(6)), so a replayed retired-epoch frame fails to decrypt
             // its header before any ratchet logic runs.
+            // performDhRatchet deep-copies, so every buffer in the result is fresh (owned here).
             speculativeState = performDhRatchet(speculativeState, remoteDhPub)
         }
 
-        // Replay rejection against speculative seq
-        if (seq <= speculativeState.recvSeq) {
-            throw ReplayException("replay: seq $seq <= recvSeq ${speculativeState.recvSeq}")
-        }
-
-        val stepsNeeded = seq - speculativeState.recvSeq
-        if (stepsNeeded > MAX_SKIPPED_KEYS + 1) {
-            throw ProtocolGapException("gap too large: stepsNeeded $stepsNeeded")
-        }
-
-        // Derivation loop for chain keys and skipped message keys
-        val derivationSkippedKeys = LinkedHashMap(speculativeState.skippedMessageKeys)
-
-        // Clear skipped keys for old epochs
-        if (isNewDhEpoch) {
-            val validEpochs = setOf(remoteDhPub.toHex(), cleanState.remoteDhPub.toHex())
-            val it = derivationSkippedKeys.entries.iterator()
-            while (it.hasNext()) {
-                val entry = it.next()
-                if (validEpochs.none { e -> entry.key.startsWith(e) }) {
-                    entry.value.zeroize()
-                    it.remove()
-                }
-            }
-        }
-
-        val pnGaps =
-            if (isNewDhEpoch && header.pn > cleanState.recvSeq) {
-                val diff = header.pn - cleanState.recvSeq
-                if (diff > MAX_SKIPPED_KEYS) throw ProtocolGapException("previous-chain pn gap too large: $diff")
-                diff.toInt()
-            } else {
-                0
-            }
-
-        val projectedSize = derivationSkippedKeys.size + kotlin.math.max(0, stepsNeeded.toInt() - 1) + pnGaps
-        if (projectedSize > MAX_SKIPPED_KEYS) {
-            throw ProtocolGapException("combined skipped key gap too large: $projectedSize")
-        }
-
-        var chainKey = speculativeState.recvChainKey.copyOf()
+        var chainKey = ByteArray(0)
         var currentStep: ChainStep? = null
+        val derivedKeys = mutableListOf<ByteArray>() // fresh skipped-key entries created here
+        var committed = false
 
         try {
+            // Replay rejection against speculative seq
+            if (seq <= speculativeState.recvSeq) {
+                throw ReplayException("replay: seq $seq <= recvSeq ${speculativeState.recvSeq}")
+            }
+
+            val stepsNeeded = seq - speculativeState.recvSeq
+            if (stepsNeeded > MAX_SKIPPED_KEYS + 1) {
+                throw ProtocolGapException("gap too large: stepsNeeded $stepsNeeded")
+            }
+
+            // Derivation loop for chain keys and skipped message keys
+            val derivationSkippedKeys = LinkedHashMap(speculativeState.skippedMessageKeys)
+
+            // Clear skipped keys for old epochs. Only reached for a new epoch, where the values
+            // are performDhRatchet's fresh copies (never the input's buffers), so wiping is safe.
+            if (isNewDhEpoch) {
+                val validEpochs = setOf(remoteDhPub.toHex(), cleanState.remoteDhPub.toHex())
+                val it = derivationSkippedKeys.entries.iterator()
+                while (it.hasNext()) {
+                    val entry = it.next()
+                    if (validEpochs.none { e -> entry.key.startsWith(e) }) {
+                        entry.value.zeroize()
+                        it.remove()
+                    }
+                }
+            }
+
+            val pnGaps =
+                if (isNewDhEpoch && header.pn > cleanState.recvSeq) {
+                    val diff = header.pn - cleanState.recvSeq
+                    if (diff > MAX_SKIPPED_KEYS) throw ProtocolGapException("previous-chain pn gap too large: $diff")
+                    diff.toInt()
+                } else {
+                    0
+                }
+
+            val projectedSize = derivationSkippedKeys.size + kotlin.math.max(0, stepsNeeded.toInt() - 1) + pnGaps
+            if (projectedSize > MAX_SKIPPED_KEYS) {
+                throw ProtocolGapException("combined skipped key gap too large: $projectedSize")
+            }
+
+            chainKey = speculativeState.recvChainKey.copyOf()
+
             // Advance the chain to 'seq', storing intermediate message keys
             repeat(stepsNeeded.toInt()) { i ->
                 val step = kdfCk(chainKey)
@@ -242,9 +257,11 @@ object Session {
                     // Store intermediate message key for future out-of-order delivery.
                     // Cached format: [MK (32) || Nonce (12) || Timestamp (8)]
                     val mkPlusNonce = step.messageKey + step.messageNonce + longToBeBytes(now)
-                    val mkKey = remoteDhPub.toHex() + ":" + currentSeq
+                    step.messageKey.zeroize()
+                    step.messageNonce.zeroize()
+                    derivedKeys.add(mkPlusNonce)
                     // No eviction needed: the projectedSize admission check above bounds the cache.
-                    derivationSkippedKeys[mkKey] = mkPlusNonce
+                    derivationSkippedKeys[remoteDhPub.toHex() + ":" + currentSeq] = mkPlusNonce
                 } else {
                     currentStep = step
                 }
@@ -261,6 +278,9 @@ object Session {
                     oldChainKey.zeroize()
                     oldChainKey = step.newChainKey
                     val mkPlusNonce = step.messageKey + step.messageNonce + longToBeBytes(now)
+                    step.messageKey.zeroize()
+                    step.messageNonce.zeroize()
+                    derivedKeys.add(mkPlusNonce)
                     derivationSkippedKeys[prevEpochHex + ":" + (cleanState.recvSeq + i + 1)] = mkPlusNonce
                 }
                 oldChainKey.zeroize()
@@ -274,13 +294,19 @@ object Session {
             // (§8.3.1(4)): a server that drops a frame and one that corrupts it must leave
             // identical state, or the ratchet desyncs permanently. The failed message's key
             // itself is never cached (it would live up to 7 days for no benefit).
+            // A new-epoch speculative state is already all fresh buffers; otherwise it aliases
+            // the input, so copy it (minus the skipped-key map, replaced below) rather than hand
+            // the input's buffers to the new state.
+            val base =
+                if (isNewDhEpoch) speculativeState else speculativeState.copy(skippedMessageKeys = emptyMap()).deepCopy()
             val newState =
-                speculativeState.deepCopy().copy(
-                    // Move ownership
+                base.copy(
                     recvChainKey = chainKey,
                     recvSeq = seq,
                     skippedMessageKeys = derivationSkippedKeys,
                 )
+            base.recvChainKey.zeroize() // superseded by chainKey; no longer referenced
+            committed = true
 
             val plaintext =
                 try {
@@ -309,11 +335,17 @@ object Session {
                 }
 
             return newState to decoded
-        } catch (e: Exception) {
-            if (e !is WhereException) {
+        } finally {
+            if (!committed) {
+                // Nothing was handed to a caller: wipe every buffer created by this call.
                 chainKey.zeroize()
+                currentStep?.let {
+                    it.messageKey.zeroize()
+                    it.messageNonce.zeroize()
+                }
+                derivedKeys.forEach { it.zeroize() }
+                if (isNewDhEpoch) speculativeState.zeroizeAll()
             }
-            throw e
         }
     }
 

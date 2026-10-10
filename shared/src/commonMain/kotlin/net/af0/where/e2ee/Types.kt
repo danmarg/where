@@ -98,6 +98,16 @@ data class SessionState(
         )
 
     /**
+     * Wipes every secret-bearing buffer of a state this code exclusively owns (e.g. a
+     * speculative ratchet result that was never committed). Never call it on a state whose
+     * buffers may be shared with another live state.
+     */
+    internal fun zeroizeAll() {
+        byteArrayFields().forEach { it.zeroize() }
+        skippedMessageKeys.values.forEach { it.zeroize() }
+    }
+
+    /**
      * Every ByteArray field declared in the primary constructor, in declaration order.
      * equals()/hashCode() fold over this instead of each maintaining its own hand-written
      * field list, so a field added to the constructor but missed here fails loudly (wrong
