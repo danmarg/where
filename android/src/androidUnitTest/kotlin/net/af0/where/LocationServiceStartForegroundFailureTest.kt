@@ -110,4 +110,26 @@ class LocationServiceStartForegroundFailureTest {
 
         controller.destroy()
     }
+
+    @Test
+    fun onCreate_stopsSelfInsteadOfCrashing_whenBackgroundStartNotAllowed() {
+        val controller = Robolectric.buildService(LocationService::class.java)
+        val service = controller.get()
+
+        // Thrown (API 31+) when started via PendingIntent.getService from the background.
+        service.startForegroundOverride = {
+            throw android.app.ForegroundServiceStartNotAllowedException("startForegroundService() not allowed")
+        }
+        service.locationSourceOverride = ServiceFakeLocationSource()
+        service.e2eeManagerOverride = mockk(relaxed = true)
+        service.locationClientOverride = mockk(relaxed = true)
+        service.uiStateStoreOverride = FakeUiStateStore()
+        service.locationProviderOverride = mockk(relaxed = true)
+        service.activityHelperOverride = mockk(relaxed = true)
+
+        controller.create()
+
+        assertTrue(shadowOf(service).isStoppedBySelf, "Service should have stopped itself after startForeground() failed")
+        controller.destroy()
+    }
 }

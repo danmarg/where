@@ -59,5 +59,21 @@ interface LocationProvider {
         radiusMeters: Float,
     ): GeofenceRequestResult
 
+    /**
+     * Removes the fence planted by [setGeofenceAt], if any. Fences are NEVER_EXPIRE and outlive
+     * the process, so one left behind after sharing stops keeps waking the service. No-op in
+     * the F-Droid build (no geofencing).
+     */
+    fun removeGeofence() {}
+
     fun onDestroy()
 }
+
+/**
+ * True for ForegroundServiceStartNotAllowedException (API 31+): starting/promoting a foreground
+ * service from the background without an exemption. Checked via SDK_INT + instanceof rather than
+ * a catch clause so the class is never referenced on older devices.
+ */
+internal fun isBackgroundStartNotAllowed(e: Throwable): Boolean =
+    android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S &&
+        e is android.app.ForegroundServiceStartNotAllowedException

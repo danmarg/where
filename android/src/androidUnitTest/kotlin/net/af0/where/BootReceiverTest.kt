@@ -52,4 +52,16 @@ class BootReceiverTest {
         val nextIntent = shadowOf(context as android.app.Application).nextStartedService
         assertEquals(null, nextIntent)
     }
+
+    @Test
+    fun testOnReceiveRestartsServiceAfterAppUpdate() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        UserPrefs.setSharing(context, true)
+
+        BootReceiver().onReceive(context, Intent(Intent.ACTION_MY_PACKAGE_REPLACED))
+
+        val nextIntent = shadowOf(context as android.app.Application).nextStartedService
+        assertNotNull(nextIntent, "An app update must restart sharing")
+        assertEquals(LocationService::class.java.name, nextIntent.component?.className)
+    }
 }

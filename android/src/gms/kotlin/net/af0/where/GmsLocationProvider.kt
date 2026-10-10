@@ -19,6 +19,7 @@ import kotlinx.coroutines.tasks.await
 import kotlinx.coroutines.withTimeoutOrNull
 
 private const val TAG = "GmsLocationProvider"
+private const val GEOFENCE_ID = "stationary_fence"
 
 class GmsLocationProvider : LocationProvider {
     private lateinit var context: Context
@@ -182,7 +183,7 @@ class GmsLocationProvider : LocationProvider {
     ): GeofenceRequestResult {
         val geofence =
             Geofence.Builder()
-                .setRequestId("stationary_fence")
+                .setRequestId(GEOFENCE_ID)
                 .setCircularRegion(lat, lng, radiusMeters)
                 .setExpirationDuration(Geofence.NEVER_EXPIRE)
                 .setTransitionTypes(Geofence.GEOFENCE_TRANSITION_EXIT)
@@ -209,6 +210,13 @@ class GmsLocationProvider : LocationProvider {
             geofenceRequestInFlight = false
             GeofenceRequestResult.FAILED
         }
+    }
+
+    override fun removeGeofence() {
+        // Drop any queued re-plant so an in-flight add's completion doesn't re-add it.
+        pendingGeofenceTarget = null
+        geofencingClient.removeGeofences(listOf(GEOFENCE_ID))
+            .addOnFailureListener { e -> Log.w(TAG, "Geofence remove failed: ${e.message}") }
     }
 
     // Task listeners run on the main looper by default (no Executor was supplied), matching

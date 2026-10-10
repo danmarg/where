@@ -216,6 +216,21 @@ class LocationViewModel(
         }
     }
 
+    /**
+     * startForegroundService() throws ForegroundServiceStartNotAllowedException (Android 12+)
+     * if the app is no longer foreground-eligible - e.g. a call made after a network await
+     * while the user switched away. Uncaught in viewModelScope that crashed the app or
+     * skipped the rest of the caller. The service then starts on the next foreground resume.
+     */
+    private fun startLocationService(intent: Intent) {
+        try {
+            getApplication<Application>().startForegroundService(intent)
+        } catch (e: IllegalStateException) {
+            if (!isBackgroundStartNotAllowed(e)) throw e
+            Log.w(TAG, "Could not start LocationService (${intent.action}): ${e.message}")
+        }
+    }
+
     private fun triggerRapidPoll() {
         locationSource.triggerRapidPoll()
     }
@@ -262,7 +277,7 @@ class LocationViewModel(
                 Intent(getApplication(), LocationService::class.java).apply {
                     action = LocationService.ACTION_FORCE_PUBLISH
                 }
-            getApplication<Application>().startForegroundService(intent)
+            startLocationService(intent)
         }
     }
 
@@ -306,7 +321,7 @@ class LocationViewModel(
                     action = LocationService.ACTION_FORCE_PUBLISH
                     putExtra(LocationService.EXTRA_FRIEND_ID, id)
                 }
-            getApplication<Application>().startForegroundService(intent)
+            startLocationService(intent)
         }
     }
 
@@ -353,7 +368,7 @@ class LocationViewModel(
                     val hasPermission = getApplication<Application>().hasLocationPermission()
                     if (hasPermission) {
                         val svcIntent = Intent(getApplication(), LocationService::class.java)
-                        getApplication<Application>().startForegroundService(svcIntent)
+                        startLocationService(svcIntent)
                     }
                     triggerRapidPoll()
                 } catch (e: Exception) {
@@ -441,7 +456,7 @@ class LocationViewModel(
                                 action = LocationService.ACTION_FORCE_PUBLISH
                                 putExtra(LocationService.EXTRA_FRIEND_ID, bobEntry.id)
                             }
-                        getApplication<Application>().startForegroundService(intent)
+                        startLocationService(intent)
                     }
 
                     withContext(Dispatchers.Main.immediate) {
@@ -493,7 +508,7 @@ class LocationViewModel(
                                     action = LocationService.ACTION_FORCE_PUBLISH
                                     putExtra(LocationService.EXTRA_FRIEND_ID, entry.id)
                                 }
-                            getApplication<Application>().startForegroundService(intent)
+                            startLocationService(intent)
                         }
                     } catch (e: Exception) {
                         Log.e(TAG, "confirmPendingInit: inner failure: ${e.message}")
@@ -632,7 +647,7 @@ class LocationViewModel(
         } else if (hasPermission && notified) {
             prefs.edit().putBoolean(KEY_STOPPED_FOR_MISSING_PERMISSION, false).apply()
             if (isSharingLocation.value) {
-                app.startForegroundService(
+                startLocationService(
                     Intent(app, LocationService::class.java).apply { action = LocationService.ACTION_FORCE_PUBLISH },
                 )
             }
@@ -683,7 +698,7 @@ class LocationViewModel(
         val hasLocationPermission = getApplication<Application>().hasLocationPermission()
         val hasRelationships = friends.value.isNotEmpty() || locationSource.allPendingInvites.value.isNotEmpty()
         if ((sharing && hasLocationPermission && hasRelationships) || inForeground) {
-            getApplication<Application>().startForegroundService(intent)
+            startLocationService(intent)
             try {
                 WorkManager.getInstance(getApplication()).enqueueUniquePeriodicWork(
                     LocationServiceRestartWorker.WORK_NAME,
