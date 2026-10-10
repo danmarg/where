@@ -500,10 +500,9 @@ The Double Ratchet protocol is designed to "self-heal" over time. A session reco
 
 For threat models where an attacker might have continuous read-access to the outbox (e.g., a server-side mirror of the mailbox), the session may never fully heal if the attacker can immediately use the compromised root key to stay ahead of the ratchet. This is mitigated by the **mailbox-polling model**: as long as the legitimate user rotates their ratchet keys, an attacker would need to maintain persistent, real-time access to the device's secure enclave to keep up.
 
-Mandatory mitigations:
-- **iOS:** Mark all session-state keychain items with `kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly`. This attribute excludes the item from iCloud Backup.
-- **Android:** Store session state in `EncryptedSharedPreferences` backed by a Keystore key created with `setIsStrongBoxBacked(true)` and `allowBackup=false` in the manifest.
-- **Both:** On detecting a fresh install or that session state is missing/invalid (e.g., root key absent), invalidate the session and initiate re-keying with all affected friends rather than accepting a potentially stale backup.
+Mandatory mitigations (session state lives in the app's SQLite database on both platforms):
+- **iOS:** The database directory is created with `NSURLIsExcludedFromBackupKey` set before SQLite opens anything, which covers the `-wal`/`-shm` files, and the exclusion is verified at every launch. As a second line of defense, the database and a `kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly` keychain item hold the same random marker. A database whose marker is missing from or differs from the keychain came from another device or install, so its sessions, pending invites and outbox are discarded before use, and the user is asked to re-pair. A database with no marker (a new one, or one created before this check existed) is adopted. A restore onto the same device restores the same keychain marker and is not detected.
+- **Android:** `allowBackup="false"`, plus `dataExtractionRules` that exclude every domain from both cloud backup and device-to-device transfer. `allowBackup` alone does not stop device transfer for apps targeting API 31+. The database is not encrypted at rest.
 
 ### 5.7 Sharing-State Semantics and Forward-Compatibility
 
