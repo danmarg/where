@@ -72,6 +72,7 @@
     <string name="approximate">Aproximada</string>
     <string name="invalid_qr_code">Código QR no válido</string>
     <string name="invite_expired">Esta invitación ha caducado. Pide que te envíen una nueva.</string>
+    <string name="invite_already_used">Ya aceptaste esta invitación. Pide una nueva para volver a vincularte.</string>
     <string name="pairing_failed">Error de emparejamiento: respuesta no válida</string>
     <string name="error_no_connection">Sin conexión: no se pudo contactar con el servidor.</string>
     <string name="error_timeout">La solicitud ha superado el tiempo de espera. Inténtalo de nuevo.</string>

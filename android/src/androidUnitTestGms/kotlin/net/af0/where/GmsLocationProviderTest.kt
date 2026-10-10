@@ -8,6 +8,7 @@ import com.google.android.gms.location.GeofencingClient
 import com.google.android.gms.location.LocationCallback
 import com.google.android.gms.location.LocationRequest
 import com.google.android.gms.location.Priority
+import com.google.android.gms.tasks.OnCompleteListener
 import com.google.android.gms.tasks.OnFailureListener
 import com.google.android.gms.tasks.OnSuccessListener
 import com.google.android.gms.tasks.Task
@@ -210,6 +211,84 @@ class GmsLocationProviderTest {
 
         failureListeners.first().onFailure(SecurityException("denied"))
         verify(exactly = 2) { mockGeofencingClient.addGeofences(any(), any()) }
+    }
+
+    // --- removeGeofence serialization ---
+
+    /** Captures add listeners and remove completion listeners so the test controls settle order. */
+    private inner class GeofenceTasks {
+        val addSuccess = mutableListOf<OnSuccessListener<Void>>()
+        val removeComplete = mutableListOf<OnCompleteListener<Void>>()
+        val calls = mutableListOf<String>()
+
+        init {
+            val addTask = mockk<Task<Void>>(relaxed = true)
+            every { mockGeofencingClient.addGeofences(any(), any()) } answers {
+                calls += "add"
+                addTask
+            }
+            every { addTask.addOnSuccessListener(any()) } answers {
+                addSuccess.add(firstArg())
+                addTask
+            }
+            every { addTask.addOnFailureListener(any()) } returns addTask
+            val removeTask = mockk<Task<Void>>(relaxed = true)
+            every { removeTask.isSuccessful } returns true
+            every { mockGeofencingClient.removeGeofences(any<List<String>>()) } answers {
+                calls += "remove"
+                removeTask
+            }
+            every { removeTask.addOnCompleteListener(any()) } answers {
+                removeComplete.add(firstArg())
+                removeTask
+            }
+        }
+    }
+
+    @Test
+    fun removeGeofence_whileAddInFlight_runsAfterTheAddSettles() {
+        // Regression test: removing while an add was outstanding used to fire the remove
+        // immediately; if GMS then applied the add last, a NEVER_EXPIRE fence outlived sharing.
+        val tasks = GeofenceTasks()
+        provider.setGeofenceAt(1.0, 2.0, 200f)
+        provider.removeGeofence()
+        assertEquals(listOf("add"), tasks.calls, "remove must wait for the in-flight add")
+
+        tasks.addSuccess.single().onSuccess(null)
+        assertEquals(listOf("add", "remove"), tasks.calls, "remove must be the final operation")
+    }
+
+    @Test
+    fun removeGeofence_replacesQueuedAdd() {
+        val tasks = GeofenceTasks()
+        provider.setGeofenceAt(1.0, 2.0, 200f)
+        assertEquals(GeofenceRequestResult.QUEUED, provider.setGeofenceAt(3.0, 4.0, 200f))
+        provider.removeGeofence()
+
+        tasks.addSuccess.single().onSuccess(null)
+        assertEquals(listOf("add", "remove"), tasks.calls, "the queued add must not be submitted")
+    }
+
+    @Test
+    fun setGeofenceAt_whileRemoveInFlight_isQueuedUntilRemoveSettles() {
+        // The reverse order: re-enabling sharing during a remove must not race it either.
+        val tasks = GeofenceTasks()
+        provider.removeGeofence()
+        assertEquals(GeofenceRequestResult.QUEUED, provider.setGeofenceAt(1.0, 2.0, 200f))
+        assertEquals(listOf("remove"), tasks.calls)
+
+        tasks.removeComplete.single().onComplete(mockk(relaxed = true))
+        assertEquals(listOf("remove", "add"), tasks.calls)
+    }
+
+    @Test
+    fun removeGeofence_isIdempotentWhenNothingIsRegistered() {
+        // Callers that don't know whether a fence exists (fresh process) can always remove.
+        val tasks = GeofenceTasks()
+        provider.removeGeofence()
+        tasks.removeComplete.single().onComplete(mockk(relaxed = true))
+        provider.removeGeofence()
+        assertEquals(listOf("remove", "remove"), tasks.calls)
     }
 
     // --- onDestroy ---
