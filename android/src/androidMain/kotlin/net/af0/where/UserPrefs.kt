@@ -15,26 +15,12 @@ object UserPrefs {
         return app.userStore
     }
 
-    fun getDisplayName(context: Context): String = store(context).displayName.value
-
-    fun setDisplayName(
-        context: Context,
-        name: String,
-    ) = store(context).setDisplayName(name)
-
     fun isSharing(context: Context): Boolean = store(context).isSharingLocation.value
 
     fun setSharing(
         context: Context,
         sharing: Boolean,
     ) = store(context).setSharing(sharing)
-
-    fun getPausedFriends(context: Context): Set<String> = store(context).pausedFriendIds.value
-
-    fun setPausedFriends(
-        context: Context,
-        paused: Set<String>,
-    ) = store(context).setPausedFriends(paused)
 
     fun getLastLocation(context: Context): Triple<Double, Double, Float>? = store(context).lastMapCamera.value
 

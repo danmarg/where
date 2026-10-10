@@ -58,8 +58,6 @@ internal class E2eeStore(
     private val _diagnosticLog = MutableStateFlow<List<String>>(emptyList())
     val diagnosticLog: StateFlow<List<String>> = _diagnosticLog.asStateFlow()
 
-    private var lastUsedTs: Long = 0L
-
     // Single lock for all store operations.
     private val storeLock = Mutex()
 
@@ -73,7 +71,6 @@ internal class E2eeStore(
         database.friendsQueries.getAllFriends().executeAsList().forEach { f ->
             val entry = f.toEntry()
             friends[f.id] = entry
-            lastUsedTs = maxOf(lastUsedTs, f.lastTs ?: 0L, f.lastRecvTs, f.lastSentTs, f.lastPollTs)
         }
         database.invitesQueries.getAllPendingInvites().executeAsList().forEach { p ->
             pendingInvites.add(p.toInvite())
@@ -89,12 +86,6 @@ internal class E2eeStore(
         friends.clear()
         pendingInvites.clear()
         loadFromDb()
-    }
-
-    private fun nextTs(): Long {
-        val now = currentTimeSeconds()
-        lastUsedTs = if (now <= lastUsedTs) lastUsedTs + 1 else now
-        return lastUsedTs
     }
 
     suspend fun <T> withMetadataLock(block: suspend MetadataScope.() -> T): T {

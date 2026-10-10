@@ -12,8 +12,6 @@ private const val TAG = "QrUtils"
 object QrUtils {
     fun payloadToUrl(qr: QrPayload): String = qr.toUrl()
 
-    fun urlToPayload(url: String): QrPayload? = QrPayload.fromUrl(url)
-
     fun generateBitmap(
         content: String,
         size: Int = 512,
