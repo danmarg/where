@@ -1,5 +1,6 @@
 import XCTest
 @preconcurrency import Shared
+@testable import Where
 
 /// The E2EE database holds live ratchet state; a restored backup would roll back send
 /// counters and reuse (key, nonce) pairs (spec §5.5). It must be excluded from backups.
