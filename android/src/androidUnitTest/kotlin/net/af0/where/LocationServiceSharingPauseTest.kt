@@ -95,4 +95,59 @@ class LocationServiceSharingPauseTest {
 
             controller.destroy()
         }
+
+    private fun geofenceEvent() =
+        android.content.Intent(context, LocationService::class.java).apply {
+            action = LocationService.ACTION_GEOFENCE_EVENT
+            putExtra(LocationService.EXTRA_GEOFENCE_LAT, 37.0)
+            putExtra(LocationService.EXTRA_GEOFENCE_LNG, -122.0)
+        }
+
+    @Test
+    fun geofencePlantedWhileSharingIsRemovedWhenSharingPauses() =
+        runTest {
+            val app = context as TestWhereApplication
+            app.userStore.setSharing(true)
+            io.mockk.every { mockLocationProvider.setGeofenceAt(any(), any(), any()) } returns GeofenceRequestResult.SUBMITTED
+
+            val controller = Robolectric.buildService(LocationService::class.java)
+            val service = controller.get()
+            service.locationProviderOverride = mockLocationProvider
+            service.locationClientOverride = mockk(relaxed = true)
+            service.e2eeManagerOverride = mockk(relaxed = true)
+            service.locationSourceOverride = fakeLocationSource
+            controller.create()
+            service.onStartCommand(geofenceEvent(), 0, 1)
+            advanceUntilIdle()
+            verify(atLeast = 1) { mockLocationProvider.setGeofenceAt(37.0, -122.0, any()) }
+
+            app.userStore.setSharing(false)
+            advanceUntilIdle()
+
+            verify(exactly = 1) { mockLocationProvider.removeGeofence() }
+            assertFalse(service.geofencePlanted)
+            controller.destroy()
+        }
+
+    @Test
+    fun geofenceEventWhileNotSharingRemovesFenceWithoutForcingGps() =
+        runTest {
+            val app = context as TestWhereApplication
+            app.userStore.setSharing(false)
+
+            val controller = Robolectric.buildService(LocationService::class.java)
+            val service = controller.get()
+            service.locationProviderOverride = mockLocationProvider
+            service.locationClientOverride = mockk(relaxed = true)
+            service.e2eeManagerOverride = mockk(relaxed = true)
+            service.locationSourceOverride = fakeLocationSource
+            controller.create()
+            service.onStartCommand(geofenceEvent(), 0, 1)
+            advanceUntilIdle()
+
+            verify(exactly = 1) { mockLocationProvider.removeGeofence() }
+            verify(exactly = 0) { mockLocationProvider.setGeofenceAt(any(), any(), any()) }
+            verify(exactly = 0) { mockLocationProvider.requestActiveUpdates(any(), any(), any()) }
+            controller.destroy()
+        }
 }

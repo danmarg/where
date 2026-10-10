@@ -86,6 +86,7 @@ class LocationService : Service() {
 
     private lateinit var alarmManager: AlarmManager
     private lateinit var pollWakeLock: PowerManager.WakeLock
+    private lateinit var networkWakeLock: PowerManager.WakeLock
     private lateinit var locationProvider: LocationProvider
     private lateinit var activityHelper: ActivityHelper
 
@@ -99,6 +100,12 @@ class LocationService : Service() {
 
     @VisibleForTesting
     internal var isPassiveRegistered = false
+
+    // True once this process has submitted a geofence; cleared when it's removed because
+    // sharing/permission went away. (A fence left by a previous process is removed when its
+    // exit event arrives while not sharing - see ACTION_GEOFENCE_EVENT.)
+    @VisibleForTesting
+    internal var geofencePlanted = false
 
     @VisibleForTesting
     internal var currentPriority = LocationAccuracy.BALANCED
@@ -246,10 +253,17 @@ class LocationService : Service() {
         // revoked between that check and this call (auto-revoke of unused permissions, or the
         // user flipping it off in Settings while we're already scheduled to (re)start) — so this
         // is a real, reachable race, not a defensive check against something that can't happen.
+        // Android 12+ also throws ForegroundServiceStartNotAllowedException (an
+        // IllegalStateException) when we were started from the background without an exemption,
+        // e.g. by the doze alarm or activity-transition PendingIntents (PendingIntent.getService)
+        // while the service was dead. Uncaught, that crashes the process.
         try {
             startForegroundOverride?.invoke() ?: startForeground(NOTIFICATION_ID, buildNotification())
-        } catch (e: SecurityException) {
-            Log.e(TAG, "startForeground failed: location permission not held; stopping service", e)
+        } catch (e: Exception) {
+            // Narrow on purpose: other IllegalStateExceptions here (e.g. a missing/invalid
+            // foregroundServiceType) are configuration bugs that should crash loudly.
+            if (e !is SecurityException && !isBackgroundStartNotAllowed(e)) throw e
+            Log.e(TAG, "startForeground failed (${e::class.simpleName}); stopping service", e)
             startForegroundFailed = true
             stopSelf()
             return
@@ -259,6 +273,13 @@ class LocationService : Service() {
         pollWakeLock =
             (getSystemService(Context.POWER_SERVICE) as PowerManager)
                 .newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "where:poll_alarm").also {
+                    it.setReferenceCounted(false)
+                }
+        // Separate from pollWakeLock: both are non-reference-counted, so sharing one let a
+        // network-change sync release the lock mid-way through an alarm-driven fix + send.
+        networkWakeLock =
+            (getSystemService(Context.POWER_SERVICE) as PowerManager)
+                .newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "where:network_sync").also {
                     it.setReferenceCounted(false)
                 }
 
@@ -301,7 +322,7 @@ class LocationService : Service() {
             object : ConnectivityManager.NetworkCallback() {
                 override fun onAvailable(network: Network) {
                     Log.d(TAG, "Network available, triggering syncNow()")
-                    pollWakeLock.acquire(WAKE_LOCK_TIMEOUT_MS)
+                    networkWakeLock.acquire(WAKE_LOCK_TIMEOUT_MS)
                     serviceScope.launch {
                         try {
                             try {
@@ -316,7 +337,7 @@ class LocationService : Service() {
                                 logReliability(WakeSource.NETWORK, false)
                             }
                         } finally {
-                            if (pollWakeLock.isHeld) pollWakeLock.release()
+                            if (networkWakeLock.isHeld) networkWakeLock.release()
                         }
                     }
                 }
@@ -508,7 +529,7 @@ class LocationService : Service() {
         // which can take 10 s+, and Samsung re-enters Doze immediately after onReceive() in
         // GeofenceReceiver returns if no wake lock is held here.
         if (intent?.action == ACTION_POLL_ALARM || intent?.action == ACTION_HEARTBEAT_TICK ||
-            intent?.action == ACTION_GEOFENCE_EVENT
+            (intent?.action == ACTION_GEOFENCE_EVENT && userStore.isSharingLocation.value)
         ) {
             pollWakeLock.acquire(WAKE_LOCK_TIMEOUT_MS)
         }
@@ -518,7 +539,12 @@ class LocationService : Service() {
             pendingWakeSource = if (intent.action == ACTION_HEARTBEAT_TICK) WakeSource.WORKER else WakeSource.ALARM
             locationSource.wakePoll()
         }
-        if (intent?.action == ACTION_GEOFENCE_EVENT) {
+        if (intent?.action == ACTION_GEOFENCE_EVENT && !userStore.isSharingLocation.value) {
+            // A NEVER_EXPIRE fence planted while sharing outlives the session (and the process).
+            // Don't force a high-accuracy fix or replant it - remove it so it stops waking us.
+            Log.d(TAG, "onStartCommand: Geofence event while not sharing; removing stale fence")
+            locationProvider.removeGeofence()
+        } else if (intent?.action == ACTION_GEOFENCE_EVENT) {
             Log.d(TAG, "onStartCommand: Received Geofence Exit event")
             currentPriority = LocationAccuracy.HIGH
             currentInterval = 10_000L
@@ -607,8 +633,14 @@ class LocationService : Service() {
         // GEOFENCE_TRANSITION_EXIT (see ACTION_GEOFENCE_EVENT below). That's still
         // self-bounding - exiting the current fence is exactly what triggers the next
         // replant - just a different mechanism, not a shared one.
+        // Only plant while sharing: async callers (getLastLocationAsync, the geofence-event fix)
+        // can complete after sharing was turned off, and a fence planted then would never be
+        // removed by ensureLocationRegistration().
+        if (!userStore.isSharingLocation.value) return
         val radiusMeters = GeofencePolicy.radiusMeters(isMoving = !isStill).toFloat()
-        when (locationProvider.setGeofenceAt(lat, lng, radiusMeters)) {
+        val result = locationProvider.setGeofenceAt(lat, lng, radiusMeters)
+        if (result != GeofenceRequestResult.FAILED) geofencePlanted = true
+        when (result) {
             GeofenceRequestResult.SUBMITTED -> {
                 // GMS: request submitted; actual confirmation logged by provider's Task listener.
                 Log.d(TAG, "Stationary: Geofence submitted at $lat, $lng")
@@ -649,6 +681,10 @@ class LocationService : Service() {
             if (isPassiveRegistered) {
                 locationProvider.removePassiveUpdates()
                 isPassiveRegistered = false
+            }
+            if (geofencePlanted) {
+                locationProvider.removeGeofence()
+                geofencePlanted = false
             }
             // Note: We don't call stopSelf() here even if permissions are missing or sharing is paused.
             // This is intentional:
@@ -719,6 +755,7 @@ class LocationService : Service() {
         // pollLoopJob recovery logic in onStartCommand), nothing else would ever release it,
         // holding a full-power partial wakelock for its 120s timeout.
         if (pollWakeLock.isHeld) pollWakeLock.release()
+        if (networkWakeLock.isHeld) networkWakeLock.release()
         super.onDestroy()
     }
 

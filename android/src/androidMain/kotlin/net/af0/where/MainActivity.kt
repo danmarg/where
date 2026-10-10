@@ -125,7 +125,12 @@ class MainActivity : ComponentActivity() {
             statusBarStyle = SystemBarStyle.light(android.graphics.Color.TRANSPARENT, android.graphics.Color.TRANSPARENT),
             navigationBarStyle = SystemBarStyle.light(android.graphics.Color.TRANSPARENT, android.graphics.Color.TRANSPARENT),
         )
-        intent?.data?.toString()?.let { viewModel.processQrUrl(it) }
+        // Handle an invite link only on a genuinely new launch. On recreation (rotation, process
+        // death restore) or a relaunch from Recents the same intent is redelivered, which used to
+        // re-open the naming dialog and, if confirmed, pair a second time with fresh keys.
+        if (shouldHandleLaunchIntent(savedInstanceState, intent)) {
+            intent?.data?.toString()?.let { viewModel.processQrUrl(it) }
+        }
 
         setContent {
             MaterialTheme {
@@ -435,6 +440,16 @@ class MainActivity : ComponentActivity() {
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
+        // Keep getIntent() current so a later recreation doesn't see the original launch intent.
+        setIntent(intent)
         intent.data?.toString()?.let { viewModel.processQrUrl(it) }
     }
 }
+
+internal fun shouldHandleLaunchIntent(
+    savedInstanceState: Bundle?,
+    intent: Intent?,
+): Boolean =
+    savedInstanceState == null &&
+        intent != null &&
+        (intent.flags and Intent.FLAG_ACTIVITY_LAUNCHED_FROM_HISTORY) == 0
