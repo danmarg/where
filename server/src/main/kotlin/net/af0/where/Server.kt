@@ -557,56 +557,64 @@ class DynamoMailboxState(
                     "expiresAt" to AttributeValue.fromN(expiresAt.toString()),
                 )
 
-            if (msgId != null) {
-                // The message write and its receivedIds record must land together or not at all -
-                // two independent PutItems left a window where a crash/AWS error between them could
-                // leave a message durably stored with no idempotency record, so a client retry of
-                // the same msgId would silently re-insert (a harmless overwrite, since messagesTable
-                // is keyed on (token, msgId)) but still double-count it in depthCounts. TransactWriteItems
-                // closes that window instead of narrowing it. The conditionExpression here is mostly
-                // redundant with the GetItem check above (both run under the same per-token lock, the
-                // only writer in this process) - it's the defense against exactly the crash case this
-                // fixes: a prior attempt whose transaction actually committed just before this process
-                // died, so a fresh attempt (this call, possibly in a restarted process) must still
-                // recognize it as a duplicate rather than trusting an in-memory decision alone.
-                try {
-                    client.transactWriteItems(
-                        TransactWriteItemsRequest.builder()
-                            .transactItems(
-                                TransactWriteItem.builder()
-                                    .put(Put.builder().tableName(messagesTable).item(messageItem).build())
-                                    .build(),
-                                TransactWriteItem.builder()
-                                    .put(
-                                        Put.builder()
-                                            .tableName(receivedIdsTable)
-                                            .item(
-                                                mapOf(
-                                                    "token" to AttributeValue.fromS(token),
-                                                    "msgId" to AttributeValue.fromS(msgId),
-                                                    "expiresAt" to AttributeValue.fromN(expiresAt.toString()),
-                                                ),
-                                            )
-                                            .conditionExpression("attribute_not_exists(msgId)")
-                                            .build(),
-                                    )
-                                    .build(),
-                            )
-                            .build(),
-                    )
-                } catch (e: TransactionCanceledException) {
-                    // TransactionCanceledException isn't synonymous with "duplicate" - contention,
-                    // throttling, and other transaction failures cancel it too, and those must
-                    // propagate as a real failure rather than be reported to the HTTP layer as a
-                    // false 204 (which would be silent message loss).
-                    if (isReceivedIdsConditionalCheckFailure(e)) {
-                        // Already seen: idempotent no-op, matches the check above.
-                        return true
+            // A write that throws may still have committed (client timeout, retries exhausted
+            // after a landed attempt); its retry is then deduped above without incrementing, so
+            // the cached count would stay one short. Drop it; the next post re-counts exactly.
+            try {
+                if (msgId != null) {
+                    // The message write and its receivedIds record must land together or not at all -
+                    // two independent PutItems left a window where a crash/AWS error between them could
+                    // leave a message durably stored with no idempotency record, so a client retry of
+                    // the same msgId would silently re-insert (a harmless overwrite, since messagesTable
+                    // is keyed on (token, msgId)) but still double-count it in depthCounts. TransactWriteItems
+                    // closes that window instead of narrowing it. The conditionExpression here is mostly
+                    // redundant with the GetItem check above (both run under the same per-token lock, the
+                    // only writer in this process) - it's the defense against exactly the crash case this
+                    // fixes: a prior attempt whose transaction actually committed just before this process
+                    // died, so a fresh attempt (this call, possibly in a restarted process) must still
+                    // recognize it as a duplicate rather than trusting an in-memory decision alone.
+                    try {
+                        client.transactWriteItems(
+                            TransactWriteItemsRequest.builder()
+                                .transactItems(
+                                    TransactWriteItem.builder()
+                                        .put(Put.builder().tableName(messagesTable).item(messageItem).build())
+                                        .build(),
+                                    TransactWriteItem.builder()
+                                        .put(
+                                            Put.builder()
+                                                .tableName(receivedIdsTable)
+                                                .item(
+                                                    mapOf(
+                                                        "token" to AttributeValue.fromS(token),
+                                                        "msgId" to AttributeValue.fromS(msgId),
+                                                        "expiresAt" to AttributeValue.fromN(expiresAt.toString()),
+                                                    ),
+                                                )
+                                                .conditionExpression("attribute_not_exists(msgId)")
+                                                .build(),
+                                        )
+                                        .build(),
+                                )
+                                .build(),
+                        )
+                    } catch (e: TransactionCanceledException) {
+                        // TransactionCanceledException isn't synonymous with "duplicate" - contention,
+                        // throttling, and other transaction failures cancel it too, and those must
+                        // propagate as a real failure rather than be reported to the HTTP layer as a
+                        // false 204 (which would be silent message loss).
+                        if (isReceivedIdsConditionalCheckFailure(e)) {
+                            // Already seen: idempotent no-op, matches the check above.
+                            return true
+                        }
+                        throw e
                     }
-                    throw e
+                } else {
+                    client.putItem(PutItemRequest.builder().tableName(messagesTable).item(messageItem).build())
                 }
-            } else {
-                client.putItem(PutItemRequest.builder().tableName(messagesTable).item(messageItem).build())
+            } catch (e: Throwable) {
+                depthCounts.remove(token)
+                throw e
             }
             depthCounts[token] = depth + 1
             return true

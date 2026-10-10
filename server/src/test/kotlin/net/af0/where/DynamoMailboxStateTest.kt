@@ -4,6 +4,7 @@ import kotlinx.serialization.json.JsonPrimitive
 import org.testcontainers.containers.GenericContainer
 import org.testcontainers.containers.wait.strategy.Wait
 import org.testcontainers.utility.DockerImageName
+import software.amazon.awssdk.core.exception.SdkClientException
 import software.amazon.awssdk.services.dynamodb.DynamoDbClient
 import software.amazon.awssdk.services.dynamodb.model.AttributeDefinition
 import software.amazon.awssdk.services.dynamodb.model.AttributeValue
@@ -22,6 +23,7 @@ import software.amazon.awssdk.services.dynamodb.model.ProjectionType
 import software.amazon.awssdk.services.dynamodb.model.PutItemRequest
 import software.amazon.awssdk.services.dynamodb.model.ScalarAttributeType
 import software.amazon.awssdk.services.dynamodb.model.TimeToLiveStatus
+import software.amazon.awssdk.services.dynamodb.model.TransactWriteItemsRequest
 import software.amazon.awssdk.services.dynamodb.model.TransactionCanceledException
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
@@ -598,6 +600,33 @@ class DynamoMailboxStateTest {
         pool.shutdown()
 
         assertFalse(state.post(token, JsonPrimitive("extra"), "extra"), "queue is full again at MAX_QUEUE_DEPTH")
+    }
+
+    @Test
+    fun `a post whose write commits but then throws does not leave the depth count short`() {
+        // e.g. a client-side timeout after DynamoDB applied the transaction. The client's retry
+        // of the same msgId is deduped without incrementing, so a cache that skipped the
+        // increment would stay one short for good and admit a post past MAX_QUEUE_DEPTH.
+        var failNextWrite = false
+        val state =
+            store { real ->
+                intercepting(real) { name, args ->
+                    if (name != "transactWriteItems" || !failNextWrite) return@intercepting null
+                    failNextWrite = false
+                    real.transactWriteItems(args[0] as TransactWriteItemsRequest)
+                    throw SdkClientException.create("simulated timeout after commit")
+                }
+            }
+        val token = freshToken()
+        seedFullQueue(token)
+        assertFalse(state.post(token, JsonPrimitive("overflow"), "overflow-msg")) // seeds the cache
+        state.deleteById(token, "seed-0") // one free slot
+
+        failNextWrite = true
+        assertFailsWith<SdkClientException> { state.post(token, JsonPrimitive("x"), "x") }
+        assertTrue(state.post(token, JsonPrimitive("x"), "x"), "the retry is a deduped no-op")
+
+        assertFalse(state.post(token, JsonPrimitive("y"), "y"), "the committed write filled the last slot")
     }
 
     @Test
