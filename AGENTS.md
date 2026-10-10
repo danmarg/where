@@ -81,7 +81,7 @@ Uses a standard, bidirectional Double Ratchet protocol with X25519 ephemeral key
 ### Swift (iOS)
 - **Swift 6 strict concurrency** — all `ObservableObject` classes marked `@MainActor`.
 - Use `async/await` for async polling loops.
-- Native `URLSession` for networking; no Ktor/coroutine bridging.
+- Networking goes through the shared `LocationClient` (Ktor Darwin engine), called from Swift `async/await`; don't write parallel `URLSession` networking code.
 - Use KMP types directly — no duplicate Swift structs.
 
 ### Android
