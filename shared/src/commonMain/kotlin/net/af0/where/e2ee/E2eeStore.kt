@@ -18,7 +18,14 @@ internal data class PendingInvite(
     @Serializable(with = ByteArrayBase64Serializer::class) val aliceEkPriv: ByteArray,
     val createdAt: Long = currentTimeSeconds(),
     val exportedAt: Long? = null,
-)
+) {
+    /**
+     * Epoch seconds until which the inviter keeps this invite: `expires_at` plus twice the grace, so
+     * a scanner that still accepts it (by a clock up to one grace behind ours) never posts an init
+     * we've dropped.
+     */
+    fun retainUntil(): Long = (qrPayload.expiresAt ?: (createdAt + INVITE_LIFETIME_SECONDS)) + 2 * INVITE_EXPIRY_GRACE_SECONDS
+}
 
 internal sealed class PersistenceAction {
     data class Update(val entry: FriendEntry) : PersistenceAction()

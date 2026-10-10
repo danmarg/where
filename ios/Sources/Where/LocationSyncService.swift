@@ -94,13 +94,21 @@ final class LocationSyncService: ObservableObject {
         didSet {
             userStore.setDisplayName(name: displayName)
             if isInviteActive {
-                Task { await createInvite() }
+                // Serialize per-keystroke renames: each awaits the previous one, so they reach the
+                // store and repo.inviteState in order and the last edit wins. (Cancelling the
+                // previous task would not stop its in-flight Kotlin call from landing later.)
+                let previous = inviteRenameTask
+                inviteRenameTask = Task {
+                    await previous?.value
+                    await createInvite()
+                }
             }
         }
     }
 
     @Published var ownHeading: Double? = nil
     private var inviteTask: Task<Void, Never>? = nil
+    private var inviteRenameTask: Task<Void, Never>? = nil
     private var sharingExpiryTask: Task<Void, Never>? = nil
     @Published var visibleUsers: [Shared.UserLocation] = []
     var isInviteActive: Bool { isInviteSheetShowing }
@@ -678,7 +686,7 @@ final class LocationSyncService: ObservableObject {
 
         if Date().timeIntervalSince(lastCleanupTime) > 3600 {
             do {
-                try await e2eeManager.cleanupExpiredInvites(expirySeconds: Shared.ProtocolConstantsKt.INVITE_LIFETIME_SECONDS)
+                try await e2eeManager.cleanupExpiredInvites()
                 lastCleanupTime = Date()
             } catch {
                 logger.error("Failed to cleanup expired invites: \(error.localizedDescription)")
@@ -860,7 +868,14 @@ final class LocationSyncService: ObservableObject {
         repo.inviteState = Shared.InviteState.None()
         isInviteSheetShowing = false
 
-        let qrWithName = Shared.QrPayload(protocolVersion: Shared.ProtocolConstantsKt.PROTOCOL_VERSION,
+        // The naming dialog may have stayed open past the invite's expiry.
+        if qr.isExpired() {
+            updateStatus(NSError(domain: "Where", code: 410, userInfo: [NSLocalizedDescriptionKey: MR.strings().invite_expired.localized()]))
+            return
+        }
+
+        // Keep the scanned protocol_version so bobProcessQr can reject versions we don't support.
+        let qrWithName = Shared.QrPayload(protocolVersion: qr.protocolVersion,
             ekPub: qr.ekPub,
             suggestedName: friendName,
             discoverySecret: qr.discoverySecret,

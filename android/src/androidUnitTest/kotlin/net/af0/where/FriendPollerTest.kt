@@ -259,17 +259,17 @@ class FriendPollerTest {
             poller.poll()
             now += 59 * 60_000L
             poller.poll()
-            coVerify(exactly = 1) { manager.cleanupExpiredInvites(48 * 3600L) }
+            coVerify(exactly = 1) { manager.cleanupExpiredInvites() }
 
             now += 2 * 60_000L
             poller.poll()
-            coVerify(exactly = 2) { manager.cleanupExpiredInvites(48 * 3600L) }
+            coVerify(exactly = 2) { manager.cleanupExpiredInvites() }
         }
 
     @Test
     fun poll_cleanupFailure_isReportedNotThrown() =
         runTest {
-            coEvery { manager.cleanupExpiredInvites(any()) } throws RuntimeException("db")
+            coEvery { manager.cleanupExpiredInvites() } throws RuntimeException("db")
 
             poller.poll()
 
@@ -362,7 +362,7 @@ class FriendPollerTest {
             a.poll()
             b.poll()
 
-            coVerify(exactly = 1) { manager.cleanupExpiredInvites(any()) }
+            coVerify(exactly = 1) { manager.cleanupExpiredInvites() }
         }
 
     @Test
@@ -374,7 +374,7 @@ class FriendPollerTest {
             a.poll()
             b.poll()
 
-            coVerify(exactly = 2) { manager.cleanupExpiredInvites(any()) }
+            coVerify(exactly = 2) { manager.cleanupExpiredInvites() }
         }
 
     @Test

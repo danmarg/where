@@ -264,13 +264,18 @@ class QrPayloadCompatTest {
                 clock.seconds = exp + INVITE_EXPIRY_GRACE_SECONDS
                 assertFalse(qr.isExpired())
                 // ...the inviter must still hold the key.
-                alice.cleanupExpiredInvites(INVITE_LIFETIME_SECONDS)
+                alice.cleanupExpiredInvites()
                 assertEquals(1, alice.listPendingInvites().size, "inviter dropped an invite a scanner still accepts")
 
+                // A scanner whose clock lags ours by up to the grace still accepts it at this point.
+                clock.seconds = exp + 2 * INVITE_EXPIRY_GRACE_SECONDS
+                alice.cleanupExpiredInvites()
+                assertEquals(1, alice.listPendingInvites().size, "inviter dropped an invite a lagging-clock scanner still accepts")
+
                 // And it is eventually cleaned up.
-                clock.seconds = exp + INVITE_EXPIRY_GRACE_SECONDS + 1
+                clock.seconds = exp + 2 * INVITE_EXPIRY_GRACE_SECONDS + 1
                 assertTrue(qr.isExpired())
-                alice.cleanupExpiredInvites(INVITE_LIFETIME_SECONDS)
+                alice.cleanupExpiredInvites()
                 assertEquals(0, alice.listPendingInvites().size)
             } finally {
                 TimeSource.setProvider(DefaultTimeProvider)
@@ -278,7 +283,7 @@ class QrPayloadCompatTest {
         }
 
     @Test
-    fun sharedInvite_isRetainedFromTheTimeItWasShared() =
+    fun sharedInvite_isRetainedUntilItsAdvertisedExpiry_notFromShareTime() =
         runTest {
             val clock = MutableClock(1_800_000_000L)
             TimeSource.setProvider(clock)
@@ -288,10 +293,10 @@ class QrPayloadCompatTest {
                 clock.seconds += 10 * 3600
                 alice.markInviteExported(qr.ekPub)
 
-                // Past the advertised expiry, but within lifetime + grace of the share: still kept.
-                clock.seconds = assertNotNull(qr.expiresAt) + INVITE_EXPIRY_GRACE_SECONDS + 1
-                alice.cleanupExpiredInvites(INVITE_LIFETIME_SECONDS)
-                assertEquals(1, alice.listPendingInvites().size)
+                // The link carries expires_at, so sharing it late doesn't extend retention.
+                clock.seconds = assertNotNull(qr.expiresAt) + 2 * INVITE_EXPIRY_GRACE_SECONDS + 1
+                alice.cleanupExpiredInvites()
+                assertEquals(0, alice.listPendingInvites().size)
             } finally {
                 TimeSource.setProvider(DefaultTimeProvider)
             }
@@ -341,6 +346,63 @@ class QrPayloadCompatTest {
         runTest {
             val alice = testE2eeManager(createTestSqlDriver())
             assertNull(alice.updateInviteName(ByteArray(32) { 9 }, "x"))
+        }
+
+    @Test
+    fun updateInviteName_nearExpiry_returnsNullSoCallerMintsAFreshInvite() =
+        runTest {
+            val clock = MutableClock(1_800_000_000L)
+            TimeSource.setProvider(clock)
+            try {
+                val alice = testE2eeManager(createTestSqlDriver())
+                val shown = alice.createInvite("A")
+                val exp = assertNotNull(shown.expiresAt)
+
+                clock.seconds = exp - INVITE_RENAME_MIN_REMAINING_SECONDS
+                assertNotNull(alice.updateInviteName(shown.ekPub, "B"))
+
+                clock.seconds = exp - INVITE_RENAME_MIN_REMAINING_SECONDS + 1
+                assertNull(alice.updateInviteName(shown.ekPub, "C"))
+            } finally {
+                TimeSource.setProvider(DefaultTimeProvider)
+            }
+        }
+
+    // ---- failed handshakes ------------------------------------------------------------------------
+
+    @Test
+    fun bogusInit_leavesInviteKeyIntact_acrossRenameShareAndRestart() =
+        runTest {
+            val driver = createTestSqlDriver()
+            val alice = testE2eeManager(driver)
+            val bob = testE2eeManager(createTestSqlDriver())
+            val shown = alice.createInvite("A")
+            val (init, _) = bob.processScannedQr(shown, "Bob")
+
+            val bogus = init.copy(keyConfirmation = init.keyConfirmation.copyOf().also { it[0] = (it[0] + 1).toByte() })
+            assertFailsWith<AuthenticationException> { alice.processKeyExchangeInit(bogus, "Mallory", shown.ekPub) }
+            assertEquals(1, alice.listPendingInvites().size, "a failed init must not consume the invite")
+
+            // Rename and share both re-persist the invite, including its private key.
+            alice.updateInviteName(shown.ekPub, "Alice B")
+            alice.markInviteExported(shown.ekPub)
+
+            val restarted = testE2eeManager(driver)
+            assertNotNull(restarted.processKeyExchangeInit(init, "Bob", shown.ekPub), "the real scan must still pair")
+        }
+
+    @Test
+    fun bogusInit_doesNotBreakALaterRealInit_inTheSameProcess() =
+        runTest {
+            val alice = testE2eeManager(createTestSqlDriver())
+            val bob = testE2eeManager(createTestSqlDriver())
+            val shown = alice.createInvite("A")
+            val (init, _) = bob.processScannedQr(shown, "Bob")
+
+            val bogus = init.copy(keyConfirmation = init.keyConfirmation.copyOf().also { it[0] = (it[0] + 1).toByte() })
+            assertFailsWith<AuthenticationException> { alice.processKeyExchangeInit(bogus, "Mallory", shown.ekPub) }
+
+            assertNotNull(alice.processKeyExchangeInit(init, "Bob", shown.ekPub))
         }
 
     @Test
