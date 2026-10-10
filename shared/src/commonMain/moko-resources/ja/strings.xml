@@ -66,6 +66,7 @@
     <string name="location_sharing_paused_no_location_services">一時停止中 · 位置情報オフ</string>
     <string name="sharing_your_location">位置情報を共有中</string>
     <string name="location_permission_missing">位置情報の許可がありません</string>
+    <string name="precise_location_off">正確な位置情報がオフです</string>
     <string name="location_services_disabled">位置情報サービスがオフです</string>
     <string name="where_location">Where の位置情報</string>
     <string name="approximate">おおよその位置</string>

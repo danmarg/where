@@ -66,6 +66,7 @@
     <string name="location_sharing_paused_no_location_services">Paused · Location off</string>
     <string name="sharing_your_location">Sharing your location</string>
     <string name="location_permission_missing">Location permission missing</string>
+    <string name="precise_location_off">Precise Location is off</string>
     <string name="location_services_disabled">Location services are off</string>
     <string name="where_location">Where Location</string>
     <string name="approximate">Approximate</string>

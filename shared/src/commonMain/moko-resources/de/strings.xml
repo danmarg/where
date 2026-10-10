@@ -66,6 +66,7 @@
     <string name="location_sharing_paused_no_location_services">Pausiert · Standort aus</string>
     <string name="sharing_your_location">Standort wird geteilt</string>
     <string name="location_permission_missing">Standortberechtigung fehlt</string>
+    <string name="precise_location_off">Genauer Standort ist deaktiviert</string>
     <string name="location_services_disabled">Standortdienste sind ausgeschaltet</string>
     <string name="where_location">Where-Standort</string>
     <string name="approximate">Ungefähr</string>

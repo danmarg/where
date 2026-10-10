@@ -66,6 +66,7 @@
     <string name="location_sharing_paused_no_location_services">Pausado · Localização desativada</string>
     <string name="sharing_your_location">Compartilhando sua localização</string>
     <string name="location_permission_missing">Permissão de localização ausente</string>
+    <string name="precise_location_off">A localização precisa está desativada</string>
     <string name="location_services_disabled">Os serviços de localização estão desativados</string>
     <string name="where_location">Localização do Where</string>
     <string name="approximate">Aproximada</string>

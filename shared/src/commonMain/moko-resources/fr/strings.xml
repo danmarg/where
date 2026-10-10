@@ -66,6 +66,7 @@
     <string name="location_sharing_paused_no_location_services">En pause · Localisation désactivée</string>
     <string name="sharing_your_location">Partage de votre position</string>
     <string name="location_permission_missing">Autorisation de localisation manquante</string>
+    <string name="precise_location_off">La position exacte est désactivée</string>
     <string name="location_services_disabled">Les services de localisation sont désactivés</string>
     <string name="where_location">Position Where</string>
     <string name="approximate">Approximative</string>

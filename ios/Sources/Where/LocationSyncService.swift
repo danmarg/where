@@ -219,6 +219,18 @@ final class LocationSyncService: ObservableObject {
         }
     }
 
+    /// Begins a background task whose expiration handler actually ends it (an empty handler
+    /// gets the app killed once the budget runs out, e.g. a long multi-friend poll on a BGTask
+    /// wake). Returns an idempotent closure for the normal completion path.
+    private func beginExpiringBackgroundTask(_ name: String) -> @MainActor @Sendable () -> Void {
+        let box = BackgroundTaskBox()
+        let end = self.endBackgroundTask
+        box.identifier = self.beginBackgroundTask(name) {
+            MainActor.assumeIsolated { box.end(using: end) }
+        }
+        return { box.end(using: end) }
+    }
+
     let e2eeManager: Shared.E2eeManager
     let userStore: Shared.UserStore
     let locationClient: LocationClientProtocol
@@ -693,16 +705,12 @@ final class LocationSyncService: ObservableObject {
             }
         }
 
-        let identifier = self.beginBackgroundTask("PollAll") {
-            // Task expired
-        }
+        let endBackgroundTask = self.beginExpiringBackgroundTask("PollAll")
 
         defer {
             watchdog.cancel()
             isPollInFlight = false
-            if identifier != .invalid {
-                self.endBackgroundTask(identifier)
-            }
+            endBackgroundTask()
         }
         do {
             let updates = try await locationClient.poll(
@@ -1083,19 +1091,13 @@ final class LocationSyncService: ObservableObject {
         lastSentTime = now
         pendingForcedSendAfterPairing = false
 
-        let identifier = self.beginBackgroundTask("SendLocation") {
-            // Task expired
-        }
+        let endBackgroundTask = self.beginExpiringBackgroundTask("SendLocation")
         let gen = sendTaskGeneration + 1
         sendTaskGeneration = gen
 
         currentSendTask?.cancel()
         currentSendTask = Task {
-            defer {
-                if identifier != .invalid {
-                    self.endBackgroundTask(identifier)
-                }
-            }
+            defer { endBackgroundTask() }
             do {
                 try await locationClient.sendLocation(lat: lat, lng: lng, pausedFriendIds: effectivelyPausedIds(), stationary: stationary)
                 if !Task.isCancelled && gen == self.sendTaskGeneration {
@@ -1149,12 +1151,15 @@ final class LocationSyncService: ObservableObject {
     }
 }
 
-private extension UIBackgroundTaskIdentifier {
-    func end() {
-        if self != .invalid {
-            MainActor.assumeIsolated {
-                UIApplication.shared.endBackgroundTask(self)
-            }
-        }
+/// Holds a background task id so the expiration handler and the normal completion path
+/// end it exactly once between them.
+@MainActor
+private final class BackgroundTaskBox {
+    var identifier: UIBackgroundTaskIdentifier = .invalid
+
+    func end(using endBackgroundTask: (UIBackgroundTaskIdentifier) -> Void) {
+        guard identifier != .invalid else { return }
+        endBackgroundTask(identifier)
+        identifier = .invalid
     }
 }
