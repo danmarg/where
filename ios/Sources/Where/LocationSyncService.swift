@@ -107,7 +107,6 @@ final class LocationSyncService: ObservableObject {
     }
 
     @Published var ownHeading: Double? = nil
-    private var inviteTask: Task<Void, Never>? = nil
     private var inviteRenameTask: Task<Void, Never>? = nil
     private var sharingExpiryTask: Task<Void, Never>? = nil
     @Published var visibleUsers: [Shared.UserLocation] = []
@@ -882,7 +881,6 @@ final class LocationSyncService: ObservableObject {
             expiresAt: qr.expiresAt
         )
         debugLog { "Scanning QR: discovery=\(qrWithName.discoveryToken().toHex()), friendName=\(friendName)" }
-        inviteTask?.cancel()
         repo.isExchanging = true
         triggerRapidPoll()
 
@@ -1034,10 +1032,10 @@ final class LocationSyncService: ObservableObject {
         // Software Distance Filter: avoid excessive updates if we haven't moved much,
         // unless this is a forced update (heartbeat, manual, etc).
         //
-        // Note: while LocationManager also sets a hardware distanceFilter=50, that only
-        // affects didUpdateLocations callbacks. This software check also covers other
-        // wake sources (network restore, visits, etc) and ensures we follow the
-        // "50m or 5-minute" reporting contract robustly.
+        // Note: while LocationManager also sets a hardware distanceFilter (the same
+        // minimumReportingDistanceMeters), that only affects didUpdateLocations callbacks. This
+        // software check also covers other wake sources (network restore, visits, etc) and
+        // enforces the "minimumReportingDistanceMeters or 5-minute" reporting contract.
         if !force, let last = lastSentLocation {
             let lastLoc = CLLocation(latitude: last.lat, longitude: last.lng)
             let newLoc = CLLocation(latitude: lat, longitude: lng)
@@ -1104,7 +1102,7 @@ final class LocationSyncService: ObservableObject {
                     lastSuccessfulSendTime = now
                     // Software Distance Filter Baseline: only update the baseline when a send
                     // successfully completes. This ensures that if a transmission fails, the
-                    // next update (even if it's <50m from this failed one) will still be
+                    // next update (even if it's within minimumReportingDistanceMeters of this failed one) will still be
                     // eligible for broadcast.
                     self.lastSentLocation = (lat: lat, lng: lng)
                     updateStatus(nil)

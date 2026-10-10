@@ -336,28 +336,6 @@ class E2eeManager(
         }
     }
 
-    /**
-     * Atomically updates a friend's metadata.
-     */
-    suspend fun updateFriendMetadata(
-        id: String,
-        isConfirmed: Boolean? = null,
-        sharingEnabled: Boolean? = null,
-    ) {
-        persistence.withFriendAndMetadataLock(id) { entry, _ ->
-            if (entry != null) {
-                val updated =
-                    entry.copy(
-                        isConfirmed = isConfirmed ?: entry.isConfirmed,
-                        sharingEnabled = sharingEnabled ?: entry.sharingEnabled,
-                    )
-                PersistenceAction.Update(updated) to Unit
-            } else {
-                PersistenceAction.None to Unit
-            }
-        }
-    }
-
     @Throws(Exception::class, SelfPairingException::class, AuthenticationException::class)
     suspend fun processScannedQr(
         qr: QrPayload,
@@ -407,29 +385,6 @@ class E2eeManager(
     }
 
     suspend fun getOutbox(friendId: String): List<EncryptedOutboxMessage> = persistence.getOutbox(friendId)
-
-    suspend fun confirmFriend(id: String) {
-        persistence.withFriendAndMetadataLock(id) { entry, _ ->
-            if (entry != null && !entry.isConfirmed) {
-                PersistenceAction.Update(entry.copy(isConfirmed = true)) to Unit
-            } else {
-                PersistenceAction.None to Unit
-            }
-        }
-    }
-
-    suspend fun setSharingEnabled(
-        id: String,
-        enabled: Boolean,
-    ) {
-        persistence.withFriendAndMetadataLock(id) { entry, _ ->
-            if (entry != null) {
-                PersistenceAction.Update(entry.copy(sharingEnabled = enabled)) to Unit
-            } else {
-                PersistenceAction.None to Unit
-            }
-        }
-    }
 
     data class PollBatchResult(
         val decryptedLocations: List<LocationPlaintext>,

@@ -22,18 +22,18 @@
 ```
 [iOS / Android]
   GPS → LocationService / LocationManager
-      → LocationClient.sendLocation()  (KMP on Android, Swift on iOS)
-      → POST /inbox/{send_token}
-      → recipient polls GET /inbox/{recv_token}
+      → LocationClient.sendLocation()  (shared KMP on both platforms)
+      → PUT /inbox/{send_token}/{msgId}   (idempotent per msgId)
+      → recipient polls GET /inbox/{recv_token}, then acks with DELETE /inbox/{recv_token}?ids=…
       → clients update map pins
 ```
 
 ### Real-time transport
-- **Mailbox API** on `/inbox/{token}` (Ktor REST endpoints).
+- **Mailbox API** on `/inbox/{token}` (Ktor REST endpoints): `PUT /inbox/{token}/{msgId}`, `GET /inbox/{token}` (non-destructive, up to 50 messages), `DELETE /inbox/{token}?ids=…` and `DELETE /inbox/{token}/{msgId}` (acks).
 - Server routes opaque encrypted payloads using pairwise routing tokens. To prevent clients from reading their own messages, each session uses separate `sendToken` / `recvToken` pairs symmetrically derived from the ratcheted root key using sender and recipient fingerprints.
 - Messages are encapsulated in standard Double Ratchet envelopes.
 - Clients maintain post-compromise security (PCS) mathematically through automated Keepalives even if only one user is sharing location.
-- Clients poll for updates at a constant rate.
+- Clients poll adaptively: every 2 s right after pairing/invite activity, 10 s in the foreground, 5 min in the background while sharing, 30 min (ack/maintenance only) when not sharing.
 
 ### User identity
 - Identity is determined by the device key itself (ephemeral X25519 session keys).
@@ -52,16 +52,17 @@ Uses a standard, bidirectional Double Ratchet protocol with X25519 ephemeral key
 
 ### Shared vs. platform-specific networking
 - **Android**: uses `LocationClient` from the shared KMP module (Ktor HTTP client over OkHttp).
-- **iOS**: uses a native Swift implementation for HTTP polling/posting.
+- **iOS**: also uses the shared `LocationClient` (Ktor Darwin engine), driven from Swift `async/await` in `LocationSyncService`.
 - **All protocol data models are in the shared KMP module**. iOS imports the `Shared` framework and uses these types directly.
 
 ### Maps
-- **Android**: `maps-compose` (Google Maps Compose). Requires a `MAPS_API_KEY` in `local.properties`.
+- **Android (gms flavor)**: `maps-compose` (Google Maps Compose). Requires a `MAPS_API_KEY` in `local.properties`.
+- **Android (fdroid flavor)**: MapLibre, no Google Play services.
 - **iOS**: `MapKit` via `UIViewRepresentable` — no API key needed.
 
 ### Battery efficiency
-- **Android**: `FusedLocationProviderClient` with `PRIORITY_BALANCED_POWER_ACCURACY`, 30s interval, run inside a foreground service so the OS does not kill it.
-- **iOS**: `distanceFilter = 50m` + `desiredAccuracy = kCLLocationAccuracyHundredMeters`; `startMonitoringSignificantLocationChanges()` when backgrounded.
+- **Android**: runs in a foreground service. `FusedLocationProviderClient` (gms) starts at `BALANCED` / 60 s. In the `full` activity-recognition flavor, Activity Recognition switches to `HIGH` / 10 s when moving and `LOW_POWER` / 5 min when still; on gms a geofence acts as a wake-on-departure backstop (its exit switches to `HIGH` / 10 s). The fdroid flavor uses the platform `LocationManager`.
+- **iOS**: `CLLocationUpdate.liveUpdates()` drives updates; sends are throttled in software to 200 m of movement (or the 5 min heartbeat). The `CLLocationManager` (`kCLLocationAccuracyNearestTenMeters`, `distanceFilter` 200 m) serves one-shot fixes, significant-change and visit monitoring, and a fallback geofence that keep background wakes going.
 
 ### Server state
 - Mailboxes are persisted in DynamoDB (on-demand, TTL-expired). State survives restarts.
@@ -108,7 +109,7 @@ curl localhost:8080/health     # → ok
 - Build: `./gradlew :android:assembleDebug` or `./scripts/run-android.sh`
 
 ### iOS (simulator)
-- Server URL in `ServerConfig.swift` (default `http://localhost:8080`).
+- Server URL in `ServerConfig.swift` (defaults to production `https://where-api.af0.net`; on a device, override with the `WHERE_SERVER_HTTP_URL` environment variable in the Xcode scheme).
 - Generate Xcode project: `cd ios && xcodegen`. The project calls `embedAndSignAppleFrameworkForXcode` as a pre-build script automatically.
 - To build the KMP framework manually: `./gradlew :shared:embedAndSignAppleFrameworkForXcode`
 - Run: `./scripts/run-ios.sh` or open `Where.xcodeproj` in Xcode.
@@ -143,7 +144,6 @@ and run on the JVM target via `:shared:jvmTest`.
 ## Key files
 - `gradle/libs.versions.toml` — central dependency management
 - `docs/e2ee-location-sync.md` — full cryptographic protocol specification
-- `docs/IMPLEMENTATION-CHECKLIST.md` — E2EE implementation status and roadmap
 
 ---
 

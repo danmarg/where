@@ -157,8 +157,6 @@ class UserStore(private val storage: RawKeyValueStorage) {
         }
     }
 
-    fun removeFriendExpiry(friendId: String) = setFriendExpiry(friendId, null)
-
     /**
      * Source-of-truth set of friends that must not receive Location messages right now,
      * combining the user's explicit pause list with any per-friend timer that has elapsed.
