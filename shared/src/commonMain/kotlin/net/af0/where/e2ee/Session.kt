@@ -19,14 +19,21 @@ object Session {
     fun encryptMessage(
         state: SessionState,
         payload: MessagePlaintext,
+    ): Pair<SessionState, EncryptedMessagePayload> = encryptPadded(state, padToFixedSize(encodeMessage(payload), PADDING_SIZE))
+
+    /**
+     * Encrypts an already-padded plaintext. Separate from [encryptMessage] so tests can
+     * produce authenticated frames whose plaintext is malformed. Zeroizes [plaintext].
+     */
+    internal fun encryptPadded(
+        state: SessionState,
+        plaintext: ByteArray,
     ): Pair<SessionState, EncryptedMessagePayload> {
         if (state.sendSeq == Long.MAX_VALUE) throw SessionBrickedException("sequence number overflow")
 
-        var currentState = state
-
-        if (currentState.needsRatchet) {
-            currentState = performDhRatchet(currentState, currentState.remoteDhPub)
-        }
+        // No lazy send-side ratchet here: performDhRatchet runs both sub-steps as soon as a new
+        // peer DH key is received, so the send chain is always current.
+        val currentState = state
 
         // DOUBLE RATCHET TRANSITION PROTECTION (§4.3)
         // The first message in a new epoch (seq == 1) is the transition message.
@@ -43,14 +50,12 @@ object Session {
         val step = kdfCk(chainKeyToUse)
         val aad = buildMessageAad(currentState.localFp, currentState.remoteFp, seqToUse, dhPubToUse, ackRemoteToUse)
 
-        val plaintext = padToFixedSize(encodeMessage(payload), PADDING_SIZE)
         val ct = aeadEncrypt(step.messageKey, step.messageNonce, plaintext, aad)
 
         val newState =
             currentState.copy(
                 sendChainKey = step.newChainKey,
                 sendSeq = seqToUse,
-                needsRatchet = false,
             )
 
         // Seal the metadata into an envelope (#186)
@@ -88,7 +93,9 @@ object Session {
             val v = entry.value
             // Format: [MK (32) || Nonce (12) || Timestamp (8)]
             if (v.size >= 52 && (now - bytesToLong(v.copyOfRange(44, 52))) > MAX_KEY_AGE_MS) {
-                v.zeroize()
+                // Dropped, not wiped: this buffer is still referenced by the caller's input
+                // state (see the ownership rule below). It disappears from storage when the
+                // new state is persisted.
                 it.remove()
                 modified = true
             }
@@ -145,26 +152,38 @@ object Session {
                     nonce.zeroize()
                 }
 
-            val unpadded =
-                try {
-                    unpad(plaintext)
-                } catch (e: Exception) {
-                    plaintext.zeroize()
-                    throw DecryptionException("unpad failed", e)
-                }
-            val decoded = decodeMessage(unpadded)
-            plaintext.zeroize()
-            unpadded.zeroize()
-
-            // Remove used key from cache
+            // Authenticated: the key is spent either way. A malformed plaintext is committed
+            // and discarded (§8.3.1(4)) rather than retried forever.
             val newCache = LinkedHashMap(cleanState.skippedMessageKeys)
             newCache.remove(cacheKey)
+            val newState = cleanState.copy(skippedMessageKeys = newCache)
 
-            return cleanState.copy(skippedMessageKeys = newCache) to decoded
+            val decoded =
+                try {
+                    val unpadded = unpad(plaintext)
+                    try {
+                        decodeMessage(unpadded)
+                    } finally {
+                        unpadded.zeroize()
+                    }
+                } catch (e: Exception) {
+                    throw DecryptionExceptionWithState(newState, e)
+                } finally {
+                    plaintext.zeroize()
+                }
+
+            return newState to decoded
         }
 
-        // 3. Speculatively perform DH and symmetric ratchet
-        // We do NOT mutate the original 'state' or commit anything until decryption succeeds.
+        // 3. Speculatively perform DH and symmetric ratchet.
+        //
+        // Buffer ownership rule for everything below:
+        //  - Never mutate (zeroize) a buffer reachable from the input `state`. The caller keeps
+        //    using it after a hard failure, and the store's cached copy is the same object
+        //    until the new state is persisted.
+        //  - Every buffer created here is either moved into the state this call commits
+        //    (returned, or attached to DecryptionExceptionWithState) or zeroized on exit.
+        // `committed` flips exactly once, when ownership moves to `newState`.
         var speculativeState = cleanState
 
         if (isNewDhEpoch) {
@@ -173,55 +192,59 @@ object Session {
             // tryDecryptHeader only ever holds the current + next receive header keys
             // (see §2.2, §8.3.1(6)), so a replayed retired-epoch frame fails to decrypt
             // its header before any ratchet logic runs.
+            // performDhRatchet deep-copies, so every buffer in the result is fresh (owned here).
             speculativeState = performDhRatchet(speculativeState, remoteDhPub)
         }
 
-        // Replay rejection against speculative seq
-        if (seq <= speculativeState.recvSeq) {
-            throw ReplayException("replay: seq $seq <= recvSeq ${speculativeState.recvSeq}")
-        }
-
-        val stepsNeeded = seq - speculativeState.recvSeq
-        if (stepsNeeded > MAX_SKIPPED_KEYS + 1) {
-            throw ProtocolGapException("gap too large: stepsNeeded $stepsNeeded")
-        }
-
-        // Derivation loop for chain keys and skipped message keys
-        val derivationSkippedKeys = LinkedHashMap(speculativeState.skippedMessageKeys)
-        // Memory Hygiene: track keys added during this derivation to zeroize on failure (#211)
-        val addedSkippedKeys = mutableListOf<ByteArray>()
-
-        // Clear skipped keys for old epochs
-        if (isNewDhEpoch) {
-            val validEpochs = setOf(remoteDhPub.toHex(), cleanState.remoteDhPub.toHex())
-            val it = derivationSkippedKeys.entries.iterator()
-            while (it.hasNext()) {
-                val entry = it.next()
-                if (validEpochs.none { e -> entry.key.startsWith(e) }) {
-                    entry.value.zeroize()
-                    it.remove()
-                }
-            }
-        }
-
-        val pnGaps =
-            if (isNewDhEpoch && header.pn > cleanState.recvSeq) {
-                val diff = header.pn - cleanState.recvSeq
-                if (diff > MAX_SKIPPED_KEYS) throw ProtocolGapException("previous-chain pn gap too large: $diff")
-                diff.toInt()
-            } else {
-                0
-            }
-
-        val projectedSize = derivationSkippedKeys.size + kotlin.math.max(0, stepsNeeded.toInt() - 1) + pnGaps
-        if (projectedSize > MAX_SKIPPED_KEYS) {
-            throw ProtocolGapException("combined skipped key gap too large: $projectedSize")
-        }
-
-        var chainKey = speculativeState.recvChainKey.copyOf()
+        var chainKey = ByteArray(0)
         var currentStep: ChainStep? = null
+        val derivedKeys = mutableListOf<ByteArray>() // fresh skipped-key entries created here
+        var committed = false
 
         try {
+            // Replay rejection against speculative seq
+            if (seq <= speculativeState.recvSeq) {
+                throw ReplayException("replay: seq $seq <= recvSeq ${speculativeState.recvSeq}")
+            }
+
+            val stepsNeeded = seq - speculativeState.recvSeq
+            if (stepsNeeded > MAX_SKIPPED_KEYS + 1) {
+                throw ProtocolGapException("gap too large: stepsNeeded $stepsNeeded")
+            }
+
+            // Derivation loop for chain keys and skipped message keys
+            val derivationSkippedKeys = LinkedHashMap(speculativeState.skippedMessageKeys)
+
+            // Clear skipped keys for old epochs. Only reached for a new epoch, where the values
+            // are performDhRatchet's fresh copies (never the input's buffers), so wiping is safe.
+            if (isNewDhEpoch) {
+                val validEpochs = setOf(remoteDhPub.toHex(), cleanState.remoteDhPub.toHex())
+                val it = derivationSkippedKeys.entries.iterator()
+                while (it.hasNext()) {
+                    val entry = it.next()
+                    if (validEpochs.none { e -> entry.key.startsWith(e) }) {
+                        entry.value.zeroize()
+                        it.remove()
+                    }
+                }
+            }
+
+            val pnGaps =
+                if (isNewDhEpoch && header.pn > cleanState.recvSeq) {
+                    val diff = header.pn - cleanState.recvSeq
+                    if (diff > MAX_SKIPPED_KEYS) throw ProtocolGapException("previous-chain pn gap too large: $diff")
+                    diff.toInt()
+                } else {
+                    0
+                }
+
+            val projectedSize = derivationSkippedKeys.size + kotlin.math.max(0, stepsNeeded.toInt() - 1) + pnGaps
+            if (projectedSize > MAX_SKIPPED_KEYS) {
+                throw ProtocolGapException("combined skipped key gap too large: $projectedSize")
+            }
+
+            chainKey = speculativeState.recvChainKey.copyOf()
+
             // Advance the chain to 'seq', storing intermediate message keys
             repeat(stepsNeeded.toInt()) { i ->
                 val step = kdfCk(chainKey)
@@ -234,103 +257,95 @@ object Session {
                     // Store intermediate message key for future out-of-order delivery.
                     // Cached format: [MK (32) || Nonce (12) || Timestamp (8)]
                     val mkPlusNonce = step.messageKey + step.messageNonce + longToBeBytes(now)
-                    addedSkippedKeys.add(mkPlusNonce)
-                    val mkKey = remoteDhPub.toHex() + ":" + currentSeq
-                    derivationSkippedKeys[mkKey] = mkPlusNonce
-                    if (derivationSkippedKeys.size > MAX_SKIPPED_KEYS) {
-                        val oldestKey = derivationSkippedKeys.keys.first()
-                        derivationSkippedKeys[oldestKey]?.zeroize()
-                        derivationSkippedKeys.remove(oldestKey)
-                    }
+                    step.messageKey.zeroize()
+                    step.messageNonce.zeroize()
+                    derivedKeys.add(mkPlusNonce)
+                    // No eviction needed: the projectedSize admission check above bounds the cache.
+                    derivationSkippedKeys[remoteDhPub.toHex() + ":" + currentSeq] = mkPlusNonce
                 } else {
                     currentStep = step
                 }
+            }
+
+            // PH-3.3: Gap filling for the PREVIOUS receiving chain. Done before the body AEAD
+            // check so that a corrupted new-epoch frame leaves the same skipped-key cache as a
+            // dropped one followed by a good one (§8.3.1(4)).
+            if (pnGaps > 0) {
+                val prevEpochHex = cleanState.remoteDhPub.toHex()
+                var oldChainKey = cleanState.recvChainKey.copyOf()
+                repeat(pnGaps) { i ->
+                    val step = kdfCk(oldChainKey)
+                    oldChainKey.zeroize()
+                    oldChainKey = step.newChainKey
+                    val mkPlusNonce = step.messageKey + step.messageNonce + longToBeBytes(now)
+                    step.messageKey.zeroize()
+                    step.messageNonce.zeroize()
+                    derivedKeys.add(mkPlusNonce)
+                    derivationSkippedKeys[prevEpochHex + ":" + (cleanState.recvSeq + i + 1)] = mkPlusNonce
+                }
+                oldChainKey.zeroize()
             }
 
             val finalStep = currentStep ?: throw ProtocolException("failed to derive message key")
             val sender = cleanState.remoteFp
             val aad = buildMessageAad(sender, cleanState.localFp, seq, remoteDhPub, ackRemoteDhPub)
 
+            // The state advanced to `seq`. It is committed whether or not the body decrypts
+            // (§8.3.1(4)): a server that drops a frame and one that corrupts it must leave
+            // identical state, or the ratchet desyncs permanently. The failed message's key
+            // itself is never cached (it would live up to 7 days for no benefit).
+            // A new-epoch speculative state is already all fresh buffers; otherwise it aliases
+            // the input, so copy it (minus the skipped-key map, replaced below) rather than hand
+            // the input's buffers to the new state.
+            val base =
+                if (isNewDhEpoch) speculativeState else speculativeState.copy(skippedMessageKeys = emptyMap()).deepCopy()
+            val newState =
+                base.copy(
+                    recvChainKey = chainKey,
+                    recvSeq = seq,
+                    skippedMessageKeys = derivationSkippedKeys,
+                )
+            base.recvChainKey.zeroize() // superseded by chainKey; no longer referenced
+            committed = true
+
             val plaintext =
                 try {
                     aeadDecrypt(finalStep.messageKey, finalStep.messageNonce, message.ct, aad)
                 } catch (e: Exception) {
-                    // Body AEAD failed despite a valid header. Advance recvSeq and the chain
-                    // key to prevent permanent DH desync — without this, a server that drops
-                    // the message entirely and a server that delivers a corrupted copy would
-                    // have different effects on session state, breaking the ratchet.
-                    // The failed message's key is NOT cached: caching it would keep MK_n alive
-                    // for up to 7 days with no benefit, since a server willing to deliver a
-                    // corrupted copy can equally just drop the message.
-                    val failedState =
-                        speculativeState.deepCopy().copy(
-                            recvChainKey = chainKey.copyOf(),
-                            recvSeq = seq,
-                            skippedMessageKeys = derivationSkippedKeys.mapValues { it.value.copyOf() },
-                            needsRatchet = cleanState.needsRatchet || isNewDhEpoch,
-                        )
-                    // Wipe any speculative intermediate keys derived during this failed call.
-                    addedSkippedKeys.forEach { it.zeroize() }
-                    chainKey.zeroize()
-                    throw DecryptionExceptionWithState(failedState, e)
+                    throw DecryptionExceptionWithState(newState, e)
                 } finally {
                     finalStep.messageKey.zeroize()
                     finalStep.messageNonce.zeroize()
                 }
 
-            // Success! Commit the state.
-            val unpadded =
+            // Likewise, an authenticated frame whose plaintext is malformed (bad padding,
+            // invalid JSON) came from the peer; commit and discard it.
+            val decoded =
                 try {
-                    unpad(plaintext)
-                } catch (e: Exception) {
-                    plaintext.zeroize()
-                    throw DecryptionException("unpad failed", e)
-                }
-            val decoded = decodeMessage(unpadded)
-            plaintext.zeroize()
-            unpadded.zeroize()
-
-            // PH-3.3: Post-decryption gap filling for the PREVIOUS receiving chain.
-            val prevEpochHex = cleanState.remoteDhPub.toHex()
-            val finalSkippedKeys: LinkedHashMap<String, ByteArray>
-            if (isNewDhEpoch && header.pn > cleanState.recvSeq) {
-                // pnGaps is already validated <= MAX_SKIPPED_KEYS in the admission check above.
-                val updatedCache = LinkedHashMap(derivationSkippedKeys)
-                var oldChainKey = cleanState.recvChainKey.copyOf()
-                repeat(pnGaps) { i ->
-                    val step = kdfCk(oldChainKey)
-                    oldChainKey.zeroize()
-                    oldChainKey = step.newChainKey
-
-                    val skippedSeq = cleanState.recvSeq + i + 1
-                    val mkKey = prevEpochHex + ":" + skippedSeq
-                    updatedCache[mkKey] = step.messageKey + step.messageNonce + longToBeBytes(now)
-
-                    if (updatedCache.size > MAX_SKIPPED_KEYS) {
-                        updatedCache.remove(updatedCache.keys.first())?.zeroize()
+                    val unpadded = unpad(plaintext)
+                    try {
+                        decodeMessage(unpadded)
+                    } finally {
+                        unpadded.zeroize()
                     }
+                } catch (e: Exception) {
+                    throw DecryptionExceptionWithState(newState, e)
+                } finally {
+                    plaintext.zeroize()
                 }
-                oldChainKey.zeroize()
-                finalSkippedKeys = updatedCache
-            } else {
-                finalSkippedKeys = derivationSkippedKeys
-            }
-
-            val newState =
-                speculativeState.deepCopy().copy(
-                    // Move ownership
-                    recvChainKey = chainKey,
-                    recvSeq = seq,
-                    skippedMessageKeys = finalSkippedKeys,
-                    needsRatchet = speculativeState.needsRatchet,
-                )
 
             return newState to decoded
-        } catch (e: Exception) {
-            if (e !is WhereException) {
+        } finally {
+            if (!committed) {
+                // Nothing was handed to a caller: wipe every buffer created by this call.
                 chainKey.zeroize()
+                currentStep?.let {
+                    it.messageKey.zeroize()
+                    it.messageNonce.zeroize()
+                }
+                derivedKeys.forEach { it.zeroize() }
+                if (isNewDhEpoch) speculativeState.zeroizeAll()
             }
-            throw e
         }
     }
 
@@ -345,22 +360,33 @@ object Session {
     ): SessionState {
         // DH ratchet step
         val stepRecv = dhRatchetSubStep(state.localDhPriv, remoteDhPub, state.rootKey)
-
         val newLocalDh = generateX25519KeyPair()
-        val stepSend = dhRatchetSubStep(newLocalDh.priv, remoteDhPub, stepRecv.newRootKey)
+        val stepSend =
+            try {
+                dhRatchetSubStep(newLocalDh.priv, remoteDhPub, stepRecv.newRootKey)
+            } catch (e: Exception) {
+                stepRecv.newRootKey.zeroize()
+                stepRecv.newChainKey.zeroize()
+                stepRecv.newHeaderKey.zeroize()
+                newLocalDh.priv.zeroize()
+                throw e
+            }
 
         // Derive new tokens
         val newRecvToken = deriveRoutingToken(stepRecv.newRootKey, state.remoteFp, state.localFp)
         val newSendToken = deriveRoutingToken(stepSend.newRootKey, state.localFp, state.remoteFp)
 
+        // Every buffer in the result is fresh and not shared with `state`: freshly derived ones
+        // are moved in (not copied, so no stray copies are left unwiped), and the carried-over
+        // fields are copied. Keep this covering every ByteArray field (see SessionState).
         val newState =
-            state.deepCopy().copy(
-                rootKey = stepSend.newRootKey.copyOf(),
-                recvChainKey = stepRecv.newChainKey.copyOf(),
-                sendChainKey = stepSend.newChainKey.copyOf(),
+            state.copy(
+                rootKey = stepSend.newRootKey,
+                recvChainKey = stepRecv.newChainKey,
+                sendChainKey = stepSend.newChainKey,
                 headerKey = state.nextHeaderKey.copyOf(),
-                sendHeaderKey = stepRecv.newHeaderKey.copyOf(),
-                nextHeaderKey = stepSend.newHeaderKey.copyOf(),
+                sendHeaderKey = stepRecv.newHeaderKey,
+                nextHeaderKey = stepSend.newHeaderKey,
                 sendToken = newSendToken,
                 recvToken = newRecvToken,
                 prevSendHeaderKey = state.sendHeaderKey.copyOf(),
@@ -368,20 +394,21 @@ object Session {
                 recvSeq = 0L,
                 pn = state.sendSeq,
                 pr = state.recvSeq,
-                localDhPriv = newLocalDh.priv.copyOf(),
-                localDhPub = newLocalDh.pub.copyOf(),
+                localDhPriv = newLocalDh.priv,
+                localDhPub = newLocalDh.pub,
                 remoteDhPub = remoteDhPub.copyOf(),
                 prevSendToken = state.sendToken.copyOf(),
-                needsRatchet = false,
+                aliceEkPub = state.aliceEkPub.copyOf(),
+                bobEkPub = state.bobEkPub.copyOf(),
+                aliceFp = state.aliceFp.copyOf(),
+                bobFp = state.bobFp.copyOf(),
+                localFp = state.localFp.copyOf(),
+                remoteFp = state.remoteFp.copyOf(),
+                skippedMessageKeys = state.skippedMessageKeys.mapValues { it.value.copyOf() },
             )
 
-        // Memory Hygiene
+        // Only used as KDF input for the send sub-step; not part of the new state.
         stepRecv.newRootKey.zeroize()
-        stepRecv.newChainKey.zeroize()
-        stepRecv.newHeaderKey.zeroize()
-        stepSend.newRootKey.zeroize()
-        stepSend.newChainKey.zeroize()
-        stepSend.newHeaderKey.zeroize()
 
         return newState
     }
