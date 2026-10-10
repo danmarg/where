@@ -34,11 +34,14 @@ const val PROTOCOL_VERSION = 1
 const val INVITE_LIFETIME_SECONDS = 48 * 3600L
 
 /**
- * Slack applied on both sides of an invite's expiry: scanners accept up to this long after
- * `expires_at` (clock skew), and the inviter keeps the invite this much longer, so an invite a
- * scanner still accepts is never one the inviter has already dropped.
+ * Clock-skew slack on an invite's expiry: scanners accept up to this long after `expires_at` by
+ * their own clock. The inviter keeps the invite twice this long past `expires_at` by its clock, so
+ * a scanner whose clock lags the inviter's by up to this much never accepts a dropped invite.
  */
 internal const val INVITE_EXPIRY_GRACE_SECONDS = 300L
+
+/** A rename keeps the shown invite only if it has at least this long left; otherwise a fresh one is minted. */
+internal const val INVITE_RENAME_MIN_REMAINING_SECONDS = 3600L
 const val SUPPORTED_MAX_VERSION = 1
 internal const val AAD_PREFIX = "Where-v1-Message"
 internal const val PADDING_SIZE = 512

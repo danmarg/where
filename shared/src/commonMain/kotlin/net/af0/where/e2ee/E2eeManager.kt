@@ -149,21 +149,26 @@ class E2eeManager(
                 encryptedName = payload.encryptedName,
             )
 
+        // Work on a copy: `pending` is the live in-memory invite. If this init is bogus the invite
+        // stays pending, and zeroing its key would break every later scan (and, once the invite is
+        // re-persisted by a rename or share, write the zeroed key to the DB).
+        val priv = pending.aliceEkPriv.copyOf()
         val session =
             try {
                 KeyExchange.aliceProcessInit(
                     msg = msg,
-                    aliceEkPriv = pending.aliceEkPriv,
+                    aliceEkPriv = priv,
                     aliceEkPub = aliceEkPubBytes,
                 )
             } finally {
-                pending.aliceEkPriv.zeroize()
+                priv.zeroize()
             }
 
         // Handshake initiated, remove the pending invite (#186)
         persistence.withMetadataLock {
             pendingInvites = pendingInvites.filter { !it.qrPayload.ekPub.contentEquals(aliceEkPubBytes) }
         }
+        pending.aliceEkPriv.zeroize()
 
         val entry =
             FriendEntry(
@@ -185,7 +190,8 @@ class E2eeManager(
      * Changes the name shown in an existing invite, keeping its keys, discovery secret and expiry.
      * Used when the user edits their name while the invite is on screen. A scan of the QR as it was
      * displayed a moment ago still pairs, and nothing is minted per edit. Returns null if the invite
-     * no longer exists.
+     * no longer exists or expires within [INVITE_RENAME_MIN_REMAINING_SECONDS]; callers then create
+     * a fresh invite rather than keep showing one scanners are about to reject.
      */
     suspend fun updateInviteName(
         ekPub: ByteArray,
@@ -193,6 +199,10 @@ class E2eeManager(
     ): QrPayload? =
         persistence.withMetadataLock {
             val old = pendingInvites.find { it.qrPayload.ekPub.contentEquals(ekPub) } ?: return@withMetadataLock null
+            val expiresAt = old.qrPayload.expiresAt
+            if (expiresAt != null && expiresAt - currentTimeSeconds() < INVITE_RENAME_MIN_REMAINING_SECONDS) {
+                return@withMetadataLock null
+            }
             val updated = old.copy(qrPayload = old.qrPayload.copy(suggestedName = suggestedName))
             pendingInvites = pendingInvites.map { if (it === old) updated else it }
             updated.qrPayload
@@ -222,34 +232,22 @@ class E2eeManager(
         }
     }
 
-    suspend fun cleanupExpiredInvites(expirySeconds: Long = INVITE_LIFETIME_SECONDS) {
+    suspend fun cleanupExpiredInvites() {
         val now = currentTimeSeconds()
-        val toRemove =
+        val unconfirmedExpired =
             persistence.withMetadataLock {
-                val expired =
-                    pendingInvites.filter {
-                        val baseTime = it.exportedAt ?: it.createdAt
-                        now - baseTime > expirySeconds + INVITE_EXPIRY_GRACE_SECONDS
-                    }
-                if (expired.isNotEmpty()) {
-                    pendingInvites =
-                        pendingInvites.filter {
-                            val baseTime = it.exportedAt ?: it.createdAt
-                            now - baseTime <= expirySeconds + INVITE_EXPIRY_GRACE_SECONDS
-                        }
-                }
+                val (kept, expired) = pendingInvites.partition { now <= it.retainUntil() }
+                if (expired.isNotEmpty()) pendingInvites = kept
 
                 // Also identify unconfirmed friends for cleanup
-                val unconfirmedExpired =
-                    friends.filter {
-                        !it.isConfirmed && (now - it.lastRecvTs > expirySeconds)
-                    }
-                expired to unconfirmedExpired
+                friends.filter {
+                    !it.isConfirmed && (now - it.lastRecvTs > INVITE_LIFETIME_SECONDS)
+                }
             }
 
-        toRemove.second.forEach { friend ->
+        unconfirmedExpired.forEach { friend ->
             persistence.withFriendAndMetadataLock(friend.id) { current, _ ->
-                if (current != null && !current.isConfirmed && (now - current.lastRecvTs > expirySeconds)) {
+                if (current != null && !current.isConfirmed && (now - current.lastRecvTs > INVITE_LIFETIME_SECONDS)) {
                     PersistenceAction.Delete to Unit
                 } else {
                     PersistenceAction.None to Unit
