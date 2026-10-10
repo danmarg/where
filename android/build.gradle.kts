@@ -165,6 +165,8 @@ android {
             buildConfigField("String", "SERVER_HTTP_URL", "\"https://where-api.af0.net\"")
         }
         debug {
+            // Optional: install side by side with a differently-signed copy (e.g. F-Droid).
+            localProperties.getProperty("DEBUG_APPLICATION_ID_SUFFIX")?.let { applicationIdSuffix = it }
             buildConfigField(
                 "String",
                 "SERVER_HTTP_URL",
