@@ -43,7 +43,7 @@ struct ContentView: View {
             isSharing: syncService.isSharingLocation,
             authorization: locationManager.authorizationStatus,
             accuracyAuthorization: locationManager.accuracyAuthorization,
-            lastFixAccuracy: locationManager.location?.horizontalAccuracy
+            lastFixAccuracy: locationManager.currentSettingsFixAccuracy
         )
     }
 

@@ -118,12 +118,16 @@ class LocationSyncServiceTests: XCTestCase {
         }
         func sendStoppedSharing(pausedFriendIds: Set<String>) async throws {}
         func sendStoppedSharingToFriend(friendId: String) async throws {}
+        var onPoll: (@MainActor () -> Void)?
         func poll(isForeground: Bool, pausedFriendIds: Set<String>, sharingEnabled: Bool) async throws -> [Shared.UserLocation] {
             _pollCallCount += 1
+            onPoll?()
             return pollResult
         }
         var pendingInviteResults: [Shared.PendingInviteResult] = []
+        var pendingInvitePollCount = 0
         func pollPendingInvites() async throws -> [Shared.PendingInviteResult] {
+            pendingInvitePollCount += 1
             return pendingInviteResults
         }
         func postKeyExchangeInit(friendId: String, qr: Shared.QrPayload, initPayload: Shared.KeyExchangeInitPayload) async throws {
@@ -1171,6 +1175,84 @@ class LocationSyncServiceTests: XCTestCase {
         XCTAssertEqual(recorder.ended, [UIBackgroundTaskIdentifier(rawValue: 42)])
     }
 
+    /// Expiry grants no extra time, so a send cut off by it must be cancelled and must not count
+    /// as sent: lastSentTime is rolled back so the next heartbeat/throttle check retries it.
+    func testSendLocationExpirationCancelsSendAndKeepsItEligibleForRetry() async throws {
+        let mockClient = MockLocationClient()
+        service = LocationSyncService(e2eeManager: service.e2eeManager, userStore: service.userStore, locationClient: mockClient, locationProvider: mockLocationProvider)
+        service.skipNetworkRestore = true
+        service.isSharingLocation = true
+        let previous = Date(timeIntervalSince1970: 1_000)
+        service.lastSentTime = previous
+        let recorder = BackgroundTaskRecorder()
+        service.beginBackgroundTask = { _, handler in recorder.begin(handler) }
+        service.endBackgroundTask = { id in recorder.end(id) }
+
+        service.sendLocation(lat: 37.7, lng: -122.4, force: true, stationary: false)
+        XCTAssertGreaterThan(service.lastSentTime, previous)
+        recorder.fireExpiration()
+
+        XCTAssertTrue(service.currentSendTask?.isCancelled ?? false, "the in-flight send is cancelled")
+        XCTAssertEqual(service.lastSentTime, previous, "an interrupted send doesn't defer the next attempt")
+        await service.currentSendTask?.value
+        XCTAssertNil(service.lastSentLocation, "an interrupted send is not recorded as delivered")
+        XCTAssertEqual(recorder.ended, [UIBackgroundTaskIdentifier(rawValue: 42)])
+    }
+
+    /// A normal completion followed by a late expiration must not roll anything back.
+    func testExpirationAfterCompletedSendChangesNothing() async throws {
+        let mockClient = MockLocationClient()
+        service = LocationSyncService(e2eeManager: service.e2eeManager, userStore: service.userStore, locationClient: mockClient, locationProvider: mockLocationProvider)
+        service.skipNetworkRestore = true
+        service.isSharingLocation = true
+        let recorder = BackgroundTaskRecorder()
+        service.beginBackgroundTask = { _, handler in recorder.begin(handler) }
+        service.endBackgroundTask = { id in recorder.end(id) }
+
+        service.sendLocation(lat: 37.7, lng: -122.4, force: true, stationary: false)
+        let sentAt = service.lastSentTime
+        await service.currentSendTask?.value
+        recorder.fireExpiration()
+
+        XCTAssertEqual(service.lastSentTime, sentAt)
+        XCTAssertNotNil(service.lastSentLocation)
+    }
+
+    private func pollAllHeartbeatDueService(_ mockClient: MockLocationClient) -> BackgroundTaskRecorder {
+        service = LocationSyncService(e2eeManager: service.e2eeManager, userStore: service.userStore, locationClient: mockClient, locationProvider: mockLocationProvider)
+        service.skipNetworkRestore = true
+        service.isSharingLocation = true
+        service.isStationaryQuery = { false }
+        service.lastSentTime = Date(timeIntervalSince1970: 0)  // heartbeat due
+        service.forceNextLocationUpdate = false
+        let recorder = BackgroundTaskRecorder()
+        service.beginBackgroundTask = { _, handler in recorder.begin(handler) }
+        service.endBackgroundTask = { id in recorder.end(id) }
+        return recorder
+    }
+
+    /// Control for the expiry test below: without expiry this poll does reach the invite poll
+    /// and the heartbeat (which, while moving, requests a fresh fix).
+    func testPollAllWithoutExpiryRunsInvitePollAndHeartbeat() async throws {
+        let mockClient = MockLocationClient()
+        _ = pollAllHeartbeatDueService(mockClient)
+        await service.pollAll(updateUi: true)
+        XCTAssertEqual(mockClient.pendingInvitePollCount, 1)
+        XCTAssertTrue(service.forceNextLocationUpdate)
+    }
+
+    /// If the background task expires mid-poll, the remaining network steps are skipped rather
+    /// than started with no budget left.
+    func testPollAllExpiryMidPollSkipsInvitePollAndHeartbeat() async throws {
+        let mockClient = MockLocationClient()
+        let recorder = pollAllHeartbeatDueService(mockClient)
+        mockClient.onPoll = { recorder.fireExpiration() }
+        await service.pollAll(updateUi: true)
+        XCTAssertEqual(mockClient.pendingInvitePollCount, 0)
+        XCTAssertFalse(service.forceNextLocationUpdate, "no heartbeat after expiry")
+        XCTAssertEqual(recorder.ended, [UIBackgroundTaskIdentifier(rawValue: 42)])
+    }
+
     /// Expiration delivered while normal completion is already ending the task (here: from
     /// inside endBackgroundTask itself, the tightest interleaving the main actor allows) must not
     /// end it a second time.
@@ -1187,6 +1269,52 @@ class LocationSyncServiceTests: XCTestCase {
         token.end()
         token.end()
         XCTAssertEqual(recorder.ended, [UIBackgroundTaskIdentifier(rawValue: 42)])
+    }
+
+    func testBackgroundTaskTokenOnExpireRunsOnceThenEnds() {
+        let recorder = BackgroundTaskRecorder()
+        let expiries = SendCountBox()
+        let token = BackgroundTaskToken(
+            name: "Test",
+            begin: { _, handler in recorder.begin(handler) },
+            end: { id in recorder.end(id) },
+            onExpire: { expiries.increment() }
+        )
+        recorder.fireExpiration()
+        recorder.fireExpiration()
+        token.end()
+        XCTAssertEqual(expiries.getCount(), 1)
+        XCTAssertTrue(token.didExpire)
+        XCTAssertEqual(recorder.ended, [UIBackgroundTaskIdentifier(rawValue: 42)])
+    }
+
+    func testBackgroundTaskTokenOnExpireDoesNotRunAfterNormalEnd() {
+        let recorder = BackgroundTaskRecorder()
+        let expiries = SendCountBox()
+        let token = BackgroundTaskToken(
+            name: "Test",
+            begin: { _, handler in recorder.begin(handler) },
+            end: { id in recorder.end(id) },
+            onExpire: { expiries.increment() }
+        )
+        token.end()
+        recorder.fireExpiration()
+        XCTAssertEqual(expiries.getCount(), 0)
+        XCTAssertFalse(token.didExpire)
+    }
+
+    // MARK: - Readings before the DB has loaded
+
+    /// The production policy behind LocationManager.shouldHandleReadings (tests otherwise use
+    /// isTrackingOverride). Before hydration, a paused user's reading must be dropped, not
+    /// broadcast or used to arm the geofence; a sharing user's cold-wake reading is handled.
+    func testShouldHandleReadings_PreloadUsesPersistedSharingToggle() {
+        typealias LM = LocationManager
+        XCTAssertFalse(LM.shouldHandleReadings(isTracking: false, isDataLoaded: false, isSharing: false), "paused, pre-load: drop")
+        XCTAssertTrue(LM.shouldHandleReadings(isTracking: false, isDataLoaded: false, isSharing: true), "sharing, pre-load: cold wake")
+        XCTAssertFalse(LM.shouldHandleReadings(isTracking: false, isDataLoaded: true, isSharing: true), "loaded, not tracking: drop")
+        XCTAssertFalse(LM.shouldHandleReadings(isTracking: false, isDataLoaded: true, isSharing: false))
+        XCTAssertTrue(LM.shouldHandleReadings(isTracking: true, isDataLoaded: true, isSharing: true))
     }
 
     /// When iOS refuses a background task (.invalid), the send still runs (unprotected from
@@ -1220,6 +1348,24 @@ class LocationSyncServiceTests: XCTestCase {
         XCTAssertEqual(S.derive(isSharing: true, authorization: .authorizedAlways, accuracyAuthorization: .reducedAccuracy, lastFixAccuracy: nil), .preciseLocationOff)
         XCTAssertEqual(S.derive(isSharing: true, authorization: .authorizedAlways, accuracyAuthorization: .reducedAccuracy, lastFixAccuracy: usable), .sharing)
         XCTAssertEqual(S.derive(isSharing: true, authorization: .authorizedAlways, accuracyAuthorization: .fullAccuracy, lastFixAccuracy: nil), .sharing)
+    }
+
+    /// A precise fix from before Precise Location was turned off (e.g. restored at launch) must
+    /// not make the pill claim "Sharing": only fixes taken under the current setting count.
+    func testFixAccuracy_IgnoresFixesFromBeforeTheAccuracySettingChanged() {
+        let changedAt = Date()
+        let before = CLLocation(coordinate: .init(latitude: 1, longitude: 2), altitude: 0, horizontalAccuracy: 10, verticalAccuracy: -1, timestamp: changedAt.addingTimeInterval(-60))
+        let after = CLLocation(coordinate: .init(latitude: 1, longitude: 2), altitude: 0, horizontalAccuracy: 1500, verticalAccuracy: -1, timestamp: changedAt.addingTimeInterval(5))
+        XCTAssertNil(LocationManager.fixAccuracy(before, takenSince: changedAt))
+        XCTAssertNil(LocationManager.fixAccuracy(nil, takenSince: changedAt))
+        XCTAssertEqual(LocationManager.fixAccuracy(after, takenSince: changedAt), 1500)
+        XCTAssertEqual(
+            ContentView.SharingStatus.derive(
+                isSharing: true, authorization: .authorizedAlways, accuracyAuthorization: .reducedAccuracy,
+                lastFixAccuracy: LocationManager.fixAccuracy(before, takenSince: changedAt)
+            ),
+            .preciseLocationOff
+        )
     }
 
     // MARK: - Restored location

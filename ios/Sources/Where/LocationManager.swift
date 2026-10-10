@@ -33,6 +33,19 @@ final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelega
     /// With Precise Location off, fixes are km-scale and every broadcast accuracy gate drops
     /// them, so nothing is sent. Surfaced in the UI rather than silently showing "Sharing".
     @Published var accuracyAuthorization: CLAccuracyAuthorization = .fullAccuracy
+    /// When `accuracyAuthorization` last changed (or launch). A fix older than this was taken
+    /// under different settings, e.g. a precise fix from before Precise Location was turned off.
+    private(set) var accuracyAuthorizationSince = Date()
+
+    /// Accuracy of the current fix if it reflects the current accuracy authorization, else nil.
+    var currentSettingsFixAccuracy: CLLocationAccuracy? {
+        Self.fixAccuracy(location, takenSince: accuracyAuthorizationSince)
+    }
+
+    nonisolated static func fixAccuracy(_ location: CLLocation?, takenSince since: Date) -> CLLocationAccuracy? {
+        guard let location, location.timestamp >= since else { return nil }
+        return location.horizontalAccuracy
+    }
 
     internal var manager: CLLocationManager?
 
@@ -148,11 +161,25 @@ final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelega
     /// path (live updates, one-shot fixes, visits, heading, geofence exits) checks this, and
     /// broadcastLocation/armGeofenceIfNeeded enforce it again, because CoreLocation can deliver
     /// a callback that was already queued, or a live update already in flight, after sharing
-    /// stopped. Before the DB has loaded (background relaunch) we can't know yet, so readings
-    /// are handled; the post-load sharingStateChanged() stops tracking if needed.
+    /// stopped.
     var shouldHandleReadings: Bool {
         if let override = isTrackingOverride { return override }
-        return updatesTask != nil || !LocationSyncService.shared.isDataLoaded
+        let sync = LocationSyncService.shared
+        return Self.shouldHandleReadings(
+            isTracking: updatesTask != nil,
+            isDataLoaded: sync.isDataLoaded,
+            isSharing: sync.isSharingLocation
+        )
+    }
+
+    /// Before the DB has loaded (a cold background relaunch by a geofence/visit/significant
+    /// change) tracking hasn't started yet, so `isTracking` can't decide. The persisted master
+    /// sharing toggle can: LocationSyncService reads it synchronously from the keychain-backed
+    /// UserStore in init, before hydration. So a paused user's pre-load reading is dropped,
+    /// and a sharing user's is handled (the post-load sharingStateChanged() then starts or
+    /// stops tracking for real, e.g. if there turn out to be no friends).
+    nonisolated static func shouldHandleReadings(isTracking: Bool, isDataLoaded: Bool, isSharing: Bool) -> Bool {
+        isTracking || (!isDataLoaded && isSharing)
     }
 
     /// Test seam for shouldHandleReadings: tracking can't actually start under XCTest (no
@@ -460,6 +487,9 @@ final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelega
         let accuracy = manager.accuracyAuthorization
         Task { @MainActor in
             self.authorizationStatus = status
+            if self.accuracyAuthorization != accuracy {
+                self.accuracyAuthorizationSince = Date()
+            }
             self.accuracyAuthorization = accuracy
             self.manager?.allowsBackgroundLocationUpdates = (status == .authorizedAlways)
             self.manager?.showsBackgroundLocationIndicator = (status == .authorizedAlways)

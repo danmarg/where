@@ -160,7 +160,7 @@ final class LocationSyncService: ObservableObject {
     let pathMonitor = NWPathMonitor()  // internal for testing
     private let monitorQueue = DispatchQueue(label: "NWPathMonitorQueue")
 
-    private var lastSentLocation: (lat: Double, lng: Double)? = nil
+    private(set) var lastSentLocation: (lat: Double, lng: Double)? = nil  // readable for testing
 
     /// Best available location for heartbeat sends: accurate GPS fix first, then last sent.
     /// Low-accuracy network fixes (e.g. from stationary cell-tower positioning) are skipped
@@ -220,10 +220,10 @@ final class LocationSyncService: ObservableObject {
 
     /// Begins a background task whose expiration handler actually ends it (an empty handler
     /// gets the app killed once the budget runs out, e.g. a long multi-friend poll on a BGTask
-    /// wake). Returns an idempotent closure for the normal completion path.
-    private func beginExpiringBackgroundTask(_ name: String) -> @MainActor @Sendable () -> Void {
-        let token = BackgroundTaskToken(name: name, begin: beginBackgroundTask, end: endBackgroundTask)
-        return { token.end() }
+    /// wake). `onExpire` decides what expiry means for the protected work; see
+    /// BackgroundTaskToken. Call `end()` on the normal completion path (idempotent).
+    private func beginExpiringBackgroundTask(_ name: String, onExpire: (@MainActor () -> Void)? = nil) -> BackgroundTaskToken {
+        BackgroundTaskToken(name: name, begin: beginBackgroundTask, end: endBackgroundTask, onExpire: onExpire)
     }
 
     let e2eeManager: Shared.E2eeManager
@@ -700,12 +700,15 @@ final class LocationSyncService: ObservableObject {
             }
         }
 
-        let endBackgroundTask = self.beginExpiringBackgroundTask("PollAll")
+        // On expiry the remaining network steps (invite polling, heartbeat send) are skipped
+        // rather than started without budget. Already-received updates are persisted by
+        // poll() itself, so stopping between steps loses nothing; the next poll resumes.
+        let backgroundTask = self.beginExpiringBackgroundTask("PollAll")
 
         defer {
             watchdog.cancel()
             isPollInFlight = false
-            endBackgroundTask()
+            backgroundTask.end()
         }
         do {
             let updates = try await locationClient.poll(
@@ -732,8 +735,18 @@ final class LocationSyncService: ObservableObject {
             // Always update visibleUsers to ensure map is fresh when returning to foreground.
             updateVisibleUsers()
 
+            if backgroundTask.didExpire {
+                logger.warning("pollAll: background time expired; skipping invite poll and heartbeat")
+                updateStatus(nil)  // the poll itself succeeded
+                return
+            }
             if updateUi || isInviteSheetShowing {
                 _ = try await pollPendingInvites()
+            }
+            if backgroundTask.didExpire {
+                logger.warning("pollAll: background time expired; skipping heartbeat")
+                updateStatus(nil)  // the poll itself succeeded
+                return
             }
 
             // Heartbeat: if we're awake enough to poll, also send location if one is due.
@@ -1082,16 +1095,28 @@ final class LocationSyncService: ObservableObject {
 
         let interval = lastSuccessfulSendTime.map { now.timeIntervalSince($0) }
         ownHeading = heading
+        // Set before the send so concurrent callers are throttled while it's in flight. A send
+        // that fails keeps it (the next throttle window / heartbeat retries; network restore
+        // resends), but one cut off by background expiry rolls it back below.
+        let previousSentTime = lastSentTime
         lastSentTime = now
         pendingForcedSendAfterPairing = false
 
-        let endBackgroundTask = self.beginExpiringBackgroundTask("SendLocation")
         let gen = sendTaskGeneration + 1
         sendTaskGeneration = gen
+        // Expiry grants no more time, so the send would be suspended mid-flight (and
+        // lastSentTime would claim a send that never landed, deferring the next heartbeat).
+        // Cancel it and make the location eligible to send again.
+        let backgroundTask = self.beginExpiringBackgroundTask("SendLocation") { [weak self] in
+            guard let self, gen == self.sendTaskGeneration else { return }
+            logger.warning("sendLocation: background time expired; cancelling send (source=\(source.rawValue))")
+            self.currentSendTask?.cancel()
+            self.lastSentTime = previousSentTime
+        }
 
         currentSendTask?.cancel()
         currentSendTask = Task {
-            defer { endBackgroundTask() }
+            defer { backgroundTask.end() }
             do {
                 try await locationClient.sendLocation(lat: lat, lng: lng, pausedFriendIds: effectivelyPausedIds(), stationary: stationary)
                 if !Task.isCancelled && gen == self.sendTaskGeneration {
