@@ -94,4 +94,6 @@
     <string name="more_options">その他のオプション</string>
     <string name="open_source_licenses">オープンソースライセンス</string>
     <string name="close">閉じる</string>
+    <string name="discarded_sessions_title">友達を再ペアリング</string>
+    <string name="discarded_sessions_message">この端末のデータは別の端末またはバックアップから移行されたため、%s との接続は安全に使用できず、削除されました。位置情報の共有を再開するには、新しい招待を依頼してください。</string>
 </resources>

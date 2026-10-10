@@ -94,4 +94,6 @@
     <string name="more_options">More options</string>
     <string name="open_source_licenses">Open Source Licenses</string>
     <string name="close">Close</string>
+    <string name="discarded_sessions_title">Re-pair your friends</string>
+    <string name="discarded_sessions_message">This device\'s data came from another phone or a backup, so your connections with %s can\'t be used safely and were removed. Ask them for new invites to share locations again.</string>
 </resources>

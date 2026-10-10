@@ -1185,4 +1185,20 @@ class LocationSyncServiceTests: XCTestCase {
         XCTAssertEqual(loc.timestamp, .distantPast)
         XCTAssertGreaterThan(loc.horizontalAccuracy, LocationSyncService.minBroadcastAccuracyMeters)
     }
+
+    func testDiscardedSessionsNoticePersistsUntilDismissed() {
+        // Written by openDatabase(), possibly during a background relaunch with no UI.
+        let key = LocationSyncService.discardedSessionNamesKey
+        UserDefaults.standard.set(["Alice", "Bob"], forKey: key)
+        defer { UserDefaults.standard.removeObject(forKey: key) }
+
+        let relaunched = LocationSyncService(e2eeManager: service.e2eeManager, userStore: service.userStore, locationClient: nil, locationProvider: mockLocationProvider)
+        relaunched.pollTimer?.invalidate()
+        relaunched.skipNetworkRestore = true
+        XCTAssertEqual(relaunched.discardedSessionNames, ["Alice", "Bob"])
+
+        relaunched.dismissDiscardedSessionsNotice()
+        XCTAssertEqual(relaunched.discardedSessionNames, [])
+        XCTAssertNil(UserDefaults.standard.stringArray(forKey: key))
+    }
 }

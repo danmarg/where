@@ -209,6 +209,16 @@ struct ContentView: View {
         } message: {
             Text(MR.strings().background_location_message.localized())
         }
+        .alert(MR.strings().discarded_sessions_title.localized(), isPresented: Binding(
+            get: { !syncService.discardedSessionNames.isEmpty },
+            set: { if !$0 { syncService.dismissDiscardedSessionsNotice() } }
+        )) {
+            Button(MR.strings().ok.localized(), role: .cancel) { }
+        } message: {
+            Text(MR.strings().discarded_sessions_message.localized(
+                args: [ListFormatter.localizedString(byJoining: syncService.discardedSessionNames) as NSString]
+            ))
+        }
         .alert(MR.strings().connection_error.localized(), isPresented: $showErrorAlert) {
             Button(MR.strings().ok.localized(), role: .cancel) { }
         } message: {
