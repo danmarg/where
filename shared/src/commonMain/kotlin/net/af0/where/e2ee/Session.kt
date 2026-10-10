@@ -19,6 +19,15 @@ object Session {
     fun encryptMessage(
         state: SessionState,
         payload: MessagePlaintext,
+    ): Pair<SessionState, EncryptedMessagePayload> = encryptPadded(state, padToFixedSize(encodeMessage(payload), PADDING_SIZE))
+
+    /**
+     * Encrypts an already-padded plaintext. Separate from [encryptMessage] so tests can
+     * produce authenticated frames whose plaintext is malformed. Zeroizes [plaintext].
+     */
+    internal fun encryptPadded(
+        state: SessionState,
+        plaintext: ByteArray,
     ): Pair<SessionState, EncryptedMessagePayload> {
         if (state.sendSeq == Long.MAX_VALUE) throw SessionBrickedException("sequence number overflow")
 
@@ -43,7 +52,6 @@ object Session {
         val step = kdfCk(chainKeyToUse)
         val aad = buildMessageAad(currentState.localFp, currentState.remoteFp, seqToUse, dhPubToUse, ackRemoteToUse)
 
-        val plaintext = padToFixedSize(encodeMessage(payload), PADDING_SIZE)
         val ct = aeadEncrypt(step.messageKey, step.messageNonce, plaintext, aad)
 
         val newState =
@@ -145,22 +153,27 @@ object Session {
                     nonce.zeroize()
                 }
 
-            val unpadded =
-                try {
-                    unpad(plaintext)
-                } catch (e: Exception) {
-                    plaintext.zeroize()
-                    throw DecryptionException("unpad failed", e)
-                }
-            val decoded = decodeMessage(unpadded)
-            plaintext.zeroize()
-            unpadded.zeroize()
-
-            // Remove used key from cache
+            // Authenticated: the key is spent either way. A malformed plaintext is committed
+            // and discarded (§8.3.1(4)) rather than retried forever.
             val newCache = LinkedHashMap(cleanState.skippedMessageKeys)
             newCache.remove(cacheKey)
+            val newState = cleanState.copy(skippedMessageKeys = newCache)
 
-            return cleanState.copy(skippedMessageKeys = newCache) to decoded
+            val decoded =
+                try {
+                    val unpadded = unpad(plaintext)
+                    try {
+                        decodeMessage(unpadded)
+                    } finally {
+                        unpadded.zeroize()
+                    }
+                } catch (e: Exception) {
+                    throw DecryptionExceptionWithState(newState, e)
+                } finally {
+                    plaintext.zeroize()
+                }
+
+            return newState to decoded
         }
 
         // 3. Speculatively perform DH and symmetric ratchet
@@ -188,8 +201,6 @@ object Session {
 
         // Derivation loop for chain keys and skipped message keys
         val derivationSkippedKeys = LinkedHashMap(speculativeState.skippedMessageKeys)
-        // Memory Hygiene: track keys added during this derivation to zeroize on failure (#211)
-        val addedSkippedKeys = mutableListOf<ByteArray>()
 
         // Clear skipped keys for old epochs
         if (isNewDhEpoch) {
@@ -234,96 +245,71 @@ object Session {
                     // Store intermediate message key for future out-of-order delivery.
                     // Cached format: [MK (32) || Nonce (12) || Timestamp (8)]
                     val mkPlusNonce = step.messageKey + step.messageNonce + longToBeBytes(now)
-                    addedSkippedKeys.add(mkPlusNonce)
                     val mkKey = remoteDhPub.toHex() + ":" + currentSeq
+                    // No eviction needed: the projectedSize admission check above bounds the cache.
                     derivationSkippedKeys[mkKey] = mkPlusNonce
-                    if (derivationSkippedKeys.size > MAX_SKIPPED_KEYS) {
-                        val oldestKey = derivationSkippedKeys.keys.first()
-                        derivationSkippedKeys[oldestKey]?.zeroize()
-                        derivationSkippedKeys.remove(oldestKey)
-                    }
                 } else {
                     currentStep = step
                 }
+            }
+
+            // PH-3.3: Gap filling for the PREVIOUS receiving chain. Done before the body AEAD
+            // check so that a corrupted new-epoch frame leaves the same skipped-key cache as a
+            // dropped one followed by a good one (§8.3.1(4)).
+            if (pnGaps > 0) {
+                val prevEpochHex = cleanState.remoteDhPub.toHex()
+                var oldChainKey = cleanState.recvChainKey.copyOf()
+                repeat(pnGaps) { i ->
+                    val step = kdfCk(oldChainKey)
+                    oldChainKey.zeroize()
+                    oldChainKey = step.newChainKey
+                    val mkPlusNonce = step.messageKey + step.messageNonce + longToBeBytes(now)
+                    derivationSkippedKeys[prevEpochHex + ":" + (cleanState.recvSeq + i + 1)] = mkPlusNonce
+                }
+                oldChainKey.zeroize()
             }
 
             val finalStep = currentStep ?: throw ProtocolException("failed to derive message key")
             val sender = cleanState.remoteFp
             val aad = buildMessageAad(sender, cleanState.localFp, seq, remoteDhPub, ackRemoteDhPub)
 
-            val plaintext =
-                try {
-                    aeadDecrypt(finalStep.messageKey, finalStep.messageNonce, message.ct, aad)
-                } catch (e: Exception) {
-                    // Body AEAD failed despite a valid header. Advance recvSeq and the chain
-                    // key to prevent permanent DH desync — without this, a server that drops
-                    // the message entirely and a server that delivers a corrupted copy would
-                    // have different effects on session state, breaking the ratchet.
-                    // The failed message's key is NOT cached: caching it would keep MK_n alive
-                    // for up to 7 days with no benefit, since a server willing to deliver a
-                    // corrupted copy can equally just drop the message.
-                    val failedState =
-                        speculativeState.deepCopy().copy(
-                            recvChainKey = chainKey.copyOf(),
-                            recvSeq = seq,
-                            skippedMessageKeys = derivationSkippedKeys.mapValues { it.value.copyOf() },
-                            needsRatchet = cleanState.needsRatchet || isNewDhEpoch,
-                        )
-                    // Wipe any speculative intermediate keys derived during this failed call.
-                    addedSkippedKeys.forEach { it.zeroize() }
-                    chainKey.zeroize()
-                    throw DecryptionExceptionWithState(failedState, e)
-                } finally {
-                    finalStep.messageKey.zeroize()
-                    finalStep.messageNonce.zeroize()
-                }
-
-            // Success! Commit the state.
-            val unpadded =
-                try {
-                    unpad(plaintext)
-                } catch (e: Exception) {
-                    plaintext.zeroize()
-                    throw DecryptionException("unpad failed", e)
-                }
-            val decoded = decodeMessage(unpadded)
-            plaintext.zeroize()
-            unpadded.zeroize()
-
-            // PH-3.3: Post-decryption gap filling for the PREVIOUS receiving chain.
-            val prevEpochHex = cleanState.remoteDhPub.toHex()
-            val finalSkippedKeys: LinkedHashMap<String, ByteArray>
-            if (isNewDhEpoch && header.pn > cleanState.recvSeq) {
-                // pnGaps is already validated <= MAX_SKIPPED_KEYS in the admission check above.
-                val updatedCache = LinkedHashMap(derivationSkippedKeys)
-                var oldChainKey = cleanState.recvChainKey.copyOf()
-                repeat(pnGaps) { i ->
-                    val step = kdfCk(oldChainKey)
-                    oldChainKey.zeroize()
-                    oldChainKey = step.newChainKey
-
-                    val skippedSeq = cleanState.recvSeq + i + 1
-                    val mkKey = prevEpochHex + ":" + skippedSeq
-                    updatedCache[mkKey] = step.messageKey + step.messageNonce + longToBeBytes(now)
-
-                    if (updatedCache.size > MAX_SKIPPED_KEYS) {
-                        updatedCache.remove(updatedCache.keys.first())?.zeroize()
-                    }
-                }
-                oldChainKey.zeroize()
-                finalSkippedKeys = updatedCache
-            } else {
-                finalSkippedKeys = derivationSkippedKeys
-            }
-
+            // The state advanced to `seq`. It is committed whether or not the body decrypts
+            // (§8.3.1(4)): a server that drops a frame and one that corrupts it must leave
+            // identical state, or the ratchet desyncs permanently. The failed message's key
+            // itself is never cached (it would live up to 7 days for no benefit).
             val newState =
                 speculativeState.deepCopy().copy(
                     // Move ownership
                     recvChainKey = chainKey,
                     recvSeq = seq,
-                    skippedMessageKeys = finalSkippedKeys,
-                    needsRatchet = speculativeState.needsRatchet,
+                    skippedMessageKeys = derivationSkippedKeys,
                 )
+
+            val plaintext =
+                try {
+                    aeadDecrypt(finalStep.messageKey, finalStep.messageNonce, message.ct, aad)
+                } catch (e: Exception) {
+                    throw DecryptionExceptionWithState(newState, e)
+                } finally {
+                    finalStep.messageKey.zeroize()
+                    finalStep.messageNonce.zeroize()
+                }
+
+            // Likewise, an authenticated frame whose plaintext is malformed (bad padding,
+            // invalid JSON) came from the peer; commit and discard it.
+            val decoded =
+                try {
+                    val unpadded = unpad(plaintext)
+                    try {
+                        decodeMessage(unpadded)
+                    } finally {
+                        unpadded.zeroize()
+                    }
+                } catch (e: Exception) {
+                    throw DecryptionExceptionWithState(newState, e)
+                } finally {
+                    plaintext.zeroize()
+                }
 
             return newState to decoded
         } catch (e: Exception) {

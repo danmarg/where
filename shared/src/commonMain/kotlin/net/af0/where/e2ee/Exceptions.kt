@@ -43,10 +43,11 @@ class InviteExpiredException() : WhereException("This invite has expired")
 class SelfPairingException() : WhereException("Cannot pair with yourself")
 
 /**
- * Thrown when header decryption and DH ratchet succeed, but the message payload
- * fails to decrypt (e.g., due to AAD mismatch or corruption). This exception
- * carries the advanced [SessionState] so the caller can still persist the DH
- * rotation to prevent permanent desync (§5.5).
+ * Thrown when the header authenticates but the message cannot be delivered: the body
+ * fails AEAD (e.g. corruption), or it authenticates but its plaintext is malformed
+ * (bad padding, undecodable). Carries the advanced [SessionState], which the caller
+ * MUST persist so a corrupted frame leaves the same state as a dropped one (§8.3.1(4)).
+ * Not a [DecryptionException]: callers must handle it separately.
  */
 class DecryptionExceptionWithState(
     val newState: SessionState,
