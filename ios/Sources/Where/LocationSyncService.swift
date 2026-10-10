@@ -155,7 +155,7 @@ final class LocationSyncService: ObservableObject {
     var locationFixTimeout: TimeInterval = 10.0  // internal for testing
     /// Fixes with horizontalAccuracy above this threshold are cell/WiFi network fixes too noisy
     /// to broadcast; only sub-200m GPS fixes are sent to friends or used for heartbeats.
-    static let minBroadcastAccuracyMeters: CLLocationAccuracy = 200
+    nonisolated static let minBroadcastAccuracyMeters: CLLocationAccuracy = 200
     private var visibleUsersCancellables = Set<AnyCancellable>()
     let pathMonitor = NWPathMonitor()  // internal for testing
     private let monitorQueue = DispatchQueue(label: "NWPathMonitorQueue")
