@@ -125,10 +125,6 @@ struct ContentView: View {
                     showScanner = true
                 },
                 onRename: { id, name in Task { await syncService.renameFriend(id: id, newName: name) } },
-                onPasteUrl: { url in
-                    showFriends = false
-                    syncService.processQrUrl(url)
-                },
                 onRemove: { id in Task { await syncService.removeFriend(id: id) } },
                 onSetFriendExpiry: { id, exp in syncService.setFriendExpiry(friendId: id, epochSeconds: exp) },
                 onZoomTo: { friendId in

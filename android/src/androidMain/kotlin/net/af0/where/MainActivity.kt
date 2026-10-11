@@ -208,7 +208,6 @@ class MainActivity : ComponentActivity() {
                             }
                         }
                     },
-                    onPasteUrl = { viewModel.processQrUrl(it) },
                     friendLastPing = friendLastPing,
                     onRenameFriend = { id, name -> viewModel.renameFriend(id, name) },
                     onRemoveFriend = { viewModel.removeFriend(it) },

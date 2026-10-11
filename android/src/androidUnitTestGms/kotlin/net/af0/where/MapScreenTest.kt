@@ -46,7 +46,6 @@ class MapScreenTest {
                 connectionStatus = ConnectionStatus.Ok,
                 onCreateInvite = {},
                 onScanQr = {},
-                onPasteUrl = {},
                 friendLastPing = emptyMap(),
                 onRenameFriend = { _, _ -> },
                 onRemoveFriend = {},
