@@ -39,6 +39,9 @@ class ProtocolGapException(message: String) : ProtocolException(message)
 /** Thrown when a scanned invite is past its `expires_at`. */
 class InviteExpiredException() : WhereException("This invite has expired")
 
+/** Thrown when this device already paired by accepting the same invite. */
+class InviteAlreadyAcceptedException() : WhereException("This invite was already accepted")
+
 /** Thrown when trying to pair with yourself. */
 class SelfPairingException() : WhereException("Cannot pair with yourself")
 

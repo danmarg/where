@@ -62,6 +62,10 @@ final class LocationSyncService: ObservableObject {
     /// discard may happen during a background relaunch.
     @Published private(set) var discardedSessionNames: [String] = []
     static let discardedSessionNamesKey = "discarded_session_names"
+    /// Why an invite the user just opened or confirmed was refused. Shown in an alert until
+    /// dismissed: the connection status would be cleared by the next successful poll, seconds
+    /// later, usually before the user has seen it.
+    @Published var inviteError: String? = nil
     /// Mirror of `userStore.isSharingLocation` for SwiftUI binding. Read freely, but to
     /// STOP sharing callers must use `stopSharing()` rather than assignment — that path
     /// also enqueues the StoppedSharing fan-out. didSet handles only state mirroring.
@@ -276,6 +280,10 @@ final class LocationSyncService: ObservableObject {
     nonisolated static func isExcludedFromBackup(path: String) -> Bool {
         let values = try? URL(fileURLWithPath: path).resourceValues(forKeys: [.isExcludedFromBackupKey])
         return values?.isExcludedFromBackup == true
+    }
+
+    func dismissInviteError() {
+        inviteError = nil
     }
 
     func dismissDiscardedSessionsNotice() {
@@ -910,11 +918,19 @@ final class LocationSyncService: ObservableObject {
     @discardableResult
     func processQrUrl(_ url: String) -> Bool {
         guard let qr = Shared.QrPayload.Companion.shared.fromUrl(url: url) else {
-            updateStatus(NSError(domain: "Where", code: 400, userInfo: [NSLocalizedDescriptionKey: MR.strings().invalid_qr_code.localized()]))
+            inviteError = MR.strings().invalid_qr_code.localized()
             return false
         }
         if qr.isExpired() {
-            updateStatus(NSError(domain: "Where", code: 410, userInfo: [NSLocalizedDescriptionKey: MR.strings().invite_expired.localized()]))
+            inviteError = MR.strings().invite_expired.localized()
+            return false
+        }
+        // Accepting an invite pairs with fresh keys, so a re-opened or redelivered link for an
+        // invite we already accepted must not pair a second time. processScannedQr enforces
+        // this again under the store lock (e.g. if the friend list hadn't loaded yet).
+        if repo.friends.contains(where: { $0.isFromInvite(qr: qr) }) {
+            logger.info("processQrUrl: invite already accepted")
+            inviteError = MR.strings().invite_already_used.localized()
             return false
         }
         repo.inviteState = Shared.InviteState.None()
@@ -931,7 +947,7 @@ final class LocationSyncService: ObservableObject {
 
         // The naming dialog may have stayed open past the invite's expiry.
         if qr.isExpired() {
-            updateStatus(NSError(domain: "Where", code: 410, userInfo: [NSLocalizedDescriptionKey: MR.strings().invite_expired.localized()]))
+            inviteError = MR.strings().invite_expired.localized()
             return
         }
 
@@ -994,7 +1010,14 @@ final class LocationSyncService: ObservableObject {
             }
         } catch {
             logger.error("confirmQrScan failed: \(error.localizedDescription)")
-            updateStatus(error)
+            switch (error as NSError).userInfo["KotlinException"] {
+            case is Shared.InviteAlreadyAcceptedException:
+                inviteError = MR.strings().invite_already_used.localized()
+            case is Shared.InviteExpiredException:
+                inviteError = MR.strings().invite_expired.localized()
+            default:
+                updateStatus(error)
+            }
         }
     }
 

@@ -1398,4 +1398,52 @@ class LocationSyncServiceTests: XCTestCase {
         XCTAssertEqual(relaunched.discardedSessionNames, [])
         XCTAssertNil(UserDefaults.standard.stringArray(forKey: key))
     }
+
+    // MARK: - Invite replay
+
+    /// A friend already paired from this invite (e.g. before an upgrade) blocks the same link.
+    func testProcessQrUrl_AlreadyAcceptedInvite_IsRejectedWithAlert() async throws {
+        let alice = Shared.E2eeManager(sqlDriver: Shared.IosSqlDriverKt.createIosSqlDriver(name: ":memory:"))
+        let qr = try await alice.createInvite(suggestedName: "Alice")
+        _ = try await service.e2eeManager.processScannedQr(qr: qr, bobSuggestedName: "Bob")
+        service.repo.friends = try await service.e2eeManager.listFriends()
+
+        XCTAssertFalse(service.processQrUrl(qr.toUrl()))
+        XCTAssertNil(service.repo.pendingQrForNaming, "no naming dialog for an already-accepted invite")
+        XCTAssertEqual(service.inviteError, MR.strings().invite_already_used.localized())
+    }
+
+    /// A new invite from the same person still opens the naming dialog.
+    func testProcessQrUrl_NewInviteFromSamePerson_IsAccepted() async throws {
+        let alice = Shared.E2eeManager(sqlDriver: Shared.IosSqlDriverKt.createIosSqlDriver(name: ":memory:"))
+        _ = try await service.e2eeManager.processScannedQr(qr: try await alice.createInvite(suggestedName: "Alice"), bobSuggestedName: "Bob")
+        service.repo.friends = try await service.e2eeManager.listFriends()
+
+        let second = try await alice.createInvite(suggestedName: "Alice")
+        XCTAssertTrue(service.processQrUrl(second.toUrl()))
+        XCTAssertNotNil(service.repo.pendingQrForNaming)
+        XCTAssertNil(service.inviteError)
+    }
+
+    /// Caught at confirm time (friend list not loaded when the link was opened): alert, no second friend.
+    func testConfirmQrScan_AlreadyAcceptedInvite_ShowsAlertAndDoesNotPair() async throws {
+        let alice = Shared.E2eeManager(sqlDriver: Shared.IosSqlDriverKt.createIosSqlDriver(name: ":memory:"))
+        let qr = try await alice.createInvite(suggestedName: "Alice")
+        _ = try await service.e2eeManager.processScannedQr(qr: qr, bobSuggestedName: "Bob")
+
+        await service.confirmQrScan(qr: qr, friendName: "Alice")
+        XCTAssertEqual(service.inviteError, MR.strings().invite_already_used.localized())
+        let friends = try await service.e2eeManager.listFriends()
+        XCTAssertEqual(friends.count, 1)
+    }
+
+    /// Invite errors stay until dismissed; a successful poll doesn't clear them.
+    func testInviteError_SurvivesStatusResetUntilDismissed() {
+        XCTAssertFalse(service.processQrUrl("not a where invite"))
+        XCTAssertEqual(service.inviteError, MR.strings().invalid_qr_code.localized())
+        service.connectionStatus = Shared.ConnectionStatus.Ok()
+        XCTAssertNotNil(service.inviteError)
+        service.dismissInviteError()
+        XCTAssertNil(service.inviteError)
+    }
 }
