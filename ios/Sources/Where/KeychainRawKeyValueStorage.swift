@@ -56,3 +56,34 @@ final class KeychainRawKeyValueStorage: RawKeyValueStorage {
         }
     }
 }
+
+/// The device half of the database's device binding (see reconcileDeviceBinding). A
+/// ThisDeviceOnly item never leaves the device in a backup or transfer.
+final class DeviceMarkerKeychain: DeviceMarkerStore {
+    private let service = "net.af0.where.e2ee"
+    private let account = "device_binding_marker"
+
+    /// "" only when the item definitely doesn't exist. Any other failure (e.g. the device is
+    /// still locked after a reboot) throws, so it is never mistaken for a missing marker.
+    func readMarker() throws -> String {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: account,
+            kSecReturnData as String: true,
+            kSecMatchLimit as String: kSecMatchLimitOne
+        ]
+        var item: CFTypeRef?
+        let status = SecItemCopyMatching(query as CFDictionary, &item)
+        if status == errSecItemNotFound { return "" }
+        guard status == errSecSuccess, let data = item as? Data, let marker = String(data: data, encoding: .utf8) else {
+            throw NSError(domain: "DeviceMarkerKeychain", code: Int(status),
+                          userInfo: [NSLocalizedDescriptionKey: "Keychain read failed: OSStatus \(status)"])
+        }
+        return marker
+    }
+
+    func writeMarker(marker: String) throws {
+        try KeychainRawKeyValueStorage().putString(key: account, value: marker)
+    }
+}

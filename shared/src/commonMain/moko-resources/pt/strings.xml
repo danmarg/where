@@ -95,4 +95,6 @@
     <string name="more_options">Mais opções</string>
     <string name="open_source_licenses">Licenças de código aberto</string>
     <string name="close">Fechar</string>
+    <string name="discarded_sessions_title">Pareie seus amigos novamente</string>
+    <string name="discarded_sessions_message">Os dados deste dispositivo vieram de outro telefone ou de um backup, então suas conexões com %s não podem ser usadas com segurança e foram removidas. Peça novos convites para voltar a compartilhar localizações.</string>
 </resources>
