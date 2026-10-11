@@ -1,0 +1,113 @@
+name: iOS
+
+# macOS runners are scarce (5 concurrent jobs), so this only runs when something the iOS app is
+# built from changes.
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - 'ios/**'
+      - 'shared/**'
+      - 'gradle/**'
+      - 'build.gradle.kts'
+      - 'settings.gradle.kts'
+      - 'gradle.properties'
+      - '.github/workflows/ios.yml'
+  pull_request:
+    paths:
+      - 'ios/**'
+      - 'shared/**'
+      - 'gradle/**'
+      - 'build.gradle.kts'
+      - 'settings.gradle.kts'
+      - 'gradle.properties'
+      - '.github/workflows/ios.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  # A new push to the same PR/branch cancels the run it supersedes. macOS runners are capped at
+  # 5 concurrent jobs, so stale runs otherwise queue everything behind them.
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  test-ios:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+          cache: gradle
+
+      - name: Install libsodium (macOS)
+        run: brew install libsodium
+
+      # commonTest (crypto vectors, ratchet, store, client) otherwise only runs on the JVM; this
+      # exercises the iOS actuals (CryptoPrimitivesImpl, Normalization, TimeProviderImpl, SQLite
+      # driver) that the app actually ships.
+      - name: Run shared tests (iOS simulator)
+        run: ./gradlew :shared:iosSimulatorArm64Test
+
+      - name: Build shared framework (Debug)
+        run: ./gradlew :shared:assembleSharedDebugXCFramework --quiet
+
+      - name: Build shared framework (Release)
+        run: ./gradlew :shared:assembleSharedReleaseXCFramework --quiet
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Create Local.xcconfig
+        run: touch ios/Local.xcconfig
+
+      - name: Generate Xcode Project
+        run: cd ios && xcodegen
+
+      - name: Run iOS Unit Tests
+        run: |
+          cd ios
+          xcodebuild test \
+            -scheme Where \
+            -destination 'platform=iOS Simulator,name=iPhone 17' \
+            -derivedDataPath build \
+            -resultBundlePath TestResults.xcresult \
+            ONLY_ACTIVE_ARCH=YES \
+            ARCHS=arm64 \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY=""
+
+      - name: Zip iOS Test Results
+        if: always()
+        run: |
+          cd ios
+          zip -r TestResults.xcresult.zip TestResults.xcresult
+
+      - name: Upload iOS Test Results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-test-results
+          path: |
+            ios/TestResults.xcresult.zip
+            shared/build/reports/tests/iosSimulatorArm64Test/
+          retention-days: 7
+
+      # The app test-ios builds anyway, so a separate build-ios job isn't needed for it.
+      - name: Zip iOS app
+        run: |
+          cd ios/build/Build/Products/Debug-iphonesimulator
+          zip -r Where.app.zip Where.app
+
+      - name: Upload iOS debug app
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-debug-app
+          path: ios/build/Build/Products/Debug-iphonesimulator/Where.app.zip
+          retention-days: 14

@@ -1,4 +1,4 @@
-name: Build iOS & Android
+name: Build Android
 
 on:
   push:
@@ -8,6 +8,12 @@ on:
 
 permissions:
   contents: read
+
+concurrency:
+  # A new push to the same PR/branch cancels the run it supersedes. macOS runners are capped at
+  # 5 concurrent jobs, so stale runs otherwise queue everything behind them.
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   build-android:
@@ -50,59 +56,4 @@ jobs:
         with:
           name: android-debug-apk
           path: android/build/outputs/apk/standardFdroid/debug/*.apk
-          retention-days: 14
-
-  build-ios:
-    runs-on: macos-latest
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: 21
-          cache: gradle
-
-      - name: Setup Xcode
-        run: sudo xcode-select --switch /Applications/Xcode.app/Contents/Developer
-
-      - name: Install XcodeGen
-        run: brew install xcodegen
-
-      - name: Create Local.xcconfig
-        run: touch ios/Local.xcconfig
-
-      - name: Generate Xcode project
-        run: |
-          touch ios/Local.xcconfig
-          cd ios && xcodegen
-
-      - name: Build KMP shared framework
-        run: ./gradlew :shared:assembleSharedDebugXCFramework
-
-      - name: Build debug app (simulator)
-        run: |
-          cd ios
-          xcodebuild build \
-            -scheme Where \
-            -configuration Debug \
-            -sdk iphonesimulator \
-            -derivedDataPath build \
-            ONLY_ACTIVE_ARCH=YES \
-            ARCHS=arm64 \
-            CODE_SIGNING_ALLOWED=NO \
-            CODE_SIGNING_REQUIRED=NO \
-            CODE_SIGN_IDENTITY=""
-
-      - name: Zip iOS app
-        run: |
-          cd ios/build/Build/Products/Debug-iphonesimulator
-          zip -r Where.app.zip Where.app
-
-      - name: Upload iOS debug app
-        uses: actions/upload-artifact@v4
-        with:
-          name: ios-debug-app
-          path: ios/build/Build/Products/Debug-iphonesimulator/Where.app.zip
           retention-days: 14
