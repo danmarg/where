@@ -134,6 +134,7 @@ The `/Volumes/Ext` external drive is used on the dev machine for all large cache
 ```bash
 ./gradlew :shared:jvmTest   # unit tests (requires JRE)
 ./e2e-test.sh               # end-to-end integration tests
+./compat-test.sh            # last release's CLI vs this checkout: upgrade in place + cross-version pairing
 ```
 
 The E2EE crypto library tests live in `shared/src/commonTest/kotlin/net/af0/where/e2ee/`

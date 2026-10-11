@@ -68,3 +68,27 @@ jobs:
           path: |
             **/build/reports/tests/
           retention-days: 7
+
+  compat:
+    # The CLI from the last release (latest v* tag) against this commit's CLI and server:
+    # in-place upgrade with a live session, and pairing across versions. See compat-test.sh.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # needs the release tags
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+          cache: gradle
+
+      - name: Install Android SDK platform
+        # Gradle configures :android even when only building the CLI and server.
+        run: |
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platform-tools" "platforms;android-36"
+
+      - name: Run cross-version compat test
+        run: ./compat-test.sh
