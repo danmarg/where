@@ -19,6 +19,12 @@ on:
   schedule:
     - cron: '20 18 * * 5'
 
+concurrency:
+  # A new push to the same PR/branch cancels the run it supersedes. macOS runners are capped at
+  # 5 concurrent jobs, so stale runs otherwise queue everything behind them.
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   analyze:
     name: Analyze (${{ matrix.language }})
@@ -42,15 +48,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-        - language: actions
-          build-mode: none
-        - language: java-kotlin
-          build-mode: manual
-        - language: ruby
-          build-mode: none
-        - language: swift
-          build-mode: manual
+        # Swift runs on macOS (5 concurrent jobs at most) and takes ~30 min, so it's left out of
+        # pull requests; main pushes and the weekly schedule still analyze it.
+        language: ${{ fromJSON(github.event_name == 'pull_request' && '["actions", "java-kotlin", "ruby"]' || '["actions", "java-kotlin", "ruby", "swift"]') }}
         # CodeQL supports the following values keywords for 'language': 'actions', 'c-cpp', 'csharp', 'go', 'java-kotlin', 'javascript-typescript', 'python', 'ruby', 'rust', 'swift'
         # Use `c-cpp` to analyze code written in C, C++ or both
         # Use 'java-kotlin' to analyze code written in Java, Kotlin or both
@@ -114,7 +114,7 @@ jobs:
       uses: github/codeql-action/init@v4
       with:
         languages: ${{ matrix.language }}
-        build-mode: ${{ matrix.build-mode }}
+        build-mode: ${{ (matrix.language == 'java-kotlin' || matrix.language == 'swift') && 'manual' || 'none' }}
         # If you wish to specify custom queries, you can do so here or in a config file.
         # By default, queries listed here will override any specified in a config file.
         # Prefix the list here with "+" to use these queries and those in the config file.
