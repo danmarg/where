@@ -31,8 +31,10 @@ build_app() {
   log "Building iOS app at $ref"
   checkout_ref "$ref" "$src"
   local cfg="$src/ios/Sources/Where/ServerConfig.swift"
-  sed -i '' 's|static let httpBaseUrl = "https://where-api.af0.net"|static let httpBaseUrl = "http://127.0.0.1:8080"|' "$cfg"
-  grep -q '"http://127.0.0.1:8080"' "$cfg" || fail "could not point $ref's simulator build at the local server"
+  # Release builds use production; every production URL literal becomes the local server.
+  sed -i '' 's|"https://where-api.af0.net"|"http://127.0.0.1:8080"|g' "$cfg"
+  grep -q '"http://127.0.0.1:8080"' "$cfg" && ! grep -q 'where-api.af0.net' "$cfg" ||
+    fail "could not point $ref's Release build at the local server"
   touch "$src/ios/Local.xcconfig"
   (cd "$src/ios" && xcodegen --quiet)
   (cd "$src" && ./gradlew :shared:assembleSharedReleaseXCFramework --quiet)
