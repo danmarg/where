@@ -160,6 +160,21 @@ class LocationViewModel(
             .map { it.values.toList() }
             .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
 
+    // Declared before init {}: viewModelScope runs on Main.immediate, so the init-block collectors
+    // run during construction and can start the service before later properties are initialized.
+    @VisibleForTesting
+    internal var consumedInvites = ConsumedInvites(app.getSharedPreferences(ConsumedInvites.PREFS_NAME, Context.MODE_PRIVATE))
+
+    @VisibleForTesting
+    internal var serviceStarter: (Intent) -> Unit = { getApplication<Application>().startForegroundService(it) }
+
+    // Service starts Android refused because the app was not foreground-eligible, keyed by
+    // (action, friend) so repeated refusals of the same request collapse to one retry.
+    private val deferredServiceStarts = LinkedHashMap<Pair<String?, String?>, Intent>()
+
+    // Set by reconcileSharingWithPermission(), which also runs from init {}.
+    private var stoppedSharingInFlight = false
+
     init {
         Log.d(TAG, "LocationViewModel init: server=${BuildConfig.SERVER_HTTP_URL}")
         // Sync foreground state to manage the background service.
@@ -215,16 +230,6 @@ class LocationViewModel(
             }
         }
     }
-
-    @VisibleForTesting
-    internal var consumedInvites = ConsumedInvites(app.getSharedPreferences(ConsumedInvites.PREFS_NAME, Context.MODE_PRIVATE))
-
-    @VisibleForTesting
-    internal var serviceStarter: (Intent) -> Unit = { getApplication<Application>().startForegroundService(it) }
-
-    // Service starts Android refused because the app was not foreground-eligible, keyed by
-    // (action, friend) so repeated refusals of the same request collapse to one retry.
-    private val deferredServiceStarts = LinkedHashMap<Pair<String?, String?>, Intent>()
 
     /**
      * startForegroundService() throws ForegroundServiceStartNotAllowedException (Android 12+)
@@ -654,8 +659,6 @@ class LocationViewModel(
         updateForegroundPolling(inForeground)
         reconcileSharingWithPermission()
     }
-
-    private var stoppedSharingInFlight = false
 
     /**
      * Keeps peers' view honest across permission changes. If the user had sharing on and lost
