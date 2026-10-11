@@ -58,15 +58,11 @@ Android pulls the server URL from `local.properties`.
 ## 3. iOS App
 
 ### Server Configuration
-iOS uses `ServerConfig.swift` for configuration.
-1. Open `ios/Sources/Where/ServerConfig.swift`.
-2. For **Simulator**, the defaults work (`localhost`).
-3. For **Real Device**, update the `#else` block with your server's LAN IP or production URL:
-   ```swift
-   #else
-   static let httpBaseUrl = "http://192.168.1.50:8080"
-   #endif
-   ```
+iOS uses `ios/Sources/Where/ServerConfig.swift`.
+1. **Simulator** (Debug): defaults to the local server at `http://127.0.0.1:8080`.
+2. **Real Device**: defaults to production. To use your machine instead, set the
+   `WHERE_SERVER_HTTP_URL` environment variable in the Xcode scheme (Edit Scheme → Run →
+   Arguments), e.g. `http://192.168.1.50:8080`.
 
 ### Build and Copy to Device
 1. **Connect your iPhone** via USB.
