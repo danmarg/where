@@ -1,0 +1,10 @@
+# Opens the friends sheet and creates an invite; the test reads its URL from the app's database.
+appId: net.af0.WhereApp
+---
+- launchApp
+- tapOn:
+    id: "person.2.fill"
+- tapOn: "Invite"
+- extendedWaitUntil:
+    visible: "Share Link"
+    timeout: 30000

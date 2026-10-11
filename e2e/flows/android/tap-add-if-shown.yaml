@@ -1,0 +1,7 @@
+appId: net.af0.where
+---
+- runFlow:
+    when:
+      visible: "Name this contact"
+    commands:
+      - tapOn: "Add"

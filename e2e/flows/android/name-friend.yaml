@@ -1,0 +1,9 @@
+# The invite link opened the naming dialog, pre-filled with the inviter's suggested name. The
+# test script decides whether a tap that didn't register needs repeating (by asking the CLI
+# whether the key exchange arrived), so this taps once.
+appId: net.af0.where
+---
+- extendedWaitUntil:
+    visible: "Name this contact"
+    timeout: 60000
+- tapOn: "Add"

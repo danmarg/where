@@ -1,0 +1,6 @@
+appId: net.af0.where
+---
+- tapOn: "Paused"
+- extendedWaitUntil:
+    visible: "Sharing"
+    timeout: 15000

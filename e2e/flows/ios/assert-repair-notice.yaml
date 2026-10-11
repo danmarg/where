@@ -1,0 +1,9 @@
+# The database no longer matches the device: sessions are gone and the user is told to re-pair.
+appId: net.af0.WhereApp
+---
+- launchApp
+- extendedWaitUntil:
+    visible: "Re-pair your friends"
+    timeout: 30000
+- tapOn: "OK"
+- assertNotVisible: "Re-pair your friends"

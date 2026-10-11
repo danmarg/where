@@ -135,7 +135,17 @@ The `/Volumes/Ext` external drive is used on the dev machine for all large cache
 ./gradlew :shared:jvmTest   # unit tests (requires JRE)
 ./e2e-test.sh               # end-to-end integration tests
 ./compat-test.sh            # last release's CLI vs this checkout: upgrade in place + cross-version pairing
+e2e/ios-upgrade-test.sh     # last release's iOS app → this checkout's, on a fresh simulator (macOS, Maestro)
+e2e/android-upgrade-test.sh # same for Android, on a booted google_apis emulator (Maestro)
 ```
+
+The app upgrade tests (`.github/workflows/app-e2e.yml`) build the last `v*` release and this
+checkout as Release builds pointed at a local server, pair the old app with the CLI, upgrade in
+place and check the friend, session and later sends survive. They also cover iOS device binding
+(a keychain reset shows the repair notice) and, on Android, invite replay, pause and backup
+refusal. Android uses the fdroid flavor: its platform location providers take emulator test
+locations directly, while gms fused location on an emulator is unreliable. They run nightly, on PRs touching the apps, and on demand
+(`gh workflow run app-e2e.yml -f which=android`). UI steps are Maestro flows in `e2e/flows/`.
 
 The E2EE crypto library tests live in `shared/src/commonTest/kotlin/net/af0/where/e2ee/`
 and run on the JVM target via `:shared:jvmTest`.

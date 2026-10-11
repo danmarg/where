@@ -1,0 +1,9 @@
+# Releases before #420 re-process the invite link they were opened with and show the naming
+# dialog again after pairing; accepting it would pair a second time.
+appId: net.af0.where
+---
+- runFlow:
+    when:
+      visible: "Name this contact"
+    commands:
+      - tapOn: "Cancel"
