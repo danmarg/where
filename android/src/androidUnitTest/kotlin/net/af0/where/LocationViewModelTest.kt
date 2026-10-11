@@ -67,7 +67,7 @@ private fun createTestSqlDriver(name: String? = null): SqlDriver {
 /**
  * TestFakeLocationSource for testing.
  */
-class TestFakeLocationSource : LocationSource {
+class TestFakeLocationSource(initialForeground: Boolean = false) : LocationSource {
     private val _lastLocation = MutableStateFlow<Triple<Double, Double, Double?>?>(null)
     override val lastLocation: StateFlow<Triple<Double, Double, Double?>?> = _lastLocation
 
@@ -80,7 +80,7 @@ class TestFakeLocationSource : LocationSource {
     private val _connectionStatus = MutableStateFlow<ConnectionStatus>(ConnectionStatus.Ok)
     override val connectionStatus: StateFlow<ConnectionStatus> = _connectionStatus
 
-    private val _isAppInForeground = MutableStateFlow(false)
+    private val _isAppInForeground = MutableStateFlow(initialForeground)
     override val isAppInForeground: StateFlow<Boolean> = _isAppInForeground.asStateFlow()
 
     private val _pendingInitPayload = MutableStateFlow<KeyExchangeInitPayload?>(null)
