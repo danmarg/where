@@ -65,7 +65,6 @@ fun FriendsSheet(
     onCreateInvite: () -> Unit,
     onCancelInvite: (ByteArray) -> Unit,
     onScanQr: () -> Unit,
-    onPasteUrl: (String) -> Unit,
     onRename: (String, String) -> Unit,
     onRemove: (String) -> Unit,
     onDismiss: () -> Unit,
@@ -73,8 +72,6 @@ fun FriendsSheet(
 ) {
     var confirmDeleteFriend by remember { mutableStateOf<FriendEntry?>(null) }
     var renameFriend by remember { mutableStateOf<FriendEntry?>(null) }
-    var showPasteField by remember { mutableStateOf(false) }
-    var pastedUrl by remember { mutableStateOf("") }
     var debugExpandedFriendId by remember { mutableStateOf<String?>(null) }
     var showDiagnosticLog by remember { mutableStateOf(false) }
     var showAcknowledgements by remember { mutableStateOf(false) }

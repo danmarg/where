@@ -12,7 +12,6 @@ struct FriendsSheet: View {
     let onCreateInvite: () -> Void
     let onScanQr: () -> Void
     let onRename: (String, String) -> Void
-    let onPasteUrl: (String) -> Void
     let onRemove: (String) -> Void
     var onSetFriendExpiry: (String, Int64?) -> Void = { _, _ in }
     let onZoomTo: (String) -> Void
@@ -21,8 +20,6 @@ struct FriendsSheet: View {
     @State private var friendToRemove: Shared.FriendEntry? = nil
     @State private var friendToRename: Shared.FriendEntry? = nil
     @State private var newFriendName: String = ""
-    @State private var showPasteField = false
-    @State private var pastedUrl = ""
     @State private var debugExpandedFriendId: String? = nil
     @State private var showDiagnosticLog = false
     /// Ticks each minute so any active "Sharing for Xh Ym" label re-renders live.
