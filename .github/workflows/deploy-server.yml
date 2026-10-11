@@ -1,19 +1,16 @@
 name: Deploy Server
 
+# Production deploys only from server-v* tags (see scripts/deploy-server.sh), or by hand.
+# Merging to main doesn't ship the server, and app release tags (v*) don't either.
 on:
   push:
-    branches: [ main ]
-    paths:
-      - 'server/**'
-      - 'shared/**'
-      - 'gradle/**'
-      - 'build.gradle.kts'
-      - 'settings.gradle.kts'
-      - 'gradle.properties'
-      - '.github/workflows/deploy-server.yml'
     tags:
-      - 'v*'
+      - 'server-v*'
   workflow_dispatch:
+
+concurrency:
+  group: deploy-server
+  cancel-in-progress: false
 
 permissions:
   contents: read
@@ -24,6 +21,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Require a commit on main
+        # A tag can point at any commit; only deploy code that went through review on main.
+        run: git merge-base --is-ancestor "$GITHUB_SHA" origin/main
       - name: Setup Flyctl
         # Pinned to a commit (tag 1.6): this job holds FLY_API_TOKEN, so a moving ref is a supply-chain risk.
         uses: superfly/flyctl-actions/setup-flyctl@ed8efb33836e8b2096c7fd3ba1c8afe303ebbff1

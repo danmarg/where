@@ -99,9 +99,14 @@ locally.
 
 ## Server
 
-The server isn't versioned or released alongside the apps — deploy it independently whenever its
-own changes are ready:
+The server isn't released alongside the apps. Deploy it independently whenever its own changes
+are ready on main:
 
 ```
 ./scripts/deploy-server.sh
 ```
+
+This tags the current `origin/main` as `server-vYYYY.MM.DD.N` and pushes the tag; the Deploy
+Server workflow deploys that commit to Fly. Merging to main does not deploy, and app release
+tags (`v*`) don't either. To roll back, run the workflow by hand (`workflow_dispatch`) on an
+earlier `server-v*` tag.
