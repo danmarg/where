@@ -37,6 +37,9 @@ class LocationOptimizationsTests: XCTestCase {
 
     override func setUp() async throws {
         resetLocationManagerShared()
+        // Default to "tracking" so tests aren't at the mercy of whether the shared service's
+        // DB has loaded; not-tracking tests set this to false explicitly.
+        LocationManager.shared.isTrackingOverride = true
         self.mockLocationProvider = MockLocationProvider()
         self.mockLocationClient = MockLocationClient()
         let e2eeManager = Shared.E2eeManager(sqlDriver: Shared.IosSqlDriverKt.createIosSqlDriver(name: ":memory:"))
@@ -55,6 +58,7 @@ class LocationOptimizationsTests: XCTestCase {
         LocationManager.shared.geofenceIsMoving = nil
         LocationManager.shared.isStationary = false
         LocationManager.shared.sendLocationOverride = nil
+        LocationManager.shared.isTrackingOverride = nil
     }
 
     func testHeartbeat_CallsRequestImmediateLocation() async throws {
@@ -130,9 +134,6 @@ class LocationOptimizationsTests: XCTestCase {
     // off (and the DB has loaded), they must not be broadcast or start tracking/geofencing.
     func testLocationManager_DidUpdateLocations_DoesNotBroadcastWhenNotTracking() async throws {
         let locationManager = LocationManager.shared
-        guard LocationSyncService.shared.isDataLoaded else {
-            throw XCTSkip("Shared service hasn't loaded its DB; the pre-load path intentionally broadcasts")
-        }
         locationManager.location = CLLocation(
             coordinate: CLLocationCoordinate2D(latitude: 1, longitude: 1),
             altitude: 0, horizontalAccuracy: 10, verticalAccuracy: 10, timestamp: Date(timeIntervalSinceNow: -60)
@@ -154,6 +155,69 @@ class LocationOptimizationsTests: XCTestCase {
 
         XCTAssertEqual(broadcasts, 0, "A one-shot fix while not tracking must not be broadcast")
         XCTAssertNil(locationManager.geofenceCenter, "...nor arm the fallback geofence")
+    }
+
+    // A live update can still be delivered after stopUpdating() cancels the stream (cancellation
+    // is cooperative). Arriving while not tracking, neither a stationary transition nor a moving
+    // fix may broadcast or arm the fallback geofence.
+    func testLiveUpdateArrivingAfterPause_DoesNotBroadcastOrArmGeofence() {
+        let locationManager = LocationManager.shared
+        locationManager.isTrackingOverride = false
+        var broadcasts = 0
+        locationManager.sendLocationOverride = { _, _, _, _ in broadcasts += 1 }
+        let loc = CLLocation(
+            coordinate: CLLocationCoordinate2D(latitude: 37.7749, longitude: -122.4194),
+            altitude: 0, horizontalAccuracy: 10, verticalAccuracy: 10, timestamp: Date()
+        )
+
+        locationManager.handleStationarityUpdate(loc, stationary: true)
+        locationManager.handleStationarityUpdate(loc, stationary: false)
+
+        XCTAssertEqual(broadcasts, 0, "an in-flight live update after pause must not be broadcast")
+        XCTAssertNil(locationManager.geofenceCenter, "...nor arm the fallback geofence")
+        XCTAssertFalse(locationManager.isStationary, "...nor change stationarity state")
+    }
+
+    func testVisitArrivingAfterPause_DoesNotBroadcast() {
+        let locationManager = LocationManager.shared
+        locationManager.isTrackingOverride = false
+        var broadcasts = 0
+        locationManager.sendLocationOverride = { _, _, _, _ in broadcasts += 1 }
+
+        locationManager.handleVisitUpdate(lat: 37.7749, lng: -122.4194)
+
+        XCTAssertEqual(broadcasts, 0, "a delayed visit after pause must not be broadcast")
+    }
+
+    func testHeadingWhileNotTracking_UpdatesHeadingButDoesNotBroadcast() {
+        let locationManager = LocationManager.shared
+        locationManager.isTrackingOverride = false
+        locationManager.location = CLLocation(
+            coordinate: CLLocationCoordinate2D(latitude: 37.7749, longitude: -122.4194),
+            altitude: 0, horizontalAccuracy: 10, verticalAccuracy: 10, timestamp: Date()
+        )
+        var broadcasts = 0
+        locationManager.sendLocationOverride = { _, _, _, _ in broadcasts += 1 }
+
+        locationManager.handleHeadingUpdate(trueHeading: 90, magneticHeading: 90)
+
+        XCTAssertEqual(broadcasts, 0, "a heading change must not re-send the cached location while not tracking")
+        XCTAssertEqual(locationManager.heading, 90)
+    }
+
+    func testVisitAndHeadingWhileTracking_Broadcast() {
+        let locationManager = LocationManager.shared
+        locationManager.location = CLLocation(
+            coordinate: CLLocationCoordinate2D(latitude: 37.7749, longitude: -122.4194),
+            altitude: 0, horizontalAccuracy: 10, verticalAccuracy: 10, timestamp: Date()
+        )
+        var broadcasts = 0
+        locationManager.sendLocationOverride = { _, _, _, _ in broadcasts += 1 }
+
+        locationManager.handleVisitUpdate(lat: 37.7749, lng: -122.4194)
+        locationManager.handleHeadingUpdate(trueHeading: 90, magneticHeading: 90)
+
+        XCTAssertEqual(broadcasts, 2)
     }
 
     // Regression test: didUpdateHeading() (via handleHeadingUpdate) used to call

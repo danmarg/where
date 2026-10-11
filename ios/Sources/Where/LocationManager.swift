@@ -33,6 +33,19 @@ final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelega
     /// With Precise Location off, fixes are km-scale and every broadcast accuracy gate drops
     /// them, so nothing is sent. Surfaced in the UI rather than silently showing "Sharing".
     @Published var accuracyAuthorization: CLAccuracyAuthorization = .fullAccuracy
+    /// When `accuracyAuthorization` last changed (or launch). A fix older than this was taken
+    /// under different settings, e.g. a precise fix from before Precise Location was turned off.
+    private(set) var accuracyAuthorizationSince = Date()
+
+    /// Accuracy of the current fix if it reflects the current accuracy authorization, else nil.
+    var currentSettingsFixAccuracy: CLLocationAccuracy? {
+        Self.fixAccuracy(location, takenSince: accuracyAuthorizationSince)
+    }
+
+    nonisolated static func fixAccuracy(_ location: CLLocation?, takenSince since: Date) -> CLLocationAccuracy? {
+        guard let location, location.timestamp >= since else { return nil }
+        return location.horizontalAccuracy
+    }
 
     internal var manager: CLLocationManager?
 
@@ -144,11 +157,33 @@ final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelega
         }
     }
 
-    /// True while the live-updates stream (and its background monitoring) is running.
-    var isTracking: Bool { isTrackingOverride ?? (updatesTask != nil) }
+    /// Whether a location reading may be broadcast or arm the fallback geofence. Every such
+    /// path (live updates, one-shot fixes, visits, heading, geofence exits) checks this, and
+    /// broadcastLocation/armGeofenceIfNeeded enforce it again, because CoreLocation can deliver
+    /// a callback that was already queued, or a live update already in flight, after sharing
+    /// stopped.
+    var shouldHandleReadings: Bool {
+        if let override = isTrackingOverride { return override }
+        let sync = LocationSyncService.shared
+        return Self.shouldHandleReadings(
+            isTracking: updatesTask != nil,
+            isDataLoaded: sync.isDataLoaded,
+            isSharing: sync.isSharingLocation
+        )
+    }
 
-    /// Test seam: tracking can't actually start under XCTest (no CLLocationManager), so tests
-    /// set this to exercise the tracking / not-tracking branches of the delegate callbacks.
+    /// Before the DB has loaded (a cold background relaunch by a geofence/visit/significant
+    /// change) tracking hasn't started yet, so `isTracking` can't decide. The persisted master
+    /// sharing toggle can: LocationSyncService reads it synchronously from the keychain-backed
+    /// UserStore in init, before hydration. So a paused user's pre-load reading is dropped,
+    /// and a sharing user's is handled (the post-load sharingStateChanged() then starts or
+    /// stops tracking for real, e.g. if there turn out to be no friends).
+    nonisolated static func shouldHandleReadings(isTracking: Bool, isDataLoaded: Bool, isSharing: Bool) -> Bool {
+        isTracking || (!isDataLoaded && isSharing)
+    }
+
+    /// Test seam for shouldHandleReadings: tracking can't actually start under XCTest (no
+    /// CLLocationManager), so tests set this to exercise the tracking / not-tracking branches.
     var isTrackingOverride: Bool? = nil
 
     func stopUpdating() {
@@ -263,6 +298,9 @@ final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelega
     /// Processes one stationarity reading from the liveUpdates stream.
     /// Extracted from the stream loop so tests can call it directly.
     func handleStationarityUpdate(_ loc: CLLocation, stationary: Bool) {
+        // stopUpdating() cancels the stream, but cancellation is cooperative: an update can
+        // still be delivered after sharing stopped.
+        guard shouldHandleReadings else { return }
         if stationary {
             if !self.isStationary {
                 self.isStationary = true
@@ -308,6 +346,7 @@ final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelega
     /// pass a stale or forgotten value. See the "here since" investigation: every prior bug
     /// in this file was a call site independently defaulting `stationary` to false.
     private func broadcastLocation(lat: Double, lng: Double, heading: Double?, force: Bool = false, source: WakeSource) {
+        guard shouldHandleReadings else { return }
         if let override = sendLocationOverride {
             override(lat, lng, heading, self.isStationary)
             return
@@ -329,6 +368,7 @@ final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelega
         // larger moving-radius fence indefinitely, defeating the "tighten once stationary"
         // policy. Distance-based `shouldRecenter` only governs re-centering *within* an
         // unchanged mode.
+        guard shouldHandleReadings else { return }
         let modeChanged = geofenceIsMoving != isMoving
         let distance = geofenceCenter.map { loc.distance(from: $0) } ?? .greatestFiniteMagnitude
         let due = geofenceCenter == nil || modeChanged ||
@@ -363,9 +403,7 @@ final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelega
                 return
             }
             self.location = loc
-            // Before the DB has loaded (background relaunch) we can't know yet; handle the
-            // fix as before - the post-load sharingStateChanged() stops tracking if needed.
-            guard self.isTracking || !LocationSyncService.shared.isDataLoaded else { return }
+            guard self.shouldHandleReadings else { return }
             let coordinate = loc.coordinate
             if loc.horizontalAccuracy <= LocationSyncService.minBroadcastAccuracyMeters {
                 broadcastLocation(lat: coordinate.latitude, lng: coordinate.longitude, heading: self.heading, source: .locationUpdate)
@@ -388,7 +426,7 @@ final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelega
                 self.geofenceIsMoving = nil
                 // A fence left over from a previous sharing session must not restart tracking.
                 self.updateRegistration()
-                guard self.isTracking || !LocationSyncService.shared.isDataLoaded else {
+                guard self.shouldHandleReadings else {
                     for r in self.manager?.monitoredRegions ?? [] where r.identifier == stationaryGeofenceId {
                         self.manager?.stopMonitoring(for: r)
                     }
@@ -413,6 +451,8 @@ final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelega
     /// call it directly — CLVisit has no public initializer, so the callback itself isn't
     /// directly testable.
     func handleVisitUpdate(lat: Double, lng: Double) {
+        // A visit is often delivered late; one that arrives after sharing stopped is dropped.
+        guard shouldHandleReadings else { return }
         broadcastLocation(lat: lat, lng: lng, heading: self.heading, source: .visit)
     }
 
@@ -437,7 +477,7 @@ final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelega
     /// isn't directly testable.
     func handleHeadingUpdate(trueHeading: Double, magneticHeading: Double) {
         self.heading = trueHeading >= 0 ? trueHeading : magneticHeading
-        if let loc = self.location {
+        if shouldHandleReadings, let loc = self.location {
             broadcastLocation(lat: loc.coordinate.latitude, lng: loc.coordinate.longitude, heading: self.heading, source: .locationUpdate)
         }
     }
@@ -447,6 +487,9 @@ final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelega
         let accuracy = manager.accuracyAuthorization
         Task { @MainActor in
             self.authorizationStatus = status
+            if self.accuracyAuthorization != accuracy {
+                self.accuracyAuthorizationSince = Date()
+            }
             self.accuracyAuthorization = accuracy
             self.manager?.allowsBackgroundLocationUpdates = (status == .authorizedAlways)
             self.manager?.showsBackgroundLocationIndicator = (status == .authorizedAlways)
