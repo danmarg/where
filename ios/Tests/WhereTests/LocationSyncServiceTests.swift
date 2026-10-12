@@ -168,6 +168,7 @@ class LocationSyncServiceTests: XCTestCase {
         service = LocationSyncService(e2eeManager: service.e2eeManager, userStore: service.userStore, locationClient: mockClient, locationProvider: mockLocationProvider)
         service.skipNetworkRestore = true
         service.isInForeground = { false }
+        try await addFriend() // with no friends it's 30 min regardless of sharing
         service.isSharingLocation = false
         service.startPolling()
 
@@ -182,6 +183,7 @@ class LocationSyncServiceTests: XCTestCase {
         service = LocationSyncService(e2eeManager: service.e2eeManager, userStore: service.userStore, locationClient: mockClient, locationProvider: mockLocationProvider)
         service.skipNetworkRestore = true
         service.isInForeground = { false }
+        try await addFriend() // with no friends it's 30 min regardless of sharing
         service.isSharingLocation = false
         service.startPolling()
 
@@ -226,6 +228,7 @@ class LocationSyncServiceTests: XCTestCase {
         service = LocationSyncService(e2eeManager: service.e2eeManager, userStore: service.userStore, locationClient: mockClient, locationProvider: mockLocationProvider)
         service.skipNetworkRestore = true
         service.isInForeground = { false }
+        try await addFriend()
         service.startPolling()
 
         await service.firePoll()
@@ -1397,6 +1400,13 @@ class LocationSyncServiceTests: XCTestCase {
         relaunched.dismissDiscardedSessionsNotice()
         XCTAssertEqual(relaunched.discardedSessionNames, [])
         XCTAssertNil(UserDefaults.standard.stringArray(forKey: key))
+    }
+
+    /// Pairs the service with a fresh peer, so it has a friend (several behaviors depend on that).
+    private func addFriend() async throws {
+        let peer = makeTestE2eeManager()
+        _ = try await service.e2eeManager.processScannedQr(qr: try await peer.createInvite(suggestedName: "Peer"), bobSuggestedName: "Me")
+        service.repo.friends = try await service.e2eeManager.listFriends()
     }
 
     // MARK: - Invite replay
