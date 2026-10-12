@@ -207,5 +207,6 @@ jobs:
             ${{ runner.temp }}/e2e/dumpsys-location.txt
             ${{ runner.temp }}/e2e/cli-locations.txt
             ${{ runner.temp }}/e2e/cli-bob-locations.txt
+            ${{ runner.temp }}/e2e/cli-keepalive.log
             ~/.maestro/tests/
           retention-days: 7

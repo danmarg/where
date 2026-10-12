@@ -88,6 +88,7 @@ fun main(args: Array<String>) {
         println("  invites                    List pending (unaccepted) invite URLs")
         println("  poll                       Poll for updates")
         println("  send <lat> <lng>           Send location to all friends")
+        println("  keepalive                  Send a keepalive to every friend (as an app does on its own)")
         println("Options:")
         println("  --host <url>               Specify the server host (default: http://localhost:8080)")
         println("  --state <path>             Specify the state file (default: where_cli_state.json)")
@@ -245,6 +246,19 @@ fun main(args: Array<String>) {
                 }
             }
         }
+        "keepalive" ->
+            runBlocking {
+                // Unthrottled, unlike sendLocation(): to a friend we haven't heard from in a while
+                // that throttles to one send per UNRESPONSIVE_SEND_INTERVAL_SECONDS.
+                for (friend in store.listFriends()) {
+                    try {
+                        locationClient.sendKeepalive(friend.id)
+                        println("Keepalive sent to ${friend.name}.")
+                    } catch (e: Exception) {
+                        println("Failed to send keepalive to ${friend.name}: ${e.message}")
+                    }
+                }
+            }
         else -> {
             println("Unknown command: ${args[0]}")
         }

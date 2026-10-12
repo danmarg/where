@@ -83,6 +83,7 @@ cli_bob_got_lat_prefix() {
 cli_got_nothing() { ! cli "$1" poll --once | grep -q "Location from"; }
 
 feed_and_check_bob() {
+  friends_keepalive
   FEED_N=$((FEED_N + 1))
   set_location "$1" "$([ $((FEED_N % 2)) = 0 ] && echo 13.42 || echo 13.43)"
   sleep 3
@@ -134,7 +135,24 @@ move_without_check() {
   sleep 4
 }
 
+# A live friend's app sends keepalives on its own; the CLI only when told to. Without them the app
+# treats a CLI friend as unresponsive and sends to it at most once per 5 min
+# (UNRESPONSIVE_SEND_INTERVAL_SECONDS). At most once a minute; ignored for a removed friend.
+KEEPALIVE_AT=0
+BOB_INVITED=
+friends_keepalive() {
+  [ $SECONDS -lt $KEEPALIVE_AT ] && return 0
+  local f out rc
+  for f in alice ${BOB_INVITED:+bob}; do
+    out=$(cli "$f" keepalive) && rc=0 || rc=$?
+    echo "$(date +%T) $f (exit $rc): ${out//$'\n'/ }" >>"$WORK/cli-keepalive.log"
+  done
+  KEEPALIVE_AT=$((SECONDS + 60))
+  return 0
+}
+
 feed_and_check_cli() {
+  friends_keepalive
   FEED_N=$((FEED_N + 1))
   set_location "$1" "$([ $((FEED_N % 2)) = 0 ] && echo 13.42 || echo 13.43)"
   sleep 3
@@ -281,6 +299,7 @@ echo "✓ Upgraded app sends its new position"
 # second CLI identity. Once it's back, both the queued key exchange and new positions get through.
 log "A server outage: sends and a pairing made during it go through once it's back"
 URL2=$(cli bob invite Bob --no-wait | grep "Invite URL:" | awk '{print $3}')
+BOB_INVITED=1
 [ -n "$URL2" ] || fail "CLI could not create an invite"
 cli alice poll --once >/dev/null
 freeze_server
@@ -368,14 +387,12 @@ echo "$OUT"
 echo "$OUT" | grep -qi "Backup is not allowed" || fail "backup of $PKG was not refused"
 echo "✓ Backup refused"
 
-# The CLI friends never send anything back, so to the app they're unresponsive friends, which
-# it sends to at most once per 5 min (UNRESPONSIVE_SEND_INTERVAL_SECONDS): give each check 6 min.
 log "Sharing with one friend can be paused while the other keeps receiving"
 maestro_flow android/resume.yaml
 toggle_friend_pause Bob Pause
 cli alice poll --once >/dev/null
 cli bob poll --once >/dev/null
-feed_until_cli_gets 360 52.77 || fail "the unpaused friend stopped receiving"
+feed_until_cli_gets 240 52.77 || fail "the unpaused friend stopped receiving"
 cli_got_nothing bob || fail "a location was sent to the paused friend"
 echo "✓ Per-friend pause"
 
@@ -385,7 +402,7 @@ remove_friend Alice
 retry 30 friend_count_is 1 || fail "the friend wasn't removed"
 cli alice poll --once >/dev/null
 cli bob poll --once >/dev/null
-retry 360 feed_and_check_bob 52.78 || fail "the remaining friend stopped receiving"
+retry 240 feed_and_check_bob 52.78 || fail "the remaining friend stopped receiving"
 cli_got_nothing alice || fail "a location was sent to the removed friend"
 echo "✓ Friend removal"
 
@@ -401,7 +418,7 @@ for p in ACCESS_FINE_LOCATION ACCESS_COARSE_LOCATION ACCESS_BACKGROUND_LOCATION;
   adb shell pm grant "$PKG" "android.permission.$p"
 done
 maestro_flow android/launch.yaml
-retry 360 feed_and_check_bob 52.81 || fail "sharing didn't resume after location permission was granted again"
+retry 240 feed_and_check_bob 52.81 || fail "sharing didn't resume after location permission was granted again"
 echo "✓ Permission revoked and restored"
 
 TEST_STATUS=passed
