@@ -1,5 +1,14 @@
 appId: net.af0.where
 ---
+# Bring it to the foreground if it isn't (after a background relaunch or reboot).
+- launchApp:
+    stopApp: false
+# Battery-optimization prompt, should the shell-granted exemption not stick (e.g. after a reboot).
+- runFlow:
+    when:
+      visible: "Improve background updates"
+    commands:
+      - tapOn: "Skip"
 - tapOn: "Sharing"
 - extendedWaitUntil:
     visible: "Paused"

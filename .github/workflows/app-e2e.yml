@@ -3,6 +3,8 @@ name: App E2E
 # Real app builds on a simulator/emulator, upgraded in place from the last release (latest v*
 # tag), with the CLI as the friend on the other end. Slow (two app builds each), so: nightly,
 # on demand, and on PRs that touch the apps or the shared module. Not a required check.
+# Nightly runs also upgrade from the release before that, for users who skipped one, and run
+# the slow Android scenarios (Doze, reboot: ~10 min) that PR and on-demand runs skip by default.
 on:
   schedule:
     - cron: '30 3 * * *'
@@ -24,12 +26,16 @@ on:
       base_ref:
         description: "Baseline ref (default: latest v* tag)"
         required: false
+      full:
+        description: "Also run the slow Android scenarios (Doze, reboot), as nightly does"
+        type: boolean
+        default: false
 
 permissions:
   contents: read
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}-${{ inputs.which }}
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}-${{ inputs.which }}-${{ inputs.base_ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
@@ -40,8 +46,35 @@ env:
   MAESTRO_DRIVER_STARTUP_TIMEOUT: 300000
 
 jobs:
+  baselines:
+    runs-on: ubuntu-latest
+    outputs:
+      refs: ${{ steps.refs.outputs.refs }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # release tags
+      - id: refs
+        env:
+          BASE_REF: ${{ inputs.base_ref }}
+          EVENT: ${{ github.event_name }}
+        run: |
+          if [ -n "$BASE_REF" ]; then
+            refs="$BASE_REF"
+          elif [ "$EVENT" = schedule ]; then
+            refs=$(git tag --merged HEAD --list 'v*' --sort=-creatordate | head -2)
+          else
+            refs=$(git describe --tags --abbrev=0 --match 'v*' HEAD)
+          fi
+          echo "refs=$(printf '%s\n' $refs | jq -Rnc '[inputs | select(length > 0)]')" >> "$GITHUB_OUTPUT"
+
   ios-upgrade:
     if: github.event_name != 'workflow_dispatch' || inputs.which != 'android'
+    needs: baselines
+    strategy:
+      fail-fast: false
+      matrix:
+        base: ${{ fromJSON(needs.baselines.outputs.refs) }}
     runs-on: macos-latest
     timeout-minutes: 75
     steps:
@@ -63,9 +96,10 @@ jobs:
 
       - name: Resolve baseline
         id: base
+        env:
+          REF: ${{ matrix.base }}
         run: |
-          ref="${{ inputs.base_ref }}"
-          [ -n "$ref" ] || ref=$(git describe --tags --abbrev=0 --match 'v*' HEAD)
+          ref="$REF"
           echo "ref=$ref" >> "$GITHUB_OUTPUT"
           echo "sha=$(git rev-parse "$ref^{commit}")" >> "$GITHUB_OUTPUT"
           echo "xcode=$(xcodebuild -version | head -1 | tr ' ' '-')" >> "$GITHUB_OUTPUT"
@@ -87,7 +121,7 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: ios-e2e-logs
+          name: ios-e2e-logs-${{ matrix.base }}
           path: |
             ${{ runner.temp }}/e2e/server.log
             ~/.maestro/tests/
@@ -95,8 +129,13 @@ jobs:
 
   android-upgrade:
     if: github.event_name != 'workflow_dispatch' || inputs.which != 'ios'
+    needs: baselines
+    strategy:
+      fail-fast: false
+      matrix:
+        base: ${{ fromJSON(needs.baselines.outputs.refs) }}
     runs-on: ubuntu-latest
-    timeout-minutes: 75
+    timeout-minutes: 110
     steps:
       - uses: actions/checkout@v4
         with:
@@ -123,9 +162,10 @@ jobs:
 
       - name: Resolve baseline
         id: base
+        env:
+          REF: ${{ matrix.base }}
         run: |
-          ref="${{ inputs.base_ref }}"
-          [ -n "$ref" ] || ref=$(git describe --tags --abbrev=0 --match 'v*' HEAD)
+          ref="$REF"
           echo "ref=$ref" >> "$GITHUB_OUTPUT"
           mkdir -p "$RUNNER_TEMP/apks"
 
@@ -147,6 +187,7 @@ jobs:
           E2E_WORK: ${{ runner.temp }}/e2e
           BASELINE_APK: ${{ runner.temp }}/apks/baseline.apk
           HEAD_APK: ${{ runner.temp }}/apks/head.apk
+          E2E_QUICK: ${{ (github.event_name != 'schedule' && !inputs.full) && '1' || '' }}
         with:
           api-level: 34
           target: google_apis
@@ -158,11 +199,13 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: android-e2e-logs
+          name: android-e2e-logs-${{ matrix.base }}
           path: |
             ${{ runner.temp }}/e2e/server.log
             ${{ runner.temp }}/e2e/logcat.txt
+            ${{ runner.temp }}/e2e/friends-hierarchy.json
             ${{ runner.temp }}/e2e/dumpsys-location.txt
             ${{ runner.temp }}/e2e/cli-locations.txt
+            ${{ runner.temp }}/e2e/cli-bob-locations.txt
             ~/.maestro/tests/
           retention-days: 7

@@ -1,6 +1,9 @@
 # The sharing button (location icon) toggles sharing off.
 appId: net.af0.WhereApp
 ---
+# Bring it to the foreground if it isn't (after a background relaunch or reboot).
+- launchApp:
+    stopApp: false
 - tapOn:
     id: "location.fill"
 - extendedWaitUntil:

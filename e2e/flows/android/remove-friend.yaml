@@ -1,0 +1,9 @@
+# Confirms removal from a friend's overflow menu (already open).
+appId: net.af0.where
+---
+- tapOn: "Remove"
+# The confirmation dialog.
+- extendedWaitUntil:
+    visible: "Remove"
+    timeout: 5000
+- tapOn: "Remove"

@@ -1,8 +1,12 @@
 #!/usr/bin/env bash
 # Android upgrade E2E: the last release's app pairs with the CLI through an invite link and
 # exchanges locations, is upgraded in place (adb install -r) to this checkout's app, and must
-# keep its friend and session. Then, on the upgraded app: opening the same invite link again
-# must not pair twice, pausing must stop location updates and sends, and backup must be refused.
+# keep its friend and session. Then, on the upgraded app: sends and a pairing made during a server
+# outage go through once it's back; it recovers from its process being killed, from deep Doze
+# (without a battery exemption) and from a reboot without being opened (unless E2E_QUICK); opening an accepted
+# invite again doesn't pair twice; pausing stops location updates and sends; backup is refused;
+# per-friend pause and friend removal affect only that friend; with location permission revoked
+# nothing is sent, and sharing resumes once it's granted again.
 #
 # Uses minified release builds of the fdroid flavor: it reads the platform GPS/network providers,
 # which emulator test providers drive directly. The gms flavor's fused location runs inside Play
@@ -12,7 +16,7 @@
 # Usage: e2e/android-upgrade-test.sh
 # Env: BASE_REF (default: latest v* tag), BASELINE_APK / HEAD_APK (prebuilt, skips a build),
 #      ABI (default: x86_64), E2E_BUILD_ONLY=1 (build the APKs and stop, e.g. before booting
-#      the emulator).
+#      the emulator), E2E_QUICK=1 (skip the Doze and reboot scenarios).
 source "$(dirname "$0")/lib.sh"
 
 PKG=net.af0.where
@@ -71,8 +75,23 @@ cli_got_any_location() { cli alice poll --once | grep -q "Location from"; }
 
 cli_established() { cli alice poll --once | grep -q "Established session"; }
 
+cli_bob_got_lat_prefix() {
+  cli bob poll --once | grep "Location from" | tee -a "$WORK/cli-bob-locations.txt" | grep -q ": $1"
+}
+
+# cli_got_nothing <state>: <state>'s CLI has no location waiting.
+cli_got_nothing() { ! cli "$1" poll --once | grep -q "Location from"; }
+
+feed_and_check_bob() {
+  FEED_N=$((FEED_N + 1))
+  set_location "$1" "$([ $((FEED_N % 2)) = 0 ] && echo 13.42 || echo 13.43)"
+  sleep 3
+  cli_bob_got_lat_prefix "$1"
+}
+
 cli_bob_established() { cli bob poll --once | grep -q "Established session"; }
 
+# <lat> without a trailing zero: the CLI prints 52.70 as "52.7".
 cli_got_lat_prefix() {
   cli alice poll --once | grep "Location from" | tee -a "$WORK/cli-locations.txt" | grep -q ": $1"
 }
@@ -108,6 +127,13 @@ move_and_publish() {
   return 1
 }
 
+# While the server is down: move, without checking (the CLI can't reach it either).
+move_without_check() {
+  FEED_N=$((FEED_N + 1))
+  set_location "$1" "$([ $((FEED_N % 2)) = 0 ] && echo 13.42 || echo 13.43)"
+  sleep 4
+}
+
 feed_and_check_cli() {
   FEED_N=$((FEED_N + 1))
   set_location "$1" "$([ $((FEED_N % 2)) = 0 ] && echo 13.42 || echo 13.43)"
@@ -126,6 +152,53 @@ assert_no_sends_while_paused() {
     fail "a location was sent while sharing was paused"
   fi
   return 0
+}
+
+app_pid() { adb shell pidof "$PKG" | tr -d '\r'; }
+
+app_restarted_since() { local p; p=$(app_pid); [ -n "$p" ] && [ "$p" != "$1" ]; }
+
+# feed_until_cli_gets <seconds> <lat>: keep moving around <lat> until the CLI receives it.
+feed_until_cli_gets() { retry "$1" feed_and_check_cli "$2"; }
+
+# tap_in_friend_row <friend> <button>: opens the friends sheet and taps <button> (its content
+# description, e.g. "Pause") in <friend>'s row. Leaves the sheet (or the menu the button opens)
+# up.
+tap_in_friend_row() {
+  local xy
+  maestro_flow android/open-friends.yaml
+  maestro ${MAESTRO_DEVICE:+--device "$MAESTRO_DEVICE"} hierarchy >"$WORK/friends-hierarchy.json" ||
+    fail "couldn't dump the friends sheet"
+  xy=$(python3 "$E2E_DIR/friend-row-button.py" "$WORK/friends-hierarchy.json" "$1" "$2") ||
+    fail "no $2 button for $1 in the friends sheet"
+  # shellcheck disable=SC2086 # "x y"
+  adb shell input tap $xy
+  sleep 2
+}
+
+# toggle_friend_pause <friend> <Pause|Resume>
+toggle_friend_pause() {
+  tap_in_friend_row "$1" "$2"
+  maestro_flow android/close-friends.yaml
+}
+
+remove_friend() {
+  tap_in_friend_row "$1" "More options"
+  maestro_flow android/remove-friend.yaml
+  maestro_flow android/close-friends.yaml
+}
+
+setup_test_location() {
+  adb shell appops set com.android.shell android:mock_location allow
+  adb shell cmd location providers add-test-provider gps --requiresSatellite --supportsAltitude
+  adb shell cmd location providers add-test-provider network --requiresNetwork --supportsAltitude
+  adb shell cmd location providers set-test-provider-enabled gps true
+  adb shell cmd location providers set-test-provider-enabled network true
+}
+
+start_logcat() {
+  adb logcat -v time >> "$WORK/logcat.txt" 2>/dev/null &
+  LOGCAT_PID=$!
 }
 
 open_link() {
@@ -157,15 +230,10 @@ adb wait-for-device
 [ "$(adb shell su 0 id -u | tr -d '\r')" = 0 ] || fail "no su on this emulator image (use a google_apis image)"
 adb uninstall "$PKG" >/dev/null 2>&1 || true
 adb shell cmd location set-location-enabled true
-adb shell appops set com.android.shell android:mock_location allow
-adb shell cmd location providers add-test-provider gps --requiresSatellite --supportsAltitude
-adb shell cmd location providers add-test-provider network --requiresNetwork --supportsAltitude
-adb shell cmd location providers set-test-provider-enabled gps true
-adb shell cmd location providers set-test-provider-enabled network true
+setup_test_location
 adb logcat -c
 # Streamed to a file: Maestro clears the device log buffer when it starts a flow.
-adb logcat -v time > "$WORK/logcat.txt" 2>/dev/null &
-LOGCAT_PID=$!
+start_logcat
 set_location 52.520 13.405
 
 log "Baseline app pairs with the CLI"
@@ -209,24 +277,77 @@ log "The upgraded app publishes where it moved to"
 move_and_publish 52.58 || fail "CLI never received the position the upgraded app moved to"
 echo "✓ Upgraded app sends its new position"
 
-# On a second CLI identity. (Not the baseline's invite: the app only records invites accepted
-# since it started tracking them, so one accepted before the upgrade can still be replayed until
-# it expires.)
-log "The upgraded app pairs with a new invite, and opening it again doesn't pair twice"
+# The server goes dark (timeouts, state kept) while the app moves and accepts a new invite from a
+# second CLI identity. Once it's back, both the queued key exchange and new positions get through.
+log "A server outage: sends and a pairing made during it go through once it's back"
 URL2=$(cli bob invite Bob --no-wait | grep "Invite URL:" | awk '{print $3}')
 [ -n "$URL2" ] || fail "CLI could not create an invite"
+cli alice poll --once >/dev/null
+freeze_server
 open_link "$URL2"
 maestro_flow android/name-friend.yaml
-if ! retry 30 cli_bob_established; then
+retry 30 friend_count_is 2 || {
   maestro_flow android/tap-add-if-shown.yaml # the tap didn't register
-  retry 60 cli_bob_established || fail "the upgraded app's key exchange never reached the CLI"
+  retry 30 friend_count_is 2 || fail "the app did not record the new friend during the outage"
+}
+for _ in $(seq 1 8); do move_without_check 52.71; done
+thaw_server
+retry 240 cli_bob_established || fail "the key exchange queued during the outage never reached the CLI"
+feed_until_cli_gets 240 52.71 || fail "no location got through after the outage"
+echo "✓ Outage: queued pairing and new positions delivered afterwards"
+
+log "A killed app process comes back and keeps sending"
+PID=$(app_pid)
+adb shell su 0 kill -9 "$PID"
+cli alice poll --once >/dev/null
+retry 180 app_restarted_since "$PID" || fail "the app was not restarted after its process was killed"
+feed_until_cli_gets 240 52.72 || fail "no location after the app process was killed"
+echo "✓ Process death: restarted and sending"
+
+# Doze and reboot take ~5 min each; E2E_QUICK skips them for quicker runs on PRs and on demand.
+if [ -n "$E2E_QUICK" ]; then
+  log "Skipping Doze and reboot (E2E_QUICK)"
+else
+  # Not exempt from battery optimization, as for a user who declines the app's prompt.
+  log "Deep Doze, not battery-exempt: heartbeats still get through"
+  adb shell dumpsys deviceidle whitelist "-$PKG" >/dev/null
+  adb shell dumpsys battery unplug
+  adb shell input keyevent KEYCODE_SLEEP
+  adb shell dumpsys deviceidle force-idle
+  # Count only sends made well inside idle (not one already under way as it began), and only if
+  # the device is still idle when the CLI sees it.
+  sleep 60
+  cli alice poll --once >/dev/null
+  DOZE_OK=0
+  retry 900 cli_got_any_location && [ "$(adb shell dumpsys deviceidle get deep | tr -d '\r')" = IDLE ] && DOZE_OK=1
+  adb shell dumpsys deviceidle unforce
+  adb shell dumpsys battery reset
+  adb shell input keyevent KEYCODE_WAKEUP
+  adb shell wm dismiss-keyguard
+  adb shell dumpsys deviceidle whitelist "+$PKG" >/dev/null
+  [ $DOZE_OK = 1 ] || fail "no heartbeat reached the CLI in 15 min of deep Doze"
+  echo "✓ Doze: heartbeat delivered while idle"
+
+  log "After a reboot, sharing resumes without opening the app"
+  kill "$LOGCAT_PID" 2>/dev/null
+  adb reboot
+  adb wait-for-device
+  until [ "$(adb shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')" = 1 ]; do sleep 3; done
+  start_logcat
+  setup_test_location
+  adb shell dumpsys deviceidle whitelist "+$PKG" >/dev/null # shell-added exemptions don't survive a reboot
+  adb shell wm dismiss-keyguard
+  cli alice poll --once >/dev/null
+  feed_until_cli_gets 300 52.74 || fail "no location after a reboot"
+  echo "✓ Reboot: sharing resumed in the background"
 fi
-retry 60 friend_count_is 2 || fail "the upgraded app did not record the new friend"
+
+log "Opening an accepted invite again doesn't pair twice"
 open_link "$URL2"
 retry 20 grep -q "invite already accepted" "$WORK/logcat.txt" || fail "the app didn't reject the replayed invite"
 maestro_flow android/invite-already-used.yaml
 friend_count_is 2 || fail "re-opening an accepted invite paired again"
-echo "✓ New pairing works; accepted invite rejected on replay"
+echo "✓ Accepted invite rejected on replay"
 
 # The foreground service itself stays up while paused, by design; location updates stop.
 log "Pausing stops location updates and sending"
@@ -246,6 +367,42 @@ OUT=$(adb shell bmgr backupnow "$PKG" 2>&1 | tr -d '\r')
 echo "$OUT"
 echo "$OUT" | grep -qi "Backup is not allowed" || fail "backup of $PKG was not refused"
 echo "✓ Backup refused"
+
+# The CLI friends never send anything back, so to the app they're unresponsive friends, which
+# it sends to at most once per 5 min (UNRESPONSIVE_SEND_INTERVAL_SECONDS): give each check 6 min.
+log "Sharing with one friend can be paused while the other keeps receiving"
+maestro_flow android/resume.yaml
+toggle_friend_pause Bob Pause
+cli alice poll --once >/dev/null
+cli bob poll --once >/dev/null
+feed_until_cli_gets 360 52.77 || fail "the unpaused friend stopped receiving"
+cli_got_nothing bob || fail "a location was sent to the paused friend"
+echo "✓ Per-friend pause"
+
+log "A removed friend stops receiving; the others don't"
+toggle_friend_pause Bob Resume
+remove_friend Alice
+retry 30 friend_count_is 1 || fail "the friend wasn't removed"
+cli alice poll --once >/dev/null
+cli bob poll --once >/dev/null
+retry 360 feed_and_check_bob 52.78 || fail "the remaining friend stopped receiving"
+cli_got_nothing alice || fail "a location was sent to the removed friend"
+echo "✓ Friend removal"
+
+# Revoking a runtime permission kills the app's process.
+log "With location permission revoked nothing is sent; once granted again, sharing resumes"
+for p in ACCESS_FINE_LOCATION ACCESS_COARSE_LOCATION ACCESS_BACKGROUND_LOCATION; do
+  adb shell pm revoke "$PKG" "android.permission.$p"
+done
+cli bob poll --once >/dev/null
+for _ in $(seq 1 8); do move_without_check 52.79; done
+cli_got_nothing bob || fail "a location was sent without location permission"
+for p in ACCESS_FINE_LOCATION ACCESS_COARSE_LOCATION ACCESS_BACKGROUND_LOCATION; do
+  adb shell pm grant "$PKG" "android.permission.$p"
+done
+maestro_flow android/launch.yaml
+retry 360 feed_and_check_bob 52.81 || fail "sharing didn't resume after location permission was granted again"
+echo "✓ Permission revoked and restored"
 
 TEST_STATUS=passed
 echo ""

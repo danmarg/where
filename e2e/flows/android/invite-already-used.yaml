@@ -2,6 +2,12 @@
 # so in a dialog that stays until dismissed.
 appId: net.af0.where
 ---
+# Battery-optimization prompt, should the shell-granted exemption not stick (e.g. after a reboot).
+- runFlow:
+    when:
+      visible: "Improve background updates"
+    commands:
+      - tapOn: "Skip"
 - extendedWaitUntil:
     visible: "You've already added this invite.*"
     timeout: 20000

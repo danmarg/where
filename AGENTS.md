@@ -141,11 +141,16 @@ e2e/android-upgrade-test.sh # same for Android, on a booted google_apis emulator
 
 The app upgrade tests (`.github/workflows/app-e2e.yml`) build the last `v*` release and this
 checkout as Release builds pointed at a local server, pair the old app with the CLI, upgrade in
-place and check the friend, session and later sends survive. They also cover iOS device binding
-(a keychain reset shows the repair notice) and, on Android, invite replay, pause and backup
-refusal. Android uses the fdroid flavor: its platform location providers take emulator test
-locations directly, while gms fused location on an emulator is unreliable. They run nightly, on PRs touching the apps, and on demand
-(`gh workflow run app-e2e.yml -f which=android`). UI steps are Maestro flows in `e2e/flows/`.
+place and check the friend, session and later sends survive. Then, on the upgraded app: a server
+outage (sends and a pairing made during it arrive afterwards), location permission revoked and
+granted again, and pause. iOS also covers background relaunch after termination and device binding
+(a keychain reset shows the repair notice); Android covers process death, invite replay, backup
+refusal, per-friend pause, friend removal, and, nightly or with `-f full=true`, deep Doze without
+a battery exemption and a reboot (`E2E_QUICK=1` skips those two, ~10 min). Android uses the fdroid
+flavor: its platform location providers take emulator test locations directly, while gms fused
+location on an emulator is unreliable. They run nightly (also upgrading from the release before
+last), on PRs touching the apps, and on demand (`gh workflow run app-e2e.yml -f which=android`,
+optionally `-f base_ref=<tag>`). UI steps are Maestro flows in `e2e/flows/`.
 
 The E2EE crypto library tests live in `shared/src/commonTest/kotlin/net/af0/where/e2ee/`
 and run on the JVM target via `:shared:jvmTest`.

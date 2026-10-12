@@ -51,8 +51,15 @@ start_server() {
 }
 
 stop_server() {
+  [ -n "$SERVER_PID" ] && kill -CONT "$SERVER_PID" 2>/dev/null
   [ -n "$SERVER_PID" ] && kill "$SERVER_PID" 2>/dev/null || true
 }
+
+# A server outage that keeps mailbox state, like production's DynamoDB does (the local server's
+# store is in memory, so a restart would wipe it): the frozen process accepts connections but
+# never answers, so clients see timeouts, the same as a network blackhole.
+freeze_server() { kill -STOP "$SERVER_PID"; }
+thaw_server() { kill -CONT "$SERVER_PID"; }
 
 # cli <state> <args...>: the CLI peer, with its state under $WORK.
 cli() {
@@ -95,7 +102,9 @@ invite_url_from_db() {
 }
 
 # maestro_flow <flow>: runs e2e/flows/<flow> on $MAESTRO_DEVICE (or the only device).
+# maestro_flow <flow> [-e NAME=value ...]
 maestro_flow() {
   local flow=$1
-  maestro ${MAESTRO_DEVICE:+--device "$MAESTRO_DEVICE"} test "$E2E_DIR/flows/$flow" || fail "maestro flow $flow failed"
+  shift
+  maestro ${MAESTRO_DEVICE:+--device "$MAESTRO_DEVICE"} test "$@" "$E2E_DIR/flows/$flow" || fail "maestro flow $flow failed"
 }
