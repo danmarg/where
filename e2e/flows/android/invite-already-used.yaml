@@ -1,9 +1,13 @@
-# An invite this device already accepted must not open the naming dialog again. (The rejection
-# message is a transient connection-status line that the next successful poll clears, so the
-# script checks the app's log for the rejection instead.)
+# An invite this device already accepted must not open the naming dialog again: the app says
+# so in a dialog that stays until dismissed.
 appId: net.af0.where
 ---
 - extendedWaitUntil:
-    visible: "Sharing"
+    visible: "You've already added this invite.*"
     timeout: 20000
 - assertNotVisible: "Name this contact"
+- tapOn: "OK"
+- extendedWaitUntil:
+    visible: "Sharing"
+    timeout: 10000
+- assertNotVisible: "You've already added this invite.*"
