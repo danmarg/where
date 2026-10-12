@@ -47,8 +47,8 @@ class LocationSyncServiceTests: XCTestCase {
     override func setUp() async throws {
         self.mockStorage = MockRawKeyValueStorage()
         self.mockLocationProvider = MockLocationProvider()
-        // Use :memory: to create a fresh in-memory database for each test
-        let e2eeManager = Shared.E2eeManager(sqlDriver: Shared.IosSqlDriverKt.createIosSqlDriver(name: ":memory:"))
+        // A fresh database for each test
+        let e2eeManager = makeTestE2eeManager()
         let userStore = Shared.UserStore(storage: mockStorage)
         self.service = LocationSyncService(e2eeManager: e2eeManager, userStore: userStore, locationClient: nil, locationProvider: mockLocationProvider)
         self.service.skipUpdateVisibleUsers = true
@@ -1403,7 +1403,7 @@ class LocationSyncServiceTests: XCTestCase {
 
     /// A friend already paired from this invite (e.g. before an upgrade) blocks the same link.
     func testProcessQrUrl_AlreadyAcceptedInvite_IsRejectedWithAlert() async throws {
-        let alice = Shared.E2eeManager(sqlDriver: Shared.IosSqlDriverKt.createIosSqlDriver(name: ":memory:"))
+        let alice = makeTestE2eeManager()
         let qr = try await alice.createInvite(suggestedName: "Alice")
         _ = try await service.e2eeManager.processScannedQr(qr: qr, bobSuggestedName: "Bob")
         service.repo.friends = try await service.e2eeManager.listFriends()
@@ -1415,7 +1415,7 @@ class LocationSyncServiceTests: XCTestCase {
 
     /// A new invite from the same person still opens the naming dialog.
     func testProcessQrUrl_NewInviteFromSamePerson_IsAccepted() async throws {
-        let alice = Shared.E2eeManager(sqlDriver: Shared.IosSqlDriverKt.createIosSqlDriver(name: ":memory:"))
+        let alice = makeTestE2eeManager()
         _ = try await service.e2eeManager.processScannedQr(qr: try await alice.createInvite(suggestedName: "Alice"), bobSuggestedName: "Bob")
         service.repo.friends = try await service.e2eeManager.listFriends()
 
@@ -1427,7 +1427,7 @@ class LocationSyncServiceTests: XCTestCase {
 
     /// Caught at confirm time (friend list not loaded when the link was opened): alert, no second friend.
     func testConfirmQrScan_AlreadyAcceptedInvite_ShowsAlertAndDoesNotPair() async throws {
-        let alice = Shared.E2eeManager(sqlDriver: Shared.IosSqlDriverKt.createIosSqlDriver(name: ":memory:"))
+        let alice = makeTestE2eeManager()
         let qr = try await alice.createInvite(suggestedName: "Alice")
         _ = try await service.e2eeManager.processScannedQr(qr: qr, bobSuggestedName: "Bob")
 
