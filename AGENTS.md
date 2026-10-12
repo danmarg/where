@@ -104,12 +104,12 @@ curl localhost:8080/health     # → ok
 ```
 
 ### Android (emulator)
-- Server URL in `local.properties` (or default `http://10.0.2.2:8080`).
+- Debug builds use `SERVER_HTTP_URL` from `local.properties` (default `http://10.0.2.2:8080`, the emulator's host) and allow plain HTTP (`src/androidDebug/res/xml/network_security_config.xml`). Release builds use production, HTTPS only.
 - Add your Maps API key: `echo "MAPS_API_KEY=your_key" >> local.properties`
 - Build: `./gradlew :android:assembleDebug` or `./scripts/run-android.sh`
 
 ### iOS (simulator)
-- Server URL in `ServerConfig.swift` (defaults to production `https://where-api.af0.net`; on a device, override with the `WHERE_SERVER_HTTP_URL` environment variable in the Xcode scheme).
+- Server URL in `ServerConfig.swift`: Debug builds on the simulator use a local server (`http://127.0.0.1:8080`); everything else uses production `https://where-api.af0.net`. The `WHERE_SERVER_HTTP_URL` environment variable in the Xcode scheme overrides both (e.g. a LAN address for a device).
 - Generate Xcode project: `cd ios && xcodegen`. The project calls `embedAndSignAppleFrameworkForXcode` as a pre-build script automatically.
 - To build the KMP framework manually: `./gradlew :shared:embedAndSignAppleFrameworkForXcode`
 - Run: `./scripts/run-ios.sh` or open `Where.xcodeproj` in Xcode.

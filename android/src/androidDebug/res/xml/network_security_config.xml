@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Debug builds talk to a local development server over plain HTTP: the emulator's host
+     (10.0.2.2, the default SERVER_HTTP_URL) or a LAN IP set in local.properties. -->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true" />
+</network-security-config>

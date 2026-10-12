@@ -78,7 +78,7 @@ curl localhost:8080/health   # → ok
    ```
 2. Open `ios/Where.xcodeproj` in Xcode and run on simulator or device.
    - The KMP shared framework is built automatically as a pre-build step.
-   - For a real device, update the server URL in `ios/Sources/Where/ServerConfig.swift`.
+   - Debug builds on the simulator talk to a local server (`./scripts/run-server.sh`); other builds use production. Override with `WHERE_SERVER_HTTP_URL` in the Xcode scheme (see `ios/Sources/Where/ServerConfig.swift`).
 
 ### CLI
 

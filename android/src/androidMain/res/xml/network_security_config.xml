@@ -1,11 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!-- Release: HTTPS only. Debug builds override this (src/androidDebug) to allow a local server. -->
 <network-security-config>
-    <domain-config cleartextTrafficPermitted="false">
-        <!-- Allow HTTP for localhost development -->
-        <domain includeSubdomains="true">localhost</domain>
-        <domain includeSubdomains="true">10.0.2.2</domain>
-
-        <!-- Allow HTTPS for production -->
-        <domain includeSubdomains="true">where-api.af0.net</domain>
-    </domain-config>
+    <base-config cleartextTrafficPermitted="false" />
 </network-security-config>
