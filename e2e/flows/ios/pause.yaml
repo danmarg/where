@@ -1,0 +1,8 @@
+# The sharing button (location icon) toggles sharing off.
+appId: net.af0.WhereApp
+---
+- tapOn:
+    id: "location.fill"
+- extendedWaitUntil:
+    visible: "Paused"
+    timeout: 15000

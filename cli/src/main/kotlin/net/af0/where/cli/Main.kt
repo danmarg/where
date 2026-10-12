@@ -85,6 +85,7 @@ fun main(args: Array<String>) {
         println("  invite <name>              Create an invite URL")
         println("  join <url> <name>          Join a friend using an invite URL")
         println("  list                       List friends")
+        println("  invites                    List pending (unaccepted) invite URLs")
         println("  poll                       Poll for updates")
         println("  send <lat> <lng>           Send location to all friends")
         println("Options:")
@@ -192,6 +193,12 @@ fun main(args: Array<String>) {
                     friends.forEach { friend ->
                         println("${friend.id.take(8)}: ${friend.name} (${if (friend.isInitiator) "Alice" else "Bob"})")
                     }
+                }
+            }
+        "invites" ->
+            runBlocking {
+                store.listPendingInvites().forEach { invite ->
+                    println("Invite URL: ${qrPayloadToUrl(invite.qrPayload)}")
                 }
             }
         "poll" -> {

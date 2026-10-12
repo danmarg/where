@@ -1,0 +1,15 @@
+# The CLI has joined the invite: the app closes the invite sheet and asks to name the friend.
+appId: net.af0.WhereApp
+---
+- extendedWaitUntil:
+    visible: "Name this contact"
+    timeout: 90000
+- tapOn: "Friend's Name"
+- inputText: "Cli"
+- retry:
+    maxRetries: 3
+    commands:
+      - tapOn: "Save"
+      - extendedWaitUntil:
+          notVisible: "Name this contact"
+          timeout: 10000

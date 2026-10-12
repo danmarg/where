@@ -1,0 +1,168 @@
+name: App E2E
+
+# Real app builds on a simulator/emulator, upgraded in place from the last release (latest v*
+# tag), with the CLI as the friend on the other end. Slow (two app builds each), so: nightly,
+# on demand, and on PRs that touch the apps or the shared module. Not a required check.
+on:
+  schedule:
+    - cron: '30 3 * * *'
+  pull_request:
+    paths:
+      - 'android/**'
+      - 'ios/**'
+      - 'shared/**'
+      - 'cli/**'
+      - 'e2e/**'
+      - 'gradle/**'
+      - '.github/workflows/app-e2e.yml'
+  workflow_dispatch:
+    inputs:
+      which:
+        type: choice
+        options: [both, ios, android]
+        default: both
+      base_ref:
+        description: "Baseline ref (default: latest v* tag)"
+        required: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}-${{ inputs.which }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  MAESTRO_VERSION: 2.11.0
+  MAESTRO_CLI_NO_ANALYTICS: 1
+  # The first run on a freshly created simulator/emulator installs Maestro's driver, which
+  # can take a few minutes on CI runners.
+  MAESTRO_DRIVER_STARTUP_TIMEOUT: 300000
+
+jobs:
+  ios-upgrade:
+    if: github.event_name != 'workflow_dispatch' || inputs.which != 'android'
+    runs-on: macos-latest
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # release tags
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+          cache: gradle
+
+      - name: Install tools
+        run: |
+          brew install xcodegen
+          curl -Ls "https://get.maestro.mobile.dev" | bash
+          echo "$HOME/.maestro/bin" >> "$GITHUB_PATH"
+
+      - name: Resolve baseline
+        id: base
+        run: |
+          ref="${{ inputs.base_ref }}"
+          [ -n "$ref" ] || ref=$(git describe --tags --abbrev=0 --match 'v*' HEAD)
+          echo "ref=$ref" >> "$GITHUB_OUTPUT"
+          echo "sha=$(git rev-parse "$ref^{commit}")" >> "$GITHUB_OUTPUT"
+          echo "xcode=$(xcodebuild -version | head -1 | tr ' ' '-')" >> "$GITHUB_OUTPUT"
+
+      - name: Cache baseline app
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/baseline.app
+          key: ios-baseline-app-${{ steps.base.outputs.sha }}-${{ steps.base.outputs.xcode }}-v2
+
+      - name: Run iOS upgrade test
+        env:
+          BASE_REF: ${{ steps.base.outputs.ref }}
+          BASELINE_APP: ${{ runner.temp }}/baseline.app
+          E2E_WORK: ${{ runner.temp }}/e2e
+        run: e2e/ios-upgrade-test.sh
+
+      - name: Upload logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-e2e-logs
+          path: |
+            ${{ runner.temp }}/e2e/server.log
+            ~/.maestro/tests/
+          retention-days: 7
+
+  android-upgrade:
+    if: github.event_name != 'workflow_dispatch' || inputs.which != 'ios'
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # release tags
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+          cache: gradle
+
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: Install tools
+        run: |
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platform-tools" "platforms;android-36"
+          curl -Ls "https://get.maestro.mobile.dev" | bash
+          echo "$HOME/.maestro/bin" >> "$GITHUB_PATH"
+
+      - name: Resolve baseline
+        id: base
+        run: |
+          ref="${{ inputs.base_ref }}"
+          [ -n "$ref" ] || ref=$(git describe --tags --abbrev=0 --match 'v*' HEAD)
+          echo "ref=$ref" >> "$GITHUB_OUTPUT"
+          mkdir -p "$RUNNER_TEMP/apks"
+
+      # Both APKs are built in this job, so they're signed with the same debug key and
+      # `adb install -r` can upgrade one to the other.
+      - name: Build baseline and HEAD release APKs
+        env:
+          BASE_REF: ${{ steps.base.outputs.ref }}
+          E2E_BUILD_ONLY: 1
+          E2E_WORK: ${{ runner.temp }}/e2e
+          BASELINE_APK: ${{ runner.temp }}/apks/baseline.apk
+          HEAD_APK: ${{ runner.temp }}/apks/head.apk
+        run: e2e/android-upgrade-test.sh
+
+      - name: Run Android upgrade test
+        uses: reactivecircus/android-emulator-runner@v2
+        env:
+          BASE_REF: ${{ steps.base.outputs.ref }}
+          E2E_WORK: ${{ runner.temp }}/e2e
+          BASELINE_APK: ${{ runner.temp }}/apks/baseline.apk
+          HEAD_APK: ${{ runner.temp }}/apks/head.apk
+        with:
+          api-level: 34
+          target: google_apis
+          arch: x86_64
+          disable-animations: true
+          script: e2e/android-upgrade-test.sh
+
+      - name: Upload logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-e2e-logs
+          path: |
+            ${{ runner.temp }}/e2e/server.log
+            ${{ runner.temp }}/e2e/logcat.txt
+            ${{ runner.temp }}/e2e/dumpsys-location.txt
+            ${{ runner.temp }}/e2e/cli-locations.txt
+            ~/.maestro/tests/
+          retention-days: 7

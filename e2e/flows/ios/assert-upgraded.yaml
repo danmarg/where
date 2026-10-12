@@ -1,0 +1,12 @@
+# First launch after the upgrade: the friend is still there and no re-pair notice appears.
+appId: net.af0.WhereApp
+---
+- launchApp
+- extendedWaitUntil:
+    visible:
+      id: "person.2.fill"
+    timeout: 30000
+- extendedWaitUntil:
+    visible: "1"
+    timeout: 15000
+- assertNotVisible: "Re-pair your friends"

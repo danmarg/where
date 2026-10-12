@@ -1,0 +1,12 @@
+appId: net.af0.where
+---
+- launchApp
+# Battery-optimization prompt, should the exemption granted at install not stick.
+- runFlow:
+    when:
+      visible: "Improve background updates"
+    commands:
+      - tapOn: "Skip"
+- extendedWaitUntil:
+    visible: "Sharing"
+    timeout: 30000
