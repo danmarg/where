@@ -38,40 +38,50 @@ struct ContentView: View {
         }
     }
 
-    /// What tapping the sharing button does. While sharing it stops - it used to show the
-    /// background-location rationale on When-In-Use instead, so sharing couldn't be turned off -
-    /// except where the pill reports a fixable permission problem: denied (red "permission
-    /// missing") goes to Settings, and not-yet-asked asks.
+    /// What tapping the sharing button does. While sharing it always stops: on When-In-Use it
+    /// used to show the background-location rationale instead (and denied opened Settings), so
+    /// sharing couldn't be turned off. Not sharing, it starts - via the permission prompt or
+    /// Settings when permission is missing.
     enum SharingToggleAction: Equatable {
-        case toggle, requestPermission, requestPermissionAndStart, openSettings
+        case toggle, requestPermissionAndStart, openSettings
 
         static func derive(isSharing: Bool, authorization: CLAuthorizationStatus) -> SharingToggleAction {
+            if isSharing { return .toggle }
             switch authorization {
-            case .denied: return .openSettings
-            case .restricted: return isSharing ? .toggle : .openSettings
-            case .notDetermined: return isSharing ? .requestPermission : .requestPermissionAndStart
+            case .denied, .restricted: return .openSettings
+            case .notDetermined: return .requestPermissionAndStart
             default: return .toggle
             }
         }
     }
 
-    /// Sharing with friends on When-In-Use only: offer the Always upgrade via an inline button
-    /// (not an auto-presented alert, which could collide with other modals or be dismissed for good).
-    static func showsBackgroundLocationButton(authorization: CLAuthorizationStatus, isSharing: Bool, hasFriends: Bool) -> Bool {
-        authorization == .authorizedWhenInUse && isSharing && hasFriends
+    /// Sharing with friends on When-In-Use only, until dismissed: offer the Always upgrade via an
+    /// inline button rather than an auto-presented alert, which could collide with other modals.
+    static func showsBackgroundLocationButton(
+        authorization: CLAuthorizationStatus,
+        isSharing: Bool,
+        hasFriends: Bool,
+        dismissed: Bool
+    ) -> Bool {
+        authorization == .authorizedWhenInUse && isSharing && hasFriends && !dismissed
     }
 
-    enum AlwaysUpgradeAction: Equatable {
-        case requestAlways, openSettings
+    @AppStorage("background_location_button_dismissed") private var backgroundLocationButtonDismissed = false
+    /// Set when the app goes inactive, which is what a system permission prompt does.
+    @State private var systemPromptAppeared = false
 
-        /// iOS shows its When-In-Use → Always prompt at most once (and not under Allow Once), so
-        /// after asking once the button goes to Settings instead of silently doing nothing.
-        static func derive(alreadyRequested: Bool) -> AlwaysUpgradeAction {
-            alreadyRequested ? .openSettings : .requestAlways
+    /// iOS shows its When-In-Use → Always prompt at most once, and never under Allow Once; when it
+    /// silently declines, there's nowhere left but Settings.
+    private func requestAlwaysOrOpenSettings() {
+        systemPromptAppeared = false
+        locationManager.requestAlwaysPermission()
+        Task { @MainActor in
+            try? await Task.sleep(for: .seconds(1))
+            if !systemPromptAppeared && locationManager.authorizationStatus == .authorizedWhenInUse {
+                openSettings()
+            }
         }
     }
-
-    @AppStorage("always_permission_requested") private var alwaysPermissionRequested = false
 
     private func openSettings() {
         if let url = URL(string: UIApplication.openSettingsURLString) {
@@ -128,7 +138,8 @@ struct ContentView: View {
                 if Self.showsBackgroundLocationButton(
                     authorization: locationManager.authorizationStatus,
                     isSharing: syncService.isSharingLocation,
-                    hasFriends: !syncService.repo.friends.isEmpty
+                    hasFriends: !syncService.repo.friends.isEmpty,
+                    dismissed: backgroundLocationButtonDismissed
                 ) {
                     backgroundLocationButton
                 }
@@ -254,6 +265,7 @@ struct ContentView: View {
             locationManager.requestPermissionAndStart()
         }
         .onChange(of: scenePhase) { _, newPhase in
+            if newPhase != .active { systemPromptAppeared = true }
             handlePhaseChange(newPhase)
         }
         .onReceive(syncService.repo.$pendingQrForNaming) { qr in
@@ -267,15 +279,11 @@ struct ContentView: View {
         }
         .alert(MR.strings().background_location_title.localized(), isPresented: $showLocationRationale) {
             Button(MR.strings().allow.localized()) {
-                switch AlwaysUpgradeAction.derive(alreadyRequested: alwaysPermissionRequested) {
-                case .requestAlways:
-                    alwaysPermissionRequested = true
-                    locationManager.requestAlwaysPermission()
-                case .openSettings:
-                    openSettings()
-                }
+                requestAlwaysOrOpenSettings()
             }
-            Button(MR.strings().skip.localized(), role: .cancel) { }
+            Button(MR.strings().skip.localized(), role: .cancel) {
+                backgroundLocationButtonDismissed = true
+            }
         } message: {
             Text(MR.strings().background_location_message.localized())
         }
@@ -416,8 +424,6 @@ struct ContentView: View {
         switch SharingToggleAction.derive(isSharing: syncService.isSharingLocation, authorization: locationManager.authorizationStatus) {
         case .toggle:
             syncService.toggleSharing()
-        case .requestPermission:
-            locationManager.requestPermissionAndStart()
         case .requestPermissionAndStart:
             locationManager.requestPermissionAndStart()
             syncService.toggleSharing()
