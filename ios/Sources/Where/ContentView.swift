@@ -38,25 +38,24 @@ struct ContentView: View {
         }
     }
 
-    /// What tapping the sharing button does. With permission missing the pill says so and a tap
-    /// goes to fix it; otherwise it toggles. When-In-Use used to show the background-location
-    /// rationale here instead of stopping, so sharing couldn't be turned off.
+    /// What tapping the sharing button does. While sharing, a tap always stops: it used to show
+    /// the background-location rationale on When-In-Use (and open Settings when denied) instead,
+    /// so sharing couldn't be turned off from the app.
     enum SharingToggleAction: Equatable {
-        case stop, start, requestPermission, requestPermissionAndStart, openSettings
+        case toggle, requestPermissionAndStart, openSettings
 
         static func derive(isSharing: Bool, authorization: CLAuthorizationStatus) -> SharingToggleAction {
+            if isSharing { return .toggle }
             switch authorization {
             case .denied, .restricted: return .openSettings
-            case .notDetermined: return isSharing ? .requestPermission : .requestPermissionAndStart
-            default: return isSharing ? .stop : .start
+            case .notDetermined: return .requestPermissionAndStart
+            default: return .toggle
             }
         }
     }
 
     /// iOS shows the When-In-Use → Always prompt at most once, so the rationale leading to it is
     /// offered once, when it matters: sharing with at least one friend on When-In-Use only.
-    static let alwaysUpgradeOfferedKey = "always_upgrade_offered"
-
     static func shouldOfferAlwaysUpgrade(
         authorization: CLAuthorizationStatus,
         isSharing: Bool,
@@ -66,16 +65,23 @@ struct ContentView: View {
         authorization == .authorizedWhenInUse && isSharing && hasFriends && !alreadyOffered
     }
 
-    private func offerAlwaysUpgradeIfNeeded() {
-        guard scenePhase == .active, !showLocationRationale else { return }
-        if Self.shouldOfferAlwaysUpgrade(
+    @AppStorage("always_upgrade_offered") private var alwaysUpgradeOffered = false
+
+    /// SwiftUI drops an alert presented while another sheet or alert is up, so the offer waits
+    /// for a moment with none: e.g. the invite sheet that's open when the first friend pairs.
+    private var isOtherModalShowing: Bool {
+        showFriends || showScanner || showErrorAlert || syncService.isInviteSheetShowing
+            || syncService.repo.pendingQrForNaming != nil || syncService.repo.pendingInitPayload != nil
+            || !syncService.discardedSessionNames.isEmpty || syncService.inviteError != nil
+    }
+
+    private var alwaysUpgradeDue: Bool {
+        scenePhase == .active && !isOtherModalShowing && Self.shouldOfferAlwaysUpgrade(
             authorization: locationManager.authorizationStatus,
             isSharing: syncService.isSharingLocation,
             hasFriends: !syncService.repo.friends.isEmpty,
-            alreadyOffered: UserDefaults.standard.bool(forKey: Self.alwaysUpgradeOfferedKey)
-        ) {
-            showLocationRationale = true
-        }
+            alreadyOffered: alwaysUpgradeOffered
+        )
     }
 
     private var sharingStatus: SharingStatus {
@@ -244,15 +250,13 @@ struct ContentView: View {
         }
         .onAppear {
             locationManager.requestPermissionAndStart()
-            offerAlwaysUpgradeIfNeeded()
         }
         .onChange(of: scenePhase) { _, newPhase in
             handlePhaseChange(newPhase)
-            offerAlwaysUpgradeIfNeeded()
         }
-        .onChange(of: locationManager.authorizationStatus) { _, _ in offerAlwaysUpgradeIfNeeded() }
-        .onChange(of: syncService.repo.friends.isEmpty) { _, _ in offerAlwaysUpgradeIfNeeded() }
-        .onChange(of: syncService.isSharingLocation) { _, _ in offerAlwaysUpgradeIfNeeded() }
+        .onChange(of: alwaysUpgradeDue, initial: true) { _, due in
+            if due { showLocationRationale = true }
+        }
         .onReceive(syncService.repo.$pendingQrForNaming) { qr in
             if let qr = qr { newFriendName = qr.suggestedName } else { newFriendName = "" }
         }
@@ -264,11 +268,11 @@ struct ContentView: View {
         }
         .alert(MR.strings().background_location_title.localized(), isPresented: $showLocationRationale) {
             Button(MR.strings().allow.localized()) {
-                UserDefaults.standard.set(true, forKey: Self.alwaysUpgradeOfferedKey)
+                alwaysUpgradeOffered = true
                 locationManager.requestAlwaysPermission()
             }
             Button(MR.strings().skip.localized(), role: .cancel) {
-                UserDefaults.standard.set(true, forKey: Self.alwaysUpgradeOfferedKey)
+                alwaysUpgradeOffered = true
             }
         } message: {
             Text(MR.strings().background_location_message.localized())
@@ -389,12 +393,8 @@ struct ContentView: View {
 
     private func handleSharingButtonTap() {
         switch SharingToggleAction.derive(isSharing: syncService.isSharingLocation, authorization: locationManager.authorizationStatus) {
-        case .stop:
-            syncService.stopSharing()
-        case .start:
-            syncService.isSharingLocation = true
-        case .requestPermission:
-            locationManager.requestPermissionAndStart()
+        case .toggle:
+            syncService.toggleSharing()
         case .requestPermissionAndStart:
             locationManager.requestPermissionAndStart()
             syncService.isSharingLocation = true

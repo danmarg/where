@@ -1353,17 +1353,17 @@ class LocationSyncServiceTests: XCTestCase {
         XCTAssertEqual(S.derive(isSharing: true, authorization: .authorizedAlways, accuracyAuthorization: .fullAccuracy, lastFixAccuracy: nil), .sharing)
     }
 
-    /// Turning sharing off must stop it on When-In-Use too: that case used to show the
-    /// background-location rationale instead, leaving no way to stop from the button.
-    func testSharingToggle_StopsRegardlessOfAlwaysPermission() {
+    /// While sharing, a tap always stops - whatever the permission. On When-In-Use it used to show
+    /// the background-location rationale instead, leaving no way to stop from the button.
+    func testSharingToggle_StopsRegardlessOfPermission() {
         typealias A = ContentView.SharingToggleAction
-        XCTAssertEqual(A.derive(isSharing: true, authorization: .authorizedWhenInUse), .stop)
-        XCTAssertEqual(A.derive(isSharing: true, authorization: .authorizedAlways), .stop)
-        XCTAssertEqual(A.derive(isSharing: false, authorization: .authorizedWhenInUse), .start)
-        XCTAssertEqual(A.derive(isSharing: false, authorization: .authorizedAlways), .start)
+        for auth: CLAuthorizationStatus in [.authorizedWhenInUse, .authorizedAlways, .denied, .restricted, .notDetermined] {
+            XCTAssertEqual(A.derive(isSharing: true, authorization: auth), .toggle, "auth \(auth.rawValue)")
+        }
+        XCTAssertEqual(A.derive(isSharing: false, authorization: .authorizedWhenInUse), .toggle)
+        XCTAssertEqual(A.derive(isSharing: false, authorization: .authorizedAlways), .toggle)
         XCTAssertEqual(A.derive(isSharing: false, authorization: .notDetermined), .requestPermissionAndStart)
-        XCTAssertEqual(A.derive(isSharing: true, authorization: .notDetermined), .requestPermission)
-        XCTAssertEqual(A.derive(isSharing: true, authorization: .denied), .openSettings)
+        XCTAssertEqual(A.derive(isSharing: false, authorization: .denied), .openSettings)
         XCTAssertEqual(A.derive(isSharing: false, authorization: .restricted), .openSettings)
     }
 
