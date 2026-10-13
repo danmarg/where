@@ -42,6 +42,11 @@ private val MultiplePermissionsState.hasFineLocationPermission: Boolean
 private const val KEY_LOCATION_PERMISSION_REQUESTED = "location_permission_requested"
 private const val KEY_BACKGROUND_LOCATION_REQUESTED = "background_location_requested"
 
+/** The app's system settings page, where permissions Android no longer asks for can be granted. */
+internal fun Context.openAppSettings() {
+    startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.fromParts("package", packageName, null)))
+}
+
 /**
  * What the master sharing pill shows. Without background location ("while in use"), sharing
  * continues only while the foreground service started from the app keeps running - Android won't
@@ -119,12 +124,7 @@ fun MapScreen(
         val permission = backgroundLocationPermission ?: return
         val requested = permissionPrefs.getBoolean(KEY_BACKGROUND_LOCATION_REQUESTED, false)
         if (requested && !permission.status.shouldShowRationale) {
-            backgroundRationaleContext.startActivity(
-                Intent(
-                    Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
-                    Uri.fromParts("package", backgroundRationaleContext.packageName, null),
-                ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
-            )
+            backgroundRationaleContext.openAppSettings()
         } else {
             permissionPrefs.edit().putBoolean(KEY_BACKGROUND_LOCATION_REQUESTED, true).apply()
             permission.launchPermissionRequest()
@@ -260,12 +260,7 @@ fun MapScreen(
                         onClick = {
                             if (permanentlyDenied) {
                                 // Android shows no dialog any more; Settings is the only way.
-                                context.startActivity(
-                                    Intent(
-                                        Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
-                                        Uri.fromParts("package", context.packageName, null),
-                                    ),
-                                )
+                                context.openAppSettings()
                             } else {
                                 locationPermissions.launchMultiplePermissionRequest()
                             }
@@ -366,7 +361,8 @@ fun MapScreen(
                         text = { Text(stringResource(MR.strings.allow_background_location)) },
                         onClick = {
                             showSharingMenu = false
-                            requestBackgroundLocationOrOpenSettings()
+                            // The disclosure must come right before the request (Play policy).
+                            showBackgroundRationale = true
                         },
                     )
                     DropdownMenuItem(
