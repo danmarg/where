@@ -118,9 +118,8 @@ class RemoveFriendTest {
                 } catch (_: Exception) {
                     // expected - stuck in the outbox
                 }
-                // A later second than the Location: within a batch the receiver lets a Location
-                // win a tie, as it would for a resume right after a pause.
-                mockTime.advanceSeconds(1)
+                // Same second as the Location, which wins ties on the receiving side: the farewell
+                // must still be dated after it.
                 p.aliceClient.removeFriend(p.bobFriendId)
                 assertEquals(2, p.aliceManager.getOrphanedOutbox().size)
 
