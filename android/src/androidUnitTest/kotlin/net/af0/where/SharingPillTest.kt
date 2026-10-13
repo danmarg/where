@@ -4,11 +4,11 @@ import org.junit.Test
 import kotlin.test.assertEquals
 
 class SharingPillTest {
-    /** Without background location, sharing stops once the app's service can't run, so it's "while open". */
+    /** Without background location, sharing stops once the app's service is restarted from the background, so it's limited. */
     @Test
-    fun withoutBackgroundLocationSharingIsWhileOpen() {
+    fun withoutBackgroundLocationSharingIsLimited() {
         assertEquals(
-            SharingPill.SHARING_WHILE_OPEN,
+            SharingPill.SHARING_LIMITED,
             sharingPill(isSharing = true, hasLocationPermission = true, hasBackgroundLocationPermission = false),
         )
         assertEquals(

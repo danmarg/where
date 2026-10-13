@@ -49,10 +49,10 @@ internal fun Context.openAppSettings() {
 
 /**
  * What the master sharing pill shows. Without background location ("while in use"), sharing
- * continues only while the foreground service started from the app keeps running - Android won't
- * restart it from the background - so it's shown as "while open".
+ * continues only while the foreground service started from the app keeps running - a restart from
+ * the background (process death, reboot) gets no location - so it's shown as limited.
  */
-internal enum class SharingPill { PAUSED, SHARING_WHILE_OPEN, SHARING }
+internal enum class SharingPill { PAUSED, SHARING_LIMITED, SHARING }
 
 internal fun sharingPill(
     isSharing: Boolean,
@@ -61,7 +61,7 @@ internal fun sharingPill(
 ): SharingPill =
     when {
         !isSharing || !hasLocationPermission -> SharingPill.PAUSED
-        !hasBackgroundLocationPermission -> SharingPill.SHARING_WHILE_OPEN
+        !hasBackgroundLocationPermission -> SharingPill.SHARING_LIMITED
         else -> SharingPill.SHARING
     }
 
@@ -323,21 +323,21 @@ fun MapScreen(
             val sharingLabel =
                 when (pill) {
                     SharingPill.PAUSED -> stringResource(MR.strings.paused)
-                    SharingPill.SHARING_WHILE_OPEN -> stringResource(MR.strings.sharing_while_open)
+                    SharingPill.SHARING_LIMITED -> stringResource(MR.strings.sharing_limited)
                     SharingPill.SHARING -> stringResource(MR.strings.sharing)
                 }
 
             Box {
                 FilledTonalButton(
-                    // "While open" offers the background upgrade alongside stopping.
-                    onClick = { if (pill == SharingPill.SHARING_WHILE_OPEN) showSharingMenu = true else onSetSharing(!isSharing) },
+                    // Limited offers the background upgrade alongside stopping.
+                    onClick = { if (pill == SharingPill.SHARING_LIMITED) showSharingMenu = true else onSetSharing(!isSharing) },
                     enabled = hasLocationPermission,
                     colors =
                         ButtonDefaults.filledTonalButtonColors(
                             containerColor =
                                 when (pill) {
                                     SharingPill.PAUSED -> Color(0xFF555555)
-                                    SharingPill.SHARING_WHILE_OPEN -> Color(0xFFE65100)
+                                    SharingPill.SHARING_LIMITED -> Color(0xFFE65100)
                                     SharingPill.SHARING -> Color(0xFF1565C0)
                                 },
                             contentColor = Color.White,
