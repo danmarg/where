@@ -52,13 +52,13 @@ class E2eeIntegrationTest {
         // receives Alice's first message.
 
         // Alice's PREVIOUS send token (Epoch 0) must match Bob's current recv token (Epoch 0).
-        assertContentEquals(
+        assertEquals(
             aliceSession.prevSendToken,
             bobSession.recvToken,
             "Alice's prevSendToken must equal Bob's recv token",
         )
         // Alice's current recv token (Epoch 0 receiver) must match Bob's current send token (Epoch 0 sender).
-        assertContentEquals(
+        assertEquals(
             aliceSession.recvToken,
             bobSession.sendToken,
             "Alice's recv token must equal Bob's send token",
@@ -67,7 +67,7 @@ class E2eeIntegrationTest {
         // Chains: Alice's send chain is now Epoch 1. Bob's recv chain is Epoch 0.
         // They will only match AFTER Bob decrypts Alice's first message and ratchets.
         // But Alice's RECV chain (Epoch 0) should still match Bob's SEND chain (Epoch 0).
-        assertContentEquals(
+        assertEquals(
             aliceSession.recvChainKey,
             bobSession.sendChainKey,
             "Alice's recv chain must equal Bob's send chain",

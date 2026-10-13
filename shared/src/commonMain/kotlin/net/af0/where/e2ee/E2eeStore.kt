@@ -203,7 +203,7 @@ internal class E2eeStore(
 
             // Double Ratchet safety: ensure receiving sequence doesn't regress (§5.5)
             // Only applicable within the same DH epoch (same remote DH key).
-            if (entry.session.remoteDhPub.contentEquals(current.session.remoteDhPub) &&
+            if (entry.session.remoteDhPub == current.session.remoteDhPub &&
                 entry.session.recvSeq < current.session.recvSeq
             ) {
                 throw IllegalStateException(
