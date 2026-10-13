@@ -97,4 +97,7 @@
     <string name="close">关闭</string>
     <string name="discarded_sessions_title">重新配对好友</string>
     <string name="discarded_sessions_message">此设备上的数据来自另一部手机或备份，因此你与 %s 的连接无法安全使用，已被移除。请向他们索取新的邀请以重新共享位置。</string>
+    <string name="sharing_while_open">仅在打开时共享</string>
+    <string name="allow_background_location">允许后台位置</string>
+    <string name="stop_sharing">停止共享</string>
 </resources>

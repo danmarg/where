@@ -1353,11 +1353,12 @@ class LocationSyncServiceTests: XCTestCase {
         XCTAssertEqual(S.derive(isSharing: true, authorization: .authorizedAlways, accuracyAuthorization: .fullAccuracy, lastFixAccuracy: nil), .sharing)
     }
 
-    /// While sharing, a tap always stops, whatever the permission. On When-In-Use it used to show
-    /// the background-location rationale instead, leaving no way to stop from the button.
-    func testSharingToggle_AlwaysStopsWhileSharing() {
+    /// While sharing, a tap stops - or, on When-In-Use, offers Always alongside stopping. It used
+    /// to show only the background-location rationale there, leaving no way to stop.
+    func testSharingToggle_AlwaysOffersAWayToStop() {
         typealias A = ContentView.SharingToggleAction
-        for auth: CLAuthorizationStatus in [.authorizedWhenInUse, .authorizedAlways, .denied, .restricted, .notDetermined] {
+        XCTAssertEqual(A.derive(isSharing: true, authorization: .authorizedWhenInUse), .chooseBackgroundOrStop)
+        for auth: CLAuthorizationStatus in [.authorizedAlways, .denied, .restricted, .notDetermined] {
             XCTAssertEqual(A.derive(isSharing: true, authorization: auth), .toggle, "auth \(auth.rawValue)")
         }
         XCTAssertEqual(A.derive(isSharing: false, authorization: .authorizedWhenInUse), .toggle)
@@ -1367,18 +1368,13 @@ class LocationSyncServiceTests: XCTestCase {
         XCTAssertEqual(A.derive(isSharing: false, authorization: .restricted), .openSettings)
     }
 
-    /// The Always upgrade button shows while sharing with a friend on When-In-Use, until dismissed.
-    func testBackgroundLocationButton_ShownOnlyWhenItMatters() {
-        func shows(_ auth: CLAuthorizationStatus, sharing: Bool = true, friends: Bool = true, dismissed: Bool = false) -> Bool {
-            ContentView.showsBackgroundLocationButton(authorization: auth, isSharing: sharing, hasFriends: friends, dismissed: dismissed)
-        }
-        XCTAssertTrue(shows(.authorizedWhenInUse))
-        XCTAssertFalse(shows(.authorizedWhenInUse, dismissed: true))
-        XCTAssertFalse(shows(.authorizedWhenInUse, sharing: false))
-        XCTAssertFalse(shows(.authorizedWhenInUse, friends: false))
-        XCTAssertFalse(shows(.authorizedAlways))
-        XCTAssertFalse(shows(.notDetermined))
-        XCTAssertFalse(shows(.denied))
+    /// When-In-Use shares only until iOS terminates the app, so the pill says so.
+    func testSharingStatus_WhenInUseIsSharingWhileOpen() {
+        typealias S = ContentView.SharingStatus
+        XCTAssertEqual(S.derive(isSharing: true, authorization: .authorizedWhenInUse, accuracyAuthorization: .fullAccuracy, lastFixAccuracy: nil), .sharingWhileOpen)
+        XCTAssertEqual(S.derive(isSharing: true, authorization: .authorizedAlways, accuracyAuthorization: .fullAccuracy, lastFixAccuracy: nil), .sharing)
+        XCTAssertEqual(S.derive(isSharing: false, authorization: .authorizedWhenInUse, accuracyAuthorization: .fullAccuracy, lastFixAccuracy: nil), .paused)
+        XCTAssertEqual(S.derive(isSharing: true, authorization: .authorizedWhenInUse, accuracyAuthorization: .reducedAccuracy, lastFixAccuracy: nil), .preciseLocationOff, "the blocking problem wins")
     }
 
     /// A precise fix from before Precise Location was turned off (e.g. restored at launch) must

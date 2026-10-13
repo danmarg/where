@@ -14,15 +14,17 @@ struct ContentView: View {
     @State private var scannedUrl: String? = nil
     @State private var zoomTarget: CLLocationCoordinate2D? = nil
     @State private var showErrorAlert = false
-    @State private var showLocationRationale = false
+    @State private var showBackgroundChoice = false
 
     @State private var newFriendName: String = ""
 
     /// What the status pill shows. Reduced (approximate) accuracy only matters when it actually
     /// stops us sending: an approximate fix inside `minBroadcastAccuracyMeters` is still broadcast,
-    /// so it's shown as normal sharing rather than as a failure.
+    /// so it's shown as normal sharing rather than as a failure. On When-In-Use, sharing carries on
+    /// in the background only until iOS terminates the app (nothing relaunches it), so it's shown
+    /// as "while open".
     enum SharingStatus: Equatable {
-        case paused, permissionMissing, preciseLocationOff, sharing
+        case paused, permissionMissing, preciseLocationOff, sharingWhileOpen, sharing
 
         static func derive(
             isSharing: Bool,
@@ -34,19 +36,20 @@ struct ContentView: View {
             if authorization == .denied || authorization == .restricted { return .permissionMissing }
             let fixUsable = lastFixAccuracy.map { $0 >= 0 && $0 <= LocationSyncService.minBroadcastAccuracyMeters } ?? false
             if accuracyAuthorization == .reducedAccuracy && !fixUsable { return .preciseLocationOff }
+            if authorization == .authorizedWhenInUse { return .sharingWhileOpen }
             return .sharing
         }
     }
 
-    /// What tapping the sharing button does. While sharing it always stops: on When-In-Use it
-    /// used to show the background-location rationale instead (and denied opened Settings), so
-    /// sharing couldn't be turned off. Not sharing, it starts - via the permission prompt or
-    /// Settings when permission is missing.
+    /// What tapping the sharing button does. While sharing it stops - except "while open", where
+    /// it offers the Always upgrade alongside stopping. On When-In-Use it used to show only the
+    /// background-location rationale, so sharing couldn't be turned off. Not sharing, it starts,
+    /// via the permission prompt or Settings when permission is missing.
     enum SharingToggleAction: Equatable {
-        case toggle, requestPermissionAndStart, openSettings
+        case toggle, chooseBackgroundOrStop, requestPermissionAndStart, openSettings
 
         static func derive(isSharing: Bool, authorization: CLAuthorizationStatus) -> SharingToggleAction {
-            if isSharing { return .toggle }
+            if isSharing { return authorization == .authorizedWhenInUse ? .chooseBackgroundOrStop : .toggle }
             switch authorization {
             case .denied, .restricted: return .openSettings
             case .notDetermined: return .requestPermissionAndStart
@@ -55,18 +58,6 @@ struct ContentView: View {
         }
     }
 
-    /// Sharing with friends on When-In-Use only, until dismissed: offer the Always upgrade via an
-    /// inline button rather than an auto-presented alert, which could collide with other modals.
-    static func showsBackgroundLocationButton(
-        authorization: CLAuthorizationStatus,
-        isSharing: Bool,
-        hasFriends: Bool,
-        dismissed: Bool
-    ) -> Bool {
-        authorization == .authorizedWhenInUse && isSharing && hasFriends && !dismissed
-    }
-
-    @AppStorage("background_location_button_dismissed") private var backgroundLocationButtonDismissed = false
     /// Set when the app goes inactive, which is what a system permission prompt does.
     @State private var systemPromptAppeared = false
 
@@ -103,6 +94,7 @@ struct ContentView: View {
         case .paused: return MR.strings().paused.localized()
         case .permissionMissing: return MR.strings().location_permission_missing.localized()
         case .preciseLocationOff: return MR.strings().precise_location_off.localized()
+        case .sharingWhileOpen: return MR.strings().sharing_while_open.localized()
         case .sharing: return MR.strings().sharing.localized()
         }
     }
@@ -111,7 +103,7 @@ struct ContentView: View {
         switch sharingStatus {
         case .paused: return Color.gray.opacity(0.85)
         case .permissionMissing: return Color.red.opacity(0.85)
-        case .preciseLocationOff: return Color.orange.opacity(0.85)
+        case .preciseLocationOff, .sharingWhileOpen: return Color.orange.opacity(0.85)
         case .sharing: return Color.blue.opacity(0.85)
         }
     }
@@ -135,14 +127,6 @@ struct ContentView: View {
 
             VStack {
                 Spacer()
-                if Self.showsBackgroundLocationButton(
-                    authorization: locationManager.authorizationStatus,
-                    isSharing: syncService.isSharingLocation,
-                    hasFriends: !syncService.repo.friends.isEmpty,
-                    dismissed: backgroundLocationButtonDismissed
-                ) {
-                    backgroundLocationButton
-                }
                 bottomBar
                     .sheet(isPresented: Binding(
                         get: { syncService.isInviteSheetShowing },
@@ -277,13 +261,14 @@ struct ContentView: View {
         .onOpenURL { url in
             syncService.processQrUrl(url.absoluteString)
         }
-        .alert(MR.strings().background_location_title.localized(), isPresented: $showLocationRationale) {
-            Button(MR.strings().allow.localized()) {
+        .confirmationDialog(MR.strings().background_location_title.localized(), isPresented: $showBackgroundChoice, titleVisibility: .visible) {
+            Button(MR.strings().allow_background_location.localized()) {
                 requestAlwaysOrOpenSettings()
             }
-            Button(MR.strings().skip.localized(), role: .cancel) {
-                backgroundLocationButtonDismissed = true
+            Button(MR.strings().stop_sharing.localized(), role: .destructive) {
+                syncService.stopSharing()
             }
+            Button(MR.strings().cancel.localized(), role: .cancel) { }
         } message: {
             Text(MR.strings().background_location_message.localized())
         }
@@ -323,25 +308,6 @@ struct ContentView: View {
         }
         .padding(.horizontal, 16)
         .padding(.bottom, 32)
-    }
-
-    @ViewBuilder
-    private var backgroundLocationButton: some View {
-        HStack {
-            Button {
-                showLocationRationale = true
-            } label: {
-                Label(MR.strings().background_location_title.localized(), systemImage: "exclamationmark.circle.fill")
-                    .font(.caption)
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 8)
-                    .background(Color.orange.opacity(0.85))
-                    .foregroundStyle(.white)
-                    .clipShape(Capsule())
-            }
-            Spacer()
-        }
-        .padding(.horizontal, 16)
     }
 
     @ViewBuilder
@@ -424,6 +390,8 @@ struct ContentView: View {
         switch SharingToggleAction.derive(isSharing: syncService.isSharingLocation, authorization: locationManager.authorizationStatus) {
         case .toggle:
             syncService.toggleSharing()
+        case .chooseBackgroundOrStop:
+            showBackgroundChoice = true
         case .requestPermissionAndStart:
             locationManager.requestPermissionAndStart()
             syncService.toggleSharing()
