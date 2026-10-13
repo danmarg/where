@@ -818,6 +818,7 @@ class LocationViewModelTest {
             io.mockk.coVerify(exactly = 1) {
                 mockClient.removeFriend("bob", pausedFriendIds = setOf("carol"), sharingEnabled = true)
             }
+            io.mockk.coVerify(exactly = 1) { mockClient.processOutboxes() }
         }
 
     /**

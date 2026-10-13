@@ -379,9 +379,8 @@ class LocationViewModel(
         val sharing = isSharingLocation.value
         viewModelScope.launch {
             try {
-                // Tells them we stopped sharing (if we were) and deletes them. If the send fails
-                // here the queued message is retried by later polls, so this only fails on a
-                // local store error.
+                // Queues a StoppedSharing (if we were sharing with them) and deletes them locally;
+                // it's delivered below, after the UI has updated, or by a later poll.
                 locationClient.removeFriend(id, pausedFriendIds = pausedIds, sharingEnabled = sharing)
             } catch (e: CancellationException) {
                 throw e
@@ -394,6 +393,13 @@ class LocationViewModel(
             withContext(Dispatchers.Main.immediate) {
                 locationSource.onFriendRemoved(id)
                 locationSource.onFriendsUpdated(updatedFriends)
+            }
+            try {
+                locationClient.processOutboxes()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.w(TAG, "processOutboxes after removing $id failed: ${e.message}")
             }
         }
     }

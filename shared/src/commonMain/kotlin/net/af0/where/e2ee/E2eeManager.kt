@@ -281,12 +281,6 @@ class E2eeManager(
         }
     }
 
-    suspend fun deleteFriend(id: String) {
-        persistence.withFriendAndMetadataLock(id) { _, _ ->
-            PersistenceAction.Delete to Unit
-        }
-    }
-
     /**
      * Encrypts a message for a friend and atomically persists the advanced ratchet state.
      * This ensures that the sequence number is ALWAYS advanced locally before a network
@@ -309,15 +303,23 @@ class E2eeManager(
      * friend, so LocationClient can deliver it later from the token and ciphertext alone.
      * Stuck messages can't simply be dropped: one may be a DH-ratchet transition the peer
      * needs to learn the token every later message (including the farewell) is posted to.
+     *
+     * An unconfirmed friend is deleted outright, outbox included, with no farewell: their outbox
+     * may still hold our KeyExchangeInit, which must not pair us after we've removed them.
      */
     suspend fun deleteFriendKeepingOutbox(
         id: String,
         farewell: MessagePlaintext?,
     ) {
         persistence.withFriendAndMetadataLock(id) { entry, metadata ->
-            if (entry == null) return@withFriendAndMetadataLock PersistenceAction.None to Unit
-            if (farewell != null) encryptToOutbox(id, entry, metadata, farewell)
-            PersistenceAction.DeleteKeepingOutbox to Unit
+            when {
+                entry == null -> PersistenceAction.None to Unit
+                !entry.isConfirmed -> PersistenceAction.Delete to Unit
+                else -> {
+                    if (farewell != null) encryptToOutbox(id, entry, metadata, farewell)
+                    PersistenceAction.DeleteKeepingOutbox to Unit
+                }
+            }
         }
     }
 

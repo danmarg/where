@@ -71,9 +71,10 @@ class RemoveFriendTest {
             assertNull(p.bobsViewOfAlice().stoppedAtTs)
 
             p.aliceClient.removeFriend(p.bobFriendId)
-
             assertTrue(p.aliceManager.listFriends().isEmpty())
-            assertTrue(p.aliceManager.getOrphanedOutbox().isEmpty(), "delivered at removal time")
+
+            p.aliceClient.processOutboxes()
+            assertTrue(p.aliceManager.getOrphanedOutbox().isEmpty())
             p.bobClient.poll()
             assertNotNull(p.bobsViewOfAlice().stoppedAtTs)
         }
@@ -85,6 +86,7 @@ class RemoveFriendTest {
             p.chaosMailbox.failPostProbability = 1.0
 
             p.aliceClient.removeFriend(p.bobFriendId)
+            p.aliceClient.processOutboxes()
 
             assertTrue(p.aliceManager.listFriends().isEmpty())
             assertEquals(1, p.aliceManager.getOrphanedOutbox().size, "the StoppedSharing must outlive the friend row")
@@ -141,6 +143,8 @@ class RemoveFriendTest {
             p.aliceClient.removeFriend(p.bobFriendId, pausedFriendIds = setOf(p.bobFriendId))
 
             assertTrue(p.aliceManager.listFriends().isEmpty())
+            assertTrue(p.aliceManager.getOrphanedOutbox().isEmpty())
+            p.aliceClient.processOutboxes()
             p.bobClient.poll()
             assertNull(p.bobsViewOfAlice().stoppedAtTs)
         }
@@ -152,8 +156,34 @@ class RemoveFriendTest {
 
             p.aliceClient.removeFriend(p.bobFriendId, sharingEnabled = false)
 
+            p.aliceClient.processOutboxes()
             p.bobClient.poll()
             assertNull(p.bobsViewOfAlice().stoppedAtTs)
+        }
+
+    @Test
+    fun `removing a not-yet-confirmed friend drops their queued KeyExchangeInit`() =
+        runTest {
+            val chaos = ChaosMailboxClient(MemoryMailboxClient())
+            val aliceManager = testE2eeManager(createTestSqlDriver())
+            val aliceClient = LocationClient("http://localhost", aliceManager, chaos)
+            val qr = aliceManager.createInvite("Alice")
+            val bobManager = testE2eeManager(createTestSqlDriver())
+            val bobClient = LocationClient("http://localhost", bobManager, chaos)
+
+            // Bob scans while offline: the init stays in his outbox.
+            val (initPayload, aliceEntry) = bobManager.processScannedQr(qr, "Bob")
+            chaos.failPostProbability = 1.0
+            runCatching { bobClient.postKeyExchangeInit(aliceEntry.id, qr, initPayload) }
+            assertEquals(1, bobManager.getOutbox(aliceEntry.id).size)
+
+            bobClient.removeFriend(aliceEntry.id)
+            assertTrue(bobManager.listFriends().isEmpty())
+            assertTrue(bobManager.getOrphanedOutbox().isEmpty(), "the init must not be posted after removal")
+
+            chaos.failPostProbability = 0.0
+            bobClient.processOutboxes()
+            assertTrue(aliceClient.pollPendingInvites().isEmpty(), "Alice must not get a pairing request")
         }
 
     @Test
@@ -174,7 +204,6 @@ class RemoveFriendTest {
                 val pending = aliceClient.pollPendingInvites()
                 val bob = requireNotNull(aliceManager.processKeyExchangeInit(pending[0].payload, "Bob", pending[0].inviteEkPub))
 
-                chaos.failPostProbability = 1.0
                 aliceClient.removeFriend(bob.id)
                 assertEquals(1, aliceManager.getOrphanedOutbox().size)
 
