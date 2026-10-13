@@ -372,6 +372,35 @@ data class OutgoingMessage(
     val destination: RoutingToken,
 )
 
+/**
+ * What became of one received frame. The cases that authenticated the frame carry the state to
+ * persist; the others leave the caller's state as it was. A `when` over this is exhaustive, so a
+ * caller can't treat an undeliverable frame like a forgery and drop its state.
+ */
+sealed class ReceivedMessage {
+    /** Authenticated and decoded. Persist [state] and deliver [plaintext]. */
+    data class Delivered(
+        val state: SessionState,
+        val plaintext: MessagePlaintext,
+    ) : ReceivedMessage()
+
+    /**
+     * The header authenticated but the body failed AEAD or its plaintext was malformed. The
+     * ratchet advanced and the message key is spent, so [state] MUST be persisted (§8.3.1(4)):
+     * a corrupted frame has to leave the same state as a dropped one. Nothing to deliver.
+     */
+    class Undeliverable(
+        val state: SessionState,
+        val cause: Throwable,
+    ) : ReceivedMessage()
+
+    /** A frame already received. Keep the input state. */
+    class Replay(val cause: ReplayException) : ReceivedMessage()
+
+    /** Not authenticated as the peer's, or not processable (e.g. too large a gap). Keep the input state. */
+    class Rejected(val cause: Exception) : ReceivedMessage()
+}
+
 /** Output of a symmetric ratchet step (KDF_CK). */
 internal class ChainStep(
     val newChainKey: ChainKey,

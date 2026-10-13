@@ -1,7 +1,7 @@
 package net.af0.where.e2ee
 
 import kotlin.test.Test
-import kotlin.test.assertFailsWith
+import kotlin.test.assertTrue
 import kotlin.test.fail
 
 /**
@@ -91,11 +91,11 @@ class X25519LowOrderPointTest {
             // the JVM) — both are valid rejections. What must never happen is the call
             // returning normally, which would mean the ratchet silently adopted an
             // attacker-known root key.
-            assertFailsWith<Throwable>(
-                "expected low-order dh_pub $hex to be rejected during the DH ratchet step",
-            ) {
-                Session.decryptMessage(bobSession, encrypted, maliciousHeader)
-            }
+            val received = Session.decryptMessage(bobSession, encrypted, maliciousHeader)
+            assertTrue(
+                received is ReceivedMessage.Rejected,
+                "expected low-order dh_pub $hex to be rejected during the DH ratchet step, got ${received.describe()}",
+            )
         }
     }
 }
