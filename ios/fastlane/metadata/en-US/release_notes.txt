@@ -1,1 +1,1 @@
-Improved pairing UX (https://github.com/danmarg/where/issues/405).
+Improvements in robustness and code quality.
