@@ -22,9 +22,9 @@ struct ContentView: View {
     /// stops us sending: an approximate fix inside `minBroadcastAccuracyMeters` is still broadcast,
     /// so it's shown as normal sharing rather than as a failure. On When-In-Use, sharing carries on
     /// in the background only until iOS terminates the app (nothing relaunches it), so it's shown
-    /// as "while open".
+    /// as limited.
     enum SharingStatus: Equatable {
-        case paused, permissionMissing, preciseLocationOff, sharingWhileOpen, sharing
+        case paused, permissionMissing, preciseLocationOff, sharingLimited, sharing
 
         static func derive(
             isSharing: Bool,
@@ -36,12 +36,12 @@ struct ContentView: View {
             if authorization == .denied || authorization == .restricted { return .permissionMissing }
             let fixUsable = lastFixAccuracy.map { $0 >= 0 && $0 <= LocationSyncService.minBroadcastAccuracyMeters } ?? false
             if accuracyAuthorization == .reducedAccuracy && !fixUsable { return .preciseLocationOff }
-            if authorization == .authorizedWhenInUse { return .sharingWhileOpen }
+            if authorization == .authorizedWhenInUse { return .sharingLimited }
             return .sharing
         }
     }
 
-    /// What tapping the sharing button does. While sharing it stops - except "while open", where
+    /// What tapping the sharing button does. While sharing it stops - except when limited, where
     /// it offers the Always upgrade alongside stopping. On When-In-Use it used to show only the
     /// background-location rationale, so sharing couldn't be turned off. Not sharing, it starts,
     /// via the permission prompt or Settings when permission is missing.
@@ -103,7 +103,7 @@ struct ContentView: View {
         case .paused: return MR.strings().paused.localized()
         case .permissionMissing: return MR.strings().location_permission_missing.localized()
         case .preciseLocationOff: return MR.strings().precise_location_off.localized()
-        case .sharingWhileOpen: return MR.strings().sharing_while_open.localized()
+        case .sharingLimited: return MR.strings().sharing_limited.localized()
         case .sharing: return MR.strings().sharing.localized()
         }
     }
@@ -112,7 +112,7 @@ struct ContentView: View {
         switch sharingStatus {
         case .paused: return Color.gray.opacity(0.85)
         case .permissionMissing: return Color.red.opacity(0.85)
-        case .preciseLocationOff, .sharingWhileOpen: return Color.orange.opacity(0.85)
+        case .preciseLocationOff, .sharingLimited: return Color.orange.opacity(0.85)
         case .sharing: return Color.blue.opacity(0.85)
         }
     }

@@ -1368,10 +1368,10 @@ class LocationSyncServiceTests: XCTestCase {
         XCTAssertEqual(A.derive(isSharing: false, authorization: .restricted), .openSettings)
     }
 
-    /// When-In-Use shares only until iOS terminates the app, so the pill says so.
-    func testSharingStatus_WhenInUseIsSharingWhileOpen() {
+    /// When-In-Use shares only until iOS terminates the app, so the pill says it's limited.
+    func testSharingStatus_WhenInUseIsSharingLimited() {
         typealias S = ContentView.SharingStatus
-        XCTAssertEqual(S.derive(isSharing: true, authorization: .authorizedWhenInUse, accuracyAuthorization: .fullAccuracy, lastFixAccuracy: nil), .sharingWhileOpen)
+        XCTAssertEqual(S.derive(isSharing: true, authorization: .authorizedWhenInUse, accuracyAuthorization: .fullAccuracy, lastFixAccuracy: nil), .sharingLimited)
         XCTAssertEqual(S.derive(isSharing: true, authorization: .authorizedAlways, accuracyAuthorization: .fullAccuracy, lastFixAccuracy: nil), .sharing)
         XCTAssertEqual(S.derive(isSharing: false, authorization: .authorizedWhenInUse, accuracyAuthorization: .fullAccuracy, lastFixAccuracy: nil), .paused)
         XCTAssertEqual(S.derive(isSharing: true, authorization: .authorizedWhenInUse, accuracyAuthorization: .reducedAccuracy, lastFixAccuracy: nil), .preciseLocationOff, "the blocking problem wins")

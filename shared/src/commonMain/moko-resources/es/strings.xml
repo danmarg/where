@@ -97,7 +97,7 @@
     <string name="close">Cerrar</string>
     <string name="discarded_sessions_title">Vuelve a emparejar a tus amigos</string>
     <string name="discarded_sessions_message">Los datos de este dispositivo provienen de otro teléfono o de una copia de seguridad, así que tus conexiones con %s no se pueden usar de forma segura y se han eliminado. Pídeles nuevas invitaciones para volver a compartir ubicaciones.</string>
-    <string name="sharing_while_open">Compartiendo con la app abierta</string>
+    <string name="sharing_limited">Compartiendo (limitado)</string>
     <string name="allow_background_location">Permitir ubicación en segundo plano</string>
     <string name="stop_sharing">Dejar de compartir</string>
 </resources>
