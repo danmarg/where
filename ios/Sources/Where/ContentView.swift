@@ -61,9 +61,18 @@ struct ContentView: View {
     /// Set when the app goes inactive, which is what a system permission prompt does.
     @State private var systemPromptAppeared = false
 
+    @AppStorage("always_permission_requested") private var alwaysPermissionRequested = false
+
     /// iOS shows its When-In-Use → Always prompt at most once, and never under Allow Once; when it
-    /// silently declines, there's nowhere left but Settings.
+    /// won't, there's nowhere left but Settings. Once we've asked, go straight there. The first
+    /// time, ask - and if no prompt shows within a second (it was used up before this flag
+    /// existed, or the grant is Allow Once), fall back to Settings.
     private func requestAlwaysOrOpenSettings() {
+        if alwaysPermissionRequested {
+            openSettings()
+            return
+        }
+        alwaysPermissionRequested = true
         systemPromptAppeared = false
         locationManager.requestAlwaysPermission()
         Task { @MainActor in
@@ -261,17 +270,6 @@ struct ContentView: View {
         .onOpenURL { url in
             syncService.processQrUrl(url.absoluteString)
         }
-        .confirmationDialog(MR.strings().background_location_title.localized(), isPresented: $showBackgroundChoice, titleVisibility: .visible) {
-            Button(MR.strings().allow_background_location.localized()) {
-                requestAlwaysOrOpenSettings()
-            }
-            Button(MR.strings().stop_sharing.localized(), role: .destructive) {
-                syncService.stopSharing()
-            }
-            Button(MR.strings().cancel.localized(), role: .cancel) { }
-        } message: {
-            Text(MR.strings().background_location_message.localized())
-        }
         .alert(MR.strings().discarded_sessions_title.localized(), isPresented: Binding(
             get: { !syncService.discardedSessionNames.isEmpty },
             set: { if !$0 { syncService.dismissDiscardedSessionsNotice() } }
@@ -325,6 +323,18 @@ struct ContentView: View {
             .background(sharingStatusColor)
             .foregroundStyle(.white)
             .clipShape(Capsule())
+        }
+        // Anchored to the pill so it points there as an iPad popover.
+        .confirmationDialog(MR.strings().background_location_title.localized(), isPresented: $showBackgroundChoice, titleVisibility: .visible) {
+            Button(MR.strings().allow_background_location.localized()) {
+                requestAlwaysOrOpenSettings()
+            }
+            Button(MR.strings().stop_sharing.localized(), role: .destructive) {
+                syncService.stopSharing()
+            }
+            Button(MR.strings().cancel.localized(), role: .cancel) { }
+        } message: {
+            Text(MR.strings().background_location_message.localized())
         }
     }
 
