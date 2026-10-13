@@ -304,8 +304,11 @@ class E2eeManager(
      * Stuck messages can't simply be dropped: one may be a DH-ratchet transition the peer
      * needs to learn the token every later message (including the farewell) is posted to.
      *
-     * An unconfirmed friend is deleted outright, outbox included, with no farewell: their outbox
-     * may still hold our KeyExchangeInit, which must not pair us after we've removed them.
+     * If our KeyExchangeInit to them is still queued, pairing never got through: they're deleted
+     * outright, outbox included, with no farewell, so the init can't pair us after removal.
+     *
+     * A farewell that fails to encrypt (e.g. broken session state) is skipped rather than
+     * blocking the removal.
      */
     suspend fun deleteFriendKeepingOutbox(
         id: String,
@@ -314,9 +317,17 @@ class E2eeManager(
         persistence.withFriendAndMetadataLock(id) { entry, metadata ->
             when {
                 entry == null -> PersistenceAction.None to Unit
-                !entry.isConfirmed -> PersistenceAction.Delete to Unit
+                persistence.getOutboxInternal(id).any { it.payload is KeyExchangeInitPayload } -> PersistenceAction.Delete to Unit
                 else -> {
-                    if (farewell != null) encryptToOutbox(id, entry, metadata, farewell)
+                    if (farewell != null) {
+                        try {
+                            encryptToOutbox(id, entry, metadata, farewell)
+                        } catch (e: CancellationException) {
+                            throw e
+                        } catch (e: Exception) {
+                            metadata.addDiagnosticEvent("removeFriend: farewell not sent: ${e.message}")
+                        }
+                    }
                     PersistenceAction.DeleteKeepingOutbox to Unit
                 }
             }
@@ -325,7 +336,7 @@ class E2eeManager(
 
     suspend fun getOrphanedOutbox(): List<Pair<String, EncryptedOutboxMessage>> = persistence.getOrphanedOutbox()
 
-    suspend fun deleteOrphanedOutboxCreatedBefore(createdAtMillis: Long) = persistence.deleteOrphanedOutboxCreatedBefore(createdAtMillis)
+    suspend fun deleteOutboxByFriendId(friendId: String) = persistence.deleteOutboxByFriendId(friendId)
 
     private fun encryptToOutbox(
         friendId: String,

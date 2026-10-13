@@ -492,11 +492,11 @@ open class LocationClient(
                     null
                 }
             store.deleteFriendKeepingOutbox(friendId, farewell)
-            mayHaveOrphanedOutbox = true
         }
         mutexLock.withLock {
-            friendMutexes.remove(friendId)
             silentDropRetries.remove(friendId)
+            orphanedOutboxGeneration++
+            mayHaveOrphanedOutbox = true
         }
     }
 
@@ -504,6 +504,11 @@ open class LocationClient(
     // removal, and until a drain finds nothing left - so routine polls skip the orphan queries.
     @kotlin.concurrent.Volatile
     private var mayHaveOrphanedOutbox = true
+
+    // Bumped (under mutexLock) by each removal, so a drain already in progress - which a
+    // concurrent caller's tryLock defers to - picks up a removal that landed after it started.
+    @kotlin.concurrent.Volatile
+    private var orphanedOutboxGeneration = 0L
     private val orphanedOutboxMutex = Mutex()
 
     /**
@@ -515,25 +520,39 @@ open class LocationClient(
     private suspend fun processOrphanedOutboxes() {
         if (!mayHaveOrphanedOutbox || !orphanedOutboxMutex.tryLock()) return
         try {
-            mayHaveOrphanedOutbox = false
-            store.deleteOrphanedOutboxCreatedBefore(currentTimeMillis() - ORPHANED_OUTBOX_RETENTION_MILLIS)
-            val byFriend = store.getOrphanedOutbox().groupBy({ it.first }, { it.second })
-            coroutineScope {
-                byFriend.map { (friendId, messages) ->
-                    async {
-                        runCatching { deliverInOrder(friendId, messages) }
-                            .onFailure {
-                                if (it is CancellationException) throw it
-                                mayHaveOrphanedOutbox = true
-                            }
-                    }
-                }.awaitAll()
-            }
+            do {
+                val generation = orphanedOutboxGeneration
+                mayHaveOrphanedOutbox = false
+                drainOrphanedOutboxesOnce()
+            } while (orphanedOutboxGeneration != generation)
         } catch (e: Throwable) {
             mayHaveOrphanedOutbox = true
             throw e
         } finally {
             orphanedOutboxMutex.unlock()
+        }
+    }
+
+    private suspend fun drainOrphanedOutboxesOnce() {
+        val cutoff = currentTimeMillis() - ORPHANED_OUTBOX_RETENTION_MILLIS
+        val byFriend = store.getOrphanedOutbox().groupBy({ it.first }, { it.second })
+        coroutineScope {
+            byFriend.map { (friendId, messages) ->
+                async {
+                    // Expire a friend's queue as a whole once its head is past retention: posting
+                    // the rest after dropping the head could send them to a token the peer only
+                    // learns from the head (a DH-ratchet transition).
+                    if (messages.first().createdAt < cutoff) {
+                        store.deleteOutboxByFriendId(friendId)
+                        return@async
+                    }
+                    runCatching { deliverInOrder(friendId, messages) }
+                        .onFailure {
+                            if (it is CancellationException) throw it
+                            mayHaveOrphanedOutbox = true
+                        }
+                }
+            }.awaitAll()
         }
     }
 
@@ -548,6 +567,9 @@ open class LocationClient(
      * false success. See https://github.com/danmarg/where/issues/343.
      */
     private suspend fun processOutbox(friendId: String) {
+        // A removed friend's queue belongs to processOrphanedOutboxes alone (a caller here may be
+        // working from a friend list read before the removal); two senders could double-post.
+        if (store.getFriend(friendId) == null) return
         deliverInOrder(friendId, store.getOutbox(friendId))
     }
 

@@ -32,9 +32,6 @@ SELECT * FROM Outbox WHERE friendId = ? ORDER BY createdAt ASC, rowid ASC;
 getOrphanedOutbox:
 SELECT * FROM Outbox WHERE friendId NOT IN (SELECT id FROM Friends) ORDER BY createdAt ASC, rowid ASC;
 
-deleteOrphanedOutboxCreatedBefore:
-DELETE FROM Outbox WHERE friendId NOT IN (SELECT id FROM Friends) AND createdAt < ?;
-
 -- Cleanup
 deleteAll:
 DELETE FROM Outbox;

@@ -186,6 +186,29 @@ class RemoveFriendTest {
         }
 
     @Test
+    fun `the scanner removing a friend before hearing back still sends StoppedSharing once the init is through`() =
+        runTest {
+            val chaos = ChaosMailboxClient(MemoryMailboxClient())
+            val aliceManager = testE2eeManager(createTestSqlDriver())
+            val aliceClient = LocationClient("http://localhost", aliceManager, chaos)
+            val qr = aliceManager.createInvite("Alice")
+            val bobManager = testE2eeManager(createTestSqlDriver())
+            val bobClient = LocationClient("http://localhost", bobManager, chaos)
+
+            val (initPayload, aliceEntry) = bobManager.processScannedQr(qr, "Bob")
+            bobClient.postKeyExchangeInit(aliceEntry.id, qr, initPayload)
+            val pending = aliceClient.pollPendingInvites()
+            requireNotNull(aliceManager.processKeyExchangeInit(pending[0].payload, "Bob", pending[0].inviteEkPub))
+            assertTrue(bobManager.listFriends().none { it.isConfirmed }, "Bob hasn't heard from Alice yet")
+
+            bobClient.removeFriend(aliceEntry.id)
+            bobClient.processOutboxes()
+
+            aliceClient.poll()
+            assertNotNull(aliceManager.listFriends().single().stoppedAtTs)
+        }
+
+    @Test
     fun `an undelivered StoppedSharing past server retention is dropped`() =
         runTest {
             val mockTime = MockTimeProvider()

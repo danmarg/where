@@ -130,11 +130,11 @@ internal class E2eeStore(
                             scope.stageFriendUpdate(friendId, saveFriendInternal(friendId, action.entry))
                         }
                         is PersistenceAction.Delete -> {
-                            deleteFriendInternal(friendId)
+                            deleteFriendInternal(friendId, keepOutbox = false)
                             scope.stageFriendDeletion(friendId)
                         }
                         is PersistenceAction.DeleteKeepingOutbox -> {
-                            database.friendsQueries.deleteFriend(friendId)
+                            deleteFriendInternal(friendId, keepOutbox = true)
                             scope.stageFriendDeletion(friendId)
                         }
                         is PersistenceAction.None -> {}
@@ -243,9 +243,12 @@ internal class E2eeStore(
         return finalEntry
     }
 
-    private fun deleteFriendInternal(friendId: String) {
+    private fun deleteFriendInternal(
+        friendId: String,
+        keepOutbox: Boolean,
+    ) {
         database.friendsQueries.deleteFriend(friendId)
-        database.outboxQueries.deleteOutboxByFriendId(friendId)
+        if (!keepOutbox) database.outboxQueries.deleteOutboxByFriendId(friendId)
     }
 
     suspend fun insertOutbox(
@@ -311,11 +314,6 @@ internal class E2eeStore(
     suspend fun getOrphanedOutbox(): List<Pair<String, EncryptedOutboxMessage>> =
         withStoreLock {
             database.outboxQueries.getOrphanedOutbox().executeAsList().map { it.friendId to it.toMessage() }
-        }
-
-    suspend fun deleteOrphanedOutboxCreatedBefore(createdAtMillis: Long) =
-        withStoreLock {
-            database.outboxQueries.deleteOrphanedOutboxCreatedBefore(createdAtMillis)
         }
 
     private fun net.af0.where.db.Outbox.toMessage() =
