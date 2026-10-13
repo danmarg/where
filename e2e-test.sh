@@ -120,6 +120,21 @@ if ! echo "$ALICE_RECEIVE" | grep -q "Location from Bob"; then
 fi
 echo "✓ Bidirectional send verified"
 
+echo "=== E2E Test: Keepalive (unthrottled, unlike send) ==="
+for _ in 1 2; do
+  BOB_KEEPALIVE=$(./cli/build/install/cli/bin/cli keepalive --state "$TEST_DIR/e2e_bob.json")
+  if ! echo "$BOB_KEEPALIVE" | grep -q "Keepalive sent to"; then
+    echo "Error: keepalive not sent: $BOB_KEEPALIVE"
+    exit 1
+  fi
+done
+ALICE_AFTER_KEEPALIVE=$(./cli/build/install/cli/bin/cli poll --state "$TEST_DIR/e2e_alice.json" --once 2>&1)
+if echo "$ALICE_AFTER_KEEPALIVE" | grep -qiE "fail|error"; then
+  echo "Error: Alice failed to process keepalives: $ALICE_AFTER_KEEPALIVE"
+  exit 1
+fi
+echo "✓ Keepalives sent and processed"
+
 echo "=== E2E Test: Cold-start Reconnect — Restart Alice ==="
 # Alice exits and restarts; session state should be loaded from e2e_alice.json
 echo "  Restarting Alice's process..."

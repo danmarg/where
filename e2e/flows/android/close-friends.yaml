@@ -1,0 +1,11 @@
+# Closes the friends sheet. One back can just collapse it from fully to half expanded.
+appId: net.af0.where
+---
+- repeat:
+    while:
+      visible: "Friends \\([0-9]+\\)"
+    times: 3
+    commands:
+      - back
+      - waitForAnimationToEnd
+- assertNotVisible: "Friends \\([0-9]+\\)"

@@ -1,5 +1,13 @@
 appId: net.af0.where
 ---
+# Bring it to the foreground if it isn't, past the battery prompt should it show.
+- launchApp:
+    stopApp: false
+- runFlow:
+    when:
+      visible: "Improve background updates"
+    commands:
+      - tapOn: "Skip"
 - tapOn: "Paused"
 - extendedWaitUntil:
     visible: "Sharing"

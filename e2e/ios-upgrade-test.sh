@@ -89,6 +89,8 @@ assert_no_sends_while_paused() {
   return 0
 }
 
+app_running() { xcrun simctl spawn "$SIM" launchctl list 2>/dev/null | grep -q "UIKitApplication:$BUNDLE"; }
+
 notice_pending() { xcrun simctl spawn "$SIM" defaults read "$BUNDLE" discarded_session_names >/dev/null 2>&1; }
 
 BASE=$(baseline_ref)
@@ -136,6 +138,36 @@ cli bob send 48.208 16.373 --force | grep -q successfully || fail "CLI send fail
 retry 60 app_has_lat 48.208 || fail "upgraded app never received the CLI's location"
 retry 120 nudge_and_check_cli 52.56 || fail "CLI never received a location from the upgraded app"
 echo "✓ Upgrade kept the friend and session, with no re-pair notice"
+
+log "A server outage: sends go through once it's back"
+cli bob poll --once >/dev/null
+freeze_server
+for lat in 52.68 52.69 52.70; do xcrun simctl location "$SIM" set "$lat,13.40" >/dev/null; sleep 10; done
+thaw_server
+retry 240 nudge_and_check_cli 52.70 || fail "no location got through after the outage"
+echo "✓ Outage: new positions delivered afterwards"
+
+# Terminated (as by the system or a swipe-away), the app must be relaunched in the background
+# by its significant-change / region monitoring when the user moves, without being opened.
+log "After the app is terminated, moving relaunches it in the background and it sends"
+xcrun simctl terminate "$SIM" "$BUNDLE"
+sleep 3
+cli bob poll --once >/dev/null
+for lat in 52.80 52.85 52.90 52.95; do xcrun simctl location "$SIM" set "$lat,13.60" >/dev/null; sleep 15; done
+retry 120 app_running || fail "moving 50 km didn't relaunch the terminated app"
+retry 180 nudge_and_check_cli 52.9 || fail "the relaunched app never sent its position"
+echo "✓ Background relaunch after termination"
+
+log "With location permission revoked nothing is sent; once granted again, sharing resumes"
+xcrun simctl privacy "$SIM" revoke location "$BUNDLE"
+sleep 3
+cli bob poll --once >/dev/null
+for lat in 53.01 53.05 53.10; do xcrun simctl location "$SIM" set "$lat,13.70" >/dev/null; sleep 15; done
+cli bob poll --once | grep -q "Location from .*: 53.1" && fail "a location was sent without location permission"
+xcrun simctl privacy "$SIM" grant location-always "$BUNDLE"
+xcrun simctl launch "$SIM" "$BUNDLE" >/dev/null
+retry 240 nudge_and_check_cli 53.2 || fail "sharing didn't resume after location permission was granted again"
+echo "✓ Permission revoked and restored"
 
 log "Pausing stops sending"
 maestro_flow ios/pause.yaml

@@ -1,0 +1,22 @@
+# Opens the friends sheet, fully expanded so every friend row is on screen.
+appId: net.af0.where
+---
+# Bring it to the foreground if it isn't, past the battery prompt should it show.
+- launchApp:
+    stopApp: false
+- runFlow:
+    when:
+      visible: "Improve background updates"
+    commands:
+      - tapOn: "Skip"
+- tapOn:
+    text: "[0-9]+"
+    rightOf: "You"
+- extendedWaitUntil:
+    visible: "Friends \\([0-9]+\\)"
+    timeout: 10000
+# It opens half-expanded, with the last rows cut off at the bottom of the screen.
+- swipe:
+    start: 50%, 75%
+    end: 50%, 10%
+- waitForAnimationToEnd
