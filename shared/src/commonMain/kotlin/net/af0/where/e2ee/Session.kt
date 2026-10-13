@@ -73,11 +73,30 @@ object Session {
         return OutgoingMessage(newState, message, transport.token)
     }
 
-    @Throws(WhereException::class)
+    /**
+     * Decrypts one received frame. Every protocol failure comes back as a [ReceivedMessage],
+     * which says what to persist; only JVM/native [Error]s (e.g. out of memory) propagate.
+     */
     fun decryptMessage(
         state: SessionState,
         message: EncryptedMessagePayload,
         preDecryptedHeader: DecryptedHeader? = null,
+    ): ReceivedMessage =
+        try {
+            val (newState, plaintext) = decryptMessageOrThrow(state, message, preDecryptedHeader)
+            ReceivedMessage.Delivered(newState, plaintext)
+        } catch (e: DecryptionExceptionWithState) {
+            ReceivedMessage.Undeliverable(e.newState, e.cause ?: e)
+        } catch (e: ReplayException) {
+            ReceivedMessage.Replay(e)
+        } catch (e: Exception) {
+            ReceivedMessage.Rejected(e)
+        }
+
+    private fun decryptMessageOrThrow(
+        state: SessionState,
+        message: EncryptedMessagePayload,
+        preDecryptedHeader: DecryptedHeader?,
     ): Pair<SessionState, MessagePlaintext> {
         // 0. Purge stale message keys (#189)
         val now = currentTimeMillis()

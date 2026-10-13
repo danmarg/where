@@ -87,7 +87,7 @@ class SessionStateGoldenTest {
         assertEquals(CT_HEX, msg.ct.toHex())
         assertEquals(ALICE_AFTER_SEND_JSON, encode(aliceNext))
 
-        val (bobNext, decoded) = Session.decryptMessage(bob(), msg)
+        val (bobNext, decoded) = Session.decryptMessage(bob(), msg).delivered()
         assertEquals(true, decoded is MessagePlaintext.Keepalive)
         assertEquals(BOB_AFTER_RECV_JSON, encode(bobNext))
     }
@@ -101,10 +101,10 @@ class SessionStateGoldenTest {
         val ka = Session.padToFixedSize("""{"type":"ka"}""".encodeToByteArray(), PADDING_SIZE)
 
         val (_, toBob) = Session.encryptPadded(legacyAlice, ka.copyOf())
-        assertEquals(true, Session.decryptMessage(bob(), toBob).second is MessagePlaintext.Keepalive)
+        assertEquals(true, Session.decryptMessage(bob(), toBob).delivered().plaintext is MessagePlaintext.Keepalive)
 
         val (_, toAlice) = Session.encryptPadded(bob(), ka.copyOf())
-        assertEquals(true, Session.decryptMessage(legacyAlice, toAlice).second is MessagePlaintext.Keepalive)
+        assertEquals(true, Session.decryptMessage(legacyAlice, toAlice).delivered().plaintext is MessagePlaintext.Keepalive)
     }
 
     @Test

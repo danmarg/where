@@ -81,7 +81,7 @@ class KeyExchangeTest {
         val (alice1, msg1) = Session.encryptMessage(aliceSession, MessagePlaintext.Location(0.0, 0.0, 0.0, 0L))
 
         // Bob receives message 1 using Epoch 0 token.
-        val (bob1, _) = Session.decryptMessage(bobSession, msg1)
+        val (bob1, _) = Session.decryptMessage(bobSession, msg1).delivered()
 
         // After Bob processes Alice's message 1 (A1), he ratchets both his
         // receive and sending chains to Epoch 1.
@@ -103,7 +103,7 @@ class KeyExchangeTest {
         val (alice1, msg1) = Session.encryptMessage(aliceSession, MessagePlaintext.Location(0.0, 0.0, 0.0, 0L))
 
         // Bob receives message 1.
-        val (bob1, _) = Session.decryptMessage(bobSession, msg1)
+        val (bob1, _) = Session.decryptMessage(bobSession, msg1).delivered()
 
         // Alice's send chain must equal Bob's receive chain.
         assertEquals(alice1.sendChainKey, bob1.recvChainKey)
@@ -133,7 +133,7 @@ class KeyExchangeTest {
         assertEquals(aliceSession.prevSendToken, bobSession.recvToken)
 
         // And verify decryption works.
-        val (_, pt) = Session.decryptMessage(bobSession, aliceEnc)
+        val (_, pt) = Session.decryptMessage(bobSession, aliceEnc).delivered()
         assertTrue(pt is MessagePlaintext.Location)
     }
 
@@ -374,13 +374,13 @@ class KeyExchangeTest {
         val (alice1, message1) = Session.encryptMessage(aliceSession, MessagePlaintext.Location(0.0, 0.0, 0.0, 0L))
 
         // Bob receives message 1
-        val (bob1, _) = Session.decryptMessage(bobSession, message1)
+        val (bob1, _) = Session.decryptMessage(bobSession, message1).delivered()
 
         // Bob sends message 2 (new DH epoch for Alice)
         val (bob2, message2) = Session.encryptMessage(bob1, MessagePlaintext.Location(0.0, 0.0, 0.0, 0L))
 
         // Alice receives message 2 (advances DH)
-        val (alice2, _) = Session.decryptMessage(alice1, message2)
+        val (alice2, _) = Session.decryptMessage(alice1, message2).delivered()
 
         // aliceEkPub and bobEkPub must be unchanged after DH ratchet
         assertEquals(aliceSession.aliceEkPub, alice2.aliceEkPub)
