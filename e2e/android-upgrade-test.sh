@@ -361,12 +361,22 @@ else
   echo "✓ Reboot: sharing resumed in the background"
 fi
 
+rejections() { grep -c "invite already accepted" "$WORK/logcat.txt" || true; }
+rejected_since() { [ "$(rejections)" -gt "$1" ]; }
+
 log "Opening an accepted invite again doesn't pair twice"
+n=$(rejections)
 open_link "$URL2"
-retry 20 grep -q "invite already accepted" "$WORK/logcat.txt" || fail "the app didn't reject the replayed invite"
+retry 20 rejected_since "$n" || fail "the app didn't reject the replayed invite"
 maestro_flow android/invite-already-used.yaml
 friend_count_is 2 || fail "re-opening an accepted invite paired again"
-echo "✓ Accepted invite rejected on replay"
+# Accepted by the baseline app, before the upgraded one tracked accepted invites.
+n=$(rejections)
+open_link "$URL"
+retry 20 rejected_since "$n" || fail "the app didn't reject the invite accepted before the upgrade"
+maestro_flow android/invite-already-used.yaml
+friend_count_is 2 || fail "re-opening an invite accepted before the upgrade paired again"
+echo "✓ Accepted invites rejected on replay, including one accepted before the upgrade"
 
 # The foreground service itself stays up while paused, by design; location updates stop.
 log "Pausing stops location updates and sending"
