@@ -376,7 +376,9 @@ class LocationViewModel(
     fun removeFriend(id: String) {
         check(Looper.myLooper() == Looper.getMainLooper()) { "removeFriend must be called on the main thread" }
         val pausedIds = userStore.effectivelyPausedIds()
-        val sharing = isSharingLocation.value
+        // Same notion of "sharing" FriendPoller gives poll(): without location permission we're
+        // receive-only, so there's nothing to say we stopped.
+        val sharing = isSharingLocation.value && getApplication<Application>().hasLocationPermission()
         viewModelScope.launch {
             try {
                 // Queues a StoppedSharing (if we were sharing with them) and deletes them locally;
@@ -395,11 +397,11 @@ class LocationViewModel(
                 locationSource.onFriendsUpdated(updatedFriends)
             }
             try {
-                locationClient.processOutboxes()
+                locationClient.processOrphanedOutboxes()
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
-                Log.w(TAG, "processOutboxes after removing $id failed: ${e.message}")
+                Log.w(TAG, "processOrphanedOutboxes after removing $id failed: ${e.message}")
             }
         }
     }
@@ -714,7 +716,7 @@ class LocationViewModel(
         val app = getApplication<Application>()
         val prefs = app.getSharedPreferences("where_prefs", Context.MODE_PRIVATE)
         val notified = prefs.getBoolean(KEY_STOPPED_FOR_MISSING_PERMISSION, false)
-        val hasPermission = app.hasLocationPermission()
+        val hasPermission = getApplication<Application>().hasLocationPermission()
         if (isSharingLocation.value && !hasPermission && !notified) {
             if (stoppedSharingInFlight) return
             stoppedSharingInFlight = true

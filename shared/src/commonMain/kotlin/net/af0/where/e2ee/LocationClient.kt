@@ -463,8 +463,9 @@ open class LocationClient(
 
     @Throws(Exception::class)
     suspend fun processOutboxes() {
-        val friends = runCatching { store.listFriends() }.getOrElse { return }
-        forEachFriendParallel(friends) { friend -> processOutbox(friend.id) }
+        runCatching { store.listFriends() }.onSuccess { friends ->
+            forEachFriendParallel(friends) { friend -> processOutbox(friend.id) }
+        }
         runCatching { processOrphanedOutboxes() }.onFailure { if (it is CancellationException) throw it }
     }
 
@@ -472,7 +473,8 @@ open class LocationClient(
      * Removes [friendId]. If we were still sharing with them, a StoppedSharing is queued first so
      * their app shows us as stopped rather than leaving our last pin to go stale. Local only: the
      * friend's outbox outlives the friend (see [E2eeManager.deleteFriendKeepingOutbox]) and is
-     * delivered by [processOutboxes], which callers should kick off once their UI has updated.
+     * delivered by [processOrphanedOutboxes] (also run by every poll), which callers should kick
+     * off once their UI has updated.
      */
     @Throws(Exception::class)
     open suspend fun removeFriend(
@@ -494,7 +496,7 @@ open class LocationClient(
             store.deleteFriendKeepingOutbox(friendId, farewell)
         }
         mutexLock.withLock {
-            silentDropRetries.remove(friendId)
+            silentDropRetries.keys.removeAll { it.startsWith("$friendId:") }
             orphanedOutboxGeneration++
             mayHaveOrphanedOutbox = true
         }
@@ -517,7 +519,8 @@ open class LocationClient(
      * retention are dropped undelivered: the mailbox would have expired them anyway. One drain at
      * a time - concurrent ones could re-post a message the peer has already read and acked.
      */
-    private suspend fun processOrphanedOutboxes() {
+    @Throws(Exception::class)
+    suspend fun processOrphanedOutboxes() {
         if (!mayHaveOrphanedOutbox || !orphanedOutboxMutex.tryLock()) return
         try {
             do {
@@ -546,11 +549,16 @@ open class LocationClient(
                         store.deleteOutboxByFriendId(friendId)
                         return@async
                     }
-                    runCatching { deliverInOrder(friendId, messages) }
-                        .onFailure {
-                            if (it is CancellationException) throw it
-                            mayHaveOrphanedOutbox = true
-                        }
+                    try {
+                        deliverInOrder(friendId, messages)
+                    } catch (e: WallClockTimeoutCancellationException) {
+                        // An ordinary request timeout, not a real cancellation (see pollFriend).
+                        mayHaveOrphanedOutbox = true
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
+                        mayHaveOrphanedOutbox = true
+                    }
                 }
             }.awaitAll()
         }

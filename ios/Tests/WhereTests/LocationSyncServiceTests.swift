@@ -122,9 +122,9 @@ class LocationSyncServiceTests: XCTestCase {
         func removeFriend(friendId: String, pausedFriendIds: Set<String>, sharingEnabled: Bool) async throws {
             removeFriendCalls.append((friendId, pausedFriendIds, sharingEnabled))
         }
-        var processOutboxesCallCount = 0
-        func processOutboxes() async throws {
-            processOutboxesCallCount += 1
+        var processOrphanedOutboxesCallCount = 0
+        func processOrphanedOutboxes() async throws {
+            processOrphanedOutboxesCallCount += 1
         }
         var onPoll: (@MainActor () -> Void)?
         func poll(isForeground: Bool, pausedFriendIds: Set<String>, sharingEnabled: Bool) async throws -> [Shared.UserLocation] {
@@ -483,7 +483,7 @@ class LocationSyncServiceTests: XCTestCase {
         XCTAssertEqual(mockClient.removeFriendCalls.first?.friendId, "bob")
         XCTAssertEqual(mockClient.removeFriendCalls.first?.pausedFriendIds, ["carol"])
         XCTAssertEqual(mockClient.removeFriendCalls.first?.sharingEnabled, true)
-        XCTAssertEqual(mockClient.processOutboxesCallCount, 1, "the queued StoppedSharing is delivered right away")
+        XCTAssertEqual(mockClient.processOrphanedOutboxesCallCount, 1, "the queued StoppedSharing is delivered right away")
     }
 
     // MARK: - sendLocationOnBackground

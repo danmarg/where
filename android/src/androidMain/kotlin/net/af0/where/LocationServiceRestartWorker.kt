@@ -6,6 +6,7 @@ import android.util.Log
 import androidx.annotation.VisibleForTesting
 import androidx.work.CoroutineWorker
 import androidx.work.WorkerParameters
+import kotlinx.coroutines.CancellationException
 
 class LocationServiceRestartWorker(
     context: Context,
@@ -19,6 +20,15 @@ class LocationServiceRestartWorker(
         val friends = app.e2eeManager.listFriends()
         val invites = app.e2eeManager.listPendingInvites()
         if (friends.isEmpty() && invites.isEmpty()) {
+            // The service stops with no one left, so a farewell to the last removed friend that
+            // failed to send is only retried from here.
+            try {
+                app.locationClient.processOrphanedOutboxes()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.w(TAG, "processOrphanedOutboxes failed: ${e.message}")
+            }
             Log.i(TAG, "No friends or pending invites; skipping service restart")
             return Result.success()
         }

@@ -22,7 +22,7 @@ protocol LocationClientProtocol: AnyObject, Sendable {
     func sendStoppedSharing(pausedFriendIds: Set<String>) async throws
     func sendStoppedSharingToFriend(friendId: String) async throws
     func removeFriend(friendId: String, pausedFriendIds: Set<String>, sharingEnabled: Bool) async throws
-    func processOutboxes() async throws
+    func processOrphanedOutboxes() async throws
     func poll(isForeground: Bool, pausedFriendIds: Set<String>, sharingEnabled: Bool) async throws -> [Shared.UserLocation]
     func pollPendingInvites() async throws -> [Shared.PendingInviteResult]
     func postKeyExchangeInit(friendId: String, qr: Shared.QrPayload, initPayload: Shared.KeyExchangeInitPayload) async throws
@@ -1101,9 +1101,9 @@ final class LocationSyncService: ObservableObject {
             return
         }
         do {
-            try await locationClient.processOutboxes()
+            try await locationClient.processOrphanedOutboxes()
         } catch {
-            logger.warning("processOutboxes after removing a friend failed: \(error.localizedDescription)")
+            logger.warning("processOrphanedOutboxes after removing a friend failed: \(error.localizedDescription)")
         }
     }
 
