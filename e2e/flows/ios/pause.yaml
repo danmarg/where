@@ -6,6 +6,18 @@ appId: net.af0.WhereApp
     stopApp: false
 - tapOn:
     id: "location.fill"
+# A tap occasionally doesn't register on the simulator; tap again only if it didn't take, since
+# a second tap that did would resume sharing.
+- extendedWaitUntil:
+    visible: "Paused"
+    timeout: 10000
+    optional: true
+- runFlow:
+    when:
+      notVisible: "Paused"
+    commands:
+      - tapOn:
+          id: "location.fill"
 - extendedWaitUntil:
     visible: "Paused"
     timeout: 15000
