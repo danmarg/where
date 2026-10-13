@@ -1353,6 +1353,34 @@ class LocationSyncServiceTests: XCTestCase {
         XCTAssertEqual(S.derive(isSharing: true, authorization: .authorizedAlways, accuracyAuthorization: .fullAccuracy, lastFixAccuracy: nil), .sharing)
     }
 
+    /// Turning sharing off must stop it on When-In-Use too: that case used to show the
+    /// background-location rationale instead, leaving no way to stop from the button.
+    func testSharingToggle_StopsRegardlessOfAlwaysPermission() {
+        typealias A = ContentView.SharingToggleAction
+        XCTAssertEqual(A.derive(isSharing: true, authorization: .authorizedWhenInUse), .stop)
+        XCTAssertEqual(A.derive(isSharing: true, authorization: .authorizedAlways), .stop)
+        XCTAssertEqual(A.derive(isSharing: false, authorization: .authorizedWhenInUse), .start)
+        XCTAssertEqual(A.derive(isSharing: false, authorization: .authorizedAlways), .start)
+        XCTAssertEqual(A.derive(isSharing: false, authorization: .notDetermined), .requestPermissionAndStart)
+        XCTAssertEqual(A.derive(isSharing: true, authorization: .notDetermined), .requestPermission)
+        XCTAssertEqual(A.derive(isSharing: true, authorization: .denied), .openSettings)
+        XCTAssertEqual(A.derive(isSharing: false, authorization: .restricted), .openSettings)
+    }
+
+    /// The Always upgrade is offered while sharing with a friend on When-In-Use, and only once.
+    func testAlwaysUpgradeOffer_OnlyWhenItMattersAndOnlyOnce() {
+        func offer(_ auth: CLAuthorizationStatus, sharing: Bool = true, friends: Bool = true, offered: Bool = false) -> Bool {
+            ContentView.shouldOfferAlwaysUpgrade(authorization: auth, isSharing: sharing, hasFriends: friends, alreadyOffered: offered)
+        }
+        XCTAssertTrue(offer(.authorizedWhenInUse))
+        XCTAssertFalse(offer(.authorizedWhenInUse, offered: true))
+        XCTAssertFalse(offer(.authorizedWhenInUse, sharing: false))
+        XCTAssertFalse(offer(.authorizedWhenInUse, friends: false))
+        XCTAssertFalse(offer(.authorizedAlways))
+        XCTAssertFalse(offer(.notDetermined))
+        XCTAssertFalse(offer(.denied))
+    }
+
     /// A precise fix from before Precise Location was turned off (e.g. restored at launch) must
     /// not make the pill claim "Sharing": only fixes taken under the current setting count.
     func testFixAccuracy_IgnoresFixesFromBeforeTheAccuracySettingChanged() {

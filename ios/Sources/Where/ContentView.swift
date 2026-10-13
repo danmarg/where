@@ -38,6 +38,46 @@ struct ContentView: View {
         }
     }
 
+    /// What tapping the sharing button does. With permission missing the pill says so and a tap
+    /// goes to fix it; otherwise it toggles. When-In-Use used to show the background-location
+    /// rationale here instead of stopping, so sharing couldn't be turned off.
+    enum SharingToggleAction: Equatable {
+        case stop, start, requestPermission, requestPermissionAndStart, openSettings
+
+        static func derive(isSharing: Bool, authorization: CLAuthorizationStatus) -> SharingToggleAction {
+            switch authorization {
+            case .denied, .restricted: return .openSettings
+            case .notDetermined: return isSharing ? .requestPermission : .requestPermissionAndStart
+            default: return isSharing ? .stop : .start
+            }
+        }
+    }
+
+    /// iOS shows the When-In-Use → Always prompt at most once, so the rationale leading to it is
+    /// offered once, when it matters: sharing with at least one friend on When-In-Use only.
+    static let alwaysUpgradeOfferedKey = "always_upgrade_offered"
+
+    static func shouldOfferAlwaysUpgrade(
+        authorization: CLAuthorizationStatus,
+        isSharing: Bool,
+        hasFriends: Bool,
+        alreadyOffered: Bool
+    ) -> Bool {
+        authorization == .authorizedWhenInUse && isSharing && hasFriends && !alreadyOffered
+    }
+
+    private func offerAlwaysUpgradeIfNeeded() {
+        guard scenePhase == .active, !showLocationRationale else { return }
+        if Self.shouldOfferAlwaysUpgrade(
+            authorization: locationManager.authorizationStatus,
+            isSharing: syncService.isSharingLocation,
+            hasFriends: !syncService.repo.friends.isEmpty,
+            alreadyOffered: UserDefaults.standard.bool(forKey: Self.alwaysUpgradeOfferedKey)
+        ) {
+            showLocationRationale = true
+        }
+    }
+
     private var sharingStatus: SharingStatus {
         SharingStatus.derive(
             isSharing: syncService.isSharingLocation,
@@ -204,10 +244,15 @@ struct ContentView: View {
         }
         .onAppear {
             locationManager.requestPermissionAndStart()
+            offerAlwaysUpgradeIfNeeded()
         }
         .onChange(of: scenePhase) { _, newPhase in
             handlePhaseChange(newPhase)
+            offerAlwaysUpgradeIfNeeded()
         }
+        .onChange(of: locationManager.authorizationStatus) { _, _ in offerAlwaysUpgradeIfNeeded() }
+        .onChange(of: syncService.repo.friends.isEmpty) { _, _ in offerAlwaysUpgradeIfNeeded() }
+        .onChange(of: syncService.isSharingLocation) { _, _ in offerAlwaysUpgradeIfNeeded() }
         .onReceive(syncService.repo.$pendingQrForNaming) { qr in
             if let qr = qr { newFriendName = qr.suggestedName } else { newFriendName = "" }
         }
@@ -219,9 +264,12 @@ struct ContentView: View {
         }
         .alert(MR.strings().background_location_title.localized(), isPresented: $showLocationRationale) {
             Button(MR.strings().allow.localized()) {
+                UserDefaults.standard.set(true, forKey: Self.alwaysUpgradeOfferedKey)
                 locationManager.requestAlwaysPermission()
             }
-            Button(MR.strings().skip.localized(), role: .cancel) { }
+            Button(MR.strings().skip.localized(), role: .cancel) {
+                UserDefaults.standard.set(true, forKey: Self.alwaysUpgradeOfferedKey)
+            }
         } message: {
             Text(MR.strings().background_location_message.localized())
         }
@@ -340,36 +388,20 @@ struct ContentView: View {
     }
 
     private func handleSharingButtonTap() {
-        if !syncService.isSharingLocation {
-            switch locationManager.authorizationStatus {
-            case .denied, .restricted:
-                if let url = URL(string: UIApplication.openSettingsURLString) {
-                    UIApplication.shared.open(url)
-                }
-                return
-            case .notDetermined:
-                locationManager.requestPermissionAndStart()
-            default:
-                break
-            }
+        switch SharingToggleAction.derive(isSharing: syncService.isSharingLocation, authorization: locationManager.authorizationStatus) {
+        case .stop:
+            syncService.stopSharing()
+        case .start:
             syncService.isSharingLocation = true
-            return
-        }
-
-        switch locationManager.authorizationStatus {
-        case .notDetermined:
+        case .requestPermission:
             locationManager.requestPermissionAndStart()
-        case .authorizedWhenInUse:
-            // If already sharing but only foreground, offer to upgrade to 'Always'.
-            showLocationRationale = true
-        case .denied, .restricted:
+        case .requestPermissionAndStart:
+            locationManager.requestPermissionAndStart()
+            syncService.isSharingLocation = true
+        case .openSettings:
             if let url = URL(string: UIApplication.openSettingsURLString) {
                 UIApplication.shared.open(url)
             }
-        case .authorizedAlways:
-            syncService.stopSharing()
-        @unknown default:
-            syncService.stopSharing()
         }
     }
 }
