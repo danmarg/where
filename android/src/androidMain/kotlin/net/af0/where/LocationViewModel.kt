@@ -375,8 +375,20 @@ class LocationViewModel(
 
     fun removeFriend(id: String) {
         check(Looper.myLooper() == Looper.getMainLooper()) { "removeFriend must be called on the main thread" }
+        val pausedIds = userStore.effectivelyPausedIds()
+        val sharing = isSharingLocation.value
         viewModelScope.launch {
-            e2eeManager.deleteFriend(id)
+            try {
+                // Tells them we stopped sharing (if we were) and deletes them. If the send fails
+                // here the queued message is retried by later polls, so this only fails on a
+                // local store error.
+                locationClient.removeFriend(id, pausedFriendIds = pausedIds, sharingEnabled = sharing)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.w(TAG, "removeFriend($id) failed: ${e.message}")
+                return@launch
+            }
             userStore.removePausedFriend(id)
             val updatedFriends = e2eeManager.listFriends()
             withContext(Dispatchers.Main.immediate) {

@@ -118,6 +118,10 @@ class LocationSyncServiceTests: XCTestCase {
         }
         func sendStoppedSharing(pausedFriendIds: Set<String>) async throws {}
         func sendStoppedSharingToFriend(friendId: String) async throws {}
+        var removeFriendCalls: [(friendId: String, pausedFriendIds: Set<String>, sharingEnabled: Bool)] = []
+        func removeFriend(friendId: String, pausedFriendIds: Set<String>, sharingEnabled: Bool) async throws {
+            removeFriendCalls.append((friendId, pausedFriendIds, sharingEnabled))
+        }
         var onPoll: (@MainActor () -> Void)?
         func poll(isForeground: Bool, pausedFriendIds: Set<String>, sharingEnabled: Bool) async throws -> [Shared.UserLocation] {
             _pollCallCount += 1
@@ -455,6 +459,26 @@ class LocationSyncServiceTests: XCTestCase {
     func testKeychainNotUserDefaults() async throws {
         service.displayName = "Sensitive Name"
         XCTAssertNil(UserDefaults.standard.string(forKey: "display_name"))
+    }
+
+    // MARK: - removeFriend
+
+    /// Removal goes through LocationClient.removeFriend (which tells the friend we stopped
+    /// sharing) with the current sharing state, rather than silently deleting them locally.
+    func testRemoveFriend_GoesThroughLocationClientWithSharingState() async throws {
+        let mockClient = MockLocationClient()
+        service = LocationSyncService(e2eeManager: service.e2eeManager, userStore: service.userStore, locationClient: mockClient, locationProvider: mockLocationProvider)
+        service.skipNetworkRestore = true
+        service.skipUpdateVisibleUsers = true
+        service.isSharingLocation = true
+        service.repo.pausedFriendIds = ["carol"]
+
+        await service.removeFriend(id: "bob")
+
+        XCTAssertEqual(mockClient.removeFriendCalls.count, 1)
+        XCTAssertEqual(mockClient.removeFriendCalls.first?.friendId, "bob")
+        XCTAssertEqual(mockClient.removeFriendCalls.first?.pausedFriendIds, ["carol"])
+        XCTAssertEqual(mockClient.removeFriendCalls.first?.sharingEnabled, true)
     }
 
     // MARK: - sendLocationOnBackground

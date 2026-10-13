@@ -298,49 +298,80 @@ class E2eeManager(
     ): Pair<EncryptedMessagePayload, SessionState> {
         return persistence.withFriendAndMetadataLock(friendId) { entry, metadata ->
             if (entry == null) throw Exception("Friend not found: $friendId")
+            val (updatedEntry, message) = encryptToOutbox(friendId, entry, metadata, payload)
+            PersistenceAction.Update(updatedEntry) to (message to updatedEntry.session)
+        }
+    }
 
-            val (nextSession, message) = Session.encryptMessage(entry.session, payload)
+    /**
+     * Removes a friend, first queueing [farewell] (if non-null) to them. Their outbox - the
+     * farewell and anything still stuck from before - is kept rather than deleted with the
+     * friend, so LocationClient can deliver it later from the token and ciphertext alone.
+     * Stuck messages can't simply be dropped: one may be a DH-ratchet transition the peer
+     * needs to learn the token every later message (including the farewell) is posted to.
+     */
+    suspend fun deleteFriendKeepingOutbox(
+        id: String,
+        farewell: MessagePlaintext?,
+    ) {
+        persistence.withFriendAndMetadataLock(id) { entry, metadata ->
+            if (entry == null) return@withFriendAndMetadataLock PersistenceAction.None to Unit
+            if (farewell != null) encryptToOutbox(id, entry, metadata, farewell)
+            PersistenceAction.DeleteKeepingOutbox to Unit
+        }
+    }
 
-            // Nonce safety check:
-            val seqAdvanced =
-                nextSession.sendSeq > entry.session.sendSeq ||
-                    nextSession.pn > entry.session.pn ||
-                    !nextSession.rootKey.contentEquals(entry.session.rootKey)
-            check(seqAdvanced) { "Nonce safety violation: sequence number did not advance" }
+    suspend fun getOrphanedOutbox(): List<Pair<String, EncryptedOutboxMessage>> = persistence.getOrphanedOutbox()
 
-            // Determine which token to use for THIS message.
-            // Strict DR Routing: Transition messages (seq 1) go to the old token.
-            // Subsequent messages go to the new token.
-            val tokenToUse = if (nextSession.sendSeq == 1L) nextSession.prevSendToken else nextSession.sendToken
+    suspend fun deleteOrphanedOutboxCreatedBefore(createdAtMillis: Long) = persistence.deleteOrphanedOutboxCreatedBefore(createdAtMillis)
 
-            val outboxMsg =
-                EncryptedOutboxMessage(
-                    token = tokenToUse.toHex(),
-                    payload = message,
-                )
+    private fun encryptToOutbox(
+        friendId: String,
+        entry: FriendEntry,
+        metadata: E2eeStore.MetadataScope,
+        payload: MessagePlaintext,
+    ): Pair<FriendEntry, EncryptedMessagePayload> {
+        val (nextSession, message) = Session.encryptMessage(entry.session, payload)
 
-            // lastSentTs is updated uniformly for every payload type, including Keepalive: both
-            // LocationClient.sendLocation's unresponsive-friend throttle and pollFriend's automated
-            // keepalive gate on "now - lastSentTs >= UNRESPONSIVE_SEND_INTERVAL_SECONDS", so whichever
-            // of the two fires resets the shared clock for the other. That's what keeps them mutually
-            // exclusive (a sent Location suppresses the next keepalive, and vice versa) and self-paced
-            // at a consistent ~5-minute cadence instead of firing on every poll cycle.
-            val updatedEntry =
-                entry.copy(
-                    session = nextSession,
-                    lastSentTs = currentTimeSeconds(),
-                )
+        // Nonce safety check:
+        val seqAdvanced =
+            nextSession.sendSeq > entry.session.sendSeq ||
+                nextSession.pn > entry.session.pn ||
+                !nextSession.rootKey.contentEquals(entry.session.rootKey)
+        check(seqAdvanced) { "Nonce safety violation: sequence number did not advance" }
 
-            metadata.insertOutbox(
-                msgId = outboxMsg.msgId,
-                friendId = friendId,
-                token = outboxMsg.token,
-                payloadBlob = E2eeStore.json.encodeToString(MailboxPayload.serializer(), outboxMsg.payload).encodeToByteArray(),
-                createdAt = outboxMsg.createdAt,
+        // Determine which token to use for THIS message.
+        // Strict DR Routing: Transition messages (seq 1) go to the old token.
+        // Subsequent messages go to the new token.
+        val tokenToUse = if (nextSession.sendSeq == 1L) nextSession.prevSendToken else nextSession.sendToken
+
+        val outboxMsg =
+            EncryptedOutboxMessage(
+                token = tokenToUse.toHex(),
+                payload = message,
             )
 
-            PersistenceAction.Update(updatedEntry) to (message to nextSession)
-        }
+        // lastSentTs is updated uniformly for every payload type, including Keepalive: both
+        // LocationClient.sendLocation's unresponsive-friend throttle and pollFriend's automated
+        // keepalive gate on "now - lastSentTs >= UNRESPONSIVE_SEND_INTERVAL_SECONDS", so whichever
+        // of the two fires resets the shared clock for the other. That's what keeps them mutually
+        // exclusive (a sent Location suppresses the next keepalive, and vice versa) and self-paced
+        // at a consistent ~5-minute cadence instead of firing on every poll cycle.
+        val updatedEntry =
+            entry.copy(
+                session = nextSession,
+                lastSentTs = currentTimeSeconds(),
+            )
+
+        metadata.insertOutbox(
+            msgId = outboxMsg.msgId,
+            friendId = friendId,
+            token = outboxMsg.token,
+            payloadBlob = E2eeStore.json.encodeToString(MailboxPayload.serializer(), outboxMsg.payload).encodeToByteArray(),
+            createdAt = outboxMsg.createdAt,
+        )
+
+        return updatedEntry to message
     }
 
     @Throws(Exception::class, SelfPairingException::class, InviteAlreadyAcceptedException::class, AuthenticationException::class)

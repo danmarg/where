@@ -791,6 +791,36 @@ class LocationViewModelTest {
         }
 
     /**
+     * Removing a friend goes through LocationClient.removeFriend (which tells them we stopped
+     * sharing) with the current sharing state, rather than silently deleting them locally.
+     */
+    @Test
+    fun testRemoveFriend_goesThroughLocationClientWithSharingState() =
+        runTest {
+            val mockClient = mockk<LocationClient>(relaxed = true)
+            val userStore = net.af0.where.e2ee.UserStore(FakeRawKeyValueStorage())
+            userStore.setSharing(true)
+            userStore.setPausedFriends(setOf("carol"))
+            viewModel =
+                LocationViewModel(
+                    app,
+                    e2eeManagerParam = E2eeManager(createTestSqlDriver(), UnconfinedTestDispatcher()),
+                    locationClientParam = mockClient,
+                    userStoreParam = userStore,
+                    startPolling = false,
+                    locationSourceParam = TestFakeLocationSource(),
+                    uiStateStoreParam = FakeUiStateStore(),
+                )
+
+            viewModel!!.removeFriend("bob")
+            advanceUntilIdle()
+
+            io.mockk.coVerify(exactly = 1) {
+                mockClient.removeFriend("bob", pausedFriendIds = setOf("carol"), sharingEnabled = true)
+            }
+        }
+
+    /**
      * If the app was killed with a per-friend timer set to expire in the past, the watcher
      * coroutine must fire the expiry on the next launch: that friend ends up in
      * pausedFriendIds and a single StoppedSharing is enqueued for them. This is the

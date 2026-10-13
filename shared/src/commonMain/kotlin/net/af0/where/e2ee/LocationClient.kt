@@ -28,6 +28,9 @@ const val UNRESPONSIVE_SEND_INTERVAL_SECONDS = 5 * 60L
  */
 const val AUTOMATED_KEEPALIVE_BACKSTOP_SECONDS = 3 * UNRESPONSIVE_SEND_INTERVAL_SECONDS
 
+/** A removed friend's undelivered messages are retried this long - the server's own retention. */
+const val ORPHANED_OUTBOX_RETENTION_MILLIS = FriendEntry.ACK_TIMEOUT_SECONDS * 1000
+
 /**
  * Orchestrates the end-to-end encrypted location sharing protocol.
  * Unifies polling, decryption, ratchet rotation, and sending for all platforms.
@@ -462,6 +465,54 @@ open class LocationClient(
     suspend fun processOutboxes() {
         val friends = runCatching { store.listFriends() }.getOrElse { return }
         forEachFriendParallel(friends) { friend -> processOutbox(friend.id) }
+        runCatching { processOrphanedOutboxes() }.onFailure { if (it is CancellationException) throw it }
+    }
+
+    /**
+     * Removes [friendId]. If we were still sharing with them, a StoppedSharing goes out first so
+     * their app shows us as stopped rather than leaving our last pin to go stale. The friend's
+     * outbox outlives the friend (see [E2eeManager.deleteFriendKeepingOutbox]); delivery is
+     * attempted now and, if that fails, retried by [processOutboxes] until it lands or ages out.
+     */
+    @Throws(Exception::class)
+    open suspend fun removeFriend(
+        friendId: String,
+        pausedFriendIds: Set<String> = emptySet(),
+        sharingEnabled: Boolean = true,
+    ) {
+        getFriendMutex(friendId).withLock {
+            val friend = store.getFriend(friendId) ?: return
+            val farewell =
+                if (sharingEnabled && isActiveFriend(friend, pausedFriendIds)) {
+                    MessagePlaintext.StoppedSharing(ts = currentTimeSeconds())
+                } else {
+                    null
+                }
+            store.deleteFriendKeepingOutbox(friendId, farewell)
+        }
+        runCatching { processOrphanedOutboxes() }.onFailure { if (it is CancellationException) throw it }
+    }
+
+    /**
+     * Delivers outbox rows left behind by removed friends, oldest first per friend, stopping a
+     * friend's queue at its first failure to keep order. Rows older than the server's retention
+     * are dropped undelivered: the mailbox would have expired them anyway.
+     */
+    private suspend fun processOrphanedOutboxes() {
+        store.deleteOrphanedOutboxCreatedBefore(currentTimeMillis() - ORPHANED_OUTBOX_RETENTION_MILLIS)
+        val byFriend = store.getOrphanedOutbox().groupBy({ it.first }, { it.second })
+        for ((friendId, messages) in byFriend) {
+            try {
+                for (msg in messages) {
+                    service.post(msg.token, msg.payload)
+                    store.removeFromOutbox(friendId, msg.msgId)
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                // Leave the rest queued for the next attempt.
+            }
+        }
     }
 
     /**

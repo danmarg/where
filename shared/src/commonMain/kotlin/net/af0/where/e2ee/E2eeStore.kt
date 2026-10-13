@@ -32,6 +32,9 @@ internal sealed class PersistenceAction {
 
     object Delete : PersistenceAction()
 
+    /** Deletes the friend but leaves its outbox rows for [E2eeStore.getOrphanedOutbox] to deliver. */
+    object DeleteKeepingOutbox : PersistenceAction()
+
     object None : PersistenceAction()
 }
 
@@ -128,6 +131,10 @@ internal class E2eeStore(
                         }
                         is PersistenceAction.Delete -> {
                             deleteFriendInternal(friendId)
+                            scope.stageFriendDeletion(friendId)
+                        }
+                        is PersistenceAction.DeleteKeepingOutbox -> {
+                            database.friendsQueries.deleteFriend(friendId)
                             scope.stageFriendDeletion(friendId)
                         }
                         is PersistenceAction.None -> {}
@@ -297,15 +304,27 @@ internal class E2eeStore(
         }
 
     internal fun getOutboxInternal(friendId: String): List<EncryptedOutboxMessage> {
-        return database.outboxQueries.getOutboxForFriend(friendId).executeAsList().map { row ->
-            EncryptedOutboxMessage(
-                msgId = row.msgId,
-                token = row.token,
-                payload = json.decodeFromString(MailboxPayload.serializer(), row.payloadBlob.decodeToString()),
-                createdAt = row.createdAt,
-            )
-        }
+        return database.outboxQueries.getOutboxForFriend(friendId).executeAsList().map { it.toMessage() }
     }
+
+    /** Outbox rows whose friend has been removed, oldest first, as (friendId, message) pairs. */
+    suspend fun getOrphanedOutbox(): List<Pair<String, EncryptedOutboxMessage>> =
+        withStoreLock {
+            database.outboxQueries.getOrphanedOutbox().executeAsList().map { it.friendId to it.toMessage() }
+        }
+
+    suspend fun deleteOrphanedOutboxCreatedBefore(createdAtMillis: Long) =
+        withStoreLock {
+            database.outboxQueries.deleteOrphanedOutboxCreatedBefore(createdAtMillis)
+        }
+
+    private fun net.af0.where.db.Outbox.toMessage() =
+        EncryptedOutboxMessage(
+            msgId = msgId,
+            token = token,
+            payload = json.decodeFromString(MailboxPayload.serializer(), payloadBlob.decodeToString()),
+            createdAt = createdAt,
+        )
 
     private fun net.af0.where.db.Friends.toEntry() =
         FriendEntry(

@@ -26,6 +26,14 @@ DELETE FROM Outbox WHERE friendId = ? AND token = ?;
 getOutboxForFriend:
 SELECT * FROM Outbox WHERE friendId = ? ORDER BY createdAt ASC;
 
+-- Rows left behind by a removed friend (see E2eeManager.deleteFriendKeepingOutbox): delivery
+-- needs only the token and the already-encrypted payload, not the session.
+getOrphanedOutbox:
+SELECT * FROM Outbox WHERE friendId NOT IN (SELECT id FROM Friends) ORDER BY createdAt ASC;
+
+deleteOrphanedOutboxCreatedBefore:
+DELETE FROM Outbox WHERE friendId NOT IN (SELECT id FROM Friends) AND createdAt < ?;
+
 -- Cleanup
 deleteAll:
 DELETE FROM Outbox;
