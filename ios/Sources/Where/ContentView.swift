@@ -235,6 +235,12 @@ struct ContentView: View {
                 args: [ListFormatter.localizedString(byJoining: syncService.discardedSessionNames) as NSString]
             ))
         }
+        .alert(syncService.inviteError ?? "", isPresented: Binding(
+            get: { syncService.inviteError != nil },
+            set: { if !$0 { syncService.dismissInviteError() } }
+        )) {
+            Button(MR.strings().ok.localized(), role: .cancel) { }
+        }
         .alert(MR.strings().connection_error.localized(), isPresented: $showErrorAlert) {
             Button(MR.strings().ok.localized(), role: .cancel) { }
         } message: {

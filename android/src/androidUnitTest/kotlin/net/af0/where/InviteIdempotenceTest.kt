@@ -3,18 +3,24 @@ package net.af0.where
 import android.app.Application
 import android.content.Context
 import androidx.test.core.app.ApplicationProvider
+import app.cash.sqldelight.driver.android.AndroidSqliteDriver
+import dev.icerock.moko.resources.desc.Resource
+import dev.icerock.moko.resources.desc.StringDesc
 import io.mockk.coEvery
 import io.mockk.coVerify
 import io.mockk.mockk
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.StandardTestDispatcher
+import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
+import net.af0.where.db.WhereDatabase
 import net.af0.where.e2ee.E2eeManager
 import net.af0.where.e2ee.FriendEntry
+import net.af0.where.e2ee.InviteAlreadyAcceptedException
 import net.af0.where.e2ee.KeyExchangeInitPayload
 import net.af0.where.e2ee.QrPayload
 import org.junit.After
@@ -38,6 +44,7 @@ class InviteIdempotenceTest {
     private val testDispatcher = StandardTestDispatcher()
     private lateinit var e2ee: E2eeManager
     private lateinit var uiState: FakeUiStateStore
+    private lateinit var source: TestFakeLocationSource
     private lateinit var vm: LocationViewModel
     private var now = 1_000_000L
 
@@ -55,13 +62,14 @@ class InviteIdempotenceTest {
         val exchanged = mockk<KeyExchangeInitPayload>(relaxed = true) to mockk<FriendEntry>(relaxed = true)
         coEvery { e2ee.processScannedQr(any(), any()) } returns exchanged
         uiState = FakeUiStateStore()
+        source = TestFakeLocationSource()
         vm =
             LocationViewModel(
                 app,
                 e2eeManagerParam = e2ee,
                 locationClientParam = mockk(relaxed = true),
                 startPolling = false,
-                locationSourceParam = TestFakeLocationSource(),
+                locationSourceParam = source,
                 uiStateStoreParam = uiState,
             )
         val prefs = app.getSharedPreferences("test_consumed_invites", Context.MODE_PRIVATE)
@@ -69,6 +77,8 @@ class InviteIdempotenceTest {
         vm.consumedInvites = ConsumedInvites(prefs) { now }
         vm.serviceStarter = {}
     }
+
+    private fun inMemoryDriver() = AndroidSqliteDriver(WhereDatabase.Schema, app, null)
 
     @After
     fun tearDown() {
@@ -127,6 +137,50 @@ class InviteIdempotenceTest {
             advanceUntilIdle()
 
             assertTrue(vm.processQrUrl(qr.toUrl()), "no pairing was created, so the invite may be retried")
+        }
+
+    @Test
+    fun inviteAcceptedBeforeTheUpgradeIsRejected() =
+        runTest(testDispatcher) {
+            // A friend paired from this invite by an app version that didn't record consumed
+            // invites: consumedInvites is empty, but the friend list knows.
+            val qr = E2eeManager(inMemoryDriver(), UnconfinedTestDispatcher()).createInvite("Alice")
+            val (_, friend) = E2eeManager(inMemoryDriver(), UnconfinedTestDispatcher()).processScannedQr(qr, "Bob")
+            source.onFriendsUpdated(listOf(friend))
+
+            assertFalse(vm.processQrUrl(qr.toUrl()))
+            assertNull(uiState.pendingQrForNaming.value, "no naming dialog for an already-accepted invite")
+            assertEquals(StringDesc.Resource(net.af0.where.shared.MR.strings.invite_already_used), vm.inviteError.value)
+        }
+
+    @Test
+    fun replayCaughtAtConfirmShowsTheErrorAndStaysConsumed() =
+        runTest(testDispatcher) {
+            // E.g. the friend list hadn't loaded yet when the link was opened.
+            coEvery { e2ee.processScannedQr(any(), any()) } throws InviteAlreadyAcceptedException()
+            val qr = invite()
+            vm.processQrUrl(qr.toUrl())
+            vm.confirmQrScan(qr, "Alice")
+            advanceUntilIdle()
+
+            assertEquals(StringDesc.Resource(net.af0.where.shared.MR.strings.invite_already_used), vm.inviteError.value)
+            assertFalse(vm.processQrUrl(qr.toUrl()), "an already-accepted invite stays consumed")
+        }
+
+    @Test
+    fun inviteErrorStaysUntilDismissed() =
+        runTest(testDispatcher) {
+            val qr = invite()
+            vm.processQrUrl(qr.toUrl())
+            vm.confirmQrScan(qr, "Alice")
+            advanceUntilIdle()
+            vm.processQrUrl(qr.toUrl())
+
+            // A successful poll resets the connection status; the invite error must survive it.
+            source.onConnectionStatus(net.af0.where.e2ee.ConnectionStatus.Ok)
+            assertEquals(StringDesc.Resource(net.af0.where.shared.MR.strings.invite_already_used), vm.inviteError.value)
+            vm.dismissInviteError()
+            assertNull(vm.inviteError.value)
         }
 
     @Test

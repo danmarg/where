@@ -67,6 +67,13 @@ data class FriendEntry(
 
     val id: String get() = canonicalId(session.aliceFp, session.bobFp)
     val safetyNumber: String get() = formatSafetyNumber(safetyNumber(session.aliceEkPub, session.bobEkPub))
+
+    /**
+     * True if this pairing came from [qr]: the session's inviter fingerprint is fixed at pairing
+     * time and unique per invite. Lets a re-opened or redelivered invite link be rejected for as
+     * long as the friend exists, including friends paired before the app tracked this.
+     */
+    fun isFromInvite(qr: QrPayload): Boolean = session.aliceFp.contentEquals(fingerprint(qr.ekPub))
 }
 
 /**
@@ -336,7 +343,7 @@ class E2eeManager(
         }
     }
 
-    @Throws(Exception::class, SelfPairingException::class, AuthenticationException::class)
+    @Throws(Exception::class, SelfPairingException::class, InviteAlreadyAcceptedException::class, AuthenticationException::class)
     suspend fun processScannedQr(
         qr: QrPayload,
         bobSuggestedName: String = "",
@@ -374,6 +381,10 @@ class E2eeManager(
             )
             if (metadata.pendingInvites.any { it.qrPayload.ekPub.contentEquals(qr.ekPub) }) {
                 throw SelfPairingException()
+            }
+            // Checked under the store lock, so two confirms of the same invite can't both pair.
+            if (metadata.friends.any { it.isFromInvite(qr) }) {
+                throw InviteAlreadyAcceptedException()
             }
             PersistenceAction.Update(entry) to (payload to entry)
         }

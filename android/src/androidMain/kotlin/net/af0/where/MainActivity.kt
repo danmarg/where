@@ -261,6 +261,17 @@ class MainActivity : ComponentActivity() {
                     )
                 }
 
+                val inviteError by viewModel.inviteError.collectAsStateWithLifecycle()
+                inviteError?.let { message ->
+                    AlertDialog(
+                        onDismissRequest = { viewModel.dismissInviteError() },
+                        text = { Text(message.toString(this@MainActivity)) },
+                        confirmButton = {
+                            TextButton(onClick = { viewModel.dismissInviteError() }) { Text(stringResource(MR.strings.ok)) }
+                        },
+                    )
+                }
+
                 val showBatteryOptimizationDialog by viewModel.showBatteryOptimizationDialog.collectAsStateWithLifecycle()
                 if (showBatteryOptimizationDialog) {
                     AlertDialog(

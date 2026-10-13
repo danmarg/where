@@ -14,6 +14,7 @@ import androidx.work.ExistingPeriodicWorkPolicy
 import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkManager
 import app.cash.sqldelight.driver.android.AndroidSqliteDriver
+import dev.icerock.moko.resources.StringResource
 import dev.icerock.moko.resources.desc.Resource
 import dev.icerock.moko.resources.desc.StringDesc
 import kotlinx.coroutines.CancellationException
@@ -33,6 +34,8 @@ import kotlinx.coroutines.withContext
 import net.af0.where.e2ee.ConnectionStatus
 import net.af0.where.e2ee.E2eeManager
 import net.af0.where.e2ee.FriendEntry
+import net.af0.where.e2ee.InviteAlreadyAcceptedException
+import net.af0.where.e2ee.InviteExpiredException
 import net.af0.where.e2ee.InviteState
 import net.af0.where.e2ee.KeyExchangeInitPayload
 import net.af0.where.e2ee.LocationClient
@@ -141,6 +144,12 @@ class LocationViewModel(
 
     private val _showBatteryOptimizationDialog = MutableStateFlow(false)
     val showBatteryOptimizationDialog: StateFlow<Boolean> = _showBatteryOptimizationDialog.asStateFlow()
+
+    // Why an invite the user just opened or confirmed was refused. Shown in a dialog until
+    // dismissed: the connection status would be cleared by the next successful poll, seconds
+    // later, usually before the user has seen it.
+    private val _inviteError = MutableStateFlow<StringDesc?>(null)
+    val inviteError: StateFlow<StringDesc?> = _inviteError.asStateFlow()
 
     val ownLocation: StateFlow<UserLocation?> =
         combine(locationSource.lastLocation, isSharingLocation) { myLoc, sharing ->
@@ -416,19 +425,22 @@ class LocationViewModel(
         val qr =
             QrPayload.fromUrl(url) ?: run {
                 Log.e(TAG, "processQrUrl: failed to parse URL")
-                locationSource.onConnectionStatus(ConnectionStatus.Error(StringDesc.Resource(MR.strings.invalid_qr_code)))
+                showInviteError(MR.strings.invalid_qr_code)
                 return false
             }
         if (qr.isExpired()) {
             Log.e(TAG, "processQrUrl: invite expired")
-            locationSource.onConnectionStatus(ConnectionStatus.Error(StringDesc.Resource(MR.strings.invite_expired)))
+            showInviteError(MR.strings.invite_expired)
             return false
         }
         // Idempotent per invite: accepting one pairs with fresh keys, so a redelivered or
-        // re-opened link for an invite we already accepted must not pair a second time.
-        if (consumedInvites.contains(qr)) {
+        // re-opened link for an invite we already accepted must not pair a second time. The
+        // friend list covers every pairing that still exists (including ones from before
+        // consumedInvites existed); consumedInvites also covers a friend since removed.
+        // E2eeManager.processScannedQr enforces the friend-list check again under its lock.
+        if (consumedInvites.contains(qr) || friends.value.any { it.isFromInvite(qr) }) {
             Log.w(TAG, "processQrUrl: invite already accepted")
-            locationSource.onConnectionStatus(ConnectionStatus.Error(StringDesc.Resource(MR.strings.invite_already_used)))
+            showInviteError(MR.strings.invite_already_used)
             return false
         }
         // Already showing the naming dialog for this exact invite: nothing to do.
@@ -458,7 +470,7 @@ class LocationViewModel(
         uiStateStore.onPendingQrForNaming(null)
         if (consumedInvites.contains(qr)) {
             Log.w(TAG, "confirmQrScan: invite already accepted")
-            locationSource.onConnectionStatus(ConnectionStatus.Error(StringDesc.Resource(MR.strings.invite_already_used)))
+            showInviteError(MR.strings.invite_already_used)
             return
         }
         // Marked before the async exchange so a duplicate confirm can't start a second one.
@@ -513,11 +525,16 @@ class LocationViewModel(
                 } finally {
                     _isExchanging.value = false
                 }
+            } catch (e: InviteAlreadyAcceptedException) {
+                // Already paired from this invite (so it stays marked as consumed).
+                Log.w(TAG, "confirmQrScan: invite already accepted")
+                showInviteError(MR.strings.invite_already_used)
+                _isExchanging.value = false
             } catch (e: Exception) {
                 Log.e(TAG, "confirmQrScan: processScannedQr failed", e)
                 // No pairing was created, so the invite may be tried again.
                 consumedInvites.remove(qr)
-                updateStatus(e)
+                if (e is InviteExpiredException) showInviteError(MR.strings.invite_expired) else updateStatus(e)
                 _isExchanging.value = false
             }
         }
@@ -630,6 +647,14 @@ class LocationViewModel(
         uiStateStore.setInviteSheetShowing(false)
         locationSource.resetRapidPoll()
         _inviteState.value = InviteState.None
+    }
+
+    private fun showInviteError(message: StringResource) {
+        _inviteError.value = StringDesc.Resource(message)
+    }
+
+    fun dismissInviteError() {
+        _inviteError.value = null
     }
 
     private fun updateStatus(e: Throwable?) {

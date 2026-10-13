@@ -42,7 +42,7 @@ class LocationOptimizationsTests: XCTestCase {
         LocationManager.shared.isTrackingOverride = true
         self.mockLocationProvider = MockLocationProvider()
         self.mockLocationClient = MockLocationClient()
-        let e2eeManager = Shared.E2eeManager(sqlDriver: Shared.IosSqlDriverKt.createIosSqlDriver(name: ":memory:"))
+        let e2eeManager = makeTestE2eeManager()
         let userStore = Shared.UserStore(storage: LocationSyncServiceTests.MockRawKeyValueStorage())
         self.service = LocationSyncService(e2eeManager: e2eeManager, userStore: userStore, locationClient: mockLocationClient, locationProvider: mockLocationProvider)
         self.service.beginBackgroundTask = { _, _ in .invalid }

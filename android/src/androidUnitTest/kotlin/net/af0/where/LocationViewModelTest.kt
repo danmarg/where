@@ -1079,12 +1079,7 @@ class LocationViewModelTest {
 
             assertFalse(vm.processQrUrl("not a where invite"))
 
-            val status = source.connectionStatus.value
-            assertTrue(status is ConnectionStatus.Error, "bad QR must surface an error, was $status")
-            assertEquals(
-                StringDesc.Resource(net.af0.where.shared.MR.strings.invalid_qr_code),
-                (status as ConnectionStatus.Error).message,
-            )
+            assertEquals(StringDesc.Resource(net.af0.where.shared.MR.strings.invalid_qr_code), vm.inviteError.value)
         }
 
     @Test
@@ -1103,12 +1098,7 @@ class LocationViewModelTest {
 
             assertFalse(vm.processQrUrl(qr.toUrl()))
 
-            val status = source.connectionStatus.value
-            assertTrue(status is ConnectionStatus.Error, "expired invite must surface an error, was $status")
-            assertEquals(
-                StringDesc.Resource(net.af0.where.shared.MR.strings.invite_expired),
-                (status as ConnectionStatus.Error).message,
-            )
+            assertEquals(StringDesc.Resource(net.af0.where.shared.MR.strings.invite_expired), vm.inviteError.value)
         }
 
     @Test
@@ -1126,7 +1116,7 @@ class LocationViewModelTest {
                 )
 
             assertTrue(vm.processQrUrl(qr.toUrl()))
-            assertEquals(ConnectionStatus.Ok, source.connectionStatus.value)
+            assertNull(vm.inviteError.value)
         }
 
     @Test
