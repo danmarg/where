@@ -13,7 +13,6 @@ import kotlinx.serialization.json.put
  * High-level session operations using a standard Double Ratchet.
  */
 object Session {
-    private const val HEADER_NONCE_SIZE = 12
     private const val HEADER_TAG_SIZE = 16
 
     fun encryptMessage(
@@ -413,9 +412,7 @@ object Session {
         longToBeBytes(pn).copyInto(plaintext, 73)
         plaintext[81] = 0 // flags
 
-        val nonce = randomBytes(HEADER_NONCE_SIZE)
-        val ct = aeadEncrypt(key.bytes, nonce, plaintext, aad)
-        return nonce + ct
+        return sealRandomNonce(key, plaintext, aad)
     }
 
     data class DecryptedHeader(val dhPub: DhPublicKey, val ackRemoteDhPub: DhPublicKey, val seq: Long, val pn: Long)
@@ -425,14 +422,12 @@ object Session {
         envelope: ByteArray,
         aad: ByteArray = ByteArray(0),
     ): DecryptedHeader {
-        if (envelope.size < HEADER_NONCE_SIZE + HEADER_TAG_SIZE + 82) {
+        if (envelope.size < RANDOM_NONCE_SIZE + HEADER_TAG_SIZE + 82) {
             throw ProtocolException("header envelope too small")
         }
-        val nonce = envelope.copyOfRange(0, HEADER_NONCE_SIZE)
-        val ct = envelope.copyOfRange(HEADER_NONCE_SIZE, envelope.size)
         val plaintext =
             try {
-                aeadDecrypt(key.bytes, nonce, ct, aad)
+                openRandomNonce(key, envelope, aad)
             } catch (e: Exception) {
                 throw AuthenticationException("header decryption failed — signature mismatch or corrupted data", e)
             }

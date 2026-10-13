@@ -70,7 +70,12 @@ object KeyExchange {
         val bobPriv = DhPrivateKey(ekB.priv)
         val bobPub = DhPublicKey(ekB.pub)
         val sk = dh(bobPriv, alicePub)
-        requireNonZeroSharedSecret(sk)
+        try {
+            requireNonZeroSharedSecret(sk)
+        } catch (e: AuthenticationException) {
+            bobPriv.zeroize()
+            throw e
+        }
 
         val session =
             initSession(
@@ -204,23 +209,9 @@ object KeyExchange {
         ekBPub: DhPublicKey,
         suggestedName: String,
     ): ByteArray {
-        val kName =
-            hkdfSha256(
-                ikm = sk.bytes,
-                salt = null,
-                info = "Where-v1-SuggestedName".encodeToByteArray(),
-                length = 32,
-            )
+        val kName = nameKey(sk)
         try {
-            val nameNonce = randomBytes(12)
-            val nameCt =
-                aeadEncrypt(
-                    key = kName,
-                    nonce = nameNonce,
-                    plaintext = suggestedName.encodeToByteArray(),
-                    aad = ekAPub.bytes + ekBPub.bytes,
-                )
-            return nameNonce + nameCt
+            return sealRandomNonce(kName, suggestedName.encodeToByteArray(), aad = ekAPub.bytes + ekBPub.bytes)
         } finally {
             kName.zeroize()
         }
@@ -235,30 +226,25 @@ object KeyExchange {
         if (encryptedName.size < 28) { // 12-byte nonce + 16-byte tag
             throw AuthenticationException("encryptedName payload is too short")
         }
-        val kName =
-            hkdfSha256(
-                ikm = sk.bytes,
-                salt = null,
-                info = "Where-v1-SuggestedName".encodeToByteArray(),
-                length = 32,
-            )
+        val kName = nameKey(sk)
         try {
-            val nonce = encryptedName.copyOfRange(0, 12)
-            val ct = encryptedName.copyOfRange(12, encryptedName.size)
-            val plaintext =
-                aeadDecrypt(
-                    key = kName,
-                    nonce = nonce,
-                    ciphertext = ct,
-                    aad = ekAPub.bytes + ekBPub.bytes,
-                )
-            return plaintext.decodeToString()
+            return openRandomNonce(kName, encryptedName, aad = ekAPub.bytes + ekBPub.bytes).decodeToString()
         } catch (e: Exception) {
             throw AuthenticationException("Failed to decrypt suggested_name: ${e.message}")
         } finally {
             kName.zeroize()
         }
     }
+
+    private fun nameKey(sk: SharedSecret) =
+        NameKey(
+            hkdfSha256(
+                ikm = sk.bytes,
+                salt = null,
+                info = "Where-v1-SuggestedName".encodeToByteArray(),
+                length = 32,
+            ),
+        )
 
     /**
      * Derive the initial session state from SK.

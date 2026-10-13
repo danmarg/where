@@ -160,7 +160,9 @@ class CatchUpTest {
 
             for (i in 61..70) {
                 val (msg, session) = bobManager.encryptAndAdvance(bobEntry.id, MessagePlaintext.Location(37.0, -122.0, 0.0, 1000L + i))
-                mailbox.post("http://localhost", session.transportFor(session.sendSeq).token.toHex(), msg)
+                // Independent of transportFor: an epoch's first message goes to the previous token.
+                val tokenToUse = if (session.sendSeq == 1L) session.prevSendToken else session.sendToken
+                mailbox.post("http://localhost", tokenToUse.toHex(), msg)
             }
 
             // Alice polls. She should get 60 from Token A, then follow to Token B and get 10 more.

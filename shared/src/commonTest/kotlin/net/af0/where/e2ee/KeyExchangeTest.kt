@@ -511,7 +511,7 @@ class KeyExchangeTest {
     @Test
     fun `bobProcessQr rejects a public key of the wrong size`() {
         val (qr, _) = KeyExchange.aliceCreateQrPayload("Alice")
-        assertFailsWith<AuthenticationException> {
+        assertFailsWith<ProtocolException> {
             KeyExchange.bobProcessQr(qr.copy(ekPub = qr.ekPub.copyOf(31)), "Bob")
         }
     }
@@ -520,7 +520,7 @@ class KeyExchangeTest {
     fun `aliceProcessInit rejects a public key of the wrong size`() {
         val (qr, aliceEkPriv) = KeyExchange.aliceCreateQrPayload("Alice")
         val (msg, _) = KeyExchange.bobProcessQr(qr, "Bob")
-        assertFailsWith<AuthenticationException> {
+        assertFailsWith<ProtocolException> {
             KeyExchange.aliceProcessInit(msg.copy(ekPub = msg.ekPub + 0), aliceEkPriv, qr.ekPub)
         }
     }

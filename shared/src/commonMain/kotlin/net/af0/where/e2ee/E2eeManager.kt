@@ -446,12 +446,12 @@ class E2eeManager(
                     !result.finalSession.rootKey.constantTimeEquals(entry.session.rootKey)
 
             // If the peer ratcheted forward, it proves they received our transition message
-            // (sent to prevSendToken). Delete only that stale entry — not any pending message
-            // we may have queued for the current sendToken.
+            // (the epoch's first, see transportFor). Delete only that stale entry — not any
+            // pending message we may have queued for the current sendToken.
             if (!result.finalSession.rootKey.constantTimeEquals(entry.session.rootKey)) {
                 persistence.deleteOutboxByFriendIdAndTokenInternal(
                     friendId,
-                    entry.session.prevSendToken.toHex(),
+                    entry.session.transportFor(1).token.toHex(),
                 )
             }
 
