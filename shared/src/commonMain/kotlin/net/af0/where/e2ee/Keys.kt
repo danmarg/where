@@ -23,7 +23,7 @@ import kotlinx.serialization.encoding.Encoder
  * Base64 string its ByteArray did, so the stored JSON is unchanged.
  */
 
-/** Base class of the typed byte strings. Not for comparing secrets in constant time. */
+/** Base class of the typed byte strings. `==` is not constant-time; see [constantTimeEquals]. */
 sealed class KeyBytes(internal val bytes: ByteArray) {
     internal val size: Int get() = bytes.size
 
@@ -36,6 +36,9 @@ sealed class KeyBytes(internal val bytes: ByteArray) {
 
     fun toHex(): String = bytes.toHex()
 
+    /** Content equality in time independent of where the bytes differ; use it for secrets. */
+    internal fun constantTimeEquals(other: KeyBytes): Boolean = other::class == this::class && constantTimeEquals(bytes, other.bytes)
+
     override fun equals(other: Any?): Boolean = other is KeyBytes && other::class == this::class && bytes.contentEquals(other.bytes)
 
     override fun hashCode(): Int = 31 * this::class.hashCode() + bytes.contentHashCode()
@@ -44,11 +47,11 @@ sealed class KeyBytes(internal val bytes: ByteArray) {
 }
 
 /** Keying material a routing token may be derived from: the root key, or SK at bootstrap. */
-sealed interface TokenSeed
+sealed class TokenSeed(bytes: ByteArray) : KeyBytes(bytes)
 
 /** Root key: KDF_RK salt; 32 bytes. */
 @Serializable(with = RootKey.Serializer::class)
-class RootKey(bytes: ByteArray) : KeyBytes(bytes), TokenSeed {
+class RootKey(bytes: ByteArray) : TokenSeed(bytes) {
     override fun copyOf() = RootKey(bytes.copyOf())
 
     internal object Serializer : KeyBytesSerializer<RootKey>("RootKey", ::RootKey)
@@ -81,7 +84,7 @@ class MessageNonce(bytes: ByteArray) : KeyBytes(bytes) {
 }
 
 /** X25519 output; 32 bytes. Input keying material only, never a key itself. */
-class SharedSecret(bytes: ByteArray) : KeyBytes(bytes), TokenSeed {
+class SharedSecret(bytes: ByteArray) : TokenSeed(bytes) {
     override fun copyOf() = SharedSecret(bytes.copyOf())
 }
 
@@ -144,7 +147,10 @@ class SkippedMessageKey(bytes: ByteArray) : KeyBytes(bytes) {
             step: ChainStep,
             nowMillis: Long,
         ): SkippedMessageKey {
-            val packed = step.messageKey.bytes + step.messageNonce.bytes + longToBeBytes(nowMillis)
+            val packed = ByteArray(SIZE)
+            step.messageKey.bytes.copyInto(packed, 0)
+            step.messageNonce.bytes.copyInto(packed, 32)
+            longToBeBytes(nowMillis).copyInto(packed, 44)
             step.messageKey.zeroize()
             step.messageNonce.zeroize()
             return SkippedMessageKey(packed)
@@ -203,6 +209,16 @@ internal class Parties(
             bobFp: Fingerprint,
         ) = if (isAlice) Parties(aliceFp, bobFp) else Parties(bobFp, aliceFp)
     }
+}
+
+/** Compares [a] and [b] without exiting early at the first difference. */
+internal fun constantTimeEquals(
+    a: ByteArray,
+    b: ByteArray,
+): Boolean {
+    var diff = a.size xor b.size
+    for (i in 0 until minOf(a.size, b.size)) diff = diff or (a[i].toInt() xor b[i].toInt())
+    return diff == 0
 }
 
 /** X25519 between our private key and their public key. */

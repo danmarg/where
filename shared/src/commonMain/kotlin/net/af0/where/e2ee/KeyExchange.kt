@@ -358,10 +358,6 @@ object KeyExchange {
         ekBPub: DhPublicKey,
         expected: ByteArray,
     ): Boolean {
-        val computed = buildKeyConfirmation(sk, ekAPub, ekBPub)
-        var diff = computed.size xor expected.size
-        val len = minOf(computed.size, expected.size)
-        for (i in 0 until len) diff = diff or (computed[i].toInt() xor expected[i].toInt())
-        return diff == 0
+        return constantTimeEquals(buildKeyConfirmation(sk, ekAPub, ekBPub), expected)
     }
 }

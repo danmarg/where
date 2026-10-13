@@ -64,8 +64,12 @@ data class SessionState(
     val sendHeaderKey: HeaderKey = HeaderKey(ByteArray(0)),
     val nextHeaderKey: HeaderKey = HeaderKey(ByteArray(0)),
 ) {
-    /** This party's and the peer's fingerprints, for direction-bound tokens and AAD. */
-    internal val parties: Parties get() = Parties(localFp, remoteFp)
+    /**
+     * This party's and the peer's fingerprints, for direction-bound tokens and AAD. Derived from
+     * the role rather than read from localFp/remoteFp, which are empty in sessions stored before
+     * those fields existed.
+     */
+    internal val parties: Parties get() = Parties.of(isAlice, aliceFp, bobFp)
 
     /** Header AAD (#186): both bootstrap fingerprints, Alice's first, the same on both sides. */
     internal fun headerAad(): ByteArray = aliceFp.bytes + bobFp.bytes
@@ -105,12 +109,12 @@ data class SessionState(
      * buffers may be shared with another live state.
      */
     internal fun zeroizeAll() {
-        byteArrayFields().forEach { it.zeroize() }
+        keyFields().forEach { it.zeroize() }
         skippedMessageKeys.values.forEach { it.zeroize() }
     }
 
     /**
-     * The bytes of every key field declared in the primary constructor, in declaration order.
+     * Every key field declared in the primary constructor, in declaration order.
      * equals()/hashCode() fold over this instead of each maintaining its own hand-written
      * field list, so a field added to the constructor but missed here fails loudly (wrong
      * equals/hashCode breaks tests immediately) instead of silently. deepCopy() above still
@@ -118,23 +122,22 @@ data class SessionState(
      * arguments and can't be driven from a list — SessionStateDeepCopyTest guards that one
      * against the same field-added-but-missed risk instead.
      */
-    private fun byteArrayFields(): Array<ByteArray> =
-        arrayOf<KeyBytes>(
+    private fun keyFields(): Array<KeyBytes> =
+        arrayOf(
             rootKey, sendChainKey, recvChainKey, sendToken, recvToken,
             localDhPriv, localDhPub, remoteDhPub, aliceEkPub, bobEkPub,
             aliceFp, bobFp, localFp, remoteFp, prevSendToken,
             prevSendHeaderKey, headerKey, sendHeaderKey, nextHeaderKey,
-        ).map { it.bytes }.toTypedArray()
+        )
 
     override fun equals(other: Any?): Boolean {
         if (other !is SessionState) return false
-        val fields = byteArrayFields()
-        val otherFields = other.byteArrayFields()
-        return fields.indices.all { i -> fields[i].contentEquals(otherFields[i]) } &&
+        val fields = keyFields()
+        val otherFields = other.keyFields()
+        return fields.indices.all { i -> fields[i] == otherFields[i] } &&
             sendSeq == other.sendSeq &&
             recvSeq == other.recvSeq &&
             isAlice == other.isAlice &&
-            skippedMessageKeys.size == other.skippedMessageKeys.size &&
             skippedMessageKeys == other.skippedMessageKeys &&
             pn == other.pn &&
             pr == other.pr
@@ -142,7 +145,7 @@ data class SessionState(
 
     override fun hashCode(): Int {
         var h = 0
-        for (field in byteArrayFields()) h = 31 * h + field.contentHashCode()
+        for (field in keyFields()) h = 31 * h + field.hashCode()
         h = 31 * h + sendSeq.hashCode()
         h = 31 * h + recvSeq.hashCode()
         h = 31 * h + isAlice.hashCode()

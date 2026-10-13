@@ -93,13 +93,28 @@ class SessionStateGoldenTest {
     }
 
     @Test
+    fun sessionStoredWithoutLocalAndRemoteFingerprintsStillWorks() {
+        // Sessions stored before localFp/remoteFp existed load them as empty; message AAD must
+        // still bind the real fingerprints.
+        val empty = Fingerprint(ByteArray(0))
+        val legacyAlice = alice().copy(localFp = empty, remoteFp = empty)
+        val ka = Session.padToFixedSize("""{"type":"ka"}""".encodeToByteArray(), PADDING_SIZE)
+
+        val (_, toBob) = Session.encryptPadded(legacyAlice, ka.copyOf())
+        assertEquals(true, Session.decryptMessage(bob(), toBob).second is MessagePlaintext.Keepalive)
+
+        val (_, toAlice) = Session.encryptPadded(bob(), ka.copyOf())
+        assertEquals(true, Session.decryptMessage(legacyAlice, toAlice).second is MessagePlaintext.Keepalive)
+    }
+
+    @Test
     fun ratchetDerivationsAreUnchanged() {
         val step = dhRatchetSubStep(alicePriv, pub(bobPriv), RootKey(bytes(4)))
         assertEquals(RATCHET_STEP_HEX, step.newRootKey.toHex() + step.newChainKey.toHex() + step.newHeaderKey.toHex())
         val chain = kdfCk(ChainKey(bytes(5)))
         assertEquals(CHAIN_STEP_HEX, chain.newChainKey.toHex() + chain.messageKey.toHex() + chain.messageNonce.toHex())
         assertEquals(ROUTING_TOKEN_HEX, deriveRoutingToken(RootKey(bytes(6)), Fingerprint(bytes(7)), Fingerprint(bytes(8))).toHex())
-        assertEquals(FINGERPRINT_HEX, fingerprint(bytes(10)).toHex())
+        assertEquals(FINGERPRINT_HEX, fingerprint(DhPublicKey(bytes(10))).toHex())
     }
 
     private companion object {

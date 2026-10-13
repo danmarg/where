@@ -7,8 +7,6 @@ package net.af0.where.e2ee
  */
 internal fun fingerprint(ekPub: DhPublicKey): Fingerprint = Fingerprint(sha256(ekPub.bytes))
 
-internal fun fingerprint(ekPub: ByteArray): Fingerprint = fingerprint(DhPublicKey(ekPub))
-
 /**
  * Safety number for out-of-band verification.
  * Returns the full 60-byte HKDF-SHA-256(ikm=SHA-256(lower_EK.pub || higher_EK.pub), info="Where-v1-SafetyNumber"),

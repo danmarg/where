@@ -73,7 +73,7 @@ data class FriendEntry(
      * time and unique per invite. Lets a re-opened or redelivered invite link be rejected for as
      * long as the friend exists, including friends paired before the app tracked this.
      */
-    fun isFromInvite(qr: QrPayload): Boolean = session.aliceFp == fingerprint(qr.ekPub)
+    fun isFromInvite(qr: QrPayload): Boolean = session.aliceFp == fingerprint(DhPublicKey(qr.ekPub))
 }
 
 /**
@@ -305,7 +305,7 @@ class E2eeManager(
             val seqAdvanced =
                 nextSession.sendSeq > entry.session.sendSeq ||
                     nextSession.pn > entry.session.pn ||
-                    nextSession.rootKey != entry.session.rootKey
+                    !nextSession.rootKey.constantTimeEquals(entry.session.rootKey)
             check(seqAdvanced) { "Nonce safety violation: sequence number did not advance" }
 
             // Determine which token to use for THIS message.
@@ -448,12 +448,12 @@ class E2eeManager(
 
             val hadStateUpdate =
                 result.finalSession.recvSeq > entry.session.recvSeq ||
-                    result.finalSession.rootKey != entry.session.rootKey
+                    !result.finalSession.rootKey.constantTimeEquals(entry.session.rootKey)
 
             // If the peer ratcheted forward, it proves they received our transition message
             // (sent to prevSendToken). Delete only that stale entry — not any pending message
             // we may have queued for the current sendToken.
-            if (result.finalSession.rootKey != entry.session.rootKey) {
+            if (!result.finalSession.rootKey.constantTimeEquals(entry.session.rootKey)) {
                 persistence.deleteOutboxByFriendIdAndTokenInternal(
                     friendId,
                     entry.session.prevSendToken.toHex(),
@@ -515,7 +515,7 @@ class E2eeManager(
 
             val shouldAck = idsToAck.isNotEmpty()
 
-            val hadDhRatchet = result.finalSession.rootKey != entry.session.rootKey
+            val hadDhRatchet = !result.finalSession.rootKey.constantTimeEquals(entry.session.rootKey)
 
             PersistenceAction.Update(updatedEntry) to
                 PollBatchResult(

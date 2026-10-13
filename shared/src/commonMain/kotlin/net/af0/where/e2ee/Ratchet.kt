@@ -98,7 +98,7 @@ internal fun deriveRoutingToken(
     recipient: Fingerprint,
 ): RoutingToken {
     val info = INFO_ROUTING_TOKEN.encodeToByteArray() + sender.bytes + recipient.bytes
-    return RoutingToken(hkdfSha256(ikm = (ikm as KeyBytes).bytes, salt = null, info = info, length = 16))
+    return RoutingToken(hkdfSha256(ikm = ikm.bytes, salt = null, info = info, length = 16))
 }
 
 /**

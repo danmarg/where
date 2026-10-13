@@ -11,7 +11,7 @@ import kotlin.test.assertTrue
  * would corrupt the other copy's live session state. This is a maintenance trap because
  * deepCopy()'s field list can't be derived from a single source of truth (Kotlin's data
  * class copy() requires named arguments) the way equals()/hashCode() now are (see
- * SessionState.byteArrayFields() in Types.kt) — a field added to the constructor but missed
+ * SessionState.keyFields() in Types.kt) — a field added to the constructor but missed
  * in deepCopy() fails silently there. This test catches that by asserting every field is a
  * genuinely distinct buffer after copying.
  */

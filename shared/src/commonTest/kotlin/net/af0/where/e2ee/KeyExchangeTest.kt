@@ -265,8 +265,8 @@ class KeyExchangeTest {
     @Test
     fun `fingerprint is 32 bytes and deterministic`() {
         val ekPub = ByteArray(32) { it.toByte() }
-        val fp1 = fingerprint(ekPub)
-        val fp2 = fingerprint(ekPub)
+        val fp1 = fingerprint(DhPublicKey(ekPub))
+        val fp2 = fingerprint(DhPublicKey(ekPub))
         assertEquals(32, fp1.size)
         assertEquals(fp1, fp2)
     }
@@ -293,8 +293,8 @@ class KeyExchangeTest {
 
         // Use a "raw" initSession for Alice to check Epoch 0 values before she ratchets
         val sk = SharedSecret(x25519(aliceEkPriv, msg.ekPub))
-        val aliceFp = fingerprint(qr.ekPub)
-        val bobFp = fingerprint(msg.ekPub)
+        val aliceFp = fingerprint(DhPublicKey(qr.ekPub))
+        val bobFp = fingerprint(DhPublicKey(msg.ekPub))
         val aliceSession0 =
             KeyExchange.initSession(
                 sk,
