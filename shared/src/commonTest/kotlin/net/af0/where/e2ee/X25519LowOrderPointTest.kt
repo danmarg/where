@@ -1,7 +1,6 @@
 package net.af0.where.e2ee
 
 import kotlin.test.Test
-import kotlin.test.assertTrue
 import kotlin.test.fail
 
 /**
@@ -88,14 +87,9 @@ class X25519LowOrderPointTest {
             // Either our explicit requireNonZeroSharedSecret() check throws
             // AuthenticationException, or the underlying X25519 primitive itself throws
             // for this point (as it does on some platforms/points, e.g. libsodium on
-            // the JVM) — both are valid rejections. What must never happen is the call
-            // returning normally, which would mean the ratchet silently adopted an
-            // attacker-known root key.
-            val received = Session.decryptMessage(bobSession, encrypted, maliciousHeader)
-            assertTrue(
-                received is ReceivedMessage.Rejected,
-                "expected low-order dh_pub $hex to be rejected during the DH ratchet step, got ${received.describe()}",
-            )
+            // the JVM). Both come back as Rejected, with the session unchanged. Delivered
+            // or Undeliverable would mean the ratchet adopted an attacker-known root key.
+            Session.decryptMessage(bobSession, encrypted, maliciousHeader).rejected()
         }
     }
 }

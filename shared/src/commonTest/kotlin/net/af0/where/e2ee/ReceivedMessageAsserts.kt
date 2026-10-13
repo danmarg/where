@@ -11,11 +11,11 @@ fun ReceivedMessage.undeliverable(): ReceivedMessage.Undeliverable =
 
 fun ReceivedMessage.replay(): ReceivedMessage.Replay = this as? ReceivedMessage.Replay ?: fail("expected Replay, got ${describe()}")
 
+fun ReceivedMessage.rejected(): ReceivedMessage.Rejected = this as? ReceivedMessage.Rejected ?: fail("expected Rejected, got ${describe()}")
+
 /** This result as [ReceivedMessage.Rejected] with a cause of type [T]. */
-inline fun <reified T : Exception> ReceivedMessage.rejectedWith(): T {
-    val rejected = this as? ReceivedMessage.Rejected ?: fail("expected Rejected, got ${describe()}")
-    return rejected.cause as? T ?: fail("expected Rejected(${T::class.simpleName}), got ${describe()}")
-}
+inline fun <reified T : Throwable> ReceivedMessage.rejectedWith(): T =
+    rejected().cause as? T ?: fail("expected Rejected(${T::class.simpleName}), got ${describe()}")
 
 fun ReceivedMessage.describe(): String =
     when (this) {

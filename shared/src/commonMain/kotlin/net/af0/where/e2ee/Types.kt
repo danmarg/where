@@ -375,11 +375,13 @@ data class OutgoingMessage(
 /**
  * What became of one received frame. The cases that authenticated the frame carry the state to
  * persist; the others leave the caller's state as it was. A `when` over this is exhaustive, so a
- * caller can't treat an undeliverable frame like a forgery and drop its state.
+ * caller can't treat an undeliverable frame like a forgery and drop its state. Only [Session]
+ * creates these.
  */
 sealed class ReceivedMessage {
     /** Authenticated and decoded. Persist [state] and deliver [plaintext]. */
-    data class Delivered(
+    @ConsistentCopyVisibility
+    data class Delivered internal constructor(
         val state: SessionState,
         val plaintext: MessagePlaintext,
     ) : ReceivedMessage()
@@ -389,16 +391,16 @@ sealed class ReceivedMessage {
      * ratchet advanced and the message key is spent, so [state] MUST be persisted (§8.3.1(4)):
      * a corrupted frame has to leave the same state as a dropped one. Nothing to deliver.
      */
-    class Undeliverable(
+    class Undeliverable internal constructor(
         val state: SessionState,
         val cause: Throwable,
     ) : ReceivedMessage()
 
     /** A frame already received. Keep the input state. */
-    class Replay(val cause: ReplayException) : ReceivedMessage()
+    class Replay internal constructor(val cause: ReplayException) : ReceivedMessage()
 
     /** Not authenticated as the peer's, or not processable (e.g. too large a gap). Keep the input state. */
-    class Rejected(val cause: Exception) : ReceivedMessage()
+    class Rejected internal constructor(val cause: Throwable) : ReceivedMessage()
 }
 
 /** Output of a symmetric ratchet step (KDF_CK). */

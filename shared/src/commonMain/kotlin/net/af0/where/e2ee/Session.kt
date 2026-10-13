@@ -73,7 +73,10 @@ object Session {
         return OutgoingMessage(newState, message, transport.token)
     }
 
-    /** Decrypts one received frame. Never throws; see [ReceivedMessage] for what to persist. */
+    /**
+     * Decrypts one received frame. Every protocol failure comes back as a [ReceivedMessage],
+     * which says what to persist; only JVM/native [Error]s (e.g. out of memory) propagate.
+     */
     fun decryptMessage(
         state: SessionState,
         message: EncryptedMessagePayload,
