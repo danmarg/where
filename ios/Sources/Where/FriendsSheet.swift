@@ -272,8 +272,8 @@ private struct FriendDebugView: View {
         VStack(alignment: .leading, spacing: 3) {
             let recvTs = friend.lastRecvTs
             let sentTs = friend.lastSentTs
-            let recvToken = toHex(friend.session.recvToken).prefix(8)
-            let sendToken = toHex(friend.session.sendToken).prefix(8)
+            let recvToken = friend.session.recvToken.toHex().prefix(8)
+            let sendToken = friend.session.sendToken.toHex().prefix(8)
             Text("recv: \(timeAgoStringFromSeconds(recvTs))  sent: \(timeAgoStringFromSeconds(sentTs))  poll: \(timeAgoStringFromSeconds(friend.lastPollTs))")
             Text("recvTok: \(recvToken)  sendTok: \(sendToken)")
             Text("caughtUp: \(friend.isCaughtUp ? "YES" : "no")")

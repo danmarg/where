@@ -1,3 +1,5 @@
+@file:Suppress("ktlint:standard:max-line-length") // recorded JSON goldens
+
 package net.af0.where.e2ee
 
 import kotlinx.serialization.json.Json
@@ -28,11 +30,11 @@ class SessionStateGoldenTest {
 
     private val basepoint = ByteArray(32).also { it[0] = 9 }
 
-    private fun pub(priv: ByteArray) = x25519(priv, basepoint)
+    private fun pub(priv: DhPrivateKey) = DhPublicKey(x25519(priv.bytes, basepoint))
 
-    private val alicePriv = bytes(1)
-    private val bobPriv = bytes(2)
-    private val sk = bytes(3)
+    private val alicePriv = DhPrivateKey(bytes(1))
+    private val bobPriv = DhPrivateKey(bytes(2))
+    private val sk = SharedSecret(bytes(3))
 
     private fun alice() =
         KeyExchange.initSession(
@@ -66,7 +68,7 @@ class SessionStateGoldenTest {
 
     @Test
     fun persistedJsonRoundTrips() {
-        val state = alice().copy(skippedMessageKeys = mapOf("ab:1" to bytes(9, 52)), sendSeq = 3, pn = 2)
+        val state = alice().copy(skippedMessageKeys = mapOf("ab:1" to SkippedMessageKey(bytes(9, 52))), sendSeq = 3, pn = 2)
         val encoded = encode(state)
         assertEquals(state, json.decodeFromString(SessionState.serializer(), encoded))
         assertEquals(encoded, encode(json.decodeFromString(SessionState.serializer(), encoded)))
@@ -92,11 +94,11 @@ class SessionStateGoldenTest {
 
     @Test
     fun ratchetDerivationsAreUnchanged() {
-        val step = dhRatchetSubStep(alicePriv, pub(bobPriv), bytes(4))
+        val step = dhRatchetSubStep(alicePriv, pub(bobPriv), RootKey(bytes(4)))
         assertEquals(RATCHET_STEP_HEX, step.newRootKey.toHex() + step.newChainKey.toHex() + step.newHeaderKey.toHex())
-        val chain = kdfCk(bytes(5))
+        val chain = kdfCk(ChainKey(bytes(5)))
         assertEquals(CHAIN_STEP_HEX, chain.newChainKey.toHex() + chain.messageKey.toHex() + chain.messageNonce.toHex())
-        assertEquals(ROUTING_TOKEN_HEX, deriveRoutingToken(bytes(6), bytes(7), bytes(8)).toHex())
+        assertEquals(ROUTING_TOKEN_HEX, deriveRoutingToken(RootKey(bytes(6)), Fingerprint(bytes(7)), Fingerprint(bytes(8))).toHex())
         assertEquals(FINGERPRINT_HEX, fingerprint(bytes(10)).toHex())
     }
 

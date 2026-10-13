@@ -59,8 +59,8 @@ class KeyExchangeTest {
         val (msg, _) = KeyExchange.bobProcessQr(qr, "Bob")
 
         // Alice can verify the key_confirmation by computing SK herself
-        val sk = x25519(aliceEkPriv, msg.ekPub)
-        assertTrue(KeyExchange.verifyKeyConfirmation(sk, qr.ekPub, msg.ekPub, msg.keyConfirmation))
+        val sk = SharedSecret(x25519(aliceEkPriv, msg.ekPub))
+        assertTrue(KeyExchange.verifyKeyConfirmation(sk, DhPublicKey(qr.ekPub), DhPublicKey(msg.ekPub), msg.keyConfirmation))
     }
 
     // ---------------------------------------------------------------------------
@@ -86,11 +86,11 @@ class KeyExchangeTest {
         // After Bob processes Alice's message 1 (A1), he ratchets both his
         // receive and sending chains to Epoch 1.
         // So they now match on the SEND↔RECV tokens.
-        assertContentEquals(alice1.sendToken, bob1.recvToken, "Alice sendToken (E1) = Bob recvToken (E1)")
+        assertEquals(alice1.sendToken, bob1.recvToken, "Alice sendToken (E1) = Bob recvToken (E1)")
         // Alice has NOT ratcheted her recv chain yet (waiting for B1).
         // Bob has ALREADY ratcheted his send chain (to B1).
         // Bob's prevSendToken (E1) matches Alice's current recvToken (E0).
-        assertContentEquals(alice1.recvToken, bob1.prevSendToken, "Alice recvToken (E0) = Bob prevSendToken (E1)")
+        assertEquals(alice1.recvToken, bob1.prevSendToken, "Alice recvToken (E0) = Bob prevSendToken (E1)")
     }
 
     @Test
@@ -106,11 +106,11 @@ class KeyExchangeTest {
         val (bob1, _) = Session.decryptMessage(bobSession, msg1)
 
         // Alice's send chain must equal Bob's receive chain.
-        assertContentEquals(alice1.sendChainKey, bob1.recvChainKey)
+        assertEquals(alice1.sendChainKey, bob1.recvChainKey)
 
         // Bob's send chain (Epoch 1) does NOT yet match Alice's receive chain (Epoch 0).
         // Alice matches Bob's send chain only AFTER she receives his message and ratchets.
-        assertNotEquals(bob1.sendChainKey.toList(), alice1.recvChainKey.toList())
+        assertNotEquals(bob1.sendChainKey, alice1.recvChainKey)
     }
 
     @Test
@@ -130,7 +130,7 @@ class KeyExchangeTest {
         // The token Alice actually posts to at the app layer (LocationClient logic)
         // would be prevSendToken. Let's verify that Alice's prevSendToken matches
         // Bob's initial recvToken.
-        assertContentEquals(aliceSession.prevSendToken, bobSession.recvToken)
+        assertEquals(aliceSession.prevSendToken, bobSession.recvToken)
 
         // And verify decryption works.
         val (_, pt) = Session.decryptMessage(bobSession, aliceEnc)
@@ -157,8 +157,8 @@ class KeyExchangeTest {
     fun `decryptSuggestedName round-trips the name Bob encrypted`() {
         val (qr, aliceEkPriv) = KeyExchange.aliceCreateQrPayload("Alice")
         val (msg, _) = KeyExchange.bobProcessQr(qr, "Bob")
-        val sk = x25519(aliceEkPriv, msg.ekPub)
-        val name = KeyExchange.decryptSuggestedName(sk, qr.ekPub, msg.ekPub, msg.encryptedName)
+        val sk = SharedSecret(x25519(aliceEkPriv, msg.ekPub))
+        val name = KeyExchange.decryptSuggestedName(sk, DhPublicKey(qr.ekPub), DhPublicKey(msg.ekPub), msg.encryptedName)
         assertEquals("Bob", name)
         sk.zeroize()
     }
@@ -167,9 +167,9 @@ class KeyExchangeTest {
     fun `decryptSuggestedName rejects wrong session key`() {
         val (qr, aliceEkPriv) = KeyExchange.aliceCreateQrPayload("Alice")
         val (msg, _) = KeyExchange.bobProcessQr(qr, "Bob")
-        val wrongSk = randomBytes(32)
+        val wrongSk = SharedSecret(randomBytes(32))
         assertFailsWith<AuthenticationException> {
-            KeyExchange.decryptSuggestedName(wrongSk, qr.ekPub, msg.ekPub, msg.encryptedName)
+            KeyExchange.decryptSuggestedName(wrongSk, DhPublicKey(qr.ekPub), DhPublicKey(msg.ekPub), msg.encryptedName)
         }
         aliceEkPriv.zeroize()
         wrongSk.zeroize()
@@ -177,9 +177,9 @@ class KeyExchangeTest {
 
     @Test
     fun `decryptSuggestedName rejects empty encryptedName`() {
-        val sk = randomBytes(32)
-        val ekA = randomBytes(32)
-        val ekB = randomBytes(32)
+        val sk = SharedSecret(randomBytes(32))
+        val ekA = DhPublicKey(randomBytes(32))
+        val ekB = DhPublicKey(randomBytes(32))
         assertFailsWith<AuthenticationException> {
             KeyExchange.decryptSuggestedName(sk, ekA, ekB, byteArrayOf())
         }
@@ -190,12 +190,12 @@ class KeyExchangeTest {
     fun `decryptSuggestedName fails with mismatched AAD`() {
         val (qr, aliceEkPriv) = KeyExchange.aliceCreateQrPayload("Alice")
         val (msg, _) = KeyExchange.bobProcessQr(qr, "Bob")
-        val sk = x25519(aliceEkPriv, msg.ekPub)
+        val sk = SharedSecret(x25519(aliceEkPriv, msg.ekPub))
 
         // Try decrypting with a different Alice public key in AAD
-        val wrongAliceEkPub = randomBytes(32)
+        val wrongAliceEkPub = DhPublicKey(randomBytes(32))
         assertFailsWith<AuthenticationException> {
-            KeyExchange.decryptSuggestedName(sk, wrongAliceEkPub, msg.ekPub, msg.encryptedName)
+            KeyExchange.decryptSuggestedName(sk, wrongAliceEkPub, DhPublicKey(msg.ekPub), msg.encryptedName)
         }
         sk.zeroize()
     }
@@ -229,29 +229,31 @@ class KeyExchangeTest {
         val (msg, _) = KeyExchange.bobProcessQr(qr, "Bob")
 
         // Both sides compute the same SK.
-        val aliceSk = x25519(aliceEkPriv, msg.ekPub)
+        val aliceSk = SharedSecret(x25519(aliceEkPriv, msg.ekPub))
 
         // Build confirmation from SK, verify it round-trips.
-        val confirmation = KeyExchange.buildKeyConfirmation(aliceSk, qr.ekPub, msg.ekPub)
-        assertTrue(KeyExchange.verifyKeyConfirmation(aliceSk, qr.ekPub, msg.ekPub, confirmation))
+        val ekA = DhPublicKey(qr.ekPub)
+        val ekB = DhPublicKey(msg.ekPub)
+        val confirmation = KeyExchange.buildKeyConfirmation(aliceSk, ekA, ekB)
+        assertTrue(KeyExchange.verifyKeyConfirmation(aliceSk, ekA, ekB, confirmation))
     }
 
     @Test
     fun `key confirmation fails with wrong sk`() {
-        val ekAPub = ByteArray(32) { 0xAA.toByte() }
-        val ekBPub = ByteArray(32) { 0xBB.toByte() }
-        val sk = ByteArray(32) { 0xAA.toByte() }
-        val wrongSk = ByteArray(32) { 0xBB.toByte() }
+        val ekAPub = DhPublicKey(ByteArray(32) { 0xAA.toByte() })
+        val ekBPub = DhPublicKey(ByteArray(32) { 0xBB.toByte() })
+        val sk = SharedSecret(ByteArray(32) { 0xAA.toByte() })
+        val wrongSk = SharedSecret(ByteArray(32) { 0xBB.toByte() })
         val confirmation = KeyExchange.buildKeyConfirmation(sk, ekAPub, ekBPub)
         assertFalse(KeyExchange.verifyKeyConfirmation(wrongSk, ekAPub, ekBPub, confirmation))
     }
 
     @Test
     fun `key confirmation fails with wrong ekAPub`() {
-        val ekAPub = ByteArray(32) { 0xAA.toByte() }
-        val ekBPub = ByteArray(32) { 0xBB.toByte() }
-        val wrongEkAPub = ByteArray(32) { 0xCC.toByte() }
-        val sk = ByteArray(32) { 0xDD.toByte() }
+        val ekAPub = DhPublicKey(ByteArray(32) { 0xAA.toByte() })
+        val ekBPub = DhPublicKey(ByteArray(32) { 0xBB.toByte() })
+        val wrongEkAPub = DhPublicKey(ByteArray(32) { 0xCC.toByte() })
+        val sk = SharedSecret(ByteArray(32) { 0xDD.toByte() })
         val confirmation = KeyExchange.buildKeyConfirmation(sk, ekAPub, ekBPub)
         assertFalse(KeyExchange.verifyKeyConfirmation(sk, wrongEkAPub, ekBPub, confirmation))
     }
@@ -266,7 +268,7 @@ class KeyExchangeTest {
         val fp1 = fingerprint(ekPub)
         val fp2 = fingerprint(ekPub)
         assertEquals(32, fp1.size)
-        assertContentEquals(fp1, fp2)
+        assertEquals(fp1, fp2)
     }
 
     @Test
@@ -276,12 +278,12 @@ class KeyExchangeTest {
         val aliceSession = KeyExchange.aliceProcessInit(msg, aliceEkPriv, qr.ekPub)
 
         // Both sides derive same aliceFp and bobFp
-        assertContentEquals(aliceSession.aliceFp, bobSession.aliceFp)
-        assertContentEquals(aliceSession.bobFp, bobSession.bobFp)
+        assertEquals(aliceSession.aliceFp, bobSession.aliceFp)
+        assertEquals(aliceSession.bobFp, bobSession.bobFp)
         // aliceFp = SHA-256(EK_A.pub)
-        assertContentEquals(sha256(qr.ekPub), aliceSession.aliceFp)
+        assertEquals(Fingerprint(sha256(qr.ekPub)), aliceSession.aliceFp)
         // bobFp = SHA-256(EK_B.pub)
-        assertContentEquals(sha256(msg.ekPub), aliceSession.bobFp)
+        assertEquals(Fingerprint(sha256(msg.ekPub)), aliceSession.bobFp)
     }
 
     @Test
@@ -290,27 +292,36 @@ class KeyExchangeTest {
         val (msg, bobSession) = KeyExchange.bobProcessQr(qr, "Bob")
 
         // Use a "raw" initSession for Alice to check Epoch 0 values before she ratchets
-        val sk = x25519(aliceEkPriv, msg.ekPub)
+        val sk = SharedSecret(x25519(aliceEkPriv, msg.ekPub))
         val aliceFp = fingerprint(qr.ekPub)
         val bobFp = fingerprint(msg.ekPub)
-        val aliceSession0 = KeyExchange.initSession(sk, true, aliceEkPriv, qr.ekPub, msg.ekPub, aliceFp, bobFp)
+        val aliceSession0 =
+            KeyExchange.initSession(
+                sk,
+                true,
+                DhPrivateKey(aliceEkPriv),
+                DhPublicKey(qr.ekPub),
+                DhPublicKey(msg.ekPub),
+                aliceFp,
+                bobFp,
+            )
 
         // Within a session, send and receive header keys must be different (Epoch 0)
-        assertFalse(aliceSession0.sendHeaderKey.contentEquals(aliceSession0.headerKey), "Alice send != recv header key")
-        assertFalse(bobSession.sendHeaderKey.contentEquals(bobSession.headerKey), "Bob send != recv header key")
+        assertNotEquals(aliceSession0.sendHeaderKey, aliceSession0.headerKey, "Alice send != recv header key")
+        assertNotEquals(bobSession.sendHeaderKey, bobSession.headerKey, "Bob send != recv header key")
 
         // Cross-session matching: Alice send matches Bob recv, and vice-versa
-        assertContentEquals(aliceSession0.sendHeaderKey, bobSession.headerKey, "Alice sendHeaderKey == Bob headerKey")
-        assertContentEquals(bobSession.sendHeaderKey, aliceSession0.headerKey, "Bob sendHeaderKey == Alice headerKey")
+        assertEquals(aliceSession0.sendHeaderKey, bobSession.headerKey, "Alice sendHeaderKey == Bob headerKey")
+        assertEquals(bobSession.sendHeaderKey, aliceSession0.headerKey, "Bob sendHeaderKey == Alice headerKey")
 
         // nextHeaderKey should be the same for both
-        assertContentEquals(aliceSession0.nextHeaderKey, bobSession.nextHeaderKey, "Alice and Bob share nextHeaderKey")
+        assertEquals(aliceSession0.nextHeaderKey, bobSession.nextHeaderKey, "Alice and Bob share nextHeaderKey")
     }
 
     @Test
     fun `safetyNumber is symmetric`() {
-        val ekA = generateX25519KeyPair().pub
-        val ekB = generateX25519KeyPair().pub
+        val ekA = DhPublicKey(generateX25519KeyPair().pub)
+        val ekB = DhPublicKey(generateX25519KeyPair().pub)
         val sn1 = safetyNumber(ekA, ekB)
         val sn2 = safetyNumber(ekB, ekA)
         assertContentEquals(sn1, sn2)
@@ -318,16 +329,16 @@ class KeyExchangeTest {
 
     @Test
     fun `safetyNumber returns 60 bytes`() {
-        val ekA = generateX25519KeyPair().pub
-        val ekB = generateX25519KeyPair().pub
+        val ekA = DhPublicKey(generateX25519KeyPair().pub)
+        val ekB = DhPublicKey(generateX25519KeyPair().pub)
         assertEquals(60, safetyNumber(ekA, ekB).size)
     }
 
     @Test
     fun `safetyNumber differs for different pairs`() {
-        val ekA = generateX25519KeyPair().pub
-        val ekB = generateX25519KeyPair().pub
-        val ekC = generateX25519KeyPair().pub
+        val ekA = DhPublicKey(generateX25519KeyPair().pub)
+        val ekB = DhPublicKey(generateX25519KeyPair().pub)
+        val ekC = DhPublicKey(generateX25519KeyPair().pub)
         val sn1 = safetyNumber(ekA, ekB)
         val sn2 = safetyNumber(ekA, ekC)
         assertNotEquals(sn1.toList(), sn2.toList())
@@ -335,8 +346,8 @@ class KeyExchangeTest {
 
     @Test
     fun `formatSafetyNumber produces three lines of 4 groups of 5 decimal digits`() {
-        val ekA = generateX25519KeyPair().pub
-        val ekB = generateX25519KeyPair().pub
+        val ekA = DhPublicKey(generateX25519KeyPair().pub)
+        val ekB = DhPublicKey(generateX25519KeyPair().pub)
         val formatted = formatSafetyNumber(safetyNumber(ekA, ekB))
         val lines = formatted.split("\n")
         assertEquals(3, lines.size)
@@ -372,8 +383,8 @@ class KeyExchangeTest {
         val (alice2, _) = Session.decryptMessage(alice1, message2)
 
         // aliceEkPub and bobEkPub must be unchanged after DH ratchet
-        assertContentEquals(aliceSession.aliceEkPub, alice2.aliceEkPub)
-        assertContentEquals(aliceSession.bobEkPub, alice2.bobEkPub)
+        assertEquals(aliceSession.aliceEkPub, alice2.aliceEkPub)
+        assertEquals(aliceSession.bobEkPub, alice2.bobEkPub)
 
         val snAfter = formatSafetyNumber(safetyNumber(alice2.aliceEkPub, alice2.bobEkPub))
         assertEquals(snBefore, snAfter, "Safety number changed after DH ratchet")
@@ -386,10 +397,10 @@ class KeyExchangeTest {
         val aliceSession = KeyExchange.aliceProcessInit(msg, aliceEkPriv, qr.ekPub)
 
         // Bootstrap keys must be the original EK_A.pub and EK_B.pub
-        assertContentEquals(qr.ekPub, aliceSession.aliceEkPub)
-        assertContentEquals(msg.ekPub, aliceSession.bobEkPub)
-        assertContentEquals(qr.ekPub, bobSession.aliceEkPub)
-        assertContentEquals(msg.ekPub, bobSession.bobEkPub)
+        assertEquals(DhPublicKey(qr.ekPub), aliceSession.aliceEkPub)
+        assertEquals(DhPublicKey(msg.ekPub), aliceSession.bobEkPub)
+        assertEquals(DhPublicKey(qr.ekPub), bobSession.aliceEkPub)
+        assertEquals(DhPublicKey(msg.ekPub), bobSession.bobEkPub)
     }
 
     @Test
@@ -403,21 +414,21 @@ class KeyExchangeTest {
         // Attacker generates their own key pair (EK_M).
         val ekM = generateX25519KeyPair()
 
-        // Attacker computes SK_AM = x25519(ekM.priv, qr.ekPub).
-        val skAM = x25519(ekM.priv, qr.ekPub)
+        // Attacker computes SK_AM = SharedSecret(x25519(ekM.priv, qr.ekPub)).
+        val skAM = SharedSecret(x25519(ekM.priv, qr.ekPub))
 
         // Attacker constructs a tampered KeyExchangeInitMessage with EK_M.pub and a keyConfirmation
         // correctly computed over (SK_AM, EK_A.pub, EK_M.pub) using KeyExchange.buildKeyConfirmation.
 
         // Encrypt name under SK_AM
-        val kName = hkdfSha256(skAM, null, "Where-v1-SuggestedName".encodeToByteArray(), 32)
+        val kName = hkdfSha256(skAM.bytes, null, "Where-v1-SuggestedName".encodeToByteArray(), 32)
         val nonce = randomBytes(12)
         val ct = aeadEncrypt(kName, nonce, "Attacker".encodeToByteArray(), qr.ekPub + ekM.pub)
 
         val tamperedMsg =
             KeyExchangeInitMessage(
                 ekPub = ekM.pub.copyOf(),
-                keyConfirmation = KeyExchange.buildKeyConfirmation(skAM, qr.ekPub, ekM.pub),
+                keyConfirmation = KeyExchange.buildKeyConfirmation(skAM, DhPublicKey(qr.ekPub), DhPublicKey(ekM.pub)),
                 encryptedName = nonce + ct,
             )
 
@@ -425,10 +436,10 @@ class KeyExchangeTest {
         val aliceSession = KeyExchange.aliceProcessInit(tamperedMsg, aliceEkPriv, qr.ekPub)
 
         // Verify that Alice's session keys (rootKey) are different from Bob's session keys.
-        assertFalse(aliceSession.rootKey.contentEquals(bobSession.rootKey))
+        assertNotEquals(aliceSession.rootKey, bobSession.rootKey)
 
         // Verify that Alice's bobEkPub in her session state matches EK_M.pub, not EK_B.pub.
-        assertContentEquals(ekM.pub, aliceSession.bobEkPub)
+        assertEquals(DhPublicKey(ekM.pub), aliceSession.bobEkPub)
     }
 
     // ---------------------------------------------------------------------------
@@ -466,8 +477,8 @@ class KeyExchangeTest {
         val (qr, aliceEkPriv) = KeyExchange.aliceCreateQrPayload("Alice")
         val (initMsg, _) = KeyExchange.bobProcessQr(qr, "Bob")
         val aliceSession = KeyExchange.aliceProcessInit(initMsg, aliceEkPriv, qr.ekPub)
-        assertNotEquals(qr.discoveryToken().toList(), aliceSession.sendToken.toList(), "Discovery token ≠ send token")
-        assertNotEquals(qr.discoveryToken().toList(), aliceSession.recvToken.toList(), "Discovery token ≠ recv token")
+        assertNotEquals(qr.discoveryToken().toHex(), aliceSession.sendToken.toHex(), "Discovery token ≠ send token")
+        assertNotEquals(qr.discoveryToken().toHex(), aliceSession.recvToken.toHex(), "Discovery token ≠ recv token")
     }
 
     // ---------------------------------------------------------------------------

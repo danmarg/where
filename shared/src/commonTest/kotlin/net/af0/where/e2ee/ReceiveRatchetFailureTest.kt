@@ -28,7 +28,7 @@ class ReceiveRatchetFailureTest {
                 MessagePlaintext.Location(1.0, 2.0, 3.0, 4L),
             )
 
-        val sessionAad = bobSession.aliceFp + bobSession.bobFp
+        val sessionAad = bobSession.headerAad()
         val header =
             try {
                 Session.decryptHeader(bobSession.headerKey, original.envelope, sessionAad)
@@ -132,7 +132,7 @@ class ReceiveRatchetFailureTest {
 
         // Alice's next frame opens a new epoch with pn = 2; Bob has only seen seq 1.
         val (_, newEpoch) = Session.encryptMessage(alice, loc(3))
-        val sessionAad = bob.aliceFp + bob.bobFp
+        val sessionAad = bob.headerAad()
         val stragglerHeader = Session.decryptHeader(bob.headerKey, m2.envelope, sessionAad)
 
         bob = expectSoftFail(bob, tamper(newEpoch))
@@ -153,7 +153,7 @@ class ReceiveRatchetFailureTest {
         val (a3, m3) = Session.encryptMessage(a2, loc(3))
         alice = a3
         bob = Session.decryptMessage(bob, m1).first
-        val malformedHeader = Session.decryptHeader(bob.headerKey, malformed.envelope, bob.aliceFp + bob.bobFp)
+        val malformedHeader = Session.decryptHeader(bob.headerKey, malformed.envelope, bob.headerAad())
         bob = Session.decryptMessage(bob, m3).first
         assertEquals(1, bob.skippedMessageKeys.size)
 
@@ -236,7 +236,7 @@ class ReceiveRatchetFailureTest {
                 ratcheted.headerKey, ratcheted.sendHeaderKey, ratcheted.nextHeaderKey,
                 ratcheted.prevSendHeaderKey, ratcheted.aliceFp, ratcheted.localFp,
             ) + ratcheted.skippedMessageKeys.values
-        assertTrue(outputBuffers.none { out -> inputBuffers.any { it === out } }, "new-epoch state aliases input buffers")
+        assertTrue(outputBuffers.none { out -> inputBuffers.any { it.bytes === out.bytes } }, "new-epoch state aliases input buffers")
         assertInputUnchanged(bob) { runCatching { Session.decryptMessage(it, tamper(m5)) } }
     }
 

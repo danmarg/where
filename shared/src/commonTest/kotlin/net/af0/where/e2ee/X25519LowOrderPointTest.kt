@@ -79,7 +79,7 @@ class X25519LowOrderPointTest {
 
             val maliciousHeader =
                 Session.DecryptedHeader(
-                    dhPub = hex.hexToByteArray(),
+                    dhPub = DhPublicKey(hex.hexToByteArray()),
                     ackRemoteDhPub = aliceSession.remoteDhPub,
                     seq = 1L,
                     pn = 0L,

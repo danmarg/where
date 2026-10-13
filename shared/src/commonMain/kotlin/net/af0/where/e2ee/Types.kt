@@ -30,46 +30,48 @@ data class RawKeyPair(val priv: ByteArray, val pub: ByteArray) {
  */
 @Serializable
 data class SessionState(
-    @Serializable(with = ByteArrayBase64Serializer::class) val rootKey: ByteArray,
-    @Serializable(with = ByteArrayBase64Serializer::class) val sendChainKey: ByteArray,
-    @Serializable(with = ByteArrayBase64Serializer::class) val recvChainKey: ByteArray,
-    @Serializable(with = ByteArrayBase64Serializer::class) val sendToken: ByteArray,
-    @Serializable(with = ByteArrayBase64Serializer::class) val recvToken: ByteArray,
+    val rootKey: RootKey,
+    val sendChainKey: ChainKey,
+    val recvChainKey: ChainKey,
+    val sendToken: RoutingToken,
+    val recvToken: RoutingToken,
     val sendSeq: Long,
     val recvSeq: Long,
     // SECURITY NOTE: We rely on the app layer to store the serialized SessionState in
     // secure storage (e.g., iOS Keychain / Android EncryptedSharedPreferences) because
     // localDhPriv MUST be persisted across app restarts to allow DH ratcheting.
-    @Serializable(with = ByteArrayBase64Serializer::class) val localDhPriv: ByteArray,
-    @Serializable(with = ByteArrayBase64Serializer::class) val localDhPub: ByteArray,
-    @Serializable(with = ByteArrayBase64Serializer::class) val remoteDhPub: ByteArray,
-    @Serializable(with = ByteArrayBase64Serializer::class) val aliceEkPub: ByteArray,
-    @Serializable(with = ByteArrayBase64Serializer::class) val bobEkPub: ByteArray,
-    @Serializable(with = ByteArrayBase64Serializer::class) val aliceFp: ByteArray,
-    @Serializable(with = ByteArrayBase64Serializer::class) val bobFp: ByteArray,
-    @Serializable(with = ByteArrayBase64Serializer::class) val localFp: ByteArray = ByteArray(0),
-    @Serializable(with = ByteArrayBase64Serializer::class) val remoteFp: ByteArray = ByteArray(0),
-    @Serializable(with = ByteArrayBase64Serializer::class) val prevSendToken: ByteArray,
-    @Serializable(with = ByteArrayBase64Serializer::class) val prevSendHeaderKey: ByteArray = ByteArray(0),
+    val localDhPriv: DhPrivateKey,
+    val localDhPub: DhPublicKey,
+    val remoteDhPub: DhPublicKey,
+    val aliceEkPub: DhPublicKey,
+    val bobEkPub: DhPublicKey,
+    val aliceFp: Fingerprint,
+    val bobFp: Fingerprint,
+    val localFp: Fingerprint = Fingerprint(ByteArray(0)),
+    val remoteFp: Fingerprint = Fingerprint(ByteArray(0)),
+    val prevSendToken: RoutingToken,
+    val prevSendHeaderKey: HeaderKey = HeaderKey(ByteArray(0)),
     val isAlice: Boolean,
     // REPLAY PROTECTION & OUT-OF-ORDER SUPPORT
-    // Map of (remoteDhPubHex + ":" + seq) to [MK (32) || Nonce (12) || Timestamp (8)]
-    val skippedMessageKeys: Map<
-        String,
-        @Serializable(with = ByteArrayBase64Serializer::class)
-        ByteArray,
-        > = emptyMap(),
+    // Map of (remoteDhPubHex + ":" + seq) to the cached key for that message
+    val skippedMessageKeys: Map<String, SkippedMessageKey> = emptyMap(),
     // Previous send and receive chain lengths (§4.4) - used to bind sequence numbers across epochs in AAD.
     val pn: Long = 0,
     val pr: Long = 0,
     // (A former `needsRatchet` flag is ignored when loading old blobs: ignoreUnknownKeys.)
     // HEADER ENCRYPTION (#186)
-    @Serializable(with = ByteArrayBase64Serializer::class) val headerKey: ByteArray = ByteArray(0),
-    @Serializable(with = ByteArrayBase64Serializer::class) val sendHeaderKey: ByteArray = ByteArray(0),
-    @Serializable(with = ByteArrayBase64Serializer::class) val nextHeaderKey: ByteArray = ByteArray(0),
+    val headerKey: HeaderKey = HeaderKey(ByteArray(0)),
+    val sendHeaderKey: HeaderKey = HeaderKey(ByteArray(0)),
+    val nextHeaderKey: HeaderKey = HeaderKey(ByteArray(0)),
 ) {
+    /** This party's and the peer's fingerprints, for direction-bound tokens and AAD. */
+    internal val parties: Parties get() = Parties(localFp, remoteFp)
+
+    /** Header AAD (#186): both bootstrap fingerprints, Alice's first, the same on both sides. */
+    internal fun headerAad(): ByteArray = aliceFp.bytes + bobFp.bytes
+
     /**
-     * Creates a deep copy of the session state, ensuring all sensitive ByteArray
+     * Creates a deep copy of the session state, ensuring all key
      * material is duplicated into fresh buffers. This prevents accidental key
      * zeroization from affecting multiple copies of the state (§5.5).
      */
@@ -108,7 +110,7 @@ data class SessionState(
     }
 
     /**
-     * Every ByteArray field declared in the primary constructor, in declaration order.
+     * The bytes of every key field declared in the primary constructor, in declaration order.
      * equals()/hashCode() fold over this instead of each maintaining its own hand-written
      * field list, so a field added to the constructor but missed here fails loudly (wrong
      * equals/hashCode breaks tests immediately) instead of silently. deepCopy() above still
@@ -117,12 +119,12 @@ data class SessionState(
      * against the same field-added-but-missed risk instead.
      */
     private fun byteArrayFields(): Array<ByteArray> =
-        arrayOf(
+        arrayOf<KeyBytes>(
             rootKey, sendChainKey, recvChainKey, sendToken, recvToken,
             localDhPriv, localDhPub, remoteDhPub, aliceEkPub, bobEkPub,
             aliceFp, bobFp, localFp, remoteFp, prevSendToken,
             prevSendHeaderKey, headerKey, sendHeaderKey, nextHeaderKey,
-        )
+        ).map { it.bytes }.toTypedArray()
 
     override fun equals(other: Any?): Boolean {
         if (other !is SessionState) return false
@@ -133,7 +135,7 @@ data class SessionState(
             recvSeq == other.recvSeq &&
             isAlice == other.isAlice &&
             skippedMessageKeys.size == other.skippedMessageKeys.size &&
-            skippedMessageKeys.all { (k, v) -> other.skippedMessageKeys[k]?.contentEquals(v) == true } &&
+            skippedMessageKeys == other.skippedMessageKeys &&
             pn == other.pn &&
             pr == other.pr
     }
@@ -144,9 +146,8 @@ data class SessionState(
         h = 31 * h + sendSeq.hashCode()
         h = 31 * h + recvSeq.hashCode()
         h = 31 * h + isAlice.hashCode()
-        // Content-based hash for the collection containing ByteArrays
         var skipHash = 0
-        skippedMessageKeys.forEach { (k, v) -> skipHash += 31 * k.hashCode() + v.contentHashCode() }
+        skippedMessageKeys.forEach { (k, v) -> skipHash += 31 * k.hashCode() + v.hashCode() }
         h = 31 * h + skipHash
         h = 31 * h + pn.hashCode()
         h = 31 * h + pr.hashCode()
@@ -348,15 +349,15 @@ data class EncryptedOutboxMessage(
 )
 
 /** Output of a symmetric ratchet step (KDF_CK). */
-internal data class ChainStep(
-    val newChainKey: ByteArray,
-    val messageKey: ByteArray,
-    val messageNonce: ByteArray,
+internal class ChainStep(
+    val newChainKey: ChainKey,
+    val messageKey: MessageKey,
+    val messageNonce: MessageNonce,
 )
 
 /** Output of a DH ratchet step (KDF_RK). */
-internal data class RatchetStep(
-    val newRootKey: ByteArray,
-    val newChainKey: ByteArray,
-    val newHeaderKey: ByteArray,
+internal class RatchetStep(
+    val newRootKey: RootKey,
+    val newChainKey: ChainKey,
+    val newHeaderKey: HeaderKey,
 )

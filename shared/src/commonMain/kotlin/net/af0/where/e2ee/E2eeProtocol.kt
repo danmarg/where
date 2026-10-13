@@ -150,7 +150,7 @@ internal object E2eeProtocol {
         session: SessionState,
         envelope: ByteArray,
     ): Session.DecryptedHeader {
-        val sessionAad = session.aliceFp + session.bobFp
+        val sessionAad = session.headerAad()
         return try {
             Session.decryptHeader(session.headerKey, envelope, sessionAad)
         } catch (e0: Exception) {
@@ -167,7 +167,7 @@ internal object E2eeProtocol {
         h: Session.DecryptedHeader,
     ): Int {
         return when {
-            h.dhPub.contentEquals(session.remoteDhPub) -> 1 // Current
+            h.dhPub == session.remoteDhPub -> 1 // Current
             else -> 2 // Unknown NEW epoch (Newest)
         }
     }

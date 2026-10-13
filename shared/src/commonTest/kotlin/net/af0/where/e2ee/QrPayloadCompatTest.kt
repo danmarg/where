@@ -107,8 +107,8 @@ class QrPayloadCompatTest {
 
             val (init, bobEntry) = bob.processScannedQr(scanned, "Bob")
             val aliceEntry = assertNotNull(alice.processKeyExchangeInit(init, "Bob", created.ekPub))
-            assertContentEquals(bobEntry.session.aliceEkPub, aliceEntry.session.aliceEkPub)
-            assertContentEquals(bobEntry.session.bobEkPub, aliceEntry.session.bobEkPub)
+            assertEquals(bobEntry.session.aliceEkPub, aliceEntry.session.aliceEkPub)
+            assertEquals(bobEntry.session.bobEkPub, aliceEntry.session.bobEkPub)
         }
 
     @Test
@@ -124,8 +124,8 @@ class QrPayloadCompatTest {
 
             val (init, bobEntry) = bob.processScannedQr(scanned, "Bob")
             val aliceEntry = assertNotNull(alice.processKeyExchangeInit(init, "Bob", created.ekPub))
-            assertContentEquals(bobEntry.session.aliceEkPub, aliceEntry.session.aliceEkPub)
-            assertContentEquals(bobEntry.session.bobEkPub, aliceEntry.session.bobEkPub)
+            assertEquals(bobEntry.session.aliceEkPub, aliceEntry.session.aliceEkPub)
+            assertEquals(bobEntry.session.bobEkPub, aliceEntry.session.bobEkPub)
         }
 
     // ---- old client, new invite ----------------------------------------------------------------

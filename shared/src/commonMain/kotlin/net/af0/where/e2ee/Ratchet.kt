@@ -19,21 +19,21 @@ package net.af0.where.e2ee
  * @param dhOutput     32-byte X25519 shared secret.
  */
 internal fun kdfRk(
-    rootKey: ByteArray,
-    dhOutput: ByteArray,
+    rootKey: RootKey,
+    dhOutput: SharedSecret,
 ): RatchetStep {
     val out =
         hkdfSha256(
-            ikm = dhOutput,
-            salt = rootKey,
+            ikm = dhOutput.bytes,
+            salt = rootKey.bytes,
             info = INFO_RATCHET_STEP.encodeToByteArray(),
             length = 96,
         )
     try {
         return RatchetStep(
-            newRootKey = out.copyOfRange(0, 32),
-            newChainKey = out.copyOfRange(32, 64),
-            newHeaderKey = out.copyOfRange(64, 96),
+            newRootKey = RootKey(out.copyOfRange(0, 32)),
+            newChainKey = ChainKey(out.copyOfRange(32, 64)),
+            newHeaderKey = HeaderKey(out.copyOfRange(64, 96)),
         )
     } finally {
         out.zeroize()
@@ -54,11 +54,11 @@ internal fun kdfRk(
  * it would obscure more than it simplifies.
  */
 internal fun dhRatchetSubStep(
-    localPriv: ByteArray,
-    remotePub: ByteArray,
-    currentRootKey: ByteArray,
+    localPriv: DhPrivateKey,
+    remotePub: DhPublicKey,
+    currentRootKey: RootKey,
 ): RatchetStep {
-    val dhOut = x25519(localPriv, remotePub)
+    val dhOut = dh(localPriv, remotePub)
     KeyExchange.requireNonZeroSharedSecret(dhOut)
     return try {
         kdfRk(currentRootKey, dhOut)
@@ -67,9 +67,9 @@ internal fun dhRatchetSubStep(
     }
 }
 
-internal fun kdfCk(chainKey: ByteArray): ChainStep {
-    val messageKey = hmacSha256(chainKey, byteArrayOf(0x01))
-    val newChainKey = hmacSha256(chainKey, byteArrayOf(0x02))
+internal fun kdfCk(chainKey: ChainKey): ChainStep {
+    val messageKey = hmacSha256(chainKey.bytes, byteArrayOf(0x01))
+    val newChainKey = hmacSha256(chainKey.bytes, byteArrayOf(0x02))
     val nonce =
         hkdfSha256(
             ikm = messageKey,
@@ -78,31 +78,48 @@ internal fun kdfCk(chainKey: ByteArray): ChainStep {
             length = 12,
         )
     return ChainStep(
-        newChainKey = newChainKey,
-        messageKey = messageKey,
-        messageNonce = nonce,
+        newChainKey = ChainKey(newChainKey),
+        messageKey = MessageKey(messageKey),
+        messageNonce = MessageNonce(nonce),
     )
 }
 
 /**
- * Derive the routing token for a given ratchet state and direction from the root key.
+ * Derive the routing token for one direction from [ikm].
+ * Call it through [Parties.sendToken] / [Parties.recvToken], which fix the direction.
  *
- * The direction is implicit in the (senderFp, recipientFp) pair: each party uses themselves
- * as sender and the peer as recipient. This eliminates the boolean ambiguity and makes
- * the direction semantically clear at each call site.
- *
- * info = "Where-v1-RoutingToken" || senderFp (32 bytes) || recipientFp (32 bytes)
+ * info = "Where-v1-RoutingToken" || sender (32 bytes) || recipient (32 bytes)
  *
  * Returns 16 bytes.
  */
 internal fun deriveRoutingToken(
-    rootKey: ByteArray,
-    senderFp: ByteArray,
-    recipientFp: ByteArray,
+    ikm: TokenSeed,
+    sender: Fingerprint,
+    recipient: Fingerprint,
+): RoutingToken {
+    val info = INFO_ROUTING_TOKEN.encodeToByteArray() + sender.bytes + recipient.bytes
+    return RoutingToken(hkdfSha256(ikm = (ikm as KeyBytes).bytes, salt = null, info = info, length = 16))
+}
+
+/**
+ * Message AAD. Call it through [Parties.sendAad] / [Parties.recvAad], which fix the
+ * direction. An empty [ackRemoteDhPub] is encoded as 32 zero bytes.
+ */
+internal fun buildMessageAad(
+    sender: Fingerprint,
+    recipient: Fingerprint,
+    seq: Long,
+    dhPub: DhPublicKey,
+    ackRemoteDhPub: DhPublicKey,
 ): ByteArray {
-    val info = INFO_ROUTING_TOKEN.encodeToByteArray() + senderFp + recipientFp
-    val token = hkdfSha256(ikm = rootKey, salt = null, info = info, length = 16)
-    return token
+    val paddedAck = if (ackRemoteDhPub.isEmpty()) ByteArray(32) else ackRemoteDhPub.bytes
+    return AAD_PREFIX.encodeToByteArray() +
+        intToBeBytes(PROTOCOL_VERSION) +
+        sender.bytes +
+        recipient.bytes +
+        longToBeBytes(seq) +
+        dhPub.bytes +
+        paddedAck
 }
 
 // ---------------------------------------------------------------------------
