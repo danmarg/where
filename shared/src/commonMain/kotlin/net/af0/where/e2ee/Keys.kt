@@ -65,12 +65,23 @@ class ChainKey(bytes: ByteArray) : KeyBytes(bytes) {
     internal object Serializer : KeyBytesSerializer<ChainKey>("ChainKey", ::ChainKey)
 }
 
+/**
+ * A key that seals more than one plaintext, so each seal draws a fresh random nonce
+ * ([sealRandomNonce]) instead of taking one from a chain step.
+ */
+sealed class RandomNonceKey(bytes: ByteArray) : KeyBytes(bytes)
+
 /** Header-encryption key for the envelope (#186); 32 bytes. */
 @Serializable(with = HeaderKey.Serializer::class)
-class HeaderKey(bytes: ByteArray) : KeyBytes(bytes) {
+class HeaderKey(bytes: ByteArray) : RandomNonceKey(bytes) {
     override fun copyOf() = HeaderKey(bytes.copyOf())
 
     internal object Serializer : KeyBytesSerializer<HeaderKey>("HeaderKey", ::HeaderKey)
+}
+
+/** Key for the suggested name in KeyExchangeInit, derived from SK; 32 bytes. */
+class NameKey(bytes: ByteArray) : RandomNonceKey(bytes) {
+    override fun copyOf() = NameKey(bytes.copyOf())
 }
 
 /** Per-message AEAD key from KDF_CK; 32 bytes. Use once, then zeroize. */
@@ -100,6 +111,16 @@ class DhPrivateKey(bytes: ByteArray) : KeyBytes(bytes) {
 @Serializable(with = DhPublicKey.Serializer::class)
 class DhPublicKey(bytes: ByteArray) : KeyBytes(bytes) {
     override fun copyOf() = DhPublicKey(bytes.copyOf())
+
+    internal companion object {
+        const val SIZE = 32
+
+        /** A peer-supplied public key, rejected as malformed unless it is exactly [SIZE] bytes. */
+        fun fromWire(bytes: ByteArray): DhPublicKey {
+            if (bytes.size != SIZE) throw ProtocolException("public key must be $SIZE bytes, got ${bytes.size}")
+            return DhPublicKey(bytes)
+        }
+    }
 
     internal object Serializer : KeyBytesSerializer<DhPublicKey>("DhPublicKey", ::DhPublicKey)
 }
@@ -209,6 +230,50 @@ internal class Parties(
             bobFp: Fingerprint,
         ) = if (isAlice) Parties(aliceFp, bobFp) else Parties(bobFp, aliceFp)
     }
+}
+
+/*
+ * The AEAD entry points. Protocol code goes through these rather than aeadEncrypt/aeadDecrypt,
+ * so the key type decides the nonce: a chain step's for a message body, a random one otherwise.
+ */
+
+internal const val RANDOM_NONCE_SIZE = 12
+
+/** AEAD-encrypts a message body under its one-time key and nonce from KDF_CK. */
+internal fun sealMessage(
+    key: MessageKey,
+    nonce: MessageNonce,
+    plaintext: ByteArray,
+    aad: ByteArray,
+): ByteArray = aeadEncrypt(key.bytes, nonce.bytes, plaintext, aad)
+
+/** Opens a message body sealed by [sealMessage]; throws if authentication fails. */
+internal fun openMessage(
+    key: MessageKey,
+    nonce: MessageNonce,
+    ciphertext: ByteArray,
+    aad: ByteArray,
+): ByteArray = aeadDecrypt(key.bytes, nonce.bytes, ciphertext, aad)
+
+/** AEAD-encrypts under [key] with a fresh random nonce; returns nonce || ciphertext || tag. */
+internal fun sealRandomNonce(
+    key: RandomNonceKey,
+    plaintext: ByteArray,
+    aad: ByteArray,
+): ByteArray {
+    val nonce = randomBytes(RANDOM_NONCE_SIZE)
+    return nonce + aeadEncrypt(key.bytes, nonce, plaintext, aad)
+}
+
+/** Opens nonce || ciphertext || tag from [sealRandomNonce]; throws if authentication fails. */
+internal fun openRandomNonce(
+    key: RandomNonceKey,
+    sealed: ByteArray,
+    aad: ByteArray,
+): ByteArray {
+    require(sealed.size >= RANDOM_NONCE_SIZE) { "sealed payload shorter than its nonce" }
+    val nonce = sealed.copyOfRange(0, RANDOM_NONCE_SIZE)
+    return aeadDecrypt(key.bytes, nonce, sealed.copyOfRange(RANDOM_NONCE_SIZE, sealed.size), aad)
 }
 
 /** Compares [a] and [b] without exiting early at the first difference. */

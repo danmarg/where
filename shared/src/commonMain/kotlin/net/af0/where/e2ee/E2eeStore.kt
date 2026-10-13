@@ -15,7 +15,7 @@ import kotlinx.serialization.json.Json
 @Serializable
 internal data class PendingInvite(
     val qrPayload: QrPayload,
-    @Serializable(with = ByteArrayBase64Serializer::class) val aliceEkPriv: ByteArray,
+    val aliceEkPriv: DhPrivateKey,
     val createdAt: Long = currentTimeSeconds(),
     val exportedAt: Long? = null,
 ) {
@@ -336,7 +336,7 @@ internal class E2eeStore(
                     // Not persisted: re-derived from creation time, same as at creation.
                     expiresAt = createdAt + INVITE_LIFETIME_SECONDS,
                 ),
-            aliceEkPriv = privKeyBlob,
+            aliceEkPriv = DhPrivateKey(privKeyBlob),
             createdAt = createdAt,
             exportedAt = exportedAt,
         )
@@ -431,7 +431,7 @@ internal class E2eeStore(
                             suggestedName = invite.qrPayload.suggestedName,
                             fingerprint = "",
                             discoverySecret = invite.qrPayload.discoverySecret,
-                            privKeyBlob = invite.aliceEkPriv,
+                            privKeyBlob = invite.aliceEkPriv.bytes,
                             createdAt = invite.createdAt,
                             exportedAt = invite.exportedAt,
                         )

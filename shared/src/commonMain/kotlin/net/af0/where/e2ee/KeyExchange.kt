@@ -37,7 +37,7 @@ object KeyExchange {
      * Alice: create the QR / invite-link payload.
      * Returns (QrPayload, EK_A.priv). The caller MUST zero EK_A.priv after aliceProcessInit.
      */
-    fun aliceCreateQrPayload(suggestedName: String): Pair<QrPayload, ByteArray> {
+    fun aliceCreateQrPayload(suggestedName: String): Pair<QrPayload, DhPrivateKey> {
         val ek = generateX25519KeyPair()
         val payload =
             QrPayload(
@@ -46,7 +46,7 @@ object KeyExchange {
                 discoverySecret = randomBytes(32),
                 expiresAt = currentTimeSeconds() + INVITE_LIFETIME_SECONDS,
             )
-        return payload to ek.priv
+        return payload to DhPrivateKey(ek.priv)
     }
 
     /**
@@ -65,12 +65,17 @@ object KeyExchange {
         }
         if (qr.isExpired()) throw InviteExpiredException()
 
+        val alicePub = DhPublicKey.fromWire(qr.ekPub)
         val ekB = generateX25519KeyPair()
         val bobPriv = DhPrivateKey(ekB.priv)
         val bobPub = DhPublicKey(ekB.pub)
-        val alicePub = DhPublicKey(qr.ekPub)
         val sk = dh(bobPriv, alicePub)
-        requireNonZeroSharedSecret(sk)
+        try {
+            requireNonZeroSharedSecret(sk)
+        } catch (e: AuthenticationException) {
+            bobPriv.zeroize()
+            throw e
+        }
 
         val session =
             initSession(
@@ -110,7 +115,7 @@ object KeyExchange {
      */
     fun aliceProcessInit(
         msg: KeyExchangeInitMessage,
-        aliceEkPriv: ByteArray,
+        aliceEkPriv: DhPrivateKey,
         aliceEkPub: ByteArray,
     ): SessionState {
         // VERIFY PROTOCOL VERSION (#194)
@@ -118,10 +123,9 @@ object KeyExchange {
             throw ProtocolVersionException("Unsupported protocol version ${msg.protocolVersion}")
         }
 
-        val alicePriv = DhPrivateKey(aliceEkPriv)
         val alicePub = DhPublicKey(aliceEkPub)
-        val bobPub = DhPublicKey(msg.ekPub)
-        val sk = dh(alicePriv, bobPub)
+        val bobPub = DhPublicKey.fromWire(msg.ekPub)
+        val sk = dh(aliceEkPriv, bobPub)
         requireNonZeroSharedSecret(sk)
         try {
             // Verify key confirmation before proceeding.
@@ -141,7 +145,7 @@ object KeyExchange {
                 initSession(
                     sk = sk,
                     isAlice = true,
-                    myDhPriv = alicePriv,
+                    myDhPriv = aliceEkPriv,
                     myDhPub = alicePub,
                     theirDhPub = bobPub,
                     aliceFp = fingerprint(alicePub),
@@ -205,23 +209,9 @@ object KeyExchange {
         ekBPub: DhPublicKey,
         suggestedName: String,
     ): ByteArray {
-        val kName =
-            hkdfSha256(
-                ikm = sk.bytes,
-                salt = null,
-                info = "Where-v1-SuggestedName".encodeToByteArray(),
-                length = 32,
-            )
+        val kName = nameKey(sk)
         try {
-            val nameNonce = randomBytes(12)
-            val nameCt =
-                aeadEncrypt(
-                    key = kName,
-                    nonce = nameNonce,
-                    plaintext = suggestedName.encodeToByteArray(),
-                    aad = ekAPub.bytes + ekBPub.bytes,
-                )
-            return nameNonce + nameCt
+            return sealRandomNonce(kName, suggestedName.encodeToByteArray(), aad = ekAPub.bytes + ekBPub.bytes)
         } finally {
             kName.zeroize()
         }
@@ -236,30 +226,25 @@ object KeyExchange {
         if (encryptedName.size < 28) { // 12-byte nonce + 16-byte tag
             throw AuthenticationException("encryptedName payload is too short")
         }
-        val kName =
-            hkdfSha256(
-                ikm = sk.bytes,
-                salt = null,
-                info = "Where-v1-SuggestedName".encodeToByteArray(),
-                length = 32,
-            )
+        val kName = nameKey(sk)
         try {
-            val nonce = encryptedName.copyOfRange(0, 12)
-            val ct = encryptedName.copyOfRange(12, encryptedName.size)
-            val plaintext =
-                aeadDecrypt(
-                    key = kName,
-                    nonce = nonce,
-                    ciphertext = ct,
-                    aad = ekAPub.bytes + ekBPub.bytes,
-                )
-            return plaintext.decodeToString()
+            return openRandomNonce(kName, encryptedName, aad = ekAPub.bytes + ekBPub.bytes).decodeToString()
         } catch (e: Exception) {
             throw AuthenticationException("Failed to decrypt suggested_name: ${e.message}")
         } finally {
             kName.zeroize()
         }
     }
+
+    private fun nameKey(sk: SharedSecret) =
+        NameKey(
+            hkdfSha256(
+                ikm = sk.bytes,
+                salt = null,
+                info = "Where-v1-SuggestedName".encodeToByteArray(),
+                length = 32,
+            ),
+        )
 
     /**
      * Derive the initial session state from SK.
