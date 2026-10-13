@@ -38,50 +38,45 @@ struct ContentView: View {
         }
     }
 
-    /// What tapping the sharing button does. While sharing, a tap always stops: it used to show
-    /// the background-location rationale on When-In-Use (and open Settings when denied) instead,
-    /// so sharing couldn't be turned off from the app.
+    /// What tapping the sharing button does. While sharing it stops - it used to show the
+    /// background-location rationale on When-In-Use instead, so sharing couldn't be turned off -
+    /// except where the pill reports a fixable permission problem: denied (red "permission
+    /// missing") goes to Settings, and not-yet-asked asks.
     enum SharingToggleAction: Equatable {
-        case toggle, requestPermissionAndStart, openSettings
+        case toggle, requestPermission, requestPermissionAndStart, openSettings
 
         static func derive(isSharing: Bool, authorization: CLAuthorizationStatus) -> SharingToggleAction {
-            if isSharing { return .toggle }
             switch authorization {
-            case .denied, .restricted: return .openSettings
-            case .notDetermined: return .requestPermissionAndStart
+            case .denied: return .openSettings
+            case .restricted: return isSharing ? .toggle : .openSettings
+            case .notDetermined: return isSharing ? .requestPermission : .requestPermissionAndStart
             default: return .toggle
             }
         }
     }
 
-    /// iOS shows the When-In-Use → Always prompt at most once, so the rationale leading to it is
-    /// offered once, when it matters: sharing with at least one friend on When-In-Use only.
-    static func shouldOfferAlwaysUpgrade(
-        authorization: CLAuthorizationStatus,
-        isSharing: Bool,
-        hasFriends: Bool,
-        alreadyOffered: Bool
-    ) -> Bool {
-        authorization == .authorizedWhenInUse && isSharing && hasFriends && !alreadyOffered
+    /// Sharing with friends on When-In-Use only: offer the Always upgrade via an inline button
+    /// (not an auto-presented alert, which could collide with other modals or be dismissed for good).
+    static func showsBackgroundLocationButton(authorization: CLAuthorizationStatus, isSharing: Bool, hasFriends: Bool) -> Bool {
+        authorization == .authorizedWhenInUse && isSharing && hasFriends
     }
 
-    @AppStorage("always_upgrade_offered") private var alwaysUpgradeOffered = false
+    enum AlwaysUpgradeAction: Equatable {
+        case requestAlways, openSettings
 
-    /// SwiftUI drops an alert presented while another sheet or alert is up, so the offer waits
-    /// for a moment with none: e.g. the invite sheet that's open when the first friend pairs.
-    private var isOtherModalShowing: Bool {
-        showFriends || showScanner || showErrorAlert || syncService.isInviteSheetShowing
-            || syncService.repo.pendingQrForNaming != nil || syncService.repo.pendingInitPayload != nil
-            || !syncService.discardedSessionNames.isEmpty || syncService.inviteError != nil
+        /// iOS shows its When-In-Use → Always prompt at most once (and not under Allow Once), so
+        /// after asking once the button goes to Settings instead of silently doing nothing.
+        static func derive(alreadyRequested: Bool) -> AlwaysUpgradeAction {
+            alreadyRequested ? .openSettings : .requestAlways
+        }
     }
 
-    private var alwaysUpgradeDue: Bool {
-        scenePhase == .active && !isOtherModalShowing && Self.shouldOfferAlwaysUpgrade(
-            authorization: locationManager.authorizationStatus,
-            isSharing: syncService.isSharingLocation,
-            hasFriends: !syncService.repo.friends.isEmpty,
-            alreadyOffered: alwaysUpgradeOffered
-        )
+    @AppStorage("always_permission_requested") private var alwaysPermissionRequested = false
+
+    private func openSettings() {
+        if let url = URL(string: UIApplication.openSettingsURLString) {
+            UIApplication.shared.open(url)
+        }
     }
 
     private var sharingStatus: SharingStatus {
@@ -130,6 +125,13 @@ struct ContentView: View {
 
             VStack {
                 Spacer()
+                if Self.showsBackgroundLocationButton(
+                    authorization: locationManager.authorizationStatus,
+                    isSharing: syncService.isSharingLocation,
+                    hasFriends: !syncService.repo.friends.isEmpty
+                ) {
+                    backgroundLocationButton
+                }
                 bottomBar
                     .sheet(isPresented: Binding(
                         get: { syncService.isInviteSheetShowing },
@@ -254,9 +256,6 @@ struct ContentView: View {
         .onChange(of: scenePhase) { _, newPhase in
             handlePhaseChange(newPhase)
         }
-        .onChange(of: alwaysUpgradeDue, initial: true) { _, due in
-            if due { showLocationRationale = true }
-        }
         .onReceive(syncService.repo.$pendingQrForNaming) { qr in
             if let qr = qr { newFriendName = qr.suggestedName } else { newFriendName = "" }
         }
@@ -268,12 +267,15 @@ struct ContentView: View {
         }
         .alert(MR.strings().background_location_title.localized(), isPresented: $showLocationRationale) {
             Button(MR.strings().allow.localized()) {
-                alwaysUpgradeOffered = true
-                locationManager.requestAlwaysPermission()
+                switch AlwaysUpgradeAction.derive(alreadyRequested: alwaysPermissionRequested) {
+                case .requestAlways:
+                    alwaysPermissionRequested = true
+                    locationManager.requestAlwaysPermission()
+                case .openSettings:
+                    openSettings()
+                }
             }
-            Button(MR.strings().skip.localized(), role: .cancel) {
-                alwaysUpgradeOffered = true
-            }
+            Button(MR.strings().skip.localized(), role: .cancel) { }
         } message: {
             Text(MR.strings().background_location_message.localized())
         }
@@ -313,6 +315,25 @@ struct ContentView: View {
         }
         .padding(.horizontal, 16)
         .padding(.bottom, 32)
+    }
+
+    @ViewBuilder
+    private var backgroundLocationButton: some View {
+        HStack {
+            Button {
+                showLocationRationale = true
+            } label: {
+                Label(MR.strings().background_location_title.localized(), systemImage: "exclamationmark.circle.fill")
+                    .font(.caption)
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 8)
+                    .background(Color.orange.opacity(0.85))
+                    .foregroundStyle(.white)
+                    .clipShape(Capsule())
+            }
+            Spacer()
+        }
+        .padding(.horizontal, 16)
     }
 
     @ViewBuilder
@@ -395,13 +416,13 @@ struct ContentView: View {
         switch SharingToggleAction.derive(isSharing: syncService.isSharingLocation, authorization: locationManager.authorizationStatus) {
         case .toggle:
             syncService.toggleSharing()
+        case .requestPermission:
+            locationManager.requestPermissionAndStart()
         case .requestPermissionAndStart:
             locationManager.requestPermissionAndStart()
-            syncService.isSharingLocation = true
+            syncService.toggleSharing()
         case .openSettings:
-            if let url = URL(string: UIApplication.openSettingsURLString) {
-                UIApplication.shared.open(url)
-            }
+            openSettings()
         }
     }
 }

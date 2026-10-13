@@ -1353,32 +1353,38 @@ class LocationSyncServiceTests: XCTestCase {
         XCTAssertEqual(S.derive(isSharing: true, authorization: .authorizedAlways, accuracyAuthorization: .fullAccuracy, lastFixAccuracy: nil), .sharing)
     }
 
-    /// While sharing, a tap always stops - whatever the permission. On When-In-Use it used to show
-    /// the background-location rationale instead, leaving no way to stop from the button.
-    func testSharingToggle_StopsRegardlessOfPermission() {
+    /// While sharing on When-In-Use or Always, a tap stops. On When-In-Use it used to show the
+    /// background-location rationale instead, leaving no way to stop from the button.
+    func testSharingToggle_StopsOnWhenInUse() {
         typealias A = ContentView.SharingToggleAction
-        for auth: CLAuthorizationStatus in [.authorizedWhenInUse, .authorizedAlways, .denied, .restricted, .notDetermined] {
-            XCTAssertEqual(A.derive(isSharing: true, authorization: auth), .toggle, "auth \(auth.rawValue)")
-        }
+        XCTAssertEqual(A.derive(isSharing: true, authorization: .authorizedWhenInUse), .toggle)
+        XCTAssertEqual(A.derive(isSharing: true, authorization: .authorizedAlways), .toggle)
+        XCTAssertEqual(A.derive(isSharing: true, authorization: .restricted), .toggle, "Settings can't fix restricted")
+        XCTAssertEqual(A.derive(isSharing: true, authorization: .denied), .openSettings, "the red pill leads to the fix")
+        XCTAssertEqual(A.derive(isSharing: true, authorization: .notDetermined), .requestPermission)
         XCTAssertEqual(A.derive(isSharing: false, authorization: .authorizedWhenInUse), .toggle)
-        XCTAssertEqual(A.derive(isSharing: false, authorization: .authorizedAlways), .toggle)
         XCTAssertEqual(A.derive(isSharing: false, authorization: .notDetermined), .requestPermissionAndStart)
         XCTAssertEqual(A.derive(isSharing: false, authorization: .denied), .openSettings)
         XCTAssertEqual(A.derive(isSharing: false, authorization: .restricted), .openSettings)
     }
 
-    /// The Always upgrade is offered while sharing with a friend on When-In-Use, and only once.
-    func testAlwaysUpgradeOffer_OnlyWhenItMattersAndOnlyOnce() {
-        func offer(_ auth: CLAuthorizationStatus, sharing: Bool = true, friends: Bool = true, offered: Bool = false) -> Bool {
-            ContentView.shouldOfferAlwaysUpgrade(authorization: auth, isSharing: sharing, hasFriends: friends, alreadyOffered: offered)
+    /// The Always upgrade button shows while sharing with a friend on When-In-Use only.
+    func testBackgroundLocationButton_ShownOnlyWhenItMatters() {
+        func shows(_ auth: CLAuthorizationStatus, sharing: Bool = true, friends: Bool = true) -> Bool {
+            ContentView.showsBackgroundLocationButton(authorization: auth, isSharing: sharing, hasFriends: friends)
         }
-        XCTAssertTrue(offer(.authorizedWhenInUse))
-        XCTAssertFalse(offer(.authorizedWhenInUse, offered: true))
-        XCTAssertFalse(offer(.authorizedWhenInUse, sharing: false))
-        XCTAssertFalse(offer(.authorizedWhenInUse, friends: false))
-        XCTAssertFalse(offer(.authorizedAlways))
-        XCTAssertFalse(offer(.notDetermined))
-        XCTAssertFalse(offer(.denied))
+        XCTAssertTrue(shows(.authorizedWhenInUse))
+        XCTAssertFalse(shows(.authorizedWhenInUse, sharing: false))
+        XCTAssertFalse(shows(.authorizedWhenInUse, friends: false))
+        XCTAssertFalse(shows(.authorizedAlways))
+        XCTAssertFalse(shows(.notDetermined))
+        XCTAssertFalse(shows(.denied))
+    }
+
+    /// iOS's Always prompt can be shown once; after that the button goes to Settings.
+    func testAlwaysUpgrade_RequestsOnceThenOpensSettings() {
+        XCTAssertEqual(ContentView.AlwaysUpgradeAction.derive(alreadyRequested: false), .requestAlways)
+        XCTAssertEqual(ContentView.AlwaysUpgradeAction.derive(alreadyRequested: true), .openSettings)
     }
 
     /// A precise fix from before Precise Location was turned off (e.g. restored at launch) must
