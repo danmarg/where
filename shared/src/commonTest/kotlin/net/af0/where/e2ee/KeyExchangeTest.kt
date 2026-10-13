@@ -26,7 +26,7 @@ class KeyExchangeTest {
 
         // ekPriv is 32 bytes and non-zero.
         assertEquals(32, ekPriv.size)
-        assertFalse(ekPriv.all { it == 0.toByte() })
+        assertFalse(ekPriv.bytes.all { it == 0.toByte() })
     }
 
     @Test
@@ -59,7 +59,7 @@ class KeyExchangeTest {
         val (msg, _) = KeyExchange.bobProcessQr(qr, "Bob")
 
         // Alice can verify the key_confirmation by computing SK herself
-        val sk = SharedSecret(x25519(aliceEkPriv, msg.ekPub))
+        val sk = SharedSecret(x25519(aliceEkPriv.bytes, msg.ekPub))
         assertTrue(KeyExchange.verifyKeyConfirmation(sk, DhPublicKey(qr.ekPub), DhPublicKey(msg.ekPub), msg.keyConfirmation))
     }
 
@@ -157,7 +157,7 @@ class KeyExchangeTest {
     fun `decryptSuggestedName round-trips the name Bob encrypted`() {
         val (qr, aliceEkPriv) = KeyExchange.aliceCreateQrPayload("Alice")
         val (msg, _) = KeyExchange.bobProcessQr(qr, "Bob")
-        val sk = SharedSecret(x25519(aliceEkPriv, msg.ekPub))
+        val sk = SharedSecret(x25519(aliceEkPriv.bytes, msg.ekPub))
         val name = KeyExchange.decryptSuggestedName(sk, DhPublicKey(qr.ekPub), DhPublicKey(msg.ekPub), msg.encryptedName)
         assertEquals("Bob", name)
         sk.zeroize()
@@ -190,7 +190,7 @@ class KeyExchangeTest {
     fun `decryptSuggestedName fails with mismatched AAD`() {
         val (qr, aliceEkPriv) = KeyExchange.aliceCreateQrPayload("Alice")
         val (msg, _) = KeyExchange.bobProcessQr(qr, "Bob")
-        val sk = SharedSecret(x25519(aliceEkPriv, msg.ekPub))
+        val sk = SharedSecret(x25519(aliceEkPriv.bytes, msg.ekPub))
 
         // Try decrypting with a different Alice public key in AAD
         val wrongAliceEkPub = DhPublicKey(randomBytes(32))
@@ -229,7 +229,7 @@ class KeyExchangeTest {
         val (msg, _) = KeyExchange.bobProcessQr(qr, "Bob")
 
         // Both sides compute the same SK.
-        val aliceSk = SharedSecret(x25519(aliceEkPriv, msg.ekPub))
+        val aliceSk = SharedSecret(x25519(aliceEkPriv.bytes, msg.ekPub))
 
         // Build confirmation from SK, verify it round-trips.
         val ekA = DhPublicKey(qr.ekPub)
@@ -292,14 +292,14 @@ class KeyExchangeTest {
         val (msg, bobSession) = KeyExchange.bobProcessQr(qr, "Bob")
 
         // Use a "raw" initSession for Alice to check Epoch 0 values before she ratchets
-        val sk = SharedSecret(x25519(aliceEkPriv, msg.ekPub))
+        val sk = SharedSecret(x25519(aliceEkPriv.bytes, msg.ekPub))
         val aliceFp = fingerprint(DhPublicKey(qr.ekPub))
         val bobFp = fingerprint(DhPublicKey(msg.ekPub))
         val aliceSession0 =
             KeyExchange.initSession(
                 sk,
                 true,
-                DhPrivateKey(aliceEkPriv),
+                aliceEkPriv,
                 DhPublicKey(qr.ekPub),
                 DhPublicKey(msg.ekPub),
                 aliceFp,
@@ -502,5 +502,39 @@ class KeyExchangeTest {
         assertFailsWith<ProtocolVersionException> {
             KeyExchange.aliceProcessInit(highV, aliceEkPriv, qr.ekPub)
         }
+    }
+
+    // ---------------------------------------------------------------------------
+    // Boundary checks and message destination
+    // ---------------------------------------------------------------------------
+
+    @Test
+    fun `bobProcessQr rejects a public key of the wrong size`() {
+        val (qr, _) = KeyExchange.aliceCreateQrPayload("Alice")
+        assertFailsWith<AuthenticationException> {
+            KeyExchange.bobProcessQr(qr.copy(ekPub = qr.ekPub.copyOf(31)), "Bob")
+        }
+    }
+
+    @Test
+    fun `aliceProcessInit rejects a public key of the wrong size`() {
+        val (qr, aliceEkPriv) = KeyExchange.aliceCreateQrPayload("Alice")
+        val (msg, _) = KeyExchange.bobProcessQr(qr, "Bob")
+        assertFailsWith<AuthenticationException> {
+            KeyExchange.aliceProcessInit(msg.copy(ekPub = msg.ekPub + 0), aliceEkPriv, qr.ekPub)
+        }
+    }
+
+    @Test
+    fun `an epoch's first message goes to the previous mailbox and later ones to the current`() {
+        val (qr, aliceEkPriv) = KeyExchange.aliceCreateQrPayload("Alice")
+        val (msg, _) = KeyExchange.bobProcessQr(qr, "Bob")
+        val alice = KeyExchange.aliceProcessInit(msg, aliceEkPriv, qr.ekPub)
+
+        val first = Session.encryptMessage(alice, MessagePlaintext.Keepalive())
+        assertEquals(alice.prevSendToken, first.destination)
+        val second = Session.encryptMessage(first.state, MessagePlaintext.Keepalive())
+        assertEquals(alice.sendToken, second.destination)
+        assertNotEquals(first.destination, second.destination)
     }
 }

@@ -101,6 +101,16 @@ class DhPrivateKey(bytes: ByteArray) : KeyBytes(bytes) {
 class DhPublicKey(bytes: ByteArray) : KeyBytes(bytes) {
     override fun copyOf() = DhPublicKey(bytes.copyOf())
 
+    internal companion object {
+        const val SIZE = 32
+
+        /** A peer-supplied public key, rejected unless it is exactly [SIZE] bytes. */
+        fun fromWire(bytes: ByteArray): DhPublicKey {
+            if (bytes.size != SIZE) throw AuthenticationException("public key must be $SIZE bytes, got ${bytes.size}")
+            return DhPublicKey(bytes)
+        }
+    }
+
     internal object Serializer : KeyBytesSerializer<DhPublicKey>("DhPublicKey", ::DhPublicKey)
 }
 
@@ -210,6 +220,22 @@ internal class Parties(
         ) = if (isAlice) Parties(aliceFp, bobFp) else Parties(bobFp, aliceFp)
     }
 }
+
+/** AEAD-encrypts a message body under its one-time key and nonce from KDF_CK. */
+internal fun sealMessage(
+    key: MessageKey,
+    nonce: MessageNonce,
+    plaintext: ByteArray,
+    aad: ByteArray,
+): ByteArray = aeadEncrypt(key.bytes, nonce.bytes, plaintext, aad)
+
+/** Opens a message body sealed by [sealMessage]; throws if authentication fails. */
+internal fun openMessage(
+    key: MessageKey,
+    nonce: MessageNonce,
+    ciphertext: ByteArray,
+    aad: ByteArray,
+): ByteArray = aeadDecrypt(key.bytes, nonce.bytes, ciphertext, aad)
 
 /** Compares [a] and [b] without exiting early at the first difference. */
 internal fun constantTimeEquals(

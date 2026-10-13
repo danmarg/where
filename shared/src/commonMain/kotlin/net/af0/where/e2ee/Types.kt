@@ -71,6 +71,14 @@ data class SessionState(
      */
     internal val parties: Parties get() = Parties.of(isAlice, aliceFp, bobFp)
 
+    /**
+     * Where the message numbered [seq] in the current send chain goes, and the header key that
+     * seals it (§4.3). The first message of an epoch goes to the previous epoch's mailbox under the
+     * previous header key, because the peer is still polling there; later ones use the current pair.
+     */
+    internal fun transportFor(seq: Long): Transport =
+        if (seq == 1L) Transport(prevSendToken, prevSendHeaderKey) else Transport(sendToken, sendHeaderKey)
+
     /** Header AAD (#186): both bootstrap fingerprints, Alice's first, the same on both sides. */
     internal fun headerAad(): ByteArray = aliceFp.bytes + bobFp.bytes
 
@@ -349,6 +357,19 @@ data class EncryptedOutboxMessage(
     val payload: MailboxPayload,
     val msgId: String = payload.msgId,
     val createdAt: Long = currentTimeMillis(),
+)
+
+/** Mailbox and header key for one outgoing message; see [SessionState.transportFor]. */
+internal class Transport(val token: RoutingToken, val headerKey: HeaderKey)
+
+/**
+ * An encrypted message, the state to persist after sending it, and the mailbox it must be posted
+ * to. Destructures as (state, payload) like the pair it replaced.
+ */
+data class OutgoingMessage(
+    val state: SessionState,
+    val payload: EncryptedMessagePayload,
+    val destination: RoutingToken,
 )
 
 /** Output of a symmetric ratchet step (KDF_CK). */

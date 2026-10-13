@@ -19,7 +19,7 @@ object Session {
     fun encryptMessage(
         state: SessionState,
         payload: MessagePlaintext,
-    ): Pair<SessionState, EncryptedMessagePayload> = encryptPadded(state, padToFixedSize(encodeMessage(payload), PADDING_SIZE))
+    ): OutgoingMessage = encryptPadded(state, padToFixedSize(encodeMessage(payload), PADDING_SIZE))
 
     /**
      * Encrypts an already-padded plaintext. Separate from [encryptMessage] so tests can
@@ -28,29 +28,27 @@ object Session {
     internal fun encryptPadded(
         state: SessionState,
         plaintext: ByteArray,
-    ): Pair<SessionState, EncryptedMessagePayload> {
+    ): OutgoingMessage {
         if (state.sendSeq == Long.MAX_VALUE) throw SessionBrickedException("sequence number overflow")
 
         // No lazy send-side ratchet here: performDhRatchet runs both sub-steps as soon as a new
         // peer DH key is received, so the send chain is always current.
         val currentState = state
 
-        // DOUBLE RATCHET TRANSITION PROTECTION (§4.3)
-        // The first message in a new epoch (seq == 1) is the transition message.
-        // It MUST be sent to the previous token using the previous header key
-        // to ensure the receiver (who is still polling the old token) can see it.
+        // DOUBLE RATCHET TRANSITION PROTECTION (§4.3): the epoch's first message goes to the
+        // previous mailbox under the previous header key (see transportFor).
         val seqToUse = currentState.sendSeq + 1
-        val usePrevForTransport = (seqToUse == 1L)
+        val transport = currentState.transportFor(seqToUse)
 
         val chainKeyToUse = currentState.sendChainKey
-        val headerKeyToUse = if (usePrevForTransport) currentState.prevSendHeaderKey else currentState.sendHeaderKey
+        val headerKeyToUse = transport.headerKey
         val dhPubToUse = currentState.localDhPub
         val ackRemoteToUse = currentState.remoteDhPub
 
         val step = kdfCk(chainKeyToUse)
         val aad = currentState.parties.sendAad(seqToUse, dhPubToUse, ackRemoteToUse)
 
-        val ct = aeadEncrypt(step.messageKey.bytes, step.messageNonce.bytes, plaintext, aad)
+        val ct = sealMessage(step.messageKey, step.messageNonce, plaintext, aad)
 
         val newState =
             currentState.copy(
@@ -73,7 +71,7 @@ object Session {
                 ct = ct,
             )
 
-        return newState to message
+        return OutgoingMessage(newState, message, transport.token)
     }
 
     @Throws(WhereException::class)
@@ -135,7 +133,7 @@ object Session {
 
             val plaintext =
                 try {
-                    aeadDecrypt(mk.bytes, nonce.bytes, message.ct, aad)
+                    openMessage(mk, nonce, message.ct, aad)
                 } catch (e: Exception) {
                     throw AuthenticationException("decryption failed with cached key", e)
                 } finally {
@@ -295,7 +293,7 @@ object Session {
 
             val plaintext =
                 try {
-                    aeadDecrypt(finalStep.messageKey.bytes, finalStep.messageNonce.bytes, message.ct, aad)
+                    openMessage(finalStep.messageKey, finalStep.messageNonce, message.ct, aad)
                 } catch (e: Exception) {
                     throw DecryptionExceptionWithState(newState, e)
                 } finally {
