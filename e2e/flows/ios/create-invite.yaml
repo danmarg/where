@@ -4,6 +4,18 @@ appId: net.af0.WhereApp
 - launchApp
 - tapOn:
     id: "person.2.fill"
+# The first tap after launch is sometimes dropped on the simulator. Tap again only if the sheet
+# didn't open: a tap while it's open could dismiss it.
+- extendedWaitUntil:
+    visible: "Invite"
+    timeout: 10000
+    optional: true
+- runFlow:
+    when:
+      notVisible: "Invite"
+    commands:
+      - tapOn:
+          id: "person.2.fill"
 - tapOn: "Invite"
 - extendedWaitUntil:
     visible: "Share Link"

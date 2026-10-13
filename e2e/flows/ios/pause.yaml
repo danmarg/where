@@ -6,8 +6,8 @@ appId: net.af0.WhereApp
     stopApp: false
 - tapOn:
     id: "location.fill"
-# A tap occasionally doesn't register on the simulator; tap again only if it didn't take, since
-# a second tap that did would resume sharing.
+# The first tap after launch is sometimes dropped on the simulator. Tap again only if it didn't
+# take, since a second tap that did would resume sharing.
 - extendedWaitUntil:
     visible: "Paused"
     timeout: 10000
