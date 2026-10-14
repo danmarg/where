@@ -1376,6 +1376,17 @@ class LocationSyncServiceTests: XCTestCase {
         }
     }
 
+    /// The background prompt comes up by itself once, when sharing is limited by When-In-Use.
+    func testBackgroundPromptOfferedOnceWhenLimited() {
+        let offer = ContentView.shouldOfferBackgroundOnce
+        XCTAssertTrue(offer(.authorizedWhenInUse, true, false))
+        XCTAssertFalse(offer(.authorizedWhenInUse, true, true), "only once")
+        XCTAssertFalse(offer(.authorizedWhenInUse, false, false), "not while paused; starting offers it")
+        for auth: CLAuthorizationStatus in [.authorizedAlways, .denied, .notDetermined] {
+            XCTAssertFalse(offer(auth, true, false), "auth \(auth.rawValue)")
+        }
+    }
+
     /// Without permission nothing can be shared, so the pill says so whatever the toggle is.
     func testSharingStatus_NoPermissionIsSharingOff() {
         typealias S = ContentView.SharingStatus

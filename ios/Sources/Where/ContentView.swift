@@ -78,6 +78,25 @@ struct ContentView: View {
 
     @AppStorage("always_permission_requested") private var alwaysPermissionRequested = false
 
+    @AppStorage("background_prompt_offered") private var backgroundPromptOffered = false
+
+    /// Sharing on When-In-Use is limited, and tapping the pill then stops rather than fixes it, so
+    /// the background prompt is offered on its own once - like Android's disclosure after the
+    /// first grant. After that it comes up only when sharing is started.
+    nonisolated static func shouldOfferBackgroundOnce(authorization: CLAuthorizationStatus, isSharing: Bool, alreadyOffered: Bool) -> Bool {
+        authorization == .authorizedWhenInUse && isSharing && !alreadyOffered
+    }
+
+    private func offerBackgroundOnceIfLimited() {
+        guard Self.shouldOfferBackgroundOnce(
+            authorization: locationManager.authorizationStatus,
+            isSharing: syncService.isSharingLocation,
+            alreadyOffered: backgroundPromptOffered
+        ) else { return }
+        backgroundPromptOffered = true
+        showBackgroundPrompt = true
+    }
+
     /// iOS shows its When-In-Use → Always prompt at most once, and never under Allow Once; when it
     /// won't, there's nowhere left but Settings. Once we've asked, go straight there. The first
     /// time, ask - and if no prompt shows within a second (it was used up before this flag
@@ -271,6 +290,10 @@ struct ContentView: View {
         }
         .onAppear {
             locationManager.requestPermissionAndStart()
+            offerBackgroundOnceIfLimited()
+        }
+        .onChange(of: locationManager.authorizationStatus) { _, _ in
+            offerBackgroundOnceIfLimited()
         }
         .onChange(of: scenePhase) { _, newPhase in
             if newPhase != .active { systemPromptAppeared = true }
