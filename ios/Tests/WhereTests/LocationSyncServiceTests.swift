@@ -1346,26 +1346,44 @@ class LocationSyncServiceTests: XCTestCase {
         typealias S = ContentView.SharingStatus
         let usable = LocationSyncService.minBroadcastAccuracyMeters
         XCTAssertEqual(S.derive(isSharing: false, authorization: .authorizedAlways, accuracyAuthorization: .reducedAccuracy, lastFixAccuracy: nil), .paused)
-        XCTAssertEqual(S.derive(isSharing: true, authorization: .denied, accuracyAuthorization: .reducedAccuracy, lastFixAccuracy: nil), .permissionMissing)
+        XCTAssertEqual(S.derive(isSharing: true, authorization: .denied, accuracyAuthorization: .reducedAccuracy, lastFixAccuracy: nil), .sharingOff)
         XCTAssertEqual(S.derive(isSharing: true, authorization: .authorizedAlways, accuracyAuthorization: .reducedAccuracy, lastFixAccuracy: 1500), .preciseLocationOff)
         XCTAssertEqual(S.derive(isSharing: true, authorization: .authorizedAlways, accuracyAuthorization: .reducedAccuracy, lastFixAccuracy: nil), .preciseLocationOff)
         XCTAssertEqual(S.derive(isSharing: true, authorization: .authorizedAlways, accuracyAuthorization: .reducedAccuracy, lastFixAccuracy: usable), .sharing)
         XCTAssertEqual(S.derive(isSharing: true, authorization: .authorizedAlways, accuracyAuthorization: .fullAccuracy, lastFixAccuracy: nil), .sharing)
     }
 
-    /// While sharing, a tap stops - or, on When-In-Use, offers Always alongside stopping. It used
-    /// to show only the background-location rationale there, leaving no way to stop.
-    func testSharingToggle_AlwaysOffersAWayToStop() {
+    /// Sharing, a tap always stops - limited or not; it once showed only the background rationale
+    /// on When-In-Use, leaving no way to stop. Not sharing, it starts and offers whatever would lift
+    /// the limit. Without permission it only opens Settings, leaving the toggle to resume sharing.
+    func testSharingToggle() {
         typealias A = ContentView.SharingToggleAction
-        XCTAssertEqual(A.derive(isSharing: true, authorization: .authorizedWhenInUse), .chooseBackgroundOrStop)
-        for auth: CLAuthorizationStatus in [.authorizedAlways, .denied, .restricted, .notDetermined] {
-            XCTAssertEqual(A.derive(isSharing: true, authorization: auth), .toggle, "auth \(auth.rawValue)")
+        func derive(_ isSharing: Bool, _ auth: CLAuthorizationStatus, _ accuracy: CLAccuracyAuthorization = .fullAccuracy) -> A {
+            A.derive(isSharing: isSharing, authorization: auth, accuracyAuthorization: accuracy, lastFixAccuracy: nil)
         }
-        XCTAssertEqual(A.derive(isSharing: false, authorization: .authorizedWhenInUse), .toggle)
-        XCTAssertEqual(A.derive(isSharing: false, authorization: .authorizedAlways), .toggle)
-        XCTAssertEqual(A.derive(isSharing: false, authorization: .notDetermined), .requestPermissionAndStart)
-        XCTAssertEqual(A.derive(isSharing: false, authorization: .denied), .openSettings)
-        XCTAssertEqual(A.derive(isSharing: false, authorization: .restricted), .openSettings)
+        for auth: CLAuthorizationStatus in [.authorizedAlways, .authorizedWhenInUse, .notDetermined] {
+            XCTAssertEqual(derive(true, auth), .toggle, "auth \(auth.rawValue)")
+            XCTAssertEqual(derive(true, auth, .reducedAccuracy), .toggle, "auth \(auth.rawValue), reduced")
+        }
+        XCTAssertEqual(derive(false, .authorizedAlways), .toggle)
+        XCTAssertEqual(derive(false, .authorizedWhenInUse), .startAndRequestAlways)
+        XCTAssertEqual(derive(false, .authorizedAlways, .reducedAccuracy), .startAndOpenSettings)
+        XCTAssertEqual(derive(false, .authorizedWhenInUse, .reducedAccuracy), .startAndOpenSettings, "precise location is the blocking problem")
+        XCTAssertEqual(derive(false, .notDetermined), .requestPermissionAndStart)
+        for isSharing in [true, false] {
+            XCTAssertEqual(derive(isSharing, .denied), .openSettings)
+            XCTAssertEqual(derive(isSharing, .restricted), .openSettings)
+        }
+    }
+
+    /// Without permission nothing can be shared, so the pill says so whatever the toggle is.
+    func testSharingStatus_NoPermissionIsSharingOff() {
+        typealias S = ContentView.SharingStatus
+        for isSharing in [true, false] {
+            for auth: CLAuthorizationStatus in [.denied, .restricted] {
+                XCTAssertEqual(S.derive(isSharing: isSharing, authorization: auth, accuracyAuthorization: .fullAccuracy, lastFixAccuracy: nil), .sharingOff)
+            }
+        }
     }
 
     /// When-In-Use shares only until iOS terminates the app, so the pill says it's limited.

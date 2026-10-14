@@ -98,6 +98,5 @@
     <string name="discarded_sessions_title">Pareie seus amigos novamente</string>
     <string name="discarded_sessions_message">Os dados deste dispositivo vieram de outro telefone ou de um backup, então suas conexões com %s não podem ser usadas com segurança e foram removidas. Peça novos convites para voltar a compartilhar localizações.</string>
     <string name="sharing_limited">Compartilhando (limitado)</string>
-    <string name="allow_background_location">Permitir localização em segundo plano</string>
-    <string name="stop_sharing">Parar de compartilhar</string>
+    <string name="sharing_off">Compartilhamento desativado</string>
 </resources>
