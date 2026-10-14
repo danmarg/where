@@ -99,4 +99,5 @@
     <string name="discarded_sessions_message">Die Daten auf diesem Gerät stammen von einem anderen Telefon oder aus einem Backup. Deine Verbindungen mit %s können daher nicht sicher verwendet werden und wurden entfernt. Bitte sie um neue Einladungen, um wieder Standorte zu teilen.</string>
     <string name="sharing_limited">Teilen (eingeschränkt)</string>
     <string name="sharing_off">Teilen aus</string>
+    <string name="precise_location_message">Ohne genauen Standort kann Where nicht genau genug teilen, wo du bist. Du kannst ihn in den Einstellungen aktivieren.</string>
 </resources>

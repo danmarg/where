@@ -99,4 +99,5 @@
     <string name="discarded_sessions_message">Les données de cet appareil proviennent d\'un autre téléphone ou d\'une sauvegarde : vos connexions avec %s ne peuvent pas être utilisées en toute sécurité et ont été supprimées. Demandez-leur de nouvelles invitations pour partager à nouveau vos positions.</string>
     <string name="sharing_limited">Partage (limité)</string>
     <string name="sharing_off">Partage désactivé</string>
+    <string name="precise_location_message">Sans la position exacte, Where ne peut pas partager votre position assez précisément. Vous pouvez l’activer dans Réglages.</string>
 </resources>

@@ -99,4 +99,5 @@
     <string name="discarded_sessions_message">此设备上的数据来自另一部手机或备份，因此你与 %s 的连接无法安全使用，已被移除。请向他们索取新的邀请以重新共享位置。</string>
     <string name="sharing_limited">共享中（受限）</string>
     <string name="sharing_off">共享已关闭</string>
+    <string name="precise_location_message">未开启精确位置，Where 无法足够准确地共享你的位置。你可以在设置中开启。</string>
 </resources>

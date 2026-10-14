@@ -14,6 +14,8 @@ struct ContentView: View {
     @State private var scannedUrl: String? = nil
     @State private var zoomTarget: CLLocationCoordinate2D? = nil
     @State private var showErrorAlert = false
+    @State private var showBackgroundPrompt = false
+    @State private var showPrecisePrompt = false
 
     @State private var newFriendName: String = ""
 
@@ -42,8 +44,8 @@ struct ContentView: View {
     }
 
     /// What tapping the sharing button does. Sharing - limited or not - it stops. Not sharing, it
-    /// starts, and if sharing would be limited it also offers the fix (the Always prompt, or
-    /// Settings for precise location). Without permission it opens Settings and leaves the toggle
+    /// starts, and if sharing would be limited it also offers the fix in a skippable prompt (then
+    /// the Always prompt, or Settings for precise location). Without permission it opens Settings and leaves the toggle
     /// alone, so sharing resumes by itself once permission is back.
     enum SharingToggleAction: Equatable {
         case toggle, startAndRequestAlways, startAndOpenSettings, requestPermissionAndStart, openSettings
@@ -337,6 +339,20 @@ struct ContentView: View {
             .foregroundStyle(.white)
             .clipShape(Capsule())
         }
+        // Starting sharing while it would be limited explains the fix first and can be skipped,
+        // so a deliberate When-In-Use choice isn't sent to Settings on every start.
+        .alert(MR.strings().background_location_title.localized(), isPresented: $showBackgroundPrompt) {
+            Button(MR.strings().allow.localized()) { requestAlwaysOrOpenSettings() }
+            Button(MR.strings().skip.localized(), role: .cancel) { }
+        } message: {
+            Text(MR.strings().background_location_message.localized())
+        }
+        .alert(MR.strings().precise_location_off.localized(), isPresented: $showPrecisePrompt) {
+            Button(MR.strings().open_settings.localized()) { openSettings() }
+            Button(MR.strings().skip.localized(), role: .cancel) { }
+        } message: {
+            Text(MR.strings().precise_location_message.localized())
+        }
     }
 
     @ViewBuilder
@@ -409,10 +425,10 @@ struct ContentView: View {
             syncService.toggleSharing()
         case .startAndRequestAlways:
             syncService.toggleSharing()
-            requestAlwaysOrOpenSettings()
+            showBackgroundPrompt = true
         case .startAndOpenSettings:
             syncService.toggleSharing()
-            openSettings()
+            showPrecisePrompt = true
         case .requestPermissionAndStart:
             locationManager.requestPermissionAndStart()
             syncService.toggleSharing()
