@@ -1375,11 +1375,67 @@ class LocationSyncServiceTests: XCTestCase {
         typealias S = ContentView.SharingStatus
         let usable = LocationSyncService.minBroadcastAccuracyMeters
         XCTAssertEqual(S.derive(isSharing: false, authorization: .authorizedAlways, accuracyAuthorization: .reducedAccuracy, lastFixAccuracy: nil), .paused)
-        XCTAssertEqual(S.derive(isSharing: true, authorization: .denied, accuracyAuthorization: .reducedAccuracy, lastFixAccuracy: nil), .permissionMissing)
+        XCTAssertEqual(S.derive(isSharing: true, authorization: .denied, accuracyAuthorization: .reducedAccuracy, lastFixAccuracy: nil), .sharingOff)
         XCTAssertEqual(S.derive(isSharing: true, authorization: .authorizedAlways, accuracyAuthorization: .reducedAccuracy, lastFixAccuracy: 1500), .preciseLocationOff)
         XCTAssertEqual(S.derive(isSharing: true, authorization: .authorizedAlways, accuracyAuthorization: .reducedAccuracy, lastFixAccuracy: nil), .preciseLocationOff)
         XCTAssertEqual(S.derive(isSharing: true, authorization: .authorizedAlways, accuracyAuthorization: .reducedAccuracy, lastFixAccuracy: usable), .sharing)
         XCTAssertEqual(S.derive(isSharing: true, authorization: .authorizedAlways, accuracyAuthorization: .fullAccuracy, lastFixAccuracy: nil), .sharing)
+    }
+
+    /// Sharing, a tap always stops - limited or not; it once showed only the background rationale
+    /// on When-In-Use, leaving no way to stop. Not sharing, it starts and offers whatever would lift
+    /// the limit. Without permission it only opens Settings, leaving the toggle to resume sharing.
+    func testSharingToggle() {
+        typealias A = ContentView.SharingToggleAction
+        func derive(_ isSharing: Bool, _ auth: CLAuthorizationStatus, _ accuracy: CLAccuracyAuthorization = .fullAccuracy) -> A {
+            A.derive(isSharing: isSharing, authorization: auth, accuracyAuthorization: accuracy, lastFixAccuracy: nil)
+        }
+        for auth: CLAuthorizationStatus in [.authorizedAlways, .authorizedWhenInUse, .notDetermined] {
+            XCTAssertEqual(derive(true, auth), .toggle, "auth \(auth.rawValue)")
+            XCTAssertEqual(derive(true, auth, .reducedAccuracy), .toggle, "auth \(auth.rawValue), reduced")
+        }
+        XCTAssertEqual(derive(false, .authorizedAlways), .toggle)
+        XCTAssertEqual(derive(false, .authorizedWhenInUse), .startAndRequestAlways)
+        XCTAssertEqual(derive(false, .authorizedAlways, .reducedAccuracy), .startAndOpenSettings)
+        XCTAssertEqual(derive(false, .authorizedWhenInUse, .reducedAccuracy), .startAndOpenSettings, "precise location is the blocking problem")
+        XCTAssertEqual(derive(false, .notDetermined), .requestPermissionAndStart)
+        for isSharing in [true, false] {
+            XCTAssertEqual(derive(isSharing, .denied), .openSettings)
+            XCTAssertEqual(derive(isSharing, .restricted), .openSettings)
+        }
+    }
+
+    /// The background prompt comes up by itself once, when sharing is limited by When-In-Use.
+    func testBackgroundPromptOfferedOnceWhenLimited() {
+        func offer(_ auth: CLAuthorizationStatus, sharing: Bool = true, offered: Bool = false, modal: Bool = false) -> Bool {
+            ContentView.shouldOfferBackgroundOnce(authorization: auth, isSharing: sharing, alreadyOffered: offered, otherModalShowing: modal)
+        }
+        XCTAssertTrue(offer(.authorizedWhenInUse))
+        XCTAssertFalse(offer(.authorizedWhenInUse, offered: true), "only once")
+        XCTAssertFalse(offer(.authorizedWhenInUse, sharing: false), "not while paused; starting offers it")
+        XCTAssertFalse(offer(.authorizedWhenInUse, modal: true), "waits for other modals, which would swallow it")
+        for auth: CLAuthorizationStatus in [.authorizedAlways, .denied, .notDetermined] {
+            XCTAssertFalse(offer(auth), "auth \(auth.rawValue)")
+        }
+    }
+
+    /// Without permission nothing can be shared, so the pill says so whatever the toggle is.
+    func testSharingStatus_NoPermissionIsSharingOff() {
+        typealias S = ContentView.SharingStatus
+        for isSharing in [true, false] {
+            for auth: CLAuthorizationStatus in [.denied, .restricted] {
+                XCTAssertEqual(S.derive(isSharing: isSharing, authorization: auth, accuracyAuthorization: .fullAccuracy, lastFixAccuracy: nil), .sharingOff)
+            }
+        }
+    }
+
+    /// When-In-Use shares only until iOS terminates the app, so the pill says it's limited.
+    func testSharingStatus_WhenInUseIsSharingLimited() {
+        typealias S = ContentView.SharingStatus
+        XCTAssertEqual(S.derive(isSharing: true, authorization: .authorizedWhenInUse, accuracyAuthorization: .fullAccuracy, lastFixAccuracy: nil), .sharingLimited)
+        XCTAssertEqual(S.derive(isSharing: true, authorization: .authorizedAlways, accuracyAuthorization: .fullAccuracy, lastFixAccuracy: nil), .sharing)
+        XCTAssertEqual(S.derive(isSharing: false, authorization: .authorizedWhenInUse, accuracyAuthorization: .fullAccuracy, lastFixAccuracy: nil), .paused)
+        XCTAssertEqual(S.derive(isSharing: true, authorization: .authorizedWhenInUse, accuracyAuthorization: .reducedAccuracy, lastFixAccuracy: nil), .preciseLocationOff, "the blocking problem wins")
     }
 
     /// A precise fix from before Precise Location was turned off (e.g. restored at launch) must

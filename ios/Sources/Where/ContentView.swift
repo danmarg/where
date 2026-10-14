@@ -14,15 +14,19 @@ struct ContentView: View {
     @State private var scannedUrl: String? = nil
     @State private var zoomTarget: CLLocationCoordinate2D? = nil
     @State private var showErrorAlert = false
-    @State private var showLocationRationale = false
+    @State private var showBackgroundPrompt = false
+    @State private var showPrecisePrompt = false
 
     @State private var newFriendName: String = ""
 
     /// What the status pill shows. Reduced (approximate) accuracy only matters when it actually
     /// stops us sending: an approximate fix inside `minBroadcastAccuracyMeters` is still broadcast,
-    /// so it's shown as normal sharing rather than as a failure.
+    /// so it's shown as normal sharing rather than as a failure. On When-In-Use, sharing carries on
+    /// in the background only until iOS terminates the app (nothing relaunches it), so it's shown
+    /// as limited. Without permission (or with Location Services off, which iOS reports as denied)
+    /// nothing can be shared, whatever the toggle says.
     enum SharingStatus: Equatable {
-        case paused, permissionMissing, preciseLocationOff, sharing
+        case paused, sharingOff, preciseLocationOff, sharingLimited, sharing
 
         static func derive(
             isSharing: Bool,
@@ -30,11 +34,108 @@ struct ContentView: View {
             accuracyAuthorization: CLAccuracyAuthorization,
             lastFixAccuracy: CLLocationAccuracy?
         ) -> SharingStatus {
+            if authorization == .denied || authorization == .restricted { return .sharingOff }
             if !isSharing { return .paused }
-            if authorization == .denied || authorization == .restricted { return .permissionMissing }
             let fixUsable = lastFixAccuracy.map { $0 >= 0 && $0 <= LocationSyncService.minBroadcastAccuracyMeters } ?? false
             if accuracyAuthorization == .reducedAccuracy && !fixUsable { return .preciseLocationOff }
+            if authorization == .authorizedWhenInUse { return .sharingLimited }
             return .sharing
+        }
+    }
+
+    /// What tapping the sharing button does. Sharing - limited or not - it stops. Not sharing, it
+    /// starts, and if sharing would be limited it also offers the fix in a skippable prompt (then
+    /// the Always prompt, or Settings for precise location). Without permission it opens Settings and leaves the toggle
+    /// alone, so sharing resumes by itself once permission is back.
+    enum SharingToggleAction: Equatable {
+        case toggle, startAndRequestAlways, startAndOpenSettings, requestPermissionAndStart, openSettings
+
+        static func derive(
+            isSharing: Bool,
+            authorization: CLAuthorizationStatus,
+            accuracyAuthorization: CLAccuracyAuthorization,
+            lastFixAccuracy: CLLocationAccuracy?
+        ) -> SharingToggleAction {
+            let statusIfSharing = SharingStatus.derive(
+                isSharing: true,
+                authorization: authorization,
+                accuracyAuthorization: accuracyAuthorization,
+                lastFixAccuracy: lastFixAccuracy
+            )
+            if statusIfSharing == .sharingOff { return .openSettings }
+            if isSharing { return .toggle }
+            if authorization == .notDetermined { return .requestPermissionAndStart }
+            switch statusIfSharing {
+            case .preciseLocationOff: return .startAndOpenSettings
+            case .sharingLimited: return .startAndRequestAlways
+            default: return .toggle
+            }
+        }
+    }
+
+    /// Set when the app goes inactive, which is what a system permission prompt does.
+    @State private var systemPromptAppeared = false
+
+    @AppStorage("always_permission_requested") private var alwaysPermissionRequested = false
+
+    @AppStorage("background_prompt_offered") private var backgroundPromptOffered = false
+
+    /// Sharing on When-In-Use is limited, and tapping the pill then stops rather than fixes it, so
+    /// the background prompt is offered on its own once - like Android's disclosure after the
+    /// first grant. After that it comes up only when sharing is started. SwiftUI drops an alert
+    /// presented over another modal (e.g. the naming alert on a first launch from an invite link),
+    /// so it waits for those to close and only counts as offered once it's answered.
+    nonisolated static func shouldOfferBackgroundOnce(
+        authorization: CLAuthorizationStatus,
+        isSharing: Bool,
+        alreadyOffered: Bool,
+        otherModalShowing: Bool
+    ) -> Bool {
+        authorization == .authorizedWhenInUse && isSharing && !alreadyOffered && !otherModalShowing
+    }
+
+    private var otherModalShowing: Bool {
+        showFriends || showScanner || showErrorAlert || showPrecisePrompt
+            || syncService.isInviteSheetShowing
+            || syncService.repo.pendingQrForNaming != nil
+            || syncService.repo.pendingInitPayload != nil
+            || syncService.inviteError != nil
+            || !syncService.discardedSessionNames.isEmpty
+    }
+
+    private func offerBackgroundOnceIfLimited() {
+        guard !showBackgroundPrompt, Self.shouldOfferBackgroundOnce(
+            authorization: locationManager.authorizationStatus,
+            isSharing: syncService.isSharingLocation,
+            alreadyOffered: backgroundPromptOffered,
+            otherModalShowing: otherModalShowing
+        ) else { return }
+        showBackgroundPrompt = true
+    }
+
+    /// iOS shows its When-In-Use → Always prompt at most once, and never under Allow Once; when it
+    /// won't, there's nowhere left but Settings. Once we've asked, go straight there. The first
+    /// time, ask - and if no prompt shows within a second (it was used up before this flag
+    /// existed, or the grant is Allow Once), fall back to Settings.
+    private func requestAlwaysOrOpenSettings() {
+        if alwaysPermissionRequested {
+            openSettings()
+            return
+        }
+        alwaysPermissionRequested = true
+        systemPromptAppeared = false
+        locationManager.requestAlwaysPermission()
+        Task { @MainActor in
+            try? await Task.sleep(for: .seconds(1))
+            if !systemPromptAppeared && locationManager.authorizationStatus == .authorizedWhenInUse {
+                openSettings()
+            }
+        }
+    }
+
+    private func openSettings() {
+        if let url = URL(string: UIApplication.openSettingsURLString) {
+            UIApplication.shared.open(url)
         }
     }
 
@@ -50,8 +151,9 @@ struct ContentView: View {
     private var sharingStatusText: String {
         switch sharingStatus {
         case .paused: return MR.strings().paused.localized()
-        case .permissionMissing: return MR.strings().location_permission_missing.localized()
+        case .sharingOff: return MR.strings().sharing_off.localized()
         case .preciseLocationOff: return MR.strings().precise_location_off.localized()
+        case .sharingLimited: return MR.strings().sharing_limited.localized()
         case .sharing: return MR.strings().sharing.localized()
         }
     }
@@ -59,8 +161,8 @@ struct ContentView: View {
     private var sharingStatusColor: Color {
         switch sharingStatus {
         case .paused: return Color.gray.opacity(0.85)
-        case .permissionMissing: return Color.red.opacity(0.85)
-        case .preciseLocationOff: return Color.orange.opacity(0.85)
+        case .sharingOff: return Color.red.opacity(0.85)
+        case .preciseLocationOff, .sharingLimited: return Color.orange.opacity(0.85)
         case .sharing: return Color.blue.opacity(0.85)
         }
     }
@@ -204,8 +306,16 @@ struct ContentView: View {
         }
         .onAppear {
             locationManager.requestPermissionAndStart()
+            offerBackgroundOnceIfLimited()
+        }
+        .onChange(of: locationManager.authorizationStatus) { _, _ in
+            offerBackgroundOnceIfLimited()
+        }
+        .onChange(of: otherModalShowing) { _, showing in
+            if !showing { offerBackgroundOnceIfLimited() }
         }
         .onChange(of: scenePhase) { _, newPhase in
+            if newPhase != .active { systemPromptAppeared = true }
             handlePhaseChange(newPhase)
         }
         .onReceive(syncService.repo.$pendingQrForNaming) { qr in
@@ -216,14 +326,6 @@ struct ContentView: View {
         }
         .onOpenURL { url in
             syncService.processQrUrl(url.absoluteString)
-        }
-        .alert(MR.strings().background_location_title.localized(), isPresented: $showLocationRationale) {
-            Button(MR.strings().allow.localized()) {
-                locationManager.requestAlwaysPermission()
-            }
-            Button(MR.strings().skip.localized(), role: .cancel) { }
-        } message: {
-            Text(MR.strings().background_location_message.localized())
         }
         .alert(MR.strings().discarded_sessions_title.localized(), isPresented: Binding(
             get: { !syncService.discardedSessionNames.isEmpty },
@@ -270,7 +372,7 @@ struct ContentView: View {
         } label: {
             Label(
                 sharingStatusText,
-                systemImage: syncService.isSharingLocation && locationManager.authorizationStatus != .denied ? "location.fill" : "location.slash.fill"
+                systemImage: sharingStatus == .paused || sharingStatus == .sharingOff ? "location.slash.fill" : "location.fill"
             )
             .font(.caption)
             .padding(.horizontal, 14)
@@ -278,6 +380,23 @@ struct ContentView: View {
             .background(sharingStatusColor)
             .foregroundStyle(.white)
             .clipShape(Capsule())
+        }
+        // Starting sharing while it would be limited explains the fix first and can be skipped,
+        // so a deliberate When-In-Use choice isn't sent to Settings on every start.
+        .alert(MR.strings().background_location_title.localized(), isPresented: $showBackgroundPrompt) {
+            Button(MR.strings().allow.localized()) {
+                backgroundPromptOffered = true
+                requestAlwaysOrOpenSettings()
+            }
+            Button(MR.strings().skip.localized(), role: .cancel) { backgroundPromptOffered = true }
+        } message: {
+            Text(MR.strings().background_location_message.localized())
+        }
+        .alert(MR.strings().precise_location_off.localized(), isPresented: $showPrecisePrompt) {
+            Button(MR.strings().open_settings.localized()) { openSettings() }
+            Button(MR.strings().skip.localized(), role: .cancel) { }
+        } message: {
+            Text(MR.strings().precise_location_message.localized())
         }
     }
 
@@ -340,36 +459,26 @@ struct ContentView: View {
     }
 
     private func handleSharingButtonTap() {
-        if !syncService.isSharingLocation {
-            switch locationManager.authorizationStatus {
-            case .denied, .restricted:
-                if let url = URL(string: UIApplication.openSettingsURLString) {
-                    UIApplication.shared.open(url)
-                }
-                return
-            case .notDetermined:
-                locationManager.requestPermissionAndStart()
-            default:
-                break
-            }
-            syncService.isSharingLocation = true
-            return
-        }
-
-        switch locationManager.authorizationStatus {
-        case .notDetermined:
+        let action = SharingToggleAction.derive(
+            isSharing: syncService.isSharingLocation,
+            authorization: locationManager.authorizationStatus,
+            accuracyAuthorization: locationManager.accuracyAuthorization,
+            lastFixAccuracy: locationManager.currentSettingsFixAccuracy
+        )
+        switch action {
+        case .toggle:
+            syncService.toggleSharing()
+        case .startAndRequestAlways:
+            syncService.toggleSharing()
+            showBackgroundPrompt = true
+        case .startAndOpenSettings:
+            syncService.toggleSharing()
+            showPrecisePrompt = true
+        case .requestPermissionAndStart:
             locationManager.requestPermissionAndStart()
-        case .authorizedWhenInUse:
-            // If already sharing but only foreground, offer to upgrade to 'Always'.
-            showLocationRationale = true
-        case .denied, .restricted:
-            if let url = URL(string: UIApplication.openSettingsURLString) {
-                UIApplication.shared.open(url)
-            }
-        case .authorizedAlways:
-            syncService.stopSharing()
-        @unknown default:
-            syncService.stopSharing()
+            syncService.toggleSharing()
+        case .openSettings:
+            openSettings()
         }
     }
 }

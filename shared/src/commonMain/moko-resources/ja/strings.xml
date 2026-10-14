@@ -97,4 +97,7 @@
     <string name="close">閉じる</string>
     <string name="discarded_sessions_title">友達を再ペアリング</string>
     <string name="discarded_sessions_message">この端末のデータは別の端末またはバックアップから移行されたため、%s との接続は安全に使用できず、削除されました。位置情報の共有を再開するには、新しい招待を依頼してください。</string>
+    <string name="sharing_limited">共有中（制限あり）</string>
+    <string name="sharing_off">共有オフ</string>
+    <string name="precise_location_message">正確な位置情報がオフのため、Where は現在地を十分な精度で共有できません。設定でオンにできます。</string>
 </resources>

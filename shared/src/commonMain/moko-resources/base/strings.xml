@@ -97,4 +97,7 @@
     <string name="close">Close</string>
     <string name="discarded_sessions_title">Re-pair your friends</string>
     <string name="discarded_sessions_message">This device\'s data came from another phone or a backup, so your connections with %s can\'t be used safely and were removed. Ask them for new invites to share locations again.</string>
+    <string name="sharing_limited">Sharing (limited)</string>
+    <string name="sharing_off">Sharing off</string>
+    <string name="precise_location_message">Without Precise Location, Where can\'t share where you are accurately enough. You can turn it on in Settings.</string>
 </resources>
