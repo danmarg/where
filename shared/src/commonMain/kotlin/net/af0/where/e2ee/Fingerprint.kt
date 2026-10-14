@@ -5,7 +5,7 @@ package net.af0.where.e2ee
  * Used in AAD for location frames, in routing token derivation, and as the session-scoped
  * peer identifier.
  */
-internal fun fingerprint(ekPub: ByteArray): ByteArray = sha256(ekPub)
+internal fun fingerprint(ekPub: DhPublicKey): Fingerprint = Fingerprint(sha256(ekPub.bytes))
 
 /**
  * Safety number for out-of-band verification.
@@ -20,11 +20,12 @@ internal fun fingerprint(ekPub: ByteArray): ByteArray = sha256(ekPub)
  * Display with formatSafetyNumber() as 12 groups of 5 decimal digits.
  */
 fun safetyNumber(
-    localEkPub: ByteArray,
-    remoteEkPub: ByteArray,
+    localEkPub: DhPublicKey,
+    remoteEkPub: DhPublicKey,
 ): ByteArray {
-    val cmp = localEkPub.compare(remoteEkPub)
-    val input = if (cmp <= 0) localEkPub + remoteEkPub else remoteEkPub + localEkPub
+    val local = localEkPub.bytes
+    val remote = remoteEkPub.bytes
+    val input = if (local.compare(remote) <= 0) local + remote else remote + local
     val ikm = sha256(input)
     return hkdfSha256(
         ikm = ikm,

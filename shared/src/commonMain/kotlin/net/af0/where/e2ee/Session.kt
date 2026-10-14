@@ -13,13 +13,12 @@ import kotlinx.serialization.json.put
  * High-level session operations using a standard Double Ratchet.
  */
 object Session {
-    private const val HEADER_NONCE_SIZE = 12
     private const val HEADER_TAG_SIZE = 16
 
     fun encryptMessage(
         state: SessionState,
         payload: MessagePlaintext,
-    ): Pair<SessionState, EncryptedMessagePayload> = encryptPadded(state, padToFixedSize(encodeMessage(payload), PADDING_SIZE))
+    ): OutgoingMessage = encryptPadded(state, padToFixedSize(encodeMessage(payload), PADDING_SIZE))
 
     /**
      * Encrypts an already-padded plaintext. Separate from [encryptMessage] so tests can
@@ -28,29 +27,27 @@ object Session {
     internal fun encryptPadded(
         state: SessionState,
         plaintext: ByteArray,
-    ): Pair<SessionState, EncryptedMessagePayload> {
+    ): OutgoingMessage {
         if (state.sendSeq == Long.MAX_VALUE) throw SessionBrickedException("sequence number overflow")
 
         // No lazy send-side ratchet here: performDhRatchet runs both sub-steps as soon as a new
         // peer DH key is received, so the send chain is always current.
         val currentState = state
 
-        // DOUBLE RATCHET TRANSITION PROTECTION (§4.3)
-        // The first message in a new epoch (seq == 1) is the transition message.
-        // It MUST be sent to the previous token using the previous header key
-        // to ensure the receiver (who is still polling the old token) can see it.
+        // DOUBLE RATCHET TRANSITION PROTECTION (§4.3): the epoch's first message goes to the
+        // previous mailbox under the previous header key (see transportFor).
         val seqToUse = currentState.sendSeq + 1
-        val usePrevForTransport = (seqToUse == 1L)
+        val transport = currentState.transportFor(seqToUse)
 
         val chainKeyToUse = currentState.sendChainKey
-        val headerKeyToUse = if (usePrevForTransport) currentState.prevSendHeaderKey else currentState.sendHeaderKey
+        val headerKeyToUse = transport.headerKey
         val dhPubToUse = currentState.localDhPub
         val ackRemoteToUse = currentState.remoteDhPub
 
         val step = kdfCk(chainKeyToUse)
-        val aad = buildMessageAad(currentState.localFp, currentState.remoteFp, seqToUse, dhPubToUse, ackRemoteToUse)
+        val aad = currentState.parties.sendAad(seqToUse, dhPubToUse, ackRemoteToUse)
 
-        val ct = aeadEncrypt(step.messageKey, step.messageNonce, plaintext, aad)
+        val ct = sealMessage(step.messageKey, step.messageNonce, plaintext, aad)
 
         val newState =
             currentState.copy(
@@ -59,8 +56,7 @@ object Session {
             )
 
         // Seal the metadata into an envelope (#186)
-        val headerAad = currentState.aliceFp + currentState.bobFp
-        val envelope = encryptHeader(headerKeyToUse, dhPubToUse, ackRemoteToUse, seqToUse, currentState.pn, headerAad)
+        val envelope = encryptHeader(headerKeyToUse, dhPubToUse, ackRemoteToUse, seqToUse, currentState.pn, currentState.headerAad())
 
         // Memory Hygiene
         step.messageKey.zeroize()
@@ -74,14 +70,33 @@ object Session {
                 ct = ct,
             )
 
-        return newState to message
+        return OutgoingMessage(newState, message, transport.token)
     }
 
-    @Throws(WhereException::class)
+    /**
+     * Decrypts one received frame. Every protocol failure comes back as a [ReceivedMessage],
+     * which says what to persist; only JVM/native [Error]s (e.g. out of memory) propagate.
+     */
     fun decryptMessage(
         state: SessionState,
         message: EncryptedMessagePayload,
         preDecryptedHeader: DecryptedHeader? = null,
+    ): ReceivedMessage =
+        try {
+            val (newState, plaintext) = decryptMessageOrThrow(state, message, preDecryptedHeader)
+            ReceivedMessage.Delivered(newState, plaintext)
+        } catch (e: DecryptionExceptionWithState) {
+            ReceivedMessage.Undeliverable(e.newState, e.cause ?: e)
+        } catch (e: ReplayException) {
+            ReceivedMessage.Replay(e)
+        } catch (e: Exception) {
+            ReceivedMessage.Rejected(e)
+        }
+
+    private fun decryptMessageOrThrow(
+        state: SessionState,
+        message: EncryptedMessagePayload,
+        preDecryptedHeader: DecryptedHeader?,
     ): Pair<SessionState, MessagePlaintext> {
         // 0. Purge stale message keys (#189)
         val now = currentTimeMillis()
@@ -91,8 +106,7 @@ object Session {
         while (it.hasNext()) {
             val entry = it.next()
             val v = entry.value
-            // Format: [MK (32) || Nonce (12) || Timestamp (8)]
-            if (v.size >= 52 && (now - bytesToLong(v.copyOfRange(44, 52))) > MAX_KEY_AGE_MS) {
+            if (v.isWellFormed && (now - v.storedAtMillis()) > MAX_KEY_AGE_MS) {
                 // Dropped, not wiped: this buffer is still referenced by the caller's input
                 // state (see the ownership rule below). It disappears from storage when the
                 // new state is persisted.
@@ -105,7 +119,7 @@ object Session {
         // 1. Unwrap the envelope to reveal metadata (#186)
         val header: DecryptedHeader =
             preDecryptedHeader ?: run {
-                val sessionAad = cleanState.aliceFp + cleanState.bobFp
+                val sessionAad = cleanState.headerAad()
                 var decoded: DecryptedHeader? = null
                 try {
                     decoded = decryptHeader(cleanState.headerKey, message.envelope, sessionAad)
@@ -120,7 +134,7 @@ object Session {
 
         val remoteDhPub = header.dhPub
         val ackRemoteDhPub = header.ackRemoteDhPub
-        val isNewDhEpoch = !remoteDhPub.contentEquals(cleanState.remoteDhPub)
+        val isNewDhEpoch = remoteDhPub != cleanState.remoteDhPub
         val seq = header.seq
 
         // Cache Key Invariant (§5.5): toHex() on a 32-byte X25519 key is ALWAYS 64 chars.
@@ -130,21 +144,14 @@ object Session {
         // 2. Check skipped message key cache first
         val cachedKey = cleanState.skippedMessageKeys[cacheKey]
         if (cachedKey != null) {
-            // AAD directionality: peer is the sender, I am the recipient.
-            val sender = cleanState.remoteFp
-            val recipient = cleanState.localFp
-
-            // Cached key format (§5.5): [MK (32) || Nonce (12) || Timestamp (8)]
-            if (cachedKey.size < 52) throw ProtocolException("invalid cached key size in cache")
-            val mk = cachedKey.copyOfRange(0, 32)
-            val nonce = cachedKey.copyOfRange(32, 44)
-
-            // Use the new buildMessageAad signature (pn is now inside the ciphertext)
-            val aad = buildMessageAad(sender, recipient, seq, remoteDhPub, ackRemoteDhPub)
+            if (!cachedKey.isWellFormed) throw ProtocolException("invalid cached key size in cache")
+            val mk = cachedKey.messageKey()
+            val nonce = cachedKey.nonce()
+            val aad = cleanState.parties.recvAad(seq, remoteDhPub, ackRemoteDhPub)
 
             val plaintext =
                 try {
-                    aeadDecrypt(mk, nonce, message.ct, aad)
+                    openMessage(mk, nonce, message.ct, aad)
                 } catch (e: Exception) {
                     throw AuthenticationException("decryption failed with cached key", e)
                 } finally {
@@ -196,9 +203,9 @@ object Session {
             speculativeState = performDhRatchet(speculativeState, remoteDhPub)
         }
 
-        var chainKey = ByteArray(0)
+        var chainKey = ChainKey(ByteArray(0))
         var currentStep: ChainStep? = null
-        val derivedKeys = mutableListOf<ByteArray>() // fresh skipped-key entries created here
+        val derivedKeys = mutableListOf<SkippedMessageKey>() // fresh skipped-key entries created here
         var committed = false
 
         try {
@@ -255,10 +262,7 @@ object Session {
                 val currentSeq = speculativeState.recvSeq + i + 1
                 if (currentSeq < seq) {
                     // Store intermediate message key for future out-of-order delivery.
-                    // Cached format: [MK (32) || Nonce (12) || Timestamp (8)]
-                    val mkPlusNonce = step.messageKey + step.messageNonce + longToBeBytes(now)
-                    step.messageKey.zeroize()
-                    step.messageNonce.zeroize()
+                    val mkPlusNonce = SkippedMessageKey.takeFrom(step, now)
                     derivedKeys.add(mkPlusNonce)
                     // No eviction needed: the projectedSize admission check above bounds the cache.
                     derivationSkippedKeys[remoteDhPub.toHex() + ":" + currentSeq] = mkPlusNonce
@@ -277,9 +281,7 @@ object Session {
                     val step = kdfCk(oldChainKey)
                     oldChainKey.zeroize()
                     oldChainKey = step.newChainKey
-                    val mkPlusNonce = step.messageKey + step.messageNonce + longToBeBytes(now)
-                    step.messageKey.zeroize()
-                    step.messageNonce.zeroize()
+                    val mkPlusNonce = SkippedMessageKey.takeFrom(step, now)
                     derivedKeys.add(mkPlusNonce)
                     derivationSkippedKeys[prevEpochHex + ":" + (cleanState.recvSeq + i + 1)] = mkPlusNonce
                 }
@@ -287,8 +289,7 @@ object Session {
             }
 
             val finalStep = currentStep ?: throw ProtocolException("failed to derive message key")
-            val sender = cleanState.remoteFp
-            val aad = buildMessageAad(sender, cleanState.localFp, seq, remoteDhPub, ackRemoteDhPub)
+            val aad = cleanState.parties.recvAad(seq, remoteDhPub, ackRemoteDhPub)
 
             // The state advanced to `seq`. It is committed whether or not the body decrypts
             // (§8.3.1(4)): a server that drops a frame and one that corrupts it must leave
@@ -310,7 +311,7 @@ object Session {
 
             val plaintext =
                 try {
-                    aeadDecrypt(finalStep.messageKey, finalStep.messageNonce, message.ct, aad)
+                    openMessage(finalStep.messageKey, finalStep.messageNonce, message.ct, aad)
                 } catch (e: Exception) {
                     throw DecryptionExceptionWithState(newState, e)
                 } finally {
@@ -356,25 +357,26 @@ object Session {
      */
     private fun performDhRatchet(
         state: SessionState,
-        remoteDhPub: ByteArray,
+        remoteDhPub: DhPublicKey,
     ): SessionState {
         // DH ratchet step
         val stepRecv = dhRatchetSubStep(state.localDhPriv, remoteDhPub, state.rootKey)
         val newLocalDh = generateX25519KeyPair()
+        val newLocalPriv = DhPrivateKey(newLocalDh.priv)
         val stepSend =
             try {
-                dhRatchetSubStep(newLocalDh.priv, remoteDhPub, stepRecv.newRootKey)
+                dhRatchetSubStep(newLocalPriv, remoteDhPub, stepRecv.newRootKey)
             } catch (e: Exception) {
                 stepRecv.newRootKey.zeroize()
                 stepRecv.newChainKey.zeroize()
                 stepRecv.newHeaderKey.zeroize()
-                newLocalDh.priv.zeroize()
+                newLocalPriv.zeroize()
                 throw e
             }
 
         // Derive new tokens
-        val newRecvToken = deriveRoutingToken(stepRecv.newRootKey, state.remoteFp, state.localFp)
-        val newSendToken = deriveRoutingToken(stepSend.newRootKey, state.localFp, state.remoteFp)
+        val newRecvToken = state.parties.recvToken(stepRecv.newRootKey)
+        val newSendToken = state.parties.sendToken(stepSend.newRootKey)
 
         // Every buffer in the result is fresh and not shared with `state`: freshly derived ones
         // are moved in (not copied, so no stray copies are left unwiped), and the carried-over
@@ -394,8 +396,8 @@ object Session {
                 recvSeq = 0L,
                 pn = state.sendSeq,
                 pr = state.recvSeq,
-                localDhPriv = newLocalDh.priv,
-                localDhPub = newLocalDh.pub,
+                localDhPriv = newLocalPriv,
+                localDhPub = DhPublicKey(newLocalDh.pub),
                 remoteDhPub = remoteDhPub.copyOf(),
                 prevSendToken = state.sendToken.copyOf(),
                 aliceEkPub = state.aliceEkPub.copyOf(),
@@ -414,41 +416,37 @@ object Session {
     }
 
     internal fun encryptHeader(
-        key: ByteArray,
-        dhPub: ByteArray,
-        ackRemoteDhPub: ByteArray,
+        key: HeaderKey,
+        dhPub: DhPublicKey,
+        ackRemoteDhPub: DhPublicKey,
         seq: Long,
         pn: Long,
         aad: ByteArray = ByteArray(0),
     ): ByteArray {
         val plaintext = ByteArray(1 + 32 + 32 + 8 + 8 + 1)
         plaintext[0] = PROTOCOL_VERSION.toByte()
-        dhPub.copyInto(plaintext, 1)
-        ackRemoteDhPub.copyInto(plaintext, 33)
+        dhPub.bytes.copyInto(plaintext, 1)
+        ackRemoteDhPub.bytes.copyInto(plaintext, 33)
         longToBeBytes(seq).copyInto(plaintext, 65)
         longToBeBytes(pn).copyInto(plaintext, 73)
         plaintext[81] = 0 // flags
 
-        val nonce = randomBytes(HEADER_NONCE_SIZE)
-        val ct = aeadEncrypt(key, nonce, plaintext, aad)
-        return nonce + ct
+        return sealRandomNonce(key, plaintext, aad)
     }
 
-    data class DecryptedHeader(val dhPub: ByteArray, val ackRemoteDhPub: ByteArray, val seq: Long, val pn: Long)
+    data class DecryptedHeader(val dhPub: DhPublicKey, val ackRemoteDhPub: DhPublicKey, val seq: Long, val pn: Long)
 
     internal fun decryptHeader(
-        key: ByteArray,
+        key: HeaderKey,
         envelope: ByteArray,
         aad: ByteArray = ByteArray(0),
     ): DecryptedHeader {
-        if (envelope.size < HEADER_NONCE_SIZE + HEADER_TAG_SIZE + 82) {
+        if (envelope.size < RANDOM_NONCE_SIZE + HEADER_TAG_SIZE + 82) {
             throw ProtocolException("header envelope too small")
         }
-        val nonce = envelope.copyOfRange(0, HEADER_NONCE_SIZE)
-        val ct = envelope.copyOfRange(HEADER_NONCE_SIZE, envelope.size)
         val plaintext =
             try {
-                aeadDecrypt(key, nonce, ct, aad)
+                openRandomNonce(key, envelope, aad)
             } catch (e: Exception) {
                 throw AuthenticationException("header decryption failed — signature mismatch or corrupted data", e)
             }
@@ -457,28 +455,11 @@ object Session {
             throw ProtocolException("unsupported protocol version in header: ${plaintext[0].toInt()}")
         }
 
-        val dhPub = plaintext.copyOfRange(1, 33)
-        val ackRemoteDhPub = plaintext.copyOfRange(33, 65)
+        val dhPub = DhPublicKey(plaintext.copyOfRange(1, 33))
+        val ackRemoteDhPub = DhPublicKey(plaintext.copyOfRange(33, 65))
         val seq = bytesToLong(plaintext.copyOfRange(65, 73))
         val pn = bytesToLong(plaintext.copyOfRange(73, 81))
         return DecryptedHeader(dhPub, ackRemoteDhPub, seq, pn)
-    }
-
-    private fun buildMessageAad(
-        senderFp: ByteArray,
-        recipientFp: ByteArray,
-        seq: Long,
-        dhPub: ByteArray,
-        ackRemoteDhPub: ByteArray,
-    ): ByteArray {
-        val paddedAck = if (ackRemoteDhPub.isEmpty()) ByteArray(32) else ackRemoteDhPub
-        return AAD_PREFIX.encodeToByteArray() +
-            intToBeBytes(PROTOCOL_VERSION) +
-            senderFp +
-            recipientFp +
-            longToBeBytes(seq) +
-            dhPub +
-            paddedAck
     }
 
     internal fun encodeMessage(msg: MessagePlaintext): ByteArray =

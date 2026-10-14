@@ -52,13 +52,13 @@ class E2eeIntegrationTest {
         // receives Alice's first message.
 
         // Alice's PREVIOUS send token (Epoch 0) must match Bob's current recv token (Epoch 0).
-        assertContentEquals(
+        assertEquals(
             aliceSession.prevSendToken,
             bobSession.recvToken,
             "Alice's prevSendToken must equal Bob's recv token",
         )
         // Alice's current recv token (Epoch 0 receiver) must match Bob's current send token (Epoch 0 sender).
-        assertContentEquals(
+        assertEquals(
             aliceSession.recvToken,
             bobSession.sendToken,
             "Alice's recv token must equal Bob's send token",
@@ -67,7 +67,7 @@ class E2eeIntegrationTest {
         // Chains: Alice's send chain is now Epoch 1. Bob's recv chain is Epoch 0.
         // They will only match AFTER Bob decrypts Alice's first message and ratchets.
         // But Alice's RECV chain (Epoch 0) should still match Bob's SEND chain (Epoch 0).
-        assertContentEquals(
+        assertEquals(
             aliceSession.recvChainKey,
             bobSession.sendChainKey,
             "Alice's recv chain must equal Bob's send chain",
@@ -111,10 +111,7 @@ class E2eeIntegrationTest {
             // Bob decodes and decrypts
             val received = json.decodeFromJsonElement<MailboxPayload>(arr[0])
             assertIs<EncryptedMessagePayload>(received)
-            val decryptResult = Session.decryptMessage(bobSession, received)
-
-            assertNotNull(decryptResult, "Decryption must succeed")
-            val (_, decrypted) = decryptResult
+            val (_, decrypted) = assertIs<ReceivedMessage.Delivered>(Session.decryptMessage(bobSession, received))
             assertIs<MessagePlaintext.Location>(decrypted)
             assertEquals(location.lat, decrypted.lat, 1e-9)
             assertEquals(location.lng, decrypted.lng, 1e-9)
@@ -159,7 +156,7 @@ class E2eeIntegrationTest {
                 val msg = json.decodeFromJsonElement<MailboxPayload>(el)
                 assertIs<EncryptedMessagePayload>(msg)
                 val (newBobState, decrypted) =
-                    Session.decryptMessage(bobStateNow, msg) ?: fail("Decryption failed for message $i")
+                    assertIs<ReceivedMessage.Delivered>(Session.decryptMessage(bobStateNow, msg), "message $i")
                 bobStateNow = newBobState
                 assertIs<MessagePlaintext.Location>(decrypted)
                 assertEquals(locations[i].lat, decrypted.lat, 1e-9)
@@ -195,14 +192,8 @@ class E2eeIntegrationTest {
             val msg = json.decodeFromJsonElement<MailboxPayload>(arr[0])
             assertIs<EncryptedMessagePayload>(msg)
 
-            val threw =
-                try {
-                    Session.decryptMessage(bobSession, msg)
-                    false
-                } catch (_: Exception) {
-                    true
-                }
-            assertTrue(threw, "Decrypting a tampered ciphertext must throw")
+            // The header still authenticates, so the ratchet advances but nothing is delivered.
+            assertIs<ReceivedMessage.Undeliverable>(Session.decryptMessage(bobSession, msg))
         }
 
     // -----------------------------------------------------------------------
@@ -231,17 +222,17 @@ class E2eeIntegrationTest {
             }
 
             // 2. Bob decrypts Alice's message 1.
-            val (bobState1, _) = Session.decryptMessage(bobState, messageA1)
+            val (bobState1, _) = assertIs<ReceivedMessage.Delivered>(Session.decryptMessage(bobState, messageA1))
             bobState = bobState1
 
             // Alice (A0) -> Bob (B0)
             val (aliceS1, msgA1) = Session.encryptMessage(aliceState, locA1)
-            val (bobS1, _) = Session.decryptMessage(bobState, msgA1)
+            val (bobS1, _) = assertIs<ReceivedMessage.Delivered>(Session.decryptMessage(bobState, msgA1))
 
             // Bob (B0) -> Alice (A0)
             val locB1 = MessagePlaintext.Location(1.0, 2.0, 3.0, 4L)
             val (bobS2, msgB2) = Session.encryptMessage(bobS1, locB1)
-            val (aliceS2, _) = Session.decryptMessage(aliceS1, msgB2)
+            val (aliceS2, _) = assertIs<ReceivedMessage.Delivered>(Session.decryptMessage(aliceS1, msgB2))
 
             // Alice (A1) -> Bob (B0)
             val (aliceS3, msgA3) = Session.encryptMessage(aliceS2, locA1)
@@ -256,7 +247,7 @@ class E2eeIntegrationTest {
             }
 
             // Bob decrypts msgA3. This triggers Bob to ratchet to A1 and generate B1.
-            val (bobS3, decA3) = Session.decryptMessage(bobS2, msgA3)
+            val (bobS3, decA3) = assertIs<ReceivedMessage.Delivered>(Session.decryptMessage(bobS2, msgA3))
             assertIs<MessagePlaintext.Location>(decA3)
             assertEquals(newToken, bobS3.recvToken.toHex(), "Bob's recvToken should now match Alice's new sendToken")
 
@@ -270,11 +261,11 @@ class E2eeIntegrationTest {
             // Bob polls new token and decrypts msgA4.
             val newArr = json.decodeFromString<JsonArray>(client.get("/inbox/$newToken").bodyAsText())
             val msg4 = json.decodeFromJsonElement<EncryptedMessagePayload>(newArr.last())
-            val (_, decA4) = Session.decryptMessage(bobS3, msg4)
+            val (_, decA4) = assertIs<ReceivedMessage.Delivered>(Session.decryptMessage(bobS3, msg4))
             assertIs<MessagePlaintext.Location>(decA4)
 
             // Verify independence: Bob can STILL decrypt the very first message using his INITIAL state.
-            val (_, decA1) = Session.decryptMessage(bobState, msgA1)
+            val (_, decA1) = assertIs<ReceivedMessage.Delivered>(Session.decryptMessage(bobState, msgA1))
             assertIs<MessagePlaintext.Location>(decA1)
         }
 
@@ -289,7 +280,7 @@ class E2eeIntegrationTest {
         val (aliceState1, message1) = Session.encryptMessage(aliceState, location)
 
         // Bob receives message 1 (seq 1). This triggers Bob to ratchet to Epoch 1.
-        val (bobState1, decrypted1) = Session.decryptMessage(bobState0, message1)
+        val (bobState1, decrypted1) = assertIs<ReceivedMessage.Delivered>(Session.decryptMessage(bobState0, message1))
         assertIs<MessagePlaintext.Location>(decrypted1)
         assertEquals(2.0, decrypted1.lng)
 
@@ -299,11 +290,11 @@ class E2eeIntegrationTest {
 
         // Bob receives message 3 (seq 3) first.
         // This triggers Bob to skip seq 2.
-        val (bobState2, decrypted3) = Session.decryptMessage(bobState1, message3)
+        val (bobState2, decrypted3) = assertIs<ReceivedMessage.Delivered>(Session.decryptMessage(bobState1, message3))
         assertIs<MessagePlaintext.Location>(decrypted3)
 
         // Bob can still decrypt message 2 if it arrives later (seq 2 was skipped)
-        val (_, decrypted2) = Session.decryptMessage(bobState2, message2)
+        val (_, decrypted2) = assertIs<ReceivedMessage.Delivered>(Session.decryptMessage(bobState2, message2))
         assertIs<MessagePlaintext.Location>(decrypted2)
     }
 

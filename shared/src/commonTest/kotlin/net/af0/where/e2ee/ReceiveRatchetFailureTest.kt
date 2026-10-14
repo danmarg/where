@@ -2,10 +2,8 @@ package net.af0.where.e2ee
 
 import kotlin.test.Test
 import kotlin.test.assertEquals
-import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
-import kotlin.test.fail
 
 class ReceiveRatchetFailureTest {
     init {
@@ -28,7 +26,7 @@ class ReceiveRatchetFailureTest {
                 MessagePlaintext.Location(1.0, 2.0, 3.0, 4L),
             )
 
-        val sessionAad = bobSession.aliceFp + bobSession.bobFp
+        val sessionAad = bobSession.headerAad()
         val header =
             try {
                 Session.decryptHeader(bobSession.headerKey, original.envelope, sessionAad)
@@ -53,9 +51,7 @@ class ReceiveRatchetFailureTest {
         )
 
         // A subsequent attempt to decrypt the (uncorrupted) original is rejected as a replay.
-        assertFailsWith<ReplayException> {
-            Session.decryptMessage(bobAfterFailure, original, header)
-        }
+        Session.decryptMessage(bobAfterFailure, original, header).replay()
     }
 
     /**
@@ -83,10 +79,10 @@ class ReceiveRatchetFailureTest {
         repeat(2) { r ->
             val (a, m) = Session.encryptMessage(alice, loc(r))
             alice = a
-            bob = Session.decryptMessage(bob, m).first
+            bob = Session.decryptMessage(bob, m).delivered().state
             val (b, m2) = Session.encryptMessage(bob, loc(100 + r))
             bob = b
-            alice = Session.decryptMessage(alice, m2).first
+            alice = Session.decryptMessage(alice, m2).delivered().state
         }
         // Alice has just received Bob's new DH key, so this frame opens a new epoch for Bob.
         val (a, newEpoch) = Session.encryptMessage(alice, loc(50))
@@ -124,20 +120,20 @@ class ReceiveRatchetFailureTest {
         val (a1, m1) = Session.encryptMessage(alice, loc(1))
         val (a2, m2) = Session.encryptMessage(a1, loc(2)) // straggler: delivered late
         alice = a2
-        bob = Session.decryptMessage(bob, m1).first
+        bob = Session.decryptMessage(bob, m1).delivered().state
 
         val (b1, reply) = Session.encryptMessage(bob, loc(100))
         bob = b1
-        alice = Session.decryptMessage(alice, reply).first
+        alice = Session.decryptMessage(alice, reply).delivered().state
 
         // Alice's next frame opens a new epoch with pn = 2; Bob has only seen seq 1.
         val (_, newEpoch) = Session.encryptMessage(alice, loc(3))
-        val sessionAad = bob.aliceFp + bob.bobFp
+        val sessionAad = bob.headerAad()
         val stragglerHeader = Session.decryptHeader(bob.headerKey, m2.envelope, sessionAad)
 
         bob = expectSoftFail(bob, tamper(newEpoch))
 
-        val (_, pt) = Session.decryptMessage(bob, m2, stragglerHeader)
+        val (_, pt) = Session.decryptMessage(bob, m2, stragglerHeader).delivered()
         assertEquals(loc(2), pt)
     }
 
@@ -152,14 +148,14 @@ class ReceiveRatchetFailureTest {
         val (a2, malformed) = Session.encryptPadded(a1, ByteArray(PADDING_SIZE))
         val (a3, m3) = Session.encryptMessage(a2, loc(3))
         alice = a3
-        bob = Session.decryptMessage(bob, m1).first
-        val malformedHeader = Session.decryptHeader(bob.headerKey, malformed.envelope, bob.aliceFp + bob.bobFp)
-        bob = Session.decryptMessage(bob, m3).first
+        bob = Session.decryptMessage(bob, m1).delivered().state
+        val malformedHeader = Session.decryptHeader(bob.headerKey, malformed.envelope, bob.headerAad())
+        bob = Session.decryptMessage(bob, m3).delivered().state
         assertEquals(1, bob.skippedMessageKeys.size)
 
         bob = expectSoftFail(bob, malformed, malformedHeader)
         assertTrue(bob.skippedMessageKeys.isEmpty(), "cached key must be spent")
-        assertFailsWith<ReplayException> { Session.decryptMessage(bob, malformed, malformedHeader) }
+        Session.decryptMessage(bob, malformed, malformedHeader).replay()
 
         converse(alice, bob)
     }
@@ -195,23 +191,23 @@ class ReceiveRatchetFailureTest {
         val (a2, m2) = Session.encryptMessage(a1, loc(2)) // skipped: its key gets cached
         val (a3, m3) = Session.encryptMessage(a2, loc(3))
         alice = a3
-        bob = Session.decryptMessage(bob, m1).first
+        bob = Session.decryptMessage(bob, m1).delivered().state
 
         // Success that derives (and caches) a skipped key.
-        assertInputUnchanged(bob) { Session.decryptMessage(it, m3) }
-        bob = Session.decryptMessage(bob, m3).first
+        assertInputUnchanged(bob) { Session.decryptMessage(it, m3).delivered() }
+        bob = Session.decryptMessage(bob, m3).delivered().state
         assertEquals(1, bob.skippedMessageKeys.size, "m2's key should be cached")
 
         // Soft-fail.
         val (_, m4) = Session.encryptMessage(alice, loc(4))
-        assertInputUnchanged(bob) { runCatching { Session.decryptMessage(it, tamper(m4)) } }
+        assertInputUnchanged(bob) { Session.decryptMessage(it, tamper(m4)).undeliverable() }
 
         // Stale-key purge: once m2's cached key is older than MAX_KEY_AGE_MS, the next decrypt
         // drops it from the new state but must not wipe the input's copy.
         TimeSource.setProvider(OffsetTimeProvider(MAX_KEY_AGE_MS + 60_000))
         try {
-            assertInputUnchanged(bob) { Session.decryptMessage(it, m4) }
-            assertTrue(Session.decryptMessage(bob, m4).first.skippedMessageKeys.isEmpty(), "stale key purged from new state")
+            assertInputUnchanged(bob) { Session.decryptMessage(it, m4).delivered() }
+            assertTrue(Session.decryptMessage(bob, m4).delivered().state.skippedMessageKeys.isEmpty(), "stale key purged from new state")
         } finally {
             TimeSource.setProvider(DefaultTimeProvider)
         }
@@ -219,12 +215,12 @@ class ReceiveRatchetFailureTest {
         // New-epoch success (performDhRatchet path) and new-epoch soft-fail.
         val (b1, reply) = Session.encryptMessage(bob, loc(100))
         bob = b1
-        alice = Session.decryptMessage(alice, reply).first
+        alice = Session.decryptMessage(alice, reply).delivered().state
         val (_, m5) = Session.encryptMessage(alice, loc(5))
-        assertInputUnchanged(bob) { Session.decryptMessage(it, m5) }
+        assertInputUnchanged(bob) { Session.decryptMessage(it, m5).delivered() }
         // The new-epoch result must not alias any of the input's buffers (wiping one later
         // must never affect the other).
-        val ratcheted = Session.decryptMessage(bob, m5).first
+        val ratcheted = Session.decryptMessage(bob, m5).delivered().state
         val inputBuffers =
             listOf(
                 bob.rootKey, bob.sendChainKey, bob.recvChainKey, bob.localDhPriv, bob.headerKey,
@@ -236,8 +232,8 @@ class ReceiveRatchetFailureTest {
                 ratcheted.headerKey, ratcheted.sendHeaderKey, ratcheted.nextHeaderKey,
                 ratcheted.prevSendHeaderKey, ratcheted.aliceFp, ratcheted.localFp,
             ) + ratcheted.skippedMessageKeys.values
-        assertTrue(outputBuffers.none { out -> inputBuffers.any { it === out } }, "new-epoch state aliases input buffers")
-        assertInputUnchanged(bob) { runCatching { Session.decryptMessage(it, tamper(m5)) } }
+        assertTrue(outputBuffers.none { out -> inputBuffers.any { it.bytes === out.bytes } }, "new-epoch state aliases input buffers")
+        assertInputUnchanged(bob) { Session.decryptMessage(it, tamper(m5)).undeliverable() }
     }
 
     private fun assertInputUnchanged(
@@ -281,13 +277,7 @@ class ReceiveRatchetFailureTest {
         state: SessionState,
         m: EncryptedMessagePayload,
         header: Session.DecryptedHeader? = null,
-    ): SessionState =
-        try {
-            Session.decryptMessage(state, m, header)
-            fail("Expected DecryptionExceptionWithState on tampered body")
-        } catch (e: DecryptionExceptionWithState) {
-            e.newState
-        }
+    ): SessionState = Session.decryptMessage(state, m, header).undeliverable().state
 
     /** Exchanges three round trips in each direction (Bob first) and asserts every frame decrypts. */
     private fun converse(
@@ -299,13 +289,13 @@ class ReceiveRatchetFailureTest {
         for (i in 0 until 3) {
             val (b, fromBob) = Session.encryptMessage(bob, loc(200 + i))
             bob = b
-            val (a, ptA) = Session.decryptMessage(alice, fromBob)
+            val (a, ptA) = Session.decryptMessage(alice, fromBob).delivered()
             alice = a
             assertEquals(loc(200 + i), ptA, "B->A round $i")
 
             val (a2, fromAlice) = Session.encryptMessage(alice, loc(300 + i))
             alice = a2
-            val (b2, ptB) = Session.decryptMessage(bob, fromAlice)
+            val (b2, ptB) = Session.decryptMessage(bob, fromAlice).delivered()
             bob = b2
             assertEquals(loc(300 + i), ptB, "A->B round $i")
         }

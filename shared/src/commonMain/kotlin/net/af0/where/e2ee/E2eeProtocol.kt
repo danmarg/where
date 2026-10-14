@@ -69,7 +69,7 @@ internal object E2eeProtocol {
 
     /**
      * Executes the core decryption loop for a batch of ordered messages.
-     * Commits session ratchets even on payload decryption failures (DecryptionExceptionWithState).
+     * Commits session ratchets even on payload decryption failures ([ReceivedMessage.Undeliverable]).
      */
     fun decryptBatch(
         initialSession: SessionState,
@@ -89,35 +89,33 @@ internal object E2eeProtocol {
         val replayedIds = mutableListOf<String>()
 
         for ((header, msg) in orderedMessages) {
-            try {
-                val (newSession, pt) = Session.decryptMessage(currentSession, msg, header)
-                currentSession = newSession
-                anySuccess = true
-                anyAuthenticated = true
-                processedIds.add(msg.msgId)
-                if (pt is MessagePlaintext.Location) {
-                    decryptedLocations.add(
-                        LocationPlaintext(
-                            lat = pt.lat,
-                            lng = pt.lng,
-                            acc = pt.acc,
-                            ts = pt.ts,
-                            stationary = pt.stationary,
-                        ),
-                    )
-                } else if (pt is MessagePlaintext.StoppedSharing) {
-                    if (stoppedSharingTs == null || pt.ts > stoppedSharingTs) {
-                        stoppedSharingTs = pt.ts
+            when (val received = Session.decryptMessage(currentSession, msg, header)) {
+                is ReceivedMessage.Delivered -> {
+                    currentSession = received.state
+                    anySuccess = true
+                    anyAuthenticated = true
+                    processedIds.add(msg.msgId)
+                    val pt = received.plaintext
+                    if (pt is MessagePlaintext.Location) {
+                        decryptedLocations.add(
+                            LocationPlaintext(
+                                lat = pt.lat,
+                                lng = pt.lng,
+                                acc = pt.acc,
+                                ts = pt.ts,
+                                stationary = pt.stationary,
+                            ),
+                        )
+                    } else if (pt is MessagePlaintext.StoppedSharing) {
+                        if (stoppedSharingTs == null || pt.ts > stoppedSharingTs) {
+                            stoppedSharingTs = pt.ts
+                        }
                     }
                 }
-            } catch (e: Exception) {
-                if (e is ReplayException) {
-                    anyReplay = true
-                    replayedIds.add(msg.msgId)
-                } else if (e is DecryptionExceptionWithState) {
+                is ReceivedMessage.Undeliverable -> {
                     // If header authenticated but payload failed, we MUST commit the
                     // ratcheted session state to prevent permanent DH desync (§5.5).
-                    currentSession = e.newState
+                    currentSession = received.state
                     softFailCount++
                     anyAuthenticated = true
                     // ACKed (deleted from the mailbox) even though nothing was delivered: the
@@ -125,9 +123,12 @@ internal object E2eeProtocol {
                     // transport cleanup only; senders never observe them (they don't read the
                     // receiver's mailbox), so this is indistinguishable from a server-side drop.
                     processedIds.add(msg.msgId)
-                } else {
-                    hardFailCount++
                 }
+                is ReceivedMessage.Replay -> {
+                    anyReplay = true
+                    replayedIds.add(msg.msgId)
+                }
+                is ReceivedMessage.Rejected -> hardFailCount++
             }
         }
 
@@ -150,7 +151,7 @@ internal object E2eeProtocol {
         session: SessionState,
         envelope: ByteArray,
     ): Session.DecryptedHeader {
-        val sessionAad = session.aliceFp + session.bobFp
+        val sessionAad = session.headerAad()
         return try {
             Session.decryptHeader(session.headerKey, envelope, sessionAad)
         } catch (e0: Exception) {
@@ -167,7 +168,7 @@ internal object E2eeProtocol {
         h: Session.DecryptedHeader,
     ): Int {
         return when {
-            h.dhPub.contentEquals(session.remoteDhPub) -> 1 // Current
+            h.dhPub == session.remoteDhPub -> 1 // Current
             else -> 2 // Unknown NEW epoch (Newest)
         }
     }

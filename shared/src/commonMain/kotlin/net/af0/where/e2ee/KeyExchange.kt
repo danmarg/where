@@ -26,8 +26,8 @@ object KeyExchange {
      * `internal` rather than `private`: Session.performDhRatchet and
      * E2eeManager.decryptSuggestedName also call it.
      */
-    internal fun requireNonZeroSharedSecret(sk: ByteArray) {
-        if (sk.all { it == 0.toByte() }) {
+    internal fun requireNonZeroSharedSecret(sk: SharedSecret) {
+        if (sk.bytes.all { it == 0.toByte() }) {
             sk.zeroize()
             throw AuthenticationException("X25519 produced an all-zero shared secret, rejecting low-order public key")
         }
@@ -37,7 +37,7 @@ object KeyExchange {
      * Alice: create the QR / invite-link payload.
      * Returns (QrPayload, EK_A.priv). The caller MUST zero EK_A.priv after aliceProcessInit.
      */
-    fun aliceCreateQrPayload(suggestedName: String): Pair<QrPayload, ByteArray> {
+    fun aliceCreateQrPayload(suggestedName: String): Pair<QrPayload, DhPrivateKey> {
         val ek = generateX25519KeyPair()
         val payload =
             QrPayload(
@@ -46,7 +46,7 @@ object KeyExchange {
                 discoverySecret = randomBytes(32),
                 expiresAt = currentTimeSeconds() + INVITE_LIFETIME_SECONDS,
             )
-        return payload to ek.priv
+        return payload to DhPrivateKey(ek.priv)
     }
 
     /**
@@ -65,27 +65,32 @@ object KeyExchange {
         }
         if (qr.isExpired()) throw InviteExpiredException()
 
+        val alicePub = DhPublicKey.fromWire(qr.ekPub)
         val ekB = generateX25519KeyPair()
-        val sk = x25519(ekB.priv, qr.ekPub)
-        requireNonZeroSharedSecret(sk)
-
-        val aliceFp = fingerprint(qr.ekPub)
-        val bobFp = fingerprint(ekB.pub)
+        val bobPriv = DhPrivateKey(ekB.priv)
+        val bobPub = DhPublicKey(ekB.pub)
+        val sk = dh(bobPriv, alicePub)
+        try {
+            requireNonZeroSharedSecret(sk)
+        } catch (e: AuthenticationException) {
+            bobPriv.zeroize()
+            throw e
+        }
 
         val session =
             initSession(
                 sk = sk,
                 isAlice = false,
-                myDhPriv = ekB.priv,
-                myDhPub = ekB.pub,
-                theirDhPub = qr.ekPub,
-                aliceFp = aliceFp,
-                bobFp = bobFp,
+                myDhPriv = bobPriv,
+                myDhPub = bobPub,
+                theirDhPub = alicePub,
+                aliceFp = fingerprint(alicePub),
+                bobFp = fingerprint(bobPub),
             )
 
-        val keyConfirmation = buildKeyConfirmation(sk, qr.ekPub, ekB.pub)
+        val keyConfirmation = buildKeyConfirmation(sk, alicePub, bobPub)
 
-        val encryptedName = encryptSuggestedName(sk, qr.ekPub, ekB.pub, suggestedName)
+        val encryptedName = encryptSuggestedName(sk, alicePub, bobPub, suggestedName)
 
         // MEMORY HYGIENE NOTE (§5.5): Bob's initial ephemeral key (ekB.priv) is copied into
         // the session.localDhPriv buffer within initSession. We zero the local ephemeral
@@ -110,7 +115,7 @@ object KeyExchange {
      */
     fun aliceProcessInit(
         msg: KeyExchangeInitMessage,
-        aliceEkPriv: ByteArray,
+        aliceEkPriv: DhPrivateKey,
         aliceEkPub: ByteArray,
     ): SessionState {
         // VERIFY PROTOCOL VERSION (#194)
@@ -118,34 +123,33 @@ object KeyExchange {
             throw ProtocolVersionException("Unsupported protocol version ${msg.protocolVersion}")
         }
 
-        val sk = x25519(aliceEkPriv, msg.ekPub)
+        val alicePub = DhPublicKey(aliceEkPub)
+        val bobPub = DhPublicKey.fromWire(msg.ekPub)
+        val sk = dh(aliceEkPriv, bobPub)
         requireNonZeroSharedSecret(sk)
         try {
             // Verify key confirmation before proceeding.
-            if (!verifyKeyConfirmation(sk, aliceEkPub, msg.ekPub, msg.keyConfirmation)) {
+            if (!verifyKeyConfirmation(sk, alicePub, bobPub, msg.keyConfirmation)) {
                 throw AuthenticationException("KeyExchangeInit key_confirmation failed — aborting key exchange")
             }
 
             // Decrypt/verify the suggested name to bind it cryptographically
             try {
-                decryptSuggestedName(sk, aliceEkPub, msg.ekPub, msg.encryptedName)
+                decryptSuggestedName(sk, alicePub, bobPub, msg.encryptedName)
             } catch (e: Exception) {
                 if (e is AuthenticationException) throw e
                 throw AuthenticationException("Failed to decrypt encrypted_name — aborting key exchange: ${e.message}")
             }
-
-            val aliceFp = fingerprint(aliceEkPub)
-            val bobFp = fingerprint(msg.ekPub)
 
             val session =
                 initSession(
                     sk = sk,
                     isAlice = true,
                     myDhPriv = aliceEkPriv,
-                    myDhPub = aliceEkPub,
-                    theirDhPub = msg.ekPub,
-                    aliceFp = aliceFp,
-                    bobFp = bobFp,
+                    myDhPub = alicePub,
+                    theirDhPub = bobPub,
+                    aliceFp = fingerprint(alicePub),
+                    bobFp = fingerprint(bobPub),
                 )
 
             // To break the Double Ratchet deadlock and ensure we don't just stay in the
@@ -154,10 +158,11 @@ object KeyExchange {
             // This generates A1, which Alice will send in her first location message.
             // Bob will see A1 != A0 and ratchet his own side.
             val newLocalDh = generateX25519KeyPair()
-            val rkStep = dhRatchetSubStep(newLocalDh.priv, msg.ekPub, session.rootKey)
+            val newLocalPriv = DhPrivateKey(newLocalDh.priv)
+            val rkStep = dhRatchetSubStep(newLocalPriv, bobPub, session.rootKey)
 
             // Tokens also rotate when the rootKey changes.
-            val newSendToken = deriveRoutingToken(rkStep.newRootKey, aliceFp, bobFp)
+            val newSendToken = session.parties.sendToken(rkStep.newRootKey)
 
             val nextAliceSession =
                 session.copy(
@@ -171,8 +176,8 @@ object KeyExchange {
                     sendToken = newSendToken,
                     recvToken = session.recvToken.copyOf(),
                     prevSendHeaderKey = session.sendHeaderKey.copyOf(),
-                    localDhPriv = newLocalDh.priv.copyOf(),
-                    localDhPub = newLocalDh.pub.copyOf(),
+                    localDhPriv = newLocalPriv.copyOf(),
+                    localDhPub = DhPublicKey(newLocalDh.pub.copyOf()),
                     prevSendToken = session.sendToken,
                     pr = session.recvSeq,
                 )
@@ -185,7 +190,7 @@ object KeyExchange {
             session.localDhPriv.zeroize()
             // session.recvChainKey is shared with nextAliceSession via shallow copy. DO NOT FILL(0).
 
-            newLocalDh.priv.zeroize()
+            newLocalPriv.zeroize()
             rkStep.newRootKey.zeroize()
             rkStep.newChainKey.zeroize()
             return nextAliceSession
@@ -199,60 +204,31 @@ object KeyExchange {
     // ---------------------------------------------------------------------------
 
     internal fun encryptSuggestedName(
-        sk: ByteArray,
-        ekAPub: ByteArray,
-        ekBPub: ByteArray,
+        sk: SharedSecret,
+        ekAPub: DhPublicKey,
+        ekBPub: DhPublicKey,
         suggestedName: String,
     ): ByteArray {
-        val kName =
-            hkdfSha256(
-                ikm = sk,
-                salt = null,
-                info = "Where-v1-SuggestedName".encodeToByteArray(),
-                length = 32,
-            )
+        val kName = nameKey(sk)
         try {
-            val nameNonce = randomBytes(12)
-            val nameCt =
-                aeadEncrypt(
-                    key = kName,
-                    nonce = nameNonce,
-                    plaintext = suggestedName.encodeToByteArray(),
-                    aad = ekAPub + ekBPub,
-                )
-            return nameNonce + nameCt
+            return sealRandomNonce(kName, suggestedName.encodeToByteArray(), aad = ekAPub.bytes + ekBPub.bytes)
         } finally {
             kName.zeroize()
         }
     }
 
     internal fun decryptSuggestedName(
-        sk: ByteArray,
-        ekAPub: ByteArray,
-        ekBPub: ByteArray,
+        sk: SharedSecret,
+        ekAPub: DhPublicKey,
+        ekBPub: DhPublicKey,
         encryptedName: ByteArray,
     ): String {
         if (encryptedName.size < 28) { // 12-byte nonce + 16-byte tag
             throw AuthenticationException("encryptedName payload is too short")
         }
-        val kName =
-            hkdfSha256(
-                ikm = sk,
-                salt = null,
-                info = "Where-v1-SuggestedName".encodeToByteArray(),
-                length = 32,
-            )
+        val kName = nameKey(sk)
         try {
-            val nonce = encryptedName.copyOfRange(0, 12)
-            val ct = encryptedName.copyOfRange(12, encryptedName.size)
-            val plaintext =
-                aeadDecrypt(
-                    key = kName,
-                    nonce = nonce,
-                    ciphertext = ct,
-                    aad = ekAPub + ekBPub,
-                )
-            return plaintext.decodeToString()
+            return openRandomNonce(kName, encryptedName, aad = ekAPub.bytes + ekBPub.bytes).decodeToString()
         } catch (e: Exception) {
             throw AuthenticationException("Failed to decrypt suggested_name: ${e.message}")
         } finally {
@@ -260,32 +236,42 @@ object KeyExchange {
         }
     }
 
+    private fun nameKey(sk: SharedSecret) =
+        NameKey(
+            hkdfSha256(
+                ikm = sk.bytes,
+                salt = null,
+                info = "Where-v1-SuggestedName".encodeToByteArray(),
+                length = 32,
+            ),
+        )
+
     /**
      * Derive the initial session state from SK.
      * Alice/Bob start with a symmetric chain derived from SK.
      */
     internal fun initSession(
-        sk: ByteArray,
+        sk: SharedSecret,
         isAlice: Boolean,
-        myDhPriv: ByteArray,
-        myDhPub: ByteArray,
-        theirDhPub: ByteArray,
-        aliceFp: ByteArray,
-        bobFp: ByteArray,
+        myDhPriv: DhPrivateKey,
+        myDhPub: DhPublicKey,
+        theirDhPub: DhPublicKey,
+        aliceFp: Fingerprint,
+        bobFp: Fingerprint,
     ): SessionState {
         val expanded =
             hkdfSha256(
-                ikm = sk,
+                ikm = sk.bytes,
                 salt = null,
                 info = INFO_KEY_EXCHANGE.encodeToByteArray(),
                 length = 192,
             )
-        val chainKey0 = expanded.copyOfRange(0, 32)
-        val chainKey1 = expanded.copyOfRange(32, 64)
-        val initialRootKey = expanded.copyOfRange(64, 96)
-        val headerKey0 = expanded.copyOfRange(96, 128)
-        val headerKey1 = expanded.copyOfRange(128, 160)
-        val nextHeaderKey = expanded.copyOfRange(160, 192)
+        val chainKey0 = ChainKey(expanded.copyOfRange(0, 32))
+        val chainKey1 = ChainKey(expanded.copyOfRange(32, 64))
+        val initialRootKey = RootKey(expanded.copyOfRange(64, 96))
+        val headerKey0 = HeaderKey(expanded.copyOfRange(96, 128))
+        val headerKey1 = HeaderKey(expanded.copyOfRange(128, 160))
+        val nextHeaderKey = HeaderKey(expanded.copyOfRange(160, 192))
 
         // Alice sends on chain 0, Bob receives on chain 0.
         // Bob sends on chain 1, Alice receives on chain 1.
@@ -298,11 +284,9 @@ object KeyExchange {
         val recvHeaderKey = if (isAlice) headerKey1 else headerKey0
 
         // Initial tokens are also derived from SK.
-        val localFp = if (isAlice) aliceFp else bobFp
-        val remoteFp = if (isAlice) bobFp else aliceFp
-
-        val sendToken = deriveRoutingToken(sk, localFp, remoteFp)
-        val recvToken = deriveRoutingToken(sk, remoteFp, localFp)
+        val parties = Parties.of(isAlice, aliceFp, bobFp)
+        val sendToken = parties.sendToken(sk)
+        val recvToken = parties.recvToken(sk)
 
         expanded.zeroize()
 
@@ -321,8 +305,8 @@ object KeyExchange {
             bobEkPub = (if (isAlice) theirDhPub else myDhPub).copyOf(),
             aliceFp = aliceFp.copyOf(),
             bobFp = bobFp.copyOf(),
-            localFp = (if (isAlice) aliceFp else bobFp).copyOf(),
-            remoteFp = (if (isAlice) bobFp else aliceFp).copyOf(),
+            localFp = parties.local.copyOf(),
+            remoteFp = parties.remote.copyOf(),
             prevSendToken = sendToken,
             prevSendHeaderKey = sendHeaderKey.copyOf(),
             isAlice = isAlice,
@@ -335,34 +319,30 @@ object KeyExchange {
     }
 
     internal fun buildKeyConfirmation(
-        sk: ByteArray,
-        ekAPub: ByteArray,
-        ekBPub: ByteArray,
+        sk: SharedSecret,
+        ekAPub: DhPublicKey,
+        ekBPub: DhPublicKey,
     ): ByteArray {
         val kConfirm =
             hkdfSha256(
-                ikm = sk,
+                ikm = sk.bytes,
                 salt = null,
                 info = INFO_CONFIRM.encodeToByteArray(),
                 length = 32,
             )
         try {
-            return hmacSha256(kConfirm, CONFIRM_PREFIX.encodeToByteArray() + ekAPub + ekBPub)
+            return hmacSha256(kConfirm, CONFIRM_PREFIX.encodeToByteArray() + ekAPub.bytes + ekBPub.bytes)
         } finally {
             kConfirm.zeroize()
         }
     }
 
     internal fun verifyKeyConfirmation(
-        sk: ByteArray,
-        ekAPub: ByteArray,
-        ekBPub: ByteArray,
+        sk: SharedSecret,
+        ekAPub: DhPublicKey,
+        ekBPub: DhPublicKey,
         expected: ByteArray,
     ): Boolean {
-        val computed = buildKeyConfirmation(sk, ekAPub, ekBPub)
-        var diff = computed.size xor expected.size
-        val len = minOf(computed.size, expected.size)
-        for (i in 0 until len) diff = diff or (computed[i].toInt() xor expected[i].toInt())
-        return diff == 0
+        return constantTimeEquals(buildKeyConfirmation(sk, ekAPub, ekBPub), expected)
     }
 }

@@ -46,13 +46,10 @@ class InviteAlreadyAcceptedException() : WhereException("This invite was already
 class SelfPairingException() : WhereException("Cannot pair with yourself")
 
 /**
- * Thrown when the header authenticates but the message cannot be delivered: the body
- * fails AEAD (e.g. corruption), or it authenticates but its plaintext is malformed
- * (bad padding, undecodable). Carries the advanced [SessionState], which the caller
- * MUST persist so a corrupted frame leaves the same state as a dropped one (§8.3.1(4)).
- * Not a [DecryptionException]: callers must handle it separately.
+ * Thrown inside [Session] when the header authenticates but the message cannot be delivered;
+ * [Session.decryptMessage] turns it into [ReceivedMessage.Undeliverable] with the same state.
  */
-class DecryptionExceptionWithState(
+internal class DecryptionExceptionWithState(
     val newState: SessionState,
     cause: Throwable,
 ) : WhereException(cause.message ?: "payload decryption failed", cause)

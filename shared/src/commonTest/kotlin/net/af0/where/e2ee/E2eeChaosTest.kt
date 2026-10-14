@@ -296,10 +296,11 @@ class E2eeChaosTest {
                 }
             }
 
-            // 3. Bob processes QR and posts response (retry until success)
+            // 3. Bob accepts the QR once (local; a second accept is rejected as a replay), then
+            // posts the response, retrying until it gets through.
+            val initAndEntry = bobManager.processScannedQr(qr, "Bob")
             while (true) {
                 try {
-                    val initAndEntry = bobManager.processScannedQr(qr, "Bob")
                     bobClient.postKeyExchangeInit(initAndEntry.second.id, qr, initAndEntry.first)
                     break
                 } catch (e: Exception) {

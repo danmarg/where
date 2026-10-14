@@ -38,6 +38,7 @@ import net.af0.where.e2ee.PROTOCOL_VERSION
 import net.af0.where.e2ee.PendingInviteView
 import net.af0.where.e2ee.QrPayload
 import net.af0.where.e2ee.RawKeyValueStorage
+import net.af0.where.e2ee.RoutingToken
 import net.af0.where.e2ee.SessionState
 import net.af0.where.e2ee.UserStore
 import net.af0.where.e2ee.currentTimeSeconds
@@ -491,8 +492,8 @@ class LocationViewModelTest {
             val mockFriend = mockk<FriendEntry>(relaxed = true)
             val mockSession = mockk<SessionState>(relaxed = true)
             every { mockFriend.session } returns mockSession
-            every { mockSession.sendToken } returns byteArrayOf(1, 2, 3)
-            every { mockSession.recvToken } returns byteArrayOf(4, 5, 6)
+            every { mockSession.sendToken } returns RoutingToken(byteArrayOf(1, 2, 3))
+            every { mockSession.recvToken } returns RoutingToken(byteArrayOf(4, 5, 6))
             every { mockFriend.id } returns "alice_fp"
             io.mockk.coEvery { store.processScannedQr(any(), any()) } returns (mockPayload to mockFriend)
 
@@ -617,8 +618,8 @@ class LocationViewModelTest {
             val mockFriend = mockk<FriendEntry>(relaxed = true)
             val mockSession = mockk<SessionState>(relaxed = true)
             every { mockFriend.session } returns mockSession
-            every { mockSession.sendToken } returns byteArrayOf(1, 2, 3)
-            every { mockSession.recvToken } returns byteArrayOf(4, 5, 6)
+            every { mockSession.sendToken } returns RoutingToken(byteArrayOf(1, 2, 3))
+            every { mockSession.recvToken } returns RoutingToken(byteArrayOf(4, 5, 6))
             every { mockFriend.id } returns "friend1"
             io.mockk.coEvery { store.processScannedQr(any(), any()) } returns (mockPayload to mockFriend)
 

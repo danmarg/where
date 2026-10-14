@@ -10,8 +10,8 @@ import kotlinx.serialization.Serializable
 internal expect fun normalizeName(name: String): String
 
 internal fun canonicalId(
-    aliceFp: ByteArray,
-    bobFp: ByteArray,
+    aliceFp: Fingerprint,
+    bobFp: Fingerprint,
 ): String {
     val a = aliceFp.toHex()
     val b = bobFp.toHex()
@@ -73,7 +73,7 @@ data class FriendEntry(
      * time and unique per invite. Lets a re-opened or redelivered invite link be rejected for as
      * long as the friend exists, including friends paired before the app tracked this.
      */
-    fun isFromInvite(qr: QrPayload): Boolean = session.aliceFp.contentEquals(fingerprint(qr.ekPub))
+    fun isFromInvite(qr: QrPayload): Boolean = session.aliceFp == fingerprint(DhPublicKey(qr.ekPub))
 }
 
 /**
@@ -344,19 +344,14 @@ class E2eeManager(
         metadata: E2eeStore.MetadataScope,
         payload: MessagePlaintext,
     ): Pair<FriendEntry, EncryptedMessagePayload> {
-        val (nextSession, message) = Session.encryptMessage(entry.session, payload)
+        val (nextSession, message, tokenToUse) = Session.encryptMessage(entry.session, payload)
 
         // Nonce safety check:
         val seqAdvanced =
             nextSession.sendSeq > entry.session.sendSeq ||
                 nextSession.pn > entry.session.pn ||
-                !nextSession.rootKey.contentEquals(entry.session.rootKey)
+                !nextSession.rootKey.constantTimeEquals(entry.session.rootKey)
         check(seqAdvanced) { "Nonce safety violation: sequence number did not advance" }
-
-        // Determine which token to use for THIS message.
-        // Strict DR Routing: Transition messages (seq 1) go to the old token.
-        // Subsequent messages go to the new token.
-        val tokenToUse = if (nextSession.sendSeq == 1L) nextSession.prevSendToken else nextSession.sendToken
 
         val outboxMsg =
             EncryptedOutboxMessage(
@@ -492,15 +487,15 @@ class E2eeManager(
 
             val hadStateUpdate =
                 result.finalSession.recvSeq > entry.session.recvSeq ||
-                    !result.finalSession.rootKey.contentEquals(entry.session.rootKey)
+                    !result.finalSession.rootKey.constantTimeEquals(entry.session.rootKey)
 
             // If the peer ratcheted forward, it proves they received our transition message
-            // (sent to prevSendToken). Delete only that stale entry — not any pending message
-            // we may have queued for the current sendToken.
-            if (!result.finalSession.rootKey.contentEquals(entry.session.rootKey)) {
+            // (the epoch's first, see transportFor). Delete only that stale entry — not any
+            // pending message we may have queued for the current sendToken.
+            if (!result.finalSession.rootKey.constantTimeEquals(entry.session.rootKey)) {
                 persistence.deleteOutboxByFriendIdAndTokenInternal(
                     friendId,
-                    entry.session.prevSendToken.toHex(),
+                    entry.session.transportFor(1).token.toHex(),
                 )
             }
 
@@ -559,7 +554,7 @@ class E2eeManager(
 
             val shouldAck = idsToAck.isNotEmpty()
 
-            val hadDhRatchet = !result.finalSession.rootKey.contentEquals(entry.session.rootKey)
+            val hadDhRatchet = !result.finalSession.rootKey.constantTimeEquals(entry.session.rootKey)
 
             PersistenceAction.Update(updatedEntry) to
                 PollBatchResult(
@@ -628,15 +623,18 @@ class E2eeManager(
         return persistence.withMetadataLock {
             val pending = pendingInvites.find { it.qrPayload.ekPub.contentEquals(aliceEkPub) }
             if (pending == null) return@withMetadataLock null
-            val sk = x25519(pending.aliceEkPriv, bobEkPub)
             try {
-                KeyExchange.requireNonZeroSharedSecret(sk)
-                KeyExchange.decryptSuggestedName(sk, aliceEkPub, bobEkPub, encryptedName)
+                val bobPub = DhPublicKey.fromWire(bobEkPub)
+                val sk = dh(pending.aliceEkPriv, bobPub)
+                try {
+                    KeyExchange.requireNonZeroSharedSecret(sk)
+                    KeyExchange.decryptSuggestedName(sk, DhPublicKey(aliceEkPub), bobPub, encryptedName)
+                } finally {
+                    sk.zeroize()
+                }
             } catch (e: Exception) {
                 addDiagnosticEvent("decryptSuggestedName failed: ${e.message}")
                 null
-            } finally {
-                sk.zeroize()
             }
         }
     }

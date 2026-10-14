@@ -3,14 +3,13 @@ package net.af0.where.e2ee
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
-import kotlin.test.assertTrue
 
 class EnvelopeTest {
     @Test
     fun testEnvelopeEncryptionDecryption() {
-        val key = randomBytes(32)
-        val dhPub = randomBytes(32)
-        val ackRemoteDhPub = randomBytes(32)
+        val key = HeaderKey(randomBytes(32))
+        val dhPub = DhPublicKey(randomBytes(32))
+        val ackRemoteDhPub = DhPublicKey(randomBytes(32))
         val seq = 123L
         val pn = 45L
 
@@ -20,18 +19,18 @@ class EnvelopeTest {
         assertEquals(110, envelope.size)
 
         val decrypted = Session.decryptHeader(key, envelope)
-        assertTrue(dhPub.contentEquals(decrypted.dhPub))
-        assertTrue(ackRemoteDhPub.contentEquals(decrypted.ackRemoteDhPub))
+        assertEquals(dhPub, decrypted.dhPub)
+        assertEquals(ackRemoteDhPub, decrypted.ackRemoteDhPub)
         assertEquals(seq, decrypted.seq)
         assertEquals(pn, decrypted.pn)
     }
 
     @Test
     fun testEnvelopeFailureWithWrongKey() {
-        val key1 = randomBytes(32)
-        val key2 = randomBytes(32)
-        val dhPub = randomBytes(32)
-        val ackRemoteDhPub = randomBytes(32)
+        val key1 = HeaderKey(randomBytes(32))
+        val key2 = HeaderKey(randomBytes(32))
+        val dhPub = DhPublicKey(randomBytes(32))
+        val ackRemoteDhPub = DhPublicKey(randomBytes(32))
 
         val envelope = Session.encryptHeader(key1, dhPub, ackRemoteDhPub, 1L, 0L)
 
@@ -42,9 +41,9 @@ class EnvelopeTest {
 
     @Test
     fun testEnvelopeCorruption() {
-        val key = randomBytes(32)
-        val dhPub = randomBytes(32)
-        val ackRemoteDhPub = randomBytes(32)
+        val key = HeaderKey(randomBytes(32))
+        val dhPub = DhPublicKey(randomBytes(32))
+        val ackRemoteDhPub = DhPublicKey(randomBytes(32))
         val envelope = Session.encryptHeader(key, dhPub, ackRemoteDhPub, 1L, 0L)
 
         // Corrupt a byte in the encrypted portion

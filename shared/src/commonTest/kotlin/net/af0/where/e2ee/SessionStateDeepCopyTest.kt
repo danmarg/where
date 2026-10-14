@@ -11,7 +11,7 @@ import kotlin.test.assertTrue
  * would corrupt the other copy's live session state. This is a maintenance trap because
  * deepCopy()'s field list can't be derived from a single source of truth (Kotlin's data
  * class copy() requires named arguments) the way equals()/hashCode() now are (see
- * SessionState.byteArrayFields() in Types.kt) — a field added to the constructor but missed
+ * SessionState.keyFields() in Types.kt) — a field added to the constructor but missed
  * in deepCopy() fails silently there. This test catches that by asserting every field is a
  * genuinely distinct buffer after copying.
  */
@@ -20,29 +20,29 @@ class SessionStateDeepCopyTest {
 
     private fun sampleState(): SessionState =
         SessionState(
-            rootKey = bytes(1),
-            sendChainKey = bytes(2),
-            recvChainKey = bytes(3),
-            sendToken = bytes(4),
-            recvToken = bytes(5),
+            rootKey = RootKey(bytes(1)),
+            sendChainKey = ChainKey(bytes(2)),
+            recvChainKey = ChainKey(bytes(3)),
+            sendToken = RoutingToken(bytes(4)),
+            recvToken = RoutingToken(bytes(5)),
             sendSeq = 0L,
             recvSeq = 0L,
-            localDhPriv = bytes(6),
-            localDhPub = bytes(7),
-            remoteDhPub = bytes(8),
-            aliceEkPub = bytes(9),
-            bobEkPub = bytes(10),
-            aliceFp = bytes(11),
-            bobFp = bytes(12),
-            localFp = bytes(13),
-            remoteFp = bytes(14),
-            prevSendToken = bytes(15),
-            prevSendHeaderKey = bytes(16),
+            localDhPriv = DhPrivateKey(bytes(6)),
+            localDhPub = DhPublicKey(bytes(7)),
+            remoteDhPub = DhPublicKey(bytes(8)),
+            aliceEkPub = DhPublicKey(bytes(9)),
+            bobEkPub = DhPublicKey(bytes(10)),
+            aliceFp = Fingerprint(bytes(11)),
+            bobFp = Fingerprint(bytes(12)),
+            localFp = Fingerprint(bytes(13)),
+            remoteFp = Fingerprint(bytes(14)),
+            prevSendToken = RoutingToken(bytes(15)),
+            prevSendHeaderKey = HeaderKey(bytes(16)),
             isAlice = true,
-            skippedMessageKeys = mapOf("k" to bytes(17)),
-            headerKey = bytes(18),
-            sendHeaderKey = bytes(19),
-            nextHeaderKey = bytes(20),
+            skippedMessageKeys = mapOf("k" to SkippedMessageKey(bytes(17))),
+            headerKey = HeaderKey(bytes(18)),
+            sendHeaderKey = HeaderKey(bytes(19)),
+            nextHeaderKey = HeaderKey(bytes(20)),
         )
 
     @Test
@@ -50,32 +50,32 @@ class SessionStateDeepCopyTest {
         val original = sampleState()
         val copy = original.deepCopy()
 
-        assertNotSame(original.rootKey, copy.rootKey)
-        assertNotSame(original.sendChainKey, copy.sendChainKey)
-        assertNotSame(original.recvChainKey, copy.recvChainKey)
-        assertNotSame(original.sendToken, copy.sendToken)
-        assertNotSame(original.recvToken, copy.recvToken)
-        assertNotSame(original.localDhPriv, copy.localDhPriv)
-        assertNotSame(original.localDhPub, copy.localDhPub)
-        assertNotSame(original.remoteDhPub, copy.remoteDhPub)
-        assertNotSame(original.aliceEkPub, copy.aliceEkPub)
-        assertNotSame(original.bobEkPub, copy.bobEkPub)
-        assertNotSame(original.aliceFp, copy.aliceFp)
-        assertNotSame(original.bobFp, copy.bobFp)
-        assertNotSame(original.localFp, copy.localFp)
-        assertNotSame(original.remoteFp, copy.remoteFp)
-        assertNotSame(original.prevSendToken, copy.prevSendToken)
-        assertNotSame(original.prevSendHeaderKey, copy.prevSendHeaderKey)
-        assertNotSame(original.headerKey, copy.headerKey)
-        assertNotSame(original.sendHeaderKey, copy.sendHeaderKey)
-        assertNotSame(original.nextHeaderKey, copy.nextHeaderKey)
-        assertNotSame(original.skippedMessageKeys.getValue("k"), copy.skippedMessageKeys.getValue("k"))
+        assertNotSame(original.rootKey.bytes, copy.rootKey.bytes)
+        assertNotSame(original.sendChainKey.bytes, copy.sendChainKey.bytes)
+        assertNotSame(original.recvChainKey.bytes, copy.recvChainKey.bytes)
+        assertNotSame(original.sendToken.bytes, copy.sendToken.bytes)
+        assertNotSame(original.recvToken.bytes, copy.recvToken.bytes)
+        assertNotSame(original.localDhPriv.bytes, copy.localDhPriv.bytes)
+        assertNotSame(original.localDhPub.bytes, copy.localDhPub.bytes)
+        assertNotSame(original.remoteDhPub.bytes, copy.remoteDhPub.bytes)
+        assertNotSame(original.aliceEkPub.bytes, copy.aliceEkPub.bytes)
+        assertNotSame(original.bobEkPub.bytes, copy.bobEkPub.bytes)
+        assertNotSame(original.aliceFp.bytes, copy.aliceFp.bytes)
+        assertNotSame(original.bobFp.bytes, copy.bobFp.bytes)
+        assertNotSame(original.localFp.bytes, copy.localFp.bytes)
+        assertNotSame(original.remoteFp.bytes, copy.remoteFp.bytes)
+        assertNotSame(original.prevSendToken.bytes, copy.prevSendToken.bytes)
+        assertNotSame(original.prevSendHeaderKey.bytes, copy.prevSendHeaderKey.bytes)
+        assertNotSame(original.headerKey.bytes, copy.headerKey.bytes)
+        assertNotSame(original.sendHeaderKey.bytes, copy.sendHeaderKey.bytes)
+        assertNotSame(original.nextHeaderKey.bytes, copy.nextHeaderKey.bytes)
+        assertNotSame(original.skippedMessageKeys.getValue("k").bytes, copy.skippedMessageKeys.getValue("k").bytes)
 
         // Content must still match despite being distinct buffers.
         assertTrue(original == copy, "deep copy must remain equal in content")
 
         // Mutating (zeroizing) one copy's key material must not affect the other.
         copy.rootKey.zeroize()
-        assertFalse(original.rootKey.all { it == 0.toByte() }, "zeroizing the copy's rootKey must not affect the original")
+        assertFalse(original.rootKey.bytes.all { it == 0.toByte() }, "zeroizing the copy's rootKey must not affect the original")
     }
 }
