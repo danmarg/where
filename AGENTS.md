@@ -109,7 +109,7 @@ curl localhost:8080/health     # → ok
 - Build: `./gradlew :android:assembleDebug` or `./scripts/run-android.sh`
 
 ### iOS (simulator)
-- Server URL in `ServerConfig.swift`: Debug builds on the simulator use a local server (`http://127.0.0.1:8080`); everything else uses production `https://where-api.af0.net`. The `WHERE_SERVER_HTTP_URL` environment variable in the Xcode scheme overrides both (e.g. a LAN address for a device).
+- Server URL in `ServerConfig.swift`: Debug builds on the simulator use a local server (`http://127.0.0.1:8080`); everything else uses production `https://where-api.af0.net`. Setting `WHERE_SERVER_HTTP_URL` in `ios/Local.xcconfig` (gitignored) overrides both (e.g. a LAN address for a device); the shared `Where` scheme, generated from `project.yml`, passes it to the app.
 - Generate Xcode project: `cd ios && xcodegen`. The project calls `embedAndSignAppleFrameworkForXcode` as a pre-build script automatically.
 - To build the KMP framework manually: `./gradlew :shared:embedAndSignAppleFrameworkForXcode`
 - Run: `./scripts/run-ios.sh` or open `Where.xcodeproj` in Xcode.

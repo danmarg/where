@@ -32,6 +32,18 @@ targets:
           fi
           # Build BOTH to avoid switching issues
           ./gradlew :shared:assembleSharedDebugXCFramework :shared:assembleSharedReleaseXCFramework
+    postBuildScripts:
+      # Records the commit the app was built from (shown under the Friends list), so a crash
+      # report or TestFlight build can be traced to its source. Runs before code signing.
+      - name: Stamp Git Commit
+        basedOnDependencyAnalysis: false
+        script: |
+          repo="$SRCROOT/.."
+          commit=$(git -C "$repo" rev-parse --short=12 HEAD 2>/dev/null || echo unknown)
+          if [ -n "$(git -C "$repo" status --porcelain --untracked-files=no 2>/dev/null)" ]; then
+            commit="$commit-dirty"
+          fi
+          /usr/libexec/PlistBuddy -c "Set :WhereGitCommit $commit" "$TARGET_BUILD_DIR/$INFOPLIST_PATH"
     dependencies:
       - framework: ../shared/build/XCFrameworks/$(CONFIGURATION:lower)/Shared.xcframework
         embed: true
@@ -76,6 +88,7 @@ targets:
           - UIInterfaceOrientationLandscapeRight
         CFBundleShortVersionString: "$(MARKETING_VERSION)"
         CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
+        WhereGitCommit: unknown
         "UISupportedInterfaceOrientations~ipad":
           - UIInterfaceOrientationPortrait
           - UIInterfaceOrientationPortraitUpsideDown
@@ -106,3 +119,29 @@ targets:
     settings:
       PRODUCT_BUNDLE_IDENTIFIER: net.af0.WhereTests
       GENERATE_INFOPLIST_FILE: YES
+
+# Shared, so `xcodebuild -scheme Where` (fastlane, CI, scripts) never depends on a scheme Xcode
+# autocreated or one in someone's xcuserdata.
+schemes:
+  Where:
+    build:
+      targets:
+        Where: all
+        WhereTests: [test]
+    run:
+      config: Debug
+      # Set WHERE_SERVER_HTTP_URL in ios/Local.xcconfig (gitignored) to point a run at another
+      # server, e.g. a LAN address for a device; unset, it expands to "" and ServerConfig ignores it.
+      # (xcodegen rewrites this scheme, so edits made to it in Xcode don't last.)
+      environmentVariables:
+        WHERE_SERVER_HTTP_URL: $(WHERE_SERVER_HTTP_URL)
+    test:
+      config: Debug
+      targets:
+        - WhereTests
+    profile:
+      config: Release
+    analyze:
+      config: Debug
+    archive:
+      config: Release
