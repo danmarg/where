@@ -92,8 +92,8 @@ targets:
       FRAMEWORK_SEARCH_PATHS: $(inherited) $(SRCROOT)/../shared/build/XCFrameworks/$(CONFIGURATION:lower)
       CODE_SIGN_IDENTITY: Apple Development
       CODE_SIGN_STYLE: Automatic
-      MARKETING_VERSION: "1.33"
-      CURRENT_PROJECT_VERSION: 58
+      MARKETING_VERSION: "1.34"
+      CURRENT_PROJECT_VERSION: 64
 
   WhereTests:
     type: bundle.unit-test
