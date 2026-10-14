@@ -100,4 +100,6 @@
     <string name="sharing_limited">Partage (limité)</string>
     <string name="sharing_off">Partage désactivé</string>
     <string name="precise_location_message">Sans la position exacte, Where ne peut pas partager votre position assez précisément. Vous pouvez l’activer dans Réglages.</string>
+    <string name="database_error_title">Where ne peut pas ouvrir ses données</string>
+    <string name="database_error_message">Where ne peut pas démarrer tant que ce problème n’est pas résolu. Vos amis et réglages n’ont pas été supprimés. Essayez de quitter puis de rouvrir l’app ; si cela ne suffit pas, signalez cette erreur :</string>
 </resources>

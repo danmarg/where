@@ -4,6 +4,7 @@ package net.af0.where.e2ee
 
 import app.cash.sqldelight.db.SqlDriver
 import app.cash.sqldelight.driver.native.NativeSqliteDriver
+import app.cash.sqldelight.driver.native.inMemoryDriver
 import co.touchlab.sqliter.DatabaseConfiguration
 import co.touchlab.sqliter.DatabaseFileContext
 import kotlinx.cinterop.ExperimentalForeignApi
@@ -69,3 +70,6 @@ private fun protectDatabaseDirectory(
         if (fm.fileExistsAtPath(path)) fm.setAttributes(protection, ofItemAtPath = path, error = null)
     }
 }
+
+/** A fresh in-memory database, for running without the on-disk one when it can't be opened. */
+fun createIosInMemorySqlDriver(): SqlDriver = inMemoryDriver(WhereDatabase.Schema)

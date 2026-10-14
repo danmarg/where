@@ -100,4 +100,6 @@
     <string name="sharing_limited">Sharing (limited)</string>
     <string name="sharing_off">Sharing off</string>
     <string name="precise_location_message">Without Precise Location, Where can\'t share where you are accurately enough. You can turn it on in Settings.</string>
+    <string name="database_error_title">Where can\'t open its data</string>
+    <string name="database_error_message">Where can\'t start until this is fixed. Your friends and settings haven\'t been deleted. Try quitting and reopening the app; if that doesn\'t help, please report this error:</string>
 </resources>

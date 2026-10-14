@@ -11,7 +11,7 @@ final class DatabaseBackupExclusionTests: XCTestCase {
         defer { driver.close() }
 
         // The driver opens lazily; loading the store forces SQLite to create the file.
-        _ = Shared.E2eeManager(sqlDriver: driver)
+        _ = try Shared.E2eeManager(sqlDriver: driver)
 
         let dir = Shared.IosSqlDriverKt.iosDatabaseDirectory(name: name)
         // The file SQLite actually created is in the directory the app excludes and verifies,

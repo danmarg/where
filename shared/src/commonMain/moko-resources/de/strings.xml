@@ -100,4 +100,6 @@
     <string name="sharing_limited">Teilen (eingeschränkt)</string>
     <string name="sharing_off">Teilen aus</string>
     <string name="precise_location_message">Ohne genauen Standort kann Where nicht genau genug teilen, wo du bist. Du kannst ihn in den Einstellungen aktivieren.</string>
+    <string name="database_error_title">Where kann seine Daten nicht öffnen</string>
+    <string name="database_error_message">Where kann erst starten, wenn das behoben ist. Deine Freunde und Einstellungen wurden nicht gelöscht. Beende die App und öffne sie erneut; wenn das nicht hilft, melde bitte diesen Fehler:</string>
 </resources>
