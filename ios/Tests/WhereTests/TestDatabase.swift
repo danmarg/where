@@ -7,5 +7,5 @@ import Shared
 /// name, so every caller would open the same database file and see each other's friends and
 /// invites, making tests order-dependent.
 func makeTestE2eeManager() -> Shared.E2eeManager {
-    Shared.E2eeManager(sqlDriver: Shared.IosSqlDriverKt.createIosSqlDriver(name: "test-\(UUID().uuidString).db"))
+    try! Shared.E2eeManager(sqlDriver: Shared.IosSqlDriverKt.createIosSqlDriver(name: "test-\(UUID().uuidString).db"))
 }

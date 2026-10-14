@@ -30,7 +30,11 @@ struct WhereApp: App {
 
     var body: some Scene {
         WindowGroup {
-            ContentView()
+            if let error = LocationSyncService.shared.databaseOpenError {
+                DatabaseErrorView(message: error)
+            } else {
+                ContentView()
+            }
         }
         .onChange(of: scenePhase) { _, newPhase in
             if newPhase == .active {

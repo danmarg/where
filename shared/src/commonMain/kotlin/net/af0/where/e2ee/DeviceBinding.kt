@@ -36,7 +36,9 @@ class DeviceBindingResult(
  * check existed) is adopted as this device's.
  *
  * Must run before an [E2eeManager] is constructed on [sqlDriver], since it loads friends.
+ * Throws if the database can't be opened.
  */
+@Throws(Exception::class)
 fun reconcileDeviceBinding(
     sqlDriver: SqlDriver,
     deviceStore: DeviceMarkerStore,

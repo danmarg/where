@@ -59,6 +59,8 @@ final class LocationSyncService: ObservableObject {
 
     @Published var connectionStatus: Shared.ConnectionStatus = Shared.ConnectionStatus.Ok()
     @Published var isDataLoaded: Bool = false
+    /// Why the database couldn't be opened, if it couldn't. Nothing is loaded, polled or sent then.
+    let databaseOpenError: String?
     /// Friends whose sessions were discarded because the database came from another device or
     /// install; shown once so the user knows to re-pair. Persisted until dismissed, since the
     /// discard may happen during a background relaunch.
@@ -250,12 +252,12 @@ final class LocationSyncService: ObservableObject {
     }()
 
     /// Opens the on-disk database, discarding its sessions first if it was restored or
-    /// transferred from elsewhere (spec §5.5), and checks it is excluded from backup.
-    private static func openDatabase() -> Shared.E2eeManager {
-        let name = "where.db"
+    /// transferred from elsewhere (spec §5.5), and checks it is excluded from backup. Throws if
+    /// the database can't be opened, e.g. a migration fails or it was written by a newer build.
+    static func openDatabase(name: String = "where.db", deviceStore: Shared.DeviceMarkerStore = DeviceMarkerKeychain()) throws -> Shared.E2eeManager {
         let driver = IosSqlDriverKt.createIosSqlDriver(name: name)
-        let binding = DeviceBindingKt.reconcileDeviceBinding(sqlDriver: driver, deviceStore: DeviceMarkerKeychain())
-        let store = Shared.E2eeManager(sqlDriver: driver)
+        let binding = try DeviceBindingKt.reconcileDeviceBinding(sqlDriver: driver, deviceStore: deviceStore)
+        let store = try Shared.E2eeManager(sqlDriver: driver)
 
         if !binding.checked {
             logger.warning("Device binding check skipped: device marker unavailable")
@@ -297,7 +299,26 @@ final class LocationSyncService: ObservableObject {
         logger.debug("LocationSyncService init: serverUrl=\(ServerConfig.httpBaseUrl)")
 
         let keychain = KeychainRawKeyValueStorage()
-        let store = e2eeManager ?? Self.openDatabase()
+        let store: Shared.E2eeManager
+        var openError: String? = nil
+        if let e2eeManager {
+            store = e2eeManager
+        } else {
+            do {
+                store = try Self.openDatabase()
+            } catch {
+                logger.fault("Could not open the database: \(String(describing: error), privacy: .public)")
+                // Before first unlock (a background relaunch after reboot) the files are still
+                // encrypted. That passes, but this process would keep the failure, so end it and
+                // let the system relaunch the app later.
+                if !UIApplication.shared.isProtectedDataAvailable { exit(0) }
+                // Otherwise run on an empty placeholder, never loaded or polled, behind a screen
+                // that says what went wrong; the database on disk is left as it is.
+                openError = error.localizedDescription
+                store = try! Shared.E2eeManager(sqlDriver: IosSqlDriverKt.createIosInMemorySqlDriver())
+            }
+        }
+        self.databaseOpenError = openError
         self.e2eeManager = store
         let userStoreValue = userStore ?? Shared.UserStore(storage: keychain)
         self.userStore = userStoreValue
@@ -347,6 +368,7 @@ final class LocationSyncService: ObservableObject {
         }
 
         Task { @MainActor in
+            guard self.databaseOpenError == nil else { return }
             await repoValue.loadInitialState()
             self.updateVisibleUsers()
             self.isDataLoaded = true
@@ -603,6 +625,7 @@ final class LocationSyncService: ObservableObject {
     }
 
     func onForegroundEntry() {
+        guard databaseOpenError == nil else { return }
         // Reset lastPollTime to .distantPast so tick() bypasses its interval guard and fires
         // a poll immediately. A stuck isPollInFlight is handled by pollAll()'s watchdog task.
         lastPollTime = .distantPast
@@ -731,7 +754,7 @@ final class LocationSyncService: ObservableObject {
     }
 
     func pollAll(updateUi: Bool = true, source: WakeSource = .timer) async {
-        if isPollInFlight { return }
+        if isPollInFlight || databaseOpenError != nil { return }
         isPollInFlight = true
         lastPollTime = Date()
 

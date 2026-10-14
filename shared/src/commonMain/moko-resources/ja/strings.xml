@@ -100,4 +100,6 @@
     <string name="sharing_limited">共有中（制限あり）</string>
     <string name="sharing_off">共有オフ</string>
     <string name="precise_location_message">正確な位置情報がオフのため、Where は現在地を十分な精度で共有できません。設定でオンにできます。</string>
+    <string name="database_error_title">Where のデータを開けません</string>
+    <string name="database_error_message">この問題が解決するまで Where を起動できません。友達や設定は削除されていません。アプリを終了して開き直してください。それでも解決しない場合は、このエラーを報告してください：</string>
 </resources>

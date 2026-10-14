@@ -100,4 +100,6 @@
     <string name="sharing_limited">共享中（受限）</string>
     <string name="sharing_off">共享已关闭</string>
     <string name="precise_location_message">未开启精确位置，Where 无法足够准确地共享你的位置。你可以在设置中开启。</string>
+    <string name="database_error_title">Where 无法打开其数据</string>
+    <string name="database_error_message">在此问题解决之前，Where 无法启动。你的好友和设置没有被删除。请尝试退出并重新打开应用；如果仍然无效，请报告此错误：</string>
 </resources>

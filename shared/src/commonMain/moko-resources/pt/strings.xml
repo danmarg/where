@@ -100,4 +100,6 @@
     <string name="sharing_limited">Compartilhando (limitado)</string>
     <string name="sharing_off">Compartilhamento desativado</string>
     <string name="precise_location_message">Sem a localização exata, o Where não consegue compartilhar onde você está com precisão suficiente. Você pode ativá-la nos Ajustes.</string>
+    <string name="database_error_title">O Where não consegue abrir seus dados</string>
+    <string name="database_error_message">O Where não pode iniciar até que isso seja resolvido. Seus amigos e ajustes não foram apagados. Tente fechar e abrir o app novamente; se não resolver, informe este erro:</string>
 </resources>

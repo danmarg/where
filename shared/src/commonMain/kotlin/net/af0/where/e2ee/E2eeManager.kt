@@ -91,12 +91,16 @@ internal fun PendingInvite.toView() = PendingInviteView(qrPayload, createdAt, ex
 /**
  * Durably manages the E2EE state, including friends, sessions, and outboxes.
  * Acts as a coordinator between persistence and protocol logic.
+ *
+ * Constructing one loads the store, which opens (and migrates) the database and can fail.
  */
 class E2eeManager(
     sqlDriver: app.cash.sqldelight.db.SqlDriver,
     ioDispatcher: CoroutineDispatcher,
 ) {
     // Secondary constructor for callers (including Swift/ObjC) that don't need to inject a dispatcher.
+    // @Throws so Swift can catch a database that won't open; Kotlin/Native would otherwise abort.
+    @Throws(Exception::class)
     constructor(sqlDriver: app.cash.sqldelight.db.SqlDriver) : this(sqlDriver, storageDispatcher)
 
     private val persistence = E2eeStore(net.af0.where.db.WhereDatabase(sqlDriver), ioDispatcher)
