@@ -28,6 +28,9 @@ const val UNRESPONSIVE_SEND_INTERVAL_SECONDS = 5 * 60L
  */
 const val AUTOMATED_KEEPALIVE_BACKSTOP_SECONDS = 3 * UNRESPONSIVE_SEND_INTERVAL_SECONDS
 
+/** A removed friend's undelivered messages are retried this long - the server's own retention. */
+const val ORPHANED_OUTBOX_RETENTION_MILLIS = FriendEntry.ACK_TIMEOUT_SECONDS * 1000
+
 /**
  * Orchestrates the end-to-end encrypted location sharing protocol.
  * Unifies polling, decryption, ratchet rotation, and sending for all platforms.
@@ -460,8 +463,105 @@ open class LocationClient(
 
     @Throws(Exception::class)
     suspend fun processOutboxes() {
-        val friends = runCatching { store.listFriends() }.getOrElse { return }
-        forEachFriendParallel(friends) { friend -> processOutbox(friend.id) }
+        runCatching { store.listFriends() }.onSuccess { friends ->
+            forEachFriendParallel(friends) { friend -> processOutbox(friend.id) }
+        }
+        runCatching { processOrphanedOutboxes() }.onFailure { if (it is CancellationException) throw it }
+    }
+
+    /**
+     * Removes [friendId]. If we were still sharing with them, a StoppedSharing is queued first so
+     * their app shows us as stopped rather than leaving our last pin to go stale. Local only: the
+     * friend's outbox outlives the friend (see [E2eeManager.deleteFriendKeepingOutbox]) and is
+     * delivered by [processOrphanedOutboxes] (also run by every poll), which callers should kick
+     * off once their UI has updated.
+     */
+    @Throws(Exception::class)
+    open suspend fun removeFriend(
+        friendId: String,
+        pausedFriendIds: Set<String> = emptySet(),
+        sharingEnabled: Boolean = true,
+    ) {
+        getFriendMutex(friendId).withLock {
+            val friend = store.getFriend(friendId) ?: return
+            // Nothing follows the farewell, so it can safely be dated after everything before it:
+            // the receiver lets a Location win a same-second tie (as for a resume right after a
+            // pause), and a stuck Location from this second may arrive in the same batch.
+            val farewell =
+                if (sharingEnabled && isActiveFriend(friend, pausedFriendIds)) {
+                    MessagePlaintext.StoppedSharing(ts = maxOf(currentTimeSeconds(), friend.lastSentTs + 1))
+                } else {
+                    null
+                }
+            store.deleteFriendKeepingOutbox(friendId, farewell)
+        }
+        mutexLock.withLock {
+            silentDropRetries.keys.removeAll { it.startsWith("$friendId:") }
+            orphanedOutboxGeneration++
+            mayHaveOrphanedOutbox = true
+        }
+    }
+
+    // True at startup (a removal may have been left undelivered by a previous run), after a
+    // removal, and until a drain finds nothing left - so routine polls skip the orphan queries.
+    @kotlin.concurrent.Volatile
+    private var mayHaveOrphanedOutbox = true
+
+    // Bumped (under mutexLock) by each removal, so a drain already in progress - which a
+    // concurrent caller's tryLock defers to - picks up a removal that landed after it started.
+    @kotlin.concurrent.Volatile
+    private var orphanedOutboxGeneration = 0L
+    private val orphanedOutboxMutex = Mutex()
+
+    /**
+     * Delivers outbox rows left behind by removed friends, in order per friend (friends in
+     * parallel), stopping a friend's queue at its first failure. Rows older than the server's
+     * retention are dropped undelivered: the mailbox would have expired them anyway. One drain at
+     * a time - concurrent ones could re-post a message the peer has already read and acked.
+     */
+    @Throws(Exception::class)
+    suspend fun processOrphanedOutboxes() {
+        if (!mayHaveOrphanedOutbox || !orphanedOutboxMutex.tryLock()) return
+        try {
+            do {
+                val generation = orphanedOutboxGeneration
+                mayHaveOrphanedOutbox = false
+                drainOrphanedOutboxesOnce()
+            } while (orphanedOutboxGeneration != generation)
+        } catch (e: Throwable) {
+            mayHaveOrphanedOutbox = true
+            throw e
+        } finally {
+            orphanedOutboxMutex.unlock()
+        }
+    }
+
+    private suspend fun drainOrphanedOutboxesOnce() {
+        val cutoff = currentTimeMillis() - ORPHANED_OUTBOX_RETENTION_MILLIS
+        val byFriend = store.getOrphanedOutbox().groupBy({ it.first }, { it.second })
+        coroutineScope {
+            byFriend.map { (friendId, messages) ->
+                async {
+                    // Expire a friend's queue as a whole once its head is past retention: posting
+                    // the rest after dropping the head could send them to a token the peer only
+                    // learns from the head (a DH-ratchet transition).
+                    if (messages.first().createdAt < cutoff) {
+                        store.deleteOutboxByFriendId(friendId)
+                        return@async
+                    }
+                    try {
+                        deliverInOrder(friendId, messages)
+                    } catch (e: WallClockTimeoutCancellationException) {
+                        // An ordinary request timeout, not a real cancellation (see pollFriend).
+                        mayHaveOrphanedOutbox = true
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
+                        mayHaveOrphanedOutbox = true
+                    }
+                }
+            }.awaitAll()
+        }
     }
 
     /**
@@ -475,9 +575,16 @@ open class LocationClient(
      * false success. See https://github.com/danmarg/where/issues/343.
      */
     private suspend fun processOutbox(friendId: String) {
-        val outbox = store.getOutbox(friendId)
-        if (outbox.isEmpty()) return
+        // A removed friend's queue belongs to processOrphanedOutboxes alone (a caller here may be
+        // working from a friend list read before the removal); two senders could double-post.
+        if (store.getFriend(friendId) == null) return
+        deliverInOrder(friendId, store.getOutbox(friendId))
+    }
 
+    private suspend fun deliverInOrder(
+        friendId: String,
+        outbox: List<EncryptedOutboxMessage>,
+    ) {
         for (outboxMsg in outbox) {
             service.post(outboxMsg.token, outboxMsg.payload)
             store.removeFromOutbox(friendId, outboxMsg.msgId)

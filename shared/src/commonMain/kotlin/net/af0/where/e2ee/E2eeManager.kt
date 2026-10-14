@@ -281,12 +281,6 @@ class E2eeManager(
         }
     }
 
-    suspend fun deleteFriend(id: String) {
-        persistence.withFriendAndMetadataLock(id) { _, _ ->
-            PersistenceAction.Delete to Unit
-        }
-    }
-
     /**
      * Encrypts a message for a friend and atomically persists the advanced ratchet state.
      * This ensures that the sequence number is ALWAYS advanced locally before a network
@@ -298,44 +292,94 @@ class E2eeManager(
     ): Pair<EncryptedMessagePayload, SessionState> {
         return persistence.withFriendAndMetadataLock(friendId) { entry, metadata ->
             if (entry == null) throw Exception("Friend not found: $friendId")
+            val (updatedEntry, message) = encryptToOutbox(friendId, entry, metadata, payload)
+            PersistenceAction.Update(updatedEntry) to (message to updatedEntry.session)
+        }
+    }
 
-            val (nextSession, message, tokenToUse) = Session.encryptMessage(entry.session, payload)
+    /**
+     * Removes a friend, first queueing [farewell] (if non-null) to them. Their outbox - the
+     * farewell and anything still stuck from before - is kept rather than deleted with the
+     * friend, so LocationClient can deliver it later from the token and ciphertext alone.
+     * Stuck messages can't simply be dropped: one may be a DH-ratchet transition the peer
+     * needs to learn the token every later message (including the farewell) is posted to.
+     *
+     * If our KeyExchangeInit to them is still queued, pairing never got through: they're deleted
+     * outright, outbox included, with no farewell, so the init can't pair us after removal.
+     *
+     * A farewell that fails to encrypt (e.g. broken session state) is skipped rather than
+     * blocking the removal.
+     */
+    suspend fun deleteFriendKeepingOutbox(
+        id: String,
+        farewell: MessagePlaintext?,
+    ) {
+        persistence.withFriendAndMetadataLock(id) { entry, metadata ->
+            when {
+                entry == null -> PersistenceAction.None to Unit
+                persistence.getOutboxInternal(id).any { it.payload is KeyExchangeInitPayload } -> PersistenceAction.Delete to Unit
+                else -> {
+                    if (farewell != null) {
+                        try {
+                            encryptToOutbox(id, entry, metadata, farewell)
+                        } catch (e: CancellationException) {
+                            throw e
+                        } catch (e: Exception) {
+                            metadata.addDiagnosticEvent("removeFriend: farewell not sent: ${e.message}")
+                        }
+                    }
+                    PersistenceAction.DeleteKeepingOutbox to Unit
+                }
+            }
+        }
+    }
 
-            // Nonce safety check:
-            val seqAdvanced =
-                nextSession.sendSeq > entry.session.sendSeq ||
-                    nextSession.pn > entry.session.pn ||
-                    !nextSession.rootKey.constantTimeEquals(entry.session.rootKey)
-            check(seqAdvanced) { "Nonce safety violation: sequence number did not advance" }
+    suspend fun getOrphanedOutbox(): List<Pair<String, EncryptedOutboxMessage>> = persistence.getOrphanedOutbox()
 
-            val outboxMsg =
-                EncryptedOutboxMessage(
-                    token = tokenToUse.toHex(),
-                    payload = message,
-                )
+    suspend fun deleteOutboxByFriendId(friendId: String) = persistence.deleteOutboxByFriendId(friendId)
 
-            // lastSentTs is updated uniformly for every payload type, including Keepalive: both
-            // LocationClient.sendLocation's unresponsive-friend throttle and pollFriend's automated
-            // keepalive gate on "now - lastSentTs >= UNRESPONSIVE_SEND_INTERVAL_SECONDS", so whichever
-            // of the two fires resets the shared clock for the other. That's what keeps them mutually
-            // exclusive (a sent Location suppresses the next keepalive, and vice versa) and self-paced
-            // at a consistent ~5-minute cadence instead of firing on every poll cycle.
-            val updatedEntry =
-                entry.copy(
-                    session = nextSession,
-                    lastSentTs = currentTimeSeconds(),
-                )
+    private fun encryptToOutbox(
+        friendId: String,
+        entry: FriendEntry,
+        metadata: E2eeStore.MetadataScope,
+        payload: MessagePlaintext,
+    ): Pair<FriendEntry, EncryptedMessagePayload> {
+        val (nextSession, message, tokenToUse) = Session.encryptMessage(entry.session, payload)
 
-            metadata.insertOutbox(
-                msgId = outboxMsg.msgId,
-                friendId = friendId,
-                token = outboxMsg.token,
-                payloadBlob = E2eeStore.json.encodeToString(MailboxPayload.serializer(), outboxMsg.payload).encodeToByteArray(),
-                createdAt = outboxMsg.createdAt,
+        // Nonce safety check:
+        val seqAdvanced =
+            nextSession.sendSeq > entry.session.sendSeq ||
+                nextSession.pn > entry.session.pn ||
+                !nextSession.rootKey.constantTimeEquals(entry.session.rootKey)
+        check(seqAdvanced) { "Nonce safety violation: sequence number did not advance" }
+
+        val outboxMsg =
+            EncryptedOutboxMessage(
+                token = tokenToUse.toHex(),
+                payload = message,
             )
 
-            PersistenceAction.Update(updatedEntry) to (message to nextSession)
-        }
+        // lastSentTs is updated uniformly for every payload type, including Keepalive: both
+        // LocationClient.sendLocation's unresponsive-friend throttle and pollFriend's automated
+        // keepalive gate on "now - lastSentTs >= UNRESPONSIVE_SEND_INTERVAL_SECONDS", so whichever
+        // of the two fires resets the shared clock for the other. That's what keeps them mutually
+        // exclusive (a sent Location suppresses the next keepalive, and vice versa) and self-paced
+        // at a consistent ~5-minute cadence instead of firing on every poll cycle.
+        val updatedEntry =
+            entry.copy(
+                session = nextSession,
+                lastSentTs = currentTimeSeconds(),
+            )
+
+        metadata.insertOutbox(
+            msgId = outboxMsg.msgId,
+            friendId = friendId,
+            token = outboxMsg.token,
+            payloadBlob = E2eeStore.json.encodeToString(MailboxPayload.serializer(), outboxMsg.payload).encodeToByteArray(),
+            createdAt = outboxMsg.createdAt,
+        )
+
+        return updatedEntry to message
     }
 
     @Throws(Exception::class, SelfPairingException::class, InviteAlreadyAcceptedException::class, AuthenticationException::class)

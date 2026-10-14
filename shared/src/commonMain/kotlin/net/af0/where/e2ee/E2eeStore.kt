@@ -32,6 +32,9 @@ internal sealed class PersistenceAction {
 
     object Delete : PersistenceAction()
 
+    /** Deletes the friend but leaves its outbox rows for [E2eeStore.getOrphanedOutbox] to deliver. */
+    object DeleteKeepingOutbox : PersistenceAction()
+
     object None : PersistenceAction()
 }
 
@@ -127,7 +130,11 @@ internal class E2eeStore(
                             scope.stageFriendUpdate(friendId, saveFriendInternal(friendId, action.entry))
                         }
                         is PersistenceAction.Delete -> {
-                            deleteFriendInternal(friendId)
+                            deleteFriendInternal(friendId, keepOutbox = false)
+                            scope.stageFriendDeletion(friendId)
+                        }
+                        is PersistenceAction.DeleteKeepingOutbox -> {
+                            deleteFriendInternal(friendId, keepOutbox = true)
                             scope.stageFriendDeletion(friendId)
                         }
                         is PersistenceAction.None -> {}
@@ -236,9 +243,12 @@ internal class E2eeStore(
         return finalEntry
     }
 
-    private fun deleteFriendInternal(friendId: String) {
+    private fun deleteFriendInternal(
+        friendId: String,
+        keepOutbox: Boolean,
+    ) {
         database.friendsQueries.deleteFriend(friendId)
-        database.outboxQueries.deleteOutboxByFriendId(friendId)
+        if (!keepOutbox) database.outboxQueries.deleteOutboxByFriendId(friendId)
     }
 
     suspend fun insertOutbox(
@@ -297,15 +307,22 @@ internal class E2eeStore(
         }
 
     internal fun getOutboxInternal(friendId: String): List<EncryptedOutboxMessage> {
-        return database.outboxQueries.getOutboxForFriend(friendId).executeAsList().map { row ->
-            EncryptedOutboxMessage(
-                msgId = row.msgId,
-                token = row.token,
-                payload = json.decodeFromString(MailboxPayload.serializer(), row.payloadBlob.decodeToString()),
-                createdAt = row.createdAt,
-            )
-        }
+        return database.outboxQueries.getOutboxForFriend(friendId).executeAsList().map { it.toMessage() }
     }
+
+    /** Outbox rows whose friend has been removed, oldest first, as (friendId, message) pairs. */
+    suspend fun getOrphanedOutbox(): List<Pair<String, EncryptedOutboxMessage>> =
+        withStoreLock {
+            database.outboxQueries.getOrphanedOutbox().executeAsList().map { it.friendId to it.toMessage() }
+        }
+
+    private fun net.af0.where.db.Outbox.toMessage() =
+        EncryptedOutboxMessage(
+            msgId = msgId,
+            token = token,
+            payload = json.decodeFromString(MailboxPayload.serializer(), payloadBlob.decodeToString()),
+            createdAt = createdAt,
+        )
 
     private fun net.af0.where.db.Friends.toEntry() =
         FriendEntry(

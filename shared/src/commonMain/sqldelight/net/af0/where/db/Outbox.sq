@@ -24,7 +24,13 @@ deleteOutboxByFriendIdAndToken:
 DELETE FROM Outbox WHERE friendId = ? AND token = ?;
 
 getOutboxForFriend:
-SELECT * FROM Outbox WHERE friendId = ? ORDER BY createdAt ASC;
+-- rowid breaks createdAt (ms) ties in insertion order.
+SELECT * FROM Outbox WHERE friendId = ? ORDER BY createdAt ASC, rowid ASC;
+
+-- Rows left behind by a removed friend (see E2eeManager.deleteFriendKeepingOutbox): delivery
+-- needs only the token and the already-encrypted payload, not the session.
+getOrphanedOutbox:
+SELECT * FROM Outbox WHERE friendId NOT IN (SELECT id FROM Friends) ORDER BY createdAt ASC, rowid ASC;
 
 -- Cleanup
 deleteAll:

@@ -54,7 +54,7 @@ The following potential features are not planned and are out of scope of this pr
 - Multidevice support (i.e., allowing Alice to share her location with Bob from *n* devices without *n* separate pairings with Bob)
 - Device backup/upgrade/transfer
 
-This decision significantly simplifies the protocol (no persistent identities!) and the UX (no "which device am I sharing from?" or cross-device backup/transfer) while improving security, but it comes at a cost: if Alice loses or resets her phone, she must repair with Bob and Charlie. Similarly, if Bob deletes his connection with Alice, it is indistinguishable to Alice from Bob's phone being powered off; should they wish to resume sharing, they will have to re-pair their phones.
+This decision significantly simplifies the protocol (no persistent identities!) and the UX (no "which device am I sharing from?" or cross-device backup/transfer) while improving security, but it comes at a cost: if Alice loses or resets her phone, she must repair with Bob and Charlie. Similarly, if Bob deletes his connection with Alice while sharing with her, Alice sees only that Bob stopped sharing (§5.7.2) — the same signal as a pause — and then silence; should they wish to resume sharing, they will have to re-pair their phones.
 
 An additional out-of-scope feature is cloud-to-device push-notification-based latency optimization. Two possible implementations exist for this:
 
@@ -514,10 +514,12 @@ A `Location` carrying `stationary: true` is a signal that the sender does not ex
 
 #### 5.7.2 StoppedSharing — Semantics
 
-A `StoppedSharing` message signals the deliberate end of a share session (manual toggle-off, or expiry of a time-limited share — the protocol does not know which). Receivers SHOULD reflect a terminal state in their UI for some bounded window, then suppress the peer's pin entirely.
+A `StoppedSharing` message signals the deliberate end of a share session (manual toggle-off, per-friend pause, expiry of a time-limited share, or removing the friend — the protocol does not know which). Receivers SHOULD reflect a terminal state in their UI for some bounded window, then suppress the peer's pin entirely.
 
 **Critical sender rule: "stop sharing" means "stop sending Locations," not "stop talking."**
 After emitting `StoppedSharing`, the sender MUST continue its normal Keepalive cadence. The 7-day inactivity window (§10.2) tears down a peer's session entirely once `lastRecvTs` exceeds the timeout; if a sender both stopped Locations *and* stopped Keepalives, every recipient would silently expire the session within a week and lose all post-compromise security guarantees on the channel. Resuming sharing later would require fresh pairing. Keepalives also continue to drive the DH ratchet forward, preserving PCS during the quiet period.
+
+**Removing a friend.** If the sender is still sharing with the friend being removed, it encrypts a `StoppedSharing` to them and then deletes the session in one transaction, keeping that friend's outbox. Outbox rows need only the routing token and ciphertext, so they are delivered after the session is gone, in order (a stuck earlier message may be the DH-ratchet transition the peer needs to find the later token), and dropped undelivered once older than the server's 7-day retention. Its timestamp is set after the last message sent to that friend, so a same-second Location in the same batch can't override it. A friend whose `KeyExchangeInit` is still queued (the scanner never got it through) is deleted outbox and all, with no `StoppedSharing`, so the init can't pair the two after removal. Once the init has been posted the inviter may already have paired, so the farewell is sent as usual. No Keepalives follow, so the peer's session expires per §10.2.
 
 #### 5.7.3 Forward-Compatibility — Unknown Message Types
 

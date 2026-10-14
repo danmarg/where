@@ -21,6 +21,8 @@ protocol LocationClientProtocol: AnyObject, Sendable {
     func sendLocationToFriend(friendId: String, lat: Double, lng: Double, stationary: Bool) async throws
     func sendStoppedSharing(pausedFriendIds: Set<String>) async throws
     func sendStoppedSharingToFriend(friendId: String) async throws
+    func removeFriend(friendId: String, pausedFriendIds: Set<String>, sharingEnabled: Bool) async throws
+    func processOrphanedOutboxes() async throws
     func poll(isForeground: Bool, pausedFriendIds: Set<String>, sharingEnabled: Bool) async throws -> [Shared.UserLocation]
     func pollPendingInvites() async throws -> [Shared.PendingInviteResult]
     func postKeyExchangeInit(friendId: String, qr: Shared.QrPayload, initPayload: Shared.KeyExchangeInitPayload) async throws
@@ -1087,13 +1089,21 @@ final class LocationSyncService: ObservableObject {
 
     func removeFriend(id: String) async {
         do {
-            try await e2eeManager.deleteFriend(id: id)
+            // Queues a StoppedSharing (if we were sharing with them) and deletes them locally;
+            // it's delivered below, after the UI has updated, or by a later poll.
+            try await locationClient.removeFriend(friendId: id, pausedFriendIds: effectivelyPausedIds(), sharingEnabled: isSharingLocation)
             repo.pausedFriendIds.remove(id)
             repo.friends = try await e2eeManager.listFriends()
             updateVisibleUsers()
             locationProvider.sharingStateChanged()
         } catch {
             logger.error("Failed to remove friend: \(error.localizedDescription)")
+            return
+        }
+        do {
+            try await locationClient.processOrphanedOutboxes()
+        } catch {
+            logger.warning("processOrphanedOutboxes after removing a friend failed: \(error.localizedDescription)")
         }
     }
 
