@@ -11,6 +11,7 @@ PROFILE_NAME    = "Where AppStore"
 SCHEME          = "Where"
 BUNDLE_ID       = "net.af0.WhereApp"
 TEAM_ID         = "5PM2V9LTHC"
+REPO_ROOT       = File.expand_path("../..", __dir__)
 
 # App Store Connect API key file. Create one at
 # https://appstoreconnect.apple.com/access/integrations/api and drop the
@@ -61,8 +62,10 @@ platform :ios do
   lane :beta do
     api_key = asc_api_key
     prepare_signing
-    bump_project_yml_build_number
-    build_release_ipa
+    build_number = next_build_number(api_key: api_key)
+    generate_project
+    build_shared_framework
+    build_release_ipa(build_number: build_number)
     upload_to_testflight(
       api_key: api_key,
       changelog: release_notes,
@@ -74,8 +77,10 @@ platform :ios do
   lane :release do
     api_key = asc_api_key
     prepare_signing
-    bump_project_yml_build_number
-    build_release_ipa
+    build_number = next_build_number(api_key: api_key)
+    generate_project
+    build_shared_framework
+    build_release_ipa(build_number: build_number)
     upload_to_app_store(
       api_key: api_key,
       # Not skip_metadata: true - this uploads fastlane/metadata/en-US/release_notes.txt (the
@@ -100,24 +105,42 @@ platform :ios do
     File.read(path).strip
   end
 
-  # project.yml (xcodegen's source of truth) is checked in with a static
-  # CURRENT_PROJECT_VERSION. Bumping only the generated .xcodeproj (e.g. via
-  # increment_build_number) doesn't stick: the next `xcodegen generate` —
-  # manual, or via run-ios.sh — regenerates the project from project.yml and
-  # silently resets the build number, reproducing App Store Connect's
-  # "must be higher than the previously uploaded version" error. Bump
-  # project.yml itself instead, then regenerate so the .xcodeproj matches.
-  private_lane :bump_project_yml_build_number do
-    project_yml = File.expand_path("../project.yml", __dir__)
-    contents = File.read(project_yml)
-    current = contents[/^\s*CURRENT_PROJECT_VERSION:\s*(\d+)/, 1]
-    UI.user_error!("Couldn't find CURRENT_PROJECT_VERSION in #{project_yml}") unless current
-    next_version = current.to_i + 1
-    updated = contents.sub(/^(\s*CURRENT_PROJECT_VERSION:\s*)\d+/, "\\1#{next_version}")
-    File.write(project_yml, updated)
-    UI.success("Bumped CURRENT_PROJECT_VERSION: #{current} -> #{next_version}")
-    ios_dir = File.expand_path("..", __dir__)
-    sh("xcodegen generate --spec \"#{project_yml}\" --project \"#{ios_dir}\"")
+  # One above the latest build App Store Connect has (or project.yml's, if higher), passed to
+  # the archive as a build setting rather than written to project.yml. Bumping a checked-in
+  # number let an upload come out lower than one already on TestFlight whenever the bump hadn't
+  # been committed, and left every deploy with an uncommitted change. "Latest" is the most
+  # recently uploaded build, which this lane always numbers above everything before it.
+  private_lane :next_build_number do |options|
+    project_yml = File.read(File.join(REPO_ROOT, "ios/project.yml"))
+    checked_in = project_yml[/^\s*CURRENT_PROJECT_VERSION:\s*(\d+)/, 1]
+    UI.user_error!("Couldn't find CURRENT_PROJECT_VERSION in ios/project.yml") unless checked_in
+    checked_in = checked_in.to_i
+    uploaded = latest_testflight_build_number(
+      api_key: options[:api_key],
+      app_identifier: BUNDLE_ID,
+      initial_build_number: 0,
+    ).to_i
+    number = [checked_in, uploaded].max + 1
+    UI.success("Build number #{number} (App Store Connect: #{uploaded}, project.yml: #{checked_in})")
+    number
+  end
+
+  private_lane :generate_project do
+    ios_dir = File.join(REPO_ROOT, "ios")
+    sh("xcodegen generate --spec \"#{ios_dir}/project.yml\" --project \"#{ios_dir}\"")
+  end
+
+  # Rebuilds the Release XCFramework from scratch so the archive can't link a stale one (a
+  # TestFlight build once shipped an old Shared framework). Xcode's pre-build script builds it
+  # too, but only as an incremental Gradle run.
+  private_lane :build_shared_framework do
+    started = Time.now
+    xcframework = File.join(REPO_ROOT, "shared/build/XCFrameworks/release/Shared.xcframework")
+    FileUtils.rm_rf(File.join(REPO_ROOT, "shared/build/XCFrameworks"))
+    sh("cd \"#{REPO_ROOT}\" && ./gradlew :shared:assembleSharedReleaseXCFramework")
+    unless File.directory?(xcframework) && File.mtime(xcframework) >= started
+      UI.user_error!("#{xcframework} wasn't rebuilt")
+    end
   end
 
   private_lane :prepare_signing do
@@ -156,11 +179,12 @@ platform :ios do
     )
   end
 
-  private_lane :build_release_ipa do
+  private_lane :build_release_ipa do |options|
     build_app(
       project: "Where.xcodeproj",
       scheme: SCHEME,
       configuration: "Release",
+      xcargs: "CURRENT_PROJECT_VERSION=#{options[:build_number]}",
       export_method: "app-store",
       output_directory: "build/fastlane",
       clean: true,

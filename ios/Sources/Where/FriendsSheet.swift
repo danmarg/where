@@ -17,6 +17,15 @@ struct FriendsSheet: View {
     let onZoomTo: (String) -> Void
     var diagnosticLog: [String] = []
 
+    /// "1.34 (64) · <commit>", to tie what's installed to its source (see project.yml).
+    static var buildDescription: String {
+        let info = Bundle.main.infoDictionary ?? [:]
+        let version = info["CFBundleShortVersionString"] as? String ?? "?"
+        let build = info["CFBundleVersion"] as? String ?? "?"
+        let commit = info["WhereGitCommit"] as? String ?? "unknown"
+        return "\(version) (\(build)) · \(commit)"
+    }
+
     @State private var friendToRemove: Shared.FriendEntry? = nil
     @State private var friendToRename: Shared.FriendEntry? = nil
     @State private var newFriendName: String = ""
@@ -147,6 +156,10 @@ struct FriendsSheet: View {
                             .font(.footnote)
                             .foregroundStyle(.secondary)
                     }
+                } footer: {
+                    Text(Self.buildDescription)
+                        .font(.caption2.monospaced())
+                        .textSelection(.enabled)
                 }
             }
             .navigationTitle(MR.strings().friends.localized())

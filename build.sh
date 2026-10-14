@@ -98,6 +98,17 @@ done
 # Deploy mode: hand off to fastlane and skip the manual build pipeline below.
 # fastlane runs its own gradle/xcodebuild invocations and handles signing.
 if [[ -n "$DEPLOY_IOS" || -n "$DEPLOY_ANDROID" ]]; then
+  # Every uploaded iOS build should be a commit (the app shows it under the Friends list); with
+  # local edits it would be marked -dirty and its source would be lost. Store metadata (release
+  # notes, edited just before deploying) isn't in the binary. ALLOW_DIRTY=1 overrides.
+  if [[ -n "$DEPLOY_IOS" && -z "${ALLOW_DIRTY:-}" ]]; then
+    dirty=$(git status --porcelain --untracked-files=no -- . ':!ios/fastlane/metadata')
+    if [[ -n "$dirty" ]]; then
+      echo "Uncommitted changes; commit them first (or set ALLOW_DIRTY=1):"
+      echo "$dirty"
+      exit 1
+    fi
+  fi
   if [[ -n "$DEPLOY_ANDROID" ]]; then
     case "$DEPLOY_ANDROID" in
       internal)            ANDROID_LANE="deploy" ;;

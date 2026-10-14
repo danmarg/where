@@ -2,8 +2,8 @@ import Foundation
 
 /// The mailbox server URL.
 ///
-/// - `WHERE_SERVER_HTTP_URL` in the environment (set it in the Xcode scheme) wins, e.g. a LAN
-///   address for a Debug build on a real device.
+/// - `WHERE_SERVER_HTTP_URL` in the environment wins, e.g. a LAN address for a Debug build on a
+///   real device. The shared scheme passes it from `ios/Local.xcconfig` (see project.yml).
 /// - Debug builds on the simulator default to a local server (`./scripts/run-server.sh`).
 /// - Everything else uses production.
 enum ServerConfig {
