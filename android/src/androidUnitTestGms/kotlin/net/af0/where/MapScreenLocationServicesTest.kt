@@ -4,7 +4,6 @@ import android.content.Context
 import android.content.Intent
 import android.location.LocationManager
 import androidx.compose.ui.test.assertIsEnabled
-import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
@@ -37,12 +36,13 @@ class MapScreenLocationServicesTest {
         shadowOf(locationManager).setLocationEnabled(enabled)
     }
 
-    private fun grantLocationPermission() {
+    private fun grantLocationPermission(background: Boolean = false) {
         val context: android.app.Application = ApplicationProvider.getApplicationContext()
         shadowOf(context).grantPermissions(
             android.Manifest.permission.ACCESS_FINE_LOCATION,
             android.Manifest.permission.ACCESS_COARSE_LOCATION,
         )
+        if (background) shadowOf(context).grantPermissions(android.Manifest.permission.ACCESS_BACKGROUND_LOCATION)
     }
 
     private fun setContent(
@@ -91,8 +91,24 @@ class MapScreenLocationServicesTest {
         // The warning must not replace the rest of the map UI (friends button, sharing
         // toggle) — only the own-location state is misleading, not friend-related UI.
         composeTestRule
-            .onNodeWithText(StringDesc.Resource(MR.strings.sharing).toString(context))
+            .onNodeWithText(StringDesc.Resource(MR.strings.sharing_off).toString(context))
             .assertExists()
+    }
+
+    @Test
+    fun testMapScreen_LocationServicesOff_PillOpensLocationSettings() {
+        grantLocationPermission()
+        setLocationServicesEnabled(false)
+        val calls = mutableListOf<Boolean>()
+        setContent(isSharing = true, onSetSharing = { calls += it })
+        composeTestRule.waitForIdle()
+
+        composeTestRule.onNodeWithText(text(MR.strings.sharing_off)).performClick()
+        composeTestRule.waitForIdle()
+
+        val app: android.app.Application = ApplicationProvider.getApplicationContext()
+        assertEquals(android.provider.Settings.ACTION_LOCATION_SOURCE_SETTINGS, shadowOf(app).nextStartedActivity?.action)
+        assertTrue(calls.isEmpty(), "the toggle is left alone so sharing resumes, got $calls")
     }
 
     @Test
@@ -130,27 +146,31 @@ class MapScreenLocationServicesTest {
         composeTestRule.onNodeWithText(text(MR.strings.grant_permission)).assertExists()
         // Friends/invite UI is still there (the friends button shows the count).
         composeTestRule.onNodeWithText("0").assertExists()
-        // A stored "sharing on" is shown as paused and cannot be toggled.
-        composeTestRule.onNodeWithText(text(MR.strings.paused)).assertExists().assertIsNotEnabled()
+        // A stored "sharing on" is shown as off.
+        composeTestRule.onNodeWithText(text(MR.strings.sharing_off)).assertExists()
         composeTestRule.onNodeWithText(text(MR.strings.sharing)).assertDoesNotExist()
     }
 
     @Test
-    fun testMapScreen_WithoutPermission_SharingToggleDoesNothing() {
+    fun testMapScreen_WithoutPermission_PillOpensSettingsWithoutTouchingTheToggle() {
+        val app: android.app.Application = ApplicationProvider.getApplicationContext()
+        app.getSharedPreferences("where_prefs", Context.MODE_PRIVATE)
+            .edit().putBoolean("location_permission_requested", true).commit()
         setLocationServicesEnabled(true)
         val calls = mutableListOf<Boolean>()
         setContent(isSharing = false, onSetSharing = { calls += it })
         composeTestRule.waitForIdle()
 
-        composeTestRule.onNodeWithText(text(MR.strings.paused)).performClick()
+        composeTestRule.onNodeWithText(text(MR.strings.sharing_off)).performClick()
         composeTestRule.waitForIdle()
 
-        assertTrue(calls.isEmpty(), "disabled toggle must not enable sharing, got $calls")
+        assertEquals(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS, shadowOf(app).nextStartedActivity?.action)
+        assertTrue(calls.isEmpty(), "permission is the fix, not the toggle, got $calls")
     }
 
     @Test
     fun testMapScreen_WithPermission_NoBannerAndToggleWorks() {
-        grantLocationPermission()
+        grantLocationPermission(background = true)
         setLocationServicesEnabled(true)
         val calls = mutableListOf<Boolean>()
         setContent(isSharing = true, onSetSharing = { calls += it })
@@ -158,6 +178,20 @@ class MapScreenLocationServicesTest {
 
         composeTestRule.onNodeWithText(text(MR.strings.location_permission_needed_to_share)).assertDoesNotExist()
         composeTestRule.onNodeWithText(text(MR.strings.sharing)).assertExists().assertIsEnabled().performClick()
+        composeTestRule.waitForIdle()
+
+        assertEquals(listOf(false), calls)
+    }
+
+    @Test
+    fun testMapScreen_WithoutBackgroundLocation_SharingIsLimitedAndTapStops() {
+        grantLocationPermission()
+        setLocationServicesEnabled(true)
+        val calls = mutableListOf<Boolean>()
+        setContent(isSharing = true, onSetSharing = { calls += it })
+        composeTestRule.waitForIdle()
+
+        composeTestRule.onNodeWithText(text(MR.strings.sharing_limited)).performClick()
         composeTestRule.waitForIdle()
 
         assertEquals(listOf(false), calls)

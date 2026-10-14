@@ -48,21 +48,47 @@ internal fun Context.openAppSettings() {
 }
 
 /**
- * What the master sharing pill shows. Without background location ("while in use"), sharing
- * continues only while the foreground service started from the app keeps running - a restart from
- * the background (process death, reboot) gets no location - so it's shown as limited.
+ * What the master sharing pill shows. Without location permission or with location services off
+ * nothing can be shared, whatever the toggle says. Without background location ("while in use"),
+ * sharing continues only while the foreground service started from the app keeps running - a
+ * restart from the background (process death, reboot) gets no location - so it's shown as limited.
  */
-internal enum class SharingPill { PAUSED, SHARING_LIMITED, SHARING }
+internal enum class SharingPill { SHARING_OFF, PAUSED, SHARING_LIMITED, SHARING }
 
 internal fun sharingPill(
     isSharing: Boolean,
     hasLocationPermission: Boolean,
+    locationServicesEnabled: Boolean,
     hasBackgroundLocationPermission: Boolean,
 ): SharingPill =
     when {
-        !isSharing || !hasLocationPermission -> SharingPill.PAUSED
+        !hasLocationPermission || !locationServicesEnabled -> SharingPill.SHARING_OFF
+        !isSharing -> SharingPill.PAUSED
         !hasBackgroundLocationPermission -> SharingPill.SHARING_LIMITED
         else -> SharingPill.SHARING
+    }
+
+/**
+ * What tapping the sharing pill does. Sharing - limited or not - it stops. Not sharing, it starts,
+ * and without background location also asks for it (behind the Play-required disclosure). When
+ * nothing can be shared it goes to the fix and leaves the toggle alone, so sharing resumes by
+ * itself once that's done.
+ */
+internal enum class SharingTap { STOP, START, START_AND_ASK_BACKGROUND, REQUEST_PERMISSION, OPEN_APP_SETTINGS, OPEN_LOCATION_SETTINGS }
+
+internal fun sharingTap(
+    isSharing: Boolean,
+    hasLocationPermission: Boolean,
+    permissionPermanentlyDenied: Boolean,
+    locationServicesEnabled: Boolean,
+    hasBackgroundLocationPermission: Boolean,
+): SharingTap =
+    when {
+        !hasLocationPermission -> if (permissionPermanentlyDenied) SharingTap.OPEN_APP_SETTINGS else SharingTap.REQUEST_PERMISSION
+        !locationServicesEnabled -> SharingTap.OPEN_LOCATION_SETTINGS
+        isSharing -> SharingTap.STOP
+        !hasBackgroundLocationPermission -> SharingTap.START_AND_ASK_BACKGROUND
+        else -> SharingTap.START
     }
 
 @OptIn(ExperimentalPermissionsApi::class, ExperimentalMaterial3Api::class)
@@ -117,7 +143,6 @@ fun MapScreen(
         }
     val backgroundRationaleContext = LocalContext.current
     var showBackgroundRationale by remember { mutableStateOf(false) }
-    var showSharingMenu by remember { mutableStateOf(false) }
 
     // After a second denial Android silently ignores the request, so go to the app's settings.
     fun requestBackgroundLocationOrOpenSettings() {
@@ -311,68 +336,72 @@ fun MapScreen(
             horizontalArrangement = Arrangement.spacedBy(8.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            // Master sharing toggle. Per-friend timers live in FriendsSheet.
-            // Sharing needs permission: without it we're receive-only and the toggle is disabled
-            // (the banner above is the way to grant it).
+            // Master sharing toggle. Per-friend timers live in FriendsSheet. Without permission
+            // we're receive-only; the pill says sharing is off and leads to the fix.
+            val hasBackgroundLocationPermission = backgroundLocationPermission?.status?.isGranted ?: true
             val pill =
                 sharingPill(
                     isSharing = isSharing,
                     hasLocationPermission = hasLocationPermission,
-                    hasBackgroundLocationPermission = backgroundLocationPermission?.status?.isGranted ?: true,
+                    locationServicesEnabled = locationServicesEnabled,
+                    hasBackgroundLocationPermission = hasBackgroundLocationPermission,
                 )
             val sharingLabel =
                 when (pill) {
+                    SharingPill.SHARING_OFF -> stringResource(MR.strings.sharing_off)
                     SharingPill.PAUSED -> stringResource(MR.strings.paused)
                     SharingPill.SHARING_LIMITED -> stringResource(MR.strings.sharing_limited)
                     SharingPill.SHARING -> stringResource(MR.strings.sharing)
                 }
 
-            Box {
-                FilledTonalButton(
-                    // Limited offers the background upgrade alongside stopping.
-                    onClick = { if (pill == SharingPill.SHARING_LIMITED) showSharingMenu = true else onSetSharing(!isSharing) },
-                    enabled = hasLocationPermission,
-                    colors =
-                        ButtonDefaults.filledTonalButtonColors(
-                            containerColor =
-                                when (pill) {
-                                    SharingPill.PAUSED -> Color(0xFF555555)
-                                    SharingPill.SHARING_LIMITED -> Color(0xFFE65100)
-                                    SharingPill.SHARING -> Color(0xFF1565C0)
-                                },
-                            contentColor = Color.White,
-                            disabledContainerColor = Color(0xFF555555).copy(alpha = 0.5f),
-                            disabledContentColor = Color.White.copy(alpha = 0.6f),
-                        ),
-                ) {
-                    Icon(
-                        if (pill != SharingPill.PAUSED) Icons.Default.LocationOn else Icons.Default.LocationOff,
-                        contentDescription = null,
-                        modifier = Modifier.size(16.dp),
-                    )
-                    Spacer(Modifier.width(4.dp))
-                    Text(
-                        sharingLabel,
-                        style = MaterialTheme.typography.labelMedium,
-                    )
-                }
-                DropdownMenu(expanded = showSharingMenu, onDismissRequest = { showSharingMenu = false }) {
-                    DropdownMenuItem(
-                        text = { Text(stringResource(MR.strings.allow_background_location)) },
-                        onClick = {
-                            showSharingMenu = false
+            FilledTonalButton(
+                onClick = {
+                    val tap =
+                        sharingTap(
+                            isSharing = isSharing,
+                            hasLocationPermission = hasLocationPermission,
+                            permissionPermanentlyDenied = permanentlyDenied,
+                            locationServicesEnabled = locationServicesEnabled,
+                            hasBackgroundLocationPermission = hasBackgroundLocationPermission,
+                        )
+                    when (tap) {
+                        SharingTap.STOP -> onSetSharing(false)
+                        SharingTap.START -> onSetSharing(true)
+                        SharingTap.START_AND_ASK_BACKGROUND -> {
+                            onSetSharing(true)
                             // The disclosure must come right before the request (Play policy).
                             showBackgroundRationale = true
-                        },
-                    )
-                    DropdownMenuItem(
-                        text = { Text(stringResource(MR.strings.stop_sharing)) },
-                        onClick = {
-                            showSharingMenu = false
-                            onSetSharing(false)
-                        },
-                    )
-                }
+                        }
+                        SharingTap.REQUEST_PERMISSION -> locationPermissions.launchMultiplePermissionRequest()
+                        SharingTap.OPEN_APP_SETTINGS -> context.openAppSettings()
+                        SharingTap.OPEN_LOCATION_SETTINGS -> context.startActivity(Intent(Settings.ACTION_LOCATION_SOURCE_SETTINGS))
+                    }
+                },
+                colors =
+                    ButtonDefaults.filledTonalButtonColors(
+                        containerColor =
+                            when (pill) {
+                                SharingPill.SHARING_OFF -> Color(0xFFB71C1C)
+                                SharingPill.PAUSED -> Color(0xFF555555)
+                                SharingPill.SHARING_LIMITED -> Color(0xFFE65100)
+                                SharingPill.SHARING -> Color(0xFF1565C0)
+                            },
+                        contentColor = Color.White,
+                    ),
+            ) {
+                Icon(
+                    when (pill) {
+                        SharingPill.SHARING, SharingPill.SHARING_LIMITED -> Icons.Default.LocationOn
+                        SharingPill.SHARING_OFF, SharingPill.PAUSED -> Icons.Default.LocationOff
+                    },
+                    contentDescription = null,
+                    modifier = Modifier.size(16.dp),
+                )
+                Spacer(Modifier.width(4.dp))
+                Text(
+                    sharingLabel,
+                    style = MaterialTheme.typography.labelMedium,
+                )
             }
 
             // Your Name chip + Connection status
