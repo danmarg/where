@@ -82,18 +82,34 @@ struct ContentView: View {
 
     /// Sharing on When-In-Use is limited, and tapping the pill then stops rather than fixes it, so
     /// the background prompt is offered on its own once - like Android's disclosure after the
-    /// first grant. After that it comes up only when sharing is started.
-    nonisolated static func shouldOfferBackgroundOnce(authorization: CLAuthorizationStatus, isSharing: Bool, alreadyOffered: Bool) -> Bool {
-        authorization == .authorizedWhenInUse && isSharing && !alreadyOffered
+    /// first grant. After that it comes up only when sharing is started. SwiftUI drops an alert
+    /// presented over another modal (e.g. the naming alert on a first launch from an invite link),
+    /// so it waits for those to close and only counts as offered once it's answered.
+    nonisolated static func shouldOfferBackgroundOnce(
+        authorization: CLAuthorizationStatus,
+        isSharing: Bool,
+        alreadyOffered: Bool,
+        otherModalShowing: Bool
+    ) -> Bool {
+        authorization == .authorizedWhenInUse && isSharing && !alreadyOffered && !otherModalShowing
+    }
+
+    private var otherModalShowing: Bool {
+        showFriends || showScanner || showErrorAlert || showPrecisePrompt
+            || syncService.isInviteSheetShowing
+            || syncService.repo.pendingQrForNaming != nil
+            || syncService.repo.pendingInitPayload != nil
+            || syncService.inviteError != nil
+            || !syncService.discardedSessionNames.isEmpty
     }
 
     private func offerBackgroundOnceIfLimited() {
-        guard Self.shouldOfferBackgroundOnce(
+        guard !showBackgroundPrompt, Self.shouldOfferBackgroundOnce(
             authorization: locationManager.authorizationStatus,
             isSharing: syncService.isSharingLocation,
-            alreadyOffered: backgroundPromptOffered
+            alreadyOffered: backgroundPromptOffered,
+            otherModalShowing: otherModalShowing
         ) else { return }
-        backgroundPromptOffered = true
         showBackgroundPrompt = true
     }
 
@@ -295,6 +311,9 @@ struct ContentView: View {
         .onChange(of: locationManager.authorizationStatus) { _, _ in
             offerBackgroundOnceIfLimited()
         }
+        .onChange(of: otherModalShowing) { _, showing in
+            if !showing { offerBackgroundOnceIfLimited() }
+        }
         .onChange(of: scenePhase) { _, newPhase in
             if newPhase != .active { systemPromptAppeared = true }
             handlePhaseChange(newPhase)
@@ -365,8 +384,11 @@ struct ContentView: View {
         // Starting sharing while it would be limited explains the fix first and can be skipped,
         // so a deliberate When-In-Use choice isn't sent to Settings on every start.
         .alert(MR.strings().background_location_title.localized(), isPresented: $showBackgroundPrompt) {
-            Button(MR.strings().allow.localized()) { requestAlwaysOrOpenSettings() }
-            Button(MR.strings().skip.localized(), role: .cancel) { }
+            Button(MR.strings().allow.localized()) {
+                backgroundPromptOffered = true
+                requestAlwaysOrOpenSettings()
+            }
+            Button(MR.strings().skip.localized(), role: .cancel) { backgroundPromptOffered = true }
         } message: {
             Text(MR.strings().background_location_message.localized())
         }
