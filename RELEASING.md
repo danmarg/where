@@ -59,7 +59,9 @@ These are pure track promotions (no new binary, no metadata/changelog re-upload)
 
 This is `android fastlane release_github_binaries`. It requires a clean tree (run it right after
 step 2's push, before making other changes) and:
-- Builds signed `standardGms` (universal) and `standardFdroid` (per-ABI) release APKs.
+- Runs `./gradlew clean`, then builds signed `standardGms` (universal) and `standardFdroid`
+  (per-ABI) release APKs. The clean matters: leftover incremental output changes the dex, and
+  F-Droid's reproducible-build check then rejects the release.
 - Tags `HEAD` as `v<versionName>` and pushes the tag.
 - Creates a GitHub Release at that tag and uploads all the APKs as assets.
 
