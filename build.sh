@@ -124,6 +124,12 @@ if [[ -n "$DEPLOY_IOS" || -n "$DEPLOY_ANDROID" ]]; then
       export KEYSTORE_PASSWORD
       export KEY_PASSWORD=$KEYSTORE_PASSWORD
     fi
+    # F-Droid rebuilds the tag from a fresh checkout and requires our APKs to match byte for
+    # byte. Incremental build output left over in this checkout changes R8's input and so the
+    # dex (v2026.10.09.1 and .10.14.2 failed verification this way); a clean build matches.
+    if [[ "$DEPLOY_ANDROID" == "github-binaries" ]]; then
+      ./gradlew clean
+    fi
     (cd android && bundle exec fastlane "$ANDROID_LANE")
     echo "✓ Android deploy complete"
     echo ""
