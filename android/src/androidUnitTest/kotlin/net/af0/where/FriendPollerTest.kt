@@ -20,6 +20,7 @@ import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
 import net.af0.where.e2ee.ConnectionStatus
 import net.af0.where.e2ee.E2eeManager
+import net.af0.where.e2ee.InvitePublicKey
 import net.af0.where.e2ee.KeyExchangeInitPayload
 import net.af0.where.e2ee.LocationClient
 import net.af0.where.e2ee.PendingInviteResult
@@ -85,17 +86,19 @@ class FriendPollerTest {
         Dispatchers.resetMain()
     }
 
-    private fun inviteWith(ekPub: ByteArray): PendingInviteView {
+    private fun inviteWith(ekPub: InvitePublicKey): PendingInviteView {
         val qr = mockk<QrPayload>(relaxed = true)
         every { qr.ekPub } returns ekPub
         return PendingInviteView(qrPayload = qr, createdAt = 0L)
     }
 
+    private fun key(tag: Int) = InvitePublicKey(ByteArray(32) { tag.toByte() })
+
     private fun result(
-        inviteEk: ByteArray,
+        inviteEk: InvitePublicKey,
         multiple: Boolean = false,
         error: String? = null,
-    ) = PendingInviteResult(mockk<KeyExchangeInitPayload>(relaxed = true), byteArrayOf(9), inviteEk, multiple, error)
+    ) = PendingInviteResult(mockk<KeyExchangeInitPayload>(relaxed = true), inviteEk, multiple, error)
 
     @Test
     fun poll_forwardsFriendUpdatesToUiAndStore() =
@@ -124,7 +127,7 @@ class FriendPollerTest {
     @Test
     fun poll_refreshesFriendAndInviteLists() =
         runTest {
-            val invites = listOf(inviteWith(byteArrayOf(1)))
+            val invites = listOf(inviteWith(key(1)))
             coEvery { manager.listPendingInvites() } returns invites
 
             poller.poll()
@@ -135,7 +138,7 @@ class FriendPollerTest {
     @Test
     fun poll_matchingHandshake_setsPendingInitAndDismissesSheet() =
         runTest {
-            val ek = byteArrayOf(1, 2, 3)
+            val ek = key(1)
             val r = result(ek, multiple = true)
             coEvery { client.pollPendingInvites() } returns listOf(r)
             coEvery { manager.listPendingInvites() } returns listOf(inviteWith(ek))
@@ -144,7 +147,7 @@ class FriendPollerTest {
             poller.poll()
 
             assertEquals(r.payload, source.pendingInitPayload.value)
-            assertTrue(source.pendingInitAliceEkPub.value!!.contentEquals(ek))
+            assertTrue(source.pendingInitAliceEkPub.value == ek)
             assertFalse(ui.isInviteSheetShowing.value)
             assertTrue(ui.multipleScansDetected.value)
         }
@@ -152,8 +155,8 @@ class FriendPollerTest {
     @Test
     fun poll_handshakeForClearedInvite_isIgnored() =
         runTest {
-            coEvery { client.pollPendingInvites() } returns listOf(result(byteArrayOf(1, 2, 3)))
-            coEvery { manager.listPendingInvites() } returns listOf(inviteWith(byteArrayOf(7, 7, 7)))
+            coEvery { client.pollPendingInvites() } returns listOf(result(key(1)))
+            coEvery { manager.listPendingInvites() } returns listOf(inviteWith(key(7)))
 
             poller.poll()
 
@@ -163,7 +166,7 @@ class FriendPollerTest {
     @Test
     fun poll_pairingError_surfacesErrorWithoutPendingInit() =
         runTest {
-            val ek = byteArrayOf(1, 2, 3)
+            val ek = key(1)
             coEvery { client.pollPendingInvites() } returns listOf(result(ek, error = "bad handshake"))
             coEvery { manager.listPendingInvites() } returns listOf(inviteWith(ek))
             ui.setInviteSheetShowing(true)
@@ -181,7 +184,7 @@ class FriendPollerTest {
     @Test
     fun poll_existingNamingDialog_isNotOverwritten() =
         runTest {
-            val ek = byteArrayOf(1, 2, 3)
+            val ek = key(1)
             val existing = mockk<KeyExchangeInitPayload>(relaxed = true)
             source.onPendingInit(existing, ek)
             coEvery { client.pollPendingInvites() } returns listOf(result(ek))
@@ -211,7 +214,7 @@ class FriendPollerTest {
     @Test
     fun poll_handshakeErrorThenCleanCycle_clearsError() =
         runTest {
-            val ek = byteArrayOf(1, 2, 3)
+            val ek = key(1)
             coEvery { client.pollPendingInvites() } returns listOf(result(ek, error = "bad handshake")) andThen emptyList()
             coEvery { manager.listPendingInvites() } returns listOf(inviteWith(ek))
 
@@ -329,7 +332,7 @@ class FriendPollerTest {
 
     @Test
     fun isRapidPolling_freshPendingInitIsBounded() {
-        source.onPendingInit(mockk<KeyExchangeInitPayload>(relaxed = true), byteArrayOf(1))
+        source.onPendingInit(mockk<KeyExchangeInitPayload>(relaxed = true), key(1))
         assertTrue(poller.isRapidPolling())
 
         now += FriendPoller.PENDING_INIT_RAPID_TIMEOUT_MS + 1

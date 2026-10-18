@@ -73,18 +73,31 @@ internal class E2eeStore(
     }
 
     private fun loadFromDb() {
+        // A row that no longer decodes (e.g. a key of the wrong length) is skipped, not fatal:
+        // failing here would fail the whole store, and with it every other friend. The row stays
+        // in the database untouched.
+        val skipped = mutableListOf<String>()
         database.friendsQueries.getAllFriends().executeAsList().forEach { f ->
-            val entry = f.toEntry()
-            friends[f.id] = entry
+            try {
+                friends[f.id] = f.toEntry()
+            } catch (e: Exception) {
+                skipped += "friend ${f.id.take(8)} (${e::class.simpleName})"
+            }
         }
         database.invitesQueries.getAllPendingInvites().executeAsList().forEach { p ->
-            pendingInvites.add(p.toInvite())
+            try {
+                pendingInvites.add(p.toInvite())
+            } catch (e: Exception) {
+                skipped += "invite (${e::class.simpleName})"
+            }
         }
         _diagnosticLog.value =
             database.diagnosticEventsQueries
                 .getRecentEvents(MAX_DIAGNOSTIC_EVENTS.toLong())
                 .executeAsList()
                 .map { "${TimeSource.formatLocalTime(it.ts)} ${it.message}" }
+        // Only the exception type: a decoding error's message can quote the stored JSON, keys included.
+        skipped.forEach { addDiagnosticEvent("load: skipped unreadable $it") }
     }
 
     private fun reloadFromDb() {
@@ -350,7 +363,7 @@ internal class E2eeStore(
             qrPayload =
                 QrPayload(
                     suggestedName = suggestedName,
-                    ekPub = ekPub,
+                    ekPub = InvitePublicKey(ekPub),
                     discoverySecret = DiscoverySecret(discoverySecret),
                     // Not persisted: re-derived from creation time, same as at creation.
                     expiresAt = createdAt + INVITE_LIFETIME_SECONDS,
@@ -439,14 +452,14 @@ internal class E2eeStore(
                 val value = newPendingInvites
                 val current = this@E2eeStore.pendingInvites
                 value.forEach { invite ->
-                    val existing = current.find { it.qrPayload.ekPub.contentEquals(invite.qrPayload.ekPub) }
+                    val existing = current.find { it.qrPayload.ekPub == invite.qrPayload.ekPub }
                     // New, or an existing invite whose name / shared-at time changed (INSERT OR REPLACE).
                     if (existing == null ||
                         existing.qrPayload.suggestedName != invite.qrPayload.suggestedName ||
                         existing.exportedAt != invite.exportedAt
                     ) {
                         database.invitesQueries.insertPendingInvite(
-                            ekPub = invite.qrPayload.ekPub,
+                            ekPub = invite.qrPayload.ekPub.bytes,
                             suggestedName = invite.qrPayload.suggestedName,
                             fingerprint = "",
                             discoverySecret = invite.qrPayload.discoverySecret.bytes,
@@ -457,8 +470,8 @@ internal class E2eeStore(
                     }
                 }
                 current.forEach { invite ->
-                    if (value.none { it.qrPayload.ekPub.contentEquals(invite.qrPayload.ekPub) }) {
-                        database.invitesQueries.deletePendingInvite(invite.qrPayload.ekPub)
+                    if (value.none { it.qrPayload.ekPub == invite.qrPayload.ekPub }) {
+                        database.invitesQueries.deletePendingInvite(invite.qrPayload.ekPub.bytes)
                     }
                 }
             }

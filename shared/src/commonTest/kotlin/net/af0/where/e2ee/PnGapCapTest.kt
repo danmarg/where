@@ -22,7 +22,7 @@ class PnGapCapTest {
     fun inflatedPnOnTransitionFrameThrowsProtocolGapException() {
         val (qr, aliceEkPriv) = KeyExchange.aliceCreateQrPayload("Alice")
         val (initMsg, bob0) = KeyExchange.bobProcessQr(qr, "Bob")
-        val alice0 = KeyExchange.aliceProcessInit(initMsg, aliceEkPriv, DhPublicKey(qr.ekPub))
+        val alice0 = KeyExchange.aliceProcessInit(initMsg, aliceEkPriv, qr.ekPub.toDhPublicKey())
 
         // Alice sends one message so Bob has recvSeq=1.
         val (alice1, msgA1) = Session.encryptMessage(alice0, MessagePlaintext.Location(1.0, 1.0, 1.0, 1L))

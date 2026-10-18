@@ -64,7 +64,7 @@ class QrPayloadCompatTest {
         httpsUrl(
             legacyJson.encodeToString(
                 LegacyQrPayload.serializer(),
-                LegacyQrPayload(qr.protocolVersion, qr.ekPub, qr.suggestedName, qr.discoverySecret.bytes),
+                LegacyQrPayload(qr.protocolVersion, qr.ekPub.bytes, qr.suggestedName, qr.discoverySecret.bytes),
             ),
         )
 
@@ -80,7 +80,7 @@ class QrPayloadCompatTest {
         for (url in listOf(httpsUrl(json), schemeUrl(json))) {
             val qr = assertNotNull(QrPayload.fromUrl(url), "old-format invite must still parse: $url")
             assertEquals("Alice", qr.suggestedName)
-            assertContentEquals(ByteArray(32) { 1 }, qr.ekPub)
+            assertContentEquals(ByteArray(32) { 1 }, qr.ekPub.bytes)
             assertContentEquals(ByteArray(32) { 2 }, qr.discoverySecret.bytes)
             assertNull(qr.expiresAt)
             assertFalse(qr.isExpired(0L))
@@ -136,7 +136,7 @@ class QrPayloadCompatTest {
     fun newFormatInvite_decodesInLegacyClient() {
         val qr =
             QrPayload(
-                ekPub = ByteArray(32) { 1 },
+                ekPub = InvitePublicKey(ByteArray(32) { 1 }),
                 suggestedName = "Alice",
                 discoverySecret = DiscoverySecret(ByteArray(32) { 2 }),
                 expiresAt = 1_800_000_000L,
@@ -147,7 +147,7 @@ class QrPayloadCompatTest {
         for (url in listOf(qr.toUrl(), schemeUrl(json))) {
             val old = legacyDecode(url)
             assertEquals("Alice", old.suggestedName)
-            assertContentEquals(qr.ekPub, old.ekPub)
+            assertContentEquals(qr.ekPub.bytes, old.ekPub)
             assertContentEquals(qr.discoverySecret.bytes, old.discoverySecret)
             assertEquals(qr.protocolVersion, old.protocolVersion)
         }
@@ -155,7 +155,12 @@ class QrPayloadCompatTest {
 
     @Test
     fun newFormatInvite_discoveryTokenIsUnchangedByExpiry() {
-        val base = QrPayload(ekPub = ByteArray(32) { 1 }, suggestedName = "Alice", discoverySecret = DiscoverySecret(ByteArray(32) { 2 }))
+        val base =
+            QrPayload(
+                ekPub = InvitePublicKey(ByteArray(32) { 1 }),
+                suggestedName = "Alice",
+                discoverySecret = DiscoverySecret(ByteArray(32) { 2 }),
+            )
         assertEquals(base.discoveryToken(), base.copy(expiresAt = 123L).discoveryToken())
     }
 
@@ -165,7 +170,7 @@ class QrPayloadCompatTest {
     fun roundTrip_preservesExpiresAt() {
         val qr =
             QrPayload(
-                ekPub = ByteArray(32) { 1 },
+                ekPub = InvitePublicKey(ByteArray(32) { 1 }),
                 suggestedName = "Alice",
                 discoverySecret = DiscoverySecret(ByteArray(32) { 2 }),
                 expiresAt = 1_800_000_000L,
@@ -181,7 +186,11 @@ class QrPayloadCompatTest {
     @Test
     fun expiresAt_addsLittleToTheLink() {
         val withoutField =
-            QrPayload(ekPub = ByteArray(32) { 1 }, suggestedName = "Alice", discoverySecret = DiscoverySecret(ByteArray(32) { 2 }))
+            QrPayload(
+                ekPub = InvitePublicKey(ByteArray(32) { 1 }),
+                suggestedName = "Alice",
+                discoverySecret = DiscoverySecret(ByteArray(32) { 2 }),
+            )
         val withField = withoutField.copy(expiresAt = 1_800_000_000L)
         val extra = withField.toUrl().length - withoutField.toUrl().length
         assertTrue(extra in 1..40, "expires_at should add a few dozen characters at most, added $extra")
@@ -207,7 +216,13 @@ class QrPayloadCompatTest {
     @Test
     fun isExpired_boundaries() {
         val exp = 1_000_000L
-        val qr = QrPayload(ekPub = ByteArray(32), suggestedName = "A", discoverySecret = DiscoverySecret(ByteArray(32)), expiresAt = exp)
+        val qr =
+            QrPayload(
+                ekPub = InvitePublicKey(ByteArray(32)),
+                suggestedName = "A",
+                discoverySecret = DiscoverySecret(ByteArray(32)),
+                expiresAt = exp,
+            )
         assertFalse(qr.isExpired(exp - 1))
         assertFalse(qr.isExpired(exp))
         assertFalse(qr.isExpired(exp + INVITE_EXPIRY_GRACE_SECONDS), "accepted up to the grace window")
@@ -315,7 +330,7 @@ class QrPayloadCompatTest {
             val renamed = assertNotNull(alice.updateInviteName(first.ekPub, "Alice B"))
 
             assertEquals("Alice B", renamed.suggestedName)
-            assertContentEquals(first.ekPub, renamed.ekPub)
+            assertEquals(first.ekPub, renamed.ekPub)
             assertEquals(first.discoverySecret, renamed.discoverySecret)
             assertEquals(first.expiresAt, renamed.expiresAt)
             assertEquals(1, alice.listPendingInvites().size)
@@ -348,7 +363,7 @@ class QrPayloadCompatTest {
     fun updateInviteName_unknownInvite_returnsNull() =
         runTest {
             val alice = testE2eeManager(createTestSqlDriver())
-            assertNull(alice.updateInviteName(ByteArray(32) { 9 }, "x"))
+            assertNull(alice.updateInviteName(InvitePublicKey(ByteArray(32) { 9 }), "x"))
         }
 
     @Test

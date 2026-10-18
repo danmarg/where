@@ -35,8 +35,8 @@ class LocationHandshakeTest {
             assertEquals(1, pending.size, "Alice should see exactly one handshake")
 
             val result = pending[0]
-            assertTrue(result.inviteEkPub.contentEquals(qr2.ekPub), "The result should point to the second invite's public key")
-            assertFalse(result.inviteEkPub.contentEquals(qr1.ekPub), "The result should NOT point to the first invite")
+            assertTrue(result.inviteEkPub == qr2.ekPub, "The result should point to the second invite's public key")
+            assertFalse(result.inviteEkPub == qr1.ekPub, "The result should NOT point to the first invite")
 
             // 4. Alice completes the handshake using the key provided in the result
             val aliceEntry = aliceManager.processKeyExchangeInit(result.payload, "Bob", result.inviteEkPub)

@@ -22,6 +22,7 @@ import net.af0.where.e2ee.DiscoverySecret
 import net.af0.where.e2ee.E2eeManager
 import net.af0.where.e2ee.FriendEntry
 import net.af0.where.e2ee.InviteAlreadyAcceptedException
+import net.af0.where.e2ee.InvitePublicKey
 import net.af0.where.e2ee.KeyExchangeInitPayload
 import net.af0.where.e2ee.QrPayload
 import org.junit.After
@@ -51,7 +52,7 @@ class InviteIdempotenceTest {
 
     private fun invite() =
         QrPayload(
-            ekPub = Random.nextBytes(32),
+            ekPub = InvitePublicKey(Random.nextBytes(32)),
             suggestedName = "Alice",
             discoverySecret = DiscoverySecret.random(),
         )

@@ -771,7 +771,7 @@ class LocationSyncServiceTests: XCTestCase {
         XCTAssertTrue(service.repo.inviteState is Shared.InviteState.None)
         let invites = try await service.e2eeManager.listPendingInvites()
         XCTAssertTrue(
-            invites.contains { toSwiftData($0.qrPayload.ekPub) == toSwiftData(qr.ekPub) },
+            invites.contains { toSwiftData($0.qrPayload.ekPub.toByteArray()) == toSwiftData(qr.ekPub.toByteArray()) },
             "dismissing the sheet must not delete an unexported invite"
         )
     }
@@ -872,7 +872,6 @@ class LocationSyncServiceTests: XCTestCase {
         )
         let pendingResult = Shared.PendingInviteResult(
             payload: fakePayload,
-            scannerEkPub: kotlinByteArray(from: Data([1, 2, 3])),
             inviteEkPub: qr.ekPub,
             multipleScansDetected: false,
             pairingError: nil
@@ -928,7 +927,6 @@ class LocationSyncServiceTests: XCTestCase {
         )
         let pendingResult = Shared.PendingInviteResult(
             payload: fakePayload,
-            scannerEkPub: kotlinByteArray(from: Data([1, 2, 3])),
             inviteEkPub: qr.ekPub,
             multipleScansDetected: false,
             pairingError: nil

@@ -9,6 +9,7 @@ import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
 import net.af0.where.e2ee.E2eeManager
+import net.af0.where.e2ee.InvitePublicKey
 import net.af0.where.e2ee.KeyExchangeInitPayload
 import net.af0.where.e2ee.LocationClient
 import net.af0.where.e2ee.PendingInviteResult
@@ -59,9 +60,9 @@ class LocationServiceReproductionTest {
             controller.create()
 
             try {
-                val aliceEkPub = byteArrayOf(1, 2, 3)
+                val aliceEkPub = InvitePublicKey(ByteArray(32) { 1 })
                 val initPayload = mockk<KeyExchangeInitPayload>(relaxed = true)
-                val pollResult = PendingInviteResult(initPayload, byteArrayOf(), aliceEkPub, false, null)
+                val pollResult = PendingInviteResult(initPayload, aliceEkPub, false, null)
 
                 // pollPendingInvites returns a result, but the invite was cleared before we process it
                 coEvery { mockClient.pollPendingInvites() } returns listOf(pollResult)
@@ -101,9 +102,9 @@ class LocationServiceReproductionTest {
             controller.create()
 
             try {
-                val aliceEkPub = byteArrayOf(1, 2, 3)
+                val aliceEkPub = InvitePublicKey(ByteArray(32) { 1 })
                 val initPayload = mockk<KeyExchangeInitPayload>(relaxed = true)
-                val pollResult = PendingInviteResult(initPayload, byteArrayOf(), aliceEkPub, false, null)
+                val pollResult = PendingInviteResult(initPayload, aliceEkPub, false, null)
 
                 // The matching invite exists, so the filter in pollPendingInvites() passes.
                 val mockQr = mockk<QrPayload>(relaxed = true)

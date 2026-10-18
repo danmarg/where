@@ -38,6 +38,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.journeyapps.barcodescanner.ScanContract
 import com.journeyapps.barcodescanner.ScanOptions
 import dev.icerock.moko.resources.compose.stringResource
+import net.af0.where.e2ee.InvitePublicKey
 import net.af0.where.e2ee.InviteState
 import net.af0.where.shared.MR
 
@@ -50,7 +51,7 @@ class MainActivity : ComponentActivity() {
                 context: android.content.Context,
                 intent: android.content.Intent,
             ) {
-                val ekPub = intent.getByteArrayExtra("ekPub") ?: return
+                val ekPub = intent.getByteArrayExtra("ekPub")?.let { runCatching { InvitePublicKey(it) }.getOrNull() } ?: return
                 viewModel.markInviteExported(ekPub)
             }
         }
@@ -348,7 +349,7 @@ class MainActivity : ComponentActivity() {
                             val intent =
                                 Intent("net.af0.where.ACTION_INVITE_EXPORTED").apply {
                                     setPackage(packageName)
-                                    putExtra("ekPub", ekPub)
+                                    putExtra("ekPub", ekPub.toByteArray())
                                 }
                             android.app.PendingIntent.getBroadcast(
                                 this@MainActivity,

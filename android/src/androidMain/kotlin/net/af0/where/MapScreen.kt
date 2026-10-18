@@ -30,6 +30,7 @@ import com.google.accompanist.permissions.*
 import dev.icerock.moko.resources.compose.stringResource
 import net.af0.where.e2ee.ConnectionStatus
 import net.af0.where.e2ee.FriendEntry
+import net.af0.where.e2ee.InvitePublicKey
 import net.af0.where.model.UserLocation
 import net.af0.where.shared.MR
 
@@ -105,7 +106,7 @@ fun MapScreen(
     pausedFriendIds: Set<String>,
     friendLastPing: Map<String, Long>,
     onTogglePause: (String) -> Unit,
-    onCancelInvite: (ByteArray) -> Unit,
+    onCancelInvite: (InvitePublicKey) -> Unit,
     isSharing: Boolean,
     onSetSharing: (sharing: Boolean) -> Unit,
     friendExpiresAt: Map<String, Long> = emptyMap(),

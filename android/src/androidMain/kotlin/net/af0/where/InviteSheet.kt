@@ -23,6 +23,7 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import dev.icerock.moko.resources.compose.stringResource
+import net.af0.where.e2ee.InvitePublicKey
 import net.af0.where.e2ee.QrPayload
 import net.af0.where.shared.MR
 
@@ -33,7 +34,7 @@ fun InviteSheet(
     displayName: String,
     onDisplayNameChange: (String) -> Unit,
     onDismiss: () -> Unit,
-    onExportedIntent: (ByteArray) -> android.app.PendingIntent,
+    onExportedIntent: (InvitePublicKey) -> android.app.PendingIntent,
 ) {
     val context = LocalContext.current
     val qrUrl = remember(qrPayload) { QrUtils.payloadToUrl(qrPayload) }

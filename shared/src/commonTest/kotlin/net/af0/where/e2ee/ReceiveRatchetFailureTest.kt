@@ -268,7 +268,7 @@ class ReceiveRatchetFailureTest {
     private fun pair(): Pair<SessionState, SessionState> {
         val (qr, aliceEkPriv) = KeyExchange.aliceCreateQrPayload("Alice")
         val (msg, bobSession) = KeyExchange.bobProcessQr(qr, "Bob")
-        return KeyExchange.aliceProcessInit(msg, aliceEkPriv, DhPublicKey(qr.ekPub)) to bobSession
+        return KeyExchange.aliceProcessInit(msg, aliceEkPriv, qr.ekPub.toDhPublicKey()) to bobSession
     }
 
     private fun loc(i: Int) = MessagePlaintext.Location(i.toDouble(), 2.0, 3.0, i.toLong())

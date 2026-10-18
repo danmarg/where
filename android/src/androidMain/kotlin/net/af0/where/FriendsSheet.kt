@@ -46,6 +46,7 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import dev.icerock.moko.resources.compose.stringResource
 import net.af0.where.e2ee.FriendEntry
+import net.af0.where.e2ee.InvitePublicKey
 import net.af0.where.e2ee.toHex
 import net.af0.where.shared.MR
 
@@ -63,7 +64,7 @@ fun FriendsSheet(
     onSetFriendExpiry: (id: String, expiresAt: Long?) -> Unit = { _, _ -> },
     onTogglePause: (String) -> Unit,
     onCreateInvite: () -> Unit,
-    onCancelInvite: (ByteArray) -> Unit,
+    onCancelInvite: (InvitePublicKey) -> Unit,
     onScanQr: () -> Unit,
     onRename: (String, String) -> Unit,
     onRemove: (String) -> Unit,

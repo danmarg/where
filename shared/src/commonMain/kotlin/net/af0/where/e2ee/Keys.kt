@@ -83,6 +83,9 @@ sealed class SecretBytes(bytes: ByteArray, expectedSize: Int) : KeyBytes(bytes, 
 sealed class PublicBytes(bytes: ByteArray, expectedSize: Int) : KeyBytes(bytes, expectedSize) {
     fun toHex(): String = bytes.toHex()
 
+    /** A copy of the bytes, for platform code that stores or passes them on (secrets have no such accessor). */
+    fun toByteArray(): ByteArray = bytes.copyOf()
+
     override fun equals(other: Any?): Boolean = other is PublicBytes && other::class == this::class && bytes.contentEquals(other.bytes)
 
     override fun hashCode(): Int = 31 * this::class.hashCode() + bytes.contentHashCode()
@@ -206,6 +209,21 @@ class DhPublicKey(bytes: ByteArray) : PublicBytes(bytes, SIZE) {
     }
 
     internal object Serializer : KeyBytesSerializer<DhPublicKey>("DhPublicKey", ::DhPublicKey)
+}
+
+/**
+ * An invite's public key: EK_A.pub in the QR (§4.2); 32 bytes. A type of its own rather than a
+ * [DhPublicKey], so the invite's key and the scanner's can't be swapped. The apps also use it as
+ * the invite's ID.
+ */
+@Serializable(with = InvitePublicKey.Serializer::class)
+class InvitePublicKey(bytes: ByteArray) : PublicBytes(bytes, KEY_SIZE) {
+    override fun copyOf() = InvitePublicKey(bytes.copyOf())
+
+    /** The same key as a [DhPublicKey], for X25519 and fingerprints. */
+    internal fun toDhPublicKey() = DhPublicKey(bytes.copyOf())
+
+    internal object Serializer : KeyBytesSerializer<InvitePublicKey>("InvitePublicKey", ::InvitePublicKey)
 }
 
 /** Session fingerprint, SHA-256 of a bootstrap EK.pub; 32 bytes. */

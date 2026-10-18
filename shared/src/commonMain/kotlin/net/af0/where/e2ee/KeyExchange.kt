@@ -41,7 +41,7 @@ object KeyExchange {
         val ek = generateX25519KeyPair()
         val payload =
             QrPayload(
-                ekPub = ek.pub.copyOf(),
+                ekPub = InvitePublicKey(ek.pub.copyOf()),
                 suggestedName = suggestedName,
                 discoverySecret = DiscoverySecret.random(),
                 expiresAt = currentTimeSeconds() + INVITE_LIFETIME_SECONDS,
@@ -65,7 +65,7 @@ object KeyExchange {
         }
         if (qr.isExpired()) throw InviteExpiredException()
 
-        val alicePub = DhPublicKey.fromWire(qr.ekPub)
+        val alicePub = qr.ekPub.toDhPublicKey()
         val ekB = generateX25519KeyPair()
         val bobPriv = DhPrivateKey(ekB.priv)
         val bobPub = DhPublicKey(ekB.pub)

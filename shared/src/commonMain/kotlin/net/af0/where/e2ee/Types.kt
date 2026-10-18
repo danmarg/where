@@ -231,10 +231,8 @@ data class QrPayload(
     @SerialName("protocol_version")
     val protocolVersion: Int = PROTOCOL_VERSION,
     // Alice's ephemeral X25519 public key (32 bytes)
-    // The invite public key is the app-facing invite ID (Android intents, Swift); still raw ByteArray.
-    @Suppress("RawKeyBytes")
     @SerialName("ek_pub")
-    @Serializable(with = ByteArrayBase64Serializer::class) val ekPub: ByteArray,
+    val ekPub: InvitePublicKey,
     @SerialName("suggested_name")
     val suggestedName: String,
     // Fresh random 32-byte secret; HKDF IKM for the discovery token (§4.2).
@@ -253,13 +251,13 @@ data class QrPayload(
 
     override fun equals(other: Any?): Boolean {
         if (other !is QrPayload) return false
-        return protocolVersion == other.protocolVersion && ekPub.contentEquals(other.ekPub) && suggestedName == other.suggestedName &&
+        return protocolVersion == other.protocolVersion && ekPub == other.ekPub && suggestedName == other.suggestedName &&
             discoverySecret.constantTimeEquals(other.discoverySecret) && expiresAt == other.expiresAt
     }
 
     override fun hashCode(): Int {
         var h = protocolVersion
-        h = 31 * h + ekPub.contentHashCode()
+        h = 31 * h + ekPub.hashCode()
         h = 31 * h + suggestedName.hashCode()
         h = 31 * h + discoverySecret.hashCode()
         h = 31 * h + (expiresAt?.hashCode() ?: 0)
@@ -336,41 +334,15 @@ sealed class ConnectionStatus {
     data class Error(val message: StringDesc) : ConnectionStatus()
 }
 
-/**
- * Result of polling for incoming handshakes (KeyExchangeInit). The public keys stay raw ByteArray:
- * the invite public key is the app-facing invite ID (Android intents, Swift).
- */
-@Suppress("RawKeyBytes")
+/** Result of polling for incoming handshakes (KeyExchangeInit). */
 data class PendingInviteResult(
+    // Its ekPub is the scanner's public key, as received (checked where it is used).
     val payload: KeyExchangeInitPayload,
-    // The public key of the person who scanned our QR
-    val scannerEkPub: ByteArray,
     // The public key of the QR code they scanned (ours)
-    val inviteEkPub: ByteArray,
+    val inviteEkPub: InvitePublicKey,
     val multipleScansDetected: Boolean,
     val pairingError: String? = null,
-) {
-    override fun equals(other: Any?): Boolean {
-        if (this === other) return true
-        if (other == null || this::class != other::class) return false
-        other as PendingInviteResult
-        if (payload != other.payload) return false
-        if (!scannerEkPub.contentEquals(other.scannerEkPub)) return false
-        if (!inviteEkPub.contentEquals(other.inviteEkPub)) return false
-        if (multipleScansDetected != other.multipleScansDetected) return false
-        if (pairingError != other.pairingError) return false
-        return true
-    }
-
-    override fun hashCode(): Int {
-        var result = payload.hashCode()
-        result = 31 * result + scannerEkPub.contentHashCode()
-        result = 31 * result + inviteEkPub.contentHashCode()
-        result = 31 * result + multipleScansDetected.hashCode()
-        result = 31 * result + (pairingError?.hashCode() ?: 0)
-        return result
-    }
-}
+)
 
 /**
  * A message that is pending delivery (used for transactional safety and recovery).

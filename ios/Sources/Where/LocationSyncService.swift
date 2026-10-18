@@ -888,7 +888,7 @@ final class LocationSyncService: ObservableObject {
         let pendingInvitesSnapshot = try await e2eeManager.listPendingInvites()
         let filteredResults = results.filter { result in
             pendingInvitesSnapshot.contains { invite in
-                toSwiftData(invite.qrPayload.ekPub) == toSwiftData(result.inviteEkPub)
+                toSwiftData(invite.qrPayload.ekPub.toByteArray()) == toSwiftData(result.inviteEkPub.toByteArray())
             }
         }
 
@@ -906,7 +906,7 @@ final class LocationSyncService: ObservableObject {
                     return filteredResults
                 }
                 repo.pendingInitPayload = result.payload
-                repo.pendingInitAliceEkPub = toSwiftData(result.inviteEkPub) // THE FIX: Use our own EK from the invite
+                repo.pendingInitAliceEkPub = toSwiftData(result.inviteEkPub.toByteArray()) // THE FIX: Use our own EK from the invite
                 repo.multipleScansDetected = result.multipleScansDetected
                 repo.inviteState = Shared.InviteState.None()
                 isInviteSheetShowing = false
@@ -920,7 +920,7 @@ final class LocationSyncService: ObservableObject {
         do {
             let ekPubToClear = ekPub ?? repo.pendingInitAliceEkPub
             if let ekPubToClear = ekPubToClear {
-                try await e2eeManager.clearInvite(ekPub: kotlinByteArray(from: ekPubToClear))
+                try await e2eeManager.clearInvite(ekPub: Shared.InvitePublicKey(bytes: kotlinByteArray(from: ekPubToClear)))
             } else if repo.inviteState is Shared.InviteState.Pending {
                 // If we are currently showing a QR but no one has scanned it yet,
                 // clear that specific one.
@@ -1057,7 +1057,7 @@ final class LocationSyncService: ObservableObject {
 
         defer { repo.isExchanging = false }
         do {
-            let result = try await e2eeManager.processKeyExchangeInit(payload: payload, aliceSuggestedName: name, aliceEkPub: kotlinByteArray(from: aliceEkPub))
+            let result = try await e2eeManager.processKeyExchangeInit(payload: payload, aliceSuggestedName: name, aliceEkPub: Shared.InvitePublicKey(bytes: kotlinByteArray(from: aliceEkPub)))
 
             if let entry = result ?? nil {
                 awaitingFirstUpdateIds[entry.id] = Date()

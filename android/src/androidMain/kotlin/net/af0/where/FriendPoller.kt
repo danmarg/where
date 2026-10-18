@@ -132,7 +132,7 @@ internal class FriendPoller(
             val pendingInvites = e2eeManager.listPendingInvites()
             val filteredResults =
                 results.filter { result ->
-                    pendingInvites.any { it.qrPayload.ekPub.contentEquals(result.inviteEkPub) }
+                    pendingInvites.any { it.qrPayload.ekPub == result.inviteEkPub }
                 }
 
             if (filteredResults.isEmpty()) {
