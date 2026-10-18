@@ -190,8 +190,14 @@ internal object ProtocolCore {
         result.delivered.mapTo(effects) { Effect.Deliver(it) }
         // The peer ratcheted, so it read our epoch's transition message (the first of the epoch,
         // posted to the previous mailbox; see SessionState.transportFor). Only that one is stale:
-        // anything queued for the current send token still has to go.
-        if (dhRatchet) effects.add(Effect.CancelPut(session.transportFor(1).token.toHex()))
+        // anything queued for the current send token still has to go. Not on Bob's first
+        // ratchet: Alice ratchets on her own in aliceProcessInit, before reading anything of his,
+        // and his previous send token is still the bootstrap one she polls (prevSendToken ==
+        // sendToken until his first ratchet). Cancelling there dropped his queued frames unsent
+        // (found by TLC, formal/tla/WhereSync.tla; BootstrapOutboxCancelTest).
+        if (dhRatchet && session.prevSendToken != session.sendToken) {
+            effects.add(Effect.CancelPut(session.transportFor(1).token.toHex()))
+        }
         // Delivered, undeliverable (key spent) and replayed frames are done with; so is anything
         // that isn't an encrypted frame (nothing else belongs in a session mailbox).
         val ids = result.processedIds + result.replayedIds + event.messages.filter { it !is EncryptedMessagePayload }.map { it.msgId }

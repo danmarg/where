@@ -3,7 +3,7 @@
 **Status:** Implemented
 **Authors:** Daniel Margolis
 **Date:** 2026-05-24
-**Protocol version:** 1. Normative examples: the golden transcript, vectors version 1 ([§11.1](#111-test-vectors-normative-examples)).
+**Protocol version:** 1. Normative examples: the golden transcript, vectors version 2 ([§11.1](#111-test-vectors-normative-examples)).
 
 ---
 

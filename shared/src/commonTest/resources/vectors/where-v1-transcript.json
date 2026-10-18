@@ -1,5 +1,5 @@
 {
-    "vectors_version": 1,
+    "vectors_version": 2,
     "protocol_version": 1,
     "spec": "docs/e2ee-location-sync.md",
     "about": "Golden transcript: each step is ProtocolCore.step(state, event, time_ms, rng) for one party. Hex unless noted; mailbox bodies are the exact wire JSON. Regenerate with WHERE_WRITE_VECTORS=1 ./gradlew :shared:jvmTest --tests '*GoldenTranscriptWriter*'.",
@@ -218,10 +218,6 @@
                 {
                     "type": "deliver",
                     "plaintext": "{\"type\":\"loc\",\"lat\":37.7749,\"lng\":-122.4194,\"acc\":10.0,\"ts\":1767225603,\"precision\":\"FINE\"}"
-                },
-                {
-                    "type": "cancel_put",
-                    "mailbox": "0007c2af6f291b6bced64e93fa6f2be0"
                 },
                 {
                     "type": "ack",
