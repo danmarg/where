@@ -20,7 +20,7 @@ final class FriendSyncRepository: ObservableObject {
     @Published var inviteState: Shared.InviteState = Shared.InviteState.None()
     @Published var pendingQrForNaming: Shared.QrPayload? = nil
     @Published var pendingInitPayload: Shared.KeyExchangeInitPayload? = nil
-    @Published var pendingInitAliceEkPub: Data? = nil
+    @Published var pendingInitAliceEkPub: Shared.InvitePublicKey? = nil
     @Published var multipleScansDetected: Bool = false
     @Published var isExchanging: Bool = false
 

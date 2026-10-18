@@ -216,7 +216,7 @@ struct ContentView: View {
                 friendExpiresAt: syncService.repo.friendExpiresAt,
                 onTogglePause: { syncService.togglePauseFriend(id: $0) },
                 onCancelInvite: { invite in
-                    Task { await syncService.clearInvite(ekPub: toSwiftData(invite.qrPayload.ekPub)) }
+                    Task { await syncService.clearInvite(ekPub: invite.qrPayload.ekPub) }
                 },
                 onCreateInvite: {
                     showFriends = false

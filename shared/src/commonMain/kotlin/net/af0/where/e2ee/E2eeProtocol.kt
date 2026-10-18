@@ -152,15 +152,13 @@ internal object E2eeProtocol {
         envelope: ByteArray,
     ): Session.DecryptedHeader {
         val sessionAad = session.headerAad()
-        return try {
-            Session.decryptHeader(session.headerKey, envelope, sessionAad)
-        } catch (e0: Exception) {
+        return session.recvHeaderKeys().firstNotNullOfOrNull { key ->
             try {
-                Session.decryptHeader(session.nextHeaderKey, envelope, sessionAad)
-            } catch (e1: Exception) {
-                throw Exception("All header keys failed")
+                Session.decryptHeader(key, envelope, sessionAad)
+            } catch (e: Exception) {
+                null
             }
-        }
+        } ?: throw Exception("All header keys failed")
     }
 
     internal fun bucketForHeader(

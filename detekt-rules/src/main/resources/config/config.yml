@@ -1,0 +1,13 @@
+# The where-e2ee rule set (detekt reads this to validate config keys). Each rule's defaults
+# (secret names, name pattern, log functions) live in its code, in one place: SecretNames.kt and
+# the rule classes.
+where-e2ee:
+  active: true
+  RawKeyBytes:
+    active: true
+  SecretComparison:
+    active: true
+  InsecureRandom:
+    active: true
+  SecretInLog:
+    active: true

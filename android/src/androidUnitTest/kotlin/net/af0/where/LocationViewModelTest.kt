@@ -28,8 +28,10 @@ import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
 import net.af0.where.db.WhereDatabase
 import net.af0.where.e2ee.ConnectionStatus
+import net.af0.where.e2ee.DiscoverySecret
 import net.af0.where.e2ee.E2eeManager
 import net.af0.where.e2ee.FriendEntry
+import net.af0.where.e2ee.InvitePublicKey
 import net.af0.where.e2ee.InviteState
 import net.af0.where.e2ee.KeyExchangeInitPayload
 import net.af0.where.e2ee.KtorMailboxClient
@@ -38,7 +40,8 @@ import net.af0.where.e2ee.PROTOCOL_VERSION
 import net.af0.where.e2ee.PendingInviteView
 import net.af0.where.e2ee.QrPayload
 import net.af0.where.e2ee.RawKeyValueStorage
-import net.af0.where.e2ee.RoutingToken
+import net.af0.where.e2ee.RecvToken
+import net.af0.where.e2ee.SendToken
 import net.af0.where.e2ee.SessionState
 import net.af0.where.e2ee.UserStore
 import net.af0.where.e2ee.currentTimeSeconds
@@ -50,7 +53,6 @@ import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.Shadows.shadowOf
 import org.robolectric.annotation.Config
-import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
@@ -90,8 +92,8 @@ class TestFakeLocationSource(initialForeground: Boolean = false) : LocationSourc
     private val _pendingInitPayloadSetAt = MutableStateFlow(0L)
     override val pendingInitPayloadSetAt: StateFlow<Long> = _pendingInitPayloadSetAt.asStateFlow()
 
-    private val _pendingInitAliceEkPub = MutableStateFlow<ByteArray?>(null)
-    override val pendingInitAliceEkPub: StateFlow<ByteArray?> = _pendingInitAliceEkPub.asStateFlow()
+    private val _pendingInitAliceEkPub = MutableStateFlow<InvitePublicKey?>(null)
+    override val pendingInitAliceEkPub: StateFlow<InvitePublicKey?> = _pendingInitAliceEkPub.asStateFlow()
 
     private val _friends = MutableStateFlow<List<FriendEntry>>(emptyList())
     override val friends: StateFlow<List<FriendEntry>> = _friends.asStateFlow()
@@ -147,7 +149,7 @@ class TestFakeLocationSource(initialForeground: Boolean = false) : LocationSourc
 
     override fun onPendingInit(
         payload: KeyExchangeInitPayload?,
-        aliceEkPub: ByteArray?,
+        aliceEkPub: InvitePublicKey?,
     ) {
         _pendingInitPayload.value = payload
         _pendingInitPayloadSetAt.value = if (payload != null) System.currentTimeMillis() else 0L
@@ -320,9 +322,9 @@ class LocationViewModelTest {
             val qr =
                 QrPayload(
                     protocolVersion = PROTOCOL_VERSION,
-                    ekPub = byteArrayOf(1, 2, 3),
+                    ekPub = InvitePublicKey(ByteArray(32) { 1 }),
                     suggestedName = "Alice",
-                    discoverySecret = ByteArray(32),
+                    discoverySecret = DiscoverySecret(ByteArray(32)),
                 )
 
             // Bob scans
@@ -361,7 +363,7 @@ class LocationViewModelTest {
                 )
 
             // 1. Peer joins Alice's mailbox
-            source.onPendingInit(initPayload, aliceEkPub = byteArrayOf(0))
+            source.onPendingInit(initPayload, aliceEkPub = InvitePublicKey(ByteArray(32)))
             advanceUntilIdle()
 
             assertEquals(initPayload, vm.pendingInitPayload.value)
@@ -418,7 +420,7 @@ class LocationViewModelTest {
             // 4. Verify ONLY the first invite was removed
             val remaining = store.listPendingInvites()
             assertEquals(1, remaining.size, "Only one invite should remain")
-            assertContentEquals(qr2.ekPub, remaining[0].qrPayload.ekPub, "The second invite should be the one remaining")
+            assertEquals(qr2.ekPub, remaining[0].qrPayload.ekPub, "The second invite should be the one remaining")
             assertNull(vm.pendingInitPayload.value)
         }
 
@@ -448,7 +450,7 @@ class LocationViewModelTest {
                 )
 
             // 1. Peer joins Alice's mailbox
-            source.onPendingInit(initPayload, aliceEkPub = byteArrayOf(0))
+            source.onPendingInit(initPayload, aliceEkPub = InvitePublicKey(ByteArray(32)))
             advanceUntilIdle()
 
             assertEquals(initPayload, vm.pendingInitPayload.value)
@@ -457,7 +459,7 @@ class LocationViewModelTest {
             vm.cancelPendingInit()
             advanceUntilIdle()
 
-            io.mockk.coVerify { store.clearInvite(any<ByteArray>()) }
+            io.mockk.coVerify { store.clearInvite(any<InvitePublicKey>()) }
             assertNull(vm.pendingInitPayload.value)
         }
 
@@ -483,17 +485,17 @@ class LocationViewModelTest {
             val qr =
                 QrPayload(
                     protocolVersion = PROTOCOL_VERSION,
-                    ekPub = byteArrayOf(1, 2, 3),
+                    ekPub = InvitePublicKey(ByteArray(32) { 1 }),
                     suggestedName = "Alice",
-                    discoverySecret = ByteArray(32),
+                    discoverySecret = DiscoverySecret(ByteArray(32)),
                 )
 
             val mockPayload = mockk<KeyExchangeInitPayload>(relaxed = true)
             val mockFriend = mockk<FriendEntry>(relaxed = true)
             val mockSession = mockk<SessionState>(relaxed = true)
             every { mockFriend.session } returns mockSession
-            every { mockSession.sendToken } returns RoutingToken(byteArrayOf(1, 2, 3))
-            every { mockSession.recvToken } returns RoutingToken(byteArrayOf(4, 5, 6))
+            every { mockSession.sendToken } returns SendToken(ByteArray(16) { 1 })
+            every { mockSession.recvToken } returns RecvToken(ByteArray(16) { 4 })
             every { mockFriend.id } returns "alice_fp"
             io.mockk.coEvery { store.processScannedQr(any(), any()) } returns (mockPayload to mockFriend)
 
@@ -529,9 +531,9 @@ class LocationViewModelTest {
             val qr =
                 QrPayload(
                     protocolVersion = PROTOCOL_VERSION,
-                    ekPub = byteArrayOf(1, 2, 3),
+                    ekPub = InvitePublicKey(ByteArray(32) { 1 }),
                     suggestedName = "Alice",
-                    discoverySecret = ByteArray(32),
+                    discoverySecret = DiscoverySecret(ByteArray(32)),
                 )
 
             uiStore.onPendingQrForNaming(qr)
@@ -608,9 +610,9 @@ class LocationViewModelTest {
             val qr =
                 QrPayload(
                     protocolVersion = PROTOCOL_VERSION,
-                    ekPub = byteArrayOf(1, 2, 3),
+                    ekPub = InvitePublicKey(ByteArray(32) { 1 }),
                     suggestedName = "Alice",
-                    discoverySecret = ByteArray(32),
+                    discoverySecret = DiscoverySecret(ByteArray(32)),
                 )
 
             // Mock store to return a friend
@@ -618,8 +620,8 @@ class LocationViewModelTest {
             val mockFriend = mockk<FriendEntry>(relaxed = true)
             val mockSession = mockk<SessionState>(relaxed = true)
             every { mockFriend.session } returns mockSession
-            every { mockSession.sendToken } returns RoutingToken(byteArrayOf(1, 2, 3))
-            every { mockSession.recvToken } returns RoutingToken(byteArrayOf(4, 5, 6))
+            every { mockSession.sendToken } returns SendToken(ByteArray(16) { 1 })
+            every { mockSession.recvToken } returns RecvToken(ByteArray(16) { 4 })
             every { mockFriend.id } returns "friend1"
             io.mockk.coEvery { store.processScannedQr(any(), any()) } returns (mockPayload to mockFriend)
 
@@ -655,9 +657,9 @@ class LocationViewModelTest {
             val qr =
                 QrPayload(
                     protocolVersion = PROTOCOL_VERSION,
-                    ekPub = byteArrayOf(1, 2, 3),
+                    ekPub = InvitePublicKey(ByteArray(32) { 1 }),
                     suggestedName = "Alice",
-                    discoverySecret = ByteArray(32),
+                    discoverySecret = DiscoverySecret(ByteArray(32)),
                 )
 
             // Test 1: Scanning a QR code dismisses the invite sheet
@@ -736,7 +738,7 @@ class LocationViewModelTest {
                     keyConfirmation = byteArrayOf(4, 5, 6),
                     suggestedName = "Alice",
                 )
-            source.onPendingInit(initPayload, aliceEkPub = byteArrayOf(0))
+            source.onPendingInit(initPayload, aliceEkPub = InvitePublicKey(ByteArray(32)))
             advanceUntilIdle()
 
             vm.confirmPendingInit("Alice")
@@ -914,7 +916,7 @@ class LocationViewModelTest {
             assertEquals(InviteState.None, viewModel!!.inviteState.value)
             assertFalse(uiStateStore.isInviteSheetShowing.value)
             assertTrue(
-                store.listPendingInvites().any { it.qrPayload.ekPub.contentEquals(pending.qr.ekPub) },
+                store.listPendingInvites().any { it.qrPayload.ekPub == pending.qr.ekPub },
                 "dismissing the sheet must not delete an unexported invite",
             )
         }
@@ -1148,9 +1150,9 @@ class LocationViewModelTest {
             val qr =
                 QrPayload(
                     protocolVersion = PROTOCOL_VERSION,
-                    ekPub = ByteArray(32) { 1 },
+                    ekPub = InvitePublicKey(ByteArray(32) { 1 }),
                     suggestedName = "Alice",
-                    discoverySecret = ByteArray(32),
+                    discoverySecret = DiscoverySecret(ByteArray(32)),
                     expiresAt = currentTimeSeconds() - 3600,
                 )
 
@@ -1167,9 +1169,9 @@ class LocationViewModelTest {
             val qr =
                 QrPayload(
                     protocolVersion = PROTOCOL_VERSION,
-                    ekPub = ByteArray(32) { 1 },
+                    ekPub = InvitePublicKey(ByteArray(32) { 1 }),
                     suggestedName = "Alice",
-                    discoverySecret = ByteArray(32),
+                    discoverySecret = DiscoverySecret(ByteArray(32)),
                     expiresAt = currentTimeSeconds() + 3600,
                 )
 
@@ -1198,7 +1200,7 @@ class LocationViewModelTest {
             advanceUntilIdle()
             val second = (vm.inviteState.value as InviteState.Pending).qr
 
-            assertTrue(first.ekPub.contentEquals(second.ekPub), "a name edit must keep the shown invite's keys")
+            assertEquals(first.ekPub, second.ekPub, "a name edit must keep the shown invite's keys")
             assertEquals(1, store.listPendingInvites().size)
         }
 
@@ -1210,9 +1212,9 @@ class LocationViewModelTest {
             val qr =
                 QrPayload(
                     protocolVersion = PROTOCOL_VERSION,
-                    ekPub = ByteArray(32) { 1 },
+                    ekPub = InvitePublicKey(ByteArray(32) { 1 }),
                     suggestedName = "Alice",
-                    discoverySecret = ByteArray(32),
+                    discoverySecret = DiscoverySecret(ByteArray(32)),
                 )
 
             assertTrue(vm.processQrUrl(qr.toUrl()))
@@ -1227,9 +1229,9 @@ class LocationViewModelTest {
             val badVersionQr =
                 QrPayload(
                     protocolVersion = PROTOCOL_VERSION + 100,
-                    ekPub = ByteArray(32) { 1 },
+                    ekPub = InvitePublicKey(ByteArray(32) { 1 }),
                     suggestedName = "Alice",
-                    discoverySecret = ByteArray(32),
+                    discoverySecret = DiscoverySecret(ByteArray(32)),
                 )
 
             vm.confirmQrScan(badVersionQr, "Alice")

@@ -1,10 +1,39 @@
 package net.af0.where.e2ee
 
-internal const val INFO_RATCHET_STEP = "Where-v1-RatchetStep"
-internal const val INFO_MSG_NONCE = "Where-v1-MsgNonce"
-internal const val INFO_KEY_EXCHANGE = "Where-v1-KeyExchange"
-internal const val INFO_ROUTING_TOKEN = "Where-v1-RoutingToken"
-internal const val INFO_CONFIRM = "Where-v1-ConfirmKey"
+/**
+ * Every domain-separation string in the protocol. They are wire-visible constants: changing one
+ * breaks interop with existing clients and sessions.
+ *
+ * Labels of the same [use] must be distinct and prefix-free (LabelTest), since some are followed by
+ * variable input (e.g. the routing-token info is label || sender || recipient). Across uses a prefix
+ * is harmless, and one exists: [CONFIRM] is a prefix of [CONFIRM_KEY], but one is HMAC input under a
+ * derived key and the other HKDF info, so they never meet in the same function.
+ */
+internal enum class Label(
+    private val value: String,
+    val use: Use,
+) {
+    RATCHET_STEP("Where-v1-RatchetStep", Use.HKDF_INFO),
+    MSG_NONCE("Where-v1-MsgNonce", Use.HKDF_INFO),
+    KEY_EXCHANGE("Where-v1-KeyExchange", Use.HKDF_INFO),
+    ROUTING_TOKEN("Where-v1-RoutingToken", Use.HKDF_INFO),
+    CONFIRM_KEY("Where-v1-ConfirmKey", Use.HKDF_INFO),
+    SUGGESTED_NAME("Where-v1-SuggestedName", Use.HKDF_INFO),
+    SAFETY_NUMBER("Where-v1-SafetyNumber", Use.HKDF_INFO),
+    DISCOVERY("Where-v1-Discovery", Use.HKDF_INFO),
+
+    /** Prefix of the key-confirmation HMAC input. */
+    CONFIRM("Where-v1-Confirm", Use.HMAC_PREFIX),
+
+    /** Prefix of a message body's AEAD AAD. */
+    MESSAGE_AAD("Where-v1-Message", Use.AAD_PREFIX),
+    ;
+
+    enum class Use { HKDF_INFO, HMAC_PREFIX, AAD_PREFIX }
+
+    /** A fresh copy of the label's UTF-8 bytes. */
+    val bytes: ByteArray get() = value.encodeToByteArray()
+}
 
 // A legitimate DH ratchet produces at most 1 token rotation per message batch.
 // We allow up to 5 follows per poll to handle back-to-back ratchet epochs arriving
@@ -43,5 +72,4 @@ internal const val INVITE_EXPIRY_GRACE_SECONDS = 300L
 /** A rename keeps the shown invite only if it has at least this long left; otherwise a fresh one is minted. */
 internal const val INVITE_RENAME_MIN_REMAINING_SECONDS = 3600L
 const val SUPPORTED_MAX_VERSION = 1
-internal const val AAD_PREFIX = "Where-v1-Message"
 internal const val PADDING_SIZE = 512

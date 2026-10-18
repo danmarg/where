@@ -11,6 +11,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import net.af0.where.e2ee.ConnectionStatus
 import net.af0.where.e2ee.FriendEntry
+import net.af0.where.e2ee.InvitePublicKey
 import net.af0.where.e2ee.KeyExchangeInitPayload
 import net.af0.where.e2ee.PendingInviteView
 import net.af0.where.e2ee.UserStore
@@ -28,7 +29,7 @@ interface LocationSource {
 
     /** Wall-clock time [pendingInitPayload] was last set to a non-null value; 0 when null. */
     val pendingInitPayloadSetAt: StateFlow<Long>
-    val pendingInitAliceEkPub: StateFlow<ByteArray?>
+    val pendingInitAliceEkPub: StateFlow<InvitePublicKey?>
     val friends: StateFlow<List<FriendEntry>>
     val allPendingInvites: StateFlow<List<PendingInviteView>>
     val lastRapidPollTrigger: StateFlow<Long>
@@ -57,7 +58,7 @@ interface LocationSource {
 
     fun onPendingInit(
         payload: KeyExchangeInitPayload?,
-        aliceEkPub: ByteArray? = null,
+        aliceEkPub: InvitePublicKey? = null,
     )
 
     fun onPendingInvitesUpdated(invites: List<PendingInviteView>)
@@ -112,8 +113,8 @@ class LocationRepository(
     private val _pendingInitPayloadSetAt = MutableStateFlow(0L)
     override val pendingInitPayloadSetAt: StateFlow<Long> = _pendingInitPayloadSetAt.asStateFlow()
 
-    private val _pendingInitAliceEkPub = MutableStateFlow<ByteArray?>(null)
-    override val pendingInitAliceEkPub: StateFlow<ByteArray?> = _pendingInitAliceEkPub.asStateFlow()
+    private val _pendingInitAliceEkPub = MutableStateFlow<InvitePublicKey?>(null)
+    override val pendingInitAliceEkPub: StateFlow<InvitePublicKey?> = _pendingInitAliceEkPub.asStateFlow()
 
     private val _friends = MutableStateFlow<List<FriendEntry>>(emptyList())
     override val friends: StateFlow<List<FriendEntry>> = _friends.asStateFlow()
@@ -183,7 +184,7 @@ class LocationRepository(
 
     override fun onPendingInit(
         payload: KeyExchangeInitPayload?,
-        aliceEkPub: ByteArray?,
+        aliceEkPub: InvitePublicKey?,
     ) {
         _pendingInitPayload.value = payload
         _pendingInitPayloadSetAt.value = if (payload != null) net.af0.where.e2ee.currentTimeMillis() else 0L

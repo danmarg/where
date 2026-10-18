@@ -1,3 +1,5 @@
+@file:OptIn(RawKeyAccess::class) // the invites table stores raw key blobs
+
 package net.af0.where.e2ee
 
 import kotlinx.coroutines.CancellationException
@@ -66,23 +68,41 @@ internal class E2eeStore(
 
     private suspend fun <T> withStoreLock(block: suspend () -> T): T = storeLock.withLock { withContext(ioDispatcher) { block() } }
 
+    // Unreadable rows already reported in this process, so a reload doesn't log them again.
+    private val reportedSkips = mutableSetOf<String>()
+
     init {
         loadFromDb()
     }
 
     private fun loadFromDb() {
+        // A row that no longer decodes (e.g. a key of the wrong length) is skipped, not fatal:
+        // failing here would fail the whole store, and with it every other friend. A friend row
+        // stays in the database untouched, for a later release to read; an invite row is deleted,
+        // since it can never pair (and invites expire anyway).
+        val skipped = mutableListOf<String>()
         database.friendsQueries.getAllFriends().executeAsList().forEach { f ->
-            val entry = f.toEntry()
-            friends[f.id] = entry
+            try {
+                friends[f.id] = f.toEntry()
+            } catch (e: Exception) {
+                skipped += "friend ${f.id.take(8)} (${e::class.simpleName})"
+            }
         }
         database.invitesQueries.getAllPendingInvites().executeAsList().forEach { p ->
-            pendingInvites.add(p.toInvite())
+            try {
+                pendingInvites.add(p.toInvite())
+            } catch (e: Exception) {
+                database.invitesQueries.deletePendingInvite(p.ekPub)
+                skipped += "invite (${e::class.simpleName}), deleted"
+            }
         }
         _diagnosticLog.value =
             database.diagnosticEventsQueries
                 .getRecentEvents(MAX_DIAGNOSTIC_EVENTS.toLong())
                 .executeAsList()
                 .map { "${TimeSource.formatLocalTime(it.ts)} ${it.message}" }
+        // Only the exception type: a decoding error's message can quote the stored JSON, keys included.
+        skipped.filter { reportedSkips.add(it) }.forEach { addDiagnosticEvent("load: skipped unreadable $it") }
     }
 
     private fun reloadFromDb() {
@@ -348,8 +368,8 @@ internal class E2eeStore(
             qrPayload =
                 QrPayload(
                     suggestedName = suggestedName,
-                    ekPub = ekPub,
-                    discoverySecret = discoverySecret,
+                    ekPub = InvitePublicKey(ekPub),
+                    discoverySecret = DiscoverySecret(discoverySecret),
                     // Not persisted: re-derived from creation time, same as at creation.
                     expiresAt = createdAt + INVITE_LIFETIME_SECONDS,
                 ),
@@ -437,17 +457,17 @@ internal class E2eeStore(
                 val value = newPendingInvites
                 val current = this@E2eeStore.pendingInvites
                 value.forEach { invite ->
-                    val existing = current.find { it.qrPayload.ekPub.contentEquals(invite.qrPayload.ekPub) }
+                    val existing = current.find { it.qrPayload.ekPub == invite.qrPayload.ekPub }
                     // New, or an existing invite whose name / shared-at time changed (INSERT OR REPLACE).
                     if (existing == null ||
                         existing.qrPayload.suggestedName != invite.qrPayload.suggestedName ||
                         existing.exportedAt != invite.exportedAt
                     ) {
                         database.invitesQueries.insertPendingInvite(
-                            ekPub = invite.qrPayload.ekPub,
+                            ekPub = invite.qrPayload.ekPub.bytes,
                             suggestedName = invite.qrPayload.suggestedName,
                             fingerprint = "",
-                            discoverySecret = invite.qrPayload.discoverySecret,
+                            discoverySecret = invite.qrPayload.discoverySecret.bytes,
                             privKeyBlob = invite.aliceEkPriv.bytes,
                             createdAt = invite.createdAt,
                             exportedAt = invite.exportedAt,
@@ -455,8 +475,8 @@ internal class E2eeStore(
                     }
                 }
                 current.forEach { invite ->
-                    if (value.none { it.qrPayload.ekPub.contentEquals(invite.qrPayload.ekPub) }) {
-                        database.invitesQueries.deletePendingInvite(invite.qrPayload.ekPub)
+                    if (value.none { it.qrPayload.ekPub == invite.qrPayload.ekPub }) {
+                        database.invitesQueries.deletePendingInvite(invite.qrPayload.ekPub.bytes)
                     }
                 }
             }

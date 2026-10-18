@@ -21,6 +21,7 @@ import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
 import net.af0.where.e2ee.ConnectionStatus
 import net.af0.where.e2ee.FriendEntry
+import net.af0.where.e2ee.InvitePublicKey
 import net.af0.where.e2ee.KeyExchangeInitPayload
 import net.af0.where.e2ee.LocationClient
 import net.af0.where.model.UserLocation
@@ -63,8 +64,8 @@ class ServiceFakeLocationSource : LocationSource {
     private val _pendingInitPayloadSetAt = MutableStateFlow(0L)
     override val pendingInitPayloadSetAt: StateFlow<Long> = _pendingInitPayloadSetAt.asStateFlow()
 
-    private val _pendingInitAliceEkPub = MutableStateFlow<ByteArray?>(null)
-    override val pendingInitAliceEkPub: StateFlow<ByteArray?> = _pendingInitAliceEkPub.asStateFlow()
+    private val _pendingInitAliceEkPub = MutableStateFlow<InvitePublicKey?>(null)
+    override val pendingInitAliceEkPub: StateFlow<InvitePublicKey?> = _pendingInitAliceEkPub.asStateFlow()
 
     private val _friends = MutableStateFlow<List<FriendEntry>>(emptyList())
     override val friends: StateFlow<List<FriendEntry>> = _friends.asStateFlow()
@@ -124,7 +125,7 @@ class ServiceFakeLocationSource : LocationSource {
 
     override fun onPendingInit(
         payload: KeyExchangeInitPayload?,
-        aliceEkPub: ByteArray?,
+        aliceEkPub: InvitePublicKey?,
     ) {
         _pendingInitPayload.value = payload
         _pendingInitPayloadSetAt.value = if (payload != null) LocationService.clock() else 0L
@@ -366,7 +367,7 @@ class LocationServiceTest {
 
             try {
                 val payload = io.mockk.mockk<KeyExchangeInitPayload>(relaxed = true)
-                fakeLocationSource.onPendingInit(payload, aliceEkPub = byteArrayOf(0))
+                fakeLocationSource.onPendingInit(payload, aliceEkPub = InvitePublicKey(ByteArray(32)))
                 assertTrue(service.isRapidPolling(), "An unconfirmed pending invite should force rapid polling")
 
                 currentTime += FriendPoller.PENDING_INIT_RAPID_TIMEOUT_MS - 1

@@ -6,6 +6,20 @@ plugins {
     alias(libs.plugins.kotlin.serialization)
     alias(libs.plugins.moko.resources)
     alias(libs.plugins.sqldelight)
+    alias(libs.plugins.detekt)
+}
+
+// Only the custom E2EE rules from :detekt-rules (config/detekt/detekt.yml), only on the e2ee
+// package: ./gradlew :shared:detekt. After editing :detekt-rules, run ./gradlew --stop first: the
+// daemon caches detekt's plugin classes.
+detekt {
+    source.setFrom("src/commonMain/kotlin/net/af0/where/e2ee")
+    config.setFrom(rootProject.file("config/detekt/detekt.yml"))
+    disableDefaultRuleSets = true
+}
+
+dependencies {
+    detektPlugins(project(":detekt-rules"))
 }
 
 sqldelight {

@@ -58,9 +58,7 @@ object Session {
         // Seal the metadata into an envelope (#186)
         val envelope = encryptHeader(headerKeyToUse, dhPubToUse, ackRemoteToUse, seqToUse, currentState.pn, currentState.headerAad())
 
-        // Memory Hygiene
-        step.messageKey.zeroize()
-        step.messageNonce.zeroize()
+        // Memory Hygiene (sealMessage already consumed the message key and nonce)
         plaintext.zeroize()
 
         val message =
@@ -106,7 +104,7 @@ object Session {
         while (it.hasNext()) {
             val entry = it.next()
             val v = entry.value
-            if (v.isWellFormed && (now - v.storedAtMillis()) > MAX_KEY_AGE_MS) {
+            if ((now - v.storedAtMillis) > MAX_KEY_AGE_MS) {
                 // Dropped, not wiped: this buffer is still referenced by the caller's input
                 // state (see the ownership rule below). It disappears from storage when the
                 // new state is persisted.
@@ -120,16 +118,13 @@ object Session {
         val header: DecryptedHeader =
             preDecryptedHeader ?: run {
                 val sessionAad = cleanState.headerAad()
-                var decoded: DecryptedHeader? = null
-                try {
-                    decoded = decryptHeader(cleanState.headerKey, message.envelope, sessionAad)
-                } catch (e: Exception) {
+                cleanState.recvHeaderKeys().firstNotNullOfOrNull { key ->
                     try {
-                        decoded = decryptHeader(cleanState.nextHeaderKey, message.envelope, sessionAad)
-                    } catch (e2: Exception) {
+                        decryptHeader(key, message.envelope, sessionAad)
+                    } catch (e: Exception) {
+                        null
                     }
-                }
-                decoded ?: throw AuthenticationException("envelope decryption failed — incorrect key or corrupted metadata")
+                } ?: throw AuthenticationException("envelope decryption failed — incorrect key or corrupted metadata")
             }
 
         val remoteDhPub = header.dhPub
@@ -144,9 +139,9 @@ object Session {
         // 2. Check skipped message key cache first
         val cachedKey = cleanState.skippedMessageKeys[cacheKey]
         if (cachedKey != null) {
-            if (!cachedKey.isWellFormed) throw ProtocolException("invalid cached key size in cache")
-            val mk = cachedKey.messageKey()
-            val nonce = cachedKey.nonce()
+            // Copies: the cached entry belongs to the input state (see the ownership rule below).
+            val mk = cachedKey.messageKey.copyOf()
+            val nonce = cachedKey.nonce.copyOf()
             val aad = cleanState.parties.recvAad(seq, remoteDhPub, ackRemoteDhPub)
 
             val plaintext =
@@ -154,9 +149,6 @@ object Session {
                     openMessage(mk, nonce, message.ct, aad)
                 } catch (e: Exception) {
                     throw AuthenticationException("decryption failed with cached key", e)
-                } finally {
-                    mk.zeroize()
-                    nonce.zeroize()
                 }
 
             // Authenticated: the key is spent either way. A malformed plaintext is committed
@@ -203,7 +195,7 @@ object Session {
             speculativeState = performDhRatchet(speculativeState, remoteDhPub)
         }
 
-        var chainKey = ChainKey(ByteArray(0))
+        var chainKey: ChainKey? = null // the receive chain as advanced so far; owned here
         var currentStep: ChainStep? = null
         val derivedKeys = mutableListOf<SkippedMessageKey>() // fresh skipped-key entries created here
         var committed = false
@@ -250,14 +242,16 @@ object Session {
                 throw ProtocolGapException("combined skipped key gap too large: $projectedSize")
             }
 
-            chainKey = speculativeState.recvChainKey.copyOf()
+            var ck = speculativeState.recvChainKey.copyOf()
+            chainKey = ck
 
             // Advance the chain to 'seq', storing intermediate message keys
             repeat(stepsNeeded.toInt()) { i ->
-                val step = kdfCk(chainKey)
+                val step = kdfCk(ck)
                 // Zero OLD chain key immediately after step
-                chainKey.zeroize()
-                chainKey = step.newChainKey
+                ck.zeroize()
+                ck = step.newChainKey
+                chainKey = ck
 
                 val currentSeq = speculativeState.recvSeq + i + 1
                 if (currentSeq < seq) {
@@ -302,7 +296,7 @@ object Session {
                 if (isNewDhEpoch) speculativeState else speculativeState.copy(skippedMessageKeys = emptyMap()).deepCopy()
             val newState =
                 base.copy(
-                    recvChainKey = chainKey,
+                    recvChainKey = ck,
                     recvSeq = seq,
                     skippedMessageKeys = derivationSkippedKeys,
                 )
@@ -314,9 +308,6 @@ object Session {
                     openMessage(finalStep.messageKey, finalStep.messageNonce, message.ct, aad)
                 } catch (e: Exception) {
                     throw DecryptionExceptionWithState(newState, e)
-                } finally {
-                    finalStep.messageKey.zeroize()
-                    finalStep.messageNonce.zeroize()
                 }
 
             // Likewise, an authenticated frame whose plaintext is malformed (bad padding,
@@ -339,7 +330,7 @@ object Session {
         } finally {
             if (!committed) {
                 // Nothing was handed to a caller: wipe every buffer created by this call.
-                chainKey.zeroize()
+                chainKey?.zeroize()
                 currentStep?.let {
                     it.messageKey.zeroize()
                     it.messageNonce.zeroize()
@@ -386,12 +377,12 @@ object Session {
                 rootKey = stepSend.newRootKey,
                 recvChainKey = stepRecv.newChainKey,
                 sendChainKey = stepSend.newChainKey,
-                headerKey = state.nextHeaderKey.copyOf(),
+                headerKey = state.nextHeaderKey?.copyOf(),
                 sendHeaderKey = stepRecv.newHeaderKey,
                 nextHeaderKey = stepSend.newHeaderKey,
                 sendToken = newSendToken,
                 recvToken = newRecvToken,
-                prevSendHeaderKey = state.sendHeaderKey.copyOf(),
+                prevSendHeaderKey = state.sendHeaderKey?.copyOf(),
                 sendSeq = 0L,
                 recvSeq = 0L,
                 pn = state.sendSeq,
@@ -404,8 +395,8 @@ object Session {
                 bobEkPub = state.bobEkPub.copyOf(),
                 aliceFp = state.aliceFp.copyOf(),
                 bobFp = state.bobFp.copyOf(),
-                localFp = state.localFp.copyOf(),
-                remoteFp = state.remoteFp.copyOf(),
+                localFp = state.localFp?.copyOf(),
+                remoteFp = state.remoteFp?.copyOf(),
                 skippedMessageKeys = state.skippedMessageKeys.mapValues { it.value.copyOf() },
             )
 
@@ -425,8 +416,8 @@ object Session {
     ): ByteArray {
         val plaintext = ByteArray(1 + 32 + 32 + 8 + 8 + 1)
         plaintext[0] = PROTOCOL_VERSION.toByte()
-        dhPub.bytes.copyInto(plaintext, 1)
-        ackRemoteDhPub.bytes.copyInto(plaintext, 33)
+        dhPub.toByteArray().copyInto(plaintext, 1)
+        ackRemoteDhPub.toByteArray().copyInto(plaintext, 33)
         longToBeBytes(seq).copyInto(plaintext, 65)
         longToBeBytes(pn).copyInto(plaintext, 73)
         plaintext[81] = 0 // flags

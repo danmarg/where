@@ -37,7 +37,7 @@ class ConsumedInvites(
         prefs.edit().remove(key(qr)).apply()
     }
 
-    private fun key(qr: QrPayload): String = MessageDigest.getInstance("SHA-256").digest(qr.ekPub).copyOf(16).toHex()
+    private fun key(qr: QrPayload): String = MessageDigest.getInstance("SHA-256").digest(qr.ekPub.toByteArray()).copyOf(16).toHex()
 
     companion object {
         const val PREFS_NAME = "consumed_invites"

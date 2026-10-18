@@ -73,7 +73,7 @@ data class FriendEntry(
      * time and unique per invite. Lets a re-opened or redelivered invite link be rejected for as
      * long as the friend exists, including friends paired before the app tracked this.
      */
-    fun isFromInvite(qr: QrPayload): Boolean = session.aliceFp == fingerprint(DhPublicKey(qr.ekPub))
+    fun isFromInvite(qr: QrPayload): Boolean = session.aliceFp == fingerprint(qr.ekPub.toDhPublicKey())
 }
 
 /**
@@ -143,14 +143,10 @@ class E2eeManager(
     suspend fun processKeyExchangeInit(
         payload: KeyExchangeInitPayload,
         aliceSuggestedName: String,
-        aliceEkPub: ByteArray,
+        aliceEkPub: InvitePublicKey,
     ): FriendEntry? {
-        val (pending, aliceEkPubBytes) =
-            persistence.withMetadataLock {
-                val p = pendingInvites.find { it.qrPayload.ekPub.contentEquals(aliceEkPub) }
-                p to (p?.qrPayload?.ekPub)
-            }
-        if (pending == null || aliceEkPubBytes == null) return null
+        val pending = persistence.withMetadataLock { pendingInvites.find { it.qrPayload.ekPub == aliceEkPub } } ?: return null
+        val inviteKey = pending.qrPayload.ekPub
 
         val msg =
             KeyExchangeInitMessage(
@@ -169,7 +165,7 @@ class E2eeManager(
                 KeyExchange.aliceProcessInit(
                     msg = msg,
                     aliceEkPriv = priv,
-                    aliceEkPub = aliceEkPubBytes,
+                    aliceEkPub = inviteKey.toDhPublicKey(),
                 )
             } finally {
                 priv.zeroize()
@@ -177,7 +173,7 @@ class E2eeManager(
 
         // Handshake initiated, remove the pending invite (#186)
         persistence.withMetadataLock {
-            pendingInvites = pendingInvites.filter { !it.qrPayload.ekPub.contentEquals(aliceEkPubBytes) }
+            pendingInvites = pendingInvites.filter { it.qrPayload.ekPub != inviteKey }
         }
         pending.aliceEkPriv.zeroize()
 
@@ -190,7 +186,7 @@ class E2eeManager(
             )
 
         persistence.withFriendAndMetadataLock(entry.id) { _, metadata ->
-            metadata.pendingInvites = metadata.pendingInvites.filterNot { it.qrPayload.ekPub.contentEquals(aliceEkPubBytes) }
+            metadata.pendingInvites = metadata.pendingInvites.filterNot { it.qrPayload.ekPub == inviteKey }
             PersistenceAction.Update(entry) to Unit
         }
 
@@ -205,11 +201,11 @@ class E2eeManager(
      * a fresh invite rather than keep showing one scanners are about to reject.
      */
     suspend fun updateInviteName(
-        ekPub: ByteArray,
+        ekPub: InvitePublicKey,
         suggestedName: String,
     ): QrPayload? =
         persistence.withMetadataLock {
-            val old = pendingInvites.find { it.qrPayload.ekPub.contentEquals(ekPub) } ?: return@withMetadataLock null
+            val old = pendingInvites.find { it.qrPayload.ekPub == ekPub } ?: return@withMetadataLock null
             val expiresAt = old.qrPayload.expiresAt
             if (expiresAt != null && expiresAt - currentTimeSeconds() < INVITE_RENAME_MIN_REMAINING_SECONDS) {
                 return@withMetadataLock null
@@ -224,17 +220,17 @@ class E2eeManager(
             pendingInvites.map { it.toView() }
         }
 
-    suspend fun clearInvite(ekPub: ByteArray) {
+    suspend fun clearInvite(ekPub: InvitePublicKey) {
         persistence.withMetadataLock {
-            pendingInvites = pendingInvites.filterNot { it.qrPayload.ekPub.contentEquals(ekPub) }
+            pendingInvites = pendingInvites.filterNot { it.qrPayload.ekPub == ekPub }
         }
     }
 
-    suspend fun markInviteExported(ekPub: ByteArray) {
+    suspend fun markInviteExported(ekPub: InvitePublicKey) {
         persistence.withMetadataLock {
             pendingInvites =
                 pendingInvites.map {
-                    if (it.qrPayload.ekPub.contentEquals(ekPub)) {
+                    if (it.qrPayload.ekPub == ekPub) {
                         it.copy(exportedAt = currentTimeSeconds())
                     } else {
                         it
@@ -422,7 +418,7 @@ class E2eeManager(
                 payloadBlob = E2eeStore.json.encodeToString(MailboxPayload.serializer(), payload).encodeToByteArray(),
                 createdAt = currentTimeMillis(),
             )
-            if (metadata.pendingInvites.any { it.qrPayload.ekPub.contentEquals(qr.ekPub) }) {
+            if (metadata.pendingInvites.any { it.qrPayload.ekPub == qr.ekPub }) {
                 throw SelfPairingException()
             }
             // Checked under the store lock, so two confirms of the same invite can't both pair.
@@ -619,20 +615,21 @@ class E2eeManager(
         }
     }
 
+    @Suppress("RawKeyBytes") // bobEkPub is the scanner's key as received; fromWire checks it
     suspend fun decryptSuggestedName(
-        aliceEkPub: ByteArray,
+        aliceEkPub: InvitePublicKey,
         bobEkPub: ByteArray,
         encryptedName: ByteArray,
     ): String? {
         return persistence.withMetadataLock {
-            val pending = pendingInvites.find { it.qrPayload.ekPub.contentEquals(aliceEkPub) }
+            val pending = pendingInvites.find { it.qrPayload.ekPub == aliceEkPub }
             if (pending == null) return@withMetadataLock null
             try {
                 val bobPub = DhPublicKey.fromWire(bobEkPub)
                 val sk = dh(pending.aliceEkPriv, bobPub)
                 try {
                     KeyExchange.requireNonZeroSharedSecret(sk)
-                    KeyExchange.decryptSuggestedName(sk, DhPublicKey(aliceEkPub), bobPub, encryptedName)
+                    KeyExchange.decryptSuggestedName(sk, aliceEkPub.toDhPublicKey(), bobPub, encryptedName)
                 } finally {
                     sk.zeroize()
                 }

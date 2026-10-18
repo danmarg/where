@@ -199,7 +199,6 @@ open class LocationClient(
                                 store.addDiagnosticEvent("Failed to decrypt suggested_name for invite from discovery=$discoveryHex")
                                 PendingInviteResult(
                                     payload = last,
-                                    scannerEkPub = last.ekPub,
                                     inviteEkPub = invite.qrPayload.ekPub,
                                     multipleScansDetected = inits.size > 1,
                                     pairingError = "Handshake failed: Cryptographic verification error.",
@@ -210,7 +209,6 @@ open class LocationClient(
                                 val populatedPayload = last.copy(suggestedName = decryptedName)
                                 PendingInviteResult(
                                     payload = populatedPayload,
-                                    scannerEkPub = last.ekPub,
                                     inviteEkPub = invite.qrPayload.ekPub,
                                     multipleScansDetected = inits.size > 1,
                                 )

@@ -36,6 +36,7 @@ import net.af0.where.e2ee.E2eeManager
 import net.af0.where.e2ee.FriendEntry
 import net.af0.where.e2ee.InviteAlreadyAcceptedException
 import net.af0.where.e2ee.InviteExpiredException
+import net.af0.where.e2ee.InvitePublicKey
 import net.af0.where.e2ee.InviteState
 import net.af0.where.e2ee.KeyExchangeInitPayload
 import net.af0.where.e2ee.LocationClient
@@ -629,7 +630,7 @@ class LocationViewModel(
         }
     }
 
-    fun cancelPendingInvite(ekPub: ByteArray) {
+    fun cancelPendingInvite(ekPub: InvitePublicKey) {
         viewModelScope.launch {
             e2eeManager.clearInvite(ekPub)
         }
@@ -649,7 +650,7 @@ class LocationViewModel(
         }
     }
 
-    fun markInviteExported(ekPub: ByteArray) {
+    fun markInviteExported(ekPub: InvitePublicKey) {
         viewModelScope.launch {
             e2eeManager.markInviteExported(ekPub)
         }

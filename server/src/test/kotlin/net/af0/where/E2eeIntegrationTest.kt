@@ -44,7 +44,7 @@ class E2eeIntegrationTest {
     fun `key exchange produces identical routing token and chain key on both sides`() {
         val (qr, aliceEkPriv) = KeyExchange.aliceCreateQrPayload("Alice")
         val (initMsg, bobSession) = KeyExchange.bobProcessQr(qr, "Bob")
-        val aliceSession = KeyExchange.aliceProcessInit(initMsg, aliceEkPriv, qr.ekPub)
+        val aliceSession = KeyExchange.aliceProcessInit(initMsg, aliceEkPriv, DhPublicKey(qr.ekPub.toByteArray()))
 
         // In the new Sealed Envelope protocol, Alice performs an initial DH ratchet
         // rotation (Epoch 1) immediately after receiving the KeyExchangeInit
@@ -53,14 +53,14 @@ class E2eeIntegrationTest {
 
         // Alice's PREVIOUS send token (Epoch 0) must match Bob's current recv token (Epoch 0).
         assertEquals(
-            aliceSession.prevSendToken,
-            bobSession.recvToken,
+            aliceSession.prevSendToken.toHex(),
+            bobSession.recvToken.toHex(),
             "Alice's prevSendToken must equal Bob's recv token",
         )
         // Alice's current recv token (Epoch 0 receiver) must match Bob's current send token (Epoch 0 sender).
         assertEquals(
-            aliceSession.recvToken,
-            bobSession.sendToken,
+            aliceSession.recvToken.toHex(),
+            bobSession.sendToken.toHex(),
             "Alice's recv token must equal Bob's send token",
         )
 
@@ -86,7 +86,7 @@ class E2eeIntegrationTest {
             // Key exchange
             val (qr, aliceEkPriv) = KeyExchange.aliceCreateQrPayload("Alice")
             val (initMsg, bobSession) = KeyExchange.bobProcessQr(qr, "Bob")
-            val aliceSession = KeyExchange.aliceProcessInit(initMsg, aliceEkPriv, qr.ekPub)
+            val aliceSession = KeyExchange.aliceProcessInit(initMsg, aliceEkPriv, DhPublicKey(qr.ekPub.toByteArray()))
 
             val token = aliceSession.sendToken.toHex()
 
@@ -126,7 +126,7 @@ class E2eeIntegrationTest {
 
             val (qr, aliceEkPriv) = KeyExchange.aliceCreateQrPayload("Alice")
             val (initMsg, bobState) = KeyExchange.bobProcessQr(qr, "Bob")
-            val aliceState0 = KeyExchange.aliceProcessInit(initMsg, aliceEkPriv, qr.ekPub)
+            val aliceState0 = KeyExchange.aliceProcessInit(initMsg, aliceEkPriv, DhPublicKey(qr.ekPub.toByteArray()))
             val token = aliceState0.sendToken.toHex()
 
             val locations =
@@ -171,7 +171,7 @@ class E2eeIntegrationTest {
 
             val (qr, aliceEkPriv) = KeyExchange.aliceCreateQrPayload("Alice")
             val (initMsg, bobSession) = KeyExchange.bobProcessQr(qr, "Bob")
-            val aliceSession = KeyExchange.aliceProcessInit(initMsg, aliceEkPriv, qr.ekPub)
+            val aliceSession = KeyExchange.aliceProcessInit(initMsg, aliceEkPriv, DhPublicKey(qr.ekPub.toByteArray()))
             val token = aliceSession.sendToken.toHex()
 
             val location = MessagePlaintext.Location(lat = 51.5, lng = -0.12, acc = 5.0, ts = 1_700_000_002L)
@@ -207,7 +207,7 @@ class E2eeIntegrationTest {
 
             val (qr, aliceEkPriv) = KeyExchange.aliceCreateQrPayload("Alice")
             val (initMsg, bobState0) = KeyExchange.bobProcessQr(qr, "Bob")
-            var aliceState = KeyExchange.aliceProcessInit(initMsg, aliceEkPriv, qr.ekPub)
+            var aliceState = KeyExchange.aliceProcessInit(initMsg, aliceEkPriv, DhPublicKey(qr.ekPub.toByteArray()))
             var bobState = bobState0
 
             val oldToken = aliceState.sendToken.toHex()
@@ -273,7 +273,7 @@ class E2eeIntegrationTest {
     fun `skipped messages within same epoch are decryptable`() {
         val (qr, aliceEkPriv) = KeyExchange.aliceCreateQrPayload("Alice")
         val (initMsg, bobState0) = KeyExchange.bobProcessQr(qr, "Bob")
-        val aliceState = KeyExchange.aliceProcessInit(initMsg, aliceEkPriv, qr.ekPub)
+        val aliceState = KeyExchange.aliceProcessInit(initMsg, aliceEkPriv, DhPublicKey(qr.ekPub.toByteArray()))
 
         // Alice encrypts two locations in the same epoch (Epoch 1)
         val location = MessagePlaintext.Location(lat = 1.0, lng = 2.0, acc = 1.0, ts = 1000L)
@@ -305,7 +305,7 @@ class E2eeIntegrationTest {
 
             val (qr, aliceEkPriv) = KeyExchange.aliceCreateQrPayload("Alice")
             val (initMsg, _) = KeyExchange.bobProcessQr(qr, "Bob")
-            val aliceSession = KeyExchange.aliceProcessInit(initMsg, aliceEkPriv, qr.ekPub)
+            val aliceSession = KeyExchange.aliceProcessInit(initMsg, aliceEkPriv, DhPublicKey(qr.ekPub.toByteArray()))
 
             val location = MessagePlaintext.Location(lat = 48.8566, lng = 2.3522, acc = 15.0, ts = 1_700_000_003L)
             val (newAliceState, message) = Session.encryptMessage(aliceSession, location)

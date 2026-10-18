@@ -43,7 +43,10 @@ jobs:
           sudo apt-get install -y libsodium-dev
 
       - name: Run ktlint
-        run: ./gradlew :server:ktlintCheck :android:ktlintCheck :cli:ktlintCheck :shared:ktlintCheck
+        run: ./gradlew :server:ktlintCheck :android:ktlintCheck :cli:ktlintCheck :shared:ktlintCheck :detekt-rules:ktlintCheck
+
+      - name: Run detekt (E2EE rules)
+        run: ./gradlew :detekt-rules:test :shared:detekt
 
       - name: Run shared + server tests (JVM)
         run: |

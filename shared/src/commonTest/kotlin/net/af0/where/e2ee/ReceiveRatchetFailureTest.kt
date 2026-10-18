@@ -1,3 +1,5 @@
+@file:OptIn(RawKeyAccess::class)
+
 package net.af0.where.e2ee
 
 import kotlin.test.Test
@@ -29,9 +31,9 @@ class ReceiveRatchetFailureTest {
         val sessionAad = bobSession.headerAad()
         val header =
             try {
-                Session.decryptHeader(bobSession.headerKey, original.envelope, sessionAad)
+                Session.decryptHeader(bobSession.headerKey!!, original.envelope, sessionAad)
             } catch (_: Exception) {
-                Session.decryptHeader(bobSession.nextHeaderKey, original.envelope, sessionAad)
+                Session.decryptHeader(bobSession.nextHeaderKey!!, original.envelope, sessionAad)
             }
 
         val tampered =
@@ -129,7 +131,7 @@ class ReceiveRatchetFailureTest {
         // Alice's next frame opens a new epoch with pn = 2; Bob has only seen seq 1.
         val (_, newEpoch) = Session.encryptMessage(alice, loc(3))
         val sessionAad = bob.headerAad()
-        val stragglerHeader = Session.decryptHeader(bob.headerKey, m2.envelope, sessionAad)
+        val stragglerHeader = Session.decryptHeader(bob.headerKey!!, m2.envelope, sessionAad)
 
         bob = expectSoftFail(bob, tamper(newEpoch))
 
@@ -149,7 +151,7 @@ class ReceiveRatchetFailureTest {
         val (a3, m3) = Session.encryptMessage(a2, loc(3))
         alice = a3
         bob = Session.decryptMessage(bob, m1).delivered().state
-        val malformedHeader = Session.decryptHeader(bob.headerKey, malformed.envelope, bob.headerAad())
+        val malformedHeader = Session.decryptHeader(bob.headerKey!!, malformed.envelope, bob.headerAad())
         bob = Session.decryptMessage(bob, m3).delivered().state
         assertEquals(1, bob.skippedMessageKeys.size)
 
@@ -225,14 +227,14 @@ class ReceiveRatchetFailureTest {
             listOf(
                 bob.rootKey, bob.sendChainKey, bob.recvChainKey, bob.localDhPriv, bob.headerKey,
                 bob.sendHeaderKey, bob.nextHeaderKey, bob.prevSendHeaderKey, bob.aliceFp, bob.localFp,
-            ) + bob.skippedMessageKeys.values
+            ).map { it!!.bytes } + bob.skippedMessageKeys.values.flatMap { listOf(it.messageKey.bytes, it.nonce.bytes) }
         val outputBuffers =
             listOf(
                 ratcheted.rootKey, ratcheted.sendChainKey, ratcheted.recvChainKey, ratcheted.localDhPriv,
                 ratcheted.headerKey, ratcheted.sendHeaderKey, ratcheted.nextHeaderKey,
                 ratcheted.prevSendHeaderKey, ratcheted.aliceFp, ratcheted.localFp,
-            ) + ratcheted.skippedMessageKeys.values
-        assertTrue(outputBuffers.none { out -> inputBuffers.any { it.bytes === out.bytes } }, "new-epoch state aliases input buffers")
+            ).map { it!!.bytes } + ratcheted.skippedMessageKeys.values.flatMap { listOf(it.messageKey.bytes, it.nonce.bytes) }
+        assertTrue(outputBuffers.none { out -> inputBuffers.any { it === out } }, "new-epoch state aliases input buffers")
         assertInputUnchanged(bob) { Session.decryptMessage(it, tamper(m5)).undeliverable() }
     }
 
@@ -266,7 +268,7 @@ class ReceiveRatchetFailureTest {
     private fun pair(): Pair<SessionState, SessionState> {
         val (qr, aliceEkPriv) = KeyExchange.aliceCreateQrPayload("Alice")
         val (msg, bobSession) = KeyExchange.bobProcessQr(qr, "Bob")
-        return KeyExchange.aliceProcessInit(msg, aliceEkPriv, qr.ekPub) to bobSession
+        return KeyExchange.aliceProcessInit(msg, aliceEkPriv, qr.ekPub.toDhPublicKey()) to bobSession
     }
 
     private fun loc(i: Int) = MessagePlaintext.Location(i.toDouble(), 2.0, 3.0, i.toLong())

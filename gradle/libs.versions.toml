@@ -24,8 +24,12 @@ security-crypto = "1.1.0-alpha06"
 moko-resources = "0.24.5"
 work = "2.9.1"
 maplibre = "11.11.0"
+detekt = "1.23.8"
 
 [libraries]
+# detekt (custom e2ee rules in :detekt-rules)
+detekt-api = { module = "io.gitlab.arturbosch.detekt:detekt-api", version.ref = "detekt" }
+detekt-test = { module = "io.gitlab.arturbosch.detekt:detekt-test", version.ref = "detekt" }
 # Moko Resources
 moko-resources = { module = "dev.icerock.moko:resources", version.ref = "moko-resources" }
 moko-resources-compose = { module = "dev.icerock.moko:resources-compose", version.ref = "moko-resources" }
@@ -112,3 +116,4 @@ compose-compiler = { id = "org.jetbrains.kotlin.plugin.compose", version.ref = "
 ktlint = { id = "org.jlleitschuh.gradle.ktlint", version = "12.2.0" }
 moko-resources = { id = "dev.icerock.mobile.multiplatform-resources", version.ref = "moko-resources" }
 sqldelight = { id = "app.cash.sqldelight", version.ref = "sqldelight" }
+detekt = { id = "io.gitlab.arturbosch.detekt", version.ref = "detekt" }

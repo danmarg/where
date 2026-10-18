@@ -16,10 +16,11 @@ private val qrJson =
 
 /**
  * Raw X25519 keypair. Both fields are 32-byte little-endian representations
- * as defined by RFC 7748.
+ * as defined by RFC 7748. Output of the platform keygen primitive; callers wrap it at once.
  */
+@Suppress("RawKeyBytes")
 data class RawKeyPair(val priv: ByteArray, val pub: ByteArray) {
-    override fun equals(other: Any?): Boolean = other is RawKeyPair && priv.contentEquals(other.priv) && pub.contentEquals(other.pub)
+    override fun equals(other: Any?): Boolean = other is RawKeyPair && constantTimeEquals(priv, other.priv) && pub.contentEquals(other.pub)
 
     override fun hashCode(): Int = 31 * priv.contentHashCode() + pub.contentHashCode()
 }
@@ -33,8 +34,8 @@ data class SessionState(
     val rootKey: RootKey,
     val sendChainKey: ChainKey,
     val recvChainKey: ChainKey,
-    val sendToken: RoutingToken,
-    val recvToken: RoutingToken,
+    val sendToken: SendToken,
+    val recvToken: RecvToken,
     val sendSeq: Long,
     val recvSeq: Long,
     // SECURITY NOTE: We rely on the app layer to store the serialized SessionState in
@@ -47,22 +48,31 @@ data class SessionState(
     val bobEkPub: DhPublicKey,
     val aliceFp: Fingerprint,
     val bobFp: Fingerprint,
-    val localFp: Fingerprint = Fingerprint(ByteArray(0)),
-    val remoteFp: Fingerprint = Fingerprint(ByteArray(0)),
-    val prevSendToken: RoutingToken,
-    val prevSendHeaderKey: HeaderKey = HeaderKey(ByteArray(0)),
+    // Null (stored as "") in sessions from before these fields existed; see EmptyAsNullSerializer.
+    @Serializable(with = Fingerprint.NullableSerializer::class)
+    val localFp: Fingerprint? = null,
+    @Serializable(with = Fingerprint.NullableSerializer::class)
+    val remoteFp: Fingerprint? = null,
+    val prevSendToken: SendToken,
+    @Serializable(with = HeaderKey.NullableSerializer::class)
+    val prevSendHeaderKey: HeaderKey? = null,
     val isAlice: Boolean,
     // REPLAY PROTECTION & OUT-OF-ORDER SUPPORT
     // Map of (remoteDhPubHex + ":" + seq) to the cached key for that message
+    @Serializable(with = SkippedKeysSerializer::class)
     val skippedMessageKeys: Map<String, SkippedMessageKey> = emptyMap(),
     // Previous send and receive chain lengths (§4.4) - used to bind sequence numbers across epochs in AAD.
     val pn: Long = 0,
     val pr: Long = 0,
     // (A former `needsRatchet` flag is ignored when loading old blobs: ignoreUnknownKeys.)
-    // HEADER ENCRYPTION (#186)
-    val headerKey: HeaderKey = HeaderKey(ByteArray(0)),
-    val sendHeaderKey: HeaderKey = HeaderKey(ByteArray(0)),
-    val nextHeaderKey: HeaderKey = HeaderKey(ByteArray(0)),
+    // HEADER ENCRYPTION (#186). Null (stored as "") in sessions from before header encryption,
+    // which can no longer send or receive and must be re-paired.
+    @Serializable(with = HeaderKey.NullableSerializer::class)
+    val headerKey: HeaderKey? = null,
+    @Serializable(with = HeaderKey.NullableSerializer::class)
+    val sendHeaderKey: HeaderKey? = null,
+    @Serializable(with = HeaderKey.NullableSerializer::class)
+    val nextHeaderKey: HeaderKey? = null,
 ) {
     /**
      * This party's and the peer's fingerprints, for direction-bound tokens and AAD. Derived from
@@ -76,11 +86,17 @@ data class SessionState(
      * seals it (§4.3). The first message of an epoch goes to the previous epoch's mailbox under the
      * previous header key, because the peer is still polling there; later ones use the current pair.
      */
-    internal fun transportFor(seq: Long): Transport =
-        if (seq == 1L) Transport(prevSendToken, prevSendHeaderKey) else Transport(sendToken, sendHeaderKey)
+    internal fun transportFor(seq: Long): Transport {
+        val (token, key) = if (seq == 1L) prevSendToken to prevSendHeaderKey else sendToken to sendHeaderKey
+        val name = if (seq == 1L) "prevSendHeaderKey" else "sendHeaderKey"
+        return Transport(token, key ?: throw SessionBrickedException("stored session has no $name; re-pair"))
+    }
+
+    /** The receive header keys to try on an envelope, current epoch first. */
+    internal fun recvHeaderKeys(): List<HeaderKey> = listOfNotNull(headerKey, nextHeaderKey)
 
     /** Header AAD (#186): both bootstrap fingerprints, Alice's first, the same on both sides. */
-    internal fun headerAad(): ByteArray = aliceFp.bytes + bobFp.bytes
+    internal fun headerAad(): ByteArray = aliceFp.toByteArray() + bobFp.toByteArray()
 
     /**
      * Creates a deep copy of the session state, ensuring all key
@@ -95,20 +111,20 @@ data class SessionState(
             sendToken = sendToken.copyOf(),
             recvToken = recvToken.copyOf(),
             localDhPriv = localDhPriv.copyOf(),
-            prevSendHeaderKey = prevSendHeaderKey.copyOf(),
+            prevSendHeaderKey = prevSendHeaderKey?.copyOf(),
             localDhPub = localDhPub.copyOf(),
             remoteDhPub = remoteDhPub.copyOf(),
             aliceEkPub = aliceEkPub.copyOf(),
             bobEkPub = bobEkPub.copyOf(),
             aliceFp = aliceFp.copyOf(),
             bobFp = bobFp.copyOf(),
-            localFp = localFp.copyOf(),
-            remoteFp = remoteFp.copyOf(),
+            localFp = localFp?.copyOf(),
+            remoteFp = remoteFp?.copyOf(),
             prevSendToken = prevSendToken.copyOf(),
             skippedMessageKeys = skippedMessageKeys.mapValues { it.value.copyOf() },
-            headerKey = headerKey.copyOf(),
-            sendHeaderKey = sendHeaderKey.copyOf(),
-            nextHeaderKey = nextHeaderKey.copyOf(),
+            headerKey = headerKey?.copyOf(),
+            sendHeaderKey = sendHeaderKey?.copyOf(),
+            nextHeaderKey = nextHeaderKey?.copyOf(),
         )
 
     /**
@@ -117,7 +133,7 @@ data class SessionState(
      * buffers may be shared with another live state.
      */
     internal fun zeroizeAll() {
-        keyFields().forEach { it.zeroize() }
+        keyFields().forEach { it?.zeroize() }
         skippedMessageKeys.values.forEach { it.zeroize() }
     }
 
@@ -130,7 +146,7 @@ data class SessionState(
      * arguments and can't be driven from a list — SessionStateDeepCopyTest guards that one
      * against the same field-added-but-missed risk instead.
      */
-    private fun keyFields(): Array<KeyBytes> =
+    private fun keyFields(): Array<KeyBytes?> =
         arrayOf(
             rootKey, sendChainKey, recvChainKey, sendToken, recvToken,
             localDhPriv, localDhPub, remoteDhPub, aliceEkPub, bobEkPub,
@@ -153,7 +169,7 @@ data class SessionState(
 
     override fun hashCode(): Int {
         var h = 0
-        for (field in keyFields()) h = 31 * h + field.hashCode()
+        for (field in keyFields()) h = 31 * h + (field?.hashCode() ?: 0)
         h = 31 * h + sendSeq.hashCode()
         h = 31 * h + recvSeq.hashCode()
         h = 31 * h + isAlice.hashCode()
@@ -215,12 +231,12 @@ data class QrPayload(
     val protocolVersion: Int = PROTOCOL_VERSION,
     // Alice's ephemeral X25519 public key (32 bytes)
     @SerialName("ek_pub")
-    @Serializable(with = ByteArrayBase64Serializer::class) val ekPub: ByteArray,
+    val ekPub: InvitePublicKey,
     @SerialName("suggested_name")
     val suggestedName: String,
     // Fresh random 32-byte secret; HKDF IKM for the discovery token (§4.2).
     @SerialName("discovery_secret")
-    @Serializable(with = ByteArrayBase64Serializer::class) val discoverySecret: ByteArray,
+    val discoverySecret: DiscoverySecret,
     // Epoch seconds after which the inviter may have dropped this invite. Optional: payloads from
     // older clients omit it (never expires), and older clients ignore it. UX metadata only; it is
     // unauthenticated and not a security control (see docs/e2ee-location-sync.md §4.2).
@@ -234,15 +250,15 @@ data class QrPayload(
 
     override fun equals(other: Any?): Boolean {
         if (other !is QrPayload) return false
-        return protocolVersion == other.protocolVersion && ekPub.contentEquals(other.ekPub) && suggestedName == other.suggestedName &&
-            discoverySecret.contentEquals(other.discoverySecret) && expiresAt == other.expiresAt
+        return protocolVersion == other.protocolVersion && ekPub == other.ekPub && suggestedName == other.suggestedName &&
+            discoverySecret.constantTimeEquals(other.discoverySecret) && expiresAt == other.expiresAt
     }
 
     override fun hashCode(): Int {
         var h = protocolVersion
-        h = 31 * h + ekPub.contentHashCode()
+        h = 31 * h + ekPub.hashCode()
         h = 31 * h + suggestedName.hashCode()
-        h = 31 * h + discoverySecret.contentHashCode()
+        h = 31 * h + discoverySecret.hashCode()
         h = 31 * h + (expiresAt?.hashCode() ?: 0)
         return h
     }
@@ -282,7 +298,8 @@ data class QrPayload(
 /** Bob's KeyExchangeInit message sent to the mailbox. */
 data class KeyExchangeInitMessage(
     val protocolVersion: Int = PROTOCOL_VERSION,
-    // Bob's ephemeral X25519 public key
+    // Bob's ephemeral X25519 public key, as on the wire (checked by DhPublicKey.fromWire)
+    @Suppress("RawKeyBytes")
     @Serializable(with = ByteArrayBase64Serializer::class) val ekPub: ByteArray,
     // HMAC-SHA-256(SK, "Where-v1-Confirm" || EK_A.pub || EK_B.pub)
     @Serializable(with = ByteArrayBase64Serializer::class) val keyConfirmation: ByteArray,
@@ -318,35 +335,13 @@ sealed class ConnectionStatus {
 
 /** Result of polling for incoming handshakes (KeyExchangeInit). */
 data class PendingInviteResult(
+    // Its ekPub is the scanner's public key, as received (checked where it is used).
     val payload: KeyExchangeInitPayload,
-    // The public key of the person who scanned our QR
-    val scannerEkPub: ByteArray,
     // The public key of the QR code they scanned (ours)
-    val inviteEkPub: ByteArray,
+    val inviteEkPub: InvitePublicKey,
     val multipleScansDetected: Boolean,
     val pairingError: String? = null,
-) {
-    override fun equals(other: Any?): Boolean {
-        if (this === other) return true
-        if (other == null || this::class != other::class) return false
-        other as PendingInviteResult
-        if (payload != other.payload) return false
-        if (!scannerEkPub.contentEquals(other.scannerEkPub)) return false
-        if (!inviteEkPub.contentEquals(other.inviteEkPub)) return false
-        if (multipleScansDetected != other.multipleScansDetected) return false
-        if (pairingError != other.pairingError) return false
-        return true
-    }
-
-    override fun hashCode(): Int {
-        var result = payload.hashCode()
-        result = 31 * result + scannerEkPub.contentHashCode()
-        result = 31 * result + inviteEkPub.contentHashCode()
-        result = 31 * result + multipleScansDetected.hashCode()
-        result = 31 * result + (pairingError?.hashCode() ?: 0)
-        return result
-    }
-}
+)
 
 /**
  * A message that is pending delivery (used for transactional safety and recovery).
@@ -360,7 +355,7 @@ data class EncryptedOutboxMessage(
 )
 
 /** Mailbox and header key for one outgoing message; see [SessionState.transportFor]. */
-internal class Transport(val token: RoutingToken, val headerKey: HeaderKey)
+internal class Transport(val token: SendToken, val headerKey: HeaderKey)
 
 /**
  * An encrypted message, the state to persist after sending it, and the mailbox it must be posted
@@ -369,7 +364,7 @@ internal class Transport(val token: RoutingToken, val headerKey: HeaderKey)
 data class OutgoingMessage(
     val state: SessionState,
     val payload: EncryptedMessagePayload,
-    val destination: RoutingToken,
+    val destination: SendToken,
 )
 
 /**
