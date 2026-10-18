@@ -73,7 +73,7 @@ VARIABLES
     sent,       \* keys each client sent
     accepted,   \* keys each client accepted (delivered and saved)
     everPosted, \* every message ever stored, for Dup
-    lostKeys,   \* keys the server lost or expired before acceptance
+    lostKeys,   \* keys the server lost or expired before the peer accepted them
     ackedUnread, \* keys a client acked (deleted) without accepting them, e.g. by force-ACK
     flags       \* violations recorded by actions (checked by invariants)
 
@@ -310,7 +310,7 @@ Lose ==
     /\ losses < MaxLoss
     /\ \E t \in Tokens : \E m \in mbox[t] :
           /\ mbox' = [mbox EXCEPT ![t] = @ \ {m}]
-          /\ lostKeys' = lostKeys \cup {KeyOf(m)}
+          /\ lostKeys' = IF KeyOf(m) \in accepted[Peer(m.from)] THEN lostKeys ELSE lostKeys \cup {KeyOf(m)}
     /\ losses' = losses + 1
     /\ UNCHANGED <<session, outbox, inflight, polledTok, toAck, ackForced, silent, posting, clock,
                    sends, urgent, crashes, dups, sent, accepted, everPosted, ackedUnread, flags>>
@@ -335,7 +335,7 @@ Expire ==
     /\ \E t \in Tokens : \E m \in mbox[t] :
           /\ clock - m.at >= TTL
           /\ mbox' = [mbox EXCEPT ![t] = @ \ {m}]
-          /\ lostKeys' = lostKeys \cup {KeyOf(m)}
+          /\ lostKeys' = IF KeyOf(m) \in accepted[Peer(m.from)] THEN lostKeys ELSE lostKeys \cup {KeyOf(m)}
     /\ UNCHANGED <<session, outbox, inflight, polledTok, toAck, ackForced, silent, posting, clock,
                    sends, urgent, crashes, losses, dups, sent, accepted, everPosted, ackedUnread, flags>>
 

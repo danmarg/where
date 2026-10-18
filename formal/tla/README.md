@@ -34,7 +34,7 @@ Safety (invariants):
 | `AcksOnlyProcessed` | A non-forced ack never deletes a frame the receiver hasn't accepted (a rejected, unopenable or never-processed one). |
 | `NoStrandedMessages` | While the server has lost nothing: a client never polls only a retired token while unread messages wait on a newer one (the epoch's transition frame is still on its way to the polled token). |
 | `NoSilentDrop` | Every frame sent has been accepted by the peer, or is still queued, on the server or in the peer's hands, or the server lost or expired it, or the peer acked it without accepting it. Nothing disappears from an outbox unsent. |
-| `NoUnreadAcks` | While the server keeps everything it stored, no client acks (deletes) a frame it hasn't accepted. Replays and duplicates are acked as processed; a force-ack only ever clears frames a loss made unprocessable. A protocol bug that leaves frames unopenable or rejected fails here, not only in liveness. |
+| `NoUnreadAcks` | While the server keeps everything it stored, no client acks (deletes) a frame it hasn't accepted. Replays and duplicates are acked as processed; a force-ack only ever clears frames a loss or expiry made unprocessable. A protocol bug that leaves frames unopenable or rejected fails here, not only in liveness. |
 
 Liveness (weak fairness on posting, dequeuing, polling, processing and acking; none on sending,
 which is the user's choice, so the properties are checked whenever the clients stop sending;

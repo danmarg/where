@@ -4,12 +4,14 @@ property that rule protects. A property no mutant can violate would be passing v
 
     TLA2TOOLS=/path/to/tla2tools.jar formal/tla/check-mutants.py [name-substring ...]
 """
-import os, re, shutil, subprocess, sys, tempfile
+import os, re, shutil, subprocess, sys, tempfile, time
 here = os.path.dirname(os.path.abspath(__file__))
 src = open(os.path.join(here, 'WhereSync.tla')).read()
 jar = os.environ['TLA2TOOLS']
 work = tempfile.mkdtemp(prefix='wheresync-mutants-')
-TIMEOUT = 1200  # per TLC run (the largest probe config takes ~4 min on 4 cores); a timeout is a MISS
+TIMEOUT = 480  # per TLC run (the largest probe config takes ~4 min on 4 cores); a timeout is a MISS
+BUDGET = 60 * 60  # whole script; runs past it are reported as not run
+started = time.monotonic()
 
 def cfg(sends=2, urgent=0, crashes=0, loss=0, dup=0, clock=0, cap=2, live=False, props=None, invariants=True):
     body = f"""CONSTANTS
@@ -29,6 +31,23 @@ def cfg(sends=2, urgent=0, crashes=0, loss=0, dup=0, clock=0, cap=2, live=False,
     if live: body += "PROPERTIES " + " ".join(props or ["AllDelivered", "EventuallySameEpoch"]) + "\n"
     body += "CHECK_DEADLOCK FALSE\n"
     return body
+
+def run_tlc(d):
+    """TLC's stdout, or a marker: 'timed out', 'not run' (over budget), or 'error: <first Error line>'."""
+    if time.monotonic() - started > BUDGET:
+        return 'not run'
+    try:
+        r = subprocess.run(['java', '-Xss16m', '-cp', jar, 'tlc2.TLC', '-workers', 'auto', '-cleanup', '-metadir', os.path.join(d, 'st'),
+                            '-config', 'm.cfg', 'WhereSync.tla'], cwd=d, capture_output=True, text=True, timeout=TIMEOUT)
+    except subprocess.TimeoutExpired:
+        return 'timed out'
+    out = r.stdout + r.stderr
+    violated = re.search(r'(?:Invariant \w+ is|Temporal propert(?:y \w+ was|ies were)) violated', out)
+    if not violated:
+        errors = [l for l in out.splitlines() if l.startswith('Error:')]
+        if errors or r.returncode not in (0,):
+            return 'error: ' + (errors[0] if errors else f'TLC exited {r.returncode}')
+    return out
 
 M = [
   # (name, old, new, cfg kwargs, expected property)
@@ -61,7 +80,7 @@ M = [
   ("header keys not rotated",
    "!.hk = s.nhk, !.shk = s.root + 1, !.nhk = s.root + 2,",
    "!.hk = s.hk, !.shk = s.root + 1, !.nhk = s.root + 2,",
-   dict(sends=2, live=True, props=["AllDelivered"]), "AllDelivered"),
+   dict(sends=2, live=True, props=["AllDelivered"], invariants=False), "AllDelivered"),
   ("cancel on every ratchet, as a safety check",
    "IF advanced /\\ s0.prevSendTok # s0.sendTok", "IF advanced",
    dict(sends=1), "NoSilentDrop"),
@@ -86,17 +105,14 @@ for name, old, new, kw, expect in M:
     d = os.path.join(work, re.sub(r'\W+', '_', name)); os.makedirs(d, exist_ok=True)
     open(os.path.join(d, 'WhereSync.tla'), 'w').write(src.replace(old, new))
     open(os.path.join(d, 'm.cfg'), 'w').write(cfg(**kw))
-    try:
-        r = subprocess.run(['java', '-Xss16m', '-cp', jar, 'tlc2.TLC', '-workers', 'auto', '-cleanup', '-metadir', os.path.join(d, 'st'),
-                            '-config', 'm.cfg', 'WhereSync.tla'], cwd=d, capture_output=True, text=True, timeout=TIMEOUT)
-        out = r.stdout
-    except subprocess.TimeoutExpired:
-        out = 'timed out'
+    out = run_tlc(d)
     found = re.findall(r'(?:Invariant|Temporal property) (\w+) (?:is|was) violated', out)
-    if 'The error occurred when TLC was evaluating' in out:
-        found.append('a TLC evaluation error')
     if out == 'timed out':
         found.append(f'nothing (timed out after {TIMEOUT} s)')
+    elif out == 'not run':
+        found.append('nothing (not run: over the time budget)')
+    elif out.startswith('error: '):
+        found.append(out)
     # TLC 1.7.x doesn't name the temporal property; each liveness mutant checks exactly one.
     if 'Temporal properties were violated' in out:
         found += kw['props']
@@ -110,7 +126,7 @@ for name, old, new, kw, expect in M:
 CRASH = """    /\\ crashes' = crashes + 1
     /\\ inflight' = [inflight EXCEPT ![c] = {}]"""
 CRASH_UNCHANGED = """    /\\ UNCHANGED <<session, outbox, mbox, clock, sends, urgent, losses, dups, sent, accepted,
-                   everPosted, lostKeys, flags>>"""
+                   everPosted, lostKeys, ackedUnread, flags>>"""
 P = [
   # (name, config, edits [(old, new)], extra invariant definition or None)
   ("a skipped key is cached", "WhereSyncSafetyLoss", [], "Probe == \\A c \\in Clients : session[c].skipped = {}"),
@@ -144,13 +160,10 @@ for name, config, edits, probe in P:
     c = open(os.path.join(here, config + '.cfg')).read()
     c = re.sub(r'^INVARIANTS .*$', 'INVARIANTS ' + want, c, flags=re.M)
     open(os.path.join(d, 'm.cfg'), 'w').write(c)
-    try:
-        r = subprocess.run(['java', '-Xss16m', '-cp', jar, 'tlc2.TLC', '-workers', 'auto', '-cleanup', '-metadir', os.path.join(d, 'st'),
-                            '-config', 'm.cfg', 'WhereSync.tla'], cwd=d, capture_output=True, text=True, timeout=TIMEOUT)
-        hit = f'Invariant {want} is violated' in r.stdout
-        why = '' if hit else (' (TLC evaluation error)' if 'The error occurred when TLC was evaluating' in r.stdout else ' (never reached)')
-    except subprocess.TimeoutExpired:
-        hit, why = False, f' (timed out after {TIMEOUT} s)'
+    out = run_tlc(d)
+    hit = f'Invariant {want} is violated' in out
+    why = '' if hit else {'timed out': f' (timed out after {TIMEOUT} s)', 'not run': ' (not run: over the time budget)'}.get(
+        out, f' ({out})' if out.startswith('error: ') else ' (never reached)')
     ok &= hit
     print(f"{'OK  ' if hit else 'MISS'} reachable in {config}: {name}{why}")
     sys.stdout.flush()
