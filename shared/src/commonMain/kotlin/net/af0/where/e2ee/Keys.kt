@@ -12,6 +12,8 @@ import kotlinx.serialization.descriptors.SerialDescriptor
 import kotlinx.serialization.descriptors.nullable
 import kotlinx.serialization.encoding.Decoder
 import kotlinx.serialization.encoding.Encoder
+import kotlin.io.encoding.Base64
+import kotlin.io.encoding.ExperimentalEncodingApi
 
 /*
  * Typed byte strings for the protocol's keys, tokens and fingerprints.
@@ -360,11 +362,17 @@ internal abstract class EmptyAsNullSerializer<T : KeyBytes>(
 
 /**
  * The skipped-key cache, stored as a map from cache key to the Base64 of [SkippedMessageKey.SIZE]
- * packed bytes, as before. An entry that can't be parsed is dropped on load: it could never
- * decrypt anything, and keeping it would only hold a slot in the bounded cache.
+ * packed bytes, as before. An entry that can't be parsed (bad Base64 or a bad packed form) is
+ * dropped on load, and the others kept: it could never decrypt anything, and failing the whole map
+ * would fail the session it belongs to.
  */
+@OptIn(ExperimentalEncodingApi::class)
 internal object SkippedKeysSerializer : KSerializer<Map<String, SkippedMessageKey>> {
     private val delegate = MapSerializer(String.serializer(), ByteArrayBase64Serializer)
+
+    // Values are read as strings and decoded one at a time, so one bad value can't fail the map.
+    private val stringMap = MapSerializer(String.serializer(), String.serializer())
+    private val base64 = Base64.withPadding(Base64.PaddingOption.PRESENT_OPTIONAL)
 
     override val descriptor: SerialDescriptor = delegate.descriptor
 
@@ -382,7 +390,13 @@ internal object SkippedKeysSerializer : KSerializer<Map<String, SkippedMessageKe
 
     override fun deserialize(decoder: Decoder): Map<String, SkippedMessageKey> {
         val result = LinkedHashMap<String, SkippedMessageKey>()
-        for ((k, v) in delegate.deserialize(decoder)) {
+        for ((k, encoded) in decoder.decodeSerializableValue(stringMap)) {
+            val v =
+                try {
+                    base64.decode(encoded)
+                } catch (e: IllegalArgumentException) {
+                    continue
+                }
             SkippedMessageKey.decode(v)?.let { result[k] = it }
             v.zeroize()
         }

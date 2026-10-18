@@ -68,8 +68,10 @@ class TypedKeysTest {
         val json = Json { ignoreUnknownKeys = true }
         val full = SkippedMessageKey.encode(SkippedMessageKey(MessageKey(bytes(1)), MessageNonce(bytes(2, 12)), 1234L))
         val noTimestamp = full.copyOfRange(0, 44)
+        // a:3 is valid Base64 of a blob that isn't a key; a:4 isn't Base64 at all. Neither may cost the others.
         val blob =
-            """{"a:1":"${Base64.encode(full)}","a:2":"${Base64.encode(noTimestamp)}","a:3":"${Base64.encode(ByteArray(7))}"}"""
+            """{"a:1":"${Base64.encode(full)}","a:2":"${Base64.encode(noTimestamp)}",""" +
+                """"a:3":"${Base64.encode(ByteArray(7))}","a:4":"not base64!"}"""
         val map = json.decodeFromString(SkippedKeysSerializer, blob)
 
         assertEquals(setOf("a:1", "a:2"), map.keys)

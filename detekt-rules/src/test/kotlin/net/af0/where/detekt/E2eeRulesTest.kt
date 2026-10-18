@@ -18,6 +18,10 @@ class E2eeRulesTest {
         assertEquals(1, rawKeyBytesCount("class A { internal val skippedKeys: Map<String, ByteArray> = emptyMap() }"))
         assertEquals(1, rawKeyBytesCount("fun tokens(): List<ByteArray> = emptyList()"))
         assertEquals(0, rawKeyBytesCount("fun chunks(): List<ByteArray> = emptyList()"))
+        // The shared secret's usual name.
+        assertEquals(1, rawKeyBytesCount("fun derive(sk: ByteArray): Int = 0"))
+        assertEquals(1, rawKeyBytesCount("fun derive(aliceSk: ByteArray): Int = 0"))
+        assertEquals(0, rawKeyBytesCount("fun run(task: ByteArray, disk: ByteArray): Int = 0"))
     }
 
     @Test

@@ -20,7 +20,7 @@ import org.jetbrains.kotlin.psi.psiUtil.isPrivate
  * Keys, tokens and fingerprints use the typed wrappers in Keys.kt, not ByteArray. Flags a
  * non-private property, parameter or function whose type is or contains ByteArray (`ByteArray?`,
  * `List<ByteArray>`, `Map<String, ByteArray>`) and whose name says it holds key material (see
- * [namePattern], plurals included). The primitive layer and wire codecs are excluded by path in
+ * [namePattern], plurals included; `sk` alone or as a camel-case suffix, so not `task`). The primitive layer and wire codecs are excluded by path in
  * the detekt config; anything else that must stay raw (a public wire field) is suppressed in place
  * with a reason.
  */
@@ -33,7 +33,7 @@ class RawKeyBytes(config: Config) : Rule(config) {
             Debt.TWENTY_MINS,
         )
 
-    private val namePattern: String by config("(?i).*(key|secret|token|priv|pub|fp|fingerprint|nonce|seed|ikm)s?")
+    private val namePattern: String by config("(?i:.*(key|secret|token|priv|pub|fp|fingerprint|nonce|seed|ikm)s?)|sk|.*[a-z0-9]Sk")
 
     private val regex by lazy { Regex(namePattern) }
 
