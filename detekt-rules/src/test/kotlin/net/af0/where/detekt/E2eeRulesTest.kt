@@ -14,6 +14,10 @@ class E2eeRulesTest {
         assertEquals(1, rawKeyBytesCount("internal fun derive(ikm: ByteArray): Int = 0"))
         assertEquals(1, rawKeyBytesCount("fun token(): ByteArray = ByteArray(16)"))
         assertEquals(1, rawKeyBytesCount("class A { val sendToken: ByteArray? = null }"))
+        // ...including inside a generic type, and plural names.
+        assertEquals(1, rawKeyBytesCount("class A { internal val skippedKeys: Map<String, ByteArray> = emptyMap() }"))
+        assertEquals(1, rawKeyBytesCount("fun tokens(): List<ByteArray> = emptyList()"))
+        assertEquals(0, rawKeyBytesCount("fun chunks(): List<ByteArray> = emptyList()"))
     }
 
     @Test

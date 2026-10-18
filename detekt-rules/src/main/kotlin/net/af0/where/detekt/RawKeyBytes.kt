@@ -18,8 +18,9 @@ import org.jetbrains.kotlin.psi.psiUtil.isPrivate
 
 /**
  * Keys, tokens and fingerprints use the typed wrappers in Keys.kt, not ByteArray. Flags a
- * non-private property, parameter or function whose type is ByteArray and whose name says it holds
- * key material (see [namePattern]). The primitive layer and wire codecs are excluded by path in
+ * non-private property, parameter or function whose type is or contains ByteArray (`ByteArray?`,
+ * `List<ByteArray>`, `Map<String, ByteArray>`) and whose name says it holds key material (see
+ * [namePattern], plurals included). The primitive layer and wire codecs are excluded by path in
  * the detekt config; anything else that must stay raw (a public wire field) is suppressed in place
  * with a reason.
  */
@@ -32,7 +33,7 @@ class RawKeyBytes(config: Config) : Rule(config) {
             Debt.TWENTY_MINS,
         )
 
-    private val namePattern: String by config("(?i).*(key|secret|token|priv|pub|fp|fingerprint|nonce|seed|ikm)")
+    private val namePattern: String by config("(?i).*(key|secret|token|priv|pub|fp|fingerprint|nonce|seed|ikm)s?")
 
     private val regex by lazy { Regex(namePattern) }
 
@@ -60,10 +61,14 @@ class RawKeyBytes(config: Config) : Rule(config) {
         ownerPrivate: Boolean = false,
     ) {
         if (ownerPrivate || declaration.isPrivate() || declaration.containingClassOrObject?.isPrivate() == true) return
-        val typeText = type?.text?.removeSuffix("?") ?: return
+        val typeText = type?.text ?: return
         val name = declaration.name ?: return
-        if (typeText == "ByteArray" && regex.matches(name)) {
+        if (BYTE_ARRAY.containsMatchIn(typeText) && regex.matches(name)) {
             report(CodeSmell(issue, Entity.from(declaration), "'$name' holds key material as ByteArray; use a typed wrapper."))
         }
+    }
+
+    private companion object {
+        val BYTE_ARRAY = Regex("""\bByteArray\b""")
     }
 }

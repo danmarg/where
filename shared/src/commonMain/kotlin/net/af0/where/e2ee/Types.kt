@@ -1,5 +1,3 @@
-@file:OptIn(RawKeyAccess::class)
-
 package net.af0.where.e2ee
 
 import dev.icerock.moko.resources.desc.StringDesc
@@ -90,14 +88,15 @@ data class SessionState(
      */
     internal fun transportFor(seq: Long): Transport {
         val (token, key) = if (seq == 1L) prevSendToken to prevSendHeaderKey else sendToken to sendHeaderKey
-        return Transport(token, key ?: throw SessionBrickedException("session predates header encryption; re-pair"))
+        val name = if (seq == 1L) "prevSendHeaderKey" else "sendHeaderKey"
+        return Transport(token, key ?: throw SessionBrickedException("stored session has no $name; re-pair"))
     }
 
     /** The receive header keys to try on an envelope, current epoch first. */
     internal fun recvHeaderKeys(): List<HeaderKey> = listOfNotNull(headerKey, nextHeaderKey)
 
     /** Header AAD (#186): both bootstrap fingerprints, Alice's first, the same on both sides. */
-    internal fun headerAad(): ByteArray = aliceFp.bytes + bobFp.bytes
+    internal fun headerAad(): ByteArray = aliceFp.toByteArray() + bobFp.toByteArray()
 
     /**
      * Creates a deep copy of the session state, ensuring all key

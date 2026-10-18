@@ -1,5 +1,3 @@
-@file:OptIn(RawKeyAccess::class)
-
 package net.af0.where.e2ee
 
 import kotlinx.serialization.encodeToString
@@ -418,8 +416,8 @@ object Session {
     ): ByteArray {
         val plaintext = ByteArray(1 + 32 + 32 + 8 + 8 + 1)
         plaintext[0] = PROTOCOL_VERSION.toByte()
-        dhPub.bytes.copyInto(plaintext, 1)
-        ackRemoteDhPub.bytes.copyInto(plaintext, 33)
+        dhPub.toByteArray().copyInto(plaintext, 1)
+        ackRemoteDhPub.toByteArray().copyInto(plaintext, 33)
         longToBeBytes(seq).copyInto(plaintext, 65)
         longToBeBytes(pn).copyInto(plaintext, 73)
         plaintext[81] = 0 // flags

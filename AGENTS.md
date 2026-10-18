@@ -77,7 +77,7 @@ Uses a standard, bidirectional Double Ratchet protocol with X25519 ephemeral key
 - `kotlinx.serialization` for all JSON. Sealed classes use `classDiscriminator = "type"` and `@SerialName` on each subclass.
 - Coroutines: use `SupervisorJob()` so one failed child doesn't cancel siblings. Prefer `StateFlow` over `LiveData`.
 - No mutable global state except the intentional `LocationRepository` singleton (bridge between service and ViewModel).
-- **E2EE key material** (`shared/.../e2ee/`): keys, tokens and fingerprints use the typed wrappers in `Keys.kt` (`SecretBytes` / `PublicBytes`), never bare `ByteArray`. Reading `.bytes` needs `@OptIn(RawKeyAccess::class)`, which only the primitive and codec code takes. Compare secrets with `constantTimeEquals`; domain-separation strings live in `enum class Label`. The custom detekt rules in `detekt-rules/` enforce this (`./gradlew :shared:detekt`).
+- **E2EE key material** (`shared/.../e2ee/`): keys, tokens and fingerprints use the typed wrappers in `Keys.kt` (`SecretBytes` / `PublicBytes`), never bare `ByteArray`. Reading a key's raw `.bytes` needs `@OptIn(RawKeyAccess::class)`, which only the primitive/KDF files and the persistence codec take (public values have `toByteArray()`). Compare secrets with `constantTimeEquals`; domain-separation strings live in `enum class Label`. The custom detekt rules in `detekt-rules/` enforce this (`./gradlew :shared:detekt`).
 
 ### Swift (iOS)
 - **Swift 6 strict concurrency** — all `ObservableObject` classes marked `@MainActor`.

@@ -68,14 +68,18 @@ internal class E2eeStore(
 
     private suspend fun <T> withStoreLock(block: suspend () -> T): T = storeLock.withLock { withContext(ioDispatcher) { block() } }
 
+    // Unreadable rows already reported in this process, so a reload doesn't log them again.
+    private val reportedSkips = mutableSetOf<String>()
+
     init {
         loadFromDb()
     }
 
     private fun loadFromDb() {
         // A row that no longer decodes (e.g. a key of the wrong length) is skipped, not fatal:
-        // failing here would fail the whole store, and with it every other friend. The row stays
-        // in the database untouched.
+        // failing here would fail the whole store, and with it every other friend. A friend row
+        // stays in the database untouched, for a later release to read; an invite row is deleted,
+        // since it can never pair (and invites expire anyway).
         val skipped = mutableListOf<String>()
         database.friendsQueries.getAllFriends().executeAsList().forEach { f ->
             try {
@@ -88,7 +92,8 @@ internal class E2eeStore(
             try {
                 pendingInvites.add(p.toInvite())
             } catch (e: Exception) {
-                skipped += "invite (${e::class.simpleName})"
+                database.invitesQueries.deletePendingInvite(p.ekPub)
+                skipped += "invite (${e::class.simpleName}), deleted"
             }
         }
         _diagnosticLog.value =
@@ -97,7 +102,7 @@ internal class E2eeStore(
                 .executeAsList()
                 .map { "${TimeSource.formatLocalTime(it.ts)} ${it.message}" }
         // Only the exception type: a decoding error's message can quote the stored JSON, keys included.
-        skipped.forEach { addDiagnosticEvent("load: skipped unreadable $it") }
+        skipped.filter { reportedSkips.add(it) }.forEach { addDiagnosticEvent("load: skipped unreadable $it") }
     }
 
     private fun reloadFromDb() {

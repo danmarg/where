@@ -1,5 +1,3 @@
-@file:OptIn(RawKeyAccess::class)
-
 package net.af0.where.e2ee
 
 /**
@@ -211,7 +209,7 @@ object KeyExchange {
     ): ByteArray {
         val kName = nameKey(sk)
         try {
-            return sealRandomNonce(kName, suggestedName.encodeToByteArray(), aad = ekAPub.bytes + ekBPub.bytes)
+            return sealRandomNonce(kName, suggestedName.encodeToByteArray(), aad = ekAPub.toByteArray() + ekBPub.toByteArray())
         } finally {
             kName.zeroize()
         }
@@ -228,7 +226,7 @@ object KeyExchange {
         }
         val kName = nameKey(sk)
         try {
-            return openRandomNonce(kName, encryptedName, aad = ekAPub.bytes + ekBPub.bytes).decodeToString()
+            return openRandomNonce(kName, encryptedName, aad = ekAPub.toByteArray() + ekBPub.toByteArray()).decodeToString()
         } catch (e: Exception) {
             throw AuthenticationException("Failed to decrypt suggested_name: ${e.message}")
         } finally {
@@ -236,12 +234,14 @@ object KeyExchange {
         }
     }
 
+    @OptIn(RawKeyAccess::class) // SK into HKDF
     private fun nameKey(sk: SharedSecret) = NameKey(hkdf(Label.SUGGESTED_NAME, ikm = sk.bytes, salt = null, length = KEY_SIZE))
 
     /**
      * Derive the initial session state from SK.
      * Alice/Bob start with a symmetric chain derived from SK.
      */
+    @OptIn(RawKeyAccess::class) // SK into HKDF
     internal fun initSession(
         sk: SharedSecret,
         isAlice: Boolean,
@@ -305,6 +305,7 @@ object KeyExchange {
         )
     }
 
+    @OptIn(RawKeyAccess::class) // SK into HKDF
     internal fun buildKeyConfirmation(
         sk: SharedSecret,
         ekAPub: DhPublicKey,
@@ -312,7 +313,7 @@ object KeyExchange {
     ): ByteArray {
         val kConfirm = hkdf(Label.CONFIRM_KEY, ikm = sk.bytes, salt = null, length = KEY_SIZE)
         try {
-            return hmacSha256(kConfirm, Label.CONFIRM.bytes + ekAPub.bytes + ekBPub.bytes)
+            return hmacSha256(kConfirm, Label.CONFIRM.bytes + ekAPub.toByteArray() + ekBPub.toByteArray())
         } finally {
             kConfirm.zeroize()
         }

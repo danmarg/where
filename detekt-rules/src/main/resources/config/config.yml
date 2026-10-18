@@ -1,73 +1,13 @@
-# Defaults for the where-e2ee rule set (detekt reads this to validate config keys).
+# The where-e2ee rule set (detekt reads this to validate config keys). Each rule's defaults
+# (secret names, name pattern, log functions) live in its code, in one place: SecretNames.kt and
+# the rule classes.
 where-e2ee:
   active: true
   RawKeyBytes:
     active: true
-    namePattern: '(?i).*(key|secret|token|priv|pub|fp|fingerprint|nonce|seed|ikm)'
   SecretComparison:
     active: true
-    secretNames:
-      - rootKey
-      - newRootKey
-      - chainKey
-      - sendChainKey
-      - recvChainKey
-      - newChainKey
-      - headerKey
-      - sendHeaderKey
-      - nextHeaderKey
-      - prevSendHeaderKey
-      - newHeaderKey
-      - messageKey
-      - messageNonce
-      - mk
-      - localDhPriv
-      - aliceEkPriv
-      - priv
-      - newLocalPriv
-      - sk
-      - dhOut
-      - dhOutput
-      - kConfirm
-      - kName
-      - discoverySecret
   InsecureRandom:
     active: true
   SecretInLog:
     active: true
-    secretNames:
-      - rootKey
-      - newRootKey
-      - chainKey
-      - sendChainKey
-      - recvChainKey
-      - newChainKey
-      - headerKey
-      - sendHeaderKey
-      - nextHeaderKey
-      - prevSendHeaderKey
-      - newHeaderKey
-      - messageKey
-      - messageNonce
-      - mk
-      - localDhPriv
-      - aliceEkPriv
-      - priv
-      - newLocalPriv
-      - sk
-      - dhOut
-      - dhOutput
-      - kConfirm
-      - kName
-      - discoverySecret
-    logFunctions:
-      - addDiagnosticEvent
-      - println
-      - print
-      - debugLog
-      - log
-      - trace
-      - debug
-      - info
-      - warn
-      - error

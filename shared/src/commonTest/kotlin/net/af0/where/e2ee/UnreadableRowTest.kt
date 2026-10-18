@@ -41,5 +41,10 @@ class UnreadableRowTest {
             val log = reloaded.diagnosticLogSnapshot()
             assertTrue(log.any { "skipped unreadable friend ${broken.id.take(8)}" in it }, "$log")
             assertTrue(log.any { "skipped unreadable invite" in it }, "$log")
+
+            // The friend row is kept for a later release; the invite row, which can never pair, is gone.
+            val again = testE2eeManager(driver)
+            assertEquals(listOf(intact.id), again.listFriends().map { it.id })
+            assertEquals(1, again.diagnosticLogSnapshot().count { "skipped unreadable invite" in it })
         }
 }

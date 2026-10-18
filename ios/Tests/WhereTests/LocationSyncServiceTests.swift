@@ -771,7 +771,7 @@ class LocationSyncServiceTests: XCTestCase {
         XCTAssertTrue(service.repo.inviteState is Shared.InviteState.None)
         let invites = try await service.e2eeManager.listPendingInvites()
         XCTAssertTrue(
-            invites.contains { toSwiftData($0.qrPayload.ekPub.toByteArray()) == toSwiftData(qr.ekPub.toByteArray()) },
+            invites.contains { $0.qrPayload.ekPub == qr.ekPub },
             "dismissing the sheet must not delete an unexported invite"
         )
     }
