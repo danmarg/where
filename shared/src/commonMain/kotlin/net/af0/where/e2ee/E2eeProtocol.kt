@@ -7,6 +7,8 @@ package net.af0.where.e2ee
 internal object E2eeProtocol {
     data class DecryptionResult(
         val finalSession: SessionState,
+        /** Every delivered plaintext, in ratchet order. */
+        val delivered: List<MessagePlaintext>,
         val decryptedLocations: List<LocationPlaintext>,
         /** At least one message was decrypted and delivered to the application. */
         val anySuccess: Boolean,
@@ -75,8 +77,11 @@ internal object E2eeProtocol {
         initialSession: SessionState,
         totalEncryptedCount: Int,
         orderedMessages: List<Pair<Session.DecryptedHeader, EncryptedMessagePayload>>,
+        nowMillis: Long = currentTimeMillis(),
+        rng: Rng = SystemRng,
     ): DecryptionResult {
         var currentSession = initialSession
+        val delivered = mutableListOf<MessagePlaintext>()
         val decryptedLocations = mutableListOf<LocationPlaintext>()
         var anySuccess = false
         var anyAuthenticated = false
@@ -89,13 +94,14 @@ internal object E2eeProtocol {
         val replayedIds = mutableListOf<String>()
 
         for ((header, msg) in orderedMessages) {
-            when (val received = Session.decryptMessage(currentSession, msg, header)) {
+            when (val received = Session.decryptMessage(currentSession, msg, header, nowMillis, rng)) {
                 is ReceivedMessage.Delivered -> {
                     currentSession = received.state
                     anySuccess = true
                     anyAuthenticated = true
                     processedIds.add(msg.msgId)
                     val pt = received.plaintext
+                    delivered.add(pt)
                     if (pt is MessagePlaintext.Location) {
                         decryptedLocations.add(
                             LocationPlaintext(
@@ -134,6 +140,7 @@ internal object E2eeProtocol {
 
         return DecryptionResult(
             finalSession = currentSession,
+            delivered = delivered,
             decryptedLocations = decryptedLocations,
             anySuccess = anySuccess,
             anyAuthenticated = anyAuthenticated,

@@ -35,14 +35,18 @@ object KeyExchange {
      * Alice: create the QR / invite-link payload.
      * Returns (QrPayload, EK_A.priv). The caller MUST zero EK_A.priv after aliceProcessInit.
      */
-    fun aliceCreateQrPayload(suggestedName: String): Pair<QrPayload, DhPrivateKey> {
-        val ek = generateX25519KeyPair()
+    fun aliceCreateQrPayload(
+        suggestedName: String,
+        nowSeconds: Long = currentTimeSeconds(),
+        rng: Rng = SystemRng,
+    ): Pair<QrPayload, DhPrivateKey> {
+        val ek = rng.x25519KeyPair()
         val payload =
             QrPayload(
                 ekPub = InvitePublicKey(ek.pub.copyOf()),
                 suggestedName = suggestedName,
-                discoverySecret = DiscoverySecret.random(),
-                expiresAt = currentTimeSeconds() + INVITE_LIFETIME_SECONDS,
+                discoverySecret = DiscoverySecret.random(rng),
+                expiresAt = nowSeconds + INVITE_LIFETIME_SECONDS,
             )
         return payload to DhPrivateKey(ek.priv)
     }
@@ -56,15 +60,17 @@ object KeyExchange {
     fun bobProcessQr(
         qr: QrPayload,
         suggestedName: String,
+        nowSeconds: Long = currentTimeSeconds(),
+        rng: Rng = SystemRng,
     ): Pair<KeyExchangeInitMessage, SessionState> {
         // VERIFY PROTOCOL VERSION (#194)
         if (qr.protocolVersion > SUPPORTED_MAX_VERSION) {
             throw ProtocolVersionException("Unsupported protocol version ${qr.protocolVersion}")
         }
-        if (qr.isExpired()) throw InviteExpiredException()
+        if (qr.isExpired(nowSeconds)) throw InviteExpiredException()
 
         val alicePub = qr.ekPub.toDhPublicKey()
-        val ekB = generateX25519KeyPair()
+        val ekB = rng.x25519KeyPair()
         val bobPriv = DhPrivateKey(ekB.priv)
         val bobPub = DhPublicKey(ekB.pub)
         val sk =
@@ -88,7 +94,7 @@ object KeyExchange {
 
         val keyConfirmation = buildKeyConfirmation(sk, alicePub, bobPub)
 
-        val encryptedName = encryptSuggestedName(sk, alicePub, bobPub, suggestedName)
+        val encryptedName = encryptSuggestedName(sk, alicePub, bobPub, suggestedName, rng)
 
         // MEMORY HYGIENE NOTE (§5.5): Bob's initial ephemeral key (ekB.priv) is copied into
         // the session.localDhPriv buffer within initSession. We zero the local ephemeral
@@ -115,6 +121,7 @@ object KeyExchange {
         msg: KeyExchangeInitMessage,
         aliceEkPriv: DhPrivateKey,
         aliceEkPub: DhPublicKey,
+        rng: Rng = SystemRng,
     ): SessionState {
         // VERIFY PROTOCOL VERSION (#194)
         if (msg.protocolVersion > SUPPORTED_MAX_VERSION) {
@@ -155,7 +162,7 @@ object KeyExchange {
             // DH ratchet step immediately after receiving Bob's bootstrap key (B0).
             // This generates A1, which Alice will send in her first location message.
             // Bob will see A1 != A0 and ratchet his own side.
-            val newLocalDh = generateX25519KeyPair()
+            val newLocalDh = rng.x25519KeyPair()
             val newLocalPriv = DhPrivateKey(newLocalDh.priv)
             val rkStep = dhRatchetSubStep(newLocalPriv, bobPub, session.rootKey)
 
@@ -206,10 +213,11 @@ object KeyExchange {
         ekAPub: DhPublicKey,
         ekBPub: DhPublicKey,
         suggestedName: String,
+        rng: Rng = SystemRng,
     ): ByteArray {
         val kName = nameKey(sk)
         try {
-            return sealRandomNonce(kName, suggestedName.encodeToByteArray(), aad = ekAPub.toByteArray() + ekBPub.toByteArray())
+            return sealRandomNonce(kName, suggestedName.encodeToByteArray(), aad = ekAPub.toByteArray() + ekBPub.toByteArray(), rng = rng)
         } finally {
             kName.zeroize()
         }

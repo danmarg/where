@@ -11,6 +11,10 @@ import kotlinx.serialization.json.put
 
 /**
  * High-level session operations using a standard Double Ratchet.
+ *
+ * Deterministic given its inputs: randomness comes from the [Rng] passed in and the time from
+ * `nowMillis`, never from the platform directly. The defaults ([SystemRng], the clock) are what the
+ * app uses; tests and the golden vectors pass their own.
  */
 object Session {
     private const val HEADER_TAG_SIZE = 16
@@ -18,7 +22,8 @@ object Session {
     fun encryptMessage(
         state: SessionState,
         payload: MessagePlaintext,
-    ): OutgoingMessage = encryptPadded(state, padToFixedSize(encodeMessage(payload), PADDING_SIZE))
+        rng: Rng = SystemRng,
+    ): OutgoingMessage = encryptPadded(state, padToFixedSize(encodeMessage(payload), PADDING_SIZE), rng)
 
     /**
      * Encrypts an already-padded plaintext. Separate from [encryptMessage] so tests can
@@ -27,6 +32,7 @@ object Session {
     internal fun encryptPadded(
         state: SessionState,
         plaintext: ByteArray,
+        rng: Rng = SystemRng,
     ): OutgoingMessage {
         if (state.sendSeq == Long.MAX_VALUE) throw SessionBrickedException("sequence number overflow")
 
@@ -56,7 +62,7 @@ object Session {
             )
 
         // Seal the metadata into an envelope (#186)
-        val envelope = encryptHeader(headerKeyToUse, dhPubToUse, ackRemoteToUse, seqToUse, currentState.pn, currentState.headerAad())
+        val envelope = encryptHeader(headerKeyToUse, dhPubToUse, ackRemoteToUse, seqToUse, currentState.pn, currentState.headerAad(), rng)
 
         // Memory Hygiene (sealMessage already consumed the message key and nonce)
         plaintext.zeroize()
@@ -79,9 +85,11 @@ object Session {
         state: SessionState,
         message: EncryptedMessagePayload,
         preDecryptedHeader: DecryptedHeader? = null,
+        nowMillis: Long = currentTimeMillis(),
+        rng: Rng = SystemRng,
     ): ReceivedMessage =
         try {
-            val (newState, plaintext) = decryptMessageOrThrow(state, message, preDecryptedHeader)
+            val (newState, plaintext) = decryptMessageOrThrow(state, message, preDecryptedHeader, nowMillis, rng)
             ReceivedMessage.Delivered(newState, plaintext)
         } catch (e: DecryptionExceptionWithState) {
             ReceivedMessage.Undeliverable(e.newState, e.cause ?: e)
@@ -95,9 +103,10 @@ object Session {
         state: SessionState,
         message: EncryptedMessagePayload,
         preDecryptedHeader: DecryptedHeader?,
+        now: Long,
+        rng: Rng,
     ): Pair<SessionState, MessagePlaintext> {
         // 0. Purge stale message keys (#189)
-        val now = currentTimeMillis()
         val cleanSkippedKeys = LinkedHashMap(state.skippedMessageKeys)
         var modified = false
         val it = cleanSkippedKeys.entries.iterator()
@@ -192,7 +201,7 @@ object Session {
             // (see §2.2, §8.3.1(6)), so a replayed retired-epoch frame fails to decrypt
             // its header before any ratchet logic runs.
             // performDhRatchet deep-copies, so every buffer in the result is fresh (owned here).
-            speculativeState = performDhRatchet(speculativeState, remoteDhPub)
+            speculativeState = performDhRatchet(speculativeState, remoteDhPub, rng)
         }
 
         var chainKey: ChainKey? = null // the receive chain as advanced so far; owned here
@@ -349,10 +358,11 @@ object Session {
     private fun performDhRatchet(
         state: SessionState,
         remoteDhPub: DhPublicKey,
+        rng: Rng,
     ): SessionState {
         // DH ratchet step
         val stepRecv = dhRatchetSubStep(state.localDhPriv, remoteDhPub, state.rootKey)
-        val newLocalDh = generateX25519KeyPair()
+        val newLocalDh = rng.x25519KeyPair()
         val newLocalPriv = DhPrivateKey(newLocalDh.priv)
         val stepSend =
             try {
@@ -413,6 +423,7 @@ object Session {
         seq: Long,
         pn: Long,
         aad: ByteArray = ByteArray(0),
+        rng: Rng = SystemRng,
     ): ByteArray {
         val plaintext = ByteArray(1 + 32 + 32 + 8 + 8 + 1)
         plaintext[0] = PROTOCOL_VERSION.toByte()
@@ -422,7 +433,7 @@ object Session {
         longToBeBytes(pn).copyInto(plaintext, 73)
         plaintext[81] = 0 // flags
 
-        return sealRandomNonce(key, plaintext, aad)
+        return sealRandomNonce(key, plaintext, aad, rng)
     }
 
     data class DecryptedHeader(val dhPub: DhPublicKey, val ackRemoteDhPub: DhPublicKey, val seq: Long, val pn: Long)
