@@ -11,6 +11,7 @@ on:
     paths:
       - 'formal/**'
       - 'shared/src/commonMain/kotlin/net/af0/where/e2ee/**'
+      - 'shared/src/commonMain/sqldelight/**'
       - 'docs/e2ee-location-sync.md'
       - '.github/workflows/tla.yml'
   schedule:
@@ -61,7 +62,7 @@ jobs:
   # must reach the behaviours it claims to cover (reachability probes): check-mutants.py.
   mutants:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 75
 
     steps:
       - uses: actions/checkout@v4

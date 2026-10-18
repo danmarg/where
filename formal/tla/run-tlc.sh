@@ -3,11 +3,19 @@
 # TLA2TOOLS points at tla2tools.jar (CI downloads the pinned release; see .github/workflows/tla.yml).
 # Exits with TLC's status: 0 when every property holds, non-zero on a violation or an error.
 set -euo pipefail
-cfg="${1:?usage: run-tlc.sh <config.cfg>}"
-cfg="$(cd "$(dirname "$cfg")" 2>/dev/null && pwd)/$(basename "$cfg")"
-[ -f "$cfg" ] || cfg="$(cd "$(dirname "$0")" && pwd)/$(basename "$1")"
+arg="${1:?usage: run-tlc.sh <config.cfg>}"
+here="$(cd "$(dirname "$0")" && pwd)"
+# The configuration as given (relative to the caller), or else by name next to this script.
+if [ -f "$arg" ]; then
+  cfg="$(cd "$(dirname "$arg")" && pwd)/$(basename "$arg")"
+elif [ -f "$here/$(basename "$arg")" ]; then
+  cfg="$here/$(basename "$arg")"
+else
+  echo "run-tlc.sh: no configuration $arg" >&2
+  exit 2
+fi
 jar="${TLA2TOOLS:?set TLA2TOOLS to the path of tla2tools.jar}"
-cd "$(dirname "$0")"
+cd "$here"
 meta="$(mktemp -d)"
 trap 'rm -rf "$meta"' EXIT
 status=0

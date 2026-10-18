@@ -47,7 +47,7 @@ class BootstrapOutboxCancelTest {
         )
     }
 
-    private class Pair(
+    private class Paired(
         val mailbox: ChaosMailboxClient,
         val aliceManager: E2eeManager,
         val aliceClient: LocationClient,
@@ -56,7 +56,7 @@ class BootstrapOutboxCancelTest {
         val bobFriendId: String,
     )
 
-    private suspend fun pair(): Pair {
+    private suspend fun pair(): Paired {
         val mailbox = ChaosMailboxClient(MemoryMailboxClient())
         val aliceManager = testE2eeManager(createTestSqlDriver())
         val aliceClient = LocationClient("http://localhost", aliceManager, mailbox)
@@ -68,63 +68,71 @@ class BootstrapOutboxCancelTest {
         bobClient.postKeyExchangeInit(bobEntry.id, qr, initPayload)
         val pending = aliceClient.pollPendingInvites()
         requireNotNull(aliceManager.processKeyExchangeInit(pending[0].payload, "Bob", pending[0].inviteEkPub))
-        return Pair(mailbox, aliceManager, aliceClient, bobManager, bobClient, bobEntry.id)
+        return Paired(mailbox, aliceManager, aliceClient, bobManager, bobClient, bobEntry.id)
     }
-
-    @Test
-    fun `a StoppedSharing Bob queued before Alice's first frame still arrives`() =
-        runTest {
-            val p = pair()
-            p.aliceClient.sendLocation(37.0, -122.0, emptySet())
-
-            // Bob stops sharing while offline: the StoppedSharing stays queued.
-            p.mailbox.failNextPost = true
-            p.bobClient.sendStoppedSharingToFriend(p.bobFriendId)
-            assertEquals(1, p.bobManager.getOutbox(p.bobFriendId).size)
-
-            // Bob reads Alice's frame (still offline for poll()'s first flush), then reconnects.
-            p.mailbox.failNextPost = true
-            p.bobClient.poll(isForeground = true, pausedFriendIds = emptySet())
-            p.bobClient.syncNow()
-
-            p.aliceClient.poll(isForeground = true, pausedFriendIds = emptySet())
-            assertNotNull(p.aliceManager.listFriends().single().stoppedAtTs, "Alice still shows Bob as sharing")
-        }
 
     @Test
     fun `a frame Bob queued before Alice's first one still arrives`() =
         runTest {
-            val mailbox = ChaosMailboxClient(MemoryMailboxClient())
-            val aliceManager = testE2eeManager(createTestSqlDriver())
-            val aliceClient = LocationClient("http://localhost", aliceManager, mailbox)
-            val bobManager = testE2eeManager(createTestSqlDriver())
-            val bobClient = LocationClient("http://localhost", bobManager, mailbox)
-
-            val qr = aliceManager.createInvite("Alice")
-            val (initPayload, bobEntry) = bobManager.processScannedQr(qr, "Bob")
-            bobClient.postKeyExchangeInit(bobEntry.id, qr, initPayload)
-            val pending = aliceClient.pollPendingInvites()
-            requireNotNull(aliceManager.processKeyExchangeInit(pending[0].payload, "Bob", pending[0].inviteEkPub))
+            val p = pair()
 
             // 1. Alice's first frame is posted.
-            aliceClient.sendLocation(37.0, -122.0, emptySet())
+            p.aliceClient.sendLocation(37.0, -122.0, emptySet())
 
             // 2. Bob's frame is queued but its PUT fails (offline).
-            mailbox.failNextPost = true
+            p.mailbox.failNextPost = true
             try {
-                bobClient.sendLocation(40.0, -74.0, emptySet())
+                p.bobClient.sendLocation(40.0, -74.0, emptySet())
             } catch (_: Exception) {
                 // expected: the frame stays in Bob's outbox
             }
-            assertEquals(1, bobManager.getOutbox(bobEntry.id).size)
+            assertEquals(1, p.bobManager.getOutbox(p.bobFriendId).size)
 
             // 3. Bob reads Alice's frame and ratchets; his queued frame must survive and drain.
             // (poll() flushes the outbox first; Bob is still offline for that PUT.)
-            mailbox.failNextPost = true
-            bobClient.poll(isForeground = true, pausedFriendIds = emptySet())
-            bobClient.syncNow()
+            p.mailbox.failNextPost = true
+            p.bobClient.poll(isForeground = true, pausedFriendIds = emptySet())
+            p.bobClient.syncNow()
 
-            val atAlice = aliceClient.poll(isForeground = true, pausedFriendIds = emptySet())
+            val atAlice = p.aliceClient.poll(isForeground = true, pausedFriendIds = emptySet())
             assertEquals(listOf(40.0), atAlice.map { it.lat }, "Bob's queued frame was dropped")
         }
+
+    @Test
+    fun `a StoppedSharing Bob queued behind a stuck frame still arrives`() =
+        runTest {
+            val mockTime = MockTimeProvider()
+            TimeSource.setProvider(mockTime)
+            try {
+                stoppedSharingBehindStuckFrame(mockTime)
+            } finally {
+                TimeSource.setProvider(DefaultTimeProvider)
+            }
+        }
+
+    private suspend fun stoppedSharingBehindStuckFrame(mockTime: MockTimeProvider) {
+        val p = pair()
+        p.aliceClient.sendLocation(37.0, -122.0, emptySet())
+
+        // Bob goes offline: a Location gets stuck, and the StoppedSharing queues behind it (#369).
+        // A second apart: the receiver orders the two by their (second-resolution) timestamps.
+        p.mailbox.failPostProbability = 1.0
+        try {
+            p.bobClient.sendLocation(40.0, -74.0, emptySet())
+        } catch (_: Exception) {
+            // expected: stuck in the outbox
+        }
+        mockTime.advanceSeconds(1)
+        p.bobClient.sendStoppedSharingToFriend(p.bobFriendId)
+        assertEquals(2, p.bobManager.getOutbox(p.bobFriendId).size)
+
+        // Still offline, Bob reads Alice's frame and ratchets. Then he reconnects.
+        p.bobClient.poll(isForeground = true, pausedFriendIds = emptySet())
+        p.mailbox.failPostProbability = 0.0
+        p.bobClient.syncNow()
+
+        val atAlice = p.aliceClient.poll(isForeground = true, pausedFriendIds = emptySet())
+        assertEquals(listOf(40.0), atAlice.map { it.lat }, "Bob's stuck Location was dropped")
+        assertNotNull(p.aliceManager.listFriends().single().stoppedAtTs, "Bob's StoppedSharing was dropped")
+    }
 }

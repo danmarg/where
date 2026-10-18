@@ -73,12 +73,13 @@ VARIABLES
     sent,       \* keys each client sent
     accepted,   \* keys each client accepted (delivered and saved)
     everPosted, \* every message ever stored, for Dup
-    lostKeys,   \* keys lost or expired on the server before acceptance
+    lostKeys,   \* keys the server lost or expired before acceptance
+    ackedUnread, \* keys a client acked (deleted) without accepting them, e.g. by force-ACK
     flags       \* violations recorded by actions (checked by invariants)
 
 vars == <<session, outbox, mbox, inflight, polledTok, toAck, ackForced, silent, posting,
           clock, sends, urgent, crashes, losses, dups, sent, accepted, everPosted,
-          lostKeys, flags>>
+          lostKeys, ackedUnread, flags>>
 
 Id(m) == <<m.from, m.dh, m.seq>>
 KeyOf(m) == <<m.dh, m.seq>>
@@ -192,6 +193,7 @@ Init ==
     /\ accepted = [c \in Clients |-> {}]
     /\ everPosted = {}
     /\ lostKeys = {}
+    /\ ackedUnread = {}
     /\ flags = [doubleAccept |-> FALSE, badRatchet |-> FALSE, ackedUnprocessed |-> FALSE]
 
 -----------------------------------------------------------------------------
@@ -210,7 +212,7 @@ Send(c) ==
     /\ Enqueue(c, Encrypt(c, session[c]))
     /\ sends' = [sends EXCEPT ![c] = @ + 1]
     /\ UNCHANGED <<mbox, inflight, polledTok, toAck, ackForced, silent, posting, clock,
-                   urgent, crashes, losses, dups, accepted, everPosted, lostKeys, flags>>
+                   urgent, crashes, losses, dups, accepted, everPosted, lostKeys, ackedUnread, flags>>
 
 \* StoppedSharing: queued even behind a stuck outbox (#369).
 SendUrgent(c) ==
@@ -218,7 +220,7 @@ SendUrgent(c) ==
     /\ Enqueue(c, Encrypt(c, session[c]))
     /\ urgent' = [urgent EXCEPT ![c] = @ + 1]
     /\ UNCHANGED <<mbox, inflight, polledTok, toAck, ackForced, silent, posting, clock,
-                   sends, crashes, losses, dups, accepted, everPosted, lostKeys, flags>>
+                   sends, crashes, losses, dups, accepted, everPosted, lostKeys, ackedUnread, flags>>
 
 \* PUT /inbox/{token}/{msgId} of the outbox head; idempotent per msgId.
 Post(c) ==
@@ -231,7 +233,7 @@ Post(c) ==
           /\ everPosted' = IF present THEN everPosted ELSE everPosted \cup {m}
           /\ posting' = [posting EXCEPT ![c] = Id(m)]
     /\ UNCHANGED <<session, outbox, inflight, polledTok, toAck, ackForced, silent, clock,
-                   sends, urgent, crashes, losses, dups, sent, accepted, lostKeys, flags>>
+                   sends, urgent, crashes, losses, dups, sent, accepted, lostKeys, ackedUnread, flags>>
 
 \* removeFromOutbox by msgId after the PUT returned (a no-op if CancelPut got there first).
 Dequeue(c) ==
@@ -239,7 +241,7 @@ Dequeue(c) ==
     /\ outbox' = [outbox EXCEPT ![c] = SelectSeq(@, LAMBDA x : Id(x) # posting[c])]
     /\ posting' = [posting EXCEPT ![c] = None]
     /\ UNCHANGED <<session, mbox, inflight, polledTok, toAck, ackForced, silent, clock,
-                   sends, urgent, crashes, losses, dups, sent, accepted, everPosted, lostKeys, flags>>
+                   sends, urgent, crashes, losses, dups, sent, accepted, everPosted, lostKeys, ackedUnread, flags>>
 
 \* GET /inbox/{recvToken}: the one token this client polls (§5.4.2).
 Poll(c) ==
@@ -248,7 +250,7 @@ Poll(c) ==
     /\ inflight' = [inflight EXCEPT ![c] = mbox[session[c].recvTok]]
     /\ polledTok' = [polledTok EXCEPT ![c] = session[c].recvTok]
     /\ UNCHANGED <<session, outbox, mbox, toAck, ackForced, silent, posting, clock,
-                   sends, urgent, crashes, losses, dups, sent, accepted, everPosted, lostKeys, flags>>
+                   sends, urgent, crashes, losses, dups, sent, accepted, everPosted, lostKeys, ackedUnread, flags>>
 
 \* E2eeManager.processBatch (decrypt, save, CancelPut) and pollFriend's ack choice.
 Process(c) ==
@@ -272,7 +274,7 @@ Process(c) ==
                                     !.badRatchet = @ \/ out.bad]
     /\ inflight' = [inflight EXCEPT ![c] = {}]
     /\ UNCHANGED <<mbox, polledTok, posting, clock, sends, urgent, crashes, losses, dups,
-                   sent, everPosted, lostKeys>>
+                   sent, everPosted, lostKeys, ackedUnread>>
 
 \* DELETE /inbox/{token}?ids=...
 Ack(c) ==
@@ -282,11 +284,11 @@ Ack(c) ==
        IN /\ mbox' = [mbox EXCEPT ![t] = @ \ gone]
           /\ flags' = [flags EXCEPT !.ackedUnprocessed =
                          @ \/ (~ackForced[c] /\ \E m \in gone : KeyOf(m) \notin accepted[c])]
-          /\ lostKeys' = lostKeys \cup {KeyOf(m) : m \in {x \in gone : KeyOf(x) \notin accepted[c]}}
+          /\ ackedUnread' = ackedUnread \cup {KeyOf(m) : m \in {x \in gone : KeyOf(x) \notin accepted[c]}}
     /\ toAck' = [toAck EXCEPT ![c] = {}]
     /\ ackForced' = [ackForced EXCEPT ![c] = FALSE]
     /\ UNCHANGED <<session, outbox, inflight, polledTok, silent, posting, clock, sends, urgent,
-                   crashes, losses, dups, sent, accepted, everPosted>>
+                   crashes, losses, dups, sent, accepted, everPosted, lostKeys>>
 
 \* Process death: everything in memory is gone; disk and server survive.
 Crash(c) ==
@@ -299,7 +301,7 @@ Crash(c) ==
     /\ silent' = [silent EXCEPT ![c] = 0]
     /\ posting' = [posting EXCEPT ![c] = None]
     /\ UNCHANGED <<session, outbox, mbox, clock, sends, urgent, losses, dups, sent, accepted,
-                   everPosted, lostKeys, flags>>
+                   everPosted, lostKeys, ackedUnread, flags>>
 
 -----------------------------------------------------------------------------
 (* Server faults *)
@@ -311,7 +313,7 @@ Lose ==
           /\ lostKeys' = lostKeys \cup {KeyOf(m)}
     /\ losses' = losses + 1
     /\ UNCHANGED <<session, outbox, inflight, polledTok, toAck, ackForced, silent, posting, clock,
-                   sends, urgent, crashes, dups, sent, accepted, everPosted, flags>>
+                   sends, urgent, crashes, dups, sent, accepted, everPosted, ackedUnread, flags>>
 
 \* A deleted message served again.
 Dup ==
@@ -321,13 +323,13 @@ Dup ==
           /\ mbox' = [mbox EXCEPT ![m.token] = @ \cup {[m EXCEPT !.at = clock]}]
     /\ dups' = dups + 1
     /\ UNCHANGED <<session, outbox, inflight, polledTok, toAck, ackForced, silent, posting, clock,
-                   sends, urgent, crashes, losses, sent, accepted, everPosted, lostKeys, flags>>
+                   sends, urgent, crashes, losses, sent, accepted, everPosted, lostKeys, ackedUnread, flags>>
 
 Tick ==
     /\ clock < MaxClock
     /\ clock' = clock + 1
     /\ UNCHANGED <<session, outbox, mbox, inflight, polledTok, toAck, ackForced, silent, posting,
-                   sends, urgent, crashes, losses, dups, sent, accepted, everPosted, lostKeys, flags>>
+                   sends, urgent, crashes, losses, dups, sent, accepted, everPosted, lostKeys, ackedUnread, flags>>
 
 Expire ==
     /\ \E t \in Tokens : \E m \in mbox[t] :
@@ -335,7 +337,7 @@ Expire ==
           /\ mbox' = [mbox EXCEPT ![t] = @ \ {m}]
           /\ lostKeys' = lostKeys \cup {KeyOf(m)}
     /\ UNCHANGED <<session, outbox, inflight, polledTok, toAck, ackForced, silent, posting, clock,
-                   sends, urgent, crashes, losses, dups, sent, accepted, everPosted, flags>>
+                   sends, urgent, crashes, losses, dups, sent, accepted, everPosted, ackedUnread, flags>>
 
 -----------------------------------------------------------------------------
 
@@ -393,18 +395,23 @@ NoStrandedMessages ==
 
 \* Nothing sent disappears without a trace: every sent frame has been accepted by the peer, is
 \* still queued, is on the server, or is in the peer's hands, unless the server lost or expired
-\* it, or a force-ACK deleted it unaccepted (both recorded in lostKeys).
+\* it (lostKeys) or the peer acked it without accepting it (ackedUnread).
 KeysIn(S) == {KeyOf(m) : m \in S}
 NoSilentDrop ==
     \A c \in Clients : \A k \in sent[c] :
         \/ k \in accepted[Peer(c)]
-        \/ k \in lostKeys
+        \/ k \in lostKeys \cup ackedUnread
         \/ k \in KeysIn({outbox[c][i] : i \in 1 .. Len(outbox[c])})
         \/ k \in KeysIn(UNION {mbox[t] : t \in Tokens})
         \/ k \in KeysIn(inflight[Peer(c)])
 
+\* While the server keeps everything it stored, no client deletes a frame it hasn't accepted:
+\* replays and duplicates are acked as processed, and a force-ACK only ever clears frames a loss
+\* made unprocessable. A frame left unopenable or rejected by a protocol bug fails here.
+NoUnreadAcks == lostKeys = {} => ackedUnread = {}
+
 Safety == TypeOK /\ NoDoubleAccept /\ SkippedWithinCap /\ RatchetSound /\ AcksOnlyProcessed
-          /\ NoStrandedMessages /\ NoSilentDrop
+          /\ NoStrandedMessages /\ NoSilentDrop /\ NoUnreadAcks
 
 -----------------------------------------------------------------------------
 (* Liveness (with MaxLoss = 0 and no expiry) *)

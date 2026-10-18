@@ -33,7 +33,8 @@ Safety (invariants):
 | `RatchetSound` | Every DH step a receiver takes is one sub-step behind the sender's, so the derived keys match. |
 | `AcksOnlyProcessed` | A non-forced ack never deletes a frame the receiver hasn't accepted (a rejected, unopenable or never-processed one). |
 | `NoStrandedMessages` | While the server has lost nothing: a client never polls only a retired token while unread messages wait on a newer one (the epoch's transition frame is still on its way to the polled token). |
-| `NoSilentDrop` | Every frame sent has been accepted by the peer, or is still queued, on the server or in the peer's hands, or was recorded as lost (server loss or expiry, or a force-ack of an unaccepted frame). Nothing disappears from an outbox unsent. |
+| `NoSilentDrop` | Every frame sent has been accepted by the peer, or is still queued, on the server or in the peer's hands, or the server lost or expired it, or the peer acked it without accepting it. Nothing disappears from an outbox unsent. |
+| `NoUnreadAcks` | While the server keeps everything it stored, no client acks (deletes) a frame it hasn't accepted. Replays and duplicates are acked as processed; a force-ack only ever clears frames a loss made unprocessable. A protocol bug that leaves frames unopenable or rejected fails here, not only in liveness. |
 
 Liveness (weak fairness on posting, dequeuing, polling, processing and acking; none on sending,
 which is the user's choice, so the properties are checked whenever the clients stop sending;
@@ -60,7 +61,7 @@ formal/tla/check-mutants.py                      # mutants and reachability prob
 CI (`.github/workflows/tla.yml`) runs all six and `check-mutants.py` on PRs that touch the model,
 the e2ee code or the spec, on main, and nightly. Across them: up to three sends per client
 (seq ≤ 3; each side ratchets at least twice), up to two crashes, up to two lost messages, a
-duplicated message, TTL expiry of anything posted before the clock reaches the TTL, skipped-key
+duplicated message, TTL expiry (of anything posted at clock 0), skipped-key
 caps of 1 and 2, and force-ack after two silent polls. No single configuration has every fault:
 together they multiply the state space past what a CI job can explore (all of them at once is
 over 12M states and still growing).
@@ -70,8 +71,8 @@ over 12M states and still growing).
 - **Mutants.** It breaks one rule at a time and requires TLC to report the property that rule
   protects: the transition rule, the replay check, single use of skipped keys, the skipped-key
   cap, the ratchet's sub-steps, acking only what was processed, the bootstrap exception to
-  CancelPut (both as a liveness and as a safety failure), dequeuing the posted frame by id,
-  header-key rotation, and recording the peer's new key. Some need a loss before the bug is
+  CancelPut and header-key rotation (each both as a liveness and as a safety failure), dequeuing
+  the posted frame by id, and recording the peer's new key. Some need a loss before the bug is
   reachable: with an honest server, outboxes drain in order and batches are sorted, so no gap
   and no unprocessable frame ever reaches a receiver.
 - **Reachability probes.** For each behaviour a configuration claims to cover, it makes that

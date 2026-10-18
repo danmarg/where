@@ -9,7 +9,7 @@ here = os.path.dirname(os.path.abspath(__file__))
 src = open(os.path.join(here, 'WhereSync.tla')).read()
 jar = os.environ['TLA2TOOLS']
 work = tempfile.mkdtemp(prefix='wheresync-mutants-')
-TIMEOUT = 300  # per TLC run; a run that times out counts as a MISS
+TIMEOUT = 1200  # per TLC run (the largest probe config takes ~4 min on 4 cores); a timeout is a MISS
 
 def cfg(sends=2, urgent=0, crashes=0, loss=0, dup=0, clock=0, cap=2, live=False, props=None, invariants=True):
     body = f"""CONSTANTS
@@ -25,7 +25,7 @@ def cfg(sends=2, urgent=0, crashes=0, loss=0, dup=0, clock=0, cap=2, live=False,
 """
     body += "SPECIFICATION Spec\n" if live else "INIT Init\nNEXT Next\n"
     if invariants:
-        body += "INVARIANTS TypeOK NoDoubleAccept SkippedWithinCap RatchetSound AcksOnlyProcessed NoStrandedMessages NoSilentDrop\n"
+        body += "INVARIANTS TypeOK NoDoubleAccept SkippedWithinCap RatchetSound AcksOnlyProcessed NoStrandedMessages NoSilentDrop NoUnreadAcks\n"
     if live: body += "PROPERTIES " + " ".join(props or ["AllDelivered", "EventuallySameEpoch"]) + "\n"
     body += "CHECK_DEADLOCK FALSE\n"
     return body
@@ -69,6 +69,10 @@ M = [
    "/\\ outbox' = [outbox EXCEPT ![c] = SelectSeq(@, LAMBDA x : Id(x) # posting[c])]",
    "/\\ outbox' = [outbox EXCEPT ![c] = IF @ = << >> THEN @ ELSE Tail(@)]",
    dict(sends=2, urgent=1), "NoSilentDrop"),
+  ("header keys not rotated, as a safety check",
+   "!.hk = s.nhk, !.shk = s.root + 1, !.nhk = s.root + 2,",
+   "!.hk = s.hk, !.shk = s.root + 1, !.nhk = s.root + 2,",
+   dict(sends=2), "NoUnreadAcks"),
   ("peer's new key not recorded",
    "!.recvTok = <<Peer(c), s.root + 1>>, !.sendTok = <<c, s.root + 2>>,",
    "!.recvTok = <<Peer(c), s.root + 1>>, !.sendTok = <<c, s.root + 2>>, !.remoteDh = s.remoteDh,",
@@ -87,10 +91,12 @@ for name, old, new, kw, expect in M:
                             '-config', 'm.cfg', 'WhereSync.tla'], cwd=d, capture_output=True, text=True, timeout=TIMEOUT)
         out = r.stdout
     except subprocess.TimeoutExpired:
-        out = ''
+        out = 'timed out'
     found = re.findall(r'(?:Invariant|Temporal property) (\w+) (?:is|was) violated', out)
     if 'The error occurred when TLC was evaluating' in out:
         found.append('a TLC evaluation error')
+    if out == 'timed out':
+        found.append(f'nothing (timed out after {TIMEOUT} s)')
     # TLC 1.7.x doesn't name the temporal property; each liveness mutant checks exactly one.
     if 'Temporal properties were violated' in out:
         found += kw['props']
@@ -142,10 +148,11 @@ for name, config, edits, probe in P:
         r = subprocess.run(['java', '-Xss16m', '-cp', jar, 'tlc2.TLC', '-workers', 'auto', '-cleanup', '-metadir', os.path.join(d, 'st'),
                             '-config', 'm.cfg', 'WhereSync.tla'], cwd=d, capture_output=True, text=True, timeout=TIMEOUT)
         hit = f'Invariant {want} is violated' in r.stdout
+        why = '' if hit else (' (TLC evaluation error)' if 'The error occurred when TLC was evaluating' in r.stdout else ' (never reached)')
     except subprocess.TimeoutExpired:
-        hit = False
+        hit, why = False, f' (timed out after {TIMEOUT} s)'
     ok &= hit
-    print(f"{'OK  ' if hit else 'MISS'} reachable in {config}: {name}")
+    print(f"{'OK  ' if hit else 'MISS'} reachable in {config}: {name}{why}")
     sys.stdout.flush()
 
 shutil.rmtree(work, ignore_errors=True)
