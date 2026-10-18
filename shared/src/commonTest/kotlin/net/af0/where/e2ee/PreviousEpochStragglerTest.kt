@@ -1,3 +1,5 @@
+@file:OptIn(RawKeyAccess::class)
+
 package net.af0.where.e2ee
 
 import kotlin.test.Test
@@ -21,7 +23,7 @@ class PreviousEpochStragglerTest {
     fun previousEpochStragglerAcrossPollsIsDropped() {
         val (qr, aliceEkPriv) = KeyExchange.aliceCreateQrPayload("Alice")
         val (msg, bob0) = KeyExchange.bobProcessQr(qr, "Bob")
-        val alice0 = KeyExchange.aliceProcessInit(msg, aliceEkPriv, qr.ekPub)
+        val alice0 = KeyExchange.aliceProcessInit(msg, aliceEkPriv, DhPublicKey(qr.ekPub))
 
         // Alice epoch 1: send two messages back-to-back. msgA2 is the straggler
         // we want to deliver across a later poll.

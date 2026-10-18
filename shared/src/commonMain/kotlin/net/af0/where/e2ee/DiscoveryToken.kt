@@ -1,3 +1,5 @@
+@file:OptIn(RawKeyAccess::class)
+
 package net.af0.where.e2ee
 
 /**
@@ -19,16 +21,11 @@ package net.af0.where.e2ee
  * The [secret] is ephemeral (freshly generated per QR), so each invite produces a
  * unique, unlinkable discovery token.
  *
- * @param secret Fresh random 32-byte secret from QrPayload.discoverySecret.
- * @return 16-byte discovery token (opaque; hex-encode for use as a URL path segment).
+ * @param secret Fresh random secret from QrPayload.discoverySecret.
+ * @return the discovery token (opaque; hex-encode for use as a URL path segment).
  */
-fun deriveDiscoveryToken(secret: ByteArray): ByteArray =
-    hkdfSha256(
-        ikm = secret,
-        salt = ByteArray(32),
-        info = "Where-v1-Discovery".encodeToByteArray(),
-        length = 16,
-    )
+fun deriveDiscoveryToken(secret: DiscoverySecret): DiscoveryToken =
+    DiscoveryToken(hkdf(Label.DISCOVERY, ikm = secret.bytes, salt = ByteArray(32), length = ROUTING_TOKEN_SIZE))
 
 /** Convenience extension — compute the discovery token from an existing QrPayload. */
-fun QrPayload.discoveryToken(): ByteArray = deriveDiscoveryToken(discoverySecret)
+fun QrPayload.discoveryToken(): DiscoveryToken = deriveDiscoveryToken(discoverySecret)

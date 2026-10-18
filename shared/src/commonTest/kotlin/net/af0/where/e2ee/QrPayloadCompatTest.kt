@@ -1,3 +1,5 @@
+@file:OptIn(RawKeyAccess::class)
+
 package net.af0.where.e2ee
 
 import kotlinx.coroutines.test.runTest
@@ -62,7 +64,7 @@ class QrPayloadCompatTest {
         httpsUrl(
             legacyJson.encodeToString(
                 LegacyQrPayload.serializer(),
-                LegacyQrPayload(qr.protocolVersion, qr.ekPub, qr.suggestedName, qr.discoverySecret),
+                LegacyQrPayload(qr.protocolVersion, qr.ekPub, qr.suggestedName, qr.discoverySecret.bytes),
             ),
         )
 
@@ -79,7 +81,7 @@ class QrPayloadCompatTest {
             val qr = assertNotNull(QrPayload.fromUrl(url), "old-format invite must still parse: $url")
             assertEquals("Alice", qr.suggestedName)
             assertContentEquals(ByteArray(32) { 1 }, qr.ekPub)
-            assertContentEquals(ByteArray(32) { 2 }, qr.discoverySecret)
+            assertContentEquals(ByteArray(32) { 2 }, qr.discoverySecret.bytes)
             assertNull(qr.expiresAt)
             assertFalse(qr.isExpired(0L))
             assertFalse(qr.isExpired(Long.MAX_VALUE), "no expires_at means no expiry, however old")
@@ -136,7 +138,7 @@ class QrPayloadCompatTest {
             QrPayload(
                 ekPub = ByteArray(32) { 1 },
                 suggestedName = "Alice",
-                discoverySecret = ByteArray(32) { 2 },
+                discoverySecret = DiscoverySecret(ByteArray(32) { 2 }),
                 expiresAt = 1_800_000_000L,
             )
         val json = legacyJson.encodeToString(QrPayload.serializer(), qr)
@@ -146,15 +148,15 @@ class QrPayloadCompatTest {
             val old = legacyDecode(url)
             assertEquals("Alice", old.suggestedName)
             assertContentEquals(qr.ekPub, old.ekPub)
-            assertContentEquals(qr.discoverySecret, old.discoverySecret)
+            assertContentEquals(qr.discoverySecret.bytes, old.discoverySecret)
             assertEquals(qr.protocolVersion, old.protocolVersion)
         }
     }
 
     @Test
     fun newFormatInvite_discoveryTokenIsUnchangedByExpiry() {
-        val base = QrPayload(ekPub = ByteArray(32) { 1 }, suggestedName = "Alice", discoverySecret = ByteArray(32) { 2 })
-        assertContentEquals(base.discoveryToken(), base.copy(expiresAt = 123L).discoveryToken())
+        val base = QrPayload(ekPub = ByteArray(32) { 1 }, suggestedName = "Alice", discoverySecret = DiscoverySecret(ByteArray(32) { 2 }))
+        assertEquals(base.discoveryToken(), base.copy(expiresAt = 123L).discoveryToken())
     }
 
     // ---- format ---------------------------------------------------------------------------------
@@ -165,7 +167,7 @@ class QrPayloadCompatTest {
             QrPayload(
                 ekPub = ByteArray(32) { 1 },
                 suggestedName = "Alice",
-                discoverySecret = ByteArray(32) { 2 },
+                discoverySecret = DiscoverySecret(ByteArray(32) { 2 }),
                 expiresAt = 1_800_000_000L,
             )
         val back = assertNotNull(QrPayload.fromUrl(qr.toUrl()))
@@ -178,7 +180,8 @@ class QrPayloadCompatTest {
 
     @Test
     fun expiresAt_addsLittleToTheLink() {
-        val withoutField = QrPayload(ekPub = ByteArray(32) { 1 }, suggestedName = "Alice", discoverySecret = ByteArray(32) { 2 })
+        val withoutField =
+            QrPayload(ekPub = ByteArray(32) { 1 }, suggestedName = "Alice", discoverySecret = DiscoverySecret(ByteArray(32) { 2 }))
         val withField = withoutField.copy(expiresAt = 1_800_000_000L)
         val extra = withField.toUrl().length - withoutField.toUrl().length
         assertTrue(extra in 1..40, "expires_at should add a few dozen characters at most, added $extra")
@@ -204,7 +207,7 @@ class QrPayloadCompatTest {
     @Test
     fun isExpired_boundaries() {
         val exp = 1_000_000L
-        val qr = QrPayload(ekPub = ByteArray(32), suggestedName = "A", discoverySecret = ByteArray(32), expiresAt = exp)
+        val qr = QrPayload(ekPub = ByteArray(32), suggestedName = "A", discoverySecret = DiscoverySecret(ByteArray(32)), expiresAt = exp)
         assertFalse(qr.isExpired(exp - 1))
         assertFalse(qr.isExpired(exp))
         assertFalse(qr.isExpired(exp + INVITE_EXPIRY_GRACE_SECONDS), "accepted up to the grace window")
@@ -313,7 +316,7 @@ class QrPayloadCompatTest {
 
             assertEquals("Alice B", renamed.suggestedName)
             assertContentEquals(first.ekPub, renamed.ekPub)
-            assertContentEquals(first.discoverySecret, renamed.discoverySecret)
+            assertEquals(first.discoverySecret, renamed.discoverySecret)
             assertEquals(first.expiresAt, renamed.expiresAt)
             assertEquals(1, alice.listPendingInvites().size)
         }

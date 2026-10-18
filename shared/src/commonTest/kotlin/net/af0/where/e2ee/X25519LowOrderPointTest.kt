@@ -1,3 +1,5 @@
+@file:OptIn(RawKeyAccess::class)
+
 package net.af0.where.e2ee
 
 import kotlin.test.Test
@@ -71,7 +73,7 @@ class X25519LowOrderPointTest {
         for (hex in lowOrderPoints) {
             val (qr, aliceEkPriv) = KeyExchange.aliceCreateQrPayload("Alice")
             val (msg, bobSession) = KeyExchange.bobProcessQr(qr, "Bob")
-            val aliceSession = KeyExchange.aliceProcessInit(msg, aliceEkPriv, qr.ekPub)
+            val aliceSession = KeyExchange.aliceProcessInit(msg, aliceEkPriv, DhPublicKey(qr.ekPub))
 
             val (_, encrypted) =
                 Session.encryptMessage(aliceSession, MessagePlaintext.Location(1.0, 2.0, 3.0, 4L))

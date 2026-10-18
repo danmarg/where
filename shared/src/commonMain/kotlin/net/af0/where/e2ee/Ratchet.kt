@@ -1,3 +1,5 @@
+@file:OptIn(RawKeyAccess::class)
+
 package net.af0.where.e2ee
 
 /*
@@ -23,10 +25,10 @@ internal fun kdfRk(
     dhOutput: SharedSecret,
 ): RatchetStep {
     val out =
-        hkdfSha256(
+        hkdf(
+            Label.RATCHET_STEP,
             ikm = dhOutput.bytes,
             salt = rootKey.bytes,
-            info = INFO_RATCHET_STEP.encodeToByteArray(),
             length = 96,
         )
     try {
@@ -70,13 +72,7 @@ internal fun dhRatchetSubStep(
 internal fun kdfCk(chainKey: ChainKey): ChainStep {
     val messageKey = hmacSha256(chainKey.bytes, byteArrayOf(0x01))
     val newChainKey = hmacSha256(chainKey.bytes, byteArrayOf(0x02))
-    val nonce =
-        hkdfSha256(
-            ikm = messageKey,
-            salt = null,
-            info = INFO_MSG_NONCE.encodeToByteArray(),
-            length = 12,
-        )
+    val nonce = hkdf(Label.MSG_NONCE, ikm = messageKey, salt = null, length = MESSAGE_NONCE_SIZE)
     return ChainStep(
         newChainKey = ChainKey(newChainKey),
         messageKey = MessageKey(messageKey),
@@ -90,20 +86,18 @@ internal fun kdfCk(chainKey: ChainKey): ChainStep {
  *
  * info = "Where-v1-RoutingToken" || sender (32 bytes) || recipient (32 bytes)
  *
- * Returns 16 bytes.
+ * Returns 16 bytes, which the caller wraps as a [SendToken] or [RecvToken].
  */
 internal fun deriveRoutingToken(
     ikm: TokenSeed,
     sender: Fingerprint,
     recipient: Fingerprint,
-): RoutingToken {
-    val info = INFO_ROUTING_TOKEN.encodeToByteArray() + sender.bytes + recipient.bytes
-    return RoutingToken(hkdfSha256(ikm = ikm.bytes, salt = null, info = info, length = 16))
-}
+): ByteArray =
+    hkdf(Label.ROUTING_TOKEN, ikm = ikm.bytes, salt = null, length = ROUTING_TOKEN_SIZE, context = sender.bytes + recipient.bytes)
 
 /**
  * Message AAD. Call it through [Parties.sendAad] / [Parties.recvAad], which fix the
- * direction. An empty [ackRemoteDhPub] is encoded as 32 zero bytes.
+ * direction.
  */
 internal fun buildMessageAad(
     sender: Fingerprint,
@@ -112,14 +106,13 @@ internal fun buildMessageAad(
     dhPub: DhPublicKey,
     ackRemoteDhPub: DhPublicKey,
 ): ByteArray {
-    val paddedAck = if (ackRemoteDhPub.isEmpty()) ByteArray(32) else ackRemoteDhPub.bytes
-    return AAD_PREFIX.encodeToByteArray() +
+    return Label.MESSAGE_AAD.bytes +
         intToBeBytes(PROTOCOL_VERSION) +
         sender.bytes +
         recipient.bytes +
         longToBeBytes(seq) +
         dhPub.bytes +
-        paddedAck
+        ackRemoteDhPub.bytes
 }
 
 // ---------------------------------------------------------------------------

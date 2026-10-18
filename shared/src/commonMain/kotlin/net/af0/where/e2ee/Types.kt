@@ -1,3 +1,5 @@
+@file:OptIn(RawKeyAccess::class)
+
 package net.af0.where.e2ee
 
 import dev.icerock.moko.resources.desc.StringDesc
@@ -33,8 +35,8 @@ data class SessionState(
     val rootKey: RootKey,
     val sendChainKey: ChainKey,
     val recvChainKey: ChainKey,
-    val sendToken: RoutingToken,
-    val recvToken: RoutingToken,
+    val sendToken: SendToken,
+    val recvToken: RecvToken,
     val sendSeq: Long,
     val recvSeq: Long,
     // SECURITY NOTE: We rely on the app layer to store the serialized SessionState in
@@ -47,22 +49,31 @@ data class SessionState(
     val bobEkPub: DhPublicKey,
     val aliceFp: Fingerprint,
     val bobFp: Fingerprint,
-    val localFp: Fingerprint = Fingerprint(ByteArray(0)),
-    val remoteFp: Fingerprint = Fingerprint(ByteArray(0)),
-    val prevSendToken: RoutingToken,
-    val prevSendHeaderKey: HeaderKey = HeaderKey(ByteArray(0)),
+    // Null (stored as "") in sessions from before these fields existed; see EmptyAsNullSerializer.
+    @Serializable(with = Fingerprint.NullableSerializer::class)
+    val localFp: Fingerprint? = null,
+    @Serializable(with = Fingerprint.NullableSerializer::class)
+    val remoteFp: Fingerprint? = null,
+    val prevSendToken: SendToken,
+    @Serializable(with = HeaderKey.NullableSerializer::class)
+    val prevSendHeaderKey: HeaderKey? = null,
     val isAlice: Boolean,
     // REPLAY PROTECTION & OUT-OF-ORDER SUPPORT
     // Map of (remoteDhPubHex + ":" + seq) to the cached key for that message
+    @Serializable(with = SkippedKeysSerializer::class)
     val skippedMessageKeys: Map<String, SkippedMessageKey> = emptyMap(),
     // Previous send and receive chain lengths (§4.4) - used to bind sequence numbers across epochs in AAD.
     val pn: Long = 0,
     val pr: Long = 0,
     // (A former `needsRatchet` flag is ignored when loading old blobs: ignoreUnknownKeys.)
-    // HEADER ENCRYPTION (#186)
-    val headerKey: HeaderKey = HeaderKey(ByteArray(0)),
-    val sendHeaderKey: HeaderKey = HeaderKey(ByteArray(0)),
-    val nextHeaderKey: HeaderKey = HeaderKey(ByteArray(0)),
+    // HEADER ENCRYPTION (#186). Null (stored as "") in sessions from before header encryption,
+    // which can no longer send or receive and must be re-paired.
+    @Serializable(with = HeaderKey.NullableSerializer::class)
+    val headerKey: HeaderKey? = null,
+    @Serializable(with = HeaderKey.NullableSerializer::class)
+    val sendHeaderKey: HeaderKey? = null,
+    @Serializable(with = HeaderKey.NullableSerializer::class)
+    val nextHeaderKey: HeaderKey? = null,
 ) {
     /**
      * This party's and the peer's fingerprints, for direction-bound tokens and AAD. Derived from
@@ -76,8 +87,13 @@ data class SessionState(
      * seals it (§4.3). The first message of an epoch goes to the previous epoch's mailbox under the
      * previous header key, because the peer is still polling there; later ones use the current pair.
      */
-    internal fun transportFor(seq: Long): Transport =
-        if (seq == 1L) Transport(prevSendToken, prevSendHeaderKey) else Transport(sendToken, sendHeaderKey)
+    internal fun transportFor(seq: Long): Transport {
+        val (token, key) = if (seq == 1L) prevSendToken to prevSendHeaderKey else sendToken to sendHeaderKey
+        return Transport(token, key ?: throw SessionBrickedException("session predates header encryption; re-pair"))
+    }
+
+    /** The receive header keys to try on an envelope, current epoch first. */
+    internal fun recvHeaderKeys(): List<HeaderKey> = listOfNotNull(headerKey, nextHeaderKey)
 
     /** Header AAD (#186): both bootstrap fingerprints, Alice's first, the same on both sides. */
     internal fun headerAad(): ByteArray = aliceFp.bytes + bobFp.bytes
@@ -95,20 +111,20 @@ data class SessionState(
             sendToken = sendToken.copyOf(),
             recvToken = recvToken.copyOf(),
             localDhPriv = localDhPriv.copyOf(),
-            prevSendHeaderKey = prevSendHeaderKey.copyOf(),
+            prevSendHeaderKey = prevSendHeaderKey?.copyOf(),
             localDhPub = localDhPub.copyOf(),
             remoteDhPub = remoteDhPub.copyOf(),
             aliceEkPub = aliceEkPub.copyOf(),
             bobEkPub = bobEkPub.copyOf(),
             aliceFp = aliceFp.copyOf(),
             bobFp = bobFp.copyOf(),
-            localFp = localFp.copyOf(),
-            remoteFp = remoteFp.copyOf(),
+            localFp = localFp?.copyOf(),
+            remoteFp = remoteFp?.copyOf(),
             prevSendToken = prevSendToken.copyOf(),
             skippedMessageKeys = skippedMessageKeys.mapValues { it.value.copyOf() },
-            headerKey = headerKey.copyOf(),
-            sendHeaderKey = sendHeaderKey.copyOf(),
-            nextHeaderKey = nextHeaderKey.copyOf(),
+            headerKey = headerKey?.copyOf(),
+            sendHeaderKey = sendHeaderKey?.copyOf(),
+            nextHeaderKey = nextHeaderKey?.copyOf(),
         )
 
     /**
@@ -117,7 +133,7 @@ data class SessionState(
      * buffers may be shared with another live state.
      */
     internal fun zeroizeAll() {
-        keyFields().forEach { it.zeroize() }
+        keyFields().forEach { it?.zeroize() }
         skippedMessageKeys.values.forEach { it.zeroize() }
     }
 
@@ -130,7 +146,7 @@ data class SessionState(
      * arguments and can't be driven from a list — SessionStateDeepCopyTest guards that one
      * against the same field-added-but-missed risk instead.
      */
-    private fun keyFields(): Array<KeyBytes> =
+    private fun keyFields(): Array<KeyBytes?> =
         arrayOf(
             rootKey, sendChainKey, recvChainKey, sendToken, recvToken,
             localDhPriv, localDhPub, remoteDhPub, aliceEkPub, bobEkPub,
@@ -153,7 +169,7 @@ data class SessionState(
 
     override fun hashCode(): Int {
         var h = 0
-        for (field in keyFields()) h = 31 * h + field.hashCode()
+        for (field in keyFields()) h = 31 * h + (field?.hashCode() ?: 0)
         h = 31 * h + sendSeq.hashCode()
         h = 31 * h + recvSeq.hashCode()
         h = 31 * h + isAlice.hashCode()
@@ -220,7 +236,7 @@ data class QrPayload(
     val suggestedName: String,
     // Fresh random 32-byte secret; HKDF IKM for the discovery token (§4.2).
     @SerialName("discovery_secret")
-    @Serializable(with = ByteArrayBase64Serializer::class) val discoverySecret: ByteArray,
+    val discoverySecret: DiscoverySecret,
     // Epoch seconds after which the inviter may have dropped this invite. Optional: payloads from
     // older clients omit it (never expires), and older clients ignore it. UX metadata only; it is
     // unauthenticated and not a security control (see docs/e2ee-location-sync.md §4.2).
@@ -235,14 +251,14 @@ data class QrPayload(
     override fun equals(other: Any?): Boolean {
         if (other !is QrPayload) return false
         return protocolVersion == other.protocolVersion && ekPub.contentEquals(other.ekPub) && suggestedName == other.suggestedName &&
-            discoverySecret.contentEquals(other.discoverySecret) && expiresAt == other.expiresAt
+            discoverySecret == other.discoverySecret && expiresAt == other.expiresAt
     }
 
     override fun hashCode(): Int {
         var h = protocolVersion
         h = 31 * h + ekPub.contentHashCode()
         h = 31 * h + suggestedName.hashCode()
-        h = 31 * h + discoverySecret.contentHashCode()
+        h = 31 * h + discoverySecret.hashCode()
         h = 31 * h + (expiresAt?.hashCode() ?: 0)
         return h
     }
@@ -360,7 +376,7 @@ data class EncryptedOutboxMessage(
 )
 
 /** Mailbox and header key for one outgoing message; see [SessionState.transportFor]. */
-internal class Transport(val token: RoutingToken, val headerKey: HeaderKey)
+internal class Transport(val token: SendToken, val headerKey: HeaderKey)
 
 /**
  * An encrypted message, the state to persist after sending it, and the mailbox it must be posted
@@ -369,7 +385,7 @@ internal class Transport(val token: RoutingToken, val headerKey: HeaderKey)
 data class OutgoingMessage(
     val state: SessionState,
     val payload: EncryptedMessagePayload,
-    val destination: RoutingToken,
+    val destination: SendToken,
 )
 
 /**

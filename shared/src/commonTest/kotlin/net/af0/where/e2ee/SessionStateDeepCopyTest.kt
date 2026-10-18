@@ -1,3 +1,5 @@
+@file:OptIn(RawKeyAccess::class)
+
 package net.af0.where.e2ee
 
 import kotlin.test.Test
@@ -16,15 +18,18 @@ import kotlin.test.assertTrue
  * genuinely distinct buffer after copying.
  */
 class SessionStateDeepCopyTest {
-    private fun bytes(tag: Int): ByteArray = ByteArray(4) { tag.toByte() }
+    private fun bytes(
+        tag: Int,
+        size: Int = 32,
+    ): ByteArray = ByteArray(size) { tag.toByte() }
 
     private fun sampleState(): SessionState =
         SessionState(
             rootKey = RootKey(bytes(1)),
             sendChainKey = ChainKey(bytes(2)),
             recvChainKey = ChainKey(bytes(3)),
-            sendToken = RoutingToken(bytes(4)),
-            recvToken = RoutingToken(bytes(5)),
+            sendToken = SendToken(bytes(4, 16)),
+            recvToken = RecvToken(bytes(5, 16)),
             sendSeq = 0L,
             recvSeq = 0L,
             localDhPriv = DhPrivateKey(bytes(6)),
@@ -36,10 +41,10 @@ class SessionStateDeepCopyTest {
             bobFp = Fingerprint(bytes(12)),
             localFp = Fingerprint(bytes(13)),
             remoteFp = Fingerprint(bytes(14)),
-            prevSendToken = RoutingToken(bytes(15)),
+            prevSendToken = SendToken(bytes(15, 16)),
             prevSendHeaderKey = HeaderKey(bytes(16)),
             isAlice = true,
-            skippedMessageKeys = mapOf("k" to SkippedMessageKey(bytes(17))),
+            skippedMessageKeys = mapOf("k" to SkippedMessageKey(MessageKey(bytes(17)), MessageNonce(bytes(21, 12)), 0L)),
             headerKey = HeaderKey(bytes(18)),
             sendHeaderKey = HeaderKey(bytes(19)),
             nextHeaderKey = HeaderKey(bytes(20)),
@@ -62,14 +67,15 @@ class SessionStateDeepCopyTest {
         assertNotSame(original.bobEkPub.bytes, copy.bobEkPub.bytes)
         assertNotSame(original.aliceFp.bytes, copy.aliceFp.bytes)
         assertNotSame(original.bobFp.bytes, copy.bobFp.bytes)
-        assertNotSame(original.localFp.bytes, copy.localFp.bytes)
-        assertNotSame(original.remoteFp.bytes, copy.remoteFp.bytes)
+        assertNotSame(original.localFp!!.bytes, copy.localFp!!.bytes)
+        assertNotSame(original.remoteFp!!.bytes, copy.remoteFp!!.bytes)
         assertNotSame(original.prevSendToken.bytes, copy.prevSendToken.bytes)
-        assertNotSame(original.prevSendHeaderKey.bytes, copy.prevSendHeaderKey.bytes)
-        assertNotSame(original.headerKey.bytes, copy.headerKey.bytes)
-        assertNotSame(original.sendHeaderKey.bytes, copy.sendHeaderKey.bytes)
-        assertNotSame(original.nextHeaderKey.bytes, copy.nextHeaderKey.bytes)
-        assertNotSame(original.skippedMessageKeys.getValue("k").bytes, copy.skippedMessageKeys.getValue("k").bytes)
+        assertNotSame(original.prevSendHeaderKey!!.bytes, copy.prevSendHeaderKey!!.bytes)
+        assertNotSame(original.headerKey!!.bytes, copy.headerKey!!.bytes)
+        assertNotSame(original.sendHeaderKey!!.bytes, copy.sendHeaderKey!!.bytes)
+        assertNotSame(original.nextHeaderKey!!.bytes, copy.nextHeaderKey!!.bytes)
+        assertNotSame(original.skippedMessageKeys.getValue("k").messageKey.bytes, copy.skippedMessageKeys.getValue("k").messageKey.bytes)
+        assertNotSame(original.skippedMessageKeys.getValue("k").nonce.bytes, copy.skippedMessageKeys.getValue("k").nonce.bytes)
 
         // Content must still match despite being distinct buffers.
         assertTrue(original == copy, "deep copy must remain equal in content")

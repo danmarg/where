@@ -1,3 +1,5 @@
+@file:OptIn(RawKeyAccess::class) // the invites table stores raw key blobs
+
 package net.af0.where.e2ee
 
 import kotlinx.coroutines.CancellationException
@@ -349,7 +351,7 @@ internal class E2eeStore(
                 QrPayload(
                     suggestedName = suggestedName,
                     ekPub = ekPub,
-                    discoverySecret = discoverySecret,
+                    discoverySecret = DiscoverySecret(discoverySecret),
                     // Not persisted: re-derived from creation time, same as at creation.
                     expiresAt = createdAt + INVITE_LIFETIME_SECONDS,
                 ),
@@ -447,7 +449,7 @@ internal class E2eeStore(
                             ekPub = invite.qrPayload.ekPub,
                             suggestedName = invite.qrPayload.suggestedName,
                             fingerprint = "",
-                            discoverySecret = invite.qrPayload.discoverySecret,
+                            discoverySecret = invite.qrPayload.discoverySecret.bytes,
                             privKeyBlob = invite.aliceEkPriv.bytes,
                             createdAt = invite.createdAt,
                             exportedAt = invite.exportedAt,

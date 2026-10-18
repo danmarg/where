@@ -169,7 +169,7 @@ class E2eeManager(
                 KeyExchange.aliceProcessInit(
                     msg = msg,
                     aliceEkPriv = priv,
-                    aliceEkPub = aliceEkPubBytes,
+                    aliceEkPub = DhPublicKey.fromWire(aliceEkPubBytes),
                 )
             } finally {
                 priv.zeroize()

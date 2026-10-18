@@ -1,3 +1,5 @@
+@file:OptIn(RawKeyAccess::class)
+
 package net.af0.where.e2ee
 
 /**
@@ -13,8 +15,6 @@ package net.af0.where.e2ee
  */
 
 object KeyExchange {
-    private const val CONFIRM_PREFIX = "Where-v1-Confirm"
-
     /**
      * X25519 returns an all-zero shared secret (rather than throwing) for canonical
      * low-order public keys on at least one supported platform (see
@@ -27,7 +27,7 @@ object KeyExchange {
      * E2eeManager.decryptSuggestedName also call it.
      */
     internal fun requireNonZeroSharedSecret(sk: SharedSecret) {
-        if (sk.bytes.all { it == 0.toByte() }) {
+        if (sk.isAllZero()) {
             sk.zeroize()
             throw AuthenticationException("X25519 produced an all-zero shared secret, rejecting low-order public key")
         }
@@ -43,7 +43,7 @@ object KeyExchange {
             QrPayload(
                 ekPub = ek.pub.copyOf(),
                 suggestedName = suggestedName,
-                discoverySecret = randomBytes(32),
+                discoverySecret = DiscoverySecret.random(),
                 expiresAt = currentTimeSeconds() + INVITE_LIFETIME_SECONDS,
             )
         return payload to DhPrivateKey(ek.priv)
@@ -116,14 +116,14 @@ object KeyExchange {
     fun aliceProcessInit(
         msg: KeyExchangeInitMessage,
         aliceEkPriv: DhPrivateKey,
-        aliceEkPub: ByteArray,
+        aliceEkPub: DhPublicKey,
     ): SessionState {
         // VERIFY PROTOCOL VERSION (#194)
         if (msg.protocolVersion > SUPPORTED_MAX_VERSION) {
             throw ProtocolVersionException("Unsupported protocol version ${msg.protocolVersion}")
         }
 
-        val alicePub = DhPublicKey(aliceEkPub)
+        val alicePub = aliceEkPub
         val bobPub = DhPublicKey.fromWire(msg.ekPub)
         val sk = dh(aliceEkPriv, bobPub)
         requireNonZeroSharedSecret(sk)
@@ -170,12 +170,12 @@ object KeyExchange {
                     sendChainKey = rkStep.newChainKey.copyOf(),
                     // CRITICAL: Alice MUST keep the Epoch 0 headerKey for receiving Bob's
                     // initial messages (B0). She only advances HER send side to Epoch 1.
-                    headerKey = session.headerKey.copyOf(),
-                    sendHeaderKey = session.nextHeaderKey.copyOf(),
+                    headerKey = session.headerKey?.copyOf(),
+                    sendHeaderKey = session.nextHeaderKey?.copyOf(),
                     nextHeaderKey = rkStep.newHeaderKey.copyOf(),
                     sendToken = newSendToken,
                     recvToken = session.recvToken.copyOf(),
-                    prevSendHeaderKey = session.sendHeaderKey.copyOf(),
+                    prevSendHeaderKey = session.sendHeaderKey?.copyOf(),
                     localDhPriv = newLocalPriv.copyOf(),
                     localDhPub = DhPublicKey(newLocalDh.pub.copyOf()),
                     prevSendToken = session.sendToken,
@@ -236,15 +236,7 @@ object KeyExchange {
         }
     }
 
-    private fun nameKey(sk: SharedSecret) =
-        NameKey(
-            hkdfSha256(
-                ikm = sk.bytes,
-                salt = null,
-                info = "Where-v1-SuggestedName".encodeToByteArray(),
-                length = 32,
-            ),
-        )
+    private fun nameKey(sk: SharedSecret) = NameKey(hkdf(Label.SUGGESTED_NAME, ikm = sk.bytes, salt = null, length = KEY_SIZE))
 
     /**
      * Derive the initial session state from SK.
@@ -260,12 +252,7 @@ object KeyExchange {
         bobFp: Fingerprint,
     ): SessionState {
         val expanded =
-            hkdfSha256(
-                ikm = sk.bytes,
-                salt = null,
-                info = INFO_KEY_EXCHANGE.encodeToByteArray(),
-                length = 192,
-            )
+            hkdf(Label.KEY_EXCHANGE, ikm = sk.bytes, salt = null, length = 192)
         val chainKey0 = ChainKey(expanded.copyOfRange(0, 32))
         val chainKey1 = ChainKey(expanded.copyOfRange(32, 64))
         val initialRootKey = RootKey(expanded.copyOfRange(64, 96))
@@ -323,15 +310,9 @@ object KeyExchange {
         ekAPub: DhPublicKey,
         ekBPub: DhPublicKey,
     ): ByteArray {
-        val kConfirm =
-            hkdfSha256(
-                ikm = sk.bytes,
-                salt = null,
-                info = INFO_CONFIRM.encodeToByteArray(),
-                length = 32,
-            )
+        val kConfirm = hkdf(Label.CONFIRM_KEY, ikm = sk.bytes, salt = null, length = KEY_SIZE)
         try {
-            return hmacSha256(kConfirm, CONFIRM_PREFIX.encodeToByteArray() + ekAPub.bytes + ekBPub.bytes)
+            return hmacSha256(kConfirm, Label.CONFIRM.bytes + ekAPub.bytes + ekBPub.bytes)
         } finally {
             kConfirm.zeroize()
         }

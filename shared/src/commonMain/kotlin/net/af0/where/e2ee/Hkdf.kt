@@ -1,6 +1,21 @@
 package net.af0.where.e2ee
 
 /**
+ * HKDF-SHA-256 with [label] (plus any [context]) as info. Protocol code derives keys through this,
+ * so every derivation names its domain-separation label from [Label].
+ */
+internal fun hkdf(
+    label: Label,
+    ikm: ByteArray,
+    salt: ByteArray?,
+    length: Int,
+    context: ByteArray = ByteArray(0),
+): ByteArray {
+    require(label.use == Label.Use.HKDF_INFO) { "$label is not an HKDF info label" }
+    return hkdfSha256(ikm, salt, label.bytes + context, length)
+}
+
+/**
  * Pure-Kotlin HKDF-SHA-256 (RFC 5869) built on top of the platform hmacSha256 primitive.
  * Having HKDF in common code (rather than duplicated in each platform) keeps the protocol
  * logic auditable in one place.

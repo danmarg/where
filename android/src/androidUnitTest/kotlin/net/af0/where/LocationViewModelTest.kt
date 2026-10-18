@@ -28,6 +28,7 @@ import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
 import net.af0.where.db.WhereDatabase
 import net.af0.where.e2ee.ConnectionStatus
+import net.af0.where.e2ee.DiscoverySecret
 import net.af0.where.e2ee.E2eeManager
 import net.af0.where.e2ee.FriendEntry
 import net.af0.where.e2ee.InviteState
@@ -38,7 +39,8 @@ import net.af0.where.e2ee.PROTOCOL_VERSION
 import net.af0.where.e2ee.PendingInviteView
 import net.af0.where.e2ee.QrPayload
 import net.af0.where.e2ee.RawKeyValueStorage
-import net.af0.where.e2ee.RoutingToken
+import net.af0.where.e2ee.RecvToken
+import net.af0.where.e2ee.SendToken
 import net.af0.where.e2ee.SessionState
 import net.af0.where.e2ee.UserStore
 import net.af0.where.e2ee.currentTimeSeconds
@@ -322,7 +324,7 @@ class LocationViewModelTest {
                     protocolVersion = PROTOCOL_VERSION,
                     ekPub = byteArrayOf(1, 2, 3),
                     suggestedName = "Alice",
-                    discoverySecret = ByteArray(32),
+                    discoverySecret = DiscoverySecret(ByteArray(32)),
                 )
 
             // Bob scans
@@ -485,15 +487,15 @@ class LocationViewModelTest {
                     protocolVersion = PROTOCOL_VERSION,
                     ekPub = byteArrayOf(1, 2, 3),
                     suggestedName = "Alice",
-                    discoverySecret = ByteArray(32),
+                    discoverySecret = DiscoverySecret(ByteArray(32)),
                 )
 
             val mockPayload = mockk<KeyExchangeInitPayload>(relaxed = true)
             val mockFriend = mockk<FriendEntry>(relaxed = true)
             val mockSession = mockk<SessionState>(relaxed = true)
             every { mockFriend.session } returns mockSession
-            every { mockSession.sendToken } returns RoutingToken(byteArrayOf(1, 2, 3))
-            every { mockSession.recvToken } returns RoutingToken(byteArrayOf(4, 5, 6))
+            every { mockSession.sendToken } returns SendToken(ByteArray(16) { 1 })
+            every { mockSession.recvToken } returns RecvToken(ByteArray(16) { 4 })
             every { mockFriend.id } returns "alice_fp"
             io.mockk.coEvery { store.processScannedQr(any(), any()) } returns (mockPayload to mockFriend)
 
@@ -531,7 +533,7 @@ class LocationViewModelTest {
                     protocolVersion = PROTOCOL_VERSION,
                     ekPub = byteArrayOf(1, 2, 3),
                     suggestedName = "Alice",
-                    discoverySecret = ByteArray(32),
+                    discoverySecret = DiscoverySecret(ByteArray(32)),
                 )
 
             uiStore.onPendingQrForNaming(qr)
@@ -610,7 +612,7 @@ class LocationViewModelTest {
                     protocolVersion = PROTOCOL_VERSION,
                     ekPub = byteArrayOf(1, 2, 3),
                     suggestedName = "Alice",
-                    discoverySecret = ByteArray(32),
+                    discoverySecret = DiscoverySecret(ByteArray(32)),
                 )
 
             // Mock store to return a friend
@@ -618,8 +620,8 @@ class LocationViewModelTest {
             val mockFriend = mockk<FriendEntry>(relaxed = true)
             val mockSession = mockk<SessionState>(relaxed = true)
             every { mockFriend.session } returns mockSession
-            every { mockSession.sendToken } returns RoutingToken(byteArrayOf(1, 2, 3))
-            every { mockSession.recvToken } returns RoutingToken(byteArrayOf(4, 5, 6))
+            every { mockSession.sendToken } returns SendToken(ByteArray(16) { 1 })
+            every { mockSession.recvToken } returns RecvToken(ByteArray(16) { 4 })
             every { mockFriend.id } returns "friend1"
             io.mockk.coEvery { store.processScannedQr(any(), any()) } returns (mockPayload to mockFriend)
 
@@ -657,7 +659,7 @@ class LocationViewModelTest {
                     protocolVersion = PROTOCOL_VERSION,
                     ekPub = byteArrayOf(1, 2, 3),
                     suggestedName = "Alice",
-                    discoverySecret = ByteArray(32),
+                    discoverySecret = DiscoverySecret(ByteArray(32)),
                 )
 
             // Test 1: Scanning a QR code dismisses the invite sheet
@@ -1150,7 +1152,7 @@ class LocationViewModelTest {
                     protocolVersion = PROTOCOL_VERSION,
                     ekPub = ByteArray(32) { 1 },
                     suggestedName = "Alice",
-                    discoverySecret = ByteArray(32),
+                    discoverySecret = DiscoverySecret(ByteArray(32)),
                     expiresAt = currentTimeSeconds() - 3600,
                 )
 
@@ -1169,7 +1171,7 @@ class LocationViewModelTest {
                     protocolVersion = PROTOCOL_VERSION,
                     ekPub = ByteArray(32) { 1 },
                     suggestedName = "Alice",
-                    discoverySecret = ByteArray(32),
+                    discoverySecret = DiscoverySecret(ByteArray(32)),
                     expiresAt = currentTimeSeconds() + 3600,
                 )
 
@@ -1212,7 +1214,7 @@ class LocationViewModelTest {
                     protocolVersion = PROTOCOL_VERSION,
                     ekPub = ByteArray(32) { 1 },
                     suggestedName = "Alice",
-                    discoverySecret = ByteArray(32),
+                    discoverySecret = DiscoverySecret(ByteArray(32)),
                 )
 
             assertTrue(vm.processQrUrl(qr.toUrl()))
@@ -1229,7 +1231,7 @@ class LocationViewModelTest {
                     protocolVersion = PROTOCOL_VERSION + 100,
                     ekPub = ByteArray(32) { 1 },
                     suggestedName = "Alice",
-                    discoverySecret = ByteArray(32),
+                    discoverySecret = DiscoverySecret(ByteArray(32)),
                 )
 
             vm.confirmQrScan(badVersionQr, "Alice")

@@ -1,3 +1,5 @@
+@file:OptIn(RawKeyAccess::class)
+
 package net.af0.where.e2ee
 
 /**
@@ -27,12 +29,7 @@ fun safetyNumber(
     val remote = remoteEkPub.bytes
     val input = if (local.compare(remote) <= 0) local + remote else remote + local
     val ikm = sha256(input)
-    return hkdfSha256(
-        ikm = ikm,
-        salt = null,
-        info = "Where-v1-SafetyNumber".encodeToByteArray(),
-        length = 60,
-    )
+    return hkdf(Label.SAFETY_NUMBER, ikm = ikm, salt = null, length = 60)
 }
 
 /**

@@ -18,6 +18,7 @@ import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
 import net.af0.where.db.WhereDatabase
+import net.af0.where.e2ee.DiscoverySecret
 import net.af0.where.e2ee.E2eeManager
 import net.af0.where.e2ee.FriendEntry
 import net.af0.where.e2ee.InviteAlreadyAcceptedException
@@ -52,7 +53,7 @@ class InviteIdempotenceTest {
         QrPayload(
             ekPub = Random.nextBytes(32),
             suggestedName = "Alice",
-            discoverySecret = Random.nextBytes(32),
+            discoverySecret = DiscoverySecret.random(),
         )
 
     @Before

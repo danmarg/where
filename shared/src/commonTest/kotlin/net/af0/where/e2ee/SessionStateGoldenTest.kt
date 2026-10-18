@@ -1,3 +1,4 @@
+@file:OptIn(RawKeyAccess::class)
 @file:Suppress("ktlint:standard:max-line-length") // recorded JSON goldens
 
 package net.af0.where.e2ee
@@ -5,6 +6,8 @@ package net.af0.where.e2ee
 import kotlinx.serialization.json.Json
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
+import kotlin.test.assertNull
 
 /**
  * Pins the persisted SessionState JSON and the bytes the ratchet derives from fixed inputs, so a
@@ -68,7 +71,7 @@ class SessionStateGoldenTest {
 
     @Test
     fun persistedJsonRoundTrips() {
-        val state = alice().copy(skippedMessageKeys = mapOf("ab:1" to SkippedMessageKey(bytes(9, 52))), sendSeq = 3, pn = 2)
+        val state = alice().copy(skippedMessageKeys = mapOf("ab:1" to SkippedMessageKey.decode(bytes(9, 52))!!), sendSeq = 3, pn = 2)
         val encoded = encode(state)
         assertEquals(state, json.decodeFromString(SessionState.serializer(), encoded))
         assertEquals(encoded, encode(json.decodeFromString(SessionState.serializer(), encoded)))
@@ -78,6 +81,11 @@ class SessionStateGoldenTest {
     fun legacyBlobWithoutDefaultedFieldsLoads() {
         val state = json.decodeFromString(SessionState.serializer(), LEGACY_JSON)
         assertEquals(LEGACY_REENCODED_JSON, encode(state))
+        // The fields it stored as "" load as null.
+        listOf(state.localFp, state.remoteFp, state.headerKey, state.sendHeaderKey, state.nextHeaderKey, state.prevSendHeaderKey)
+            .forEach { assertNull(it) }
+        // Such a session can't seal a header; it fails cleanly instead of with an AEAD error.
+        assertFailsWith<SessionBrickedException> { Session.encryptMessage(state, MessagePlaintext.Keepalive()) }
     }
 
     @Test
@@ -94,10 +102,9 @@ class SessionStateGoldenTest {
 
     @Test
     fun sessionStoredWithoutLocalAndRemoteFingerprintsStillWorks() {
-        // Sessions stored before localFp/remoteFp existed load them as empty; message AAD must
+        // Sessions stored before localFp/remoteFp existed load them as null; message AAD must
         // still bind the real fingerprints.
-        val empty = Fingerprint(ByteArray(0))
-        val legacyAlice = alice().copy(localFp = empty, remoteFp = empty)
+        val legacyAlice = alice().copy(localFp = null, remoteFp = null)
         val ka = Session.padToFixedSize("""{"type":"ka"}""".encodeToByteArray(), PADDING_SIZE)
 
         val (_, toBob) = Session.encryptPadded(legacyAlice, ka.copyOf())
@@ -110,9 +117,9 @@ class SessionStateGoldenTest {
     @Test
     fun ratchetDerivationsAreUnchanged() {
         val step = dhRatchetSubStep(alicePriv, pub(bobPriv), RootKey(bytes(4)))
-        assertEquals(RATCHET_STEP_HEX, step.newRootKey.toHex() + step.newChainKey.toHex() + step.newHeaderKey.toHex())
+        assertEquals(RATCHET_STEP_HEX, step.newRootKey.bytes.toHex() + step.newChainKey.bytes.toHex() + step.newHeaderKey.bytes.toHex())
         val chain = kdfCk(ChainKey(bytes(5)))
-        assertEquals(CHAIN_STEP_HEX, chain.newChainKey.toHex() + chain.messageKey.toHex() + chain.messageNonce.toHex())
+        assertEquals(CHAIN_STEP_HEX, chain.newChainKey.bytes.toHex() + chain.messageKey.bytes.toHex() + chain.messageNonce.bytes.toHex())
         assertEquals(ROUTING_TOKEN_HEX, deriveRoutingToken(RootKey(bytes(6)), Fingerprint(bytes(7)), Fingerprint(bytes(8))).toHex())
         assertEquals(FINGERPRINT_HEX, fingerprint(DhPublicKey(bytes(10))).toHex())
     }
