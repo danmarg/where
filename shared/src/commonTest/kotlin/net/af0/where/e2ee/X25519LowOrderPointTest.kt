@@ -3,6 +3,7 @@
 package net.af0.where.e2ee
 
 import kotlin.test.Test
+import kotlin.test.assertFailsWith
 import kotlin.test.fail
 
 /**
@@ -44,6 +45,18 @@ class X25519LowOrderPointTest {
             "eeffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f",
         )
 
+    /**
+     * Wycheproof's x25519 cases whose shared secret is all zero: low-order public keys, including
+     * non-canonical encodings (u >= p, high bit set) of the points above, paired with edge-case
+     * private keys.
+     */
+    private val wycheproofZeroSharedSecret =
+        Wycheproof.load("x25519_test.json").filter { "ZeroSharedSecret" in it.flags }
+
+    /** Every low-order public key this test knows: the canonical list plus Wycheproof's encodings. */
+    private val allLowOrderPublicKeys =
+        (lowOrderPoints + wycheproofZeroSharedSecret.map { it.hex("public").toHex() }).distinct()
+
     @Test
     fun x25519RejectsCanonicalLowOrderPoints() {
         val myPriv = randomBytes(32)
@@ -70,7 +83,7 @@ class X25519LowOrderPointTest {
      */
     @Test
     fun decryptMessageRejectsLowOrderRatchetKey() {
-        for (hex in lowOrderPoints) {
+        for (hex in allLowOrderPublicKeys) {
             val (qr, aliceEkPriv) = KeyExchange.aliceCreateQrPayload("Alice")
             val (msg, bobSession) = KeyExchange.bobProcessQr(qr, "Bob")
             val aliceSession = KeyExchange.aliceProcessInit(msg, aliceEkPriv, qr.ekPub.toDhPublicKey())
@@ -92,6 +105,37 @@ class X25519LowOrderPointTest {
             // the JVM). Both come back as Rejected, with the session unchanged. Delivered
             // or Undeliverable would mean the ratchet adopted an attacker-known root key.
             Session.decryptMessage(bobSession, encrypted, maliciousHeader).rejected()
+        }
+    }
+
+    /** The protocol's DH step refuses every Wycheproof zero-shared-secret case with a typed error. */
+    @Test
+    fun dhRejectsWycheproofLowOrderPublicKeys() {
+        check(wycheproofZeroSharedSecret.isNotEmpty())
+        for (case in wycheproofZeroSharedSecret) {
+            assertFailsWith<AuthenticationException>("$case") {
+                KeyExchange.requireNonZeroSharedSecret(dh(DhPrivateKey(case.hex("private")), DhPublicKey(case.hex("public"))))
+            }
+        }
+    }
+
+    /** A low-order key in either handshake message aborts pairing before any session exists. */
+    @Test
+    fun keyExchangeRejectsLowOrderPublicKeys() {
+        for (hex in allLowOrderPublicKeys) {
+            val qr =
+                QrPayload(
+                    ekPub = InvitePublicKey(hex.hexToByteArray()),
+                    suggestedName = "Mallory",
+                    discoverySecret = DiscoverySecret.random(),
+                )
+            assertFailsWith<AuthenticationException>("QR ek_pub $hex") { KeyExchange.bobProcessQr(qr, "Bob") }
+
+            val (aliceQr, aliceEkPriv) = KeyExchange.aliceCreateQrPayload("Alice")
+            val init = KeyExchangeInitMessage(ekPub = hex.hexToByteArray(), keyConfirmation = ByteArray(32), encryptedName = ByteArray(0))
+            assertFailsWith<AuthenticationException>("KeyExchangeInit ek_pub $hex") {
+                KeyExchange.aliceProcessInit(init, aliceEkPriv, aliceQr.ekPub.toDhPublicKey())
+            }
         }
     }
 }

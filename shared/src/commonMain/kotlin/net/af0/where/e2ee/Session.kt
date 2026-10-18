@@ -307,7 +307,7 @@ object Session {
                 try {
                     openMessage(finalStep.messageKey, finalStep.messageNonce, message.ct, aad)
                 } catch (e: Exception) {
-                    throw DecryptionExceptionWithState(newState, e)
+                    throw DecryptionExceptionWithState(newState, DecryptionException("message body authentication failed", e))
                 }
 
             // Likewise, an authenticated frame whose plaintext is malformed (bad padding,
@@ -500,10 +500,12 @@ object Session {
         }.getOrElse { e -> throw DecryptionException("malformed message plaintext", e) }
 
     private fun decodeLocation(obj: JsonObject): MessagePlaintext.Location? {
-        // Missing required coordinates → degrade to Keepalive (§5.7.3 leniency, mirrors "stop" handling).
-        val lat = obj["lat"]?.jsonPrimitive?.content?.toDoubleOrNull() ?: return null
-        val lng = obj["lng"]?.jsonPrimitive?.content?.toDoubleOrNull() ?: return null
-        val acc = obj["acc"]?.jsonPrimitive?.content?.toDoubleOrNull() ?: return null
+        // Missing or non-finite required coordinates → degrade to Keepalive (§5.7.3 leniency,
+        // mirrors "stop" handling). "1e999" and "NaN" parse as doubles; neither is a place.
+        fun finite(key: String) = obj[key]?.jsonPrimitive?.content?.toDoubleOrNull()?.takeIf { it.isFinite() }
+        val lat = finite("lat") ?: return null
+        val lng = finite("lng") ?: return null
+        val acc = finite("acc") ?: return null
         val ts = obj["ts"]?.jsonPrimitive?.longOrNull ?: return null
         // Unknown precision string (e.g. a future "MEDIUM") falls back to FINE for forward-compat.
         val precision =

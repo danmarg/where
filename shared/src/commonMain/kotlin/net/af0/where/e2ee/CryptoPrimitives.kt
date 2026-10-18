@@ -42,6 +42,7 @@ internal expect fun x25519(
  * @param plaintext arbitrary plaintext
  * @param aad   additional authenticated data
  * @return ciphertext || 16-byte authentication tag (concatenated)
+ * @throws IllegalArgumentException if the key or nonce has the wrong size
  */
 internal expect fun aeadEncrypt(
     key: ByteArray,
@@ -57,7 +58,7 @@ internal expect fun aeadEncrypt(
  * @param ciphertext ciphertext || 16-byte authentication tag
  * @param aad   additional authenticated data (must match what was used during encrypt)
  * @return plaintext, or throws if authentication fails
- * @throws IllegalArgumentException on authentication failure
+ * @throws IllegalArgumentException on authentication failure, or a key or nonce of the wrong size
  */
 internal expect fun aeadDecrypt(
     key: ByteArray,
@@ -65,6 +66,19 @@ internal expect fun aeadDecrypt(
     ciphertext: ByteArray,
     aad: ByteArray,
 ): ByteArray
+
+/**
+ * Refuses an AEAD key or nonce of the wrong size before it reaches libsodium, whose bindings
+ * pass both through unchecked: a short nonce would be read past its end and a long one silently
+ * truncated (Wycheproof chacha20_poly1305, InvalidNonceSize).
+ */
+internal fun requireAeadKeyAndNonce(
+    key: ByteArray,
+    nonce: ByteArray,
+) {
+    require(key.size == 32) { "AEAD key must be 32 bytes, got ${key.size}" }
+    require(nonce.size == 12) { "AEAD nonce must be 12 bytes, got ${nonce.size}" }
+}
 
 /**
  * Securely zeros out the byte array to prevent sensitive material from lingering in memory.

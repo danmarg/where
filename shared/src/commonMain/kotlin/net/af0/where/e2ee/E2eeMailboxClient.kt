@@ -71,12 +71,7 @@ object KtorMailboxClient : MailboxClient {
      */
     private const val MAILBOX_WALL_CLOCK_TIMEOUT_MS = 60_000L
 
-    private val json =
-        Json {
-            classDiscriminator = "type"
-            ignoreUnknownKeys = true
-            encodeDefaults = true
-        }
+    private val json = mailboxJson
 
     // KtorMailboxClient was already a process-lifetime singleton object holding one HttpClient
     // for the app's entire life (its transport identity is inherently global state, mutable or

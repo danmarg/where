@@ -135,6 +135,8 @@ The `/Volumes/Ext` external drive is used on the dev machine for all large cache
 ```bash
 ./gradlew :shared:jvmTest   # unit tests (requires JRE)
 ./gradlew :detekt-rules:test :shared:detekt   # E2EE lint rules and their tests
+./gradlew :shared:fuzzCorpusTest   # fuzz targets over the committed corpus (docs/fuzzing.md)
+./gradlew :shared:fuzz -Pfuzz.target=DecryptMessage -Pfuzz.seconds=600   # Jazzer, one target (nightly in fuzz.yml)
 ./e2e-test.sh               # end-to-end integration tests
 ./compat-test.sh            # last release's CLI vs this checkout: upgrade in place + cross-version pairing
 e2e/ios-upgrade-test.sh     # last release's iOS app → this checkout's, on a fresh simulator (macOS, Maestro)
@@ -155,7 +157,13 @@ last), on PRs touching the apps, and on demand (`gh workflow run app-e2e.yml -f 
 optionally `-f base_ref=<tag>`). UI steps are Maestro flows in `e2e/flows/`.
 
 The E2EE crypto library tests live in `shared/src/commonTest/kotlin/net/af0/where/e2ee/`
-and run on the JVM target via `:shared:jvmTest`.
+and run on the JVM target via `:shared:jvmTest` and on the iOS simulator via
+`:shared:iosSimulatorArm64Test` (`ios.yml`). `CryptoPrimitivesVectorTest` runs the vendored
+Wycheproof vectors (`commonTest/resources/wycheproof`) on both, covering both HMAC backends. The
+schedule property test (`jvmTest/.../ScheduleInterleavingPropertyTest.kt`) drives two managers
+through random sends, drops, duplicates, reorders, crashes and restarts; rerun one schedule with
+`--tests '*ScheduleInterleaving*replay' -Dschedule.seed=<n>`. The crypto backend choice is recorded
+in `docs/crypto-backend.md`.
 
 ---
 

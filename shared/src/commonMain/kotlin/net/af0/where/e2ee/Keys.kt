@@ -506,8 +506,17 @@ internal fun constantTimeEquals(
     return diff == 0
 }
 
-/** X25519 between our private key and their public key. */
+/**
+ * X25519 between our private key and their public key. A public key the primitive refuses
+ * outright (libsodium does for some low-order points) is an [AuthenticationException], the same
+ * as the all-zero result [KeyExchange.requireNonZeroSharedSecret] catches for the others.
+ */
 internal fun dh(
     localPriv: DhPrivateKey,
     remotePub: DhPublicKey,
-): SharedSecret = SharedSecret(x25519(localPriv.bytes, remotePub.bytes))
+): SharedSecret =
+    try {
+        SharedSecret(x25519(localPriv.bytes, remotePub.bytes))
+    } catch (e: Exception) {
+        throw AuthenticationException("X25519 rejected the public key", e)
+    }

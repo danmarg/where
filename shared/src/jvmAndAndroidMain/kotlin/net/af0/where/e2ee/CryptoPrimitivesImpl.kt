@@ -73,6 +73,7 @@ internal actual fun aeadEncrypt(
     plaintext: ByteArray,
     aad: ByteArray,
 ): ByteArray {
+    requireAeadKeyAndNonce(key, nonce)
     return AuthenticatedEncryptionWithAssociatedData.chaCha20Poly1305IetfEncrypt(
         plaintext.toUByteArray(),
         aad.toUByteArray(),
@@ -87,6 +88,7 @@ internal actual fun aeadDecrypt(
     ciphertext: ByteArray,
     aad: ByteArray,
 ): ByteArray {
+    requireAeadKeyAndNonce(key, nonce)
     return try {
         AuthenticatedEncryptionWithAssociatedData.chaCha20Poly1305IetfDecrypt(
             ciphertext.toUByteArray(),

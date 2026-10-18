@@ -19,12 +19,14 @@ zxing-core = "3.5.3"
 zxing-android = "4.3.0"
 testcontainers = "2.0.2"
 awssdk = "2.44.1"
-libsodium = "0.9.5"
+# strictly: a transitive dependency must not move the crypto backend (docs/crypto-backend.md).
+libsodium = { strictly = "0.9.5" }
 security-crypto = "1.1.0-alpha06"
 moko-resources = "0.24.5"
 work = "2.9.1"
 maplibre = "11.11.0"
 detekt = "1.23.8"
+jazzer = "0.30.0"
 
 [libraries]
 # detekt (custom e2ee rules in :detekt-rules)
@@ -77,6 +79,10 @@ play-services-location = { module = "com.google.android.gms:play-services-locati
 accompanist-permissions = { module = "com.google.accompanist:accompanist-permissions", version.ref = "accompanist-permissions" }
 zxing-core = { module = "com.google.zxing:core", version.ref = "zxing-core" }
 zxing-android-embedded = { module = "com.journeyapps:zxing-android-embedded", version.ref = "zxing-android" }
+
+# Fuzzing (shared/src/jvmFuzz)
+jazzer = { module = "com.code-intelligence:jazzer", version.ref = "jazzer" }
+jazzer-api = { module = "com.code-intelligence:jazzer-api", version.ref = "jazzer" }
 
 # Crypto
 libsodium-kmp = { module = "com.ionspin.kotlin:multiplatform-crypto-libsodium-bindings", version.ref = "libsodium" }
