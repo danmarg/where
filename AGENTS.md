@@ -165,11 +165,22 @@ through random sends, drops, duplicates, reorders, crashes and restarts; rerun o
 `--tests '*ScheduleInterleaving*replay' -Dschedule.seed=<n>`. The crypto backend choice is recorded
 in `docs/crypto-backend.md`.
 
+The protocol itself is the pure function `ProtocolCore.step(state, event, now, rng)` (events: invite,
+scan, init, send, receive; effects: put, cancel put, ack, deliver, retire token). `Session` and
+`KeyExchange` take the time and an `Rng` instead of reading the clock or the CSPRNG; `E2eeManager`
+and `LocationClient` keep the I/O, locking and storage and carry out the effects. The golden
+transcript (`commonTest/resources/vectors/where-v1-transcript.json`, spec §11.1) is that function
+run with seeded RNGs, and `GoldenTranscriptTest` replays it byte for byte on the JVM and iOS. A
+change that breaks it is a protocol change: regenerate it with
+`WHERE_WRITE_VECTORS=1 ./gradlew :shared:jvmTest --tests '*GoldenTranscriptWriter*'` and bump its
+version with the spec's.
+
 ---
 
 ## Key files
 - `gradle/libs.versions.toml` — central dependency management
 - `docs/e2ee-location-sync.md` — full cryptographic protocol specification
+- `shared/src/commonTest/resources/vectors/` — golden transcript, the spec's normative examples
 
 ---
 

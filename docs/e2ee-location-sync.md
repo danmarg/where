@@ -3,6 +3,7 @@
 **Status:** Implemented
 **Authors:** Daniel Margolis
 **Date:** 2026-05-24
+**Protocol version:** 1. Normative examples: the golden transcript, vectors version 1 ([§11.1](#111-test-vectors-normative-examples)).
 
 ---
 
@@ -926,6 +927,18 @@ With this design, and assuming only the advertised mailbox API and payload encry
 - **Kotlin Multiplatform:** Use [ionspin/kotlin-multiplatform-libsodium](https://github.com/ionspin/kotlin-multiplatform-libsodium) for X25519, ChaCha20-Poly1305 and SHA-256; HMAC-SHA-256 is the platform's (javax `Mac`, CommonCrypto). See [crypto-backend.md](crypto-backend.md) for why, the pinned versions, and how each is tested (Wycheproof on both platforms). Libsodium provides a unified API across JVM, Android, and iOS, eliminating platform-specific implementation variance. All crypto operations are common-code `expect/actual` implementations.
 - **Android / Kotlin:** Libsodium bindings use `libsodium.so` (statically linked). Store root keys in Android Keystore where supported; a Keystore-backed wrapper key can protect the master key material.
 - **iOS / Swift:** Libsodium bindings use the native `libsodium` framework (iOS includes sodium.dylib). Key material persists in the Secure Enclave-backed Keychain. SwiftUI calls the KMP shared module for crypto operations.
+
+### 11.1 Test Vectors (Normative Examples)
+
+[`shared/src/commonTest/resources/vectors/where-v1-transcript.json`](../shared/src/commonTest/resources/vectors/where-v1-transcript.json) is the normative example of this protocol. Where this document and the transcript disagree, the transcript records what interoperating clients do, and the document has a bug.
+
+The transcript is one pairing run through the protocol's pure step function (`ProtocolCore.step(state, event, now, rng)` in `shared/.../e2ee/ProtocolCore.kt`) with a fixed clock and a seeded RNG for each party (the file defines the RNG, so another implementation can reproduce every draw). Each step records the event, the effects (mailbox puts with their exact wire bodies, acks, deliveries, cancelled transition frames, retired tokens) and the party's state afterwards. It covers:
+
+- the invite (§4.2: QR payload, discovery secret and token, the inviter's ephemeral key), the `KeyExchangeInit` (§9.3), and `SK` with both sides' initial root, chain and header keys and routing tokens (§4.4);
+- frames in each direction, each side's first receive being a DH ratchet with a routing-token rotation, the transition frame on the old token (§5.4.1) and its send-side retirement (§5.4.3), two epochs each way;
+- Location (with and without `stationary`), StoppedSharing and Keepalive plaintexts (§5.7, §9.1.2).
+
+`GoldenTranscriptTest` replays it on the JVM and on the iOS simulator: feeding each step the recorded inputs must reproduce the recorded outputs byte for byte, and generating it from scratch must reproduce the file. The transcript is versioned with this document: a change that alters it is a protocol change, which regenerates the file (`WHERE_WRITE_VECTORS=1 ./gradlew :shared:jvmTest --tests '*GoldenTranscriptWriter*'`), bumps `vectors_version` here and in the file, and bumps `protocol_version` if old and new clients no longer interoperate.
 
 ---
 

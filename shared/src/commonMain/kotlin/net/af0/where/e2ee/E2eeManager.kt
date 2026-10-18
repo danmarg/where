@@ -337,7 +337,13 @@ class E2eeManager(
         metadata: E2eeStore.MetadataScope,
         payload: MessagePlaintext,
     ): Pair<FriendEntry, EncryptedMessagePayload> {
-        val step = ProtocolCore.step(ProtocolCore.State.Paired(entry.session), ProtocolCore.Event.Send(payload), currentTimeMillis(), SystemRng)
+        val step =
+            ProtocolCore.step(
+                ProtocolCore.State.Paired(entry.session),
+                ProtocolCore.Event.Send(payload),
+                currentTimeMillis(),
+                SystemRng,
+            )
         val nextSession = (step.state as ProtocolCore.State.Paired).session
         val put = step.effects.single() as ProtocolCore.Effect.Put
         val message = put.payload as EncryptedMessagePayload

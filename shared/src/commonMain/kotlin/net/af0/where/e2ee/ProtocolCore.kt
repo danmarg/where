@@ -97,8 +97,8 @@ object ProtocolCore {
         rng: Rng,
     ): Step =
         when (event) {
-            is Event.CreateInvite -> createInvite(expect<State.Idle>(state, event), event, nowMillis, rng)
-            is Event.ScanQr -> scanQr(expect<State.Idle>(state, event), event, nowMillis, rng)
+            is Event.CreateInvite -> expect<State.Idle>(state, event).let { createInvite(event, nowMillis, rng) }
+            is Event.ScanQr -> expect<State.Idle>(state, event).let { scanQr(event, nowMillis, rng) }
             is Event.ProcessInit -> processInit(expect<State.Inviting>(state, event), event, rng)
             is Event.Send -> send(expect<State.Paired>(state, event).session, event, rng)
             is Event.Receive -> receive(expect<State.Paired>(state, event).session, event, nowMillis, rng)
@@ -107,11 +107,11 @@ object ProtocolCore {
     private inline fun <reified S : State> expect(
         state: State,
         event: Event,
-    ): S = state as? S ?: throw IllegalStateException("${event::class.simpleName} needs ${S::class.simpleName}, not ${state::class.simpleName}")
+    ): S =
+        state as? S
+            ?: throw IllegalStateException("${event::class.simpleName} needs ${S::class.simpleName}, not ${state::class.simpleName}")
 
-    @Suppress("UNUSED_PARAMETER")
     private fun createInvite(
-        state: State.Idle,
         event: Event.CreateInvite,
         nowMillis: Long,
         rng: Rng,
@@ -120,9 +120,7 @@ object ProtocolCore {
         return Step(State.Inviting(qr, priv), emptyList())
     }
 
-    @Suppress("UNUSED_PARAMETER")
     private fun scanQr(
-        state: State.Idle,
         event: Event.ScanQr,
         nowMillis: Long,
         rng: Rng,

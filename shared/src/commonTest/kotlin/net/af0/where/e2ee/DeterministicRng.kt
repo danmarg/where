@@ -8,8 +8,7 @@ class DeterministicRng(seed: String) : Rng {
     private val key = sha256(seed.encodeToByteArray())
     private var counter = 0L
 
-    override fun bytes(size: Int): ByteArray =
-        hkdfSha256(ikm = key, salt = null, info = INFO + longToBeBytes(counter++), length = size)
+    override fun bytes(size: Int): ByteArray = hkdfSha256(ikm = key, salt = null, info = INFO + longToBeBytes(counter++), length = size)
 
     /** The private key is 32 drawn bytes; X25519 clamps it, as libsodium's own key generation does. */
     override fun x25519KeyPair(): RawKeyPair {
