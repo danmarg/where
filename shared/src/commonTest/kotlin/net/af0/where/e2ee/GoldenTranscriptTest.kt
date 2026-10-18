@@ -48,7 +48,7 @@ class GoldenTranscriptTest {
     }
 
     @Test
-    fun `transcript covers skipped keys, replays, reordering and soft failures`() {
+    fun `transcript covers skipped keys and replays and reordering and soft failures`() {
         val steps = GoldenTranscript.steps(recorded)
         assertTrue(steps.any { it.getValue("state").jsonObject["skipped_keys"]?.jsonArray?.isNotEmpty() == true }, "no skipped key")
         val receives = steps.filter { it.eventType() == "receive" }
