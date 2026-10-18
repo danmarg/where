@@ -406,7 +406,7 @@ NoSilentDrop ==
         \/ k \in KeysIn(UNION {mbox[t] : t \in Tokens})
         \/ k \in KeysIn(inflight[Peer(c)])
 
-\* While the server keeps everything it stored, no client deletes a frame it hasn't accepted:
+\* While the server has lost or expired no unread frame, no client deletes one it hasn't accepted:
 \* replays and duplicates are acked as processed, and a force-ACK only ever clears frames a loss
 \* or expiry made unprocessable. A frame left unopenable or rejected by a protocol bug fails here.
 NoUnreadAcks == lostKeys = {} => ackedUnread = {}
