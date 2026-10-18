@@ -48,15 +48,36 @@ class GoldenTranscriptTest {
     }
 
     @Test
+    fun `transcript covers skipped keys, replays, reordering and soft failures`() {
+        val steps = GoldenTranscript.steps(recorded)
+        assertTrue(steps.any { it.getValue("state").jsonObject["skipped_keys"]?.jsonArray?.isNotEmpty() == true }, "no skipped key")
+        val receives = steps.filter { it.eventType() == "receive" }
+
+        fun acked(step: JsonObject) =
+            step.getValue("effects").jsonArray.map { it.jsonObject }.filter { it.str("type") == "ack" }.flatMap { e ->
+                e.getValue("ids").jsonArray.map { it.jsonPrimitive.content }
+            }
+
+        fun delivered(step: JsonObject) = GoldenTranscript.effectTypes(step).count { it == "deliver" }
+
+        fun bodies(step: JsonObject) = step.getValue("event").jsonObject.getValue("bodies").jsonArray.size
+        // A replay or a soft failure: acked but not delivered.
+        assertTrue(receives.count { acked(it).size > delivered(it) } >= 2, "no replayed or undeliverable frame")
+        assertTrue(receives.any { bodies(it) >= 2 && delivered(it) == 2 }, "no multi-frame batch")
+    }
+
+    @Test
     fun `every receive reads the mailbox its frames were put to`() {
         val putTo = mutableMapOf<String, String>()
         val recvToken = mutableMapOf<String, String>()
         for ((i, step) in GoldenTranscript.steps(recorded).withIndex()) {
             val event = step.getValue("event").jsonObject
             if (event.str("type") == "receive") {
+                // Frames as they were put; the corrupted copy and the stray non-frame are planted.
                 for (body in event.getValue("bodies").jsonArray) {
-                    val msgId = decodeMailboxPayload(body.jsonPrimitive.content).msgId
-                    assertEquals(recvToken[step.party()], putTo[msgId], "step $i reads $msgId from the wrong mailbox")
+                    val payload = decodeMailboxPayload(body.jsonPrimitive.content)
+                    if (payload !is EncryptedMessagePayload || payload.msgId !in putTo) continue
+                    assertEquals(recvToken[step.party()], putTo[payload.msgId], "step $i reads ${payload.msgId} from the wrong mailbox")
                 }
             }
             for (effect in step.getValue("effects").jsonArray.map { it.jsonObject }) {

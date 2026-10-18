@@ -293,3 +293,9 @@ tasks.register<JavaExec>("generateFuzzSeeds") {
     mainClass.set("net.af0.where.e2ee.fuzz.SeedCorpus")
     args(fuzzCorpusDir.asFile.absolutePath)
 }
+
+// GoldenTranscriptWriter only writes under WHERE_WRITE_VECTORS=1; without this input a run with
+// it set would be UP-TO-DATE after one without, and silently write nothing.
+tasks.named<Test>("jvmTest") {
+    inputs.property("writeVectors", providers.environmentVariable("WHERE_WRITE_VECTORS").orElse(""))
+}

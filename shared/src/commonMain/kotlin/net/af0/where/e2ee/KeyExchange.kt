@@ -213,7 +213,7 @@ object KeyExchange {
         ekAPub: DhPublicKey,
         ekBPub: DhPublicKey,
         suggestedName: String,
-        rng: Rng = SystemRng,
+        rng: Rng,
     ): ByteArray {
         val kName = nameKey(sk)
         try {

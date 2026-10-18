@@ -486,7 +486,7 @@ class E2eeManager(
                 delivered.filterIsInstance<MessagePlaintext.Location>().map {
                     LocationPlaintext(lat = it.lat, lng = it.lng, acc = it.acc, ts = clampTs(it.ts), stationary = it.stationary)
                 }
-            val stoppedSharingTs = delivered.filterIsInstance<MessagePlaintext.StoppedSharing>().maxOfOrNull { clampTs(it.ts) }
+            val stoppedSharingTs = delivered.filterIsInstance<MessagePlaintext.StoppedSharing>().maxOfOrNull { it.ts }?.let { clampTs(it) }
             val lastLocation = decryptedLocations.lastOrNull()
             val storedLastTs = entry.lastTs?.takeIf { it <= maxTs } ?: 0
 

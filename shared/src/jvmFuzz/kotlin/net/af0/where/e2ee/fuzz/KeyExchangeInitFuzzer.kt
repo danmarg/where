@@ -5,6 +5,7 @@ import net.af0.where.e2ee.DhPublicKey
 import net.af0.where.e2ee.KeyExchange
 import net.af0.where.e2ee.KeyExchangeInitMessage
 import net.af0.where.e2ee.KeyExchangeInitPayload
+import net.af0.where.e2ee.SystemRng
 import net.af0.where.e2ee.decodeMailboxPayload
 import net.af0.where.e2ee.dh
 import net.af0.where.e2ee.x25519
@@ -39,7 +40,7 @@ object KeyExchangeInitFuzzer {
             val name = input.sized(64).decodeToString()
             var ekPub = bobPub.toByteArray()
             var confirmation = KeyExchange.buildKeyConfirmation(sk, alicePub, bobPub)
-            var encryptedName = KeyExchange.encryptSuggestedName(sk, alicePub, bobPub, name)
+            var encryptedName = KeyExchange.encryptSuggestedName(sk, alicePub, bobPub, name, SystemRng)
             var version = 1
             when (input.byte() % 6) {
                 0 -> genuine = true

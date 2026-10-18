@@ -32,7 +32,7 @@ object Session {
     internal fun encryptPadded(
         state: SessionState,
         plaintext: ByteArray,
-        rng: Rng = SystemRng,
+        rng: Rng,
     ): OutgoingMessage {
         if (state.sendSeq == Long.MAX_VALUE) throw SessionBrickedException("sequence number overflow")
 
@@ -423,7 +423,7 @@ object Session {
         seq: Long,
         pn: Long,
         aad: ByteArray = ByteArray(0),
-        rng: Rng = SystemRng,
+        rng: Rng,
     ): ByteArray {
         val plaintext = ByteArray(1 + 32 + 32 + 8 + 8 + 1)
         plaintext[0] = PROTOCOL_VERSION.toByte()

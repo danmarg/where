@@ -14,7 +14,7 @@ package net.af0.where.e2ee
  * A step that throws (a forged init, an expired invite, a bricked session) leaves the caller's
  * state as it was: nothing is to be persisted and no effect happens.
  */
-object ProtocolCore {
+internal object ProtocolCore {
     /** One pairing, from one party's side. */
     sealed class State {
         /** Nothing yet: either side may start, by inviting or by scanning. */
@@ -191,7 +191,7 @@ object ProtocolCore {
         // The peer ratcheted, so it read our epoch's transition message (the first of the epoch,
         // posted to the previous mailbox; see SessionState.transportFor). Only that one is stale:
         // anything queued for the current send token still has to go.
-        if (dhRatchet) effects.add(Effect.CancelPut(session.prevSendToken.toHex()))
+        if (dhRatchet) effects.add(Effect.CancelPut(session.transportFor(1).token.toHex()))
         // Delivered, undeliverable (key spent) and replayed frames are done with; so is anything
         // that isn't an encrypted frame (nothing else belongs in a session mailbox).
         val ids = result.processedIds + result.replayedIds + event.messages.filter { it !is EncryptedMessagePayload }.map { it.msgId }

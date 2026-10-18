@@ -64,8 +64,8 @@ object GoldenTranscript {
      * by one (his first receive is a DH ratchet and a receive-token rotation). Bob replies; his
      * first frame is the epoch's transition frame on the previous mailbox, so Alice ratchets,
      * rotates her receive token and cancels her own transition frame, then reads Bob's second
-     * frame on the new mailbox. A last exchange, Alice to Bob, covers StoppedSharing and Keepalive
-     * and the second ratchet each way. Every receive reads the mailbox its frames were put to.
+     * frame on the new mailbox. Then StoppedSharing and Keepalive, the second epoch each way, and
+     * the batch cases (below). Every frame is read from the mailbox it was put to.
      */
     private val script =
         listOf(
@@ -84,7 +84,32 @@ object GoldenTranscript {
             Scripted(ALICE) { ProtocolCore.Event.Send(MessagePlaintext.Keepalive()) },
             Scripted(BOB) { r -> ProtocolCore.Event.Receive(listOf(r.put(11).body())) },
             Scripted(BOB) { r -> ProtocolCore.Event.Receive(listOf(r.put(12).body())) },
+            // Out of order: Alice reads Bob's third frame before his second (a skipped key), then
+            // the second (from the cache) with the third again (a replay, still acked).
+            Scripted(BOB) { ProtocolCore.Event.Send(loc(40.713, -74.0062, T0 + 15)) },
+            Scripted(BOB) { ProtocolCore.Event.Send(loc(40.7131, -74.0063, T0 + 16)) },
+            Scripted(BOB) { ProtocolCore.Event.Send(loc(40.7132, -74.0064, T0 + 17)) },
+            Scripted(ALICE) { r -> ProtocolCore.Event.Receive(listOf(r.put(15).body())) },
+            Scripted(ALICE) { r -> ProtocolCore.Event.Receive(listOf(r.put(17).body())) },
+            Scripted(ALICE) { r -> ProtocolCore.Event.Receive(listOf(r.put(16).body(), r.put(17).body())) },
+            // A batch delivered out of order (sorted by seq before decrypting), then a corrupted
+            // body (soft fail: committed and acked, not delivered) next to a payload that isn't
+            // an encrypted frame (acked unread).
+            Scripted(ALICE) { ProtocolCore.Event.Send(loc(37.7751, -122.4182, T0 + 21)) },
+            Scripted(ALICE) { ProtocolCore.Event.Send(loc(37.7752, -122.4181, T0 + 22)) },
+            Scripted(ALICE) { ProtocolCore.Event.Send(loc(37.7753, -122.418, T0 + 23)) },
+            Scripted(ALICE) { ProtocolCore.Event.Send(MessagePlaintext.Keepalive()) },
+            Scripted(BOB) { r -> ProtocolCore.Event.Receive(listOf(r.put(21).body())) },
+            Scripted(BOB) { r -> ProtocolCore.Event.Receive(listOf(r.put(23).body(), r.put(22).body())) },
+            Scripted(BOB) { r -> ProtocolCore.Event.Receive(listOf(corrupt(r.put(24).body()), r.put(1).body())) },
         )
+
+    /** The frame with the last byte of its body flipped: the header still opens, the body doesn't. */
+    private fun corrupt(payload: MailboxPayload): MailboxPayload {
+        val frame = payload as EncryptedMessagePayload
+        val ct = frame.ct.copyOf().also { it[it.size - 1] = (it[it.size - 1].toInt() xor 1).toByte() }
+        return EncryptedMessagePayload(v = frame.v, envelope = frame.envelope, ct = ct)
+    }
 
     /** Runs the script and returns the transcript. */
     fun generate(): JsonObject = run(recordedEvent = null)
@@ -227,6 +252,22 @@ object GoldenTranscript {
     @OptIn(RawKeyAccess::class)
     private fun hex(key: KeyBytes?): String = key?.bytes?.toHex() ?: ""
 
+    /** The skipped-key cache: its map key ("dh_pub hex:seq"), the key, nonce and time stored. */
+    @OptIn(RawKeyAccess::class)
+    private fun skipped(s: SessionState) =
+        buildJsonArray {
+            s.skippedMessageKeys.forEach { (id, k) ->
+                add(
+                    buildJsonObject {
+                        put("id", id)
+                        put("message_key", hex(k.messageKey))
+                        put("nonce", hex(k.nonce))
+                        put("stored_at_ms", k.storedAtMillis)
+                    },
+                )
+            }
+        }
+
     @OptIn(RawKeyAccess::class)
     private fun handshakeSecret(
         state: ProtocolCore.State,
@@ -253,8 +294,12 @@ object GoldenTranscript {
                     val s = state.session
                     put("type", "paired")
                     put("is_alice", s.isAlice)
+                    put("alice_ek_pub", hex(s.aliceEkPub))
+                    put("bob_ek_pub", hex(s.bobEkPub))
                     put("alice_fp", hex(s.aliceFp))
                     put("bob_fp", hex(s.bobFp))
+                    put("local_fp", hex(s.localFp))
+                    put("remote_fp", hex(s.remoteFp))
                     put("root_key", hex(s.rootKey))
                     put("send_chain_key", hex(s.sendChainKey))
                     put("recv_chain_key", hex(s.recvChainKey))
@@ -272,7 +317,7 @@ object GoldenTranscript {
                     put("recv_seq", s.recvSeq)
                     put("pn", s.pn)
                     put("pr", s.pr)
-                    put("skipped_keys", s.skippedMessageKeys.size)
+                    put("skipped_keys", skipped(s))
                 }
             }
         }

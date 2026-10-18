@@ -10,10 +10,10 @@ package net.af0.where.e2ee
  * byte for byte (see the golden vectors in commonTest/resources/vectors).
  */
 interface Rng {
-    /** [size] random bytes. */
+    /** [size] random bytes, in a fresh array the caller owns (and may zeroize). */
     fun bytes(size: Int): ByteArray
 
-    /** A fresh X25519 key pair. */
+    /** A fresh X25519 key pair, in arrays the caller owns (and may zeroize). */
     fun x25519KeyPair(): RawKeyPair
 }
 

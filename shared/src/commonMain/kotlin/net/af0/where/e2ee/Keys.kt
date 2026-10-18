@@ -192,7 +192,7 @@ class DiscoverySecret(bytes: ByteArray) : SecretBytes(bytes, KEY_SIZE) {
 
     companion object {
         /** A fresh secret from the platform CSPRNG. */
-        fun random(rng: Rng = SystemRng): DiscoverySecret = DiscoverySecret(rng.bytes(KEY_SIZE))
+        fun random(rng: Rng): DiscoverySecret = DiscoverySecret(rng.bytes(KEY_SIZE))
     }
 }
 
@@ -481,7 +481,7 @@ internal fun sealRandomNonce(
     key: RandomNonceKey,
     plaintext: ByteArray,
     aad: ByteArray,
-    rng: Rng = SystemRng,
+    rng: Rng,
 ): ByteArray {
     val nonce = rng.bytes(RANDOM_NONCE_SIZE)
     return nonce + aeadEncrypt(key.bytes, nonce, plaintext, aad)

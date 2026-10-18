@@ -77,8 +77,8 @@ internal object E2eeProtocol {
         initialSession: SessionState,
         totalEncryptedCount: Int,
         orderedMessages: List<Pair<Session.DecryptedHeader, EncryptedMessagePayload>>,
-        nowMillis: Long = currentTimeMillis(),
-        rng: Rng = SystemRng,
+        nowMillis: Long,
+        rng: Rng,
     ): DecryptionResult {
         var currentSession = initialSession
         val delivered = mutableListOf<MessagePlaintext>()

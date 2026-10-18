@@ -4,6 +4,7 @@ import net.af0.where.e2ee.AuthenticationException
 import net.af0.where.e2ee.HeaderKey
 import net.af0.where.e2ee.PROTOCOL_VERSION
 import net.af0.where.e2ee.Session
+import net.af0.where.e2ee.SystemRng
 import net.af0.where.e2ee.bytesToLong
 import net.af0.where.e2ee.sealRandomNonce
 
@@ -23,7 +24,7 @@ object DecryptHeaderFuzzer {
             0 -> refusedOnlyWithWhereException { Session.decryptHeader(key, input.rest(), aad) }
             1 -> {
                 val plaintext = input.rest()
-                val envelope = sealRandomNonce(key, plaintext.copyOf(), aad)
+                val envelope = sealRandomNonce(key, plaintext.copyOf(), aad, SystemRng)
                 val header = refusedOnlyWithWhereException { Session.decryptHeader(key, envelope, aad) } ?: return
                 // Authenticated: the fields are exactly the plaintext's.
                 fuzzCheck(plaintext.size >= 82 && plaintext[0].toInt() == PROTOCOL_VERSION) { "accepted a malformed header" }
@@ -34,7 +35,7 @@ object DecryptHeaderFuzzer {
             }
             else -> {
                 // Sealed under one key and opened under another: never accepted.
-                val envelope = sealRandomNonce(HeaderKey(ByteArray(32)), input.rest(), aad)
+                val envelope = sealRandomNonce(HeaderKey(ByteArray(32)), input.rest(), aad, SystemRng)
                 try {
                     Session.decryptHeader(key, envelope, aad)
                     throw FuzzPropertyViolation("header opened under the wrong key")

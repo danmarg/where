@@ -4,6 +4,7 @@ import net.af0.where.e2ee.DhPublicKey
 import net.af0.where.e2ee.EncryptedMessagePayload
 import net.af0.where.e2ee.ReceivedMessage
 import net.af0.where.e2ee.Session
+import net.af0.where.e2ee.SystemRng
 import net.af0.where.e2ee.WhereException
 
 /**
@@ -35,7 +36,7 @@ object DecryptMessageFuzzer {
                     }
                     EncryptedMessagePayload(envelope = envelope, ct = ct.copyOf(ct.size - input.byte() % 3))
                 }
-                2 -> Session.encryptPadded(SessionFixture.aliceFirstEpoch, input.sized(600)).payload
+                2 -> Session.encryptPadded(SessionFixture.aliceFirstEpoch, input.sized(600), SystemRng).payload
                 else -> {
                     val real = SessionFixture.headers[pick]
                     header =

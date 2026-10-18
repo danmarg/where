@@ -336,7 +336,7 @@ open class LocationClient(
                     totalMessagesProcessed += messages.size
 
                     // The receive token rotated (RetireToken): the next iteration polls the new one.
-                    if (result.retiredToken == currentToken) {
+                    if (result.retiredToken != null) {
                         tokenFollows++
                         if (tokenFollows >= MAX_TOKEN_FOLLOWS_PER_POLL) {
                             stopPolling = true
