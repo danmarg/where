@@ -18,10 +18,11 @@ private val qrJson =
 
 /**
  * Raw X25519 keypair. Both fields are 32-byte little-endian representations
- * as defined by RFC 7748.
+ * as defined by RFC 7748. Output of the platform keygen primitive; callers wrap it at once.
  */
+@Suppress("RawKeyBytes")
 data class RawKeyPair(val priv: ByteArray, val pub: ByteArray) {
-    override fun equals(other: Any?): Boolean = other is RawKeyPair && priv.contentEquals(other.priv) && pub.contentEquals(other.pub)
+    override fun equals(other: Any?): Boolean = other is RawKeyPair && constantTimeEquals(priv, other.priv) && pub.contentEquals(other.pub)
 
     override fun hashCode(): Int = 31 * priv.contentHashCode() + pub.contentHashCode()
 }
@@ -230,6 +231,8 @@ data class QrPayload(
     @SerialName("protocol_version")
     val protocolVersion: Int = PROTOCOL_VERSION,
     // Alice's ephemeral X25519 public key (32 bytes)
+    // The invite public key is the app-facing invite ID (Android intents, Swift); still raw ByteArray.
+    @Suppress("RawKeyBytes")
     @SerialName("ek_pub")
     @Serializable(with = ByteArrayBase64Serializer::class) val ekPub: ByteArray,
     @SerialName("suggested_name")
@@ -251,7 +254,7 @@ data class QrPayload(
     override fun equals(other: Any?): Boolean {
         if (other !is QrPayload) return false
         return protocolVersion == other.protocolVersion && ekPub.contentEquals(other.ekPub) && suggestedName == other.suggestedName &&
-            discoverySecret == other.discoverySecret && expiresAt == other.expiresAt
+            discoverySecret.constantTimeEquals(other.discoverySecret) && expiresAt == other.expiresAt
     }
 
     override fun hashCode(): Int {
@@ -298,7 +301,8 @@ data class QrPayload(
 /** Bob's KeyExchangeInit message sent to the mailbox. */
 data class KeyExchangeInitMessage(
     val protocolVersion: Int = PROTOCOL_VERSION,
-    // Bob's ephemeral X25519 public key
+    // Bob's ephemeral X25519 public key, as on the wire (checked by DhPublicKey.fromWire)
+    @Suppress("RawKeyBytes")
     @Serializable(with = ByteArrayBase64Serializer::class) val ekPub: ByteArray,
     // HMAC-SHA-256(SK, "Where-v1-Confirm" || EK_A.pub || EK_B.pub)
     @Serializable(with = ByteArrayBase64Serializer::class) val keyConfirmation: ByteArray,
@@ -332,7 +336,11 @@ sealed class ConnectionStatus {
     data class Error(val message: StringDesc) : ConnectionStatus()
 }
 
-/** Result of polling for incoming handshakes (KeyExchangeInit). */
+/**
+ * Result of polling for incoming handshakes (KeyExchangeInit). The public keys stay raw ByteArray:
+ * the invite public key is the app-facing invite ID (Android intents, Swift).
+ */
+@Suppress("RawKeyBytes")
 data class PendingInviteResult(
     val payload: KeyExchangeInitPayload,
     // The public key of the person who scanned our QR

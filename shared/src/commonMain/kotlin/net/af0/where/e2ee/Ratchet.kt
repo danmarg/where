@@ -88,6 +88,7 @@ internal fun kdfCk(chainKey: ChainKey): ChainStep {
  *
  * Returns 16 bytes, which the caller wraps as a [SendToken] or [RecvToken].
  */
+@Suppress("RawKeyBytes") // Parties wraps it as a SendToken or RecvToken
 internal fun deriveRoutingToken(
     ikm: TokenSeed,
     sender: Fingerprint,

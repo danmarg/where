@@ -133,6 +133,7 @@ class E2eeManager(
             qr
         }
 
+    @Suppress("RawKeyBytes") // invite public keys: the app-facing invite ID, still raw ByteArray
     @Throws(
         Exception::class,
         SelfPairingException::class,
@@ -204,6 +205,7 @@ class E2eeManager(
      * no longer exists or expires within [INVITE_RENAME_MIN_REMAINING_SECONDS]; callers then create
      * a fresh invite rather than keep showing one scanners are about to reject.
      */
+    @Suppress("RawKeyBytes") // invite public keys: the app-facing invite ID, still raw ByteArray
     suspend fun updateInviteName(
         ekPub: ByteArray,
         suggestedName: String,
@@ -224,12 +226,14 @@ class E2eeManager(
             pendingInvites.map { it.toView() }
         }
 
+    @Suppress("RawKeyBytes") // invite public keys: the app-facing invite ID, still raw ByteArray
     suspend fun clearInvite(ekPub: ByteArray) {
         persistence.withMetadataLock {
             pendingInvites = pendingInvites.filterNot { it.qrPayload.ekPub.contentEquals(ekPub) }
         }
     }
 
+    @Suppress("RawKeyBytes") // invite public keys: the app-facing invite ID, still raw ByteArray
     suspend fun markInviteExported(ekPub: ByteArray) {
         persistence.withMetadataLock {
             pendingInvites =
@@ -619,6 +623,7 @@ class E2eeManager(
         }
     }
 
+    @Suppress("RawKeyBytes") // invite public keys: the app-facing invite ID, still raw ByteArray
     suspend fun decryptSuggestedName(
         aliceEkPub: ByteArray,
         bobEkPub: ByteArray,

@@ -1,0 +1,16 @@
+# Configuration for `./gradlew :shared:detekt`: only the custom E2EE rules from :detekt-rules,
+# only on shared/src/commonMain/kotlin/net/af0/where/e2ee (default rule sets are disabled).
+where-e2ee:
+  active: true
+  RawKeyBytes:
+    active: true
+    # The primitive layer and the codecs take and return raw bytes by design.
+    excludes: ['**/CryptoPrimitives.kt', '**/Hkdf.kt', '**/Keys.kt', '**/MailboxMessage.kt']
+  SecretComparison:
+    active: true
+    # Defines constantTimeEquals and the typed keys' equals.
+    excludes: ['**/Keys.kt']
+  InsecureRandom:
+    active: true
+  SecretInLog:
+    active: true
