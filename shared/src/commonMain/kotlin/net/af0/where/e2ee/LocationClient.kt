@@ -335,15 +335,11 @@ open class LocationClient(
 
                     totalMessagesProcessed += messages.size
 
-                    if (result.hadStateUpdate) {
-                        val friendAfterUpdate = store.getFriend(friendId) ?: break
-                        val nextToken = friendAfterUpdate.session.recvToken.toHex()
-                        if (nextToken != currentToken) {
-                            tokenFollows++
-                            if (tokenFollows >= MAX_TOKEN_FOLLOWS_PER_POLL) {
-                                stopPolling = true
-                            }
-                            // Continue to next loop iteration with new token
+                    // The receive token rotated (RetireToken): the next iteration polls the new one.
+                    if (result.retiredToken == currentToken) {
+                        tokenFollows++
+                        if (tokenFollows >= MAX_TOKEN_FOLLOWS_PER_POLL) {
+                            stopPolling = true
                         }
                     }
                 } catch (e: Exception) {
