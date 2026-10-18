@@ -379,7 +379,8 @@ AcksOnlyProcessed == ~flags.ackedUnprocessed
 \* A client never polls only a retired token while unread messages wait on a newer one: any
 \* unaccepted frame on a token newer than the one it polls has its epoch's transition frame
 \* still on the way to the polled token (queued, on the server there, or in hand). Holds while
-\* the server keeps what it stored (§5.4.5 "What this does NOT fix").
+\* the server keeps every frame not yet read (§5.4.5 "What this does NOT fix"); losing an already
+\* accepted frame doesn't count.
 TransitionPending(c, m) ==
     LET isT(x) == x.from = m.from /\ x.dh = m.dh /\ x.seq = 1
     IN \/ \E x \in mbox[session[c].recvTok] : isT(x)
@@ -407,7 +408,7 @@ NoSilentDrop ==
 
 \* While the server keeps everything it stored, no client deletes a frame it hasn't accepted:
 \* replays and duplicates are acked as processed, and a force-ACK only ever clears frames a loss
-\* made unprocessable. A frame left unopenable or rejected by a protocol bug fails here.
+\* or expiry made unprocessable. A frame left unopenable or rejected by a protocol bug fails here.
 NoUnreadAcks == lostKeys = {} => ackedUnread = {}
 
 Safety == TypeOK /\ NoDoubleAccept /\ SkippedWithinCap /\ RatchetSound /\ AcksOnlyProcessed

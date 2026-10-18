@@ -33,11 +33,11 @@ def cfg(sends=2, urgent=0, crashes=0, loss=0, dup=0, clock=0, cap=2, live=False,
     return body
 
 def run_tlc(d):
-    """TLC's stdout, or a marker: 'timed out', 'not run' (over budget), or 'error: <first Error line>'."""
+    """TLC's output, or a marker: 'timed out', 'not run' (over budget), or 'error: <first Error line>'."""
     if time.monotonic() - started > BUDGET:
         return 'not run'
     try:
-        r = subprocess.run(['java', '-Xss16m', '-cp', jar, 'tlc2.TLC', '-workers', 'auto', '-cleanup', '-metadir', os.path.join(d, 'st'),
+        r = subprocess.run(['java', '-XX:+UseParallelGC', '-Xss16m', '-cp', jar, 'tlc2.TLC', '-workers', 'auto', '-cleanup', '-metadir', os.path.join(d, 'st'),
                             '-config', 'm.cfg', 'WhereSync.tla'], cwd=d, capture_output=True, text=True, timeout=TIMEOUT)
     except subprocess.TimeoutExpired:
         return 'timed out'
@@ -46,7 +46,7 @@ def run_tlc(d):
     if not violated:
         errors = [l for l in out.splitlines() if l.startswith('Error:')]
         if errors or r.returncode not in (0,):
-            return 'error: ' + (errors[0] if errors else f'TLC exited {r.returncode}')
+            return 'error: ' + (errors[0].removeprefix('Error: ') if errors else f'TLC exited {r.returncode}')
     return out
 
 M = [
