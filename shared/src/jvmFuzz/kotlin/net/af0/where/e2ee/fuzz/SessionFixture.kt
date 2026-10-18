@@ -16,6 +16,12 @@ import net.af0.where.e2ee.SessionState
 internal object SessionFixture {
     val bob: SessionState
 
+    /**
+     * A deep copy of [bob] taken before anything decrypts against it, for checking that nothing
+     * (the fixture's own sanity checks included) modifies its input state.
+     */
+    val bobSnapshot: SessionState
+
     /** Alice before her ratchet, for authenticating arbitrary plaintexts as her next frame. */
     val aliceFirstEpoch: SessionState
 
@@ -51,6 +57,7 @@ internal object SessionFixture {
 
         // Skipped key (seq 2), next in order (4), after a gap (6), the new epoch's first two.
         frames = listOf(first[1], first[3], first[5], second[0], second[1])
+        bobSnapshot = bob.deepCopy()
         headers =
             frames.map { f ->
                 bob.recvHeaderKeys().firstNotNullOf { key ->
@@ -58,6 +65,7 @@ internal object SessionFixture {
                 }
             }
         for (f in frames) delivered(bob, f)
+        check(bob == bobSnapshot) { "decryptMessage modified its input state while building the fixture" }
     }
 
     private fun delivered(

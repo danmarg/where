@@ -12,7 +12,7 @@ test classpath.
 | `Unpad` | `Session.unpad` | a padded plaintext, checked against a reference implementation |
 | `QrPayload` | `QrPayload.fromUrl`, then `KeyExchange.bobProcessQr` | an invite link, raw or wrapped as its Base64 fragment |
 | `KeyExchangeInit` | mailbox decoding, then `KeyExchange.aliceProcessInit` | raw JSON; or a genuine init from a chosen scanner key and name, then one field corrupted |
-| `MailboxPayload` | `decodeMailboxPayload` | a payload as the server returns it |
+| `MailboxPayload` | `decodeMailboxPayload`, and `decodeMailboxPayloads` (what `poll` uses) | a payload as the server returns it, alone and as a one-element poll response |
 | `DecryptMessage` | `Session.decryptMessage` against a fixed, valid receive state | raw bytes; a genuine frame with bytes flipped; an authenticated frame with an arbitrary plaintext; a genuine frame with a chosen pre-decrypted header |
 
 Every target checks the same properties. A rejected input fails only with a typed
@@ -23,12 +23,20 @@ round-trips (decoded messages, mailbox payloads, invite links), it does. The `De
 fixture's frames each decrypt by a different path: cached skipped key, in order, after a gap, and
 both new-epoch frames.
 
+The fixtures (the `DecryptMessage` session, the `KeyExchangeInit` invite) use fresh keys each
+run, since X25519 keys come from the platform CSPRNG with no way to seed it. So the structured
+modes describe a frame relative to the fixture (which frame, which bytes to flip, which header
+fields to change) rather than containing one, and the committed seeds are built from fixed bytes
+only: regenerating them adds nothing new. A finding that depends on a fixture's exact key bytes
+may not reproduce on the next run; it shows up in the uploaded crash file's stack trace either
+way.
+
 ## Running
 
 ```bash
 ./gradlew :shared:fuzzCorpusTest                                # committed corpus + seeded random inputs, every target (runs in CI)
 ./gradlew :shared:fuzz -Pfuzz.target=DecryptMessage -Pfuzz.seconds=600   # Jazzer, one target
-./gradlew :shared:generateFuzzSeeds                             # rewrite well-formed seeds into the corpus
+./gradlew :shared:generateFuzzSeeds                             # write the well-formed seeds into the corpus
 ```
 
 `fuzz` grows `shared/build/fuzz/<target>/corpus` from the committed seeds in

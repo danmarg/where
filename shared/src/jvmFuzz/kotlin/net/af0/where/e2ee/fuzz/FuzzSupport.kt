@@ -28,8 +28,14 @@ internal class FuzzInput(private val data: ByteArray) {
     /** Exactly [n] bytes, zero-filled past the end of the input. */
     fun fixed(n: Int): ByteArray = bytes(n).copyOf(n)
 
-    /** A length-prefixed field of at most [max] bytes. */
-    fun sized(max: Int): ByteArray = bytes(byte() % (max + 1))
+    /**
+     * A length-prefixed field of at most [max] bytes. The prefix is one byte, or two (big-endian)
+     * when [max] is over 255, so every length up to [max] is reachable.
+     */
+    fun sized(max: Int): ByteArray {
+        val prefix = if (max > 255) (byte() shl 8) or byte() else byte()
+        return bytes(prefix % (max + 1))
+    }
 
     fun rest(): ByteArray = bytes(remaining)
 }

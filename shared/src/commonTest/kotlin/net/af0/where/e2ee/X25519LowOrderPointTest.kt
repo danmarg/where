@@ -45,17 +45,9 @@ class X25519LowOrderPointTest {
             "eeffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f",
         )
 
-    /**
-     * Wycheproof's x25519 cases whose shared secret is all zero: low-order public keys, including
-     * non-canonical encodings (u >= p, high bit set) of the points above, paired with edge-case
-     * private keys.
-     */
-    private val wycheproofZeroSharedSecret =
-        Wycheproof.load("x25519_test.json").filter { "ZeroSharedSecret" in it.flags }
+    private val wycheproofZeroSharedSecret get() = WycheproofLowOrder.zeroSharedSecret
 
-    /** Every low-order public key this test knows: the canonical list plus Wycheproof's encodings. */
-    private val allLowOrderPublicKeys =
-        (lowOrderPoints + wycheproofZeroSharedSecret.map { it.hex("public").toHex() }).distinct()
+    private val allLowOrderPublicKeys get() = WycheproofLowOrder.allPublicKeys(lowOrderPoints)
 
     @Test
     fun x25519RejectsCanonicalLowOrderPoints() {
@@ -138,4 +130,17 @@ class X25519LowOrderPointTest {
             }
         }
     }
+}
+
+/** Parsed once per test run, not once per test method (the test class is instantiated per method). */
+private object WycheproofLowOrder {
+    /**
+     * Wycheproof's x25519 cases whose shared secret is all zero: low-order public keys, including
+     * non-canonical encodings (u >= p, high bit set) of the canonical points, paired with edge-case
+     * private keys.
+     */
+    val zeroSharedSecret by lazy { Wycheproof.load("x25519_test.json").filter { "ZeroSharedSecret" in it.flags } }
+
+    /** Every low-order public key the test knows: [canonical] plus Wycheproof's encodings. */
+    fun allPublicKeys(canonical: List<String>) = (canonical + zeroSharedSecret.map { it.hex("public").toHex() }).distinct()
 }

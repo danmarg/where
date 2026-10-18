@@ -237,12 +237,23 @@ class ScheduleInterleavingPropertyTest {
             }
             if (failure != null) return@runTest
 
-            // Repair the network: drain both outboxes, read every mailbox until nothing changes.
+            // Repair the network: drain both outboxes, read every mailbox until nothing changes. A
+            // poll reads only the current recvToken, so a backlog across several epochs takes a
+            // round per epoch boundary.
             trace += "-- quiesce"
-            repeat(QUIESCE_ROUNDS) {
+
+            suspend fun quiesceState() =
+                listOf(alice, bob).map { p ->
+                    listOf(session(p).recvToken.toHex(), p.decrypted.size, p.manager.getOutbox(friendId).size)
+                } + server.size
+            var rounds = 0
+            do {
+                val before = quiesceState()
                 for (p in listOf(alice, bob)) drainOutbox(p) { Post.OK }
                 for (p in listOf(alice, bob)) poll(p, page = 50, shuffle = false, ackLost = false)
-            }
+                rounds++
+            } while (quiesceState() != before && rounds < MAX_QUIESCE_ROUNDS)
+            expect(rounds < MAX_QUIESCE_ROUNDS) { "the network didn't settle in $MAX_QUIESCE_ROUNDS rounds" }
             for (p in listOf(alice, bob)) {
                 val missing = p.reachedServer - p.decrypted
                 expect(missing.isEmpty()) { "${p.name} never decrypted ${missing.sorted()} (decrypted ${p.decrypted.sorted()})" }
@@ -265,6 +276,6 @@ class ScheduleInterleavingPropertyTest {
         const val SCHEDULES = 300
         const val MIN_STEPS = 40
         const val MAX_STEPS = 160
-        const val QUIESCE_ROUNDS = 4
+        const val MAX_QUIESCE_ROUNDS = 200
     }
 }

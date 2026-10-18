@@ -14,8 +14,6 @@ import net.af0.where.e2ee.WhereException
  * frame's true header (as far as the body authenticates it) can deliver it.
  */
 object DecryptMessageFuzzer {
-    private val snapshot by lazy { SessionFixture.bob.deepCopy() }
-
     @JvmStatic
     fun fuzzerTestOneInput(data: ByteArray) {
         val bob = SessionFixture.bob
@@ -52,7 +50,7 @@ object DecryptMessageFuzzer {
             }
 
         val result = Session.decryptMessage(bob, frame, header)
-        fuzzCheck(bob == snapshot) { "decryptMessage modified its input state" }
+        fuzzCheck(bob == SessionFixture.bobSnapshot) { "decryptMessage modified its input state" }
         val cause =
             when (result) {
                 is ReceivedMessage.Delivered -> null

@@ -3,6 +3,7 @@ package net.af0.where.e2ee
 import kotlinx.serialization.KSerializer
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.descriptors.PrimitiveKind
 import kotlinx.serialization.descriptors.PrimitiveSerialDescriptor
 import kotlinx.serialization.descriptors.SerialDescriptor
@@ -40,8 +41,15 @@ internal val mailboxJson =
 
 /** Parses one mailbox payload as received; anything malformed is a [ProtocolException]. */
 internal fun decodeMailboxPayload(text: String): MailboxPayload =
+    decodeOrProtocolException { mailboxJson.decodeFromString(MailboxPayload.serializer(), text) }
+
+/** Parses a mailbox poll response (a JSON array of payloads); anything malformed is a [ProtocolException]. */
+internal fun decodeMailboxPayloads(text: String): List<MailboxPayload> =
+    decodeOrProtocolException { mailboxJson.decodeFromString(ListSerializer(MailboxPayload.serializer()), text) }
+
+private inline fun <T> decodeOrProtocolException(decode: () -> T): T =
     try {
-        mailboxJson.decodeFromString(MailboxPayload.serializer(), text)
+        decode()
     } catch (e: IllegalArgumentException) {
         // kotlinx.serialization's SerializationException, and Base64's errors, are both this.
         throw ProtocolException("malformed mailbox payload: ${e.message}")
