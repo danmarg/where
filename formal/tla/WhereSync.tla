@@ -46,8 +46,6 @@ Peer(c) == IF c = "A" THEN "B" ELSE "A"
 \* Each ratchet adds 2 to a root index; there is at most one per received new key.
 MaxRoot == 2 * 2 * (MaxSends + MaxUrgent) + 3
 Tokens == Clients \X (0 .. MaxRoot)
-DhIds == -2 .. MaxRoot
-Keys == DhIds \X (1 .. (MaxSends + MaxUrgent))
 None == <<"none">>
 
 VARIABLES
@@ -391,9 +389,11 @@ Safety == TypeOK /\ NoDoubleAccept /\ SkippedWithinCap /\ RatchetSound /\ AcksOn
 -----------------------------------------------------------------------------
 (* Liveness (with MaxLoss = 0 and no expiry) *)
 
-\* Every message sent is eventually accepted by the peer.
-AllDelivered ==
-    \A c \in Clients : \A k \in Keys : [](k \in sent[c] => <>(k \in accepted[Peer(c)]))
+\* Every message sent is eventually accepted by the peer. Sends are bounded and `sent` and
+\* `accepted` only grow, so this is the same as each sent key eventually being accepted
+\* (\A k : [](k \in sent[c] => <>(k \in accepted[Peer(c)]))), with one tableau branch instead
+\* of one per key.
+AllDelivered == <>[](\A c \in Clients : sent[c] \subseteq accepted[Peer(c)])
 
 \* Both sides eventually agree on each other's DH key: each knows the key the other is
 \* sending under, unless the other has not sent under it yet.

@@ -403,6 +403,8 @@ Routing tokens are derived from the current root key. Whenever the DH ratchet ad
 
 A peer's mailbox state is identified by its DH public key `dh_pub`, which serves as the canonical epoch identifier. Epoch numbers may exist as an internal convenience, but they are derived from DH ratchet progression and must never be treated as an independent source of truth.
 
+**Formal model.** [`formal/tla/WhereSync.tla`](../formal/tla/WhereSync.tla) models this section (with §5.3 and §8.3.1) for two clients and the server: the transition rule, single-token polling, the ratchet and token rotation, send-side retirement, acks and force-acks, crashes between saving state and acking, and server loss, duplication and TTL expiry. TLC checks, at small bounds in CI (`.github/workflows/tla.yml`): no `(epoch, seq)` accepted twice; the skipped-key cache within its cap; every receive-side DH step matching the sender's; acks deleting only processed messages; no client left polling a retired token while unread messages wait on a newer one (absent server loss); and, under fairness with no loss, every message delivered and both sides eventually on each other's current DH key. See [`formal/tla/README.md`](../formal/tla/README.md) for the bounds and the counterexamples found so far.
+
 **The Mailbox Synchronization Challenge:**
 In an anonymous mailbox model, a client polling token `T_old` will never see a message posted to `T_new`. The protocol resolves this with a **transition-message rule** on the send side and a **root-key-advance observation** on the retirement side, rather than a two-token polling window on the receive side.
 
@@ -411,7 +413,7 @@ The first message of a new sending epoch (`seq == 1`) MUST be posted to the *pre
 
 This is symmetric by construction: `prev_send_token` is derived from the pre-ratchet root key, which is exactly the token the peer is currently polling for messages from us. When the peer decrypts the transition message, the new `dh_pub` triggers a DH ratchet step that derives a new `recv_token` matching our new `send_token` — so the next message we post will land on the token the peer has rotated to.
 
-Implementation: `Session.encryptMessage` selects `prevSendHeaderKey` and `prevSendToken` when `sendSeq + 1 == 1` (`Session.kt:36-41`; `E2eeManager.kt:274`).
+Implementation: `Session.encryptMessage` selects `prevSendHeaderKey` and `prevSendToken` when `sendSeq + 1 == 1` (`SessionState.transportFor`).
 
 #### 5.4.2 Receive Rule (Single Active Token)
 The receiver polls exactly one mailbox token at a time (the current `recv_token`). There is no `prev_recv_token` polling — the sender's transition rule (§5.4.1) routes the first new-epoch message onto the token the receiver is already polling. After processing that message, the receiver ratchets forward and switches its polling target to the new `recv_token`.
@@ -423,7 +425,9 @@ When a decrypted message carries a new sender `dh_pub`:
 #### 5.4.3 Send-Side Retirement (Observed Root-Key Advance)
 The sender retires its `prev_send_token` (and stops posting fallback retries to it) when it observes an authenticated proof that the peer has processed its new DH key. The proof used here is a successful decryption whose post-ratchet `root_key` is strictly newer than the one in effect when those outbox entries were enqueued — exactly the property an authenticated ack-of-DH would have established, inferred directly from the ratchet instead.
 
-Implementation: `E2eeManager` clears outbox entries still targeting `prevSendToken` once `decryptBatch` returns a session with an advanced `rootKey` (`E2eeManager.kt:433-438`).
+Implementation: `ProtocolCore` emits a `CancelPut` for `prevSendToken` when a received batch advances the `rootKey`, and `E2eeManager` deletes those outbox entries.
+
+**Exception: the responder's first ratchet.** The initiator performs one DH step on its own when it processes the `KeyExchangeInit` (§4.4), before reading anything from the responder. So the responder's first ratchet proves nothing about its own frames, and until then its `prev_send_token` is still its bootstrap send token, the one the initiator polls. No retirement happens while `prev_send_token == send_token`. Cancelling there deleted frames the responder had queued but not yet posted (a TLC counterexample; `BootstrapOutboxCancelTest`).
 
 `ack_remote_dh_pub` is carried in the header, authenticated, and bound into the message AAD (`buildMessageAad`) so its value cannot be modified in flight. The implementation does not currently read it for any retirement decision — retirement is fully driven by observed root-key advance. The field is retained on the wire for backwards compatibility and to leave room for a future ack-driven retirement scheme without a wire break.
 
