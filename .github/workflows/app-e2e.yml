@@ -124,6 +124,7 @@ jobs:
           name: ios-e2e-logs-${{ matrix.base }}
           path: |
             ${{ runner.temp }}/e2e/server.log
+            ${{ runner.temp }}/e2e/app-*.log
             ~/.maestro/tests/
           retention-days: 7
 

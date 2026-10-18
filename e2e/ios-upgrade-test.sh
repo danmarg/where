@@ -89,6 +89,12 @@ assert_no_sends_while_paused() {
   return 0
 }
 
+# save_app_log <label>: the app's recent unified log, kept in $WORK for the CI log artifact.
+save_app_log() {
+  xcrun simctl spawn "$SIM" log show --last 15m --style compact \
+    --predicate 'process == "Where"' > "$WORK/app-$1.log" 2>&1 || true
+}
+
 app_running() { xcrun simctl spawn "$SIM" launchctl list 2>/dev/null | grep -q "UIKitApplication:$BUNDLE"; }
 
 notice_pending() { xcrun simctl spawn "$SIM" defaults read "$BUNDLE" discarded_session_names >/dev/null 2>&1; }
@@ -166,7 +172,11 @@ for lat in 53.01 53.05 53.10; do xcrun simctl location "$SIM" set "$lat,13.70" >
 cli bob poll --once | grep -q "Location from .*: 53.1" && fail "a location was sent without location permission"
 xcrun simctl privacy "$SIM" grant location-always "$BUNDLE"
 xcrun simctl launch "$SIM" "$BUNDLE" >/dev/null
-retry 240 nudge_and_check_cli 53.2 || fail "sharing didn't resume after location permission was granted again"
+if ! retry 240 nudge_and_check_cli 53.2; then
+  # Record why in the uploaded logs before failing.
+  save_app_log "after-regrant"
+  fail "sharing didn't resume after location permission was granted again"
+fi
 echo "✓ Permission revoked and restored"
 
 log "Pausing stops sending"

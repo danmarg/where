@@ -288,6 +288,10 @@ final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelega
                 try? await Task.sleep(for: retryDelay)
                 retryDelay = min(retryDelay * 2, .seconds(60))  // cap at 60s
             }
+            // The loop gave up on its own (authorization denied). Clear the handle so a later
+            // grant can start a fresh stream; a cancelled task was replaced or cleared by
+            // stopUpdating() and must not clobber its successor.
+            if !Task.isCancelled { self.updatesTask = nil }
         }
 
         manager.startMonitoringSignificantLocationChanges()
