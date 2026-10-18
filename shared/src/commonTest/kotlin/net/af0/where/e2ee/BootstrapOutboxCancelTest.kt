@@ -3,6 +3,7 @@ package net.af0.where.e2ee
 import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 
 /**
@@ -36,16 +37,59 @@ class BootstrapOutboxCancelTest {
 
         val a1 = ProtocolCore.step(alice, ProtocolCore.Event.Send(MessagePlaintext.Keepalive()), now, rngA)
         val b1 = ProtocolCore.step(scan.state, ProtocolCore.Event.Send(MessagePlaintext.Keepalive()), now, rngB)
-        val bobQueued = (b1.effects.single() as ProtocolCore.Effect.Put).mailbox
 
         val a1Frame = (a1.effects.single() as ProtocolCore.Effect.Put).payload
         val received = ProtocolCore.step(b1.state, ProtocolCore.Event.Receive(listOf(a1Frame)), now, rngB)
         assertTrue(received.report!!.dhRatchet, "Bob's first receive is a DH ratchet")
         assertTrue(
-            received.effects.none { it is ProtocolCore.Effect.CancelPut && it.mailbox == bobQueued },
-            "Bob's queued bootstrap-epoch frame must not be cancelled: ${received.effects}",
+            received.effects.none { it is ProtocolCore.Effect.CancelPut },
+            "Bob has no transition frame to retire on his first ratchet: ${received.effects}",
         )
     }
+
+    private class Pair(
+        val mailbox: ChaosMailboxClient,
+        val aliceManager: E2eeManager,
+        val aliceClient: LocationClient,
+        val bobManager: E2eeManager,
+        val bobClient: LocationClient,
+        val bobFriendId: String,
+    )
+
+    private suspend fun pair(): Pair {
+        val mailbox = ChaosMailboxClient(MemoryMailboxClient())
+        val aliceManager = testE2eeManager(createTestSqlDriver())
+        val aliceClient = LocationClient("http://localhost", aliceManager, mailbox)
+        val bobManager = testE2eeManager(createTestSqlDriver())
+        val bobClient = LocationClient("http://localhost", bobManager, mailbox)
+
+        val qr = aliceManager.createInvite("Alice")
+        val (initPayload, bobEntry) = bobManager.processScannedQr(qr, "Bob")
+        bobClient.postKeyExchangeInit(bobEntry.id, qr, initPayload)
+        val pending = aliceClient.pollPendingInvites()
+        requireNotNull(aliceManager.processKeyExchangeInit(pending[0].payload, "Bob", pending[0].inviteEkPub))
+        return Pair(mailbox, aliceManager, aliceClient, bobManager, bobClient, bobEntry.id)
+    }
+
+    @Test
+    fun `a StoppedSharing Bob queued before Alice's first frame still arrives`() =
+        runTest {
+            val p = pair()
+            p.aliceClient.sendLocation(37.0, -122.0, emptySet())
+
+            // Bob stops sharing while offline: the StoppedSharing stays queued.
+            p.mailbox.failNextPost = true
+            p.bobClient.sendStoppedSharingToFriend(p.bobFriendId)
+            assertEquals(1, p.bobManager.getOutbox(p.bobFriendId).size)
+
+            // Bob reads Alice's frame (still offline for poll()'s first flush), then reconnects.
+            p.mailbox.failNextPost = true
+            p.bobClient.poll(isForeground = true, pausedFriendIds = emptySet())
+            p.bobClient.syncNow()
+
+            p.aliceClient.poll(isForeground = true, pausedFriendIds = emptySet())
+            assertNotNull(p.aliceManager.listFriends().single().stoppedAtTs, "Alice still shows Bob as sharing")
+        }
 
     @Test
     fun `a frame Bob queued before Alice's first one still arrives`() =

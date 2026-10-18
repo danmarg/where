@@ -9,6 +9,7 @@ here = os.path.dirname(os.path.abspath(__file__))
 src = open(os.path.join(here, 'WhereSync.tla')).read()
 jar = os.environ['TLA2TOOLS']
 work = tempfile.mkdtemp(prefix='wheresync-mutants-')
+TIMEOUT = 300  # per TLC run; a run that times out counts as a MISS
 
 def cfg(sends=2, urgent=0, crashes=0, loss=0, dup=0, clock=0, cap=2, live=False, props=None, invariants=True):
     body = f"""CONSTANTS
@@ -24,7 +25,7 @@ def cfg(sends=2, urgent=0, crashes=0, loss=0, dup=0, clock=0, cap=2, live=False,
 """
     body += "SPECIFICATION Spec\n" if live else "INIT Init\nNEXT Next\n"
     if invariants:
-        body += "INVARIANTS TypeOK NoDoubleAccept SkippedWithinCap RatchetSound AcksOnlyProcessed NoStrandedMessages\n"
+        body += "INVARIANTS TypeOK NoDoubleAccept SkippedWithinCap RatchetSound AcksOnlyProcessed NoStrandedMessages NoSilentDrop\n"
     if live: body += "PROPERTIES " + " ".join(props or ["AllDelivered", "EventuallySameEpoch"]) + "\n"
     body += "CHECK_DEADLOCK FALSE\n"
     return body
@@ -56,11 +57,18 @@ M = [
    dict(sends=2, cap=0, loss=1), "AcksOnlyProcessed"),
   ("cancel on every ratchet (the old bug)",
    "IF advanced /\\ s0.prevSendTok # s0.sendTok", "IF advanced",
-   dict(sends=1, live=True, props=["AllDelivered"]), "AllDelivered"),
+   dict(sends=1, live=True, props=["AllDelivered"], invariants=False), "AllDelivered"),
   ("header keys not rotated",
    "!.hk = s.nhk, !.shk = s.root + 1, !.nhk = s.root + 2,",
    "!.hk = s.hk, !.shk = s.root + 1, !.nhk = s.root + 2,",
    dict(sends=2, live=True, props=["AllDelivered"]), "AllDelivered"),
+  ("cancel on every ratchet, as a safety check",
+   "IF advanced /\\ s0.prevSendTok # s0.sendTok", "IF advanced",
+   dict(sends=1), "NoSilentDrop"),
+  ("dequeue the head instead of the posted frame",
+   "/\\ outbox' = [outbox EXCEPT ![c] = SelectSeq(@, LAMBDA x : Id(x) # posting[c])]",
+   "/\\ outbox' = [outbox EXCEPT ![c] = IF @ = << >> THEN @ ELSE Tail(@)]",
+   dict(sends=2, urgent=1), "NoSilentDrop"),
   ("peer's new key not recorded",
    "!.recvTok = <<Peer(c), s.root + 1>>, !.sendTok = <<c, s.root + 2>>,",
    "!.recvTok = <<Peer(c), s.root + 1>>, !.sendTok = <<c, s.root + 2>>, !.remoteDh = s.remoteDh,",
@@ -74,10 +82,15 @@ for name, old, new, kw, expect in M:
     d = os.path.join(work, re.sub(r'\W+', '_', name)); os.makedirs(d, exist_ok=True)
     open(os.path.join(d, 'WhereSync.tla'), 'w').write(src.replace(old, new))
     open(os.path.join(d, 'm.cfg'), 'w').write(cfg(**kw))
-    r = subprocess.run(['java', '-Xss16m', '-cp', jar, 'tlc2.TLC', '-workers', 'auto', '-cleanup', '-metadir', os.path.join(d, 'st'),
-                        '-config', 'm.cfg', 'WhereSync.tla'], cwd=d, capture_output=True, text=True, timeout=900)
-    out = r.stdout
+    try:
+        r = subprocess.run(['java', '-Xss16m', '-cp', jar, 'tlc2.TLC', '-workers', 'auto', '-cleanup', '-metadir', os.path.join(d, 'st'),
+                            '-config', 'm.cfg', 'WhereSync.tla'], cwd=d, capture_output=True, text=True, timeout=TIMEOUT)
+        out = r.stdout
+    except subprocess.TimeoutExpired:
+        out = ''
     found = re.findall(r'(?:Invariant|Temporal property) (\w+) (?:is|was) violated', out)
+    if 'The error occurred when TLC was evaluating' in out:
+        found.append('a TLC evaluation error')
     # TLC 1.7.x doesn't name the temporal property; each liveness mutant checks exactly one.
     if 'Temporal properties were violated' in out:
         found += kw['props']
@@ -85,5 +98,55 @@ for name, old, new, kw, expect in M:
     ok &= hit
     print(f"{'OK  ' if hit else 'MISS'} {name}: expected {expect}, TLC reported {found or 'no violation'}")
     sys.stdout.flush()
+# Reachability probes: each makes one behaviour trip RatchetSound (or adds a state invariant) and
+# runs against the checked-in configuration that claims to cover it. A probe TLC never trips
+# means that configuration doesn't reach the behaviour, so its properties say nothing about it.
+CRASH = """    /\\ crashes' = crashes + 1
+    /\\ inflight' = [inflight EXCEPT ![c] = {}]"""
+CRASH_UNCHANGED = """    /\\ UNCHANGED <<session, outbox, mbox, clock, sends, urgent, losses, dups, sent, accepted,
+                   everPosted, lostKeys, flags>>"""
+P = [
+  # (name, config, edits [(old, new)], extra invariant definition or None)
+  ("a skipped key is cached", "WhereSyncSafetyLoss", [], "Probe == \\A c \\in Clients : session[c].skipped = {}"),
+  ("a cached key is used", "WhereSyncSafetyLoss",
+   [("THEN [st |-> [s EXCEPT !.skipped = @ \\ {key}], res |-> \"deliver\", bad |-> FALSE]",
+     "THEN [st |-> [s EXCEPT !.skipped = @ \\ {key}], res |-> \"deliver\", bad |-> TRUE]")], None),
+  ("the previous chain's gap is filled", "WhereSyncSafetyLoss",
+   [("bad |-> isNew /\\ m.dh # s.root + 1]", "bad |-> (isNew /\\ m.dh # s.root + 1) \\/ pnGaps > 0]")], None),
+  ("a frame is rejected over the cap", "WhereSyncSafetyReject",
+   [("THEN [st |-> s, res |-> \"reject\", bad |-> FALSE]", "THEN [st |-> s, res |-> \"reject\", bad |-> TRUE]")], None),
+  ("a batch is force-ACKed", "WhereSyncSafetyReject", [], "Probe == \\A c \\in Clients : ~ackForced[c]"),
+  ("a message expires", "WhereSyncSafetyTTL", [], "Probe == lostKeys = {}"),
+  ("a crash lands between saving and acking", "WhereSyncSafety",
+   [(CRASH, CRASH.replace("crashes + 1", "crashes + 1\n    /\\ flags' = [flags EXCEPT !.badRatchet = toAck[c] # {}]")),
+    (CRASH_UNCHANGED, CRASH_UNCHANGED.replace(", flags>>", ">>"))], None),
+  ("each side ratchets twice", "WhereSyncSafety", [], "Probe == ~(session[\"A\"].root >= 5 /\\ session[\"B\"].root >= 4)"),
+  ("a duplicate is served", "WhereSyncSafety", [], "Probe == dups = 0"),
+]
+for name, config, edits, probe in P:
+    if only and not any(o in name for o in only): continue
+    text = src
+    for old, new in edits:
+        assert text.count(old) == 1, (name, old)
+        text = text.replace(old, new)
+    want = "RatchetSound"
+    if probe:
+        text = text.replace("\n=============================================================================", "\n" + probe + "\n=============================================================================")
+        want = "Probe"
+    d = os.path.join(work, "probe_" + re.sub(r'\W+', '_', name)); os.makedirs(d, exist_ok=True)
+    open(os.path.join(d, 'WhereSync.tla'), 'w').write(text)
+    c = open(os.path.join(here, config + '.cfg')).read()
+    c = re.sub(r'^INVARIANTS .*$', 'INVARIANTS ' + want, c, flags=re.M)
+    open(os.path.join(d, 'm.cfg'), 'w').write(c)
+    try:
+        r = subprocess.run(['java', '-Xss16m', '-cp', jar, 'tlc2.TLC', '-workers', 'auto', '-cleanup', '-metadir', os.path.join(d, 'st'),
+                            '-config', 'm.cfg', 'WhereSync.tla'], cwd=d, capture_output=True, text=True, timeout=TIMEOUT)
+        hit = f'Invariant {want} is violated' in r.stdout
+    except subprocess.TimeoutExpired:
+        hit = False
+    ok &= hit
+    print(f"{'OK  ' if hit else 'MISS'} reachable in {config}: {name}")
+    sys.stdout.flush()
+
 shutil.rmtree(work, ignore_errors=True)
 sys.exit(0 if ok else 1)

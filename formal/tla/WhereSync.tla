@@ -26,6 +26,15 @@
 (* hit are GET -> Process (batch lost, refetched) and Process -> DELETE    *)
 (* (§5.4.5: state saved, messages left on the server), and Post -> dequeue *)
 (* on the send side (the frame is posted again).                           *)
+(*                                                                         *)
+(* Deliberate over-approximations (more behaviours than the code has, so   *)
+(* fine for safety): a Send can interleave between a Poll and its Process  *)
+(* (the per-friend mutex prevents it); a failed DELETE is only modelled as *)
+(* a crash; ForceAckAfter is a constant (MAX_SILENT_DROP_RETRIES is 5).    *)
+(* One under-approximation: Process includes CancelPut, but the code       *)
+(* deletes those outbox rows just before the session transaction commits.  *)
+(* A crash between the two leaves the batch unacked, so reprocessing it    *)
+(* makes the same ratchet and the same cancel of a frame already read.     *)
 (***************************************************************************)
 EXTENDS Integers, Sequences, FiniteSets
 
@@ -337,10 +346,10 @@ Next ==
     \/ \E c \in Clients : ClientStep(c)
     \/ Lose \/ Dup \/ Tick \/ Expire
 
-\* Weak fairness on the client's own work; none on crashes or server faults.
+\* Weak fairness on the client's own work; none on sending (the user's choice), crashes or
+\* server faults, so liveness is checked whenever the clients stop sending.
 Fairness ==
     \A c \in Clients :
-        /\ WF_vars(Send(c)) /\ WF_vars(SendUrgent(c))
         /\ WF_vars(Post(c)) /\ WF_vars(Dequeue(c))
         /\ WF_vars(Poll(c)) /\ WF_vars(Process(c)) /\ WF_vars(Ack(c))
 
@@ -382,9 +391,20 @@ NoStrandedMessages ==
              /\ t[1] = Peer(c) /\ t[2] > session[c].recvTok[2])
                 => TransitionPending(c, m)
 
-\* The sent keys are the ones the peer can derive: within the key space we enumerate.
+\* Nothing sent disappears without a trace: every sent frame has been accepted by the peer, is
+\* still queued, is on the server, or is in the peer's hands, unless the server lost or expired
+\* it, or a force-ACK deleted it unaccepted (both recorded in lostKeys).
+KeysIn(S) == {KeyOf(m) : m \in S}
+NoSilentDrop ==
+    \A c \in Clients : \A k \in sent[c] :
+        \/ k \in accepted[Peer(c)]
+        \/ k \in lostKeys
+        \/ k \in KeysIn({outbox[c][i] : i \in 1 .. Len(outbox[c])})
+        \/ k \in KeysIn(UNION {mbox[t] : t \in Tokens})
+        \/ k \in KeysIn(inflight[Peer(c)])
+
 Safety == TypeOK /\ NoDoubleAccept /\ SkippedWithinCap /\ RatchetSound /\ AcksOnlyProcessed
-          /\ NoStrandedMessages
+          /\ NoStrandedMessages /\ NoSilentDrop
 
 -----------------------------------------------------------------------------
 (* Liveness (with MaxLoss = 0 and no expiry) *)
@@ -395,8 +415,8 @@ Safety == TypeOK /\ NoDoubleAccept /\ SkippedWithinCap /\ RatchetSound /\ AcksOn
 \* of one per key.
 AllDelivered == <>[](\A c \in Clients : sent[c] \subseteq accepted[Peer(c)])
 
-\* Both sides eventually agree on each other's DH key: each knows the key the other is
-\* sending under, unless the other has not sent under it yet.
+\* Eventually each side knows the DH key the other is sending under, unless the other hasn't
+\* sent under it yet: every key the peer has sent under has reached it.
 Synced(c) == session[c].remoteDh = session[Peer(c)].localDh \/ session[Peer(c)].sendSeq = 0
 EventuallySameEpoch == <>[](\A c \in Clients : Synced(c))
 

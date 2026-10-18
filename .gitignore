@@ -38,3 +38,7 @@ cli/where_cli_state.json
 !android/src/fdroid/play/**/*.txt
 !ios/fastlane/metadata/**/*.txt
 .log
+
+# TLC output (formal/tla)
+formal/tla/*_TTrace_*
+formal/tla/states/

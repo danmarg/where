@@ -36,7 +36,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        config: [ WhereSyncSafety, WhereSyncSafetyLoss, WhereSyncSafetyTTL, WhereSyncSafetyDeep, WhereSyncLiveness ]
+        config: [ WhereSyncSafety, WhereSyncSafetyLoss, WhereSyncSafetyReject, WhereSyncSafetyTTL, WhereSyncSafetyDeep, WhereSyncLiveness ]
     name: tlc (${{ matrix.config }})
 
     steps:
@@ -57,10 +57,11 @@ jobs:
           TLA2TOOLS: ${{ runner.temp }}/tla2tools.jar
         run: formal/tla/run-tlc.sh ${{ matrix.config }}.cfg
 
-  # Each property must catch the bug it is there for: one mutant per rule (check-mutants.py).
+  # Each property must catch the bug it is there for (one mutant per rule), and each configuration
+  # must reach the behaviours it claims to cover (reachability probes): check-mutants.py.
   mutants:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
 
     steps:
       - uses: actions/checkout@v4
