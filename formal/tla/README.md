@@ -72,8 +72,9 @@ over 12M states and still growing).
   protects: the transition rule, the replay check, single use of skipped keys, the skipped-key
   cap, the ratchet's sub-steps, acking only what was processed, the bootstrap exception to
   CancelPut and header-key rotation (each both as a liveness and as a safety failure), dequeuing
-  the posted frame by id, recording the peer's new key, and dropping the fairness on processing
-  (so the hand-written fairness condition below can't make liveness pass vacuously). Some need a loss before the bug is
+  the posted frame by id, recording the peer's new key, and dropping the fairness on processing.
+  The last shows the hand-written fairness condition below is needed; the other liveness mutants
+  still failing with it in place show it isn't too strong. Some need a loss before the bug is
   reachable: with an honest server, outboxes drain in order and batches are sorted, so no gap
   and no unprocessable frame ever reaches a receiver.
 - **Reachability probes.** For each behaviour a configuration claims to cover, it makes that
