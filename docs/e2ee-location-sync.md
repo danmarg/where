@@ -3,7 +3,7 @@
 **Status:** Implemented
 **Authors:** Daniel Margolis
 **Date:** 2026-05-24
-**Protocol version:** 1. Normative examples: the golden transcript, vectors version 1 ([§11.1](#111-test-vectors-normative-examples)).
+**Protocol version:** 1. Normative examples: the golden transcript, vectors version 2 ([§11.1](#111-test-vectors-normative-examples)).
 
 ---
 
@@ -940,7 +940,7 @@ The transcript is one pairing run through the protocol's pure step function (`Pr
 - a corrupted body (committed and acked but not delivered, §8.3.1(4)) and a non-frame payload on a session mailbox (acked unread);
 - Location (with and without `stationary`), StoppedSharing and Keepalive plaintexts (§5.7, §9.1.2).
 
-`GoldenTranscriptTest` replays it on the JVM and on the iOS simulator: feeding each step the recorded inputs must reproduce the recorded outputs byte for byte, and generating it from scratch must reproduce the file. The transcript is versioned with this document: a change that alters it is a protocol change, which regenerates the file (`WHERE_WRITE_VECTORS=1 ./gradlew :shared:jvmTest --tests '*GoldenTranscriptWriter*'`), bumps `vectors_version` (`GoldenTranscript.VECTORS_VERSION`, which writes it into the file) and the version named at the top of this document, and bumps `protocol_version` if old and new clients no longer interoperate.
+`GoldenTranscriptTest` replays it on the JVM and on the iOS simulator: feeding each step the recorded inputs must reproduce the recorded outputs byte for byte, and generating it from scratch must reproduce the file. That only shows reproducibility, so `SpecConformanceTest` checks the file against this document instead: it recomputes the handshake (§4.2, §4.4), every DH ratchet, header-key and token rotation, and every chain step (§8.3) from the formulas here, using only the raw primitives and the info strings as written here, and checks that what is delivered is what was sent, once, and that token effects match the state. The keys in the file are public test values: never treat it as a recording of a real session. The transcript is versioned with this document: a change that alters it is a protocol change, which regenerates the file (`WHERE_WRITE_VECTORS=1 ./gradlew :shared:jvmTest --tests '*GoldenTranscriptWriter*'`), bumps `vectors_version` (`GoldenTranscript.VECTORS_VERSION`, which writes it into the file) and the version named at the top of this document, and bumps `protocol_version` if old and new clients no longer interoperate.
 
 ---
 

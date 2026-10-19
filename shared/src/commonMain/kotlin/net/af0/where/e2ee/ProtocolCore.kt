@@ -11,8 +11,24 @@ package net.af0.where.e2ee
  * token changes. App policy (names, clamping peer timestamps, retry and force-ACK rules, which
  * mailboxes to poll when) stays with them.
  *
- * A step that throws (a forged init, an expired invite, a bricked session) leaves the caller's
- * state as it was: nothing is to be persisted and no effect happens.
+ * A step that throws (a forged init, an expired invite, a bricked session, a batch from a stale
+ * mailbox) leaves the caller's state as it was: nothing is to be persisted and no effect happens.
+ *
+ * Atomicity contract for interpreters (E2eeManager; AtomicityTest checks it):
+ * - **One transaction.** The new state and every local effect commit together or not at all, in
+ *   one store transaction under the store lock: the session, the outbox rows a [Effect.Put]
+ *   queues and a [Effect.CancelPut] deletes, and the pending invite a [Event.ProcessInit]
+ *   consumes ([Effect.RetireToken] for the discovery mailbox). A crash or failed write leaves the
+ *   old state and outbox, and the step simply runs again.
+ * - **After the commit, idempotent and loss-tolerant.** Mailbox I/O happens only after the commit
+ *   and may be repeated or lost to a crash: a PUT is retried from the outbox and is idempotent per
+ *   msgId; an [Effect.Ack] lost to a crash leaves frames that come back as replays and are acked
+ *   then; a [Effect.RetireToken] lost to a crash costs nothing, because the next poll reads the
+ *   receive token from the saved session (LocationClient follows the saved token; the effect only
+ *   counts follows), and frames left on the retired mailbox expire with the server's TTL (§5.4.5).
+ * - **Polled mailbox.** A [Event.Receive] names the mailbox it was polled from and is refused
+ *   unless that is the session's current receive mailbox, so a stale or concurrent poll can't
+ *   commit or ack anything.
  */
 internal object ProtocolCore {
     /** One pairing, from one party's side. */
@@ -40,8 +56,12 @@ internal object ProtocolCore {
         /** Encrypt [payload] to the peer. */
         data class Send(val payload: MessagePlaintext) : Event()
 
-        /** A batch polled from the session's current receive mailbox. */
-        data class Receive(val messages: List<MailboxPayload>) : Event()
+        /**
+         * A batch polled from [mailbox] (hex). It must be the session's current receive mailbox:
+         * a batch from any other (a stale or concurrent poll, a misrouted caller) is refused with
+         * [StaleMailboxException] before anything is decrypted, committed or acked.
+         */
+        data class Receive(val mailbox: String, val messages: List<MailboxPayload>) : Event()
     }
 
     /** Mailboxes are named by their token in hex, as the server and the outbox see them. */
@@ -180,6 +200,9 @@ internal object ProtocolCore {
         nowMillis: Long,
         rng: Rng,
     ): Step {
+        if (event.mailbox != session.recvToken.toHex()) {
+            throw StaleMailboxException("batch polled from a mailbox other than the current receive mailbox")
+        }
         val encrypted = event.messages.filterIsInstance<EncryptedMessagePayload>()
         val ordered = E2eeProtocol.decryptAndSort(session, encrypted)
         val result = E2eeProtocol.decryptBatch(session, encrypted.size, ordered, nowMillis, rng)
