@@ -24,8 +24,6 @@ internal object E2eeProtocol {
         val softFailCount: Int,
         val hardFailCount: Int,
         val silentDrops: Int,
-        /** Timestamp of the most recent StoppedSharing message seen in this batch, if any. */
-        val stoppedSharingTs: Long? = null,
     )
 
     /**
@@ -38,9 +36,9 @@ internal object E2eeProtocol {
         session: SessionState,
         messages: List<EncryptedMessagePayload>,
     ): List<Pair<Session.DecryptedHeader, EncryptedMessagePayload>> {
-        // Group into buckets by DH key to handle epoch transitions correctly.
-        // We preserve the delivery order within each bucket and across buckets
-        // unless they are clearly out of sequence.
+        // Group into buckets by DH key to handle epoch transitions correctly, and always sort:
+        // the result is the peer's send order (epoch, then seq), whatever order the server
+        // returned. E2eeManager.processBatch relies on that to order Locations and stops.
         val ordered =
             messages.mapNotNull { msg ->
                 try {
@@ -88,7 +86,6 @@ internal object E2eeProtocol {
         var anyReplay = false
         var softFailCount = 0
         var hardFailCount = 0
-        var stoppedSharingTs: Long? = null
 
         val processedIds = mutableListOf<String>()
         val replayedIds = mutableListOf<String>()
@@ -112,10 +109,6 @@ internal object E2eeProtocol {
                                 stationary = pt.stationary,
                             ),
                         )
-                    } else if (pt is MessagePlaintext.StoppedSharing) {
-                        if (stoppedSharingTs == null || pt.ts > stoppedSharingTs) {
-                            stoppedSharingTs = pt.ts
-                        }
                     }
                 }
                 is ReceivedMessage.Undeliverable -> {
@@ -150,7 +143,6 @@ internal object E2eeProtocol {
             softFailCount = softFailCount,
             hardFailCount = hardFailCount,
             silentDrops = totalEncryptedCount - orderedMessages.size,
-            stoppedSharingTs = stoppedSharingTs,
         )
     }
 

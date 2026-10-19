@@ -79,6 +79,23 @@ open class LocationClient(
         }
     }
 
+    // Orders sendLocation calls against stops. The receiver takes the sharing state from send
+    // order, so a Location that read the pause state before a stop but reached the friend's
+    // mutex after it would otherwise land after the stop and show the friend as sharing again.
+    private var sendSeq = 0L
+    private val lastStopSeq = mutableMapOf<String, Long>()
+
+    private suspend fun nextSendSeq(): Long = mutexLock.withLock { ++sendSeq }
+
+    /** Call under [friendId]'s mutex, once its StoppedSharing is queued. */
+    private suspend fun recordStop(friendId: String) = mutexLock.withLock { lastStopSeq[friendId] = ++sendSeq }
+
+    /** Whether a stop to [friendId] was queued after the sendLocation call numbered [callSeq] began. */
+    private suspend fun stoppedSince(
+        friendId: String,
+        callSeq: Long,
+    ): Boolean = mutexLock.withLock { (lastStopSeq[friendId] ?: 0L) > callSeq }
+
     private val inFlightPolls = mutableSetOf<String>()
     private val inFlightMutex = Mutex()
 
@@ -616,6 +633,8 @@ open class LocationClient(
         stationary: Boolean = false,
     ) {
         coroutineScope {
+            // Before the pause state is read: see sendSeq.
+            val callSeq = nextSendSeq()
             val now = currentTimeSeconds()
             val payload = MessagePlaintext.Location(lat = lat, lng = lng, acc = 0.0, ts = now, stationary = stationary)
             // Sequential: each friend's eligibility check is a local-DB read serialized behind
@@ -645,7 +664,8 @@ open class LocationClient(
                         runCatching {
                             val mutex = getFriendMutex(friend.id)
                             mutex.withLock {
-                                sendMessageToFriendInternal(friend.id, payload)
+                                // Stopped while this call waited: the stop is the last word.
+                                if (!stoppedSince(friend.id, callSeq)) sendMessageToFriendInternal(friend.id, payload)
                             }
                         }.onFailure { if (it is CancellationException) throw it }
                     }
@@ -688,6 +708,7 @@ open class LocationClient(
         val activeFriends = store.listFriends().filter { isActiveFriend(it, pausedFriendIds) }
         forEachFriendParallel(activeFriends) { friend ->
             sendMessageToFriendInternal(friend.id, payload, requireDrainedOutboxFirst = false)
+            recordStop(friend.id)
         }
     }
 
@@ -702,6 +723,7 @@ open class LocationClient(
         mutex.withLock {
             try {
                 sendMessageToFriendInternal(friendId, payload, requireDrainedOutboxFirst = false)
+                recordStop(friendId)
             } catch (e: CancellationException) {
                 throw e
             } catch (_: Exception) {
@@ -751,8 +773,8 @@ open class LocationClient(
         // requireDrainedOutboxFirst=false (StoppedSharing) instead best-effort-drains but always
         // proceeds to encryptAndAdvance, so a terminal signal isn't dropped just because an older
         // message is stuck (#369) - safe here specifically because StoppedSharing has no routine
-        // cadence to flood the outbox with, and the receive side already takes the latest
-        // timestamp across duplicate/stale StoppedSharing messages (see E2eeProtocol).
+        // cadence to flood the outbox with, and the receive side takes the sharing state from
+        // whichever of a batch's Locations and stops was sent last (see E2eeManager.processBatch).
         if (store.getOutbox(friendId).isNotEmpty()) {
             if (requireDrainedOutboxFirst) {
                 processOutbox(friendId)
