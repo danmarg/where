@@ -7,10 +7,11 @@ import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
 /**
- * LocationClient follows a rotated receive token only through the core's RetireToken effect, so
- * that effect has to track the token exactly: a receive that changes the committed recvToken emits
- * exactly one RetireToken for the token it replaced, and a receive that doesn't emits none. Missing
- * one would leave a healthy session polling a mailbox nothing arrives at any more.
+ * The RetireToken effect has to track the receive token exactly: a receive that changes the
+ * committed recvToken emits exactly one RetireToken for the token it replaced, and one that
+ * doesn't emits none. (LocationClient polls the saved token each round, so it follows a rotation
+ * even without the effect; it uses the effect to count follows against MAX_TOKEN_FOLLOWS_PER_POLL.
+ * Interpreters that act on the effect itself rely on this equivalence.)
  */
 class RetireTokenTest {
     init {
@@ -94,7 +95,7 @@ class RetireTokenTest {
     }
 
     @Test
-    fun `the client follows a rotation even when the transition frame itself isn't delivered`() =
+    fun `an undeliverable transition frame is acked and the same poll continues on the new token`() =
         runTest {
             val mailbox = ChaosMailboxClient(MemoryMailboxClient())
             val aliceManager = testE2eeManager(createTestSqlDriver())

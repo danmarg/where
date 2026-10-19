@@ -19,7 +19,7 @@ class AtomicityTest {
         initializeE2eeTests()
     }
 
-    private class Pair(
+    private class Paired(
         val alice: E2eeManager,
         val aliceDriver: FailingSqlDriver,
         val aliceId: String,
@@ -27,14 +27,14 @@ class AtomicityTest {
         val bobId: String,
     )
 
-    private suspend fun pair(): Pair {
+    private suspend fun pair(): Paired {
         val aliceDriver = FailingSqlDriver(createTestSqlDriver())
         val alice = testE2eeManager(aliceDriver)
         val bob = testE2eeManager(createTestSqlDriver())
         val qr = alice.createInvite("Alice")
         val (init, bobEntry) = bob.processScannedQr(qr, "Bob")
         val aliceEntry = requireNotNull(alice.processKeyExchangeInit(init, "Bob", qr.ekPub))
-        return Pair(alice, aliceDriver, aliceEntry.id, bob, bobEntry.id)
+        return Paired(alice, aliceDriver, aliceEntry.id, bob, bobEntry.id)
     }
 
     private suspend fun E2eeManager.recvToken(id: String) = requireNotNull(getFriend(id)).session.recvToken.toHex()
@@ -42,7 +42,7 @@ class AtomicityTest {
     private fun keepalive() = MessagePlaintext.Keepalive()
 
     /** Alice's queued transition frame, read by Bob, then Bob's reply that makes Alice ratchet. */
-    private suspend fun Pair.ratchetSetup(): EncryptedMessagePayload {
+    private suspend fun Paired.ratchetSetup(): EncryptedMessagePayload {
         val (a1, _) = alice.encryptAndAdvance(aliceId, keepalive())
         assertEquals(1, alice.getOutbox(aliceId).size)
         assertNotNull(bob.processBatch(bobId, bob.recvToken(bobId), listOf(a1)))
@@ -65,6 +65,33 @@ class AtomicityTest {
             assertNotNull(p.alice.processBatch(p.aliceId, before, listOf(b1)))
             assertTrue(p.alice.recvToken(p.aliceId) != before)
             assertTrue(p.alice.getOutbox(p.aliceId).isEmpty())
+        }
+
+    @Test
+    fun `a failed CancelPut delete rolls back the session too`() =
+        runTest {
+            val p = pair()
+            val b1 = p.ratchetSetup()
+            val before = p.alice.recvToken(p.aliceId)
+            p.aliceDriver.failOn = "DELETE FROM Outbox WHERE friendId = ? AND token = ?"
+            assertFailsWith<IllegalStateException> { p.alice.processBatch(p.aliceId, before, listOf(b1)) }
+            assertEquals(before, p.alice.recvToken(p.aliceId), "the session must roll back with the delete")
+            assertEquals(1, p.alice.getOutbox(p.aliceId).size)
+        }
+
+    @Test
+    fun `a failed invite delete rolls back saving the friend too`() =
+        runTest {
+            val aliceDriver = FailingSqlDriver(createTestSqlDriver())
+            val alice = testE2eeManager(aliceDriver)
+            val bob = testE2eeManager(createTestSqlDriver())
+            val qr = alice.createInvite("Alice")
+            val (init, _) = bob.processScannedQr(qr, "Bob")
+            aliceDriver.failOn = "DELETE FROM PendingInvites WHERE ekPub = ?"
+            assertFailsWith<IllegalStateException> { alice.processKeyExchangeInit(init, "Bob", qr.ekPub) }
+            assertTrue(alice.listFriends().isEmpty(), "the friend must roll back with the invite delete")
+            assertEquals(1, alice.listPendingInvites().size)
+            assertNotNull(alice.processKeyExchangeInit(init, "Bob", qr.ekPub))
         }
 
     @Test

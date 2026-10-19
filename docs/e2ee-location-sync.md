@@ -411,7 +411,7 @@ The first message of a new sending epoch (`seq == 1`) MUST be posted to the *pre
 
 This is symmetric by construction: `prev_send_token` is derived from the pre-ratchet root key, which is exactly the token the peer is currently polling for messages from us. When the peer decrypts the transition message, the new `dh_pub` triggers a DH ratchet step that derives a new `recv_token` matching our new `send_token` — so the next message we post will land on the token the peer has rotated to.
 
-Implementation: `Session.encryptMessage` selects `prevSendHeaderKey` and `prevSendToken` when `sendSeq + 1 == 1` (`Session.kt:36-41`; `E2eeManager.kt:274`).
+Implementation: `Session.encryptMessage` selects `prevSendHeaderKey` and `prevSendToken` when `sendSeq + 1 == 1` (`SessionState.transportFor`).
 
 #### 5.4.2 Receive Rule (Single Active Token)
 The receiver polls exactly one mailbox token at a time (the current `recv_token`). There is no `prev_recv_token` polling — the sender's transition rule (§5.4.1) routes the first new-epoch message onto the token the receiver is already polling. After processing that message, the receiver ratchets forward and switches its polling target to the new `recv_token`.
@@ -423,7 +423,7 @@ When a decrypted message carries a new sender `dh_pub`:
 #### 5.4.3 Send-Side Retirement (Observed Root-Key Advance)
 The sender retires its `prev_send_token` (and stops posting fallback retries to it) when it observes an authenticated proof that the peer has processed its new DH key. The proof used here is a successful decryption whose post-ratchet `root_key` is strictly newer than the one in effect when those outbox entries were enqueued — exactly the property an authenticated ack-of-DH would have established, inferred directly from the ratchet instead.
 
-Implementation: `E2eeManager` clears outbox entries still targeting `prevSendToken` once `decryptBatch` returns a session with an advanced `rootKey` (`E2eeManager.kt:433-438`).
+Implementation: `ProtocolCore` emits a `CancelPut` for `prevSendToken` when a received batch advances the `rootKey`, and `E2eeManager` deletes those outbox entries in the same transaction as the new session.
 
 `ack_remote_dh_pub` is carried in the header, authenticated, and bound into the message AAD (`buildMessageAad`) so its value cannot be modified in flight. The implementation does not currently read it for any retirement decision — retirement is fully driven by observed root-key advance. The field is retained on the wire for backwards compatibility and to leave room for a future ack-driven retirement scheme without a wire break.
 
@@ -707,6 +707,8 @@ new_token = HKDF-SHA-256(
 )
 ```
 Direction is encoded explicitly via the `sender_fp || recipient_fp` ordering in the info field.
+
+A DH ratchet step runs KDF_RK twice (receive sub-step, then send sub-step with the new key pair), and each token comes from its own sub-step's root key: `recv_token = RoutingToken(root from the receive sub-step, peer_fp || my_fp)` and `send_token = RoutingToken(root from the send sub-step, my_fp || peer_fp)`. The session keeps the send sub-step's root. So the peer's `send_token`, derived from the root its own send sub-step produced, is the same value as our `recv_token`. The previous `send_token` becomes `prev_send_token` (§5.4.1).
 
 **KDF_CK (symmetric ratchet step):**
 ```

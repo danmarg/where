@@ -177,15 +177,27 @@ class E2eeManager(
         // friend, and Bob's init on a mailbox nobody polls. And only if the invite is still
         // pending: a concurrent init for it got there first.
         val paired =
-            persistence.withFriendAndMetadataLock(entry.id) { _, metadata ->
-                if (metadata.pendingInvites.none { it.qrPayload.ekPub == inviteKey }) {
-                    return@withFriendAndMetadataLock PersistenceAction.None to false
+            try {
+                persistence.withFriendAndMetadataLock(entry.id) { _, metadata ->
+                    if (metadata.pendingInvites.none { it.qrPayload.ekPub == inviteKey }) {
+                        return@withFriendAndMetadataLock PersistenceAction.None to false
+                    }
+                    metadata.pendingInvites = metadata.pendingInvites.filterNot { it.qrPayload.ekPub == inviteKey }
+                    PersistenceAction.Update(entry) to true
                 }
-                metadata.pendingInvites = metadata.pendingInvites.filterNot { it.qrPayload.ekPub == inviteKey }
-                PersistenceAction.Update(entry) to true
+            } catch (e: Exception) {
+                // Nothing was saved and the new session is ours alone. The invite's key is left
+                // alone: the reload after the failed write may have left it pending for a retry.
+                session.zeroizeAll()
+                throw e
             }
-        if (!paired) return null
+        // Pending no more either way (consumed here, or by a concurrent init that got there
+        // first), so its key is dead; the losing session was never saved.
         pending.aliceEkPriv.zeroize()
+        if (!paired) {
+            session.zeroizeAll()
+            return null
+        }
 
         return entry
     }

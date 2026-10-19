@@ -94,6 +94,22 @@ class SpecConformanceTest {
 
     private fun JsonObject.effects() = getValue("effects").jsonArray.map { it.jsonObject }
 
+    private val basePoint = byteArrayOf(9) + ByteArray(31)
+
+    private fun be64(v: Long) = ByteArray(8) { i -> (v shr (56 - 8 * i)).toByte() }
+
+    private fun be64(
+        b: ByteArray,
+        at: Int,
+    ) = (0 until 8).fold(0L) { acc, i -> (acc shl 8) or (b[at + i].toLong() and 0xff) }
+
+    /** §9.1.2 de-padding: the plaintext ends at the 0x80 before the trailing zeros. */
+    private fun unpad(b: ByteArray): ByteArray {
+        val end = b.indexOfLast { it != 0.toByte() }
+        check(end >= 0 && b[end] == 0x80.toByte()) { "bad padding" }
+        return b.copyOfRange(0, end)
+    }
+
     private fun assertHex(
         expected: ByteArray,
         actual: String,
@@ -120,6 +136,21 @@ class SpecConformanceTest {
         assertHex(aliceEk, invite.str("ek_pub"), "Bob holds Alice's invite key")
         val sk = x25519(invite.hex("ek_priv"), bobEk)
         assertHex(sk, steps[2].str("sk"), "SK = X25519(EK_A.priv, EK_B.pub)")
+        // §4.4 key confirmation and §9.3 encrypted name, in Bob's KeyExchangeInit.
+        val init = decodeMailboxPayload(steps[1].effects().single().str("body")) as KeyExchangeInitPayload
+        assertHex(bobEk, init.ekPub.toHex(), "the init carries EK_B.pub")
+        val kConfirm = hkdf(sk, null, utf8("Where-v1-ConfirmKey"), 32)
+        assertHex(hmacSha256(kConfirm, utf8("Where-v1-Confirm") + aliceEk + bobEk), init.keyConfirmation.toHex(), "key_confirmation")
+        val kName = hkdf(sk, null, utf8("Where-v1-SuggestedName"), 32)
+        val name =
+            aeadDecrypt(
+                kName,
+                init.encryptedName.copyOfRange(0, 12),
+                init.encryptedName.copyOfRange(12, init.encryptedName.size),
+                aliceEk + bobEk,
+            )
+        assertEquals(steps[1].event().str("suggested_name"), name.decodeToString(), "encrypted_name under K_name")
+
         val aliceFp = sha256(aliceEk)
         val bobFp = sha256(bobEk)
         for (s in listOf(bob, alice)) {
@@ -205,6 +236,51 @@ class SpecConformanceTest {
             }
         }
         assertTrue(ratchets >= 4 && sends >= 10, "the transcript should exercise the schedule ($ratchets ratchets, $sends sends)")
+    }
+
+    @Test
+    fun `every frame opens with keys derived from its sender's state, per spec 9_1`() {
+        val last = mutableMapOf<String, JsonObject>()
+        var frames = 0
+        for ((i, step) in steps.withIndex()) {
+            val party = step.str("party")
+            val prev = last[party]
+            val now = step.state()
+            last[party] = now
+            if (now.str("type") == "paired") {
+                assertHex(x25519(now.hex("local_dh_priv"), basePoint), now.str("local_dh_pub"), "step $i: DH key pair")
+            }
+            if (step.event().str("type") != "send" || prev == null) continue
+            frames++
+            val put = step.effects().single()
+            val frame = decodeMailboxPayload(put.str("body")) as EncryptedMessagePayload
+            val seq = prev.num("send_seq") + 1
+            // §5.4.1: an epoch's first frame goes to the previous mailbox under the previous key.
+            assertEquals(if (seq == 1L) prev.str("prev_send_token") else prev.str("send_token"), put.str("mailbox"), "step $i: mailbox")
+            val headerKey = if (seq == 1L) prev.hex("prev_send_header_key") else prev.hex("send_header_key")
+            val env = frame.envelope
+            val header =
+                aeadDecrypt(headerKey, env.copyOfRange(0, 12), env.copyOfRange(12, env.size), prev.hex("alice_fp") + prev.hex("bob_fp"))
+            assertEquals(82, header.size, "step $i: header plaintext size")
+            assertEquals(1, header[0].toInt(), "step $i: header version")
+            val dh = header.copyOfRange(1, 33)
+            val ack = header.copyOfRange(33, 65)
+            assertHex(dh, prev.str("local_dh_pub"), "step $i: header dh_pub")
+            assertHex(ack, prev.str("remote_dh_pub"), "step $i: header ack_remote_dh_pub")
+            assertEquals(seq, be64(header, 65), "step $i: header msg_num")
+            assertEquals(prev.num("pn"), be64(header, 73), "step $i: header prev_chain_len")
+
+            // §8.3 KDF_CK and §9.1.2 body AAD.
+            val messageKey = hmacSha256(prev.hex("send_chain_key"), byteArrayOf(0x01))
+            val nonce = hkdf(messageKey, null, utf8("Where-v1-MsgNonce"), 12)
+            val aad =
+                utf8("Where-v1-Message") + byteArrayOf(0, 0, 0, 1) + prev.hex("local_fp") + prev.hex("remote_fp") +
+                    be64(seq) + dh + ack
+            val padded = aeadDecrypt(messageKey, nonce, frame.ct, aad)
+            assertEquals(512, padded.size, "step $i: padded plaintext size")
+            assertEquals(step.event().str("plaintext"), unpad(padded).decodeToString(), "step $i: plaintext")
+        }
+        assertTrue(frames >= 10)
     }
 
     @Test
