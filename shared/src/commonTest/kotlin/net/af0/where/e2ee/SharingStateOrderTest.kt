@@ -45,6 +45,26 @@ class SharingStateOrderTest {
         }
 
     @Test
+    fun `send order spans a DH ratchet within the batch`() =
+        runTest {
+            val alice = testE2eeManager(createTestSqlDriver())
+            val bob = testE2eeManager(createTestSqlDriver())
+            val qr = alice.createInvite("Alice")
+            val (init, bobEntry) = bob.processScannedQr(qr, "Bob")
+            val aliceEntry = requireNotNull(alice.processKeyExchangeInit(init, "Bob", qr.ekPub))
+            // Bob's Location in his bootstrap epoch; then he reads Alice's first frame and ratchets,
+            // so his stop is seq 1 of a new epoch. It is dated earlier, so only send order puts it last.
+            val loc = bob.encryptAndAdvance(bobEntry.id, loc(t)).first
+            val fromAlice = alice.encryptAndAdvance(aliceEntry.id, MessagePlaintext.Keepalive()).first
+            requireNotNull(bob.processBatch(bobEntry.id, bobEntry.session.recvToken.toHex(), listOf(fromAlice)))
+            val stop = bob.encryptAndAdvance(bobEntry.id, MessagePlaintext.StoppedSharing(ts = t - 5)).first
+
+            // Delivered stop first: the batch is still processed in send order.
+            requireNotNull(alice.processBatch(aliceEntry.id, aliceEntry.session.recvToken.toHex(), listOf(stop, loc)))
+            assertEquals(t - 5, alice.listFriends().single().stoppedAtTs)
+        }
+
+    @Test
     fun `send order wins when the peer's clock stepped back`() =
         runTest {
             assertEquals(t - 5, aliceAfter(loc(t), MessagePlaintext.StoppedSharing(ts = t - 5)).stoppedAtTs)
