@@ -182,9 +182,8 @@ internal object E2eeProtocol {
                 dh == current && (seq >= 2 || peerBootstrap)
             }
         if (kept.size == session.skippedMessageKeys.size) return session
-        val inputs = input.skippedMessageKeys.values
         for ((id, key) in session.skippedMessageKeys) {
-            if (id !in kept && inputs.none { it === key }) key.zeroize()
+            if (id !in kept && input.skippedMessageKeys[id] !== key) key.zeroize()
         }
         return session.copy(skippedMessageKeys = kept)
     }

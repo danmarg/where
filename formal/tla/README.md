@@ -129,9 +129,9 @@ next.
 Modelled but not checked by any mutant: the empty-outbox gate on ordinary sends, the force-ack
 threshold (no property depends on either), and keying the silent-poll counter by token. That last
 one is unobservable here: a receive token only changes in a Process that processed something, which
-resets the counter, so a per-friend counter behaves the same. Nor is one case the model can't
-create: dropping a cached key for the current epoch's seq 1. An epoch's later frames go to the new
-mailbox, so the receiver never reads one before the transition frame on the mailbox it polls first
+resets the counter, so a per-friend counter behaves the same. Nor is dropping a cached key for the
+current epoch's seq 1, a case the model can't create: an epoch's later frames go to the new mailbox,
+so the receiver never reads one before the transition frame on the mailbox it polls first
 (`SkippedKeyPruningTest` covers it, as a server could misroute frames).
 
 Apalache was not needed: TLC covers these bounds in minutes. (The batch operators are `RECURSIVE`,
@@ -168,4 +168,3 @@ unless the model changes with it (which is why CI runs on changes there too).
 Corrupted frames (spec §8.3.1(4) makes them leave the same state as a drop, which is modelled),
 the 50-message GET window, skipped-key expiry (`MAX_KEY_AGE_MS`, the same 7 days as the TTL), the
 handshake (both clients start paired), and more than one friend.
-
