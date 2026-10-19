@@ -524,15 +524,22 @@ class E2eeManager(
 
             // Derive the sharing-state fields (stationarySinceTs, stoppedAtTs) atomically
             // from the most recent event in this batch. Whichever of {last Location, last
-            // StoppedSharing} the peer sent later wins: a Location implies the peer is active
-            // (clear stopped); a StoppedSharing implies they paused (clear stationary).
-            // Within a stationary run we preserve the original "since" timestamp.
-            // "Later" is the order the core delivered them in: the peer's send order (epoch, then
-            // seq), authenticated, unlike the self-reported ts, which has one-second resolution (a
-            // stop and a Location in the same second used to tie in the Location's favour) and
-            // can go backwards with the peer's clock.
+            // StoppedSharing} is later wins: a Location implies the peer is active (clear
+            // stopped); a StoppedSharing implies they paused (clear stationary). Within a
+            // stationary run we preserve the original "since" timestamp.
+            // "Later" is by ts, which is when the peer generated each: a Location generated
+            // before a stop but encrypted after it (it waited on the friend's lock) still loses.
+            // The ts has one-second resolution, so a same-second tie goes to send order, the
+            // order the core delivered them in (epoch, then seq); it used to go to the Location.
             val lastLocIndex = delivered.indexOfLast { it is MessagePlaintext.Location }
             val lastStopIndex = delivered.indexOfLast { it is MessagePlaintext.StoppedSharing }
+            val stopIsLater =
+                when {
+                    stoppedSharingTs == null -> false
+                    lastLocation == null -> true
+                    stoppedSharingTs != lastLocation.ts -> stoppedSharingTs > lastLocation.ts
+                    else -> lastStopIndex > lastLocIndex
+                }
             val newStationarySinceTs: Long?
             val newStoppedAtTs: Long?
             when {
@@ -540,7 +547,7 @@ class E2eeManager(
                     newStationarySinceTs = entry.stationarySinceTs
                     newStoppedAtTs = entry.stoppedAtTs
                 }
-                lastStopIndex > lastLocIndex -> {
+                stopIsLater -> {
                     newStationarySinceTs = null
                     newStoppedAtTs = stoppedSharingTs
                 }
