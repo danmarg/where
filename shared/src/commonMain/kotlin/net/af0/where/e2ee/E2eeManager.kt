@@ -527,8 +527,9 @@ class E2eeManager(
             // StoppedSharing} is later wins: a Location implies the peer is active (clear
             // stopped); a StoppedSharing implies they paused (clear stationary). Within a
             // stationary run we preserve the original "since" timestamp.
-            // "Later" is by ts, which is when the peer generated each: a Location generated
-            // before a stop but encrypted after it (it waited on the friend's lock) still loses.
+            // "Later" is by ts, which is when the peer generated each: a Location generated in an
+            // earlier second than a stop but encrypted after it (it waited on the friend's lock)
+            // still loses.
             // The ts has one-second resolution, so a same-second tie goes to send order, the
             // order the core delivered them in (epoch, then seq); it used to go to the Location.
             val lastLocIndex = delivered.indexOfLast { it is MessagePlaintext.Location }
