@@ -478,9 +478,10 @@ open class LocationClient(
     ) {
         getFriendMutex(friendId).withLock {
             val friend = store.getFriend(friendId) ?: return
-            // Nothing follows the farewell, so it can safely be dated after everything before it:
-            // the receiver lets a Location win a same-second tie (as for a resume right after a
-            // pause), and a stuck Location from this second may arrive in the same batch.
+            // Nothing follows the farewell, so it can safely be dated after everything before it.
+            // Current receivers order a batch by send order, but older ones compare timestamps and
+            // let a Location win a same-second tie, and a stuck Location from this second may
+            // arrive in the same batch.
             val farewell =
                 if (sharingEnabled && isActiveFriend(friend, pausedFriendIds)) {
                     MessagePlaintext.StoppedSharing(ts = maxOf(currentTimeSeconds(), friend.lastSentTs + 1))

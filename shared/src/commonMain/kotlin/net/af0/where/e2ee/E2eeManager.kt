@@ -497,12 +497,16 @@ class E2eeManager(
             }
 
             // Derive the sharing-state fields (stationarySinceTs, stoppedAtTs) atomically
-            // from the most recent event in this batch. Whichever of {last Location, max
-            // StoppedSharing ts} is later wins: a Location implies the peer is active
+            // from the most recent event in this batch. Whichever of {last Location, last
+            // StoppedSharing} the peer sent later wins: a Location implies the peer is active
             // (clear stopped); a StoppedSharing implies they paused (clear stationary).
             // Within a stationary run we preserve the original "since" timestamp.
-            val lastLocTs = lastLocation?.ts ?: Long.MIN_VALUE
-            val stopTs = stoppedSharingTs ?: Long.MIN_VALUE
+            // "Later" is the order the core delivered them in: the peer's send order (epoch, then
+            // seq), authenticated, unlike the self-reported ts, which has one-second resolution (a
+            // stop and a Location in the same second used to tie in the Location's favour) and
+            // can go backwards with the peer's clock.
+            val lastLocIndex = delivered.indexOfLast { it is MessagePlaintext.Location }
+            val lastStopIndex = delivered.indexOfLast { it is MessagePlaintext.StoppedSharing }
             val newStationarySinceTs: Long?
             val newStoppedAtTs: Long?
             when {
@@ -510,7 +514,7 @@ class E2eeManager(
                     newStationarySinceTs = entry.stationarySinceTs
                     newStoppedAtTs = entry.stoppedAtTs
                 }
-                stopTs > lastLocTs -> {
+                lastStopIndex > lastLocIndex -> {
                     newStationarySinceTs = null
                     newStoppedAtTs = stoppedSharingTs
                 }
