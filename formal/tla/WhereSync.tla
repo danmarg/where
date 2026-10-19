@@ -31,10 +31,9 @@
 (* fine for safety): a Send can interleave between a Poll and its Process  *)
 (* (the per-friend mutex prevents it); a failed DELETE is only modelled as *)
 (* a crash; ForceAckAfter is a constant (MAX_SILENT_DROP_RETRIES is 5).    *)
-(* One under-approximation: Process includes CancelPut, but the code       *)
-(* deletes those outbox rows just before the session transaction commits.  *)
-(* A crash between the two leaves the batch unacked, so reprocessing it    *)
-(* makes the same ratchet and the same cancel of a frame already read.     *)
+(* Process includes CancelPut: the code deletes those outbox rows in the   *)
+(* same store transaction as the new session (ProtocolCore's atomicity     *)
+(* contract; AtomicityTest), so one atomic step is exact.                  *)
 (***************************************************************************)
 EXTENDS Integers, Sequences, FiniteSets
 
@@ -65,7 +64,7 @@ VARIABLES
     polledTok,  \* in memory: the token that batch came from
     toAck,      \* in memory: ids to DELETE (after Process, before Ack)
     ackForced,  \* in memory: toAck is a force-ACK of an unprocessable batch
-    silent,     \* in memory: consecutive polls that processed nothing
+    silent,     \* in memory: <<token, consecutive polls of it that processed nothing>>
     posting,    \* in memory: id of the outbox head just posted, or None
     clock,      \* server clock
     \* ghost / bounds
@@ -192,7 +191,7 @@ Init ==
     /\ polledTok = [c \in Clients |-> None]
     /\ toAck = [c \in Clients |-> {}]
     /\ ackForced = [c \in Clients |-> FALSE]
-    /\ silent = [c \in Clients |-> 0]
+    /\ silent = [c \in Clients |-> <<None, 0>>]
     /\ posting = [c \in Clients |-> None]
     /\ clock = 0
     /\ sends = [c \in Clients |-> 0]
@@ -203,7 +202,7 @@ Init ==
     /\ everPosted = {}
     /\ lostKeys = {}
     /\ ackedUnread = {}
-    /\ flags = [doubleAccept |-> FALSE, badRatchet |-> FALSE, ackedUnprocessed |-> FALSE]
+    /\ flags = [doubleAccept |-> FALSE, badRatchet |-> FALSE, ackedUnprocessed |-> FALSE, forcedProcessable |-> FALSE]
 
 -----------------------------------------------------------------------------
 (* Client actions *)
@@ -268,7 +267,10 @@ Process(c) ==
            out == ProcessBatch(c, s0, inflight[c])
            advanced == out.st.root # s0.root
            nothing == out.ackIds = {}
-           force == nothing /\ silent[c] + 1 >= ForceAckAfter
+           \* LocationClient.silentDropRetries: per friend and token, cleared once a poll of that
+           \* token processes something or is force-acked, lost on restart.
+           silentHere == IF silent[c][1] = polledTok[c] THEN silent[c][2] ELSE 0
+           force == nothing /\ silentHere + 1 >= ForceAckAfter
        IN /\ session' = [session EXCEPT ![c] = out.st]
           \* CancelPut: the peer read our transition frame (§5.4.3). Not while the previous send
           \* token is still the bootstrap one (Bob's first ratchet answers Alice's own, §4.4).
@@ -278,9 +280,14 @@ Process(c) ==
           /\ accepted' = [accepted EXCEPT ![c] = @ \cup out.delivered]
           /\ toAck' = [toAck EXCEPT ![c] = IF force THEN {Id(m) : m \in inflight[c]} ELSE out.ackIds]
           /\ ackForced' = [ackForced EXCEPT ![c] = force]
-          /\ silent' = [silent EXCEPT ![c] = IF nothing /\ ~force THEN @ + 1 ELSE 0]
+          /\ silent' = [silent EXCEPT ![c] = <<polledTok[c], IF nothing /\ ~force THEN silentHere + 1 ELSE 0>>]
+          \* A force-ACK only follows a batch that processed nothing, so each of its frames was
+          \* tried against the unchanged starting state: none would be processed on its own.
           /\ flags' = [flags EXCEPT !.doubleAccept = @ \/ (out.delivered \cap accepted[c] # {}),
-                                    !.badRatchet = @ \/ out.bad]
+                                    !.badRatchet = @ \/ out.bad,
+                                    !.forcedProcessable =
+                                        @ \/ (force /\ \E m \in inflight[c] :
+                                                 Opens(s0, m) /\ DecryptOne(c, s0, m).res # "reject")]
     /\ inflight' = [inflight EXCEPT ![c] = {}]
     /\ UNCHANGED <<mbox, polledTok, posting, clock, sends, urgent, crashes, losses, dups,
                    sent, everPosted, lostKeys, ackedUnread>>
@@ -307,7 +314,7 @@ Crash(c) ==
     /\ polledTok' = [polledTok EXCEPT ![c] = None]
     /\ toAck' = [toAck EXCEPT ![c] = {}]
     /\ ackForced' = [ackForced EXCEPT ![c] = FALSE]
-    /\ silent' = [silent EXCEPT ![c] = 0]
+    /\ silent' = [silent EXCEPT ![c] = <<None, 0>>]
     /\ posting' = [posting EXCEPT ![c] = None]
     /\ UNCHANGED <<session, outbox, mbox, clock, sends, urgent, losses, dups, sent, accepted,
                    everPosted, lostKeys, ackedUnread, flags>>
@@ -360,10 +367,9 @@ Next ==
 \* Weak fairness on the client's own work; none on sending (the user's choice), crashes or
 \* server faults, so liveness is checked whenever the clients stop sending.
 \*
-\* Process's is written out: WF_vars(A) is []<>~ENABLED A \/ []<><<A>>_vars, and Process(c) is
-\* enabled exactly when inflight[c] # {} (and always changes inflight), so that predicate stands
-\* in for ENABLED. TLC computes ENABLED by evaluating the whole batch decryption in every state,
-\* which made the liveness run ~100x slower on TLC 1.7.4.
+\* Process's is written out, with inflight[c] # {} standing in for ENABLED (the comment above
+\* FairnessWF says why that is exact). TLC computes ENABLED by evaluating the whole batch
+\* decryption in every state, which made the liveness run ~100x slower on TLC 1.7.4.
 WFProcess(c) == []<>(inflight[c] = {}) \/ []<><<Process(c)>>_vars
 
 Fairness ==
@@ -372,6 +378,24 @@ Fairness ==
         /\ WF_vars(Poll(c)) /\ WFProcess(c) /\ WF_vars(Ack(c))
 
 Spec == Init /\ [][Next]_vars /\ Fairness
+
+\* Why WFProcess(c) is WF_vars(Process(c)). By definition WF_vars(A) is
+\*   <>[](ENABLED <<A>>_vars) => []<><<A>>_vars,  i.e.  []<>~ENABLED <<A>>_vars \/ []<><<A>>_vars.
+\* ENABLED <<Process(c)>>_vars is exactly inflight[c] # {}: that is Process's only guard; every
+\* other conjunct assigns a primed variable a value that always exists (ProcessBatch, Run and
+\* DecryptOne are total recursions over a finite batch, and Sorted's CHOOSE denotes a value
+\* regardless; TLC also needs it to have a witness, which it does because a mailbox holds distinct
+\* Ids of one sender, so ranks are distinct); and every Process step
+\* changes vars (it empties inflight[c]), so <<Process(c)>>_vars = Process(c). Substituting gives
+\* WFProcess. WhereSyncFairness*.cfg check the two formulations imply each other at small bounds,
+\* and the "processing not fair" mutant checks WFProcess is needed at all.
+FairnessWF ==
+    \A c \in Clients :
+        /\ WF_vars(Post(c)) /\ WF_vars(Dequeue(c))
+        /\ WF_vars(Poll(c)) /\ WF_vars(Process(c)) /\ WF_vars(Ack(c))
+SpecWF == Init /\ [][Next]_vars /\ FairnessWF
+WFProcessAll == \A c \in Clients : WFProcess(c)
+WFProcessStd == \A c \in Clients : WF_vars(Process(c))
 
 -----------------------------------------------------------------------------
 (* Safety *)
@@ -410,17 +434,37 @@ NoStrandedMessages ==
              /\ t[1] = Peer(c) /\ t[2] > session[c].recvTok[2])
                 => TransitionPending(c, m)
 
-\* Nothing sent disappears without a trace: every sent frame has been accepted by the peer, is
-\* still queued, is on the server, or is in the peer's hands, unless the server lost or expired
-\* it (lostKeys) or the peer acked it without accepting it (ackedUnread).
-KeysIn(S) == {KeyOf(m) : m \in S}
+\* Every sent frame the peer hasn't accepted is still deliverable, per frame: it is pending (in the
+\* sender's outbox, on the server, or in the peer's hands) on a mailbox the peer will read, either
+\* the one it polls or a newer one whose epoch's transition frame is itself pending on the one it
+\* polls. The only exceptions are scoped to the frame: it was itself lost, expired or acked unread,
+\* or it waits on a newer mailbox whose epoch's transition frame was (so that mailbox is never
+\* reached, §5.4.5). A frame dropped from an outbox, posted or not, or left on a mailbox the peer
+\* has moved past, fails here.
+SentBy(c) == {m \in everPosted : m.from = c} \cup {outbox[c][i] : i \in 1 .. Len(outbox[c])}
+Gone(k) == k \in lostKeys \cup ackedUnread
+PendingFrame(f) ==
+    \/ \E i \in 1 .. Len(outbox[f.from]) : Id(outbox[f.from][i]) = Id(f)
+    \/ \E x \in mbox[f.token] : Id(x) = Id(f)
+    \/ \E x \in inflight[Peer(f.from)] : Id(x) = Id(f)
+Reachable(f) ==
+    LET r == session[Peer(f.from)].recvTok IN
+    \/ f.token = r
+    \/ /\ f.token[1] = r[1] /\ f.token[2] > r[2]
+       /\ \E x \in SentBy(f.from) :
+             x.dh = f.dh /\ x.seq = 1 /\ x.token = r /\ KeyOf(x) \notin accepted[Peer(f.from)] /\ PendingFrame(x)
 NoSilentDrop ==
-    \A c \in Clients : \A k \in sent[c] :
-        \/ k \in accepted[Peer(c)]
-        \/ k \in lostKeys \cup ackedUnread
-        \/ k \in KeysIn({outbox[c][i] : i \in 1 .. Len(outbox[c])})
-        \/ k \in KeysIn(UNION {mbox[t] : t \in Tokens})
-        \/ k \in KeysIn(inflight[Peer(c)])
+    \A c \in Clients :
+        \* A frame dropped before it was ever posted leaves no frame behind, only its key.
+        /\ \A k \in sent[c] : k \in accepted[Peer(c)] \/ Gone(k) \/ k \in {KeyOf(f) : f \in SentBy(c)}
+        /\ \A f \in SentBy(c) :
+               KeyOf(f) \notin accepted[Peer(c)] =>
+                   \/ Gone(KeyOf(f))
+                   \/ Gone(<<f.dh, 1>>) /\ f.token[2] > session[Peer(c)].recvTok[2]
+                   \/ PendingFrame(f) /\ Reachable(f)
+
+\* A force-ACK never deletes a frame that would have been processed on its own.
+ForceAckOnlyUnprocessable == ~flags.forcedProcessable
 
 \* While the server has lost or expired no unread frame, no client deletes one it hasn't accepted:
 \* replays and duplicates are acked as processed, and a force-ACK only ever clears frames a loss
@@ -431,14 +475,14 @@ NoUnreadAcks == lostKeys = {} => ackedUnread = {}
 \* under a header key the receiver still holds, so a later batch can open it and reach the cache.
 \* A key for a frame no later batch can open is useless to the receiver and a liability if the
 \* device is compromised (the server still has the ciphertext).
-SentBy(c) == {m \in everPosted : m.from = c} \cup {outbox[c][i] : i \in 1 .. Len(outbox[c])}
 CachedKeysUsable ==
     \A c \in Clients : \A k \in session[c].skipped :
         /\ \E m \in SentBy(Peer(c)) : KeyOf(m) = k
         /\ \A m \in {x \in SentBy(Peer(c)) : KeyOf(x) = k} : m.hk \in {session[c].hk, session[c].nhk}
 
 Safety == TypeOK /\ NoDoubleAccept /\ SkippedWithinCap /\ RatchetSound /\ AcksOnlyProcessed
-          /\ NoStrandedMessages /\ NoSilentDrop /\ NoUnreadAcks /\ CachedKeysUsable
+          /\ NoStrandedMessages /\ NoSilentDrop /\ NoUnreadAcks /\ ForceAckOnlyUnprocessable
+          /\ CachedKeysUsable
 
 -----------------------------------------------------------------------------
 (* Liveness (with MaxLoss = 0 and no expiry) *)
@@ -449,9 +493,11 @@ Safety == TypeOK /\ NoDoubleAccept /\ SkippedWithinCap /\ RatchetSound /\ AcksOn
 \* of one per key.
 AllDelivered == <>[](\A c \in Clients : sent[c] \subseteq accepted[Peer(c)])
 
-\* Eventually each side knows the DH key the other is sending under, unless the other hasn't
-\* sent under it yet: every key the peer has sent under has reached it.
-Synced(c) == session[c].remoteDh = session[Peer(c)].localDh \/ session[Peer(c)].sendSeq = 0
-EventuallySameEpoch == <>[](\A c \in Clients : Synced(c))
+\* Eventually each side knows the DH key of the last frame the other actually sent (DH ids grow
+\* with each epoch, so that is the largest dh among the keys it sent). Keys a peer has generated
+\* but not yet sent under are not required: convergence is about announced keys.
+LastSentDh(c) == CHOOSE d \in {k[1] : k \in sent[c]} : \A k \in sent[c] : k[1] <= d
+KnowsPeersLastKey(c) == sent[Peer(c)] = {} \/ session[c].remoteDh = LastSentDh(Peer(c))
+EventuallyKnowsSentKeys == <>[](\A c \in Clients : KnowsPeersLastKey(c))
 
 =============================================================================

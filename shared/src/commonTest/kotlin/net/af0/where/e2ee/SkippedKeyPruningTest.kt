@@ -40,7 +40,10 @@ class SkippedKeyPruningTest {
         state: ProtocolCore.State,
         rng: Rng,
         vararg frames: MailboxPayload,
-    ): ProtocolCore.Step = ProtocolCore.step(state, ProtocolCore.Event.Receive(frames.toList()), now, rng)
+    ): ProtocolCore.Step {
+        val mailbox = (state as ProtocolCore.State.Paired).session.recvToken.toHex()
+        return ProtocolCore.step(state, ProtocolCore.Event.Receive(mailbox, frames.toList()), now, rng)
+    }
 
     private fun ProtocolCore.State.skipped() = (this as ProtocolCore.State.Paired).session.skippedMessageKeys
 
@@ -73,7 +76,7 @@ class SkippedKeyPruningTest {
     }
 
     @Test
-    fun `seq 1 of the peer's current epoch is dropped, since it is sealed under the previous header key`() {
+    fun `seq 1 of the peer's current epoch is dropped since it is sealed under the previous header key`() {
         var (alice, bob) = paired()
         val (a1s, lost) = send(alice, rngA, 1.0)
         val (_, a2) = send(a1s, rngA, 2.0)
@@ -106,7 +109,7 @@ class SkippedKeyPruningTest {
     }
 
     @Test
-    fun `seq 1 of the peer's bootstrap epoch is kept, since it shares that epoch's header key`() {
+    fun `seq 1 of the peer's bootstrap epoch is kept since it shares that epoch's header key`() {
         val (alice, bob) = paired()
         val (b1s, b1) = send(bob, rngB, 1.0)
         val (_, b2) = send(b1s, rngB, 2.0)

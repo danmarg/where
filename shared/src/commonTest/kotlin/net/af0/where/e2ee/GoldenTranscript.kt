@@ -12,6 +12,10 @@ import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 
 /**
+ * TEST VECTORS ONLY: everything secret in the transcript (private keys, SK, root, chain, header and
+ * message keys) is derived from published seeds by [DeterministicRng], which lives in commonTest so
+ * no production code can select it. Never treat the file as a recording of a real session.
+ *
  * The golden transcript (commonTest/resources/vectors/where-v1-transcript.json): a pairing and the
  * first frames each way, run through [ProtocolCore.step] with a [DeterministicRng] per party and a
  * fixed clock, recorded byte for byte. It is the normative example for docs/e2ee-location-sync.md.
@@ -26,7 +30,7 @@ object GoldenTranscript {
     const val FILE = "where-v1-transcript.json"
 
     /** Bumped when the transcript's format or scenario changes; independent of the protocol version. */
-    const val VECTORS_VERSION = 2
+    const val VECTORS_VERSION = 3
     const val START_MILLIS = 1_767_225_600_000L // 2026-01-01T00:00:00Z
     const val STEP_MILLIS = 1_000L
     val SEEDS = mapOf(ALICE to "where-golden-v1/alice", BOB to "where-golden-v1/bob")
@@ -41,6 +45,9 @@ object GoldenTranscript {
 
     /** The steps recorded so far, for building later events from earlier outputs. */
     private class Recorded(val steps: List<JsonObject>) {
+        /** The receive mailbox in [party]'s latest recorded state: the one it polls. */
+        fun recvToken(party: String): String = steps.last { it.str("party") == party }.state().str("recv_token")
+
         /** The wire bodies of the Put effects of step [index]. */
         fun puts(index: Int): List<JsonObject> = steps[index].effects().filter { it.str("type") == "put" }
 
@@ -74,24 +81,24 @@ object GoldenTranscript {
             Scripted(ALICE) { r -> ProtocolCore.Event.ProcessInit(r.put(1).body() as KeyExchangeInitPayload) },
             Scripted(ALICE) { ProtocolCore.Event.Send(loc(37.7749, -122.4194, T0 + 3)) },
             Scripted(ALICE) { ProtocolCore.Event.Send(loc(37.775, -122.4183, T0 + 4)) },
-            Scripted(BOB) { r -> ProtocolCore.Event.Receive(listOf(r.put(3).body())) },
-            Scripted(BOB) { r -> ProtocolCore.Event.Receive(listOf(r.put(4).body())) },
+            Scripted(BOB) { r -> ProtocolCore.Event.Receive(r.recvToken(BOB), listOf(r.put(3).body())) },
+            Scripted(BOB) { r -> ProtocolCore.Event.Receive(r.recvToken(BOB), listOf(r.put(4).body())) },
             Scripted(BOB) { ProtocolCore.Event.Send(loc(40.7128, -74.006, T0 + 7)) },
             Scripted(BOB) { ProtocolCore.Event.Send(loc(40.7129, -74.0061, T0 + 8, stationary = true)) },
-            Scripted(ALICE) { r -> ProtocolCore.Event.Receive(listOf(r.put(7).body())) },
-            Scripted(ALICE) { r -> ProtocolCore.Event.Receive(listOf(r.put(8).body())) },
+            Scripted(ALICE) { r -> ProtocolCore.Event.Receive(r.recvToken(ALICE), listOf(r.put(7).body())) },
+            Scripted(ALICE) { r -> ProtocolCore.Event.Receive(r.recvToken(ALICE), listOf(r.put(8).body())) },
             Scripted(ALICE) { ProtocolCore.Event.Send(MessagePlaintext.StoppedSharing(ts = T0 + 11)) },
             Scripted(ALICE) { ProtocolCore.Event.Send(MessagePlaintext.Keepalive()) },
-            Scripted(BOB) { r -> ProtocolCore.Event.Receive(listOf(r.put(11).body())) },
-            Scripted(BOB) { r -> ProtocolCore.Event.Receive(listOf(r.put(12).body())) },
+            Scripted(BOB) { r -> ProtocolCore.Event.Receive(r.recvToken(BOB), listOf(r.put(11).body())) },
+            Scripted(BOB) { r -> ProtocolCore.Event.Receive(r.recvToken(BOB), listOf(r.put(12).body())) },
             // Out of order: Alice reads Bob's third frame before his second (a skipped key), then
             // the second (from the cache) with the third again (a replay, still acked).
             Scripted(BOB) { ProtocolCore.Event.Send(loc(40.713, -74.0062, T0 + 15)) },
             Scripted(BOB) { ProtocolCore.Event.Send(loc(40.7131, -74.0063, T0 + 16)) },
             Scripted(BOB) { ProtocolCore.Event.Send(loc(40.7132, -74.0064, T0 + 17)) },
-            Scripted(ALICE) { r -> ProtocolCore.Event.Receive(listOf(r.put(15).body())) },
-            Scripted(ALICE) { r -> ProtocolCore.Event.Receive(listOf(r.put(17).body())) },
-            Scripted(ALICE) { r -> ProtocolCore.Event.Receive(listOf(r.put(16).body(), r.put(17).body())) },
+            Scripted(ALICE) { r -> ProtocolCore.Event.Receive(r.recvToken(ALICE), listOf(r.put(15).body())) },
+            Scripted(ALICE) { r -> ProtocolCore.Event.Receive(r.recvToken(ALICE), listOf(r.put(17).body())) },
+            Scripted(ALICE) { r -> ProtocolCore.Event.Receive(r.recvToken(ALICE), listOf(r.put(16).body(), r.put(17).body())) },
             // A batch delivered out of order (sorted by seq before decrypting), then a corrupted
             // body (soft fail: committed and acked, not delivered) next to a payload that isn't
             // an encrypted frame (acked unread).
@@ -99,9 +106,9 @@ object GoldenTranscript {
             Scripted(ALICE) { ProtocolCore.Event.Send(loc(37.7752, -122.4181, T0 + 22)) },
             Scripted(ALICE) { ProtocolCore.Event.Send(loc(37.7753, -122.418, T0 + 23)) },
             Scripted(ALICE) { ProtocolCore.Event.Send(MessagePlaintext.Keepalive()) },
-            Scripted(BOB) { r -> ProtocolCore.Event.Receive(listOf(r.put(21).body())) },
-            Scripted(BOB) { r -> ProtocolCore.Event.Receive(listOf(r.put(23).body(), r.put(22).body())) },
-            Scripted(BOB) { r -> ProtocolCore.Event.Receive(listOf(corrupt(r.put(24).body()), r.put(1).body())) },
+            Scripted(BOB) { r -> ProtocolCore.Event.Receive(r.recvToken(BOB), listOf(r.put(21).body())) },
+            Scripted(BOB) { r -> ProtocolCore.Event.Receive(r.recvToken(BOB), listOf(r.put(23).body(), r.put(22).body())) },
+            Scripted(BOB) { r -> ProtocolCore.Event.Receive(r.recvToken(BOB), listOf(corrupt(r.put(24).body()), r.put(1).body())) },
         )
 
     /** The frame with the last byte of its body flipped: the header still opens, the body doesn't. */
@@ -154,6 +161,12 @@ object GoldenTranscript {
         return buildJsonObject {
             put("vectors_version", VECTORS_VERSION)
             put("protocol_version", PROTOCOL_VERSION)
+            put(
+                "warning",
+                "TEST VECTORS ONLY. Every private key, root, chain, header and message key and shared secret here is " +
+                    "public, derived from the published seeds below. Never load this as, or mistake it for, a recording " +
+                    "of a real session, and never use any of its keys or tokens for real traffic.",
+            )
             put("spec", "docs/e2ee-location-sync.md")
             put(
                 "about",
@@ -205,6 +218,7 @@ object GoldenTranscript {
                 }
                 is ProtocolCore.Event.Receive -> {
                     put("type", "receive")
+                    put("mailbox", event.mailbox)
                     put("bodies", buildJsonArray { event.messages.forEach { add(JsonPrimitive(body(it))) } })
                 }
             }
@@ -216,7 +230,11 @@ object GoldenTranscript {
             "scan_qr" -> ProtocolCore.Event.ScanQr(QrPayload.fromUrl(o.str("qr_url"))!!, o.str("suggested_name"))
             "process_init" -> ProtocolCore.Event.ProcessInit(decodeMailboxPayload(o.str("body")) as KeyExchangeInitPayload)
             "send" -> ProtocolCore.Event.Send(Session.decodeMessage(o.str("plaintext").encodeToByteArray()))
-            "receive" -> ProtocolCore.Event.Receive(o["bodies"]!!.jsonArray.map { decodeMailboxPayload(it.jsonPrimitive.content) })
+            "receive" ->
+                ProtocolCore.Event.Receive(
+                    o.str("mailbox"),
+                    o["bodies"]!!.jsonArray.map { decodeMailboxPayload(it.jsonPrimitive.content) },
+                )
             else -> error("unknown event ${o.str("type")}")
         }
 

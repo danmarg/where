@@ -10,8 +10,11 @@ on:
   pull_request:
     paths:
       - 'formal/**'
-      - 'shared/src/commonMain/kotlin/net/af0/where/e2ee/**'
-      - 'shared/src/commonMain/sqldelight/**'
+      # The code the model mirrors: protocol, persistence and outbox (e2ee/, sqldelight/),
+      # client orchestration (LocationClient, polling and acks, elsewhere in commonMain) and the
+      # mailbox server (GET window, TTL, idempotent PUT). README.md maps each assumption to it.
+      - 'shared/src/commonMain/**'
+      - 'server/src/main/**'
       - 'docs/e2ee-location-sync.md'
       - '.github/workflows/tla.yml'
   schedule:
@@ -37,7 +40,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        config: [ WhereSyncSafety, WhereSyncSafetyLoss, WhereSyncSafetyReject, WhereSyncSafetyTTL, WhereSyncSafetyDeep, WhereSyncLiveness ]
+        config: [ WhereSyncSafety, WhereSyncSafetyLoss, WhereSyncSafetyReject, WhereSyncSafetyTTL, WhereSyncSafetyDeep, WhereSyncLiveness, WhereSyncFairness, WhereSyncFairnessConverse ]
     name: tlc (${{ matrix.config }})
 
     steps:
