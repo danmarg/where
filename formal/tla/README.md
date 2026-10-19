@@ -86,7 +86,10 @@ over 12M states and still growing).
   twice, a duplicate served.
 
 Modelled but not checked by any mutant: the empty-outbox gate on ordinary sends and the
-force-ack threshold (no property depends on either).
+force-ack threshold (no property depends on either), and dropping a cached key for the current
+epoch's seq 1, which the model can't create: an epoch's later frames go to the new mailbox, so the
+receiver never reads one before the transition frame on the mailbox it polls first
+(`SkippedKeyPruningTest` covers it, as a server could misroute frames).
 
 Process's weak fairness is written out by hand (`WFProcess`, see the comment in the module):
 TLC evaluates `ENABLED Process(c)` by running the whole batch decryption in every state, which

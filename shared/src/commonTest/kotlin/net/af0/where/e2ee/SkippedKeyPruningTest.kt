@@ -73,6 +73,22 @@ class SkippedKeyPruningTest {
     }
 
     @Test
+    fun `seq 1 of the peer's current epoch is dropped, since it is sealed under the previous header key`() {
+        var (alice, bob) = paired()
+        val (a1s, lost) = send(alice, rngA, 1.0)
+        val (_, a2) = send(a1s, rngA, 2.0)
+
+        // Alice's transition frame is lost; Bob ratchets on her second one and fills seq 1.
+        val r = receive(bob, rngB, a2)
+        assertEquals(listOf(2.0), r.deliveredLats())
+        assertTrue(r.state.skipped().isEmpty(), "kept an unusable key: ${r.state.skipped().keys}")
+
+        val late = receive(r.state, rngB, lost)
+        assertTrue(late.deliveredLats().isEmpty())
+        assertTrue(late.effects.none { it is ProtocolCore.Effect.Ack }, "an unopenable frame isn't acked")
+    }
+
+    @Test
     fun `a gap key in the peer's current epoch is kept and used later`() {
         var (alice, bob) = paired()
         val (a1s, a1) = send(alice, rngA, 1.0)

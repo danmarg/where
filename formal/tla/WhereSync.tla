@@ -434,7 +434,8 @@ NoUnreadAcks == lostKeys = {} => ackedUnread = {}
 SentBy(c) == {m \in everPosted : m.from = c} \cup {outbox[c][i] : i \in 1 .. Len(outbox[c])}
 CachedKeysUsable ==
     \A c \in Clients : \A k \in session[c].skipped :
-        \A m \in {x \in SentBy(Peer(c)) : KeyOf(x) = k} : m.hk \in {session[c].hk, session[c].nhk}
+        /\ \E m \in SentBy(Peer(c)) : KeyOf(m) = k
+        /\ \A m \in {x \in SentBy(Peer(c)) : KeyOf(x) = k} : m.hk \in {session[c].hk, session[c].nhk}
 
 Safety == TypeOK /\ NoDoubleAccept /\ SkippedWithinCap /\ RatchetSound /\ AcksOnlyProcessed
           /\ NoStrandedMessages /\ NoSilentDrop /\ NoUnreadAcks /\ CachedKeysUsable

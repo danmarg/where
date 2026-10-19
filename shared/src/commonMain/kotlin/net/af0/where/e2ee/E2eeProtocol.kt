@@ -139,7 +139,7 @@ internal object E2eeProtocol {
         }
 
         return DecryptionResult(
-            finalSession = dropUnusableSkippedKeys(currentSession),
+            finalSession = dropUnusableSkippedKeys(currentSession, initialSession),
             delivered = delivered,
             decryptedLocations = decryptedLocations,
             anySuccess = anySuccess,
@@ -165,10 +165,14 @@ internal object E2eeProtocol {
      * keys), and keeping it would leave a message key on the device for nothing: a later device
      * compromise would let a server that withheld the frame decrypt it.
      *
-     * Entries are dropped, not wiped: their buffers may still be referenced by the caller's input
-     * state (see Session.decryptMessageOrThrow's ownership rule).
+     * A dropped entry is wiped unless it is one of [input]'s own (the caller may still use that
+     * state; see Session.decryptMessageOrThrow's ownership rule). The others were created in this
+     * batch, or copied by a DH ratchet, and nothing else refers to them.
      */
-    internal fun dropUnusableSkippedKeys(session: SessionState): SessionState {
+    internal fun dropUnusableSkippedKeys(
+        session: SessionState,
+        input: SessionState,
+    ): SessionState {
         val current = session.remoteDhPub.toHex()
         val peerBootstrap = session.remoteDhPub == (if (session.isAlice) session.bobEkPub else session.aliceEkPub)
         val kept =
@@ -177,7 +181,12 @@ internal object E2eeProtocol {
                 val seq = id.substringAfter(':').toLongOrNull() ?: return@filterKeys false
                 dh == current && (seq >= 2 || peerBootstrap)
             }
-        return if (kept.size == session.skippedMessageKeys.size) session else session.copy(skippedMessageKeys = kept)
+        if (kept.size == session.skippedMessageKeys.size) return session
+        val inputs = input.skippedMessageKeys.values
+        for ((id, key) in session.skippedMessageKeys) {
+            if (id !in kept && inputs.none { it === key }) key.zeroize()
+        }
+        return session.copy(skippedMessageKeys = kept)
     }
 
     private fun tryDecryptHeader(
