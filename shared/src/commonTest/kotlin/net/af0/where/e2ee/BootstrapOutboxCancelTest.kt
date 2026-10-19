@@ -39,7 +39,7 @@ class BootstrapOutboxCancelTest {
         val b1 = ProtocolCore.step(scan.state, ProtocolCore.Event.Send(MessagePlaintext.Keepalive()), now, rngB)
 
         val a1Frame = (a1.effects.single() as ProtocolCore.Effect.Put).payload
-        val received = ProtocolCore.step(b1.state, ProtocolCore.Event.Receive(listOf(a1Frame)), now, rngB)
+        val received = ProtocolCore.step(b1.state, ProtocolCore.Event.Receive((b1.state as ProtocolCore.State.Paired).session.recvToken.toHex(), listOf(a1Frame)), now, rngB)
         assertTrue(received.report!!.dhRatchet, "Bob's first receive is a DH ratchet")
         assertTrue(
             received.effects.none { it is ProtocolCore.Effect.CancelPut },

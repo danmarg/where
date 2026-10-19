@@ -31,10 +31,9 @@
 (* fine for safety): a Send can interleave between a Poll and its Process  *)
 (* (the per-friend mutex prevents it); a failed DELETE is only modelled as *)
 (* a crash; ForceAckAfter is a constant (MAX_SILENT_DROP_RETRIES is 5).    *)
-(* One under-approximation: Process includes CancelPut, but the code       *)
-(* deletes those outbox rows just before the session transaction commits.  *)
-(* A crash between the two leaves the batch unacked, so reprocessing it    *)
-(* makes the same ratchet and the same cancel of a frame already read.     *)
+(* Process includes CancelPut: the code deletes those outbox rows in the   *)
+(* same store transaction as the new session (ProtocolCore's atomicity     *)
+(* contract; AtomicityTest), so one atomic step is exact.                  *)
 (***************************************************************************)
 EXTENDS Integers, Sequences, FiniteSets
 

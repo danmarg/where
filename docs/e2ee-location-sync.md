@@ -3,7 +3,7 @@
 **Status:** Implemented
 **Authors:** Daniel Margolis
 **Date:** 2026-05-24
-**Protocol version:** 1. Normative examples: the golden transcript, vectors version 2 ([§11.1](#111-test-vectors-normative-examples)).
+**Protocol version:** 1. Normative examples: the golden transcript, vectors version 3 ([§11.1](#111-test-vectors-normative-examples)).
 
 ---
 
@@ -425,7 +425,7 @@ When a decrypted message carries a new sender `dh_pub`:
 #### 5.4.3 Send-Side Retirement (Observed Root-Key Advance)
 The sender retires its `prev_send_token` (and stops posting fallback retries to it) when it observes an authenticated proof that the peer has processed its new DH key. The proof used here is a successful decryption whose post-ratchet `root_key` is strictly newer than the one in effect when those outbox entries were enqueued — exactly the property an authenticated ack-of-DH would have established, inferred directly from the ratchet instead.
 
-Implementation: `ProtocolCore` emits a `CancelPut` for `prevSendToken` when a received batch advances the `rootKey`, and `E2eeManager` deletes those outbox entries.
+Implementation: `ProtocolCore` emits a `CancelPut` for `prevSendToken` when a received batch advances the `rootKey`, and `E2eeManager` deletes those outbox entries in the same transaction as the new session.
 
 **Exception: the responder's first ratchet.** The initiator performs one DH step on its own when it processes the `KeyExchangeInit` (§4.4), before reading anything from the responder. So the responder's first ratchet proves nothing about its own frames, and until then its `prev_send_token` is still its bootstrap send token, the one the initiator polls. No retirement happens while `prev_send_token == send_token`. Cancelling there deleted frames the responder had queued but not yet posted (a TLC counterexample; `BootstrapOutboxCancelTest`).
 
@@ -712,6 +712,8 @@ new_token = HKDF-SHA-256(
 ```
 Direction is encoded explicitly via the `sender_fp || recipient_fp` ordering in the info field.
 
+A DH ratchet step runs KDF_RK twice (receive sub-step, then send sub-step with the new key pair), and each token comes from its own sub-step's root key: `recv_token = RoutingToken(root from the receive sub-step, peer_fp || my_fp)` and `send_token = RoutingToken(root from the send sub-step, my_fp || peer_fp)`. The session keeps the send sub-step's root. So the peer's `send_token`, derived from the root its own send sub-step produced, is the same value as our `recv_token`. The previous `send_token` becomes `prev_send_token` (§5.4.1).
+
 **KDF_CK (symmetric ratchet step):**
 ```
 message_key     = HMAC-SHA-256(key = current_chain_key, data = 0x01)
@@ -944,7 +946,7 @@ The transcript is one pairing run through the protocol's pure step function (`Pr
 - a corrupted body (committed and acked but not delivered, §8.3.1(4)) and a non-frame payload on a session mailbox (acked unread);
 - Location (with and without `stationary`), StoppedSharing and Keepalive plaintexts (§5.7, §9.1.2).
 
-`GoldenTranscriptTest` replays it on the JVM and on the iOS simulator: feeding each step the recorded inputs must reproduce the recorded outputs byte for byte, and generating it from scratch must reproduce the file. The transcript is versioned with this document: a change that alters it is a protocol change, which regenerates the file (`WHERE_WRITE_VECTORS=1 ./gradlew :shared:jvmTest --tests '*GoldenTranscriptWriter*'`), bumps `vectors_version` (`GoldenTranscript.VECTORS_VERSION`, which writes it into the file) and the version named at the top of this document, and bumps `protocol_version` if old and new clients no longer interoperate.
+`GoldenTranscriptTest` replays it on the JVM and on the iOS simulator: feeding each step the recorded inputs must reproduce the recorded outputs byte for byte, and generating it from scratch must reproduce the file. That only shows reproducibility, so `SpecConformanceTest` checks the file against this document instead: it recomputes the handshake (§4.2, §4.4), every DH ratchet, header-key and token rotation, and every chain step (§8.3) from the formulas here, using only the raw primitives and the info strings as written here, and checks that what is delivered is what was sent, once, and that token effects match the state. The keys in the file are public test values: never treat it as a recording of a real session. The transcript is versioned with this document: a change that alters it is a protocol change, which regenerates the file (`WHERE_WRITE_VECTORS=1 ./gradlew :shared:jvmTest --tests '*GoldenTranscriptWriter*'`), bumps `vectors_version` (`GoldenTranscript.VECTORS_VERSION`, which writes it into the file) and the version named at the top of this document, and bumps `protocol_version` if old and new clients no longer interoperate.
 
 ---
 
