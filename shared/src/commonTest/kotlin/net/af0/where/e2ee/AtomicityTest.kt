@@ -77,6 +77,10 @@ class AtomicityTest {
             assertFailsWith<IllegalStateException> { p.alice.processBatch(p.aliceId, before, listOf(b1)) }
             assertEquals(before, p.alice.recvToken(p.aliceId), "the session must roll back with the delete")
             assertEquals(1, p.alice.getOutbox(p.aliceId).size)
+
+            assertNotNull(p.alice.processBatch(p.aliceId, before, listOf(b1)))
+            assertTrue(p.alice.recvToken(p.aliceId) != before)
+            assertTrue(p.alice.getOutbox(p.aliceId).isEmpty())
         }
 
     @Test
