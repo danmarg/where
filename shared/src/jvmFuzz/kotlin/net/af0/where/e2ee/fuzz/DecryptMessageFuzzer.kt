@@ -66,7 +66,9 @@ object DecryptMessageFuzzer {
                     result is ReceivedMessage.Delivered || result is ReceivedMessage.Undeliverable,
                 ) { "authenticated frame: $result" }
             // The body's AAD binds seq and both DH keys, so only those can't be forged here. pn is
-            // authenticated by the header AEAD alone, which a pre-decrypted header skips.
+            // authenticated by the header AEAD alone, which a pre-decrypted header skips, so a
+            // frame delivered under a header that differs only in pn is expected, not a failure
+            // (corpus/DecryptMessage/pn-only-forged-header is that case, on a cached-key frame).
             3 ->
                 if (result is ReceivedMessage.Delivered) {
                     val real = SessionFixture.headers[pick]
