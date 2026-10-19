@@ -83,8 +83,8 @@ class CryptoPrimitivesVectorTest {
     }
 
     // HMAC pads a short key with zeros to the block size, so an empty key is valid input (the
-    // same as 64 zero bytes). javax SecretKeySpec refuses an empty array and CommonCrypto needs a
-    // stand-in buffer for one, so both backends special-case it; Wycheproof has no empty key.
+    // same as 64 zero bytes). javax SecretKeySpec refuses an empty array and Kotlin/Native can't pin
+    // one for CommonCrypto, so both backends special-case it; Wycheproof has no empty key.
     // Expected values from Python's hmac module.
     @Test
     fun `hmacSha256 with an empty key`() {
