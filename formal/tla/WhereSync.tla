@@ -168,9 +168,18 @@ Run(c, ms, s, acc) ==
                         !.bad = @ \/ r.bad]
          IN Run(c, Tail(ms), r.st, acc2)
 
+\* E2eeProtocol.dropUnusableSkippedKeys, after the batch: only keys a later batch can reach stay
+\* cached. Those are the peer's current epoch from seq 2 on (sealed under the send header key the
+\* receiver holds as hk); seq 1 is sealed under the previous one, except in the peer's bootstrap
+\* epoch (its initial key: A0 = -1, B0 = -2), where both are the same key.
+PeerBootstrapDh(c) == IF c = "A" THEN -2 ELSE -1
+Usable(c, s, k) == k[1] = s.remoteDh /\ (k[2] >= 2 \/ s.remoteDh = PeerBootstrapDh(c))
+DropUnusable(c, s) == [s EXCEPT !.skipped = {k \in s.skipped : Usable(c, s, k)}]
+
 ProcessBatch(c, s0, batch) ==
-    Run(c, Sorted({m \in batch : Opens(s0, m)}, s0), s0,
-        [st |-> s0, delivered |-> {}, ackIds |-> {}, bad |-> FALSE])
+    LET out == Run(c, Sorted({m \in batch : Opens(s0, m)}, s0), s0,
+                   [st |-> s0, delivered |-> {}, ackIds |-> {}, bad |-> FALSE])
+    IN [out EXCEPT !.st = DropUnusable(c, out.st)]
 
 -----------------------------------------------------------------------------
 (* Initial state *)
@@ -418,8 +427,17 @@ NoSilentDrop ==
 \* or expiry made unprocessable. A frame left unopenable or rejected by a protocol bug fails here.
 NoUnreadAcks == lostKeys = {} => ackedUnread = {}
 
+\* Every cached message key can still be used: the frame it belongs to (wherever it is) is sealed
+\* under a header key the receiver still holds, so a later batch can open it and reach the cache.
+\* A key for a frame no later batch can open is useless to the receiver and a liability if the
+\* device is compromised (the server still has the ciphertext).
+SentBy(c) == {m \in everPosted : m.from = c} \cup {outbox[c][i] : i \in 1 .. Len(outbox[c])}
+CachedKeysUsable ==
+    \A c \in Clients : \A k \in session[c].skipped :
+        \A m \in {x \in SentBy(Peer(c)) : KeyOf(x) = k} : m.hk \in {session[c].hk, session[c].nhk}
+
 Safety == TypeOK /\ NoDoubleAccept /\ SkippedWithinCap /\ RatchetSound /\ AcksOnlyProcessed
-          /\ NoStrandedMessages /\ NoSilentDrop /\ NoUnreadAcks
+          /\ NoStrandedMessages /\ NoSilentDrop /\ NoUnreadAcks /\ CachedKeysUsable
 
 -----------------------------------------------------------------------------
 (* Liveness (with MaxLoss = 0 and no expiry) *)

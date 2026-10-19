@@ -139,7 +139,7 @@ internal object E2eeProtocol {
         }
 
         return DecryptionResult(
-            finalSession = currentSession,
+            finalSession = dropUnusableSkippedKeys(currentSession),
             delivered = delivered,
             decryptedLocations = decryptedLocations,
             anySuccess = anySuccess,
@@ -152,6 +152,32 @@ internal object E2eeProtocol {
             silentDrops = totalEncryptedCount - orderedMessages.size,
             stoppedSharingTs = stoppedSharingTs,
         )
+    }
+
+    /**
+     * Drops the cached message keys no later batch can use. A cached key is only reached through
+     * its frame's header, and after a batch the receiver holds just the current and next receive
+     * header keys (§8.3.1(6)): that opens the peer's current epoch from seq 2 on (sealed under the
+     * peer's send header key, our [SessionState.headerKey]). Seq 1 is sealed under the peer's
+     * previous send header key, already gone, except in the peer's bootstrap epoch, where the two
+     * are the same key. Every other entry (gap fill for the previous chain, an earlier epoch) only
+     * ever served frames in the same batch (decryptAndSort opens all of them with the pre-batch
+     * keys), and keeping it would leave a message key on the device for nothing: a later device
+     * compromise would let a server that withheld the frame decrypt it.
+     *
+     * Entries are dropped, not wiped: their buffers may still be referenced by the caller's input
+     * state (see Session.decryptMessageOrThrow's ownership rule).
+     */
+    internal fun dropUnusableSkippedKeys(session: SessionState): SessionState {
+        val current = session.remoteDhPub.toHex()
+        val peerBootstrap = session.remoteDhPub == (if (session.isAlice) session.bobEkPub else session.aliceEkPub)
+        val kept =
+            session.skippedMessageKeys.filterKeys { id ->
+                val dh = id.substringBefore(':')
+                val seq = id.substringAfter(':').toLongOrNull() ?: return@filterKeys false
+                dh == current && (seq >= 2 || peerBootstrap)
+            }
+        return if (kept.size == session.skippedMessageKeys.size) session else session.copy(skippedMessageKeys = kept)
     }
 
     private fun tryDecryptHeader(

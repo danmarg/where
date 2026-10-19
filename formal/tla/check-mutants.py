@@ -27,7 +27,7 @@ def cfg(sends=2, urgent=0, crashes=0, loss=0, dup=0, clock=0, cap=2, live=False,
 """
     body += "SPECIFICATION Spec\n" if live else "INIT Init\nNEXT Next\n"
     if invariants:
-        body += "INVARIANTS TypeOK NoDoubleAccept SkippedWithinCap RatchetSound AcksOnlyProcessed NoStrandedMessages NoSilentDrop NoUnreadAcks\n"
+        body += "INVARIANTS TypeOK NoDoubleAccept SkippedWithinCap RatchetSound AcksOnlyProcessed NoStrandedMessages NoSilentDrop NoUnreadAcks CachedKeysUsable\n"
     if live: body += "PROPERTIES " + " ".join(props or ["AllDelivered", "EventuallySameEpoch"]) + "\n"
     body += "CHECK_DEADLOCK FALSE\n"
     return body
@@ -95,6 +95,15 @@ M = [
   ("processing not fair (the hand-written WFProcess does constrain behaviours)",
    "/\\ WF_vars(Poll(c)) /\\ WFProcess(c) /\\ WF_vars(Ack(c))", "/\\ WF_vars(Poll(c)) /\\ WF_vars(Ack(c))",
    dict(sends=1, live=True, props=["AllDelivered"], invariants=False), "AllDelivered"),
+  ("unusable cached keys kept",
+   "    IN [out EXCEPT !.st = DropUnusable(c, out.st)]", "    IN out",
+   dict(sends=2, loss=1), "CachedKeysUsable"),
+  ("every cached key dropped",
+   "Usable(c, s, k) == k[1] = s.remoteDh /\\ (k[2] >= 2 \\/ s.remoteDh = PeerBootstrapDh(c))", "Usable(c, s, k) == FALSE",
+   dict(sends=2, loss=1, dup=1), "AcksOnlyProcessed"),
+  ("no bootstrap exception for cached seq-1 keys",
+   "Usable(c, s, k) == k[1] = s.remoteDh /\\ (k[2] >= 2 \\/ s.remoteDh = PeerBootstrapDh(c))", "Usable(c, s, k) == k[1] = s.remoteDh /\\ k[2] >= 2",
+   dict(sends=2, loss=1, dup=1), "AcksOnlyProcessed"),
   ("peer's new key not recorded",
    "!.recvTok = <<Peer(c), s.root + 1>>, !.sendTok = <<c, s.root + 2>>,",
    "!.recvTok = <<Peer(c), s.root + 1>>, !.sendTok = <<c, s.root + 2>>, !.remoteDh = s.remoteDh,",

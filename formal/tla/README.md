@@ -34,6 +34,7 @@ Safety (invariants):
 | `AcksOnlyProcessed` | A non-forced ack never deletes a frame the receiver hasn't accepted (a rejected, unopenable or never-processed one). |
 | `NoStrandedMessages` | While the server has lost or expired no unread frame: a client never polls only a retired token while unread messages wait on a newer one (the epoch's transition frame is still on its way to the polled token). |
 | `NoSilentDrop` | Every frame sent has been accepted by the peer, or is still queued, on the server or in the peer's hands, or the server lost or expired it, or the peer acked it without accepting it. Nothing disappears from an outbox unsent. |
+| `CachedKeysUsable` | Every cached message key belongs to a frame sealed under a header key the receiver still holds, so a later batch can reach it. Found the keys kept for frames no later batch could open (below). |
 | `NoUnreadAcks` | While the server has lost or expired no unread frame, no client acks (deletes) a frame it hasn't accepted. Replays and duplicates are acked as processed; a force-ack only ever clears frames a loss or expiry made unprocessable. A protocol bug that leaves frames unopenable or rejected fails here, not only in liveness. |
 
 Liveness (weak fairness on posting, dequeuing, polling, processing and acking; none on sending,
@@ -71,7 +72,8 @@ over 12M states and still growing).
 - **Mutants.** It breaks one rule at a time and requires TLC to report the property that rule
   protects: the transition rule, the replay check, single use of skipped keys, the skipped-key
   cap, the ratchet's sub-steps, acking only what was processed, the bootstrap exception to
-  CancelPut and header-key rotation (each both as a liveness and as a safety failure), dequeuing
+  CancelPut and header-key rotation (each both as a liveness and as a safety failure), keeping
+  unusable cached keys, dropping usable ones (all of them, or the bootstrap seq-1 key), dequeuing
   the posted frame by id, recording the peer's new key, and dropping the fairness on processing.
   The last shows the hand-written fairness condition below is needed; the other liveness mutants
   still failing with it in place show it isn't too strong. Some need a loss before the bug is
@@ -100,6 +102,7 @@ Each trace TLC finds becomes a regression test, then a fix in the code or the sp
 | Found by | Problem | Test | Fix |
 |---|---|---|---|
 | TLC, `AllDelivered` (and now `NoSilentDrop`) | Bob queues a frame before reading Alice's first; his first ratchet cancels it unsent. | `BootstrapOutboxCancelTest` | `ProtocolCore`: no CancelPut while `prevSendToken == sendToken` |
+| TLC, `CachedKeysUsable` | A lost frame's key, filled in at the next ratchet, was kept although no later batch could open that frame (its header key was gone): useless to the receiver, a liability after a device compromise. | `SkippedKeyPruningTest` | `E2eeProtocol.dropUnusableSkippedKeys` after each batch |
 | Review of the model against the code | The outbox drained by `createdAt` (wall clock), so a clock stepped back reordered it; the model, and the transition rule, need FIFO. | `OutboxOrderTest` | `Outbox.sq`: order by `rowid` |
 
 ## Not modelled
@@ -108,5 +111,3 @@ Corrupted frames (spec §8.3.1(4) makes them leave the same state as a drop, whi
 the 50-message GET window, skipped-key expiry (`MAX_KEY_AGE_MS`, the same 7 days as the TTL), the
 handshake (both clients start paired), and more than one friend.
 
-Observed but not a property: a skipped key kept across a DH ratchet can only be used within the
-same batch, since later batches no longer hold the old epoch's header key (spec §5.3, "Scope").
