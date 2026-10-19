@@ -3,7 +3,7 @@
 **Status:** Implemented
 **Authors:** Daniel Margolis
 **Date:** 2026-05-24
-**Protocol version:** 1. Normative examples: the golden transcript, vectors version 2 ([§11.1](#111-test-vectors-normative-examples)).
+**Protocol version:** 1. Normative examples: the golden transcript, vectors version 3 ([§11.1](#111-test-vectors-normative-examples)).
 
 ---
 
@@ -403,7 +403,7 @@ Routing tokens are derived from the current root key. Whenever the DH ratchet ad
 
 A peer's mailbox state is identified by its DH public key `dh_pub`, which serves as the canonical epoch identifier. Epoch numbers may exist as an internal convenience, but they are derived from DH ratchet progression and must never be treated as an independent source of truth.
 
-**Formal model.** [`formal/tla/WhereSync.tla`](../formal/tla/WhereSync.tla) models this section (with §5.3 and §8.3.1) for two clients and the server: the transition rule, single-token polling, the ratchet and token rotation, send-side retirement, acks and force-acks, crashes between saving state and acking, and server loss, duplication and TTL expiry. TLC checks, at small bounds in CI (`.github/workflows/tla.yml`): no `(epoch, seq)` accepted twice; the skipped-key cache within its cap; every receive-side DH step matching the sender's; acks deleting only accepted messages; no client left polling a retired token while unread messages wait on a newer one (unless the server lost an unread frame); no sent frame disappearing unless the server lost or expired it or the receiver force-acked it after such a loss; no frame deleted unread unless the server lost an unread frame first; and, under fairness with no loss, every message delivered and each side eventually knowing every DH key the other has sent under. Mutants check that each property catches the bug it is for, and probes that each configuration reaches what it claims to. See [`formal/tla/README.md`](../formal/tla/README.md) for the bounds and the counterexamples found so far. The model assumes the outbox drains in the order frames were queued (`Outbox.sq` orders by `rowid`, not the wall clock).
+**Formal model.** [`formal/tla/WhereSync.tla`](../formal/tla/WhereSync.tla) models this section (with §5.3 and §8.3.1) for two clients and the server: the transition rule, single-token polling, the ratchet and token rotation, send-side retirement, acks and force-acks, crashes between saving state and acking, and server loss, duplication and TTL expiry. TLC checks, at small bounds in CI (`.github/workflows/tla.yml`): no `(epoch, seq)` accepted twice; the skipped-key cache within its cap; every receive-side DH step matching the sender's; acks deleting only accepted messages; no client left polling a retired token while unread messages wait on a newer one (unless the server lost an unread frame); every sent, unaccepted frame still pending on a mailbox the receiver will read (the one it polls, or a newer one whose transition frame is pending on it), unless that frame or its transition frame was lost, expired or acked unread; force-acks deleting only frames the receiver could not have processed; no frame deleted unread unless the server lost an unread frame first; and, under fairness with no loss, every message delivered and each side eventually holding the DH key of the last frame the other sent. Mutants check that each property catches the bug it is for, and probes that each configuration reaches what it claims to. See [`formal/tla/README.md`](../formal/tla/README.md) for the bounds and the counterexamples found so far. The model's assumptions about the code (atomic transactions, single-token polling, a FIFO outbox ordered by `rowid` rather than the wall clock, one msgId per frame, idempotent PUTs) are listed there with the code that keeps each.
 
 **The Mailbox Synchronization Challenge:**
 In an anonymous mailbox model, a client polling token `T_old` will never see a message posted to `T_new`. The protocol resolves this with a **transition-message rule** on the send side and a **root-key-advance observation** on the retirement side, rather than a two-token polling window on the receive side.
@@ -425,7 +425,7 @@ When a decrypted message carries a new sender `dh_pub`:
 #### 5.4.3 Send-Side Retirement (Observed Root-Key Advance)
 The sender retires its `prev_send_token` (and stops posting fallback retries to it) when it observes an authenticated proof that the peer has processed its new DH key. The proof used here is a successful decryption whose post-ratchet `root_key` is strictly newer than the one in effect when those outbox entries were enqueued — exactly the property an authenticated ack-of-DH would have established, inferred directly from the ratchet instead.
 
-Implementation: `ProtocolCore` emits a `CancelPut` for `prevSendToken` when a received batch advances the `rootKey`, and `E2eeManager` deletes those outbox entries.
+Implementation: `ProtocolCore` emits a `CancelPut` for `prevSendToken` when a received batch advances the `rootKey`, and `E2eeManager` deletes those outbox entries in the same transaction as the new session.
 
 **Exception: the responder's first ratchet.** The initiator performs one DH step on its own when it processes the `KeyExchangeInit` (§4.4), before reading anything from the responder. So the responder's first ratchet proves nothing about its own frames, and until then its `prev_send_token` is still its bootstrap send token, the one the initiator polls. No retirement happens while `prev_send_token == send_token`. Cancelling there deleted frames the responder had queued but not yet posted (a TLC counterexample; `BootstrapOutboxCancelTest`).
 
@@ -712,6 +712,8 @@ new_token = HKDF-SHA-256(
 ```
 Direction is encoded explicitly via the `sender_fp || recipient_fp` ordering in the info field.
 
+A DH ratchet step runs KDF_RK twice (receive sub-step, then send sub-step with the new key pair; Alice's eager ratchet in §4.4 runs only the send sub-step), and each token comes from its own sub-step's root key: `recv_token = RoutingToken(root from the receive sub-step, peer_fp || my_fp)` and `send_token = RoutingToken(root from the send sub-step, my_fp || peer_fp)`. The session keeps the send sub-step's root. So the peer's `send_token`, derived from the root its own send sub-step produced, is the same value as our `recv_token`. The previous `send_token` becomes `prev_send_token` (§5.4.1).
+
 **KDF_CK (symmetric ratchet step):**
 ```
 message_key     = HMAC-SHA-256(key = current_chain_key, data = 0x01)
@@ -776,7 +778,7 @@ The `envelope` is a 110-byte binary blob consisting of:
 - `ack_remote_dh_pub` (32 bytes): the newest peer DH public key for which at least one message has been successfully authenticated and committed to session state (see §5.4.3).
 - `msg_num` (8 bytes, big-endian Long): sender chain message number.
 - `prev_chain_len` (8 bytes, big-endian Long): length of the previous sending chain.
-- `flags` (1 byte): optional flags, such as `TRANSITION` (0x01).
+- `flags` (1 byte): reserved. Senders set `0x00` and receivers ignore it. (A `TRANSITION` flag, `0x01`, was once planned; it is not used: an epoch's transition frame is the one with `msg_num` 1, §5.4.1.)
 
 The header is encrypted using the current `header_key` derived from the DH ratchet.
 
@@ -944,7 +946,7 @@ The transcript is one pairing run through the protocol's pure step function (`Pr
 - a corrupted body (committed and acked but not delivered, §8.3.1(4)) and a non-frame payload on a session mailbox (acked unread);
 - Location (with and without `stationary`), StoppedSharing and Keepalive plaintexts (§5.7, §9.1.2).
 
-`GoldenTranscriptTest` replays it on the JVM and on the iOS simulator: feeding each step the recorded inputs must reproduce the recorded outputs byte for byte, and generating it from scratch must reproduce the file. The transcript is versioned with this document: a change that alters it is a protocol change, which regenerates the file (`WHERE_WRITE_VECTORS=1 ./gradlew :shared:jvmTest --tests '*GoldenTranscriptWriter*'`), bumps `vectors_version` (`GoldenTranscript.VECTORS_VERSION`, which writes it into the file) and the version named at the top of this document, and bumps `protocol_version` if old and new clients no longer interoperate.
+`GoldenTranscriptTest` replays it on the JVM and on the iOS simulator: feeding each step the recorded inputs must reproduce the recorded outputs byte for byte, and generating it from scratch must reproduce the file. That only shows reproducibility, so `SpecConformanceTest` checks the file against this document instead: it recomputes the handshake (§4.2, §4.4), every DH ratchet, header-key and token rotation, and every chain step (§8.3) from the formulas here, using only the raw primitives and the info strings as written here, and checks that what is delivered is what was sent, once, and that token effects match the state. The keys in the file are public test values: never treat it as a recording of a real session. The transcript is versioned with this document: a change that alters it is a protocol change, which regenerates the file (`WHERE_WRITE_VECTORS=1 ./gradlew :shared:jvmTest --tests '*GoldenTranscriptWriter*'`), bumps `vectors_version` (`GoldenTranscript.VECTORS_VERSION`, which writes it into the file) and the version named at the top of this document, and bumps `protocol_version` if old and new clients no longer interoperate.
 
 ---
 

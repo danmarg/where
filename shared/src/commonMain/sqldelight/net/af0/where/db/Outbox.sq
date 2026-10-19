@@ -7,8 +7,10 @@ CREATE TABLE Outbox (
 );
 
 -- Outbox Queries
+-- Plain INSERT: a repeated msgId fails the transaction instead of replacing the row, which would
+-- move the frame to the back of the queue (a new rowid) or overwrite one not yet posted.
 insertOutbox:
-INSERT OR REPLACE INTO Outbox(msgId, friendId, token, payloadBlob, createdAt)
+INSERT INTO Outbox(msgId, friendId, token, payloadBlob, createdAt)
 VALUES (?, ?, ?, ?, ?);
 
 deleteOutboxByMsgId:

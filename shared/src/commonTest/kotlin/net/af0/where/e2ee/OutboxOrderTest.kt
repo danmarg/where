@@ -1,8 +1,10 @@
 package net.af0.where.e2ee
 
 import kotlinx.coroutines.test.runTest
+import net.af0.where.db.WhereDatabase
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFails
 
 /**
  * The outbox drains in the order frames were queued, whatever the wall clock does. It used to be
@@ -38,4 +40,17 @@ class OutboxOrderTest {
                 TimeSource.setProvider(DefaultTimeProvider)
             }
         }
+
+    @Test
+    fun `a repeated msgId neither moves nor replaces a queued frame`() {
+        val queries = WhereDatabase(createTestSqlDriver()).outboxQueries
+        queries.insertOutbox("first", "friend", "token", byteArrayOf(1), 0)
+        queries.insertOutbox("second", "friend", "token", byteArrayOf(2), 0)
+
+        assertFails { queries.insertOutbox("first", "friend", "token", byteArrayOf(3), 0) }
+
+        val queued = queries.getOutboxForFriend("friend").executeAsList()
+        assertEquals(listOf("first", "second"), queued.map { it.msgId })
+        assertEquals(listOf(1.toByte()), queued.first().payloadBlob.toList())
+    }
 }

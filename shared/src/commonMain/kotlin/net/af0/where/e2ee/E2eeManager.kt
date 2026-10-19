@@ -163,13 +163,6 @@ class E2eeManager(
             )
         val session = (step.state as ProtocolCore.State.Paired).session
 
-        // Handshake initiated: the step's RetireToken (the discovery mailbox) is carried out by
-        // removing the pending invite, which is what LocationClient polls that mailbox for (#186).
-        persistence.withMetadataLock {
-            pendingInvites = pendingInvites.filter { it.qrPayload.ekPub != inviteKey }
-        }
-        pending.aliceEkPriv.zeroize()
-
         val entry =
             FriendEntry(
                 name = sanitizeName(aliceSuggestedName),
@@ -178,9 +171,37 @@ class E2eeManager(
                 isConfirmed = true,
             )
 
-        persistence.withFriendAndMetadataLock(entry.id) { _, metadata ->
-            metadata.pendingInvites = metadata.pendingInvites.filterNot { it.qrPayload.ekPub == inviteKey }
-            PersistenceAction.Update(entry) to Unit
+        // The step's RetireToken (the discovery mailbox) is carried out by removing the pending
+        // invite, which is what LocationClient polls that mailbox for (#186). In one transaction
+        // with saving the friend: removed alone, a crash would leave neither the invite nor the
+        // friend, and Bob's init on a mailbox nobody polls. And only if the invite is still
+        // pending: a concurrent init for it got there first.
+        val paired =
+            try {
+                persistence.withFriendAndMetadataLock(entry.id) { _, metadata ->
+                    if (metadata.pendingInvites.none { it.qrPayload.ekPub == inviteKey }) {
+                        return@withFriendAndMetadataLock PersistenceAction.None to false
+                    }
+                    metadata.pendingInvites = metadata.pendingInvites.filterNot { it.qrPayload.ekPub == inviteKey }
+                    PersistenceAction.Update(entry) to true
+                }
+            } catch (e: CancellationException) {
+                // Not a failed write: the transaction may have committed and the friend's cached
+                // entry may hold this very session. Leave it alone.
+                throw e
+            } catch (e: Exception) {
+                // The write failed: E2eeStore reloaded from the database, so nothing holds the new
+                // session but us. The invite's key is left alone: the reload may have left the
+                // invite pending, for a retry.
+                session.zeroizeAll()
+                throw e
+            }
+        // Pending no more either way (consumed here, or by a concurrent init that got there
+        // first), so its key is dead; the losing session was never saved.
+        pending.aliceEkPriv.zeroize()
+        if (!paired) {
+            session.zeroizeAll()
+            return null
         }
 
         return entry
@@ -452,13 +473,19 @@ class E2eeManager(
         recvToken: String,
         messages: List<MailboxPayload>,
     ): PollBatchResult? {
-        return persistence.withFriendAndMetadataLock(friendId) { entry, _ ->
+        return persistence.withFriendAndMetadataLock(friendId) { entry, metadata ->
             if (entry == null) return@withFriendAndMetadataLock PersistenceAction.None to null
+            // A batch from any mailbox but the current one (a poll that raced a token rotation, a
+            // stale caller) is refused before anything is decrypted, saved or acked.
+            if (recvToken != entry.session.recvToken.toHex()) {
+                metadata.addDiagnosticEvent("processBatch($friendId): batch is from a retired mailbox; ignored")
+                return@withFriendAndMetadataLock PersistenceAction.None to null
+            }
 
             val step =
                 ProtocolCore.step(
                     ProtocolCore.State.Paired(entry.session),
-                    ProtocolCore.Event.Receive(messages),
+                    ProtocolCore.Event.Receive(recvToken, messages),
                     currentTimeMillis(),
                     SystemRng,
                 )
@@ -490,10 +517,9 @@ class E2eeManager(
             val lastLocation = decryptedLocations.lastOrNull()
             val storedLastTs = entry.lastTs?.takeIf { it <= maxTs } ?: 0
 
+            // In the same transaction as the new session (see ProtocolCore's atomicity contract).
             for (effect in step.effects) {
-                if (effect is ProtocolCore.Effect.CancelPut) {
-                    persistence.deleteOutboxByFriendIdAndTokenInternal(friendId, effect.mailbox)
-                }
+                if (effect is ProtocolCore.Effect.CancelPut) metadata.deleteOutbox(friendId, effect.mailbox)
             }
 
             // Derive the sharing-state fields (stationarySinceTs, stoppedAtTs) atomically
