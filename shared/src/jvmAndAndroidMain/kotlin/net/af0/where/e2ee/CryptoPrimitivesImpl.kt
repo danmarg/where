@@ -26,12 +26,16 @@ internal actual fun sha512(data: ByteArray): ByteArray {
 // HMAC-SHA-256
 // ---------------------------------------------------------------------------
 
+private const val HMAC_SHA256_BLOCK_SIZE = 64
+
 internal actual fun hmacSha256(
     key: ByteArray,
     data: ByteArray,
 ): ByteArray {
     val mac = Mac.getInstance("HmacSHA256")
-    mac.init(SecretKeySpec(key, "HmacSHA256"))
+    // SecretKeySpec refuses an empty array, but an empty key is valid HMAC input. HMAC pads a key
+    // shorter than the block with zeros, so a zero block computes the same MAC (as iOS does it).
+    mac.init(SecretKeySpec(if (key.isEmpty()) ByteArray(HMAC_SHA256_BLOCK_SIZE) else key, "HmacSHA256"))
     return mac.doFinal(data)
 }
 
