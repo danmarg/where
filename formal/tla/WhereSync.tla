@@ -350,10 +350,17 @@ Next ==
 
 \* Weak fairness on the client's own work; none on sending (the user's choice), crashes or
 \* server faults, so liveness is checked whenever the clients stop sending.
+\*
+\* Process's is written out: WF_vars(A) is []<>~ENABLED A \/ []<><<A>>_vars, and Process(c) is
+\* enabled exactly when inflight[c] # {} (and always changes inflight), so that predicate stands
+\* in for ENABLED. TLC computes ENABLED by evaluating the whole batch decryption in every state,
+\* which made the liveness run ~100x slower on TLC 1.7.4.
+WFProcess(c) == []<>(inflight[c] = {}) \/ []<><<Process(c)>>_vars
+
 Fairness ==
     \A c \in Clients :
         /\ WF_vars(Post(c)) /\ WF_vars(Dequeue(c))
-        /\ WF_vars(Poll(c)) /\ WF_vars(Process(c)) /\ WF_vars(Ack(c))
+        /\ WF_vars(Poll(c)) /\ WFProcess(c) /\ WF_vars(Ack(c))
 
 Spec == Init /\ [][Next]_vars /\ Fairness
 

@@ -54,7 +54,7 @@ formal/tla/run-tlc.sh WhereSyncSafetyLoss.cfg    # a loss, a duplicate, a crash,
 formal/tla/run-tlc.sh WhereSyncSafetyReject.cfg  # two losses against a cap of 1: rejects, force-acks  ~0.3M, ~15 s
 formal/tla/run-tlc.sh WhereSyncSafetyTTL.cfg     # TTL expiry and a crash                    ~0.7M states, ~30 s
 formal/tla/run-tlc.sh WhereSyncSafetyDeep.cfg    # WhereSyncSafety with two crashes          ~2.8M states, ~2 min
-formal/tla/run-tlc.sh WhereSyncLiveness.cfg      # liveness, with crashes and a duplicate
+formal/tla/run-tlc.sh WhereSyncLiveness.cfg      # liveness, with crashes and a duplicate     ~1.1M states, ~3 min
 formal/tla/check-mutants.py                      # mutants and reachability probes
 ```
 
@@ -72,7 +72,8 @@ over 12M states and still growing).
   protects: the transition rule, the replay check, single use of skipped keys, the skipped-key
   cap, the ratchet's sub-steps, acking only what was processed, the bootstrap exception to
   CancelPut and header-key rotation (each both as a liveness and as a safety failure), dequeuing
-  the posted frame by id, and recording the peer's new key. Some need a loss before the bug is
+  the posted frame by id, recording the peer's new key, and dropping the fairness on processing
+  (so the hand-written fairness condition below can't make liveness pass vacuously). Some need a loss before the bug is
   reachable: with an honest server, outboxes drain in order and batches are sorted, so no gap
   and no unprocessable frame ever reaches a receiver.
 - **Reachability probes.** For each behaviour a configuration claims to cover, it makes that
@@ -83,6 +84,10 @@ over 12M states and still growing).
 
 Modelled but not checked by any mutant: the empty-outbox gate on ordinary sends and the
 force-ack threshold (no property depends on either).
+
+Process's weak fairness is written out by hand (`WFProcess`, see the comment in the module):
+TLC evaluates `ENABLED Process(c)` by running the whole batch decryption in every state, which
+made the liveness check about 100 times slower on TLC 1.7.4.
 
 Apalache was not needed: TLC covers these bounds in minutes. (The batch operators are `RECURSIVE`,
 which Apalache doesn't support; it would need them rewritten as folds.)
