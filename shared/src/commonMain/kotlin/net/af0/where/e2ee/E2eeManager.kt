@@ -185,9 +185,14 @@ class E2eeManager(
                     metadata.pendingInvites = metadata.pendingInvites.filterNot { it.qrPayload.ekPub == inviteKey }
                     PersistenceAction.Update(entry) to true
                 }
+            } catch (e: CancellationException) {
+                // Not a failed write: the transaction may have committed and the friend's cached
+                // entry may hold this very session. Leave it alone.
+                throw e
             } catch (e: Exception) {
-                // Nothing was saved and the new session is ours alone. The invite's key is left
-                // alone: the reload after the failed write may have left it pending for a retry.
+                // The write failed: E2eeStore reloaded from the database, so nothing holds the new
+                // session but us. The invite's key is left alone: the reload may have left the
+                // invite pending, for a retry.
                 session.zeroizeAll()
                 throw e
             }

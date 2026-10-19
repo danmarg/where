@@ -23,7 +23,7 @@ class RetireTokenTest {
     private fun ProtocolCore.State.session() = (this as ProtocolCore.State.Paired).session
 
     @Test
-    fun `RetireToken is emitted exactly when the receive token changes, over random schedules`() {
+    fun `RetireToken is emitted exactly when the receive token changes over random schedules`() {
         var receives = 0
         var rotations = 0
         repeat(150) { seed ->

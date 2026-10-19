@@ -712,7 +712,7 @@ new_token = HKDF-SHA-256(
 ```
 Direction is encoded explicitly via the `sender_fp || recipient_fp` ordering in the info field.
 
-A DH ratchet step runs KDF_RK twice (receive sub-step, then send sub-step with the new key pair), and each token comes from its own sub-step's root key: `recv_token = RoutingToken(root from the receive sub-step, peer_fp || my_fp)` and `send_token = RoutingToken(root from the send sub-step, my_fp || peer_fp)`. The session keeps the send sub-step's root. So the peer's `send_token`, derived from the root its own send sub-step produced, is the same value as our `recv_token`. The previous `send_token` becomes `prev_send_token` (§5.4.1).
+A DH ratchet step runs KDF_RK twice (receive sub-step, then send sub-step with the new key pair; Alice's eager ratchet in §4.4 runs only the send sub-step), and each token comes from its own sub-step's root key: `recv_token = RoutingToken(root from the receive sub-step, peer_fp || my_fp)` and `send_token = RoutingToken(root from the send sub-step, my_fp || peer_fp)`. The session keeps the send sub-step's root. So the peer's `send_token`, derived from the root its own send sub-step produced, is the same value as our `recv_token`. The previous `send_token` becomes `prev_send_token` (§5.4.1).
 
 **KDF_CK (symmetric ratchet step):**
 ```
@@ -778,7 +778,7 @@ The `envelope` is a 110-byte binary blob consisting of:
 - `ack_remote_dh_pub` (32 bytes): the newest peer DH public key for which at least one message has been successfully authenticated and committed to session state (see §5.4.3).
 - `msg_num` (8 bytes, big-endian Long): sender chain message number.
 - `prev_chain_len` (8 bytes, big-endian Long): length of the previous sending chain.
-- `flags` (1 byte): optional flags, such as `TRANSITION` (0x01).
+- `flags` (1 byte): reserved. Senders set `0x00` and receivers ignore it. (A `TRANSITION` flag, `0x01`, was once planned; it is not used: an epoch's transition frame is the one with `msg_num` 1, §5.4.1.)
 
 The header is encrypted using the current `header_key` derived from the DH ratchet.
 

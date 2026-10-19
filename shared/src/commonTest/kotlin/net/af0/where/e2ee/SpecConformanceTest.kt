@@ -203,8 +203,12 @@ class SpecConformanceTest {
             val prev = last[party]
             last[party] = now
             if (prev == null || prev.str("type") != "paired" || now.str("type") != "paired") continue
-            val me = now.hex("local_fp")
-            val peer = now.hex("remote_fp")
+            // §4.4 fingerprints, by party (not the state's own local/remote fields).
+            val aliceFp = sha256(now.hex("alice_ek_pub"))
+            val bobFp = sha256(now.hex("bob_ek_pub"))
+            val (me, peer) = if (party == "alice") aliceFp to bobFp else bobFp to aliceFp
+            assertHex(me, now.str("local_fp"), "step $i: local_fp")
+            assertHex(peer, now.str("remote_fp"), "step $i: remote_fp")
             when (step.event().str("type")) {
                 "send" -> {
                     sends++
@@ -239,7 +243,7 @@ class SpecConformanceTest {
     }
 
     @Test
-    fun `every frame opens with keys derived from its sender's state, per spec 9_1`() {
+    fun `every frame opens with keys derived from its sender's state per spec 9_1`() {
         val last = mutableMapOf<String, JsonObject>()
         var frames = 0
         for ((i, step) in steps.withIndex()) {
@@ -258,9 +262,12 @@ class SpecConformanceTest {
             // §5.4.1: an epoch's first frame goes to the previous mailbox under the previous key.
             assertEquals(if (seq == 1L) prev.str("prev_send_token") else prev.str("send_token"), put.str("mailbox"), "step $i: mailbox")
             val headerKey = if (seq == 1L) prev.hex("prev_send_header_key") else prev.hex("send_header_key")
+            // §4.4: alice_fp = SHA-256(EK_A.pub), bob_fp = SHA-256(EK_B.pub); the sender is the party.
+            val aliceFp = sha256(prev.hex("alice_ek_pub"))
+            val bobFp = sha256(prev.hex("bob_ek_pub"))
+            val (senderFp, recipientFp) = if (party == "alice") aliceFp to bobFp else bobFp to aliceFp
             val env = frame.envelope
-            val header =
-                aeadDecrypt(headerKey, env.copyOfRange(0, 12), env.copyOfRange(12, env.size), prev.hex("alice_fp") + prev.hex("bob_fp"))
+            val header = aeadDecrypt(headerKey, env.copyOfRange(0, 12), env.copyOfRange(12, env.size), aliceFp + bobFp)
             assertEquals(82, header.size, "step $i: header plaintext size")
             assertEquals(1, header[0].toInt(), "step $i: header version")
             val dh = header.copyOfRange(1, 33)
@@ -269,13 +276,12 @@ class SpecConformanceTest {
             assertHex(ack, prev.str("remote_dh_pub"), "step $i: header ack_remote_dh_pub")
             assertEquals(seq, be64(header, 65), "step $i: header msg_num")
             assertEquals(prev.num("pn"), be64(header, 73), "step $i: header prev_chain_len")
+            assertEquals(0, header[81].toInt(), "step $i: header flags are reserved, 0")
 
             // §8.3 KDF_CK and §9.1.2 body AAD.
             val messageKey = hmacSha256(prev.hex("send_chain_key"), byteArrayOf(0x01))
             val nonce = hkdf(messageKey, null, utf8("Where-v1-MsgNonce"), 12)
-            val aad =
-                utf8("Where-v1-Message") + byteArrayOf(0, 0, 0, 1) + prev.hex("local_fp") + prev.hex("remote_fp") +
-                    be64(seq) + dh + ack
+            val aad = utf8("Where-v1-Message") + byteArrayOf(0, 0, 0, 1) + senderFp + recipientFp + be64(seq) + dh + ack
             val padded = aeadDecrypt(messageKey, nonce, frame.ct, aad)
             assertEquals(512, padded.size, "step $i: padded plaintext size")
             assertEquals(step.event().str("plaintext"), unpad(padded).decodeToString(), "step $i: plaintext")
@@ -284,7 +290,7 @@ class SpecConformanceTest {
     }
 
     @Test
-    fun `what is delivered is what the peer sent, once, and token effects match the state`() {
+    fun `what is delivered is what the peer sent exactly once and token effects match the state`() {
         val sentBy = mutableMapOf<String, MutableList<String>>() // party -> plaintexts sent
         val deliveredTo = mutableMapOf<String, MutableList<String>>()
         val last = mutableMapOf<String, JsonObject>()
