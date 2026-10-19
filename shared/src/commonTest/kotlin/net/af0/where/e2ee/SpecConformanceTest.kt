@@ -243,7 +243,7 @@ class SpecConformanceTest {
     }
 
     @Test
-    fun `every frame opens with keys derived from its sender's state, per spec 9_1`() {
+    fun `every frame opens with keys derived from its sender's state per spec 9_1`() {
         val last = mutableMapOf<String, JsonObject>()
         var frames = 0
         for ((i, step) in steps.withIndex()) {
@@ -290,7 +290,7 @@ class SpecConformanceTest {
     }
 
     @Test
-    fun `what is delivered is what the peer sent, once, and token effects match the state`() {
+    fun `what is delivered is what the peer sent exactly once and token effects match the state`() {
         val sentBy = mutableMapOf<String, MutableList<String>>() // party -> plaintexts sent
         val deliveredTo = mutableMapOf<String, MutableList<String>>()
         val last = mutableMapOf<String, JsonObject>()

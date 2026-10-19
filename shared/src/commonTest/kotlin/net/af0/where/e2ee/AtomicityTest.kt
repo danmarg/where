@@ -120,7 +120,7 @@ class AtomicityTest {
         }
 
     @Test
-    fun `after a crash between saving and acking, the batch is a replay and the old mailbox is refused`() =
+    fun `after a crash between saving and acking the batch is a replay and the old mailbox is refused`() =
         runTest {
             val p = pair()
             val b1 = p.ratchetSetup()
