@@ -208,6 +208,7 @@ class SpecConformanceTest {
             val bobFp = sha256(now.hex("bob_ek_pub"))
             val (me, peer) = if (party == "alice") aliceFp to bobFp else bobFp to aliceFp
             assertHex(me, now.str("local_fp"), "step $i: local_fp")
+            assertHex(peer, now.str("remote_fp"), "step $i: remote_fp")
             when (step.event().str("type")) {
                 "send" -> {
                     sends++
@@ -261,14 +262,12 @@ class SpecConformanceTest {
             // §5.4.1: an epoch's first frame goes to the previous mailbox under the previous key.
             assertEquals(if (seq == 1L) prev.str("prev_send_token") else prev.str("send_token"), put.str("mailbox"), "step $i: mailbox")
             val headerKey = if (seq == 1L) prev.hex("prev_send_header_key") else prev.hex("send_header_key")
+            // §4.4: alice_fp = SHA-256(EK_A.pub), bob_fp = SHA-256(EK_B.pub); the sender is the party.
+            val aliceFp = sha256(prev.hex("alice_ek_pub"))
+            val bobFp = sha256(prev.hex("bob_ek_pub"))
+            val (senderFp, recipientFp) = if (party == "alice") aliceFp to bobFp else bobFp to aliceFp
             val env = frame.envelope
-            val header =
-                aeadDecrypt(
-                    headerKey,
-                    env.copyOfRange(0, 12),
-                    env.copyOfRange(12, env.size),
-                    sha256(prev.hex("alice_ek_pub")) + sha256(prev.hex("bob_ek_pub")),
-                )
+            val header = aeadDecrypt(headerKey, env.copyOfRange(0, 12), env.copyOfRange(12, env.size), aliceFp + bobFp)
             assertEquals(82, header.size, "step $i: header plaintext size")
             assertEquals(1, header[0].toInt(), "step $i: header version")
             val dh = header.copyOfRange(1, 33)
@@ -278,10 +277,6 @@ class SpecConformanceTest {
             assertEquals(seq, be64(header, 65), "step $i: header msg_num")
             assertEquals(prev.num("pn"), be64(header, 73), "step $i: header prev_chain_len")
             assertEquals(0, header[81].toInt(), "step $i: header flags are reserved, 0")
-            // §4.4: alice_fp = SHA-256(EK_A.pub), bob_fp = SHA-256(EK_B.pub); the sender is the party.
-            val aliceFp = sha256(prev.hex("alice_ek_pub"))
-            val bobFp = sha256(prev.hex("bob_ek_pub"))
-            val (senderFp, recipientFp) = if (party == "alice") aliceFp to bobFp else bobFp to aliceFp
 
             // §8.3 KDF_CK and §9.1.2 body AAD.
             val messageKey = hmacSha256(prev.hex("send_chain_key"), byteArrayOf(0x01))
