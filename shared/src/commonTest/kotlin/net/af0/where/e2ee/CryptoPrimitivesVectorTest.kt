@@ -82,6 +82,22 @@ class CryptoPrimitivesVectorTest {
         assertContentEquals(expected, hmacSha256(key, data))
     }
 
+    // HMAC pads a short key with zeros to the block size, so an empty key is valid input (the
+    // same as 64 zero bytes). javax SecretKeySpec refuses an empty array and Kotlin/Native can't pin
+    // one for CommonCrypto, so both backends special-case it; Wycheproof has no empty key.
+    // Expected values from Python's hmac module.
+    @Test
+    fun `hmacSha256 with an empty key`() {
+        assertContentEquals(
+            hex("b613679a0814d9ec772f95d778c35fc5ff1697c493715653c6c712144292c5ad"),
+            hmacSha256(ByteArray(0), ByteArray(0)),
+        )
+        val fox = "The quick brown fox jumps over the lazy dog".encodeToByteArray()
+        val expected = hex("fb011e6154a19b9a4c767373c305275a5a69e8b68b0b4c9200c383dced19a416")
+        assertContentEquals(expected, hmacSha256(ByteArray(0), fox))
+        assertContentEquals(expected, hmacSha256(ByteArray(64), fox))
+    }
+
     // -----------------------------------------------------------------------
     // X25519 (RFC 7748 test vectors)
     // -----------------------------------------------------------------------
