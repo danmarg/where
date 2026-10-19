@@ -13,6 +13,9 @@ TIMEOUT = 480  # per TLC run (the largest probe config takes ~4 min on 4 cores);
 BUDGET = 60 * 60  # whole script; runs past it are reported as not run
 started = time.monotonic()
 
+ALL_INVARIANTS = ["TypeOK", "NoDoubleAccept", "SkippedWithinCap", "RatchetSound", "AcksOnlyProcessed",
+                  "NoStrandedMessages", "NoSilentDrop", "NoUnreadAcks", "ForceAckOnlyUnprocessable"]
+
 def cfg(sends=2, urgent=0, crashes=0, loss=0, dup=0, clock=0, cap=2, live=False, props=None, invariants=True):
     body = f"""CONSTANTS
     MaxSends = {sends}
@@ -26,9 +29,11 @@ def cfg(sends=2, urgent=0, crashes=0, loss=0, dup=0, clock=0, cap=2, live=False,
     ForceAckAfter = 2
 """
     body += "SPECIFICATION Spec\n" if live else "INIT Init\nNEXT Next\n"
+    if invariants is True:
+        invariants = ALL_INVARIANTS
     if invariants:
-        body += "INVARIANTS TypeOK NoDoubleAccept SkippedWithinCap RatchetSound AcksOnlyProcessed NoStrandedMessages NoSilentDrop NoUnreadAcks\n"
-    if live: body += "PROPERTIES " + " ".join(props or ["AllDelivered", "EventuallySameEpoch"]) + "\n"
+        body += "INVARIANTS " + " ".join(invariants) + "\n"
+    if live: body += "PROPERTIES " + " ".join(props or ["AllDelivered", "EventuallyKnowsSentKeys"]) + "\n"
     body += "CHECK_DEADLOCK FALSE\n"
     return body
 
@@ -53,7 +58,10 @@ M = [
   # (name, old, new, cfg kwargs, expected property)
   ("no transition rule",
    "token |-> IF seq = 1 THEN s.prevSendTok ELSE s.sendTok]", "token |-> s.sendTok]",
-   dict(), "NoStrandedMessages"),
+   dict(invariants=["TypeOK", "NoStrandedMessages"]), "NoStrandedMessages"),
+  ("no transition rule, against the per-frame NoSilentDrop",
+   "token |-> IF seq = 1 THEN s.prevSendTok ELSE s.sendTok]", "token |-> s.sendTok]",
+   dict(), "NoSilentDrop"),
   ("no replay check",
    "IF m.seq <= sp.recvSeq\n      THEN [st |-> s, res |-> \"replay\", bad |-> FALSE]",
    "IF m.seq < 0\n      THEN [st |-> s, res |-> \"replay\", bad |-> FALSE]",
@@ -98,7 +106,10 @@ M = [
   ("peer's new key not recorded",
    "!.recvTok = <<Peer(c), s.root + 1>>, !.sendTok = <<c, s.root + 2>>,",
    "!.recvTok = <<Peer(c), s.root + 1>>, !.sendTok = <<c, s.root + 2>>, !.remoteDh = s.remoteDh,",
-   dict(sends=1, live=True, props=["EventuallySameEpoch"], invariants=False), "EventuallySameEpoch"),
+   dict(sends=1, live=True, props=["EventuallyKnowsSentKeys"], invariants=False), "EventuallyKnowsSentKeys"),
+  ("force-ACK of a batch that processed something",
+   "force == nothing /\\ silentHere + 1 >= ForceAckAfter", "force == silentHere + 1 >= ForceAckAfter",
+   dict(sends=2, loss=1, cap=0, dup=1), "ForceAckOnlyUnprocessable"),
 ]
 ok = True
 only = sys.argv[1:]
