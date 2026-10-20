@@ -8,8 +8,10 @@ import kotlin.test.assertTrue
  * Known-input/output test vectors for every crypto primitive.
  *
  * These run on ALL platforms (JVM, Android, iOS) via the commonTest source set.
- * On iOS the actual implementations are the Security framework / CommonCrypto
- * cinterop; on JVM/Android they use libsodium bindings.
+ * Both platforms use the libsodium bindings for X25519, ChaCha20-Poly1305 and SHA-2;
+ * HMAC (and so HKDF) is javax `Mac` on JVM/Android and CommonCrypto on iOS.
+ * Besides the RFC vectors below, every Wycheproof case for these primitives runs
+ * (see commonTest/resources/wycheproof).
  *
  * Catching a failure here on one platform means that platform's implementation
  * diverges from the spec.
@@ -78,6 +80,22 @@ class CryptoPrimitivesVectorTest {
                     "881dc200c9833da726e9376c2e32cff7",
             )
         assertContentEquals(expected, hmacSha256(key, data))
+    }
+
+    // HMAC pads a short key with zeros to the block size, so an empty key is valid input (the
+    // same as 64 zero bytes). javax SecretKeySpec refuses an empty array and Kotlin/Native can't pin
+    // one for CommonCrypto, so both backends special-case it; Wycheproof has no empty key.
+    // Expected values from Python's hmac module.
+    @Test
+    fun `hmacSha256 with an empty key`() {
+        assertContentEquals(
+            hex("b613679a0814d9ec772f95d778c35fc5ff1697c493715653c6c712144292c5ad"),
+            hmacSha256(ByteArray(0), ByteArray(0)),
+        )
+        val fox = "The quick brown fox jumps over the lazy dog".encodeToByteArray()
+        val expected = hex("fb011e6154a19b9a4c767373c305275a5a69e8b68b0b4c9200c383dced19a416")
+        assertContentEquals(expected, hmacSha256(ByteArray(0), fox))
+        assertContentEquals(expected, hmacSha256(ByteArray(64), fox))
     }
 
     // -----------------------------------------------------------------------
@@ -244,6 +262,89 @@ class CryptoPrimitivesVectorTest {
 
         assertContentEquals(expectedOkm, hkdfSha256(ikm, salt, info, l))
     }
+
+    // -----------------------------------------------------------------------
+    // Wycheproof (C2SP/wycheproof testvectors_v1, vendored in commonTest/resources)
+    // -----------------------------------------------------------------------
+
+    @Test
+    fun `x25519 Wycheproof`() =
+        Wycheproof.verify("x25519_test.json") { case ->
+            val expected = case.hex("shared")
+            val actual =
+                try {
+                    x25519(case.hex("private"), case.hex("public"))
+                } catch (_: Exception) {
+                    null
+                }
+            when {
+                actual != null && actual.contentEquals(expected) -> null
+                // libsodium refuses an all-zero result (low-order public key) rather than
+                // returning it; either way requireNonZeroSharedSecret stops it reaching a KDF.
+                actual == null && expected.all { it == 0.toByte() } -> null
+                actual == null -> "threw, expected ${expected.toHex()}"
+                else -> "got ${actual.toHex()}, expected ${expected.toHex()}"
+            }
+        }
+
+    @Test
+    fun `chachapoly Wycheproof`() =
+        Wycheproof.verify("chacha20_poly1305_test.json") { case ->
+            val key = case.hex("key")
+            val iv = case.hex("iv")
+            val aad = case.hex("aad")
+            val msg = case.hex("msg")
+            val sealed = case.hex("ct") + case.hex("tag")
+            if (case.groupInt("ivSize") != 96) {
+                // Only the 96-bit IETF nonce is ChaCha20-Poly1305 here; anything else must be
+                // refused, not read past or truncated.
+                val encrypted = runCatching { aeadEncrypt(key, iv, msg, aad) }
+                val decrypted = runCatching { aeadDecrypt(key, iv, sealed, aad) }
+                return@verify if (encrypted.isSuccess || decrypted.isSuccess) "accepted a ${iv.size}-byte nonce" else null
+            }
+            val opened = runCatching { aeadDecrypt(key, iv, sealed, aad) }.getOrNull()
+            when (case.result) {
+                "valid" ->
+                    when {
+                        !aeadEncrypt(key, iv, msg, aad).contentEquals(sealed) -> "encryption differs"
+                        opened == null -> "decryption failed"
+                        !opened.contentEquals(msg) -> "decryption differs"
+                        else -> null
+                    }
+                else -> if (opened != null) "forgery accepted" else null
+            }
+        }
+
+    @Test
+    fun `hmacSha256 Wycheproof`() =
+        Wycheproof.verify("hmac_sha256_test.json") { case ->
+            val tag = case.hex("tag")
+            val mac = hmacSha256(case.hex("key"), case.hex("msg"))
+            // Truncated-tag groups compare the leading tagSize bits.
+            val matches = constantTimeEquals(mac.copyOf(case.groupInt("tagSize") / 8), tag)
+            when (case.result) {
+                "valid" -> if (!matches) "got ${mac.toHex()}" else null
+                else -> if (matches) "modified tag matched" else null
+            }
+        }
+
+    @Test
+    fun `hkdf Wycheproof`() =
+        Wycheproof.verify("hkdf_sha256_test.json") { case ->
+            val okm =
+                runCatching {
+                    hkdfSha256(case.hex("ikm"), case.hex("salt"), case.hex("info"), case.int("size"))
+                }.getOrNull()
+            when (case.result) {
+                "valid" ->
+                    when {
+                        okm == null -> "threw"
+                        !okm.contentEquals(case.hex("okm")) -> "got ${okm.toHex()}"
+                        else -> null
+                    }
+                else -> if (okm != null) "accepted an invalid size ${case.int("size")}" else null
+            }
+        }
 
     @Test
     fun testBytesToLongPrecedence() {

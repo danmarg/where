@@ -3,11 +3,13 @@ package net.af0.where.e2ee
 import kotlinx.serialization.KSerializer
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.descriptors.PrimitiveKind
 import kotlinx.serialization.descriptors.PrimitiveSerialDescriptor
 import kotlinx.serialization.descriptors.SerialDescriptor
 import kotlinx.serialization.encoding.Decoder
 import kotlinx.serialization.encoding.Encoder
+import kotlinx.serialization.json.Json
 import kotlin.io.encoding.Base64
 import kotlin.io.encoding.ExperimentalEncodingApi
 
@@ -28,6 +30,34 @@ object ByteArrayBase64Serializer : KSerializer<ByteArray> {
 
     override fun deserialize(decoder: Decoder): ByteArray = base64.decode(decoder.decodeString())
 }
+
+/** The mailbox API's wire JSON (§9): what [KtorMailboxClient] sends and parses. */
+internal val mailboxJson =
+    Json {
+        classDiscriminator = "type"
+        ignoreUnknownKeys = true
+        encodeDefaults = true
+    }
+
+/** Parses one mailbox payload as received; anything malformed is a [ProtocolException]. */
+internal fun decodeMailboxPayload(text: String): MailboxPayload =
+    decodeOrProtocolException { mailboxJson.decodeFromString(MailboxPayload.serializer(), text) }
+
+/** Parses a mailbox poll response (a JSON array of payloads); anything malformed is a [ProtocolException]. */
+internal fun decodeMailboxPayloads(text: String): List<MailboxPayload> =
+    decodeOrProtocolException { mailboxJson.decodeFromString(ListSerializer(MailboxPayload.serializer()), text) }
+
+private inline fun <T> decodeOrProtocolException(decode: () -> T): T =
+    try {
+        decode()
+    } catch (e: IllegalArgumentException) {
+        // kotlinx.serialization's SerializationException, and Base64's errors, are both this.
+        throw ProtocolException("malformed mailbox payload: ${e.message}")
+    } catch (e: IndexOutOfBoundsException) {
+        // kotlinx.serialization 1.8's lexer throws this for a truncated quoted number (found by
+        // the MailboxPayload fuzz target; corpus has the input).
+        throw ProtocolException("malformed mailbox payload: ${e.message}")
+    }
 
 /**
  * Sealed base class for all payloads exchanged through the mailbox API (§9).

@@ -1,0 +1,74 @@
+name: Fuzz
+
+# Jazzer over every parser of attacker-controlled bytes (shared/src/jvmFuzz; see docs/fuzzing.md).
+# PRs only replay the committed corpus (:shared:fuzzCorpusTest in test.yml); this runs the fuzzer.
+on:
+  schedule:
+    - cron: '17 3 * * *'
+  workflow_dispatch:
+    inputs:
+      seconds:
+        description: 'Seconds per target'
+        default: '600'
+
+permissions:
+  contents: read
+
+jobs:
+  fuzz:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [DecryptHeader, DecodeMessage, Unpad, QrPayload, KeyExchangeInit, MailboxPayload, DecryptMessage]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+          cache: gradle
+
+      - name: Install Android SDK platform
+        # Gradle configures :android even when only running :shared tasks.
+        run: |
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platform-tools" "platforms;android-36"
+
+      - name: Install libsodium
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libsodium-dev
+
+      - name: Fuzz ${{ matrix.target }}
+        # Inputs reach the script through env, never interpolated into it.
+        env:
+          TARGET: ${{ matrix.target }}
+          SECONDS_PER_TARGET: ${{ inputs.seconds || '600' }}
+        run: |
+          case "$SECONDS_PER_TARGET" in ''|*[!0-9]*) echo "seconds must be a whole number" >&2; exit 1 ;; esac
+          export LD_LIBRARY_PATH=/usr/lib/x86_64-linux-gnu:$LD_LIBRARY_PATH
+          ./gradlew :shared:fuzz -Pfuzz.target="$TARGET" -Pfuzz.seconds="$SECONDS_PER_TARGET"
+
+      # A finding: the crashing input (add it to shared/src/jvmFuzz/corpus/<target>/ with the fix)
+      # and Jazzer's Java reproducer.
+      - name: Upload finding
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-finding-${{ matrix.target }}
+          path: |
+            shared/build/fuzz/${{ matrix.target }}/crash-*
+            shared/build/fuzz/${{ matrix.target }}/timeout-*
+            shared/build/fuzz/${{ matrix.target }}/oom-*
+            shared/build/fuzz/${{ matrix.target }}/*.java
+          retention-days: 30
+
+      - name: Upload grown corpus
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-corpus-${{ matrix.target }}
+          path: shared/build/fuzz/${{ matrix.target }}/corpus/
+          retention-days: 14

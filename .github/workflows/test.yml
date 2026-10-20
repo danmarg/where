@@ -51,7 +51,7 @@ jobs:
       - name: Run shared + server tests (JVM)
         run: |
           export LD_LIBRARY_PATH=/usr/lib/x86_64-linux-gnu:$LD_LIBRARY_PATH
-          ./gradlew :shared:jvmTest :server:test
+          ./gradlew :shared:jvmTest :shared:fuzzCorpusTest :server:test
 
       - name: Run Android unit tests
         # fullFdroid is intentionally omitted: the variant is disabled in build.gradle.kts

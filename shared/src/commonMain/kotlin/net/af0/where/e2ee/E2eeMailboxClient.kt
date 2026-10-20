@@ -1,7 +1,6 @@
 package net.af0.where.e2ee
 
 import io.ktor.client.HttpClient
-import io.ktor.client.call.body
 import io.ktor.client.network.sockets.ConnectTimeoutException
 import io.ktor.client.network.sockets.SocketTimeoutException
 import io.ktor.client.plugins.HttpRequestTimeoutException
@@ -10,6 +9,7 @@ import io.ktor.client.request.get
 import io.ktor.client.request.parameter
 import io.ktor.client.request.put
 import io.ktor.client.request.setBody
+import io.ktor.client.statement.bodyAsText
 import io.ktor.http.ContentType
 import io.ktor.http.HttpStatusCode
 import io.ktor.http.contentType
@@ -71,12 +71,7 @@ object KtorMailboxClient : MailboxClient {
      */
     private const val MAILBOX_WALL_CLOCK_TIMEOUT_MS = 60_000L
 
-    private val json =
-        Json {
-            classDiscriminator = "type"
-            ignoreUnknownKeys = true
-            encodeDefaults = true
-        }
+    private val json = mailboxJson
 
     // KtorMailboxClient was already a process-lifetime singleton object holding one HttpClient
     // for the app's entire life (its transport identity is inherently global state, mutable or
@@ -221,19 +216,23 @@ object KtorMailboxClient : MailboxClient {
         baseUrl: String,
         token: String,
     ): List<MailboxPayload> {
-        try {
-            return withFailureTracking {
-                withWallClockTimeout(MAILBOX_WALL_CLOCK_TIMEOUT_MS) {
-                    val response = client.get("$baseUrl/inbox/$token")
-                    if (response.status != HttpStatusCode.OK) {
-                        throw ServerException(response.status.value, "Failed to poll mailbox")
+        val text =
+            try {
+                withFailureTracking {
+                    withWallClockTimeout(MAILBOX_WALL_CLOCK_TIMEOUT_MS) {
+                        val response = client.get("$baseUrl/inbox/$token")
+                        if (response.status != HttpStatusCode.OK) {
+                            throw ServerException(response.status.value, "Failed to poll mailbox")
+                        }
+                        response.bodyAsText()
                     }
-                    response.body()
                 }
+            } catch (e: Exception) {
+                throw mapException(e)
             }
-        } catch (e: Exception) {
-            throw mapException(e)
-        }
+        // Decoded outside withFailureTracking: a response that arrived but doesn't parse is a
+        // ProtocolException, not a transport failure that should count toward a client reset.
+        return decodeMailboxPayloads(text)
     }
 
     override suspend fun ackId(

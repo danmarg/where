@@ -267,7 +267,7 @@ key_confirmation = HMAC-SHA-256(key  = K_confirm,
 
 **Public-Key Validation.** All X25519 operations in this protocol (the `SK` derivation above and every DH ratchet step in §8.3) MUST reject low-order or otherwise invalid public keys. An attacker who substitutes a low-order point for `EK_B.pub` (or for a later ratchet `dh_pub`) could otherwise coerce the X25519 output to a known constant (typically all-zero), compromising forward secrecy and enabling key confirmation to pass under attacker-known inputs.
 
-The reference implementation relies on libsodium's `crypto_scalarmult_curve25519`, which returns an error for all 7 canonical low-order points listed in its blacklist (`0`, `1`, the two cofactor-order generators from cr.yp.to/ecdh.html, and `p-1`, `p`, `p+1`). Our wrappers propagate this as an exception (`shared/.../e2ee/CryptoPrimitivesImpl.kt`), which `KeyExchange` and `Session` surface as a session-creation or message-decryption failure. The regression guard lives in `shared/.../e2ee/X25519LowOrderPointTest.kt`.
+The reference implementation relies on libsodium's `crypto_scalarmult_curve25519`, which returns an error for all 7 canonical low-order points listed in its blacklist (`0`, `1`, the two cofactor-order generators from cr.yp.to/ecdh.html, and `p-1`, `p`, `p+1`). Our `dh()` wrapper turns that error into an `AuthenticationException`, and `requireNonZeroSharedSecret` rejects the low-order inputs libsodium doesn't refuse, so `KeyExchange` and `Session` surface either as a session-creation or message-decryption failure. The regression guard lives in `shared/.../e2ee/X25519LowOrderPointTest.kt`, which also runs every Wycheproof public key whose shared secret is zero (non-canonical encodings included).
 
 Implementations using a different X25519 library MUST add an equivalent check: either reject the input against the published low-order point list (RFC 7748 §6.1) or verify in constant time that the X25519 output is not all-zero.
 
@@ -821,6 +821,7 @@ For a **Location Update** (`"type": "loc"`):
 ```
 *   `precision` (string, optional): One of `"FINE"` (exact) or `"COARSE"` (rounded to ~1.1km). If absent, defaults to `"FINE"`.
 *   `stationary` (bool, optional): When `true`, signals that the sender is parked and may go quiet (see §5.7.1). Senders SHOULD omit the key entirely when `false` to minimize on-wire entropy. Absent ⇒ `false`.
+*   `lat`, `lng`, `acc` and `ts` are required. A Location missing one, or with a coordinate or accuracy that isn't a finite number (e.g. `1e999`, `NaN`), is decoded as a Keepalive.
 
 For a **Keepalive** (`"type": "ka"`):
 ```json
@@ -913,16 +914,16 @@ With this design, and assuming only the advertised mailbox API and payload encry
 |---|---|---|---|
 | Asymmetric key agreement | X25519 (ECDH) | Diffie-Hellman key exchange at bootstrap and each DH ratchet step | libsodium / Tink / CryptoKit |
 | Symmetric encryption | ChaCha20-Poly1305 (IETF) | Encrypt location payloads and control messages (AEAD) | libsodium |
-| Key derivation (KDF_RK) | HKDF-SHA-256 | Derive new root key and chain key from DH output | libsodium |
-| Chain KDF (KDF_CK) | HMAC-SHA-256 + HKDF-SHA-256 | Advance symmetric ratchet: `MK = HMAC(CK, 0x01)`, `CK' = HMAC(CK, 0x02)`, `nonce = HKDF(ikm=MK, info="Where-v1-MsgNonce", length=12)` | libsodium |
-| Suggested name KDF | HKDF-SHA-256 | Derive name encryption key `K_name` from shared secret `SK` | libsodium |
+| Key derivation (KDF_RK) | HKDF-SHA-256 | Derive new root key and chain key from DH output | common Kotlin over platform HMAC |
+| Chain KDF (KDF_CK) | HMAC-SHA-256 + HKDF-SHA-256 | Advance symmetric ratchet: `MK = HMAC(CK, 0x01)`, `CK' = HMAC(CK, 0x02)`, `nonce = HKDF(ikm=MK, info="Where-v1-MsgNonce", length=12)` | platform HMAC |
+| Suggested name KDF | HKDF-SHA-256 | Derive name encryption key `K_name` from shared secret `SK` | common Kotlin over platform HMAC |
 | Suggested name encryption | ChaCha20-Poly1305 (IETF) | Encrypt/decrypt suggested name during key exchange | libsodium |
-| Session auth | HMAC-SHA-256 | Authenticate `KeyExchangeInit` key confirmation | libsodium |
+| Session auth | HMAC-SHA-256 | Authenticate `KeyExchangeInit` key confirmation | javax `Mac` (JVM/Android), CommonCrypto `CCHmac` (iOS) |
 | Hash / fingerprint | SHA-256 | Session fingerprints (`alice_fp`, `bob_fp`), safety number, discovery token | libsodium |
-| Random number generation | OS CSPRNG | Ephemeral key generation | `SecureRandom` (Android) / `SecRandomCopyBytes` (iOS) |
+| Random number generation | OS CSPRNG | Ephemeral key generation | libsodium `randombytes_buf` (OS CSPRNG) |
 
 **Library recommendations:**
-- **Kotlin Multiplatform:** Use [ionspin/kotlin-multiplatform-libsodium](https://github.com/ionspin/kotlin-multiplatform-libsodium) for all cryptographic primitives (X25519, ChaCha20-Poly1305, SHA-256, HMAC-SHA-256). Libsodium provides a unified API across JVM, Android, and iOS, eliminating platform-specific implementation variance. All crypto operations are common-code `expect/actual` implementations.
+- **Kotlin Multiplatform:** Use [ionspin/kotlin-multiplatform-libsodium](https://github.com/ionspin/kotlin-multiplatform-libsodium) for X25519, ChaCha20-Poly1305 and SHA-256; HMAC-SHA-256 is the platform's (javax `Mac`, CommonCrypto). See [crypto-backend.md](crypto-backend.md) for why, the pinned versions, and how each is tested (Wycheproof on both platforms). Libsodium provides a unified API across JVM, Android, and iOS, eliminating platform-specific implementation variance. All crypto operations are common-code `expect/actual` implementations.
 - **Android / Kotlin:** Libsodium bindings use `libsodium.so` (statically linked). Store root keys in Android Keystore where supported; a Keystore-backed wrapper key can protect the master key material.
 - **iOS / Swift:** Libsodium bindings use the native `libsodium` framework (iOS includes sodium.dylib). Key material persists in the Secure Enclave-backed Keychain. SwiftUI calls the KMP shared module for crypto operations.
 

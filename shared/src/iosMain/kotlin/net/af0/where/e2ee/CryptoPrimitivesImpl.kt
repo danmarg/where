@@ -37,8 +37,12 @@ internal actual fun hmacSha256(
     data: ByteArray,
 ): ByteArray {
     val result = ByteArray(CC_SHA256_DIGEST_LENGTH)
-    key.usePinned { keyPinned ->
-        data.usePinned { dataPinned ->
+    // addressOf(0) throws on an empty array, but an empty key or message is valid HMAC input
+    // (Wycheproof has empty messages): pin a 1-byte stand-in and still pass the real length.
+    val keyBuf = if (key.isEmpty()) ByteArray(1) else key
+    val dataBuf = if (data.isEmpty()) ByteArray(1) else data
+    keyBuf.usePinned { keyPinned ->
+        dataBuf.usePinned { dataPinned ->
             result.usePinned { resultPinned ->
                 CCHmac(
                     kCCHmacAlgSHA256,
@@ -92,6 +96,7 @@ internal actual fun aeadEncrypt(
     plaintext: ByteArray,
     aad: ByteArray,
 ): ByteArray {
+    requireAeadKeyAndNonce(key, nonce)
     return AuthenticatedEncryptionWithAssociatedData.chaCha20Poly1305IetfEncrypt(
         plaintext.toUByteArray(),
         aad.toUByteArray(),
@@ -106,6 +111,7 @@ internal actual fun aeadDecrypt(
     ciphertext: ByteArray,
     aad: ByteArray,
 ): ByteArray {
+    requireAeadKeyAndNonce(key, nonce)
     return try {
         AuthenticatedEncryptionWithAssociatedData.chaCha20Poly1305IetfDecrypt(
             ciphertext.toUByteArray(),

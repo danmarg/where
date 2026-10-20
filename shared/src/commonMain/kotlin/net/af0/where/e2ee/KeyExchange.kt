@@ -67,13 +67,13 @@ object KeyExchange {
         val ekB = generateX25519KeyPair()
         val bobPriv = DhPrivateKey(ekB.priv)
         val bobPub = DhPublicKey(ekB.pub)
-        val sk = dh(bobPriv, alicePub)
-        try {
-            requireNonZeroSharedSecret(sk)
-        } catch (e: AuthenticationException) {
-            bobPriv.zeroize()
-            throw e
-        }
+        val sk =
+            try {
+                dh(bobPriv, alicePub).also { requireNonZeroSharedSecret(it) }
+            } catch (e: AuthenticationException) {
+                bobPriv.zeroize()
+                throw e
+            }
 
         val session =
             initSession(

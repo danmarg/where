@@ -97,4 +97,16 @@ class MessagePlaintextCodecTest {
         val decoded = Session.decodeMessage(incomplete.encodeToByteArray())
         assertTrue(decoded is MessagePlaintext.Keepalive)
     }
+
+    /** Found by the DecodeMessage fuzz target: these parse as doubles, but no place is infinite. */
+    @Test
+    fun locWithNonFiniteValueDegradesToKeepalive() {
+        for (field in listOf("lat", "lng", "acc")) {
+            for (value in listOf("1e999", "-1e999", "\"NaN\"", "\"Infinity\"")) {
+                val values = mutableMapOf("lat" to "1.0", "lng" to "2.0", "acc" to "5.0").apply { put(field, value) }
+                val wire = """{"type":"loc","lat":${values["lat"]},"lng":${values["lng"]},"acc":${values["acc"]},"ts":1000}"""
+                assertTrue(Session.decodeMessage(wire.encodeToByteArray()) is MessagePlaintext.Keepalive, wire)
+            }
+        }
+    }
 }

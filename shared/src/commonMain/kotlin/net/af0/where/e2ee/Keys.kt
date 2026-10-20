@@ -2,6 +2,7 @@
 
 package net.af0.where.e2ee
 
+import com.ionspin.kotlin.crypto.GeneralLibsodiumException
 import kotlinx.serialization.KSerializer
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.builtins.MapSerializer
@@ -506,8 +507,18 @@ internal fun constantTimeEquals(
     return diff == 0
 }
 
-/** X25519 between our private key and their public key. */
+/**
+ * X25519 between our private key and their public key. A public key libsodium refuses outright
+ * (it does for some low-order points) is an [AuthenticationException], the same as the all-zero
+ * result [KeyExchange.requireNonZeroSharedSecret] catches for the others. Any other failure (say,
+ * libsodium not initialized) propagates as itself rather than looking like a bad peer key.
+ */
 internal fun dh(
     localPriv: DhPrivateKey,
     remotePub: DhPublicKey,
-): SharedSecret = SharedSecret(x25519(localPriv.bytes, remotePub.bytes))
+): SharedSecret =
+    try {
+        SharedSecret(x25519(localPriv.bytes, remotePub.bytes))
+    } catch (e: GeneralLibsodiumException) {
+        throw AuthenticationException("X25519 rejected the public key", e)
+    }
