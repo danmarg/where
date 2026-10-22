@@ -408,7 +408,7 @@ class LocationService : Service() {
                         val friendId = pendingFriendSends.tryReceive().getOrNull() ?: break
                         // Before reading the sharing state: a stop issued after it drops the send.
                         val stamp = locationClient.sharingStamp()
-                        if (!userStore.isSharingLocation.value) break
+                        if (!canSendLocations()) break
                         // The friend may have been paused (or their timed share expired) while
                         // this send sat queued waiting for a fix.
                         if (friendId in userStore.effectivelyPausedIds()) continue
@@ -587,7 +587,7 @@ class LocationService : Service() {
             val friendId = intent.getStringExtra(EXTRA_FRIEND_ID)
             // Before reading the sharing state: a stop issued after it drops the send.
             val stamp = locationClient.sharingStamp()
-            if (userStore.isSharingLocation.value) {
+            if (canSendLocations()) {
                 if (friendId != null && friendId in userStore.effectivelyPausedIds()) {
                     Log.d(TAG, "ACTION_FORCE_PUBLISH: $friendId is paused; not sending")
                 } else if (friendId != null) {
@@ -988,6 +988,12 @@ class LocationService : Service() {
 
     internal suspend fun doPoll(source: WakeSource = WakeSource.TIMER) = friendPoller.poll(source)
 
+    // Sharing is on and we hold location permission. Without permission the ViewModel has told
+    // friends we stopped (reconcileSharingWithPermission) while sharing stays on as the user's
+    // choice, so a cached fix must not go out after that stop; when permission returns, sends
+    // resume. Read after taking a LocationClient.sharingStamp(), like the pause state.
+    private fun canSendLocations(): Boolean = userStore.isSharingLocation.value && hasLocationPermission()
+
     // No default for `stationary`: every call site must decide explicitly. A silent
     // `= false` default caused several "here since" regressions where a call site omitted
     // it and unknowingly asserted "moving" - see the "here since" investigation.
@@ -1028,7 +1034,7 @@ class LocationService : Service() {
             // Before reading the sharing state: a stop issued after it drops this Location for
             // that friend rather than letting it follow the stop (LocationClient.sharingStamp).
             val stamp = locationClient.sharingStamp()
-            if (!userStore.isSharingLocation.value) return
+            if (!canSendLocations()) return
             try {
                 locationClient.sendLocation(lat, lng, userStore.effectivelyPausedIds(), stationary = stationary, stamp = stamp)
                 val sendCompleteTime = clock()

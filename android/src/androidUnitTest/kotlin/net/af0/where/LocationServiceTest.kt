@@ -412,6 +412,29 @@ class LocationServiceTest {
         }
 
     @Test
+    fun noLocationIsSentWithoutLocationPermission() =
+        runTest {
+            // Permission revoked with sharing still on: the ViewModel has sent a stop, so the
+            // heartbeat's cached fix must not follow it.
+            val controller = Robolectric.buildService(LocationService::class.java)
+            val service = controller.get()
+            val mockClient = io.mockk.mockk<LocationClient>(relaxed = true)
+            service.locationClientOverride = mockClient
+            service.locationSourceOverride = fakeLocationSource
+            service.e2eeManagerOverride = io.mockk.mockk(relaxed = true)
+            controller.create()
+            shadowOf(context).denyPermissions(Manifest.permission.ACCESS_FINE_LOCATION)
+
+            try {
+                service.sendLocationIfNeeded(1.0, 2.0, isHeartbeat = true, force = true, stationary = false)
+                advanceUntilIdle()
+                io.mockk.coVerify(exactly = 0) { mockClient.sendLocation(any(), any(), any(), any(), any()) }
+            } finally {
+                controller.destroy()
+            }
+        }
+
+    @Test
     fun testSendLocationRetriesOnTransientFailure() =
         runTest {
             var currentTime = 1_000_000_000L
