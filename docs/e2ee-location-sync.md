@@ -403,8 +403,6 @@ Routing tokens are derived from the current root key. Whenever the DH ratchet ad
 
 A peer's mailbox state is identified by its DH public key `dh_pub`, which serves as the canonical epoch identifier. Epoch numbers may exist as an internal convenience, but they are derived from DH ratchet progression and must never be treated as an independent source of truth.
 
-**Formal model.** [`formal/tla/WhereSync.tla`](../formal/tla/WhereSync.tla) models this section (with §5.3 and §8.3.1) for two clients and the server: the transition rule, single-token polling, the ratchet and token rotation, send-side retirement, acks and force-acks, crashes between saving state and acking, and server loss, duplication and TTL expiry. TLC checks, at small bounds in CI (`.github/workflows/tla.yml`): no `(epoch, seq)` accepted twice; the skipped-key cache within its cap; every receive-side DH step matching the sender's; acks deleting only accepted messages; no client left polling a retired token while unread messages wait on a newer one (unless the server lost an unread frame); every sent, unaccepted frame still pending on a mailbox the receiver will read (the one it polls, or a newer one whose transition frame is pending on it), unless that frame or its transition frame was lost, expired or acked unread; force-acks deleting only frames the receiver could not have processed; no frame deleted unread unless the server lost an unread frame first; and, under fairness with no loss, every message delivered and each side eventually holding the DH key of the last frame the other sent. Mutants check that each property catches the bug it is for, and probes that each configuration reaches what it claims to. See [`formal/tla/README.md`](../formal/tla/README.md) for the bounds and the counterexamples found so far. The model's assumptions about the code (atomic transactions, single-token polling, a FIFO outbox ordered by `rowid` rather than the wall clock, one msgId per frame, idempotent PUTs) are listed there with the code that keeps each.
-
 **The Mailbox Synchronization Challenge:**
 In an anonymous mailbox model, a client polling token `T_old` will never see a message posted to `T_new`. The protocol resolves this with a **transition-message rule** on the send side and a **root-key-advance observation** on the retirement side, rather than a two-token polling window on the receive side.
 
@@ -421,6 +419,8 @@ The receiver polls exactly one mailbox token at a time (the current `recv_token`
 When a decrypted message carries a new sender `dh_pub`:
 1. Speculatively perform the DH ratchet step (§8.3.1(4) requires this to be committed only after body AEAD authentication succeeds — but see §8.3.1(4) note for the deliberate failed-body liveness deviation).
 2. Update `recv_token` to the value derived from the new root key.
+
+A batch is processed only against the token it was fetched from. If the client's `recv_token` changed between the GET and processing (a concurrent poll ratcheted), it MUST drop the batch without decrypting, saving or acking anything, leaving it on the server for a later poll.
 
 #### 5.4.3 Send-Side Retirement (Observed Root-Key Advance)
 The sender retires its `prev_send_token` (and stops posting fallback retries to it) when it observes an authenticated proof that the peer has processed its new DH key. The proof used here is a successful decryption whose post-ratchet `root_key` is strictly newer than the one in effect when those outbox entries were enqueued — exactly the property an authenticated ack-of-DH would have established, inferred directly from the ratchet instead.
@@ -452,7 +452,7 @@ When processing a batch of messages already retrieved from the server, clients S
 The GET → process → DELETE sequence is the receive-side analogue of the send-side transactional outbox:
 
 1. `GET /inbox/{token}` returns messages; the server retains them.
-2. The client decrypts, updates session state, and **durably saves** the new `recvToken` and ratchet state to local storage.
+2. The client decrypts, updates session state, and **durably saves** the new `recvToken` and ratchet state to local storage. Any send-side retirement this triggers (§5.4.3) MUST happen in the same transaction: a crash must never leave the ratchet saved without the discarded messages being gone, or the reverse.
 3. The client calls `DELETE /inbox/{token}?ids=...` to release the messages from the server.
 
 If the client crashes between steps 1 and 2, it re-fetches the same messages on next startup (server still holds them) and re-processes them from the same prior session state — idempotent and correct. If it crashes between steps 2 and 3, the session is already saved with the new `recvToken`; the leftover messages on the server are never fetched again and expire after TTL.

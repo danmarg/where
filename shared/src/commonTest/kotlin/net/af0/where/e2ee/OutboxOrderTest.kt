@@ -12,7 +12,6 @@ import kotlin.test.assertFails
  * frame first. The transition rule needs strict FIFO (§5.4.1, §5.4.3): if an epoch's transition
  * frame overtakes an earlier frame to the same mailbox, the peer ratchets and stops polling that
  * mailbox, and the earlier frame is either cancelled unsent or posted where no one reads it.
- * (formal/tla/WhereSync.tla models the outbox as a FIFO queue.)
  */
 class OutboxOrderTest {
     init {
