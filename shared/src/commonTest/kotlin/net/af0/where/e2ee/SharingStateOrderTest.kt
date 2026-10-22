@@ -68,6 +68,16 @@ class SharingStateOrderTest {
         }
 
     @Test
+    fun `the stop time is the last stop's in send order and not the largest`() =
+        runTest {
+            // The sender's clock stepped back between the two stops. The last stop ties the
+            // Location and wins by send order (stoppedAtTs set means stopped); the largest stop
+            // time would be t + 1.
+            val friend = aliceAfter(loc(t), MessagePlaintext.StoppedSharing(ts = t + 1), MessagePlaintext.StoppedSharing(ts = t))
+            assertEquals(t, friend.stoppedAtTs)
+        }
+
+    @Test
     fun `a Location generated before a stop but sent after it loses`() =
         runTest {
             // It waited on the friend's lock while the stop went out (LocationClient.sendLocation).
