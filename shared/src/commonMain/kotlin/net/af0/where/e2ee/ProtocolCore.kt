@@ -69,7 +69,18 @@ internal object ProtocolCore {
         /** Post [payload] to [mailbox] (`PUT /inbox/{mailbox}/{payload.msgId}`), retrying until it lands. */
         data class Put(val mailbox: String, val payload: MailboxPayload) : Effect()
 
-        /** Pending [Put]s to [mailbox] are obsolete: the peer has moved past that mailbox. */
+        /**
+         * Drop the sender's queued [Put]s for [mailbox], its previous send token (§5.4.3). The
+         * interpreter deletes every outbox row of the friend addressed to [mailbox], so this is
+         * sound only because each such row is either the epoch's transition frame, whose delivery
+         * the peer's ratchet proves, or was PUT before it: the outbox drains in order, and only the
+         * epoch's first frame (seq 1) is addressed to the previous token, after the rest of the
+         * previous epoch. Every later frame is addressed to the current send token and is never
+         * touched. Not emitted while the previous and current send token are the same (the
+         * responder's first ratchet), where that argument fails. BootstrapOutboxCancelTest and
+         * the schedule property test (a message may leave an outbox only by being posted, or by
+         * the server losing it) check this.
+         */
         data class CancelPut(val mailbox: String) : Effect()
 
         /** Delete [ids] from [mailbox] (`DELETE /inbox/{mailbox}?ids=…`). */
