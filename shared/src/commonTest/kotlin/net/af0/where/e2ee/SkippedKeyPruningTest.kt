@@ -6,8 +6,9 @@ import kotlin.test.assertTrue
 
 /**
  * After each batch the receiver keeps only the cached message keys a later batch can reach
- * (E2eeProtocol.dropUnusableSkippedKeys; CachedKeysUsable in formal/tla/WhereSync.tla). The first
- * case is the TLC counterexample to that invariant; the other two are the keys that must stay.
+ * (E2eeProtocol.dropUnusableSkippedKeys). The first case is a counterexample found by model
+ * checking (the TLA+ model on the `claude/sync-model` branch); the second is the other key that
+ * must go, and the last two are the keys that must stay.
  */
 class SkippedKeyPruningTest {
     init {

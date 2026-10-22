@@ -7,7 +7,8 @@ import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 
 /**
- * A TLC counterexample (formal/tla/WhereSync.tla, AllDelivered), as a test.
+ * A counterexample found by model checking the protocol (the TLA+ model on the
+ * `claude/sync-model` branch; ScheduleInterleavingPropertyTest finds it too), as a test.
  *
  *   1. Alice sends and posts her first frame (her epoch's transition frame, on the bootstrap token).
  *   2. Bob queues a frame of his own, still in the bootstrap epoch; its PUT hasn't happened yet.
