@@ -228,7 +228,7 @@ internal object ProtocolCore {
         // ratchet: Alice ratchets on her own in aliceProcessInit, before reading anything of his,
         // and his previous send token is still the bootstrap one she polls (prevSendToken ==
         // sendToken until his first ratchet). Cancelling there dropped his queued frames unsent
-        // (found by TLC, formal/tla/WhereSync.tla; BootstrapOutboxCancelTest).
+        // (BootstrapOutboxCancelTest; ScheduleInterleavingPropertyTest finds it too).
         if (dhRatchet && session.prevSendToken != session.sendToken) {
             effects.add(Effect.CancelPut(session.transportFor(1).token.toHex()))
         }

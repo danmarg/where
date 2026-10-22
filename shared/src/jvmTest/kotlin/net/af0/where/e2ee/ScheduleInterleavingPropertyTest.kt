@@ -39,7 +39,12 @@ class ScheduleInterleavingPropertyTest {
 
     @Test
     fun randomSchedulesKeepDeliveryInvariants() {
-        val failures = (1..SCHEDULES).mapNotNull { seed -> runSchedule(seed.toLong(), verbose = false) }
+        val failures =
+            try {
+                (1..SCHEDULES).mapNotNull { seed -> runSchedule(seed.toLong(), verbose = false) }
+            } finally {
+                TimeSource.setProvider(DefaultTimeProvider)
+            }
         if (failures.isNotEmpty()) {
             fail("${failures.size} of $SCHEDULES schedules failed:\n" + failures.sortedBy { it.length }.take(3).joinToString("\n\n"))
         }
@@ -49,7 +54,11 @@ class ScheduleInterleavingPropertyTest {
     @Test
     fun replay() {
         val seed = System.getProperty("schedule.seed")?.toLong() ?: return
-        runSchedule(seed, verbose = true)?.let { fail(it) }
+        try {
+            runSchedule(seed, verbose = true)?.let { fail(it) }
+        } finally {
+            TimeSource.setProvider(DefaultTimeProvider)
+        }
     }
 
     private class Party(val name: String, val driver: SqlDriver) {
@@ -75,6 +84,9 @@ class ScheduleInterleavingPropertyTest {
         val random = Random(seed)
         val trace = mutableListOf<String>()
         var failure: String? = null
+        // The wall clock wanders, backwards too: the outbox must drain in queue order regardless.
+        val clock = MockTimeProvider()
+        TimeSource.setProvider(clock)
         runTest {
             val alice = Party("alice", createTestSqlDriver())
             val bob = Party("bob", createTestSqlDriver())
@@ -218,6 +230,7 @@ class ScheduleInterleavingPropertyTest {
 
             repeat(random.nextInt(MIN_STEPS, MAX_STEPS)) {
                 if (failure != null) return@repeat
+                clock.advanceSeconds(random.nextInt(-120, 121).toLong())
                 val p = if (random.nextBoolean()) alice else bob
                 when (random.nextInt(100)) {
                     in 0..39 -> {
