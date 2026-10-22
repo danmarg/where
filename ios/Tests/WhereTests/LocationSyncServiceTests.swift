@@ -108,11 +108,12 @@ class LocationSyncServiceTests: XCTestCase {
             return _pollCallCount
         }
         var lastStationary: Bool? = nil
-        func sendLocation(lat: Double, lng: Double, pausedFriendIds: Set<String>, stationary: Bool) async throws {
+        func sharingStamp() -> Int64 { 0 }
+        func sendLocation(lat: Double, lng: Double, pausedFriendIds: Set<String>, stationary: Bool, stamp: Int64) async throws {
             lastStationary = stationary
             sendLocationCallback?()
         }
-        func sendLocationToFriend(friendId: String, lat: Double, lng: Double, stationary: Bool) async throws {
+        func sendLocationToFriend(friendId: String, lat: Double, lng: Double, stationary: Bool, stamp: Int64) async throws {
             sendLocationToFriendCallback?(friendId)
             sendLocationCallback?()
         }

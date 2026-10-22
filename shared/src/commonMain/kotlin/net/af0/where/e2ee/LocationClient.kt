@@ -31,6 +31,9 @@ const val AUTOMATED_KEEPALIVE_BACKSTOP_SECONDS = 3 * UNRESPONSIVE_SEND_INTERVAL_
 /** A removed friend's undelivered messages are retried this long - the server's own retention. */
 const val ORPHANED_OUTBOX_RETENTION_MILLIS = FriendEntry.ACK_TIMEOUT_SECONDS * 1000
 
+/** No [LocationClient.sharingStamp] passed: the send takes one itself, on entry. */
+private const val NO_STAMP = -1L
+
 /**
  * Orchestrates the end-to-end encrypted location sharing protocol.
  * Unifies polling, decryption, ratchet rotation, and sending for all platforms.
@@ -76,6 +79,68 @@ open class LocationClient(
     private suspend fun getFriendMutex(id: String): Mutex {
         mutexLock.withLock {
             return friendMutexes.getOrPut(id) { Mutex() }
+        }
+    }
+
+    // Sharing-state order (§5.7.2). The receiver takes "sharing" or "stopped" from the order of
+    // our Locations and stops and, within one batch, from their ts (the later wins, a Location
+    // winning a tie). So per friend we never send a Location that was decided on before a stop
+    // after that stop, and date each message after the ones before it (see sharingTs).
+    // stopsIssued counts stops; lastStopIssued is its value at each friend's latest stop, and
+    // lastStopIssuedToAll at the latest stop to everyone. All of it, and sharingTsByFriend, changes
+    // under sharingOrderMutex; stopsIssued is also read without it, by sharingStamp().
+    private val sharingOrderMutex = Mutex()
+
+    @kotlin.concurrent.Volatile
+    private var stopsIssued = 0L
+    private val lastStopIssued = mutableMapOf<String, Long>()
+    private var lastStopIssuedToAll = 0L
+
+    private class SharingTs(var location: Long, var stop: Long)
+
+    private val sharingTsByFriend = mutableMapOf<String, SharingTs>()
+
+    /**
+     * Take this BEFORE reading the sharing and pause state that decides a Location send, and pass
+     * it to [sendLocation] or [sendLocationToFriend]. A stop issued to a friend after the stamp
+     * means that read may predate the pause, so the Location is not sent to that friend: it would
+     * follow the stop and undo it. Callers flip the pause state before calling the stop functions,
+     * so a read that comes after the stamp of such a stop already sees the pause.
+     */
+    fun sharingStamp(): Long = stopsIssued
+
+    /** [friendId] null: a stop to every friend, including one paired while it goes out. */
+    private suspend fun issueStop(friendId: String?) {
+        sharingOrderMutex.withLock {
+            stopsIssued++
+            if (friendId == null) lastStopIssuedToAll = stopsIssued else lastStopIssued[friendId] = stopsIssued
+        }
+    }
+
+    private suspend fun stoppedSince(
+        friendId: String,
+        stamp: Long,
+    ): Boolean = sharingOrderMutex.withLock { maxOf(lastStopIssued[friendId] ?: 0L, lastStopIssuedToAll) > stamp }
+
+    // Under the friend's mutex. A stop is dated after every Location sent to this friend before it,
+    // and a Location no earlier than every stop before it, so whichever we sent last wins at the
+    // receiver, even in one second or after our clock steps back. Keepalives don't count, and a
+    // Location only moves later for a stop, so a clock that ran ahead and was corrected dates
+    // Locations right again at once. Kept in memory; after a restart lastSentTs (no earlier than
+    // the last message's ts when it was a Location or stop, E2eeManager.encryptToOutbox) stands in.
+    private suspend fun sharingTs(
+        friendId: String,
+        isStop: Boolean,
+    ): Long {
+        val seed = store.getFriend(friendId)?.lastSentTs ?: Long.MIN_VALUE
+        val now = currentTimeSeconds()
+        return sharingOrderMutex.withLock {
+            val last = sharingTsByFriend.getOrPut(friendId) { SharingTs(seed, seed) }
+            if (isStop) {
+                maxOf(now, last.location + 1).also { last.stop = maxOf(last.stop, it) }
+            } else {
+                maxOf(now, last.stop).also { last.location = maxOf(last.location, it) }
+            }
         }
     }
 
@@ -489,6 +554,10 @@ open class LocationClient(
                 }
             store.deleteFriendKeepingOutbox(friendId, farewell)
         }
+        sharingOrderMutex.withLock {
+            lastStopIssued.remove(friendId)
+            sharingTsByFriend.remove(friendId)
+        }
         mutexLock.withLock {
             silentDropRetries.keys.removeAll { it.startsWith("$friendId:") }
             orphanedOutboxGeneration++
@@ -613,10 +682,11 @@ open class LocationClient(
         lng: Double,
         pausedFriendIds: Set<String> = emptySet(),
         stationary: Boolean = false,
+        stamp: Long = NO_STAMP,
     ) {
+        val sharingStamp = if (stamp == NO_STAMP) sharingStamp() else stamp
         coroutineScope {
             val now = currentTimeSeconds()
-            val payload = MessagePlaintext.Location(lat = lat, lng = lng, acc = 0.0, ts = now, stationary = stationary)
             // Sequential: each friend's eligibility check is a local-DB read serialized behind
             // E2eeStore's single storeLock anyway, so fanning these out via async/awaitAll (like
             // the network send phase below) buys no real concurrency, just dispatch overhead.
@@ -644,7 +714,7 @@ open class LocationClient(
                         runCatching {
                             val mutex = getFriendMutex(friend.id)
                             mutex.withLock {
-                                sendMessageToFriendInternal(friend.id, payload)
+                                sendLocationLocked(friend.id, lat, lng, stationary, sharingStamp)
                             }
                         }.onFailure { if (it is CancellationException) throw it }
                     }
@@ -667,13 +737,29 @@ open class LocationClient(
         lat: Double,
         lng: Double,
         stationary: Boolean = false,
+        stamp: Long = NO_STAMP,
     ) {
+        val sharingStamp = if (stamp == NO_STAMP) sharingStamp() else stamp
         val mutex = getFriendMutex(friendId)
         mutex.withLock {
-            val ts = currentTimeSeconds()
-            val payload = MessagePlaintext.Location(lat = lat, lng = lng, acc = 0.0, ts = ts, stationary = stationary)
-            sendMessageToFriendInternal(friendId, payload)
+            sendLocationLocked(friendId, lat, lng, stationary, sharingStamp)
         }
+    }
+
+    // Under the friend's mutex.
+    private suspend fun sendLocationLocked(
+        friendId: String,
+        lat: Double,
+        lng: Double,
+        stationary: Boolean,
+        stamp: Long,
+    ) {
+        if (stoppedSince(friendId, stamp)) {
+            store.addDiagnosticEvent("sendLocation($friendId): sharing stopped since this send was decided; skipped")
+            return
+        }
+        val ts = sharingTs(friendId, isStop = false)
+        sendMessageToFriendInternal(friendId, MessagePlaintext.Location(lat = lat, lng = lng, acc = 0.0, ts = ts, stationary = stationary))
     }
 
     /**
@@ -683,9 +769,10 @@ open class LocationClient(
      */
     @Throws(Exception::class)
     open suspend fun sendStoppedSharing(pausedFriendIds: Set<String> = emptySet()) {
-        val payload = MessagePlaintext.StoppedSharing(ts = currentTimeSeconds())
+        issueStop(null)
         val activeFriends = store.listFriends().filter { isActiveFriend(it, pausedFriendIds) }
         forEachFriendParallel(activeFriends) { friend ->
+            val payload = MessagePlaintext.StoppedSharing(ts = sharingTs(friend.id, isStop = true))
             sendMessageToFriendInternal(friend.id, payload, requireDrainedOutboxFirst = false)
         }
     }
@@ -696,10 +783,11 @@ open class LocationClient(
      */
     @Throws(Exception::class)
     open suspend fun sendStoppedSharingToFriend(friendId: String) {
-        val payload = MessagePlaintext.StoppedSharing(ts = currentTimeSeconds())
+        issueStop(friendId)
         val mutex = getFriendMutex(friendId)
         mutex.withLock {
             try {
+                val payload = MessagePlaintext.StoppedSharing(ts = sharingTs(friendId, isStop = true))
                 sendMessageToFriendInternal(friendId, payload, requireDrainedOutboxFirst = false)
             } catch (e: CancellationException) {
                 throw e

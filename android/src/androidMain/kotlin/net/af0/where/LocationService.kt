@@ -406,13 +406,15 @@ class LocationService : Service() {
 
                     while (true) {
                         val friendId = pendingFriendSends.tryReceive().getOrNull() ?: break
+                        // Before reading the sharing state: a stop issued after it drops the send.
+                        val stamp = locationClient.sharingStamp()
                         if (!userStore.isSharingLocation.value) break
                         // The friend may have been paused (or their timed share expired) while
                         // this send sat queued waiting for a fix.
                         if (friendId in userStore.effectivelyPausedIds()) continue
                         launch {
                             try {
-                                locationClient.sendLocationToFriend(friendId, loc.first, loc.second, stationary = stationary)
+                                locationClient.sendLocationToFriend(friendId, loc.first, loc.second, stationary = stationary, stamp = stamp)
                             } catch (e: Exception) {
                                 Log.e(TAG, "Failed to send deferred location to $friendId: ${e.message}")
                             }
@@ -583,6 +585,8 @@ class LocationService : Service() {
         }
         if (intent?.action == ACTION_FORCE_PUBLISH) {
             val friendId = intent.getStringExtra(EXTRA_FRIEND_ID)
+            // Before reading the sharing state: a stop issued after it drops the send.
+            val stamp = locationClient.sharingStamp()
             if (userStore.isSharingLocation.value) {
                 if (friendId != null && friendId in userStore.effectivelyPausedIds()) {
                     Log.d(TAG, "ACTION_FORCE_PUBLISH: $friendId is paused; not sending")
@@ -593,7 +597,7 @@ class LocationService : Service() {
                         val stationary = isStill
                         serviceScope.launch {
                             try {
-                                locationClient.sendLocationToFriend(friendId, loc.first, loc.second, stationary = stationary)
+                                locationClient.sendLocationToFriend(friendId, loc.first, loc.second, stationary = stationary, stamp = stamp)
                             } catch (e: Exception) {
                                 Log.e(TAG, "Failed to send forced location to $friendId: ${e.message}")
                             }
@@ -1020,12 +1024,13 @@ class LocationService : Service() {
         var lastError: Exception? = null
         val totalAttempts = 1 + SEND_RETRY_DELAYS_MS.size
         for (attempt in 0 until totalAttempts) {
-            if (attempt > 0) {
-                delay(SEND_RETRY_DELAYS_MS[attempt - 1])
-                if (!userStore.isSharingLocation.value) return
-            }
+            if (attempt > 0) delay(SEND_RETRY_DELAYS_MS[attempt - 1])
+            // Before reading the sharing state: a stop issued after it drops this Location for
+            // that friend rather than letting it follow the stop (LocationClient.sharingStamp).
+            val stamp = locationClient.sharingStamp()
+            if (!userStore.isSharingLocation.value) return
             try {
-                locationClient.sendLocation(lat, lng, userStore.effectivelyPausedIds(), stationary = stationary)
+                locationClient.sendLocation(lat, lng, userStore.effectivelyPausedIds(), stationary = stationary, stamp = stamp)
                 val sendCompleteTime = clock()
                 logReliability(source, true, interval, wakeTrigger)
                 checkLateHeartbeat(interval)
