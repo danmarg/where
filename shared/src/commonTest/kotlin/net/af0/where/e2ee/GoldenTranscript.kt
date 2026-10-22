@@ -30,7 +30,7 @@ object GoldenTranscript {
     const val FILE = "where-v1-transcript.json"
 
     /** Bumped when the transcript's format or scenario changes; independent of the protocol version. */
-    const val VECTORS_VERSION = 2
+    const val VECTORS_VERSION = 3
     const val START_MILLIS = 1_767_225_600_000L // 2026-01-01T00:00:00Z
     const val STEP_MILLIS = 1_000L
     val SEEDS = mapOf(ALICE to "where-golden-v1/alice", BOB to "where-golden-v1/bob")

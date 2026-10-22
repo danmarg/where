@@ -1,5 +1,5 @@
 {
-    "vectors_version": 2,
+    "vectors_version": 3,
     "protocol_version": 1,
     "warning": "TEST VECTORS ONLY. Every private key, root, chain, header and message key and shared secret here is public, derived from the published seeds below. Never load this as, or mistake it for, a recording of a real session, and never use any of its keys or tokens for real traffic.",
     "spec": "docs/e2ee-location-sync.md",
@@ -220,10 +220,6 @@
                 {
                     "type": "deliver",
                     "plaintext": "{\"type\":\"loc\",\"lat\":37.7749,\"lng\":-122.4194,\"acc\":10.0,\"ts\":1767225603,\"precision\":\"FINE\"}"
-                },
-                {
-                    "type": "cancel_put",
-                    "mailbox": "0007c2af6f291b6bced64e93fa6f2be0"
                 },
                 {
                     "type": "ack",

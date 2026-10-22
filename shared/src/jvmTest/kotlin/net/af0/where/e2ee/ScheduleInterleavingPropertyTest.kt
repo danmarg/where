@@ -13,7 +13,8 @@ import kotlin.test.fail
  * per mailbox token in arrival order and serves them a page at a time; and a receiver polls only
  * its current recvToken (§5.4.2).
  *
- * Within those rules a schedule interleaves sends, failed posts (retried later), frames the
+ * Within those rules (and one exception: a message can also be created behind a stuck outbox, as
+ * LocationClient does for a StoppedSharing) a schedule interleaves sends, failed posts (retried later), frames the
  * server takes and loses, frames stored ahead of the one posted before them (same epoch), crashes
  * after a post but before its outbox entry is cleared (so it's
  * posted again), lost acks (so a frame is served again), batches handed over in any order, replays
@@ -25,8 +26,8 @@ import kotlin.test.fail
  *  - skippedMessageKeys never exceeds [MAX_SKIPPED_KEYS].
  *
  * Then the network is repaired (outboxes drain, every mailbox is read until empty). Every message
- * that reached the server must have decrypted exactly once, and a fresh message each way must
- * get through. The server never loses an epoch's transition message (seq 1): §5.4.5 accepts that
+ * that reached the server must have decrypted exactly once, every message created must have
+ * reached the server (or been one the server lost), and a fresh message each way must get through. The server never loses an epoch's transition message (seq 1): §5.4.5 accepts that
  * loss as unrecoverable.
  *
  * A failure names its seed; [replay] reruns one schedule with its full trace.
@@ -90,6 +91,7 @@ class ScheduleInterleavingPropertyTest {
             val numberOf = mutableMapOf<String, Int>() // msgId -> message number
             val seqOf = mutableMapOf<String, Long>() // msgId -> sendSeq
             var nextNumber = 0
+            val lostByServer = mutableSetOf<Int>() // posted, then lost by the server: the outbox entry goes with them
 
             fun expect(
                 ok: Boolean,
@@ -159,7 +161,10 @@ class ScheduleInterleavingPropertyTest {
                     trace += "  ${from.name} post #$n: $o"
                     when (o) {
                         Post.FAILED -> return false
-                        Post.LOST -> from.manager.removeFromOutbox(friendId, entry.msgId)
+                        Post.LOST -> {
+                            lostByServer.add(n)
+                            from.manager.removeFromOutbox(friendId, entry.msgId)
+                        }
                         Post.CRASH_AFTER_POST -> {
                             post(frame)
                             from.manager = testE2eeManager(from.driver)
@@ -182,15 +187,19 @@ class ScheduleInterleavingPropertyTest {
                     else -> Post.OK
                 }
 
-            suspend fun send(p: Party): Boolean {
-                // WAL safety: a stuck outbox blocks a new message until it drains.
-                if (!drainOutbox(p, ::chaoticPost)) return false
+            suspend fun createMessage(p: Party) {
                 val n = nextNumber++
                 val (payload, sent) =
                     p.manager.encryptAndAdvance(friendId, MessagePlaintext.Location(n.toDouble(), 0.0, 1.0, 1_000L + n))
                 numberOf[payload.msgId] = n
                 seqOf[payload.msgId] = sent.sendSeq
                 trace += "${p.name} send #$n (seq ${sent.sendSeq})"
+            }
+
+            suspend fun send(p: Party): Boolean {
+                // WAL safety: a stuck outbox blocks a new message until it drains.
+                if (!drainOutbox(p, ::chaoticPost)) return false
+                createMessage(p)
                 return true
             }
 
@@ -229,6 +238,12 @@ class ScheduleInterleavingPropertyTest {
                         trace += "${p.name} retry outbox"
                         drainOutbox(p, ::chaoticPost)
                     }
+                    in 90..93 -> {
+                        // A message created without draining the outbox first, as LocationClient
+                        // does for a StoppedSharing (#369): several entries can be queued at once.
+                        createMessage(p)
+                        if (random.nextBoolean()) drainOutbox(p, ::chaoticPost)
+                    }
                     else -> {
                         trace += "${p.name} restart"
                         p.manager = testE2eeManager(p.driver)
@@ -258,6 +273,10 @@ class ScheduleInterleavingPropertyTest {
                 val missing = p.reachedServer - p.decrypted
                 expect(missing.isEmpty()) { "${p.name} never decrypted ${missing.sorted()} (decrypted ${p.decrypted.sorted()})" }
             }
+            // Nothing is taken off an outbox unsent except what the server lost: a CancelPut that
+            // deleted a message the peer hadn't received would show up here, and nowhere above.
+            val neverSent = numberOf.values.toSet() - lostByServer - alice.reachedServer - bob.reachedServer
+            expect(neverSent.isEmpty()) { "messages ${neverSent.sorted()} left an outbox without ever reaching the server" }
 
             // And the session still works both ways.
             for (p in listOf(alice, bob)) {
