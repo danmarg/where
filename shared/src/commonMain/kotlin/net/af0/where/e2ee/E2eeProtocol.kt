@@ -38,9 +38,9 @@ internal object E2eeProtocol {
         session: SessionState,
         messages: List<EncryptedMessagePayload>,
     ): List<Pair<Session.DecryptedHeader, EncryptedMessagePayload>> {
-        // Group into buckets by DH key to handle epoch transitions correctly.
-        // We preserve the delivery order within each bucket and across buckets
-        // unless they are clearly out of sequence.
+        // Group into buckets by DH key to handle epoch transitions correctly, and always sort:
+        // the result is the peer's send order (epoch, then seq), whatever order the server
+        // returned (§5.4.4). E2eeManager.processBatch relies on that to order Locations and stops.
         val ordered =
             messages.mapNotNull { msg ->
                 try {
@@ -58,7 +58,9 @@ internal object E2eeProtocol {
             if (b1 != b2) {
                 b1.compareTo(b2)
             } else if (b1 == 2) {
-                // For multiple unknown NEW epochs, sort by 'pn' to stay chronological (§7.1)
+                // A batch holds at most one epoch we haven't seen (§5.4.4), so pn is the same for
+                // all of these and this is seq order; pn first only fixes an order for frames
+                // from a second unseen epoch, which needs our state to have been rolled back.
                 if (h1.pn != h2.pn) h1.pn.compareTo(h2.pn) else h1.seq.compareTo(h2.seq)
             } else {
                 // Within the same bucket (DH epoch), sort by sequence number.

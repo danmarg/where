@@ -445,7 +445,7 @@ To prevent header-undecryptable frames from permanently filling the server's 50-
 Note: a duplicate transition message arriving after the ratchet has already advanced is header-undecryptable (the previous epoch's receive header key has been discarded). It will be cleared by the force-ACK mechanism above. If the queue contains a mix of decryptable and undecryptable frames, successfully decryptable frames reset the retry counter, so an undecryptable duplicate may linger longer — but since it is not blocking progress it only occupies a queue slot until it is eventually force-ACKed or ages out (7 days, §10.2).
 
 **Batch Ordering:**
-When processing a batch of messages already retrieved from the server, clients SHOULD process older epoch classes before newer ones, then lower `prev_chain_len`, then lower `msg_num`.
+Clients MUST process a batch in the peer's send order, whatever order the server returned it in: frames of the peer's current epoch (`dh_pub == remote_dh_pub`) first, then frames of a new epoch, each by `msg_num`. That is send order for two reasons. A sender finishes each epoch before it starts the next. And a batch holds at most one epoch the receiver hasn't seen: the peer starts a new epoch only on a DH key the receiver sent it, and the receiver makes a new DH key only after reading the peer's latest one. A second unseen epoch can only appear if the receiver's own state was rolled back (lost storage, which §5.4.5 already says needs a re-pair); its frames' position in the order is unspecified. The sharing state (§5.7.2) depends on this order.
 
 #### 5.4.5 Receive-Side Crash Safety
 
