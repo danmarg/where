@@ -119,7 +119,7 @@ class X25519LowOrderPointTest {
                 QrPayload(
                     ekPub = InvitePublicKey(hex.hexToByteArray()),
                     suggestedName = "Mallory",
-                    discoverySecret = DiscoverySecret.random(),
+                    discoverySecret = DiscoverySecret.random(SystemRng),
                 )
             assertFailsWith<AuthenticationException>("QR ek_pub $hex") { KeyExchange.bobProcessQr(qr, "Bob") }
 

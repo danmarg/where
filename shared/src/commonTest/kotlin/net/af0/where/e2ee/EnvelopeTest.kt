@@ -13,7 +13,7 @@ class EnvelopeTest {
         val seq = 123L
         val pn = 45L
 
-        val envelope = Session.encryptHeader(key, dhPub, ackRemoteDhPub, seq, pn)
+        val envelope = Session.encryptHeader(key, dhPub, ackRemoteDhPub, seq, pn, rng = SystemRng)
 
         // Envelope should be 12 (nonce) + 82 (plain) + 16 (tag) = 110 bytes
         assertEquals(110, envelope.size)
@@ -32,7 +32,7 @@ class EnvelopeTest {
         val dhPub = DhPublicKey(randomBytes(32))
         val ackRemoteDhPub = DhPublicKey(randomBytes(32))
 
-        val envelope = Session.encryptHeader(key1, dhPub, ackRemoteDhPub, 1L, 0L)
+        val envelope = Session.encryptHeader(key1, dhPub, ackRemoteDhPub, 1L, 0L, rng = SystemRng)
 
         assertFailsWith<AuthenticationException> {
             Session.decryptHeader(key2, envelope)
@@ -44,7 +44,7 @@ class EnvelopeTest {
         val key = HeaderKey(randomBytes(32))
         val dhPub = DhPublicKey(randomBytes(32))
         val ackRemoteDhPub = DhPublicKey(randomBytes(32))
-        val envelope = Session.encryptHeader(key, dhPub, ackRemoteDhPub, 1L, 0L)
+        val envelope = Session.encryptHeader(key, dhPub, ackRemoteDhPub, 1L, 0L, rng = SystemRng)
 
         // Corrupt a byte in the encrypted portion
         envelope[20] = (envelope[20].toInt() xor 0xFF).toByte()

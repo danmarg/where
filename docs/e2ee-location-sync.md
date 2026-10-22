@@ -3,6 +3,7 @@
 **Status:** Implemented
 **Authors:** Daniel Margolis
 **Date:** 2026-05-24
+**Protocol version:** 1. Normative examples: the golden transcript, vectors version 3 ([§11.1](#111-test-vectors-normative-examples)).
 
 ---
 
@@ -410,7 +411,7 @@ The first message of a new sending epoch (`seq == 1`) MUST be posted to the *pre
 
 This is symmetric by construction: `prev_send_token` is derived from the pre-ratchet root key, which is exactly the token the peer is currently polling for messages from us. When the peer decrypts the transition message, the new `dh_pub` triggers a DH ratchet step that derives a new `recv_token` matching our new `send_token` — so the next message we post will land on the token the peer has rotated to.
 
-Implementation: `Session.encryptMessage` selects `prevSendHeaderKey` and `prevSendToken` when `sendSeq + 1 == 1` (`Session.kt:36-41`; `E2eeManager.kt:274`).
+Implementation: `Session.encryptMessage` selects `prevSendHeaderKey` and `prevSendToken` when `sendSeq + 1 == 1` (`SessionState.transportFor`).
 
 #### 5.4.2 Receive Rule (Single Active Token)
 The receiver polls exactly one mailbox token at a time (the current `recv_token`). There is no `prev_recv_token` polling — the sender's transition rule (§5.4.1) routes the first new-epoch message onto the token the receiver is already polling. After processing that message, the receiver ratchets forward and switches its polling target to the new `recv_token`.
@@ -419,10 +420,14 @@ When a decrypted message carries a new sender `dh_pub`:
 1. Speculatively perform the DH ratchet step (§8.3.1(4) requires this to be committed only after body AEAD authentication succeeds — but see §8.3.1(4) note for the deliberate failed-body liveness deviation).
 2. Update `recv_token` to the value derived from the new root key.
 
+A batch is processed only against the token it was fetched from. If the client's `recv_token` changed between the GET and processing (a concurrent poll ratcheted), it MUST drop the batch without decrypting, saving or acking anything, leaving it on the server for a later poll.
+
 #### 5.4.3 Send-Side Retirement (Observed Root-Key Advance)
 The sender retires its `prev_send_token` (and stops posting fallback retries to it) when it observes an authenticated proof that the peer has processed its new DH key. The proof used here is a successful decryption whose post-ratchet `root_key` is strictly newer than the one in effect when those outbox entries were enqueued — exactly the property an authenticated ack-of-DH would have established, inferred directly from the ratchet instead.
 
-Implementation: `E2eeManager` clears outbox entries still targeting `prevSendToken` once `decryptBatch` returns a session with an advanced `rootKey` (`E2eeManager.kt:433-438`).
+**What retirement discards.** Retiring `prev_send_token` discards every message the sender has queued for that token and not yet delivered. That is safe only because nothing else is owed on that token: the epoch's transition message (`seq == 1`) is the only message of the epoch addressed to `prev_send_token`, and it follows the rest of the previous epoch's messages, which are addressed to the same token. A sender MUST deliver its queued messages in the order it created them (creation order, not timestamps, which can step back), so every earlier message for that token was delivered before the peer could have read the transition message. Messages of the current epoch (`seq >= 2`) are addressed to `send_token`, and retirement MUST NOT discard them.
+
+**Exception: the responder's first ratchet.** The initiator performs one DH step on its own when it processes the `KeyExchangeInit` (§4.4), before reading anything from the responder, so the responder's first ratchet proves nothing about its own messages. Until then its `prev_send_token` is its bootstrap send token, the one the initiator polls, and it is also its `send_token`. While `prev_send_token == send_token` a sender MUST NOT retire: that token holds messages of its current epoch that the peer has not necessarily received.
 
 `ack_remote_dh_pub` is carried in the header, authenticated, and bound into the message AAD (`buildMessageAad`) so its value cannot be modified in flight. The implementation does not currently read it for any retirement decision — retirement is fully driven by observed root-key advance. The field is retained on the wire for backwards compatibility and to leave room for a future ack-driven retirement scheme without a wire break.
 
@@ -440,14 +445,14 @@ To prevent header-undecryptable frames from permanently filling the server's 50-
 Note: a duplicate transition message arriving after the ratchet has already advanced is header-undecryptable (the previous epoch's receive header key has been discarded). It will be cleared by the force-ACK mechanism above. If the queue contains a mix of decryptable and undecryptable frames, successfully decryptable frames reset the retry counter, so an undecryptable duplicate may linger longer — but since it is not blocking progress it only occupies a queue slot until it is eventually force-ACKed or ages out (7 days, §10.2).
 
 **Batch Ordering:**
-When processing a batch of messages already retrieved from the server, clients SHOULD process older epoch classes before newer ones, then lower `prev_chain_len`, then lower `msg_num`.
+Clients MUST process a batch in the peer's send order, whatever order the server returned it in: frames of the peer's current epoch (`dh_pub == remote_dh_pub`) first, then frames of a new epoch, each by `msg_num`. That is send order for two reasons. A sender finishes each epoch before it starts the next. And a batch holds at most one epoch the receiver hasn't seen: the peer starts a new epoch only on a DH key the receiver sent it, and the receiver makes a new DH key only after reading the peer's latest one. A second unseen epoch can only appear if the receiver's own state was rolled back (lost storage, which §5.4.5 already says needs a re-pair); its frames' position in the order is unspecified. The sharing state (§5.7.2) depends on this order.
 
 #### 5.4.5 Receive-Side Crash Safety
 
 The GET → process → DELETE sequence is the receive-side analogue of the send-side transactional outbox:
 
 1. `GET /inbox/{token}` returns messages; the server retains them.
-2. The client decrypts, updates session state, and **durably saves** the new `recvToken` and ratchet state to local storage.
+2. The client decrypts, updates session state, and **durably saves** the new `recvToken` and ratchet state to local storage. Any send-side retirement this triggers (§5.4.3) MUST happen in the same transaction: a crash must never leave the ratchet saved without the discarded messages being gone, or the reverse.
 3. The client calls `DELETE /inbox/{token}?ids=...` to release the messages from the server.
 
 If the client crashes between steps 1 and 2, it re-fetches the same messages on next startup (server still holds them) and re-processes them from the same prior session state — idempotent and correct. If it crashes between steps 2 and 3, the session is already saved with the new `recvToken`; the leftover messages on the server are never fetched again and expire after TTL.
@@ -707,6 +712,8 @@ new_token = HKDF-SHA-256(
 ```
 Direction is encoded explicitly via the `sender_fp || recipient_fp` ordering in the info field.
 
+A DH ratchet step runs KDF_RK twice (receive sub-step, then send sub-step with the new key pair; Alice's eager ratchet in §4.4 runs only the send sub-step), and each token comes from its own sub-step's root key: `recv_token = RoutingToken(root from the receive sub-step, peer_fp || my_fp)` and `send_token = RoutingToken(root from the send sub-step, my_fp || peer_fp)`. The session keeps the send sub-step's root. So the peer's `send_token`, derived from the root its own send sub-step produced, is the same value as our `recv_token`. The previous `send_token` becomes `prev_send_token` (§5.4.1).
+
 **KDF_CK (symmetric ratchet step):**
 ```
 message_key     = HMAC-SHA-256(key = current_chain_key, data = 0x01)
@@ -771,7 +778,7 @@ The `envelope` is a 110-byte binary blob consisting of:
 - `ack_remote_dh_pub` (32 bytes): the newest peer DH public key for which at least one message has been successfully authenticated and committed to session state (see §5.4.3).
 - `msg_num` (8 bytes, big-endian Long): sender chain message number.
 - `prev_chain_len` (8 bytes, big-endian Long): length of the previous sending chain.
-- `flags` (1 byte): optional flags, such as `TRANSITION` (0x01).
+- `flags` (1 byte): reserved. Senders set `0x00` and receivers ignore it. (A `TRANSITION` flag, `0x01`, was once planned; it is not used: an epoch's transition frame is the one with `msg_num` 1, §5.4.1.)
 
 The header is encrypted using the current `header_key` derived from the DH ratchet.
 
@@ -926,6 +933,20 @@ With this design, and assuming only the advertised mailbox API and payload encry
 - **Kotlin Multiplatform:** Use [ionspin/kotlin-multiplatform-libsodium](https://github.com/ionspin/kotlin-multiplatform-libsodium) for X25519, ChaCha20-Poly1305 and SHA-256; HMAC-SHA-256 is the platform's (javax `Mac`, CommonCrypto). See [crypto-backend.md](crypto-backend.md) for why, the pinned versions, and how each is tested (Wycheproof on both platforms). Libsodium provides a unified API across JVM, Android, and iOS, eliminating platform-specific implementation variance. All crypto operations are common-code `expect/actual` implementations.
 - **Android / Kotlin:** Libsodium bindings use `libsodium.so` (statically linked). Store root keys in Android Keystore where supported; a Keystore-backed wrapper key can protect the master key material.
 - **iOS / Swift:** Libsodium bindings use the native `libsodium` framework (iOS includes sodium.dylib). Key material persists in the Secure Enclave-backed Keychain. SwiftUI calls the KMP shared module for crypto operations.
+
+### 11.1 Test Vectors (Normative Examples)
+
+[`shared/src/commonTest/resources/vectors/where-v1-transcript.json`](../shared/src/commonTest/resources/vectors/where-v1-transcript.json) is the normative example of this protocol. It is the normative fixture for wire formats, encodings and derivations: where this document and the transcript disagree about those, the transcript records what interoperating clients do, and the document has a bug. It is not the authority on security properties (when a message may be discarded, what an ack may delete, which keys may be kept). A transcript reproduces whatever the reference implementation does, including a bug, so those properties are stated in this document and checked independently of it (by the reference implementation's conformance, schedule-interleaving and atomicity tests); a disagreement about one is settled by deciding which side is wrong, not by deferring to the transcript.
+
+The transcript is one pairing run through the protocol's pure step function (`ProtocolCore.step(state, event, now, rng)` in `shared/.../e2ee/ProtocolCore.kt`) with a fixed clock and a seeded RNG for each party. The file defines the RNG; reproducing the draws also takes the order the reference implementation makes them in (per party: the invite key pair, then the discovery secret; on a scan, the key pair, then the name nonce; on a send, the header nonce; on a DH ratchet, the new key pair). Each step records the event, the effects (mailbox puts with their exact wire bodies, acks, deliveries, cancelled transition frames, retired tokens) and the party's state afterwards. It covers:
+
+- the invite (§4.2: QR payload, discovery secret and token, the inviter's ephemeral key), the `KeyExchangeInit` (§9.3), and `SK` with both sides' initial root, chain and header keys and routing tokens (§4.4);
+- frames in each direction, every side's receive of a new DH key being a ratchet with a routing-token rotation, the transition frame on the old token (§5.4.1) and its send-side retirement (§5.4.3); Alice sends in three epochs, Bob in two;
+- out-of-order delivery: a skipped key cached and later used (§5.3, §8.3.1(3)), a replay that is still acked (§5.4.4), and a batch sorted by sequence before decryption;
+- a corrupted body (committed and acked but not delivered, §8.3.1(4)) and a non-frame payload on a session mailbox (acked unread);
+- Location (with and without `stationary`), StoppedSharing and Keepalive plaintexts (§5.7, §9.1.2).
+
+`GoldenTranscriptTest` replays it on the JVM and on the iOS simulator: feeding each step the recorded inputs must reproduce the recorded outputs byte for byte, and generating it from scratch must reproduce the file. That only shows reproducibility, so `SpecConformanceTest` checks the file against this document instead: it recomputes the handshake (§4.2, §4.4), every DH ratchet, header-key and token rotation, and every chain step (§8.3) from the formulas here, using only the raw primitives and the info strings as written here, and checks that what is delivered is what was sent, once, and that token effects match the state. The keys in the file are public test values: never treat it as a recording of a real session. The transcript is versioned with this document: a change that alters it is a protocol change, which regenerates the file (`WHERE_WRITE_VECTORS=1 ./gradlew :shared:jvmTest --tests '*GoldenTranscriptWriter*'`), bumps `vectors_version` (`GoldenTranscript.VECTORS_VERSION`, which writes it into the file) and the version named at the top of this document, and bumps `protocol_version` if old and new clients no longer interoperate.
 
 ---
 

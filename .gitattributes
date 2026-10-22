@@ -1,0 +1,2 @@
+# The golden transcript is compared byte for byte.
+shared/src/commonTest/resources/vectors/*.json text eol=lf

@@ -91,7 +91,7 @@ class SessionStateGoldenTest {
     @Test
     fun encryptAndDecryptAreUnchanged() {
         val plaintext = Session.padToFixedSize("""{"type":"ka"}""".encodeToByteArray(), PADDING_SIZE)
-        val (aliceNext, msg) = Session.encryptPadded(alice(), plaintext)
+        val (aliceNext, msg) = Session.encryptPadded(alice(), plaintext, SystemRng)
         assertEquals(CT_HEX, msg.ct.toHex())
         assertEquals(ALICE_AFTER_SEND_JSON, encode(aliceNext))
 
@@ -107,10 +107,10 @@ class SessionStateGoldenTest {
         val legacyAlice = alice().copy(localFp = null, remoteFp = null)
         val ka = Session.padToFixedSize("""{"type":"ka"}""".encodeToByteArray(), PADDING_SIZE)
 
-        val (_, toBob) = Session.encryptPadded(legacyAlice, ka.copyOf())
+        val (_, toBob) = Session.encryptPadded(legacyAlice, ka.copyOf(), SystemRng)
         assertEquals(true, Session.decryptMessage(bob(), toBob).delivered().plaintext is MessagePlaintext.Keepalive)
 
-        val (_, toAlice) = Session.encryptPadded(bob(), ka.copyOf())
+        val (_, toAlice) = Session.encryptPadded(bob(), ka.copyOf(), SystemRng)
         assertEquals(true, Session.decryptMessage(legacyAlice, toAlice).delivered().plaintext is MessagePlaintext.Keepalive)
     }
 

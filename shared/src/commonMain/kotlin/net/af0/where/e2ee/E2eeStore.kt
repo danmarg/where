@@ -314,13 +314,6 @@ internal class E2eeStore(
         database.outboxQueries.deleteOutboxByFriendId(friendId)
     }
 
-    internal fun deleteOutboxByFriendIdAndTokenInternal(
-        friendId: String,
-        token: String,
-    ) {
-        database.outboxQueries.deleteOutboxByFriendIdAndToken(friendId, token)
-    }
-
     suspend fun getOutbox(friendId: String): List<EncryptedOutboxMessage> =
         withStoreLock {
             getOutboxInternal(friendId)
@@ -391,6 +384,12 @@ internal class E2eeStore(
             payloadBlob: ByteArray,
             createdAt: Long,
         )
+
+        /** Deletes [friendId]'s outbox rows for [token], in the same transaction as the rest. */
+        fun deleteOutbox(
+            friendId: String,
+            token: String,
+        )
     }
 
     private data class OutboxInsert(
@@ -414,6 +413,15 @@ internal class E2eeStore(
             createdAt: Long,
         ) {
             queuedOutboxInserts.add(OutboxInsert(msgId, friendId, token, payloadBlob, createdAt))
+        }
+
+        private val queuedOutboxDeletes = mutableListOf<Pair<String, String>>()
+
+        override fun deleteOutbox(
+            friendId: String,
+            token: String,
+        ) {
+            queuedOutboxDeletes.add(friendId to token)
         }
 
         private var pendingInvitesChanged = false
@@ -444,6 +452,7 @@ internal class E2eeStore(
         }
 
         fun applyToDb() {
+            queuedOutboxDeletes.forEach { (friendId, token) -> database.outboxQueries.deleteOutboxByFriendIdAndToken(friendId, token) }
             queuedOutboxInserts.forEach { outbox ->
                 database.outboxQueries.insertOutbox(
                     msgId = outbox.msgId,

@@ -126,7 +126,10 @@ class E2eeManager(
                         ?: pendingInvites.minByOrNull { it.createdAt }
                 pendingInvites = pendingInvites.filter { it !== victim }
             }
-            val (qr, priv) = KeyExchange.aliceCreateQrPayload(suggestedName)
+            val invite =
+                ProtocolCore.step(ProtocolCore.State.Idle, ProtocolCore.Event.CreateInvite(suggestedName), currentTimeMillis(), SystemRng)
+                    .state as ProtocolCore.State.Inviting
+            val (qr, priv) = invite.qr to invite.priv
             // createdAt is tied to the advertised expiry, so a reloaded invite derives the same expires_at.
             val createdAt = qr.expiresAt?.minus(INVITE_LIFETIME_SECONDS) ?: currentTimeSeconds()
             pendingInvites = pendingInvites + PendingInvite(qr, priv, createdAt)
@@ -148,34 +151,17 @@ class E2eeManager(
         val pending = persistence.withMetadataLock { pendingInvites.find { it.qrPayload.ekPub == aliceEkPub } } ?: return null
         val inviteKey = pending.qrPayload.ekPub
 
-        val msg =
-            KeyExchangeInitMessage(
-                protocolVersion = payload.v,
-                ekPub = payload.ekPub,
-                keyConfirmation = payload.keyConfirmation,
-                encryptedName = payload.encryptedName,
+        // The core works on a copy of the key: `pending` is the live in-memory invite. If this init
+        // is bogus the invite stays pending, and zeroing its key would break every later scan (and,
+        // once the invite is re-persisted by a rename or share, write the zeroed key to the DB).
+        val step =
+            ProtocolCore.step(
+                ProtocolCore.State.Inviting(pending.qrPayload, pending.aliceEkPriv),
+                ProtocolCore.Event.ProcessInit(payload),
+                currentTimeMillis(),
+                SystemRng,
             )
-
-        // Work on a copy: `pending` is the live in-memory invite. If this init is bogus the invite
-        // stays pending, and zeroing its key would break every later scan (and, once the invite is
-        // re-persisted by a rename or share, write the zeroed key to the DB).
-        val priv = pending.aliceEkPriv.copyOf()
-        val session =
-            try {
-                KeyExchange.aliceProcessInit(
-                    msg = msg,
-                    aliceEkPriv = priv,
-                    aliceEkPub = inviteKey.toDhPublicKey(),
-                )
-            } finally {
-                priv.zeroize()
-            }
-
-        // Handshake initiated, remove the pending invite (#186)
-        persistence.withMetadataLock {
-            pendingInvites = pendingInvites.filter { it.qrPayload.ekPub != inviteKey }
-        }
-        pending.aliceEkPriv.zeroize()
+        val session = (step.state as ProtocolCore.State.Paired).session
 
         val entry =
             FriendEntry(
@@ -185,9 +171,37 @@ class E2eeManager(
                 isConfirmed = true,
             )
 
-        persistence.withFriendAndMetadataLock(entry.id) { _, metadata ->
-            metadata.pendingInvites = metadata.pendingInvites.filterNot { it.qrPayload.ekPub == inviteKey }
-            PersistenceAction.Update(entry) to Unit
+        // The step's RetireToken (the discovery mailbox) is carried out by removing the pending
+        // invite, which is what LocationClient polls that mailbox for (#186). In one transaction
+        // with saving the friend: removed alone, a crash would leave neither the invite nor the
+        // friend, and Bob's init on a mailbox nobody polls. And only if the invite is still
+        // pending: a concurrent init for it got there first.
+        val paired =
+            try {
+                persistence.withFriendAndMetadataLock(entry.id) { _, metadata ->
+                    if (metadata.pendingInvites.none { it.qrPayload.ekPub == inviteKey }) {
+                        return@withFriendAndMetadataLock PersistenceAction.None to false
+                    }
+                    metadata.pendingInvites = metadata.pendingInvites.filterNot { it.qrPayload.ekPub == inviteKey }
+                    PersistenceAction.Update(entry) to true
+                }
+            } catch (e: CancellationException) {
+                // Not a failed write: the transaction may have committed and the friend's cached
+                // entry may hold this very session. Leave it alone.
+                throw e
+            } catch (e: Exception) {
+                // The write failed: E2eeStore reloaded from the database, so nothing holds the new
+                // session but us. The invite's key is left alone: the reload may have left the
+                // invite pending, for a retry.
+                session.zeroizeAll()
+                throw e
+            }
+        // Pending no more either way (consumed here, or by a concurrent init that got there
+        // first), so its key is dead; the losing session was never saved.
+        pending.aliceEkPriv.zeroize()
+        if (!paired) {
+            session.zeroizeAll()
+            return null
         }
 
         return entry
@@ -344,20 +358,17 @@ class E2eeManager(
         metadata: E2eeStore.MetadataScope,
         payload: MessagePlaintext,
     ): Pair<FriendEntry, EncryptedMessagePayload> {
-        val (nextSession, message, tokenToUse) = Session.encryptMessage(entry.session, payload)
-
-        // Nonce safety check:
-        val seqAdvanced =
-            nextSession.sendSeq > entry.session.sendSeq ||
-                nextSession.pn > entry.session.pn ||
-                !nextSession.rootKey.constantTimeEquals(entry.session.rootKey)
-        check(seqAdvanced) { "Nonce safety violation: sequence number did not advance" }
-
-        val outboxMsg =
-            EncryptedOutboxMessage(
-                token = tokenToUse.toHex(),
-                payload = message,
+        val step =
+            ProtocolCore.step(
+                ProtocolCore.State.Paired(entry.session),
+                ProtocolCore.Event.Send(payload),
+                currentTimeMillis(),
+                SystemRng,
             )
+        val nextSession = (step.state as ProtocolCore.State.Paired).session
+        val put = step.effects.single() as ProtocolCore.Effect.Put
+        val message = put.payload as EncryptedMessagePayload
+        val outboxMsg = EncryptedOutboxMessage(token = put.mailbox, payload = message)
 
         // lastSentTs is updated uniformly for every payload type, including Keepalive: both
         // LocationClient.sendLocation's unresponsive-friend throttle and pollFriend's automated
@@ -388,16 +399,16 @@ class E2eeManager(
         bobSuggestedName: String = "",
     ): Pair<KeyExchangeInitPayload, FriendEntry> {
         val sanitizedRequestedName = sanitizeName(bobSuggestedName)
-        val (initMsg, session) = KeyExchange.bobProcessQr(qr, sanitizedRequestedName)
-
-        val payload =
-            KeyExchangeInitPayload(
-                v = initMsg.protocolVersion,
-                ekPub = initMsg.ekPub,
-                keyConfirmation = initMsg.keyConfirmation,
-                encryptedName = initMsg.encryptedName,
-                suggestedName = sanitizedRequestedName,
+        val step =
+            ProtocolCore.step(
+                ProtocolCore.State.Idle,
+                ProtocolCore.Event.ScanQr(qr, sanitizedRequestedName),
+                currentTimeMillis(),
+                SystemRng,
             )
+        val session = (step.state as ProtocolCore.State.Paired).session
+        val put = step.effects.single() as ProtocolCore.Effect.Put
+        val payload = put.payload as KeyExchangeInitPayload
 
         val entry =
             FriendEntry(
@@ -414,7 +425,7 @@ class E2eeManager(
             metadata.insertOutbox(
                 msgId = payload.msgId,
                 friendId = entry.id,
-                token = qr.discoveryToken().toHex(),
+                token = put.mailbox,
                 payloadBlob = E2eeStore.json.encodeToString(MailboxPayload.serializer(), payload).encodeToByteArray(),
                 createdAt = currentTimeMillis(),
             )
@@ -438,16 +449,23 @@ class E2eeManager(
 
     suspend fun getOutbox(friendId: String): List<EncryptedOutboxMessage> = persistence.getOutbox(friendId)
 
+    /**
+     * One polled batch, processed. [ack] and [retiredToken] are the core's mailbox effects, left
+     * to LocationClient to carry out (it owns the network and the force-ACK policy).
+     */
     data class PollBatchResult(
         val decryptedLocations: List<LocationPlaintext>,
         val anySuccess: Boolean,
         val hadSilentDrops: Boolean,
+        /** Ids to delete from the polled mailbox (the core's [ProtocolCore.Effect.Ack]). */
         val processedIds: List<String>,
         val anyReplay: Boolean = false,
         val failCount: Int = 0,
         val hadStateUpdate: Boolean = false,
         val hadDhRatchet: Boolean = false,
         val shouldAck: Boolean = true,
+        /** The polled mailbox, if the receive token rotated away from it (the core's [ProtocolCore.Effect.RetireToken]). */
+        val retiredToken: String? = null,
     )
 
     suspend fun processBatch(
@@ -455,19 +473,30 @@ class E2eeManager(
         recvToken: String,
         messages: List<MailboxPayload>,
     ): PollBatchResult? {
-        return persistence.withFriendAndMetadataLock(friendId) { entry, _ ->
+        return persistence.withFriendAndMetadataLock(friendId) { entry, metadata ->
             if (entry == null) return@withFriendAndMetadataLock PersistenceAction.None to null
+            // A batch from any mailbox but the current one (a poll that raced a token rotation, a
+            // stale caller) is refused before anything is decrypted, saved or acked.
+            if (recvToken != entry.session.recvToken.toHex()) {
+                metadata.addDiagnosticEvent("processBatch($friendId): batch is from a retired mailbox; ignored")
+                return@withFriendAndMetadataLock PersistenceAction.None to null
+            }
 
-            val encryptedMessages = messages.filterIsInstance<EncryptedMessagePayload>()
-
-            val orderedMessages = E2eeProtocol.decryptAndSort(entry.session, encryptedMessages)
-            val result = E2eeProtocol.decryptBatch(entry.session, encryptedMessages.size, orderedMessages)
-
-            val failCount = result.softFailCount + result.hardFailCount
+            val step =
+                ProtocolCore.step(
+                    ProtocolCore.State.Paired(entry.session),
+                    ProtocolCore.Event.Receive(recvToken, messages),
+                    currentTimeMillis(),
+                    SystemRng,
+                )
+            val finalSession = (step.state as ProtocolCore.State.Paired).session
+            val report = step.report!!
+            val delivered = step.effects.filterIsInstance<ProtocolCore.Effect.Deliver>().map { it.plaintext }
 
             // Peer activity = any frame authenticated as theirs, even one whose body was lost
             // (soft-fail). Delivery (locations, anySuccess) is tracked separately.
-            val hadActivity = result.decryptedLocations.isNotEmpty() || (result.anyAuthenticated && result.finalSession != entry.session)
+            val hadActivity =
+                delivered.any { it is MessagePlaintext.Location } || (report.anyAuthenticated && finalSession != entry.session)
             // A peer's ts is self-reported (authenticated, but not trustworthy as a clock). A ts
             // more than the allowed skew ahead is replaced by our receive time, and a stored
             // lastTs that far ahead is ignored, so a single far-future value (bad clock or
@@ -480,26 +509,18 @@ class E2eeManager(
             fun clampTs(ts: Long) = if (ts > maxTs) nowTs else ts
             // Clamped values are also what callers see (PollBatchResult -> UserLocation ->
             // updateLastLocation), so the raw ts never reaches storage or the UI.
-            val decryptedLocations = result.decryptedLocations.map { it.copy(ts = clampTs(it.ts)) }
-            val stoppedSharingTs = result.stoppedSharingTs?.let { clampTs(it) }
+            val decryptedLocations =
+                delivered.filterIsInstance<MessagePlaintext.Location>().map {
+                    LocationPlaintext(lat = it.lat, lng = it.lng, acc = it.acc, ts = clampTs(it.ts), stationary = it.stationary)
+                }
+            val stoppedSharingTs = delivered.filterIsInstance<MessagePlaintext.StoppedSharing>().maxOfOrNull { it.ts }?.let { clampTs(it) }
             val lastLocation = decryptedLocations.lastOrNull()
             val storedLastTs = entry.lastTs?.takeIf { it <= maxTs } ?: 0
 
-            val hadStateUpdate =
-                result.finalSession.recvSeq > entry.session.recvSeq ||
-                    !result.finalSession.rootKey.constantTimeEquals(entry.session.rootKey)
-
-            // If the peer ratcheted forward, it proves they received our transition message
-            // (the epoch's first, see transportFor). Delete only that stale entry — not any
-            // pending message we may have queued for the current sendToken.
-            if (!result.finalSession.rootKey.constantTimeEquals(entry.session.rootKey)) {
-                persistence.deleteOutboxByFriendIdAndTokenInternal(
-                    friendId,
-                    entry.session.transportFor(1).token.toHex(),
-                )
+            // In the same transaction as the new session (see ProtocolCore's atomicity contract).
+            for (effect in step.effects) {
+                if (effect is ProtocolCore.Effect.CancelPut) metadata.deleteOutbox(friendId, effect.mailbox)
             }
-
-            val currentRecvToken = if (result.anySuccess || hadStateUpdate) result.finalSession.recvToken else entry.session.recvToken
 
             // Derive the sharing-state fields (stationarySinceTs, stoppedAtTs) atomically
             // from the most recent event in this batch. Whichever of {last Location, max
@@ -532,8 +553,8 @@ class E2eeManager(
 
             val updatedEntry =
                 entry.copy(
-                    session = result.finalSession,
-                    isConfirmed = entry.isConfirmed || result.anyAuthenticated,
+                    session = finalSession,
+                    isConfirmed = entry.isConfirmed || report.anyAuthenticated,
                     lastRecvTs = if (hadActivity) currentTimeSeconds() else entry.lastRecvTs,
                     lastLat = if (lastLocation != null && (lastLocation.ts >= storedLastTs)) lastLocation.lat else entry.lastLat,
                     lastLng = if (lastLocation != null && (lastLocation.ts >= storedLastTs)) lastLocation.lng else entry.lastLng,
@@ -543,30 +564,19 @@ class E2eeManager(
                     stoppedAtTs = newStoppedAtTs,
                 )
 
-            if (result.finalSession != entry.session) {
-                // State transition occurred
-            }
-
-            // Calculate which IDs to ACK
-            val allProcessedIds = result.processedIds + result.replayedIds
-            val nonEncryptedIds = messages.filter { it !is EncryptedMessagePayload }.map { it.msgId }
-            val idsToAck = allProcessedIds + nonEncryptedIds
-
-            val shouldAck = idsToAck.isNotEmpty()
-
-            val hadDhRatchet = !result.finalSession.rootKey.constantTimeEquals(entry.session.rootKey)
-
+            val idsToAck = step.effects.filterIsInstance<ProtocolCore.Effect.Ack>().flatMap { it.ids }
             PersistenceAction.Update(updatedEntry) to
                 PollBatchResult(
                     decryptedLocations = decryptedLocations,
-                    anySuccess = result.anySuccess,
-                    hadSilentDrops = result.silentDrops > 0 || (messages.size > (encryptedMessages.size + nonEncryptedIds.size)),
+                    anySuccess = report.anySuccess,
+                    hadSilentDrops = report.silentDrops > 0,
                     processedIds = idsToAck,
-                    anyReplay = result.anyReplay,
-                    failCount = failCount,
-                    hadStateUpdate = hadStateUpdate,
-                    hadDhRatchet = hadDhRatchet,
-                    shouldAck = shouldAck,
+                    anyReplay = report.anyReplay,
+                    failCount = report.failCount,
+                    hadStateUpdate = report.stateAdvanced,
+                    hadDhRatchet = report.dhRatchet,
+                    shouldAck = idsToAck.isNotEmpty(),
+                    retiredToken = step.effects.filterIsInstance<ProtocolCore.Effect.RetireToken>().singleOrNull()?.mailbox,
                 )
         }
     }

@@ -102,7 +102,7 @@ class ReceiveRatchetFailureTest {
     @Test
     fun malformedPlaintextOnTransitionFrameDoesNotBrickSession() {
         var (alice, bob) = pair()
-        val (a1, malformed) = Session.encryptPadded(alice, ByteArray(PADDING_SIZE)) // no 0x80 marker
+        val (a1, malformed) = Session.encryptPadded(alice, ByteArray(PADDING_SIZE), SystemRng) // no 0x80 marker
         alice = a1
         bob = expectSoftFail(bob, malformed)
         assertEquals(1L, bob.recvSeq)
@@ -147,7 +147,7 @@ class ReceiveRatchetFailureTest {
     fun malformedPlaintextWithCachedKeySpendsKey() {
         var (alice, bob) = pair()
         val (a1, m1) = Session.encryptMessage(alice, loc(1))
-        val (a2, malformed) = Session.encryptPadded(a1, ByteArray(PADDING_SIZE))
+        val (a2, malformed) = Session.encryptPadded(a1, ByteArray(PADDING_SIZE), SystemRng)
         val (a3, m3) = Session.encryptMessage(a2, loc(3))
         alice = a3
         bob = Session.decryptMessage(bob, m1).delivered().state
