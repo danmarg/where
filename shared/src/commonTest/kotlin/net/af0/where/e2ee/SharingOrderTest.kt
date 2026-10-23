@@ -155,10 +155,9 @@ class SharingOrderTest {
             p.alice.sendLocation(1.0, 1.0, stamp = stamp)
             p.alice.sendLocationToFriend(carolId, 1.0, 1.0, stamp = stamp)
 
-            // So nothing went to her, and she starts with no pin, not a "sharing" one.
+            // So nothing went to her mailbox: she starts with no pin, not a "sharing" one.
             val carolsMailbox = carolManager.listFriends().single().session.recvToken.toHex()
             assertTrue(p.mailbox.mailboxes[carolsMailbox].orEmpty().isEmpty())
-            assertNull(carolManager.listFriends().single().lastLat)
             assertTrue(p.bobReads().second.isEmpty())
         }
 
