@@ -151,8 +151,9 @@ class SkippedKeyPruningTest {
         val newCurrent = key(5)
         val inputKeys = mapOf("$old:2" to inputOld, "$current:2" to inputCurrent, "$old:3" to copiedOld)
         val before = inputKeys.snapshot()
-        // The batch's state: the input's own old key, a DH ratchet's copy of another one, and keys
-        // derived in this batch, old and current.
+        // A synthetic batch state with every kind of entry at once (a real ratchet copies all the
+        // input's keys): the input's own old key, a ratchet's copy of another, and keys derived in
+        // this batch, old and current. Only this test pins the reference check on its own.
         val session =
             input.copy(
                 skippedMessageKeys =
@@ -202,10 +203,15 @@ class SkippedKeyPruningTest {
         assertEquals(listOf(12.0, 14.0), r.deliveredLats())
         assertEquals(1, r.state.skipped().size, "only seq 3 of the new epoch is kept")
 
-        // The input state is untouched and still works; the kept key opens its frame.
+        // The input state is untouched and still works (the ratchet's deep copy and the prune's
+        // reference check both protect it); the kept key opens its frame and the dropped gap's
+        // frame no longer opens.
         bob.skipped().forEach { (id, k) -> assertTrue(before.getValue(id).contentEquals(k.material()), "input's $id was changed") }
         assertEquals(listOf(2.0), receive(bob, rngB, sent[1]).deliveredLats())
         assertEquals(listOf(13.0), receive(r.state, rngB, next[2]).deliveredLats())
+        val late = receive(r.state, rngB, next[0])
+        assertTrue(late.deliveredLats().isEmpty())
+        assertTrue(late.effects.none { it is ProtocolCore.Effect.Ack }, "an unopenable frame isn't acked")
     }
 
     @Test
@@ -233,7 +239,9 @@ class SkippedKeyPruningTest {
             assertEquals(listOf(10.0 * (round + 1) + 2), r.deliveredLats())
             assertTrue(r.state.skipped().isEmpty(), "round $round kept seq 1 of a non-bootstrap epoch: ${r.state.skipped().keys}")
             alice = r.state
-            assertTrue(receive(alice, rngA, lost).deliveredLats().isEmpty())
+            val late = receive(alice, rngA, lost)
+            assertTrue(late.deliveredLats().isEmpty())
+            assertTrue(late.effects.none { it is ProtocolCore.Effect.Ack }, "an unopenable frame isn't acked")
         }
     }
 }
