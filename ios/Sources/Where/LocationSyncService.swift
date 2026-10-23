@@ -17,8 +17,9 @@ private class RawStringDesc: NSObject, Shared.ResourcesStringDesc {
 
 @MainActor
 protocol LocationClientProtocol: AnyObject, Sendable {
-    func sendLocation(lat: Double, lng: Double, pausedFriendIds: Set<String>, stationary: Bool) async throws
-    func sendLocationToFriend(friendId: String, lat: Double, lng: Double, stationary: Bool) async throws
+    func sharingStamp() -> Int64
+    func sendLocation(lat: Double, lng: Double, pausedFriendIds: Set<String>, stationary: Bool, stamp: Int64) async throws
+    func sendLocationToFriend(friendId: String, lat: Double, lng: Double, stationary: Bool, stamp: Int64) async throws
     func sendStoppedSharing(pausedFriendIds: Set<String>) async throws
     func sendStoppedSharingToFriend(friendId: String) async throws
     func removeFriend(friendId: String, pausedFriendIds: Set<String>, sharingEnabled: Bool) async throws
@@ -420,15 +421,17 @@ final class LocationSyncService: ObservableObject {
     /// otherwise the StoppedSharing fan-out is silently skipped.
     func stopSharing() {
         let paused = effectivelyPausedIds()
+        // Flip the state before the stop goes out: a Location send that read it earlier took its
+        // stamp earlier, so LocationClient drops it rather than sending it after the stop.
+        if isSharingLocation {
+            isSharingLocation = false
+        }
         Task {
             do {
                 try await locationClient.sendStoppedSharing(pausedFriendIds: paused)
             } catch {
                 logger.warning("sendStoppedSharing failed: \(error.localizedDescription)")
             }
-        }
-        if isSharingLocation {
-            isSharingLocation = false
         }
     }
 
@@ -494,6 +497,8 @@ final class LocationSyncService: ObservableObject {
         // that master-off and per-friend-timer-expiry produce. On transition out of
         // paused, immediately broadcast our current location so the peer doesn't have
         // to wait up to a full heartbeat interval for the implicit "I'm back" update.
+        // Before reading the sharing state below: a stop issued after it drops the resume send.
+        let stamp = locationClient.sharingStamp()
         if !wasPaused {
             Task {
                 do {
@@ -505,7 +510,7 @@ final class LocationSyncService: ObservableObject {
         } else if let last = locationProvider.lastLocation, isSharingLocation {
             Task {
                 do {
-                    try await locationClient.sendLocationToFriend(friendId: id, lat: last.coordinate.latitude, lng: last.coordinate.longitude, stationary: locationProvider.isStationary)
+                    try await locationClient.sendLocationToFriend(friendId: id, lat: last.coordinate.latitude, lng: last.coordinate.longitude, stationary: locationProvider.isStationary, stamp: stamp)
                 } catch {
                     logger.warning("sendLocationToFriend(\(id)) on unpause failed: \(error.localizedDescription)")
                 }
@@ -1008,11 +1013,13 @@ final class LocationSyncService: ObservableObject {
                 try await locationClient.postKeyExchangeInit(friendId: bobEntry.id, qr: qrWithName, initPayload: initPayload)
                 debugLog { "KeyExchangeInit posted successfully" }
 
+                // Before reading the sharing state: a stop issued after it drops the send.
+                let stamp = locationClient.sharingStamp()
                 if let last = locationProvider.lastLocation, isSharingLocation {
                     // Proactively send our first location update to Alice to trigger confirmation on her side.
                     // We use sendLocationToFriend here to bypass the !isConfirmed check in sendLocation().
                     do {
-                        try await locationClient.sendLocationToFriend(friendId: bobEntry.id, lat: last.coordinate.latitude, lng: last.coordinate.longitude, stationary: false)
+                        try await locationClient.sendLocationToFriend(friendId: bobEntry.id, lat: last.coordinate.latitude, lng: last.coordinate.longitude, stationary: false, stamp: stamp)
                     } catch {
                         logger.error("Failed to send proactive location update to \(bobEntry.id): \(error.localizedDescription)")
                     }
@@ -1064,10 +1071,12 @@ final class LocationSyncService: ObservableObject {
                 repo.friends = try await e2eeManager.listFriends()
                 updateVisibleUsers()
 
+                // Before reading the sharing state: a stop issued after it drops the send.
+                let stamp = locationClient.sharingStamp()
                 if let last = locationProvider.lastLocation, isSharingLocation {
                     // Proactively send our first location update to Bob to trigger confirmation on his side.
                     do {
-                        try await locationClient.sendLocationToFriend(friendId: entry.id, lat: last.coordinate.latitude, lng: last.coordinate.longitude, stationary: false)
+                        try await locationClient.sendLocationToFriend(friendId: entry.id, lat: last.coordinate.latitude, lng: last.coordinate.longitude, stationary: false, stamp: stamp)
                     } catch {
                         logger.error("Failed to send reactive location update to \(entry.id): \(error.localizedDescription)")
                     }
@@ -1144,6 +1153,9 @@ final class LocationSyncService: ObservableObject {
     // `= false` default caused several "here since" regressions where a call site
     // omitted it and unknowingly asserted "moving" - see the "here since" investigation.
     func sendLocation(lat: Double, lng: Double, heading: Double? = nil, force: Bool = false, source: WakeSource = .locationUpdate, stationary: Bool) {
+        // Before reading the sharing and pause state: a stop issued to a friend after it drops
+        // this Location for that friend rather than letting it follow the stop.
+        let stamp = locationClient.sharingStamp()
         guard isSharingLocation else { return }
         let now = Date()
 
@@ -1176,7 +1188,7 @@ final class LocationSyncService: ObservableObject {
             } else {
                 Task {
                     do {
-                        try await locationClient.sendLocationToFriend(friendId: friendId, lat: lat, lng: lng, stationary: false)
+                        try await locationClient.sendLocationToFriend(friendId: friendId, lat: lat, lng: lng, stationary: false, stamp: stamp)
                     } catch {
                         logger.error("Failed forced pairing send to \(friendId): \(error.localizedDescription)")
                     }
@@ -1224,7 +1236,7 @@ final class LocationSyncService: ObservableObject {
         currentSendTask = Task {
             defer { backgroundTask.end() }
             do {
-                try await locationClient.sendLocation(lat: lat, lng: lng, pausedFriendIds: effectivelyPausedIds(), stationary: stationary)
+                try await locationClient.sendLocation(lat: lat, lng: lng, pausedFriendIds: effectivelyPausedIds(), stationary: stationary, stamp: stamp)
                 if !Task.isCancelled && gen == self.sendTaskGeneration {
                     logger.info("sendLocation: succeeded (lat=\(lat), lng=\(lng), source=\(source.rawValue))")
                     logReliability(source: source, success: true, interval: interval)

@@ -238,7 +238,8 @@ fun main(args: Array<String>) {
 
             runBlocking {
                 try {
-                    locationClient.sendLocation(lat, lng)
+                    // No sharing state is read here, so the stamp is taken at the call.
+                    locationClient.sendLocation(lat, lng, stamp = locationClient.sharingStamp())
                     storage.putString("last_sent_time", now.toString())
                     println("Location sent successfully.")
                 } catch (e: Exception) {
