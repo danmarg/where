@@ -108,7 +108,10 @@ class LocationSyncServiceTests: XCTestCase {
             return _pollCallCount
         }
         var lastStationary: Bool? = nil
-        func sharingStamp() -> Int64 { 0 }
+        /// Stops sent so far; the stamp, as in Shared.LocationClient.
+        var stopsIssued: Int64 = 0
+        var onStop: (@MainActor () -> Void)?
+        func sharingStamp() -> Int64 { stopsIssued }
         func sendLocation(lat: Double, lng: Double, pausedFriendIds: Set<String>, stationary: Bool, stamp: Int64) async throws {
             lastStationary = stationary
             sendLocationCallback?()
@@ -117,8 +120,14 @@ class LocationSyncServiceTests: XCTestCase {
             sendLocationToFriendCallback?(friendId)
             sendLocationCallback?()
         }
-        func sendStoppedSharing(pausedFriendIds: Set<String>) async throws {}
-        func sendStoppedSharingToFriend(friendId: String) async throws {}
+        func sendStoppedSharing(pausedFriendIds: Set<String>) async throws {
+            stopsIssued += 1
+            onStop?()
+        }
+        func sendStoppedSharingToFriend(friendId: String) async throws {
+            stopsIssued += 1
+            onStop?()
+        }
         var removeFriendCalls: [(friendId: String, pausedFriendIds: Set<String>, sharingEnabled: Bool)] = []
         func removeFriend(friendId: String, pausedFriendIds: Set<String>, sharingEnabled: Bool) async throws {
             removeFriendCalls.append((friendId, pausedFriendIds, sharingEnabled))
@@ -1539,5 +1548,47 @@ class LocationSyncServiceTests: XCTestCase {
         XCTAssertNotNil(service.inviteError)
         service.dismissInviteError()
         XCTAssertNil(service.inviteError)
+    }
+
+    // MARK: - Stop ordering
+    //
+    // LocationClient drops a Location whose stamp predates a stop to that friend. That is only
+    // right if the state a send reads already shows the pause by the time the stop is issued, so
+    // each stop path must flip the state first.
+
+    func testStopSharing_SharingIsOffBeforeTheStopGoesOut() async throws {
+        let mockClient = MockLocationClient()
+        service = LocationSyncService(e2eeManager: service.e2eeManager, userStore: service.userStore, locationClient: mockClient, locationProvider: mockLocationProvider)
+        service.skipNetworkRestore = true
+        let svc: LocationSyncService = service
+        svc.isSharingLocation = true
+
+        let stopped = XCTestExpectation(description: "stop sent")
+        var sharingAtStop: Bool?
+        mockClient.onStop = {
+            sharingAtStop = svc.isSharingLocation
+            stopped.fulfill()
+        }
+        svc.stopSharing()
+        await fulfillment(of: [stopped], timeout: 2.0)
+        XCTAssertEqual(sharingAtStop, false)
+    }
+
+    func testTogglePauseFriend_FriendIsPausedBeforeTheStopGoesOut() async throws {
+        let mockClient = MockLocationClient()
+        service = LocationSyncService(e2eeManager: service.e2eeManager, userStore: service.userStore, locationClient: mockClient, locationProvider: mockLocationProvider)
+        service.skipNetworkRestore = true
+        let svc: LocationSyncService = service
+        svc.isSharingLocation = true
+
+        let stopped = XCTestExpectation(description: "stop sent")
+        var pausedAtStop: Bool?
+        mockClient.onStop = {
+            pausedAtStop = svc.effectivelyPausedIds().contains("friend-1")
+            stopped.fulfill()
+        }
+        svc.togglePauseFriend(id: "friend-1")
+        await fulfillment(of: [stopped], timeout: 2.0)
+        XCTAssertEqual(pausedAtStop, true)
     }
 }

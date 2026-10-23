@@ -31,9 +31,6 @@ const val AUTOMATED_KEEPALIVE_BACKSTOP_SECONDS = 3 * UNRESPONSIVE_SEND_INTERVAL_
 /** A removed friend's undelivered messages are retried this long - the server's own retention. */
 const val ORPHANED_OUTBOX_RETENTION_MILLIS = FriendEntry.ACK_TIMEOUT_SECONDS * 1000
 
-/** No [LocationClient.sharingStamp] passed: the send takes one itself, on entry. */
-private const val NO_STAMP = -1L
-
 /**
  * Orchestrates the end-to-end encrypted location sharing protocol.
  * Unifies polling, decryption, ratchet rotation, and sending for all platforms.
@@ -102,14 +99,24 @@ open class LocationClient(
 
     /**
      * Take this BEFORE reading the sharing and pause state that decides a Location send, and pass
-     * it to [sendLocation] or [sendLocationToFriend]. A stop issued to a friend after the stamp
-     * means that read may predate the pause, so the Location is not sent to that friend: it would
-     * follow the stop and undo it. Callers flip the pause state before calling the stop functions,
-     * so a read that comes after the stamp of such a stop already sees the pause.
+     * it to [sendLocation] or [sendLocationToFriend] (it is required there, so no caller can skip
+     * it; one that reads no such state takes it right before the call). A stop issued to a friend
+     * after the stamp means that read may predate the pause, so the Location is not sent to that
+     * friend: it would follow the stop and undo it. Callers flip the pause state before calling
+     * the stop functions, so a read that comes after the stamp of such a stop already sees the
+     * pause.
+     *
+     * A stop is recorded before it is encrypted and queued. If that then fails or is cancelled, the
+     * Locations it drops were still decided before the pause, so dropping them stays right; the
+     * friend keeps our last pin until a later stop or Location reaches them.
      */
     fun sharingStamp(): Long = stopsIssued
 
-    /** [friendId] null: a stop to every friend, including one paired while it goes out. */
+    /**
+     * [friendId] null: a stop to every friend, including one paired while it goes out. Such a
+     * friend has had no Location from us, so it shows no pin, and gets none until a send whose
+     * stamp is taken after this stop finds sharing on.
+     */
     private suspend fun issueStop(friendId: String?) {
         sharingOrderMutex.withLock {
             stopsIssued++
@@ -122,20 +129,25 @@ open class LocationClient(
         stamp: Long,
     ): Boolean = sharingOrderMutex.withLock { maxOf(lastStopIssued[friendId] ?: 0L, lastStopIssuedToAll) > stamp }
 
-    // Under the friend's mutex. A stop is dated after every Location sent to this friend before it,
+    // Under the friend's mutex (so one friend's calls don't interleave). A stop is dated after
+    // every Location sent to this friend before it,
     // and a Location no earlier than every stop before it, so whichever we sent last wins at the
     // receiver, even in one second or after our clock steps back. Keepalives don't count, and a
     // Location only moves later for a stop, so a clock that ran ahead and was corrected dates
-    // Locations right again at once. Kept in memory; after a restart lastSentTs (no earlier than
-    // the last message's ts when it was a Location or stop, E2eeManager.encryptToOutbox) stands in.
+    // Locations right again at once. Kept in memory and set up once per friend, under the ordering
+    // lock, from lastSentTs (no earlier than the last message's ts when it was a Location or stop,
+    // E2eeManager.encryptToOutbox), which stands in after a restart.
     private suspend fun sharingTs(
         friendId: String,
         isStop: Boolean,
     ): Long {
-        val seed = store.getFriend(friendId)?.lastSentTs ?: Long.MIN_VALUE
         val now = currentTimeSeconds()
         return sharingOrderMutex.withLock {
-            val last = sharingTsByFriend.getOrPut(friendId) { SharingTs(seed, seed) }
+            val last =
+                sharingTsByFriend[friendId] ?: run {
+                    val seed = store.getFriend(friendId)?.lastSentTs ?: Long.MIN_VALUE
+                    SharingTs(seed, seed).also { sharingTsByFriend[friendId] = it }
+                }
             if (isStop) {
                 maxOf(now, last.location + 1).also { last.stop = maxOf(last.stop, it) }
             } else {
@@ -682,9 +694,8 @@ open class LocationClient(
         lng: Double,
         pausedFriendIds: Set<String> = emptySet(),
         stationary: Boolean = false,
-        stamp: Long = NO_STAMP,
+        stamp: Long,
     ) {
-        val sharingStamp = if (stamp == NO_STAMP) sharingStamp() else stamp
         coroutineScope {
             val now = currentTimeSeconds()
             // Sequential: each friend's eligibility check is a local-DB read serialized behind
@@ -714,7 +725,7 @@ open class LocationClient(
                         runCatching {
                             val mutex = getFriendMutex(friend.id)
                             mutex.withLock {
-                                sendLocationLocked(friend.id, lat, lng, stationary, sharingStamp)
+                                sendLocationLocked(friend.id, lat, lng, stationary, stamp)
                             }
                         }.onFailure { if (it is CancellationException) throw it }
                     }
@@ -737,12 +748,11 @@ open class LocationClient(
         lat: Double,
         lng: Double,
         stationary: Boolean = false,
-        stamp: Long = NO_STAMP,
+        stamp: Long,
     ) {
-        val sharingStamp = if (stamp == NO_STAMP) sharingStamp() else stamp
         val mutex = getFriendMutex(friendId)
         mutex.withLock {
-            sendLocationLocked(friendId, lat, lng, stationary, sharingStamp)
+            sendLocationLocked(friendId, lat, lng, stationary, stamp)
         }
     }
 

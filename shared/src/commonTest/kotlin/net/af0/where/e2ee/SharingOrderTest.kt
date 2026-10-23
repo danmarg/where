@@ -26,28 +26,40 @@ class SharingOrderTest {
 
     private class Pair(
         val mailbox: MemoryMailboxClient,
+        val aliceManager: E2eeManager,
         val alice: LocationClient,
         val bob: LocationClient,
         val bobManager: E2eeManager,
         val bobId: String,
     )
 
-    private suspend fun paired(): Pair {
+    private suspend fun paired(aliceDriver: app.cash.sqldelight.db.SqlDriver = createTestSqlDriver()): Pair {
         val mailbox = MemoryMailboxClient()
-        val aliceManager = testE2eeManager(createTestSqlDriver())
+        val aliceManager = testE2eeManager(aliceDriver)
         val alice = LocationClient("http://localhost", aliceManager, mailbox)
-        val qr = aliceManager.createInvite("Alice")
-        val bobManager = testE2eeManager(createTestSqlDriver())
-        val bob = LocationClient("http://localhost", bobManager, mailbox)
-        val (init, bobEntry) = bobManager.processScannedQr(qr, "Bob")
-        bob.postKeyExchangeInit(bobEntry.id, qr, init)
-        val pending = alice.pollPendingInvites().single()
-        val bobId = requireNotNull(aliceManager.processKeyExchangeInit(pending.payload, "Bob", pending.inviteEkPub)).id
+        val (bobManager, bob, bobId) = pairWithAlice(mailbox, aliceManager, alice, "Bob")
         // Alice's first frame is her epoch's transition frame, on the mailbox Bob polls before it;
         // once he has read it, what she sends next shares one mailbox and so one batch.
         alice.sendKeepalive(bobId)
         bob.poll(isForeground = true, pausedFriendIds = emptySet())
-        return Pair(mailbox, alice, bob, bobManager, bobId)
+        return Pair(mailbox, aliceManager, alice, bob, bobManager, bobId)
+    }
+
+    /** A new friend of Alice's: their manager, client, and their id on Alice's side. */
+    private suspend fun pairWithAlice(
+        mailbox: MemoryMailboxClient,
+        aliceManager: E2eeManager,
+        alice: LocationClient,
+        name: String,
+    ): Triple<E2eeManager, LocationClient, String> {
+        val qr = aliceManager.createInvite("Alice")
+        val manager = testE2eeManager(createTestSqlDriver())
+        val client = LocationClient("http://localhost", manager, mailbox)
+        val (init, entry) = manager.processScannedQr(qr, name)
+        client.postKeyExchangeInit(entry.id, qr, init)
+        val pending = alice.pollPendingInvites().single()
+        val id = requireNotNull(aliceManager.processKeyExchangeInit(pending.payload, name, pending.inviteEkPub)).id
+        return Triple(manager, client, id)
     }
 
     /** Bob's view of Alice after one batch, and the Locations it delivered. */
@@ -130,5 +142,44 @@ class SharingOrderTest {
             val (alice, lats) = p.bobReads()
             assertNotNull(alice.stoppedAtTs)
             assertTrue(lats.isEmpty())
+        }
+
+    @Test
+    fun `a friend paired while a stop to everyone goes out gets no Location decided before it`() =
+        runTest {
+            val p = paired()
+            val stamp = p.alice.sharingStamp()
+            p.alice.sendStoppedSharing()
+            // Carol is paired after the stop listed Alice's friends, so she gets no stop.
+            val (carolManager, _, carolId) = pairWithAlice(p.mailbox, p.aliceManager, p.alice, "Carol")
+            p.alice.sendLocation(1.0, 1.0, stamp = stamp)
+            p.alice.sendLocationToFriend(carolId, 1.0, 1.0, stamp = stamp)
+
+            // So nothing went to her, and she starts with no pin, not a "sharing" one.
+            val carolsMailbox = carolManager.listFriends().single().session.recvToken.toHex()
+            assertTrue(p.mailbox.mailboxes[carolsMailbox].orEmpty().isEmpty())
+            assertNull(carolManager.listFriends().single().lastLat)
+            assertTrue(p.bobReads().second.isEmpty())
+        }
+
+    @Test
+    fun `a stop that fails before it is queued still drops the Locations decided before it`() =
+        runTest {
+            val driver = FailingSqlDriver(createTestSqlDriver())
+            val p = paired(driver)
+            p.alice.sendLocation(1.0, 1.0)
+            val stamp = p.alice.sharingStamp()
+            driver.failOn = "INSERT INTO Outbox"
+            p.alice.sendStoppedSharingToFriend(p.bobId)
+            p.alice.sendLocation(2.0, 2.0, stamp = stamp)
+
+            // The stop was lost, so Bob keeps Alice's last pin, but the stale Location didn't follow.
+            val (alice, lats) = p.bobReads()
+            assertNull(alice.stoppedAtTs)
+            assertEquals(listOf(1.0), lats)
+
+            // The next stop goes through and is dated after that Location.
+            p.alice.sendStoppedSharingToFriend(p.bobId)
+            assertNotNull(p.bobReads().first.stoppedAtTs)
         }
 }
