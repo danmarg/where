@@ -13,6 +13,23 @@ A cross-platform, end-to-end encrypted real-time location sharing app for iOS an
 - **iOS:** [App Store](https://apps.apple.com/us/app/where-share-privately/id6763714413)
 - **Beta Testing:** [Join the closed testing group](https://groups.google.com/g/where-app-testers)
 
+## Screenshots
+
+<table>
+  <tr>
+    <td><img src="assets/screenshots/ios-1.jpg" width="180" alt="iOS: a friend's location on the map"></td>
+    <td><img src="assets/screenshots/ios-2.jpg" width="180" alt="iOS: inviting a friend with a QR code"></td>
+    <td><img src="assets/screenshots/ios-3.jpg" width="180" alt="iOS: naming a new friend"></td>
+    <td><img src="assets/screenshots/ios-4.jpg" width="180" alt="iOS: friends list"></td>
+  </tr>
+  <tr>
+    <td><img src="android/src/fdroid/play/listings/en-US/graphics/phone-screenshots/5.png" width="180" alt="Android: a friend's location on the map"></td>
+    <td><img src="android/src/fdroid/play/listings/en-US/graphics/phone-screenshots/2.png" width="180" alt="Android: inviting a friend with a QR code"></td>
+    <td><img src="android/src/fdroid/play/listings/en-US/graphics/phone-screenshots/3.png" width="180" alt="Android: naming a new friend"></td>
+    <td><img src="android/src/fdroid/play/listings/en-US/graphics/phone-screenshots/4.png" width="180" alt="Android: friends list"></td>
+  </tr>
+</table>
+
 ## Privacy model
 
 Where is designed so the server learns as little as possible:
