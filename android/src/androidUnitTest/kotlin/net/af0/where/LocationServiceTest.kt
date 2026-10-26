@@ -408,7 +408,30 @@ class LocationServiceTest {
             controller.startCommand(0, 0)
             advanceUntilIdle()
 
-            io.mockk.coVerify { mockClient.sendLocation(any(), any(), any()) }
+            io.mockk.coVerify { mockClient.sendLocation(any(), any(), any(), stamp = any()) }
+        }
+
+    @Test
+    fun noLocationIsSentWithoutLocationPermission() =
+        runTest {
+            // Permission revoked with sharing still on: the ViewModel has sent a stop, so the
+            // heartbeat's cached fix must not follow it.
+            val controller = Robolectric.buildService(LocationService::class.java)
+            val service = controller.get()
+            val mockClient = io.mockk.mockk<LocationClient>(relaxed = true)
+            service.locationClientOverride = mockClient
+            service.locationSourceOverride = fakeLocationSource
+            service.e2eeManagerOverride = io.mockk.mockk(relaxed = true)
+            controller.create()
+            shadowOf(context).denyPermissions(Manifest.permission.ACCESS_FINE_LOCATION)
+
+            try {
+                service.sendLocationIfNeeded(1.0, 2.0, isHeartbeat = true, force = true, stationary = false)
+                advanceUntilIdle()
+                io.mockk.coVerify(exactly = 0) { mockClient.sendLocation(any(), any(), any(), any(), any()) }
+            } finally {
+                controller.destroy()
+            }
         }
 
     @Test
@@ -423,7 +446,7 @@ class LocationServiceTest {
             val mockClient = io.mockk.mockk<LocationClient>(relaxed = true)
             // First call throws, second call succeeds.
             var sendCalls = 0
-            io.mockk.coEvery { mockClient.sendLocation(any(), any(), any()) } answers {
+            io.mockk.coEvery { mockClient.sendLocation(any(), any(), any(), stamp = any()) } answers {
                 sendCalls += 1
                 if (sendCalls == 1) throw RuntimeException("simulated transient failure")
                 Unit
@@ -658,7 +681,7 @@ class LocationServiceTest {
             advanceUntilIdle()
 
             io.mockk.coVerify(exactly = 1) {
-                mockClient.sendLocation(37.0, -122.0, any(), stationary = true)
+                mockClient.sendLocation(37.0, -122.0, any(), stationary = true, stamp = any())
             }
         }
 
@@ -694,10 +717,10 @@ class LocationServiceTest {
             advanceUntilIdle()
 
             io.mockk.coVerify(atLeast = 1) {
-                mockClient.sendLocation(37.5, -122.5, any(), stationary = true)
+                mockClient.sendLocation(37.5, -122.5, any(), stationary = true, stamp = any())
             }
             io.mockk.coVerify(exactly = 0) {
-                mockClient.sendLocation(37.5, -122.5, any(), stationary = false)
+                mockClient.sendLocation(37.5, -122.5, any(), stationary = false, stamp = any())
             }
         }
 
@@ -737,10 +760,10 @@ class LocationServiceTest {
             advanceUntilIdle()
 
             io.mockk.coVerify(atLeast = 1) {
-                mockClient.sendLocation(37.0, -122.0, any(), stationary = true)
+                mockClient.sendLocation(37.0, -122.0, any(), stationary = true, stamp = any())
             }
             io.mockk.coVerify(exactly = 0) {
-                mockClient.sendLocation(37.0, -122.0, any(), stationary = false)
+                mockClient.sendLocation(37.0, -122.0, any(), stationary = false, stamp = any())
             }
         }
 
