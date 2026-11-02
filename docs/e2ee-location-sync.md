@@ -521,6 +521,10 @@ A `Location` carrying `stationary: true` is a signal that the sender does not ex
 
 A `StoppedSharing` message signals the deliberate end of a share session (manual toggle-off, per-friend pause, expiry of a time-limited share, or removing the friend — the protocol does not know which). Receivers SHOULD reflect a terminal state in their UI for some bounded window, then suppress the peer's pin entirely.
 
+**Ordering Locations and stops.** The receiver takes the sharing state from whichever of the `Location` and `StoppedSharing` messages its peer sent it came last: across batches, the later batch; within one batch, the later `ts` (the last `Location` against the latest stop), with a `Location` winning a tie. `ts` has one-second resolution, so the sender keeps this right:
+- A `Location` decided on before a stop (the sender read "sharing" before the user paused) MUST NOT be sent after that stop.
+- A stop's `ts` MUST be later than that of every `Location` sent to that peer before it, and a `Location`'s `ts` no earlier than that of every stop sent to that peer before it, even within one second or after the sender's clock steps back.
+
 **Critical sender rule: "stop sharing" means "stop sending Locations," not "stop talking."**
 After emitting `StoppedSharing`, the sender MUST continue its normal Keepalive cadence. The 7-day inactivity window (§10.2) tears down a peer's session entirely once `lastRecvTs` exceeds the timeout; if a sender both stopped Locations *and* stopped Keepalives, every recipient would silently expire the session within a week and lose all post-compromise security guarantees on the channel. Resuming sharing later would require fresh pairing. Keepalives also continue to drive the DH ratchet forward, preserving PCS during the quiet period.
 
@@ -842,7 +846,7 @@ For a **Stopped-Sharing** notice (`"type": "stop"`):
   "ts": 1711152000
 }
 ```
-*   `ts` (int): Sender's wall-clock at the moment sharing was stopped. The recipient uses this to render the terminal state ("stopped sharing at HH:mm"). See §5.7.2 for sender obligations after emitting this message.
+*   `ts` (int): Sender's wall-clock at the moment sharing was stopped, or one second after the last `Location` sent to that peer if that is later (§5.7.2). The recipient uses this to render the terminal state ("stopped sharing at HH:mm"). See §5.7.2 for sender obligations after emitting this message.
 
 Senders MUST emit the `"type"` field on every plaintext message. Receivers MUST dispatch on it, treating any unrecognized value as a Keepalive (§5.7.3).
 

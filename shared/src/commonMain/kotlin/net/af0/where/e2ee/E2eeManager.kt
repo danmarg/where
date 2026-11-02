@@ -375,11 +375,19 @@ class E2eeManager(
         // keepalive gate on "now - lastSentTs >= UNRESPONSIVE_SEND_INTERVAL_SECONDS", so whichever
         // of the two fires resets the shared clock for the other. That's what keeps them mutually
         // exclusive (a sent Location suppresses the next keepalive, and vice versa) and self-paced
-        // at a consistent ~5-minute cadence instead of firing on every poll cycle.
+        // at a consistent ~5-minute cadence instead of firing on every poll cycle. For a Location
+        // or StoppedSharing it is at least that message's ts, which LocationClient may date a
+        // little ahead of the clock (§5.7.2); after a restart it dates the next one from here.
+        val sharingTs =
+            when (payload) {
+                is MessagePlaintext.Location -> payload.ts
+                is MessagePlaintext.StoppedSharing -> payload.ts
+                else -> Long.MIN_VALUE
+            }
         val updatedEntry =
             entry.copy(
                 session = nextSession,
-                lastSentTs = currentTimeSeconds(),
+                lastSentTs = maxOf(currentTimeSeconds(), sharingTs),
             )
 
         metadata.insertOutbox(

@@ -72,8 +72,8 @@ class LocationServicePauseBypassTest {
             service.onStartCommand(forcePublish("active-friend"), 0, 2)
             advanceUntilIdle()
 
-            coVerify(exactly = 0) { client.sendLocationToFriend("paused-friend", any(), any(), any()) }
-            coVerify(exactly = 1) { client.sendLocationToFriend("active-friend", any(), any(), any()) }
+            coVerify(exactly = 0) { client.sendLocationToFriend("paused-friend", any(), any(), any(), any()) }
+            coVerify(exactly = 1) { client.sendLocationToFriend("active-friend", any(), any(), any(), any()) }
             controller.destroy()
         }
 }
