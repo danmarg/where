@@ -22,10 +22,10 @@ import net.af0.where.e2ee.toHex
 import org.testcontainers.containers.GenericContainer
 import org.testcontainers.containers.wait.strategy.Wait
 import org.testcontainers.utility.DockerImageName
+import software.amazon.awssdk.core.SdkBytes
 import software.amazon.awssdk.core.exception.SdkClientException
 import software.amazon.awssdk.services.dynamodb.DynamoDbClient
 import software.amazon.awssdk.services.dynamodb.model.AttributeDefinition
-import software.amazon.awssdk.core.SdkBytes
 import software.amazon.awssdk.services.dynamodb.model.AttributeValue
 import software.amazon.awssdk.services.dynamodb.model.BatchWriteItemRequest
 import software.amazon.awssdk.services.dynamodb.model.BatchWriteItemResponse
