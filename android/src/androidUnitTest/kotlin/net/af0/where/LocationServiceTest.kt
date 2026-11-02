@@ -429,6 +429,13 @@ class LocationServiceTest {
                 service.sendLocationIfNeeded(1.0, 2.0, isHeartbeat = true, force = true, stationary = false)
                 advanceUntilIdle()
                 io.mockk.coVerify(exactly = 0) { mockClient.sendLocation(any(), any(), any(), any(), any()) }
+
+                // The refused attempt must not close the send gate: once permission is back, an
+                // ordinary (non-forced) heartbeat goes out straight away.
+                shadowOf(context).grantPermissions(Manifest.permission.ACCESS_FINE_LOCATION)
+                service.sendLocationIfNeeded(1.0, 2.0, isHeartbeat = true, stationary = false)
+                advanceUntilIdle()
+                io.mockk.coVerify(exactly = 1) { mockClient.sendLocation(any(), any(), any(), any(), any()) }
             } finally {
                 controller.destroy()
             }

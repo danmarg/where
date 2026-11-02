@@ -82,7 +82,7 @@ open class LocationClient(
     // Sharing-state order (§5.7.2). The receiver takes "sharing" or "stopped" from the order of
     // our Locations and stops and, within one batch, from their ts (the later wins, a Location
     // winning a tie). So per friend we never send a Location that was decided on before a stop
-    // after that stop, and date each message after the ones before it (see sharingTs).
+    // after that stop, and date each message after the ones before it (see locationTs and stopTs).
     // stopsIssued counts stops; lastStopIssued is its value at each friend's latest stop, and
     // lastStopIssuedToAll at the latest stop to everyone. All of it, and sharingTsByFriend, changes
     // under sharingOrderMutex; stopsIssued is also read without it, by sharingStamp().
@@ -124,37 +124,42 @@ open class LocationClient(
         }
     }
 
-    private suspend fun stoppedSince(
+    // Under the friend's mutex (so one friend's calls don't interleave). A stop is dated after
+    // every Location sent to this friend before it, and a Location no earlier than every stop
+    // before it, so whichever we sent last wins at the receiver, even in one second or after our
+    // clock steps back. Keepalives don't count, and a Location only moves later for a stop, so a
+    // clock that ran ahead and was corrected dates Locations right again at once. Kept in memory
+    // and set up once per friend, under the ordering lock, from lastSentTs (no earlier than the
+    // last message's ts when it was a Location or stop, E2eeManager.encryptToOutbox), which stands
+    // in after a restart.
+
+    /** The ts for a Location to [friendId], or null if a stop to them was issued after [stamp]. */
+    private suspend fun locationTs(
         friendId: String,
         stamp: Long,
-    ): Boolean = sharingOrderMutex.withLock { maxOf(lastStopIssued[friendId] ?: 0L, lastStopIssuedToAll) > stamp }
-
-    // Under the friend's mutex (so one friend's calls don't interleave). A stop is dated after
-    // every Location sent to this friend before it,
-    // and a Location no earlier than every stop before it, so whichever we sent last wins at the
-    // receiver, even in one second or after our clock steps back. Keepalives don't count, and a
-    // Location only moves later for a stop, so a clock that ran ahead and was corrected dates
-    // Locations right again at once. Kept in memory and set up once per friend, under the ordering
-    // lock, from lastSentTs (no earlier than the last message's ts when it was a Location or stop,
-    // E2eeManager.encryptToOutbox), which stands in after a restart.
-    private suspend fun sharingTs(
-        friendId: String,
-        isStop: Boolean,
-    ): Long {
+    ): Long? {
         val now = currentTimeSeconds()
         return sharingOrderMutex.withLock {
-            val last =
-                sharingTsByFriend[friendId] ?: run {
-                    val seed = store.getFriend(friendId)?.lastSentTs ?: Long.MIN_VALUE
-                    SharingTs(seed, seed).also { sharingTsByFriend[friendId] = it }
-                }
-            if (isStop) {
-                maxOf(now, last.location + 1).also { last.stop = maxOf(last.stop, it) }
-            } else {
-                maxOf(now, last.stop).also { last.location = maxOf(last.location, it) }
-            }
+            if (maxOf(lastStopIssued[friendId] ?: 0L, lastStopIssuedToAll) > stamp) return@withLock null
+            val last = sharingTsLocked(friendId)
+            maxOf(now, last.stop).also { last.location = maxOf(last.location, it) }
         }
     }
+
+    private suspend fun stopTs(friendId: String): Long {
+        val now = currentTimeSeconds()
+        return sharingOrderMutex.withLock {
+            val last = sharingTsLocked(friendId)
+            maxOf(now, last.location + 1).also { last.stop = maxOf(last.stop, it) }
+        }
+    }
+
+    // Holding sharingOrderMutex.
+    private suspend fun sharingTsLocked(friendId: String): SharingTs =
+        sharingTsByFriend[friendId] ?: run {
+            val seed = store.getFriend(friendId)?.lastSentTs ?: Long.MIN_VALUE
+            SharingTs(seed, seed).also { sharingTsByFriend[friendId] = it }
+        }
 
     private val inFlightPolls = mutableSetOf<String>()
     private val inFlightMutex = Mutex()
@@ -764,11 +769,11 @@ open class LocationClient(
         stationary: Boolean,
         stamp: Long,
     ) {
-        if (stoppedSince(friendId, stamp)) {
+        val ts = locationTs(friendId, stamp)
+        if (ts == null) {
             store.addDiagnosticEvent("sendLocation($friendId): sharing stopped since this send was decided; skipped")
             return
         }
-        val ts = sharingTs(friendId, isStop = false)
         sendMessageToFriendInternal(friendId, MessagePlaintext.Location(lat = lat, lng = lng, acc = 0.0, ts = ts, stationary = stationary))
     }
 
@@ -782,7 +787,7 @@ open class LocationClient(
         issueStop(null)
         val activeFriends = store.listFriends().filter { isActiveFriend(it, pausedFriendIds) }
         forEachFriendParallel(activeFriends) { friend ->
-            val payload = MessagePlaintext.StoppedSharing(ts = sharingTs(friend.id, isStop = true))
+            val payload = MessagePlaintext.StoppedSharing(ts = stopTs(friend.id))
             sendMessageToFriendInternal(friend.id, payload, requireDrainedOutboxFirst = false)
         }
     }
@@ -797,7 +802,7 @@ open class LocationClient(
         val mutex = getFriendMutex(friendId)
         mutex.withLock {
             try {
-                val payload = MessagePlaintext.StoppedSharing(ts = sharingTs(friendId, isStop = true))
+                val payload = MessagePlaintext.StoppedSharing(ts = stopTs(friendId))
                 sendMessageToFriendInternal(friendId, payload, requireDrainedOutboxFirst = false)
             } catch (e: CancellationException) {
                 throw e

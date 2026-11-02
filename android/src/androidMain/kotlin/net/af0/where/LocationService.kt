@@ -1034,7 +1034,11 @@ class LocationService : Service() {
             // Before reading the sharing state: a stop issued after it drops this Location for
             // that friend rather than letting it follow the stop (LocationClient.sharingStamp).
             val stamp = locationClient.sharingStamp()
-            if (!canSendLocations()) return
+            if (!canSendLocations()) {
+                // Nothing was sent: don't leave the send gate closed for the next wake.
+                sendLock.withLock { lastSentTime = 0L }
+                return
+            }
             try {
                 locationClient.sendLocation(lat, lng, userStore.effectivelyPausedIds(), stationary = stationary, stamp = stamp)
                 val sendCompleteTime = clock()
