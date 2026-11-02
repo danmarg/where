@@ -1,9 +1,28 @@
 package net.af0.where
 
+import io.ktor.client.request.get
+import io.ktor.client.request.put
+import io.ktor.client.request.setBody
+import io.ktor.client.statement.bodyAsText
+import io.ktor.http.ContentType
+import io.ktor.http.HttpStatusCode
+import io.ktor.http.contentType
+import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.decodeFromJsonElement
+import kotlinx.serialization.json.jsonArray
+import net.af0.where.e2ee.DhPublicKey
+import net.af0.where.e2ee.EncryptedMessagePayload
+import net.af0.where.e2ee.KeyExchange
+import net.af0.where.e2ee.MailboxPayload
+import net.af0.where.e2ee.MessagePlaintext
+import net.af0.where.e2ee.ReceivedMessage
+import net.af0.where.e2ee.Session
+import net.af0.where.e2ee.toHex
 import org.testcontainers.containers.GenericContainer
 import org.testcontainers.containers.wait.strategy.Wait
 import org.testcontainers.utility.DockerImageName
+import software.amazon.awssdk.core.SdkBytes
 import software.amazon.awssdk.core.exception.SdkClientException
 import software.amazon.awssdk.services.dynamodb.DynamoDbClient
 import software.amazon.awssdk.services.dynamodb.model.AttributeDefinition
@@ -32,6 +51,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
+import kotlin.test.assertIs
 import kotlin.test.assertTrue
 
 /**
@@ -64,13 +84,17 @@ class DynamoMailboxStateTest {
     // Fresh table pair per store (rather than a fresh token, as PostgresMailboxStateTest used) -
     // DynamoDB table creation is cheap against Local and this keeps each test's queue-depth-guard
     // and TTL-seeding assertions fully isolated from any other test's items.
-    private fun store(wrap: (DynamoDbClient) -> DynamoDbClient = { it }): DynamoMailboxState {
+    private fun store(
+        compactPayloads: Boolean = false,
+        wrap: (DynamoDbClient) -> DynamoDbClient = { it },
+    ): DynamoMailboxState {
         val client = wrap(createDynamoDbClient("test", "test", "us-east-1", endpoint()))
         val suffix = tableCounter++
         return DynamoMailboxState(
             client,
             messagesTable = "test_messages_$suffix",
             receivedIdsTable = "test_received_$suffix",
+            compactPayloads = compactPayloads,
         ).also { stores.add(it) }
     }
 
@@ -863,4 +887,210 @@ class DynamoMailboxStateTest {
         assertTrue(state.post(token, JsonPrimitive("fresh"), "reused"))
         assertEquals(listOf(JsonPrimitive("fresh")), state.drain(token))
     }
+
+    private fun rawItem(
+        token: String,
+        msgId: String,
+    ): Map<String, AttributeValue> =
+        createDynamoDbClient("test", "test", "us-east-1", endpoint()).use {
+            it.getItem(
+                GetItemRequest.builder()
+                    .tableName("test_messages_${tableCounter - 1}")
+                    .key(mapOf("token" to AttributeValue.fromS(token), "msgId" to AttributeValue.fromS(msgId)))
+                    .consistentRead(true)
+                    .build(),
+            ).item()
+        }
+
+    // DynamoDB's item size rules: attribute name bytes plus value bytes, numbers about one byte per
+    // two significant digits plus one. Checked against real AWS consumed capacity: an item this
+    // formula puts at 1024 B costs 1 write unit, and 1030 B costs 2, on the table and its GSI alike.
+    private fun itemSize(item: Map<String, AttributeValue>): Int =
+        item.entries.sumOf { (name, value) ->
+            name.toByteArray().size +
+                when {
+                    value.s() != null -> value.s().toByteArray().size
+                    value.b() != null -> value.b().asByteArray().size
+                    else -> (value.n().trimStart('-', '0').replace(".", "").length + 1) / 2 + 1
+                }
+        }
+
+    // A 32-hex-char routing token, like real ones (16 bytes).
+    private fun realisticToken() = java.util.UUID.randomUUID().toString().replace("-", "")
+
+    @Test
+    fun `compact location messages drain byte-identically and fit in one write unit`() {
+        val state = store(compactPayloads = true)
+        val token = realisticToken()
+        val messages = RealMessages.locations(20)
+        val sizes =
+            messages.map { message ->
+                assertTrue(state.post(token, RealMessages.wire(message), message.msgId))
+                val item = rawItem(token, message.msgId)
+                assertTrue("c" in item && "payload" !in item, "stored compact: ${item.keys}")
+                itemSize(item)
+            }
+        assertEquals(messages.map { RealMessages.wire(it).toString() }, state.drain(token)!!.map { it.toString() })
+        // ~780 B today; the margin leaves room for a somewhat larger envelope.
+        assertTrue(sizes.max() <= 900, "item sizes $sizes")
+    }
+
+    @Test
+    fun `with the flag off location messages are stored as JSON`() {
+        val state = store()
+        val token = freshToken()
+        val message = RealMessages.locations(1).single()
+        assertTrue(state.post(token, RealMessages.wire(message), message.msgId))
+        assertTrue("payload" in rawItem(token, message.msgId))
+        assertEquals(listOf(RealMessages.wire(message)), state.drain(token))
+    }
+
+    @Test
+    fun `legacy and compact items drain together in posted order`() {
+        val state = store(compactPayloads = true)
+        val token = freshToken()
+        val client = createDynamoDbClient("test", "test", "us-east-1", endpoint())
+        client.use {
+            it.putItem(
+                PutItemRequest.builder()
+                    .tableName("test_messages_${tableCounter - 1}")
+                    .item(
+                        mapOf(
+                            "token" to AttributeValue.fromS(token),
+                            "msgId" to AttributeValue.fromS("legacy"),
+                            "payload" to AttributeValue.fromS("\"legacy\""),
+                            "postedAt" to AttributeValue.fromN((System.currentTimeMillis() - 1000).toString()),
+                            "expiresAt" to AttributeValue.fromN((System.currentTimeMillis() / 1000 + 3600).toString()),
+                        ),
+                    )
+                    .build(),
+            )
+        }
+        val (first, second) = RealMessages.locations(2)
+        assertTrue(state.post(token, RealMessages.wire(first), first.msgId))
+        Thread.sleep(2)
+        assertTrue(state.post(token, JsonPrimitive("not compactable"), "plain"))
+        Thread.sleep(2)
+        assertTrue(state.post(token, RealMessages.wire(second), second.msgId))
+
+        assertEquals(
+            listOf(JsonPrimitive("legacy"), RealMessages.wire(first), JsonPrimitive("not compactable"), RealMessages.wire(second)),
+            state.drain(token),
+        )
+    }
+
+    @Test
+    fun `a malformed item is skipped without failing the poll`() {
+        val state = store(compactPayloads = true)
+        val token = freshToken()
+        val (first, second) = RealMessages.locations(2)
+        assertTrue(state.post(token, RealMessages.wire(first), first.msgId))
+        val now = System.currentTimeMillis()
+        val bad =
+            mapOf(
+                "half-compact" to mapOf("c" to AttributeValue.fromB(SdkBytes.fromByteArray(byteArrayOf(1)))),
+                "v as string" to
+                    mapOf(
+                        "v" to AttributeValue.fromS("1"),
+                        "e" to AttributeValue.fromB(SdkBytes.fromByteArray(byteArrayOf(1))),
+                        "c" to AttributeValue.fromB(SdkBytes.fromByteArray(byteArrayOf(1))),
+                    ),
+                "no payload" to emptyMap(),
+                "unparsable payload" to mapOf("payload" to AttributeValue.fromS("{not json")),
+            )
+        createDynamoDbClient("test", "test", "us-east-1", endpoint()).use { client ->
+            bad.entries.forEachIndexed { i, (name, attrs) ->
+                client.putItem(
+                    PutItemRequest.builder()
+                        .tableName("test_messages_${tableCounter - 1}")
+                        .item(
+                            attrs +
+                                mapOf(
+                                    "token" to AttributeValue.fromS(token),
+                                    "msgId" to AttributeValue.fromS("bad-$i-$name"),
+                                    "postedAt" to AttributeValue.fromN((now + i + 1).toString()),
+                                    "expiresAt" to AttributeValue.fromN((now / 1000 + 3600).toString()),
+                                ),
+                        )
+                        .build(),
+                )
+            }
+        }
+        Thread.sleep(10)
+        assertTrue(state.post(token, RealMessages.wire(second), second.msgId))
+        assertEquals(listOf(RealMessages.wire(first), RealMessages.wire(second)), state.drain(token))
+    }
+
+    @Test
+    fun `a full page of malformed items does not hide valid messages behind it`() {
+        val state = store(compactPayloads = true)
+        val token = freshToken()
+        val now = System.currentTimeMillis()
+        createDynamoDbClient("test", "test", "us-east-1", endpoint()).use { client ->
+            repeat(60) { i ->
+                client.putItem(
+                    PutItemRequest.builder()
+                        .tableName("test_messages_${tableCounter - 1}")
+                        .item(
+                            mapOf(
+                                "token" to AttributeValue.fromS(token),
+                                "msgId" to AttributeValue.fromS("bad-$i"),
+                                "c" to AttributeValue.fromB(SdkBytes.fromByteArray(byteArrayOf(1))),
+                                "postedAt" to AttributeValue.fromN((now - 10_000 + i).toString()),
+                                "expiresAt" to AttributeValue.fromN((now / 1000 + 3600).toString()),
+                            ),
+                        )
+                        .build(),
+                )
+            }
+        }
+        val messages = RealMessages.locations(3)
+        messages.forEach { assertTrue(state.post(token, RealMessages.wire(it), it.msgId)) }
+        assertEquals(messages.map { RealMessages.wire(it) }, state.drain(token))
+    }
+
+    @Test
+    fun `compact items are acked like any other`() {
+        val state = store(compactPayloads = true)
+        val token = freshToken()
+        val messages = RealMessages.locations(3)
+        messages.forEach { assertTrue(state.post(token, RealMessages.wire(it), it.msgId)) }
+
+        state.deleteById(token, messages[0].msgId)
+        state.deleteByIds(token, listOf(messages[1].msgId))
+        assertEquals(listOf(RealMessages.wire(messages[2])), state.drain(token))
+    }
+
+    @Test
+    fun `a compact message round-trips through the HTTP API and decrypts`() =
+        io.ktor.server.testing.testApplication {
+            val (qr, aliceEkPriv) = KeyExchange.aliceCreateQrPayload("Alice")
+            val (initMsg, bobSession) = KeyExchange.bobProcessQr(qr, "Bob")
+            val alice = KeyExchange.aliceProcessInit(initMsg, aliceEkPriv, DhPublicKey(qr.ekPub.toByteArray()))
+            val (_, message) = Session.encryptMessage(alice, MessagePlaintext.Location(lat = 1.5, lng = 2.5, acc = 3.0, ts = 4L))
+            val state = store(compactPayloads = true)
+            application { module(ServerState(mailbox = state)) }
+            val token = alice.sendToken.toHex()
+
+            val put =
+                client.put("/inbox/$token/${message.msgId}") {
+                    contentType(ContentType.Application.Json)
+                    setBody(RealMessages.wire(message).toString())
+                }
+            assertEquals(HttpStatusCode.NoContent, put.status)
+            val item = rawItem(token, message.msgId)
+            assertTrue("c" in item && "payload" !in item, "stored compact: ${item.keys}")
+
+            val polled = Json.parseToJsonElement(client.get("/inbox/$token").bodyAsText()).jsonArray
+            val received = assertIs<EncryptedMessagePayload>(wireJson.decodeFromJsonElement<MailboxPayload>(polled.single()))
+            val (_, plaintext) = assertIs<ReceivedMessage.Delivered>(Session.decryptMessage(bobSession, received))
+            val location = assertIs<MessagePlaintext.Location>(plaintext)
+            assertEquals(1.5 to 2.5, location.lat to location.lng)
+        }
+
+    private val wireJson =
+        Json {
+            classDiscriminator = "type"
+            ignoreUnknownKeys = true
+        }
 }

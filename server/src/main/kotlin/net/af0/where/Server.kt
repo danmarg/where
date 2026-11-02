@@ -27,9 +27,13 @@ import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
 import org.slf4j.LoggerFactory
 import software.amazon.awssdk.auth.credentials.AwsBasicCredentials
 import software.amazon.awssdk.auth.credentials.StaticCredentialsProvider
+import software.amazon.awssdk.core.SdkBytes
 import software.amazon.awssdk.regions.Region
 import software.amazon.awssdk.services.dynamodb.DynamoDbClient
 import software.amazon.awssdk.services.dynamodb.model.AttributeDefinition
@@ -63,6 +67,7 @@ import software.amazon.awssdk.services.dynamodb.model.WriteRequest
 import java.net.Inet6Address
 import java.net.InetAddress
 import java.net.URI
+import java.util.Base64
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.ConcurrentLinkedQueue
@@ -361,6 +366,85 @@ fun createDynamoDbClient(
         .build()
 
 /**
+ * A smaller DynamoDB layout for location messages. DynamoDB bills a write unit per started 1 KB of
+ * item, and an EncryptedMessage stored as its JSON string comes to ~1.13 KB, so each put, delete
+ * and their GSI copies cost 2 units. Storing the base64 fields as raw bytes and dropping the parts
+ * the item already holds (the type, implied by the layout, and msgId, which is the sort key) brings
+ * it to ~780 B, 1 unit each.
+ *
+ * Only a payload that is exactly what clients send is compacted: these keys in this order, an
+ * integer `v`, canonical padded base64, and the path's msgId. [decode] then rebuilds JSON that is
+ * byte-identical to the original. Anything else (other message types, new fields, a client that
+ * omits defaults) is stored as its JSON string, as before.
+ *
+ * Rollout: a server without [decode] can't read these items, and GET fails for their token until
+ * they're acked or expire, so writing them is behind DynamoMailboxState.compactPayloads
+ * (MAILBOX_COMPACT_PAYLOADS). Turning the flag off is always safe, but it only stops new compact
+ * writes: existing compact items stay compact. Rolling back to a binary from before this layout
+ * needs the flag off and every compact item acked or expired (TTL is a lazy upper bound).
+ */
+internal object CompactPayload {
+    private val KEYS = listOf("type", "v", "envelope", "ct", "msgId")
+    private const val TYPE = "EncryptedMessage"
+    private val UNSIGNED_INT = Regex("0|[1-9][0-9]*")
+    private val ATTRIBUTES = setOf("v", "e", "c")
+
+    /** The attributes that replace `payload` for [payload], or null if it doesn't qualify. */
+    fun encode(
+        payload: JsonElement,
+        msgId: String?,
+    ): Map<String, AttributeValue>? {
+        if (msgId == null || payload !is JsonObject || payload.keys.toList() != KEYS) return null
+        val type = payload.getValue("type") as? JsonPrimitive ?: return null
+        val v = payload.getValue("v") as? JsonPrimitive ?: return null
+        val innerMsgId = payload.getValue("msgId") as? JsonPrimitive ?: return null
+        if (!type.isString || type.content != TYPE) return null
+        if (v.isString || !UNSIGNED_INT.matches(v.content) || v.content.toIntOrNull() == null) return null
+        if (!innerMsgId.isString || innerMsgId.content != msgId) return null
+        val envelope = canonicalBase64(payload.getValue("envelope")) ?: return null
+        val ct = canonicalBase64(payload.getValue("ct")) ?: return null
+        return mapOf(
+            "v" to AttributeValue.fromN(v.content),
+            "e" to AttributeValue.fromB(SdkBytes.fromByteArray(envelope)),
+            "c" to AttributeValue.fromB(SdkBytes.fromByteArray(ct)),
+        )
+    }
+
+    /** True if [item] uses the compact layout: it has any of its attributes, rather than `payload`. */
+    fun isCompact(item: Map<String, AttributeValue>): Boolean = item.keys.any { it in ATTRIBUTES }
+
+    /**
+     * The original payload JSON for a compact item [encode] wrote, or null if [item] is malformed
+     * (an attribute missing, of the wrong DynamoDB type, empty, or `v` not an unsigned Int). Check
+     * [isCompact] first: this never falls back to `payload`, so a half-compact item fails here
+     * rather than somewhere less obvious.
+     */
+    fun decode(item: Map<String, AttributeValue>): JsonElement? {
+        val version =
+            item["v"]?.n()?.takeIf { UNSIGNED_INT.matches(it) }?.toIntOrNull() ?: return null
+        val envelope = item["e"]?.b()?.asByteArray()?.takeIf { it.isNotEmpty() } ?: return null
+        val ciphertext = item["c"]?.b()?.asByteArray()?.takeIf { it.isNotEmpty() } ?: return null
+        val msgId = item["msgId"]?.s() ?: return null
+        val base64 = Base64.getEncoder()
+        return buildJsonObject {
+            put("type", TYPE)
+            put("v", version)
+            put("envelope", base64.encodeToString(envelope))
+            put("ct", base64.encodeToString(ciphertext))
+            put("msgId", msgId)
+        }
+    }
+
+    // Decoded bytes only if re-encoding gives back the same string, which rules out missing
+    // padding, the URL-safe alphabet and stray bits the decoder would drop. Empty is rejected too.
+    private fun canonicalBase64(element: JsonElement): ByteArray? {
+        val s = (element as? JsonPrimitive)?.takeIf { it.isString }?.content ?: return null
+        val bytes = runCatching { Base64.getDecoder().decode(s) }.getOrNull() ?: return null
+        return bytes.takeIf { it.isNotEmpty() && Base64.getEncoder().encodeToString(it) == s }
+    }
+}
+
+/**
  * DynamoDB-backed mailbox store. Two tables, mirroring the same split PostgresMailboxState used
  * and for the same reason: mailbox_received_ids must outlive message deletion, so idempotency
  * can't be folded into the messages table.
@@ -397,6 +481,9 @@ class DynamoMailboxState(
     private val limiter: InProcessRateLimiter = InProcessRateLimiter(),
     private val messagesTable: String = "where_mailbox_messages",
     private val receivedIdsTable: String = "where_mailbox_received_ids",
+    // Write location messages in [CompactPayload]'s layout. drain() reads both layouts whatever
+    // this is set to; see CompactPayload for why it's a flag.
+    private val compactPayloads: Boolean = false,
 ) : MailboxStore {
     private val locks = StripedLocks()
     private val depthCounts = ConcurrentHashMap<String, Int>()
@@ -540,9 +627,11 @@ class DynamoMailboxState(
                     // behaves like InMemoryMailboxState's queue (a fresh entry per post), not a
                     // dedup target.
                     "msgId" to AttributeValue.fromS(msgId ?: UUID.randomUUID().toString()),
-                    "payload" to AttributeValue.fromS(payload.toString()),
                     "postedAt" to AttributeValue.fromN(now.toString()),
                     "expiresAt" to AttributeValue.fromN(expiresAt.toString()),
+                ) + (
+                    (if (compactPayloads) CompactPayload.encode(payload, msgId) else null)
+                        ?: mapOf("payload" to AttributeValue.fromS(payload.toString()))
                 )
 
             // A write that throws may still have committed (client timeout, retries exhausted
@@ -690,12 +779,14 @@ class DynamoMailboxState(
      * already in postedAt order via ScanIndexForward - no need to read the whole partition and
      * sort client-side. Limit is applied before FilterExpression on DynamoDB's side, so a page
      * can return fewer than [MAX_MESSAGES_PER_POLL] live items if some in it are expired; the
-     * loop keeps paging until it either has enough or the index is exhausted.
+     * loop keeps paging until it either has enough or the index is exhausted. "Enough" counts
+     * decoded messages, not raw items: malformed items are skipped (they still expire via TTL), and
+     * counting them would let a run of 50 of them hide every valid message behind it.
      */
     override fun drain(token: String): List<JsonElement>? {
         if (!limiter.checkGet(token)) return null
         val now = System.currentTimeMillis() / 1000
-        val items = mutableListOf<Map<String, AttributeValue>>()
+        val messages = mutableListOf<JsonElement>()
         var lastKey: Map<String, AttributeValue>? = null
         do {
             val response =
@@ -717,13 +808,23 @@ class DynamoMailboxState(
                         .exclusiveStartKey(lastKey)
                         .build(),
                 )
-            items.addAll(response.items())
+            for (item in response.items()) {
+                val message =
+                    if (CompactPayload.isCompact(item)) {
+                        CompactPayload.decode(item)
+                    } else {
+                        item["payload"]?.s()?.let { runCatching { json.parseToJsonElement(it) }.getOrNull() }
+                    }
+                if (message == null) {
+                    auditLog.warn("Skipping malformed mailbox item (msgId={})", item["msgId"]?.s())
+                } else if (messages.size < MAX_MESSAGES_PER_POLL) {
+                    messages.add(message)
+                }
+            }
             lastKey = response.lastEvaluatedKey().takeIf { it.isNotEmpty() }
-        } while (lastKey != null && items.size < MAX_MESSAGES_PER_POLL)
+        } while (lastKey != null && messages.size < MAX_MESSAGES_PER_POLL)
 
-        return items
-            .take(MAX_MESSAGES_PER_POLL)
-            .map { json.parseToJsonElement(it.getValue("payload").s()) }
+        return messages
     }
 
     override fun deleteById(
@@ -924,6 +1025,7 @@ fun main() {
                             ?: error("AWS_SECRET_ACCESS_KEY is required when AWS_ACCESS_KEY_ID is set"),
                     region = System.getenv("AWS_REGION") ?: error("AWS_REGION is required when AWS_ACCESS_KEY_ID is set"),
                 ),
+                compactPayloads = System.getenv("MAILBOX_COMPACT_PAYLOADS")?.toBoolean() ?: false,
             )
         } ?: run {
             // On Fly, a missing secret must not silently fall back to a store that loses every
