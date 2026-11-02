@@ -114,7 +114,7 @@ simulate_bgtask_heartbeat() {
   pid=$(app_pid)
   [ -n "$pid" ] || fail "the app isn't running, so there's no heartbeat to simulate"
   out="$WORK/bgtask-heartbeat.log"
-  xcrun lldb --batch -p "$pid" -o "command script import $E2E_DIR/lldb-simulate-bgtask.py" > "$out" 2>&1 || true
+  xcrun lldb --batch -p "$pid" -o "command script import $E2E_DIR/lldb_simulate_bgtask.py" > "$out" 2>&1 || true
   if ! grep -q '^BGTASK_RESULT: ok' "$out"; then
     cat "$out"
     save_app_log "after-bgtask"

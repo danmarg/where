@@ -3,7 +3,7 @@
 Run inside an lldb attached to the running app (see simulate_bgtask_heartbeat in
 e2e/ios-upgrade-test.sh):
 
-    lldb --batch -p <pid> -o "command script import e2e/lldb-simulate-bgtask.py"
+    lldb --batch -p <pid> -o "command script import e2e/lldb_simulate_bgtask.py"
 
 This is Apple's documented way to exercise a background task (`_simulateLaunchForTaskWithIdentifier:`
 from the debugger). The system calls the launch handler on a background queue, which is what the real
