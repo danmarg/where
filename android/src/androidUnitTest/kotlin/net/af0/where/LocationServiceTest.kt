@@ -925,6 +925,144 @@ class LocationServiceTest {
             controller.destroy()
         }
 
+    /**
+     * Randomized simulation of the send path's rate guarantees, over an hour of virtual time:
+     * bursts of fixes while moving, quiet stretches, activity transitions (flapping included),
+     * sends that take up to 8 s (now and then 45 s) and sends that fail. Scenario tests each
+     * cover one path; this covers their interleavings, and latency, which an instant mock
+     * hides. Checks:
+     *  1. successful sends are at least MIN_SEND_INTERVAL_MS apart;
+     *  2. a fix already sent isn't sent again before the heartbeat is due (a wasted write);
+     *  3. no send starts while another is in flight;
+     *  4. after a quiet spell, the last fix has gone out (so the above can't pass by not sending).
+     * The deliberate immediate send on entering STILL, and its retries, are exempt from 1-3.
+     */
+    @Test
+    fun testSendRateInvariants_RandomizedSimulation_seed1() = simulateSends(1)
+
+    @Test
+    fun testSendRateInvariants_RandomizedSimulation_seed2() = simulateSends(2)
+
+    private fun simulateSends(seed: Int) =
+        runTest {
+            ShadowLog.stream = null // an hour of virtual time logs a lot
+            // Separate streams, so a change in how sends interleave can't reshuffle the scenario.
+            val scenario = kotlin.random.Random(seed)
+            val network = kotlin.random.Random(seed + 1000)
+            val base = 1_000_000_000L
+            LocationService.clock = { base + testScheduler.currentTime }
+
+            val controller = Robolectric.buildService(LocationService::class.java)
+            val service = controller.get()
+            val mockClient = io.mockk.mockk<LocationClient>(relaxed = true)
+            service.locationClientOverride = mockClient
+            service.locationSourceOverride = fakeLocationSource
+            val mockE2ee = io.mockk.mockk<net.af0.where.e2ee.E2eeManager>(relaxed = true)
+            service.e2eeManagerOverride = mockE2ee
+            io.mockk.coEvery { mockClient.pollPendingInvites() } returns emptyList()
+            val friend = io.mockk.mockk<net.af0.where.e2ee.FriendEntry>(relaxed = true)
+            io.mockk.every { friend.id } returns "friend1"
+            io.mockk.coEvery { mockE2ee.listFriends() } returns listOf(friend)
+            fakeLocationSource.onFriendsUpdated(listOf(friend))
+
+            var nextEvents: List<ActivityTransitionEvent>? = null
+            service.activityHelperOverride =
+                object : ActivityHelper {
+                    override fun init(context: android.content.Context) {}
+
+                    override fun extractTransitionEvents(intent: Intent) = nextEvents
+
+                    override fun ensureRegistered(
+                        hasPermission: Boolean,
+                        isSharing: Boolean,
+                    ) {}
+
+                    override fun unregister() {}
+
+                    override fun onDestroy() {}
+                }
+
+            // exempt: the immediate send on entering STILL, or a retry of one that failed.
+            data class Send(val start: Long, val lat: Double, val lng: Double, val exempt: Boolean)
+            val sent = mutableListOf<Send>()
+            val overlaps = mutableListOf<Long>()
+            val stillEnterTimes = mutableSetOf<Long>()
+            var failedExemptAttempt = false
+            var inFlight = 0
+            var failures = true
+            io.mockk.coEvery { mockClient.sendLocation(any(), any(), any(), any(), any()) } coAnswers {
+                val start = LocationService.clock()
+                val exempt = start in stillEnterTimes || failedExemptAttempt
+                if (inFlight > 0 && !exempt) overlaps += start - base
+                inFlight++
+                try {
+                    // Now and then one runs into the HTTP timeouts, outlasting the send window.
+                    delay(if (network.nextInt(20) == 0) network.nextLong(30_000L, 45_000L) else network.nextLong(0L, 8_000L))
+                    if (failures && network.nextInt(10) == 0) {
+                        failedExemptAttempt = exempt
+                        throw java.io.IOException("simulated network failure")
+                    }
+                    failedExemptAttempt = false
+                    sent += Send(start, firstArg(), secondArg(), exempt)
+                } finally {
+                    inFlight--
+                }
+            }
+
+            var fix = 0
+
+            fun nextFix() {
+                fix++
+                fakeLocationSource.onLocation(37.0 + fix * 1e-4, -122.0, null)
+            }
+            nextFix()
+            controller.create()
+            runCurrent()
+
+            val end = testScheduler.currentTime + 60 * 60_000L
+            var moving = true
+            while (testScheduler.currentTime < end) {
+                if (scenario.nextInt(20) == 0) moving = !moving
+                if (moving || scenario.nextInt(30) == 0) nextFix()
+                if (BuildConfig.ACTIVITY_RECOGNITION_ENABLED && scenario.nextInt(40) == 0) {
+                    val type = if (scenario.nextBoolean()) ActivityType.STILL else ActivityType.IN_VEHICLE
+                    nextEvents = listOf(ActivityTransitionEvent(type, TransitionType.ENTER))
+                    if (type == ActivityType.STILL) stillEnterTimes += LocationService.clock()
+                    controller.withIntent(
+                        Intent(service, LocationService::class.java).apply {
+                            action = LocationService.ACTION_ACTIVITY_TRANSITION
+                        },
+                    ).startCommand(0, 1)
+                }
+                runCurrent()
+                advanceTimeBy(if (moving) scenario.nextLong(500L, 3_000L) else scenario.nextLong(1_000L, 20_000L))
+            }
+            // One last fix, then quiet with a healthy network: it must go out well before the
+            // heartbeat would have sent it anyway.
+            failures = false
+            nextFix()
+            runCurrent()
+            advanceTimeBy(150_000L)
+            runCurrent()
+            controller.destroy()
+
+            val lastLat = 37.0 + fix * 1e-4
+            assertTrue(sent.any { it.lat == lastLat }, "seed $seed: the last fix ($lastLat) was never sent")
+            assertTrue(overlaps.isEmpty(), "seed $seed: sends started while another was in flight at $overlaps ms")
+            for ((prev, next) in sent.zipWithNext()) {
+                if (next.exempt) continue
+                val gap = next.start - prev.start
+                val ctx = "seed $seed: sends at ${prev.start - base} and ${next.start - base} ms"
+                assertTrue(gap >= LocationService.MIN_SEND_INTERVAL_MS, "$ctx are only $gap ms apart")
+                if (next.lat == prev.lat && next.lng == prev.lng) {
+                    assertTrue(
+                        gap >= LocationService.HEARTBEAT_INTERVAL_MS - LocationService.HEARTBEAT_EARLY_SLACK_MS,
+                        "$ctx repeat the same fix $gap ms apart",
+                    )
+                }
+            }
+        }
+
     @Test
     fun testSetGeofenceAt_logsDistinctDiagnosticsForSubmittedQueuedAndFailed() {
         // Regression test: LocationService.setGeofenceAt() branches on GeofenceRequestResult
