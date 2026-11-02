@@ -124,9 +124,10 @@ class LocationService : Service() {
 
     private var lastSuccessfulSendTime: Long? = null
 
-    // When the last successfully delivered send was admitted; it carried the latest fix known
-    // then, so any fix from before it is already out (see scheduleTrailingSend).
+    // The last successfully delivered send: when it was admitted and the fix it carried. See
+    // scheduleTrailingSend, which uses them to tell whether a dropped fix has gone out since.
     private var lastDeliveredAdmissionTime = 0L
+    private var lastDeliveredFix: Pair<Double, Double>? = null
 
     // Sends admitted and not yet finished, retries included (see sendLocationIfNeeded).
     private var sendsInFlight = 0
@@ -843,7 +844,7 @@ class LocationService : Service() {
             // Runs regardless of foreground state so background location stays alive.
             // Gated on time since the last send: this loop also wakes on every location
             // callback (up to 1/s from the passive listener), the 10 s foreground timer and the
-            // 2 s rapid timer, and the forced send below would otherwise fire on each of them.
+            // 2 s rapid timer, and would otherwise force a fix and attempt a send on each.
             if (isSharing && isHeartbeatDue(clock())) {
                 val now = clock()
                 val stillBackstopDue = isStillBackstopDue(now)
@@ -999,7 +1000,7 @@ class LocationService : Service() {
                     waited += wait
                     val pending = trailingFix ?: return@launch
                     val done =
-                        lastDeliveredAdmissionTime >= pending.time ||
+                        isDelivered(pending) ||
                             sendLocationIfNeeded(
                                 pending.lat,
                                 pending.lng,
@@ -1016,6 +1017,13 @@ class LocationService : Service() {
                 trailingFix = null
             }
     }
+
+    // Delivered if a send carried this very fix (pollLoop's heartbeat sends a fresh fix and then
+    // the collector, refused while that send is in flight, queues the same one), or a send
+    // admitted after it - most send paths report the newest fix they know. Not the forced ones
+    // that capture a fix before launching; a fix dropped within that same instant is rare
+    // enough to accept.
+    private fun isDelivered(fix: TrailingFix): Boolean = lastDeliveredFix == (fix.lat to fix.lng) || lastDeliveredAdmissionTime > fix.time
 
     /** True once the last send is old enough for pollLoop's heartbeat - see [HEARTBEAT_EARLY_SLACK_MS]. */
     @VisibleForTesting
@@ -1142,6 +1150,7 @@ class LocationService : Service() {
                 checkLateHeartbeat(interval)
                 lastSuccessfulSendTime = sendCompleteTime
                 lastDeliveredAdmissionTime = admittedAt
+                lastDeliveredFix = lat to lng
                 updateStatus(null)
                 return
             } catch (e: CancellationException) {

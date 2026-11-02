@@ -15,6 +15,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.advanceUntilIdle
@@ -922,6 +923,51 @@ class LocationServiceTest {
             runCurrent()
             io.mockk.coVerify(exactly = 1) { mockClient.sendLocation(37.01, -122.0, any(), any(), any()) }
             io.mockk.coVerify(exactly = 2) { mockClient.sendLocation(any(), any(), any(), any(), any()) }
+            controller.destroy()
+        }
+
+    @Test
+    fun testHeartbeatFreshFix_IsNotResentAsTrailingSend() =
+        runTest {
+            // pollLoop's heartbeat hands a fresh fix to the location source and sends it. The
+            // collector sees that same fix a moment later, is refused (the heartbeat is in
+            // flight) and queues it as a trailing send - which must not send it a second time.
+            val base = 1_000_000_000L
+            LocationService.clock = { base + testScheduler.currentTime }
+
+            val controller = Robolectric.buildService(LocationService::class.java)
+            val service = controller.get()
+
+            val mockClient = io.mockk.mockk<LocationClient>(relaxed = true)
+            service.locationClientOverride = mockClient
+            service.locationSourceOverride = fakeLocationSource
+            val mockE2ee = io.mockk.mockk<net.af0.where.e2ee.E2eeManager>(relaxed = true)
+            service.e2eeManagerOverride = mockE2ee
+            io.mockk.coEvery { mockClient.pollPendingInvites() } returns emptyList()
+            io.mockk.coEvery { mockClient.sendLocation(any(), any(), any(), any(), any()) } coAnswers { delay(500L) }
+
+            val friend = io.mockk.mockk<net.af0.where.e2ee.FriendEntry>(relaxed = true)
+            io.mockk.every { friend.id } returns "friend1"
+            io.mockk.coEvery { mockE2ee.listFriends() } returns listOf(friend)
+            fakeLocationSource.onFriendsUpdated(listOf(friend))
+            fakeLocationSource.onLocation(37.0, -122.0, null)
+
+            controller.create()
+            runCurrent()
+            advanceTimeBy(1_000L)
+            runCurrent()
+            io.mockk.coVerify(exactly = 1) { mockClient.sendLocation(any(), any(), any(), any(), any()) }
+
+            advanceTimeBy(LocationService.HEARTBEAT_INTERVAL_MS)
+            backgroundScope.launch { service.sendLocationIfNeeded(37.02, -122.0, isHeartbeat = true, stationary = false) }
+            runCurrent()
+            advanceTimeBy(5L)
+            fakeLocationSource.onLocation(37.02, -122.0, null)
+            runCurrent()
+
+            advanceTimeBy(60_000L)
+            runCurrent()
+            io.mockk.coVerify(exactly = 1) { mockClient.sendLocation(37.02, -122.0, any(), any(), any()) }
             controller.destroy()
         }
 
