@@ -62,7 +62,8 @@ Uses a standard, bidirectional Double Ratchet protocol with X25519 ephemeral key
 
 ### Battery efficiency
 - **Android**: runs in a foreground service. `FusedLocationProviderClient` (gms) starts at `BALANCED` / 60 s. In the `full` activity-recognition flavor, Activity Recognition switches to `HIGH` / 10 s when moving and `LOW_POWER` / 5 min when still; on gms a geofence acts as a wake-on-departure backstop (its exit switches to `HIGH` / 10 s). The fdroid flavor uses the platform `LocationManager`.
-- **iOS**: `CLLocationUpdate.liveUpdates()` drives updates; sends are throttled in software to 200 m of movement (or the 5 min heartbeat). The `CLLocationManager` (`kCLLocationAccuracyNearestTenMeters`, `distanceFilter` 200 m) serves one-shot fixes, significant-change and visit monitoring, and a fallback geofence that keep background wakes going.
+- **iOS**: `CLLocationUpdate.liveUpdates()` drives updates. The `CLLocationManager` (`kCLLocationAccuracyNearestTenMeters`, `distanceFilter` 200 m) serves one-shot fixes, significant-change and visit monitoring, and a fallback geofence that keep background wakes going.
+- **Sends (both platforms)**: every broadcast Location goes through `LocationSendScheduler` (`shared/commonMain`), one worker that owns sending: at most one attempt per 30 s, a fix sent early only after 100 m of movement (or a stationary change), otherwise the 5 min heartbeat (armed by platform wakes), forced requests (entering stationary, sharing turned on) serialized behind any send in flight, and a backoff after failed rounds. Platforms only report fixes and wakes to it; its policy is tested in `LocationSendSchedulerTest`. Per-friend sends (a new friend, an unpause) stay outside it.
 
 ### Server state
 - Mailboxes are persisted in DynamoDB (on-demand, TTL-expired). State survives restarts.

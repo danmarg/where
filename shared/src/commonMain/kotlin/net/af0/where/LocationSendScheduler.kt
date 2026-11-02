@@ -2,6 +2,8 @@ package net.af0.where
 
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.MainScope
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
@@ -11,6 +13,7 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.selects.onTimeout
 import kotlinx.coroutines.selects.select
+import kotlinx.coroutines.withTimeoutOrNull
 import net.af0.where.e2ee.LocationClient
 import kotlin.math.PI
 import kotlin.math.asin
@@ -43,6 +46,7 @@ data class SendPolicy(
 interface BroadcastSender {
     fun sharingStamp(): Long
 
+    @Throws(Exception::class)
     suspend fun sendLocation(
         lat: Double,
         lng: Double,
@@ -93,6 +97,9 @@ sealed class DrainResult {
 
     /** Nothing needs sending. */
     data object Idle : DrainResult()
+
+    /** The caller's maxWaitMs ran out with a send still in flight; it carries on without them. */
+    data object InFlight : DrainResult()
 }
 
 /** Hears about each send once it's settled - after its retries, if any. */
@@ -122,6 +129,7 @@ class LocationSendScheduler(
     private val scope: CoroutineScope,
     private val policy: SendPolicy = SendPolicy(),
     private val listener: SendListener? = null,
+    private val onClose: () -> Unit = {},
 ) {
     private data class Fix(val lat: Double, val lng: Double)
 
@@ -154,10 +162,11 @@ class LocationSendScheduler(
     private val signal = Channel<Unit>(Channel.CONFLATED)
     private val busy = MutableStateFlow(false)
     private var worker: Job? = null
+    private var closed = false
 
     /** Starts the worker; also restarts it if it ever ended (every event does this too). */
     fun start() {
-        if (worker?.isActive == true) return
+        if (closed || worker?.isActive == true) return
         worker =
             scope.launch {
                 try {
@@ -198,11 +207,19 @@ class LocationSendScheduler(
      * doesn't wait out the send interval: a send held back by it is reported as [DrainResult.Pending],
      * and goes out on the worker's own timer or the next wake.
      */
-    suspend fun wakeAndDrain(): DrainResult {
+    suspend fun wakeAndDrain(maxWaitMs: Long? = null): DrainResult {
         if (isHeartbeatDue()) heartbeatArmed = true
         val settledBefore = settled
         kick()
-        busy.first { !it || worker?.isActive != true }
+        // A bounded wait doesn't cancel the send: a caller whose background time is running out
+        // stops waiting, and the send carries on (or freezes with the app and retries on resume).
+        val drained =
+            if (maxWaitMs == null) {
+                busy.first { !it || worker?.isActive != true }
+            } else {
+                withTimeoutOrNull(maxWaitMs) { busy.first { !it || worker?.isActive != true } }
+            }
+        if (drained == null) return DrainResult.InFlight
         if (settled != settledBefore) return if (lastSettledOk) DrainResult.Sent else DrainResult.Failed
         val wait = nextDueIn()
         return if (wait == null) DrainResult.Idle else DrainResult.Pending(maxOf(wait, 0L))
@@ -235,6 +252,14 @@ class LocationSendScheduler(
         backoffUntil = 0L
         parked = false
         kick()
+    }
+
+    /** Stops the worker for good (a platform that owns the scope may cancel that instead). */
+    fun close() {
+        closed = true
+        worker?.cancel()
+        busy.value = false
+        onClose()
     }
 
     private fun kick() {
@@ -378,4 +403,26 @@ class LocationSendScheduler(
     private companion object {
         const val EARTH_RADIUS_METERS = 6_371_000.0
     }
+}
+
+/** Elapsed time that keeps counting while the device sleeps; platforms supply it. */
+fun interface MonotonicClock {
+    fun nowMs(): Long
+}
+
+/** The policy everything uses unless a test says otherwise (exported for Swift, which can't see default arguments). */
+val defaultSendPolicy = SendPolicy()
+
+/**
+ * A scheduler confined to the main thread, for platforms (iOS) that don't own a coroutine scope.
+ * Call [LocationSendScheduler.close] when done with it.
+ */
+fun createMainSendScheduler(
+    sender: BroadcastSender,
+    gate: SendGate,
+    clock: MonotonicClock,
+    listener: SendListener?,
+): LocationSendScheduler {
+    val scope = MainScope()
+    return LocationSendScheduler(sender, gate, { clock.nowMs() }, scope, defaultSendPolicy, listener, onClose = { scope.cancel() })
 }
