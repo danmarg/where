@@ -546,8 +546,9 @@ class DynamoMailboxState(
                 )
 
             // A write that throws may still have committed (client timeout, retries exhausted
-            // after a landed attempt); its retry is then deduped above without incrementing, so
-            // the cached count would stay one short. Drop it; the next post re-counts exactly.
+            // after a landed attempt), and its retry won't increment for that row (deduped above,
+            // or the message put below finds the row), so the cached count would stay one short.
+            // Drop it; the next post re-counts exactly.
             try {
                 if (msgId != null) {
                     // Two plain PutItems rather than one TransactWriteItems: a transaction bills every
@@ -567,9 +568,12 @@ class DynamoMailboxState(
                                 PutItemRequest.builder()
                                     .tableName(messagesTable)
                                     .item(messageItem)
-                                    // Never overwrite: that would reset postedAt (reordering delivery)
-                                    // and replace the original payload.
-                                    .conditionExpression("attribute_not_exists(msgId)")
+                                    // Never overwrite a live row: that would reset postedAt (reordering
+                                    // delivery) and replace the original payload. An expired row the TTL
+                                    // sweep hasn't removed yet is fair game; it's no longer counted or
+                                    // delivered, so treating it as present would drop this message.
+                                    .conditionExpression("attribute_not_exists(msgId) OR expiresAt <= :now")
+                                    .expressionAttributeValues(mapOf(":now" to AttributeValue.fromN((now / 1000).toString())))
                                     .build(),
                             )
                             true

@@ -234,14 +234,14 @@ class DynamoMailboxStateTest {
         // own dedup check, so this doesn't just re-test itself.
         val state = store()
         val token = freshToken()
-        assertTrue(state.post(token, JsonPrimitive("atomic"), "msg-atomic"))
+        assertTrue(state.post(token, JsonPrimitive("both"), "msg-both"))
 
         val client = createDynamoDbClient("test", "test", "us-east-1", endpoint())
         val message =
             client.getItem(
                 GetItemRequest.builder()
                     .tableName("test_messages_${tableCounter - 1}")
-                    .key(mapOf("token" to AttributeValue.fromS(token), "msgId" to AttributeValue.fromS("msg-atomic")))
+                    .key(mapOf("token" to AttributeValue.fromS(token), "msgId" to AttributeValue.fromS("msg-both")))
                     .consistentRead(true)
                     .build(),
             )
@@ -249,14 +249,14 @@ class DynamoMailboxStateTest {
             client.getItem(
                 GetItemRequest.builder()
                     .tableName("test_received_${tableCounter - 1}")
-                    .key(mapOf("token" to AttributeValue.fromS(token), "msgId" to AttributeValue.fromS("msg-atomic")))
+                    .key(mapOf("token" to AttributeValue.fromS(token), "msgId" to AttributeValue.fromS("msg-both")))
                     .consistentRead(true)
                     .build(),
             )
         client.close()
 
         assertTrue(message.hasItem(), "message row must exist after a successful post")
-        assertTrue(receivedId.hasItem(), "receivedIds row must exist alongside it, not just after a separate call")
+        assertTrue(receivedId.hasItem(), "receivedIds row must exist alongside it")
     }
 
     @Test
@@ -638,9 +638,9 @@ class DynamoMailboxStateTest {
 
     @Test
     fun `a post whose write commits but then throws does not leave the depth count short`() {
-        // e.g. a client-side timeout after DynamoDB applied the message write. The client's retry
-        // of the same msgId is deduped without incrementing, so a cache that skipped the
-        // increment would stay one short for good and admit a post past MAX_QUEUE_DEPTH.
+        // e.g. a client-side timeout after DynamoDB applied the message write. Nothing later
+        // increments for that row, so a cache that skipped the increment would stay one short for
+        // good and admit a post past MAX_QUEUE_DEPTH.
         var failNextWrite = false
         val state =
             store { real ->
@@ -804,5 +804,31 @@ class DynamoMailboxStateTest {
         assertTrue(hasReceivedId(token, "x"), "the idempotency record is still written")
 
         assertFalse(state.post(token, JsonPrimitive("y"), "y"), "the landed write filled the last slot")
+    }
+
+    @Test
+    fun `a msgId whose expired row the TTL sweep has not removed yet is stored again`() {
+        val state = store()
+        val token = freshToken()
+        val client = createDynamoDbClient("test", "test", "us-east-1", endpoint())
+        client.use {
+            it.putItem(
+                PutItemRequest.builder()
+                    .tableName("test_messages_${tableCounter - 1}")
+                    .item(
+                        mapOf(
+                            "token" to AttributeValue.fromS(token),
+                            "msgId" to AttributeValue.fromS("reused"),
+                            "payload" to AttributeValue.fromS("\"stale\""),
+                            "postedAt" to AttributeValue.fromN("1"),
+                            "expiresAt" to AttributeValue.fromN("1"),
+                        ),
+                    )
+                    .build(),
+            )
+        }
+
+        assertTrue(state.post(token, JsonPrimitive("fresh"), "reused"))
+        assertEquals(listOf(JsonPrimitive("fresh")), state.drain(token))
     }
 }
