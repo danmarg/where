@@ -183,7 +183,8 @@ class LocationSendScheduler(
         lng: Double,
         accuracyMeters: Double? = null,
     ) {
-        if (accuracyMeters != null && accuracyMeters > policy.maxAccuracyMeters) return
+        // Negative accuracy means invalid (CoreLocation's convention).
+        if (accuracyMeters != null && (accuracyMeters < 0 || accuracyMeters > policy.maxAccuracyMeters)) return
         latest = Fix(lat, lng)
         kick()
     }
@@ -198,7 +199,8 @@ class LocationSendScheduler(
     fun isHeartbeatDue(): Boolean {
         val now = clock()
         clampToNow(now)
-        return now - lastAttempt >= policy.heartbeatMs - policy.heartbeatSlackMs
+        // Never attempted: due, whatever the clock's origin (a monotonic clock starts near 0 at boot).
+        return lastAttempt == 0L || now - lastAttempt >= policy.heartbeatMs - policy.heartbeatSlackMs
     }
 
     /**
@@ -219,6 +221,8 @@ class LocationSendScheduler(
             } else {
                 withTimeoutOrNull(maxWaitMs) { busy.first { !it || worker?.isActive != true } }
             }
+        // On timeout, a caller outside the scheduler's thread (Swift) may resume off it: return
+        // without touching any state.
         if (drained == null) return DrainResult.InFlight
         if (settled != settledBefore) return if (lastSettledOk) DrainResult.Sent else DrainResult.Failed
         val wait = nextDueIn()

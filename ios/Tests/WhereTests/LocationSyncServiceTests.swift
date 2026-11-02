@@ -1028,6 +1028,22 @@ class LocationSyncServiceTests: XCTestCase {
         func fireExpiration() { lock.withLock { handler }?() }
     }
 
+    func testSendBackgroundTaskEndsOnceEvenIfExpirationFiresLate() async throws {
+        let mockClient = MockLocationClient()
+        service = LocationSyncService(e2eeManager: service.e2eeManager, userStore: service.userStore, locationClient: mockClient, locationProvider: mockLocationProvider)
+        service.skipNetworkRestore = true
+        service.isSharingLocation = true
+        let recorder = BackgroundTaskRecorder()
+        service.beginBackgroundTask = { _, handler in recorder.begin(handler) }
+        service.endBackgroundTask = { id in recorder.end(id) }
+
+        service.reportLocation(lat: 37.7, lng: -122.4, accuracy: 10, force: true)
+        await service.drainTask?.value
+        XCTAssertEqual(recorder.ended, [UIBackgroundTaskIdentifier(rawValue: 42)])
+        recorder.fireExpiration()
+        XCTAssertEqual(recorder.ended, [UIBackgroundTaskIdentifier(rawValue: 42)])
+    }
+
     func testPollAllBackgroundTaskEndsOnceEvenIfExpirationFiresLate() async throws {
         // Hermetic: no real network client or CoreMotion query.
         service = LocationSyncService(e2eeManager: service.e2eeManager, userStore: service.userStore, locationClient: MockLocationClient(), locationProvider: mockLocationProvider)

@@ -199,8 +199,13 @@ final class LocationSyncService: ObservableObject {
     private(set) var sendScheduler: LocationSendScheduler!
     /// The drain holding a background task while the scheduler sends (at most one at a time).
     private(set) var drainTask: Task<Void, Never>? = nil  // readable for testing
-    /// How long one drain may hold background time: under the ~30 s an app gets on a wake.
+    /// How long one wake's sending may hold background time: under the ~30 s an app gets.
     static let drainMaxWaitMs: Int64 = 25_000
+    /// With no usable fix at all, the heartbeat asks for one at most this often.
+    private static let fixRequestWithoutFallbackInterval: TimeInterval = 60
+    private var lastFixRequestWithoutFallback: Date = .distantPast
+    /// What reported the fix a non-heartbeat send carries, for the diagnostic log.
+    private var lastReportSource: WakeSource = .locationUpdate
     // Queries whether the device is stationary. Default queries CoreMotion;
     // tests replace with { true } or { false } for deterministic results.
     // Initialized in init() to capture motionActivityManager/motionQueue without
@@ -692,8 +697,6 @@ final class LocationSyncService: ObservableObject {
         }
     }
 
-    private var lastSuccessfulSendTime: Date? = nil
-
     private func logReliability(source: WakeSource, success: Bool, interval: TimeInterval? = nil) {
         let status = success ? "OK" : "ERR"
         var message = "Wake: \(source.rawValue) -> \(status)"
@@ -738,6 +741,7 @@ final class LocationSyncService: ObservableObject {
         // rather than started without budget. Already-received updates are persisted by
         // poll() itself, so stopping between steps loses nothing; the next poll resumes.
         let backgroundTask = self.beginExpiringBackgroundTask("PollAll")
+        let wakeStart = Date()
 
         defer {
             watchdog.cancel()
@@ -809,15 +813,26 @@ final class LocationSyncService: ObservableObject {
                     } else {
                         logger.info("pollAll: heartbeat due — moving, requesting fresh fix")
                     }
-                    lastForcedFixTime = now
-                    // Wait for the fresh fix rather than sending the cached one: a fresh fix
-                    // landing just after would be held back by the send interval, and on a
-                    // background wake we'd be suspended before it went out.
-                    if let fresh = await awaitFreshFix(since: now) { fix = fresh }
+                    if fix != nil {
+                        lastForcedFixTime = now
+                        // Wait for the fresh fix rather than sending the cached one: a fresh fix
+                        // landing just after would be held back by the send interval, and on a
+                        // background wake we'd be suspended before it went out.
+                        if let fresh = await awaitFreshFix(since: now) { fix = fresh }
+                    } else if now.timeIntervalSince(lastFixRequestWithoutFallback) >= Self.fixRequestWithoutFallbackInterval {
+                        // No usable fix at all (e.g. approximate location): ask for one, but don't
+                        // hold up this poll waiting - the heartbeat stays due until one arrives.
+                        lastFixRequestWithoutFallback = now
+                        locationProvider.requestImmediateLocation()
+                    }
                 }
-                if let fix {
+                if backgroundTask.didExpire {
+                    logger.warning("pollAll: background time expired; skipping heartbeat send")
+                } else if let fix {
                     sendScheduler.onFix(lat: fix.lat, lng: fix.lng, accuracyMeters: nil)
-                    _ = try? await sendScheduler.wakeAndDrain(maxWaitMs: KotlinLong(value: Self.drainMaxWaitMs))
+                    // Within what's left of this wake's budget, not a fresh one.
+                    let remainingMs = Self.drainMaxWaitMs - Int64(Date().timeIntervalSince(wakeStart) * 1000)
+                    _ = try? await sendScheduler.wakeAndDrain(maxWaitMs: KotlinLong(value: max(remainingMs, 1_000)))
                 }
             }
 
@@ -1101,6 +1116,7 @@ final class LocationSyncService: ObservableObject {
     func reportLocation(lat: Double, lng: Double, accuracy: Double?, heading: Double? = nil, force: Bool = false, source: WakeSource = .locationUpdate) {
         guard isSharingLocation else { return }
         ownHeading = heading
+        lastReportSource = source
         if accuracy.map({ $0 >= 0 && $0 <= Self.minBroadcastAccuracyMeters }) ?? true {
             lastReportedLocation = (lat: lat, lng: lng)
         }
@@ -1164,7 +1180,7 @@ final class LocationSyncService: ObservableObject {
 
     /// The scheduler's report on a settled send (see SchedulerListener).
     func sendSettled(heartbeat: Bool, success: Bool, sinceLastSuccess: TimeInterval?, errorMessage: String?) {
-        logReliability(source: heartbeat ? .heartbeat : .locationUpdate, success: success, interval: sinceLastSuccess)
+        logReliability(source: heartbeat ? .heartbeat : lastReportSource, success: success, interval: sinceLastSuccess)
         if let errorMessage {
             updateStatus(NSError(domain: "net.af0.where.send", code: 1, userInfo: [NSLocalizedDescriptionKey: errorMessage]))
         } else {

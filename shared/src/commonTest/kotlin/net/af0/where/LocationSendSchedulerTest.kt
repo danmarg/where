@@ -458,10 +458,19 @@ class LocationSendSchedulerTest {
         }
 
     @Test
+    fun aSchedulerThatNeverSentHasItsHeartbeatDueEvenRightAfterBoot() =
+        runTest {
+            val clock = { 1_000L } // a monotonic clock a second after boot
+            val scheduler = LocationSendScheduler(FakeSender(clock), FakeGate(), clock, backgroundScope)
+            assertTrue(scheduler.isHeartbeatDue())
+        }
+
+    @Test
     fun inaccurateFixesAreIgnored() =
         runTest {
             val h = harness()
             h.scheduler.onFix(37.0, -122.0, accuracyMeters = 1_500.0)
+            h.scheduler.onFix(37.0, -122.0, accuracyMeters = -1.0) // invalid
             runCurrent()
             assertEquals(0, h.sender.attempts.size)
         }
