@@ -1,0 +1,94 @@
+"""Fire the app's BGTaskScheduler heartbeat launch handler from lldb and report whether it traps.
+
+Run inside an lldb attached to the running app (see simulate_bgtask_heartbeat in
+e2e/ios-upgrade-test.sh):
+
+    lldb --batch -p <pid> -o "command script import e2e/lldb-simulate-bgtask.py"
+
+This is Apple's documented way to exercise a background task (`_simulateLaunchForTaskWithIdentifier:`
+from the debugger). The system calls the launch handler on a background queue, which is what the real
+system does and what exposed the 1.31 crash: a handler that Swift 6 had inferred as @MainActor trapped
+in _dispatch_assert_queue_fail on entry. Nothing else in CI runs that closure.
+
+Prints exactly one `BGTASK_RESULT:` line, which the caller greps for:
+  ok            the handler ran (or at least nothing trapped) for the whole settle window
+  crashed ...   the process stopped on an exception/signal; the backtrace follows
+  error ...     could not drive the app (expression failed, process exited, ...)
+Also prints `BGTASK_HANDLER_OBSERVED: yes|no` (whether BGTaskScheduler's dispatch was seen running).
+"""
+
+import time
+
+import lldb
+
+TASK_ID = "net.af0.where.heartbeat"
+SETTLE_SECONDS = 20  # the handler hops to a background queue and starts a poll; give it time
+RUN_SELECTOR = "-[BGTaskScheduler _runTask:registration:]"
+
+
+def _wait_for_state(process, wanted, timeout):
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if process.GetState() in wanted:
+            return True
+        time.sleep(0.2)
+    return process.GetState() in wanted
+
+
+def _describe_stop(process):
+    lines = []
+    for thread in process:
+        reason = thread.GetStopReason()
+        if reason in (lldb.eStopReasonNone, lldb.eStopReasonInvalid):
+            continue
+        lines.append("thread %d stop reason: %s" % (thread.GetIndexID(), thread.GetStopDescription(256)))
+        if reason in (lldb.eStopReasonException, lldb.eStopReasonSignal):
+            for frame in thread.frames[:25]:
+                lines.append("    %s" % frame)
+    return "\n".join(lines)
+
+
+def __lldb_init_module(debugger, _internal_dict):
+    target = debugger.GetSelectedTarget()
+    process = target.GetProcess()
+    if not process.IsValid():
+        print("BGTASK_RESULT: error not attached to a process")
+        return
+
+    # Count how often the system's dispatch of the handler runs, then carry on. Soft evidence that
+    # the simulated launch really reached the handler, so a no-op doesn't pass silently.
+    bp = target.BreakpointCreateByName(RUN_SELECTOR)
+    bp.SetAutoContinue(True)
+
+    options = lldb.SBExpressionOptions()
+    options.SetLanguage(lldb.eLanguageTypeObjC)
+    options.SetUnwindOnError(True)
+    expr = '(void)[[BGTaskScheduler sharedScheduler] _simulateLaunchForTaskWithIdentifier:@"%s"]' % TASK_ID
+    result = target.EvaluateExpression(expr, options)
+    if result.GetError().Fail():
+        print("BGTASK_RESULT: error expression failed: %s" % result.GetError().GetCString())
+        process.Detach()
+        return
+
+    debugger.SetAsync(True)
+    process.Continue()
+
+    deadline = time.time() + SETTLE_SECONDS
+    while time.time() < deadline:
+        state = process.GetState()
+        if state == lldb.eStateStopped:
+            # Nothing of ours stops it (the breakpoint auto-continues), so any stop is a trap/signal.
+            print("BGTASK_RESULT: crashed")
+            print(_describe_stop(process))
+            process.Detach()
+            return
+        if state in (lldb.eStateExited, lldb.eStateCrashed, lldb.eStateDetached):
+            print("BGTASK_RESULT: crashed process %s" % lldb.SBDebugger.StateAsCString(state))
+            return
+        time.sleep(0.5)
+
+    process.Stop()
+    _wait_for_state(process, {lldb.eStateStopped}, 10)
+    print("BGTASK_HANDLER_OBSERVED: %s" % ("yes" if bp.GetHitCount() > 0 else "no"))
+    print("BGTASK_RESULT: ok")
+    process.Detach()
