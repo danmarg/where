@@ -58,7 +58,7 @@ EMU_SERIAL=$(run adb devices 2>/dev/null | grep "^emulator-" | cut -f1 | head -1
 if [ -z "$EMU_SERIAL" ]; then
   echo "No emulator running. Starting ($AVD_NAME)..."
   # -no-snapshot-load ensures a fresh boot which often resolves windowing/state issues.
-  run emulator -avd "$AVD_NAME" -no-audio -no-boot-anim -gpu host -no-snapshot-load > /dev/null 2>&1 &
+  run emulator -avd "$AVD_NAME" -dns-server 8.8.8.8,1.1.1.1.1 -no-audio -no-boot-anim -gpu host -no-snapshot-load > /dev/null 2>&1 &
   
   echo "Waiting for emulator to appear in adb devices..."
   # Give it a moment to actually start the process
@@ -112,5 +112,7 @@ echo "✓ APK installed"
 echo ""
 
 echo "=== Launching ==="
-run adb -s "$EMU_SERIAL" shell am start -n net.af0.where/.MainActivity
+# Debug builds may carry an applicationId suffix (DEBUG_APPLICATION_ID_SUFFIX in local.properties).
+APP_ID_SUFFIX=$(grep "^DEBUG_APPLICATION_ID_SUFFIX=" local.properties 2>/dev/null | cut -d= -f2 | tr -d '[:space:]' || true)
+run adb -s "$EMU_SERIAL" shell am start -n "net.af0.where${APP_ID_SUFFIX}/net.af0.where.MainActivity"
 echo "✓ App launched"
