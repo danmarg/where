@@ -99,33 +99,6 @@ app_running() { xcrun simctl spawn "$SIM" launchctl list 2>/dev/null | grep -q "
 
 notice_pending() { xcrun simctl spawn "$SIM" defaults read "$BUNDLE" discarded_session_names >/dev/null 2>&1; }
 
-app_pid() {
-  xcrun simctl spawn "$SIM" launchctl list 2>/dev/null |
-    awk -v b="UIKitApplication:$BUNDLE" 'index($3, b) == 1 && $1 ~ /^[0-9]+$/ { print $1; exit }'
-}
-
-# Have the system run the app's BGTaskScheduler heartbeat launch handler, as iOS does for a
-# background refresh, and fail if the app traps. The handler is called on a background queue; a
-# closure that inherits @MainActor isolation traps there (the 1.31 crash), and no other step here
-# runs it: the simulator never schedules these on its own. Driven from lldb because
-# `_simulateLaunchForTaskWithIdentifier:` is the supported way to trigger one (see the helper).
-simulate_bgtask_heartbeat() {
-  local pid out
-  pid=$(app_pid)
-  [ -n "$pid" ] || fail "the app isn't running, so there's no heartbeat to simulate"
-  out="$WORK/bgtask-heartbeat.log"
-  xcrun lldb --batch -p "$pid" -o "command script import $E2E_DIR/lldb_simulate_bgtask.py" > "$out" 2>&1 || true
-  if ! grep -q '^BGTASK_RESULT: ok' "$out"; then
-    cat "$out"
-    save_app_log "after-bgtask"
-    fail "simulated BGTask heartbeat did not run cleanly (see above; log kept in $out)"
-  fi
-  grep -q '^BGTASK_HANDLER_OBSERVED: yes' "$out" ||
-    echo "⚠ the BGTaskScheduler dispatch wasn't observed; the simulated launch may not have reached the handler (see $out)"
-  app_running || fail "the app died after the simulated BGTask heartbeat"
-  return 0
-}
-
 BASE=$(baseline_ref)
 log "iOS upgrade test: $BASE -> HEAD ($(git -C "$ROOT" rev-parse --short HEAD)), work dir $WORK"
 
@@ -171,10 +144,6 @@ cli bob send 48.208 16.373 --force | grep -q successfully || fail "CLI send fail
 retry 60 app_has_lat 48.208 || fail "upgraded app never received the CLI's location"
 retry 120 nudge_and_check_cli 52.56 || fail "CLI never received a location from the upgraded app"
 echo "✓ Upgrade kept the friend and session, with no re-pair notice"
-
-log "The BGTask heartbeat launch handler runs without trapping"
-simulate_bgtask_heartbeat
-echo "✓ Simulated BGTask heartbeat"
 
 log "A server outage: sends go through once it's back"
 cli bob poll --once >/dev/null

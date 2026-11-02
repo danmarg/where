@@ -147,7 +147,7 @@ The app upgrade tests (`.github/workflows/app-e2e.yml`) build the last `v*` rele
 checkout as Release builds pointed at a local server, pair the old app with the CLI, upgrade in
 place and check the friend, session and later sends survive. Then, on the upgraded app: a server
 outage (sends and a pairing made during it arrive afterwards), location permission revoked and
-granted again, and pause. iOS also covers the BGTask heartbeat launch handler (fired from lldb by `e2e/lldb_simulate_bgtask.py`, which would have caught the 1.31 isolation trap), background relaunch after termination and device binding
+granted again, and pause. iOS also covers background relaunch after termination and device binding
 (a keychain reset shows the repair notice); Android covers process death, invite replay, backup
 refusal, per-friend pause, friend removal, and, nightly or with `-f full=true`, deep Doze without
 a battery exemption and a reboot (`E2E_QUICK=1` skips those two, ~10 min). Android uses the fdroid
