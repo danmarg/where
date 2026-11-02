@@ -818,7 +818,7 @@ class LocationServiceTest {
                 advanceUntilIdle()
             }
 
-            io.mockk.coVerify(exactly = 1) { mockClient.sendLocation(any(), any(), any(), any()) }
+            io.mockk.coVerify(exactly = 1) { mockClient.sendLocation(any(), any(), any(), any(), any()) }
             // Nor should each fix wake a poll of every friend.
             io.mockk.coVerify(atMost = 3) { mockClient.poll(any(), any(), any()) }
 
@@ -828,7 +828,7 @@ class LocationServiceTest {
             fakeLocationSource.wakePoll()
             advanceUntilIdle()
 
-            io.mockk.coVerify(exactly = 2) { mockClient.sendLocation(any(), any(), any(), any()) }
+            io.mockk.coVerify(exactly = 2) { mockClient.sendLocation(any(), any(), any(), any(), any()) }
             controller.destroy()
         }
 
@@ -861,17 +861,17 @@ class LocationServiceTest {
             service.isStill = true
             service.lastStillForcedFixTime = LocationService.clock()
             runCurrent()
-            io.mockk.coVerify(exactly = 1) { mockClient.sendLocation(any(), any(), any(), any()) }
+            io.mockk.coVerify(exactly = 1) { mockClient.sendLocation(any(), any(), any(), any(), any()) }
 
             advanceTimeBy(10_000L)
             fakeLocationSource.onLocation(37.01, -122.0, null)
             runCurrent()
-            io.mockk.coVerify(exactly = 1) { mockClient.sendLocation(any(), any(), any(), any()) }
+            io.mockk.coVerify(exactly = 1) { mockClient.sendLocation(any(), any(), any(), any(), any()) }
 
             advanceTimeBy(25_000L)
             runCurrent()
-            io.mockk.coVerify(exactly = 1) { mockClient.sendLocation(37.01, -122.0, any(), any()) }
-            io.mockk.coVerify(exactly = 2) { mockClient.sendLocation(any(), any(), any(), any()) }
+            io.mockk.coVerify(exactly = 1) { mockClient.sendLocation(37.01, -122.0, any(), any(), any()) }
+            io.mockk.coVerify(exactly = 2) { mockClient.sendLocation(any(), any(), any(), any(), any()) }
             controller.destroy()
         }
 
