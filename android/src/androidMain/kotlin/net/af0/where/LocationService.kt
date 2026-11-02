@@ -402,6 +402,7 @@ class LocationService : Service() {
                             source = WakeSource.LOCATION_UPDATE,
                             stationary = stationary,
                         )
+                        scheduleTrailingSend(loc.first, loc.second, stationary)
                     }
 
                     while (true) {
@@ -782,6 +783,7 @@ class LocationService : Service() {
     @VisibleForTesting
     internal var lastSentTime: Long = 0L
     private var lastLocationPollWakeTime = 0L
+    private var trailingSendJob: Job? = null
     private val sendLock = Mutex()
 
     private suspend fun pollLoop() {
@@ -965,6 +967,30 @@ class LocationService : Service() {
         val intent = Intent(this, LocationService::class.java).apply { action = ACTION_POLL_ALARM }
         val pi = PendingIntent.getService(this, 0, intent, PendingIntent.FLAG_NO_CREATE or PendingIntent.FLAG_IMMUTABLE)
         if (pi != null) alarmManager.cancel(pi)
+    }
+
+    // A fix inside MIN_SEND_INTERVAL_MS of the last send is dropped by sendLocationIfNeeded.
+    // If it was the last fix before we stopped (the active request has a minimum distance, so
+    // no more callbacks come), friends would see us short of where we stopped until the next
+    // heartbeat. Send it once the throttle window ends, unless something was sent since -
+    // every send reports the latest fix. Each new fix replaces the pending one.
+    private fun scheduleTrailingSend(
+        lat: Double,
+        lng: Double,
+        stationary: Boolean,
+    ) {
+        trailingSendJob?.cancel()
+        val fixTime = clock()
+        val wait = (MIN_SEND_INTERVAL_MS - (fixTime - lastSentTime)).coerceAtLeast(0L) + 1L
+        trailingSendJob =
+            serviceScope.launch {
+                delay(wait)
+                // Cleared before sending so a newer fix can't cancel a send in flight.
+                trailingSendJob = null
+                if (lastSentTime < fixTime) {
+                    sendLocationIfNeeded(lat, lng, isHeartbeat = false, source = WakeSource.LOCATION_UPDATE, stationary = stationary)
+                }
+            }
     }
 
     /** True once the last send is old enough for pollLoop's heartbeat - see [HEARTBEAT_EARLY_SLACK_MS]. */

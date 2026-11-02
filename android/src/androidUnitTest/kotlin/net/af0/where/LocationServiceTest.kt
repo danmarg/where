@@ -15,8 +15,10 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.test.StandardTestDispatcher
+import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.resetMain
+import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
 import net.af0.where.e2ee.ConnectionStatus
@@ -826,6 +828,49 @@ class LocationServiceTest {
             fakeLocationSource.wakePoll()
             advanceUntilIdle()
 
+            io.mockk.coVerify(exactly = 2) { mockClient.sendLocation(any(), any(), any(), any()) }
+            controller.destroy()
+        }
+
+    @Test
+    fun testThrottledFinalFix_IsSentWhenThrottleWindowEnds() =
+        runTest {
+            // Without pollLoop's per-wake forced send, a fix dropped by the 30 s movement
+            // throttle must still go out once the window ends - otherwise the last position
+            // before stopping waits for the next 5 min heartbeat.
+            val base = 1_000_000_000L
+            LocationService.clock = { base + testScheduler.currentTime }
+
+            val controller = Robolectric.buildService(LocationService::class.java)
+            val service = controller.get()
+
+            val mockClient = io.mockk.mockk<LocationClient>(relaxed = true)
+            service.locationClientOverride = mockClient
+            service.locationSourceOverride = fakeLocationSource
+            val mockE2ee = io.mockk.mockk<net.af0.where.e2ee.E2eeManager>(relaxed = true)
+            service.e2eeManagerOverride = mockE2ee
+            io.mockk.coEvery { mockClient.pollPendingInvites() } returns emptyList()
+
+            val friend = io.mockk.mockk<net.af0.where.e2ee.FriendEntry>(relaxed = true)
+            io.mockk.every { friend.id } returns "friend1"
+            io.mockk.coEvery { mockE2ee.listFriends() } returns listOf(friend)
+            fakeLocationSource.onFriendsUpdated(listOf(friend))
+            fakeLocationSource.onLocation(37.0, -122.0, null)
+
+            controller.create()
+            service.isStill = true
+            service.lastStillForcedFixTime = LocationService.clock()
+            runCurrent()
+            io.mockk.coVerify(exactly = 1) { mockClient.sendLocation(any(), any(), any(), any()) }
+
+            advanceTimeBy(10_000L)
+            fakeLocationSource.onLocation(37.01, -122.0, null)
+            runCurrent()
+            io.mockk.coVerify(exactly = 1) { mockClient.sendLocation(any(), any(), any(), any()) }
+
+            advanceTimeBy(25_000L)
+            runCurrent()
+            io.mockk.coVerify(exactly = 1) { mockClient.sendLocation(37.01, -122.0, any(), any()) }
             io.mockk.coVerify(exactly = 2) { mockClient.sendLocation(any(), any(), any(), any()) }
             controller.destroy()
         }
