@@ -35,17 +35,32 @@ def _wait_for_state(process, wanted, timeout):
     return process.GetState() in wanted
 
 
-def _describe_stop(process):
+SIGSTOP = 17  # Darwin; lldb's own attach/stop signal, never a crash
+
+
+def _fatal_stop(process):
+    """(is_fatal, description) for the process's current stop.
+
+    Only an exception (EXC_BREAKPOINT from a Swift runtime trap, EXC_BAD_ACCESS, ...) or a signal
+    other than SIGSTOP counts. A stop with no reason is lldb's own bookkeeping (e.g. just after
+    resuming), not the app dying.
+    """
+    fatal = False
     lines = []
     for thread in process:
         reason = thread.GetStopReason()
-        if reason in (lldb.eStopReasonNone, lldb.eStopReasonInvalid):
+        if reason == lldb.eStopReasonException:
+            fatal = True
+        elif reason == lldb.eStopReasonSignal:
+            if thread.GetStopReasonDataAtIndex(0) == SIGSTOP:
+                continue
+            fatal = True
+        else:
             continue
         lines.append("thread %d stop reason: %s" % (thread.GetIndexID(), thread.GetStopDescription(256)))
-        if reason in (lldb.eStopReasonException, lldb.eStopReasonSignal):
-            for frame in thread.frames[:25]:
-                lines.append("    %s" % frame)
-    return "\n".join(lines)
+        for frame in thread.frames[:25]:
+            lines.append("    %s" % frame)
+    return fatal, "\n".join(lines)
 
 
 def _simulate_launch(debugger, process):
@@ -75,6 +90,7 @@ def _simulate_launch(debugger, process):
     errors = []
     result = frame.EvaluateExpression(direct, options)
     if result.GetError().Success():
+        print("BGTASK_TRIGGER: frame.EvaluateExpression(direct)")
         return []
     errors.append("frame.EvaluateExpression(direct): %s" % result.GetError().GetCString())
 
@@ -83,6 +99,7 @@ def _simulate_launch(debugger, process):
         res = lldb.SBCommandReturnObject()
         interp.HandleCommand("expression -l objc -- " + expr, res)
         if res.Succeeded():
+            print("BGTASK_TRIGGER: %s" % label)
             return []
         errors.append("%s: %s" % (label, (res.GetError() or res.GetOutput() or "").strip()))
     return errors
@@ -109,17 +126,22 @@ def __lldb_init_module(debugger, _internal_dict):
 
     debugger.SetAsync(True)
     process.Continue()
+    # Async Continue returns before the state flips; reading "stopped" right away is not a crash.
+    _wait_for_state(process, {lldb.eStateRunning, lldb.eStateExited, lldb.eStateCrashed}, 10)
 
     deadline = time.time() + SETTLE_SECONDS
     while time.time() < deadline:
         state = process.GetState()
         if state == lldb.eStateStopped:
-            # Nothing of ours stops it (the breakpoint auto-continues), so any stop is a trap/signal.
-            print("BGTASK_RESULT: crashed")
-            print(_describe_stop(process))
-            process.Detach()
-            return
-        if state in (lldb.eStateExited, lldb.eStateCrashed, lldb.eStateDetached):
+            fatal, description = _fatal_stop(process)
+            if fatal:
+                print("BGTASK_RESULT: crashed")
+                print(description)
+                process.Detach()
+                return
+            process.Continue()  # a benign stop (no reason, or lldb's SIGSTOP): keep going
+            _wait_for_state(process, {lldb.eStateRunning, lldb.eStateExited, lldb.eStateCrashed}, 10)
+        elif state in (lldb.eStateExited, lldb.eStateCrashed, lldb.eStateDetached):
             print("BGTASK_RESULT: crashed process %s" % lldb.SBDebugger.StateAsCString(state))
             return
         time.sleep(0.5)
