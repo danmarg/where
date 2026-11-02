@@ -15,7 +15,12 @@ struct WhereApp: App {
         BGTaskScheduler.shared.register(
             forTaskWithIdentifier: "net.af0.where.heartbeat",
             using: nil
-        ) { task in
+        ) { @Sendable task in
+            // `@Sendable` keeps this closure nonisolated. WhereApp is @MainActor, so without it
+            // Swift 6 infers the closure as main-actor-isolated and checks that at entry; but
+            // BGTaskScheduler (queue: nil) runs it on a background queue, which traps in
+            // `_dispatch_assert_queue_fail` (the 1.31 crash).
+            //
             // See BGTaskCompletionCoordinator for why this needs its own type: BGTask has no
             // public initializer, so the completion/reschedule logic has to live somewhere
             // testable rather than inline in this closure.
