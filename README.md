@@ -70,6 +70,8 @@ Where is designed so the server learns as little as possible:
 
 Uses an in-memory store by default; set `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` and `AWS_REGION` to use DynamoDB.
 
+`MAILBOX_COMPACT_PAYLOADS=true` stores location messages in a smaller DynamoDB layout (one write unit instead of two). Any server version since that layout reads both, so the flag can be turned off at any time. Rolling back to an older server needs the flag off first and the compact items gone: acked, or expired after 7 days.
+
 ```bash
 ./gradlew :server:run
 curl localhost:8080/health   # → ok

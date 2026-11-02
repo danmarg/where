@@ -60,6 +60,18 @@ class CompactPayloadTest {
     }
 
     @Test
+    fun `edge values of v round-trip`() {
+        val message = RealMessages.locations(1).single()
+        val good = RealMessages.wire(message).jsonObject
+        for (v in listOf(0, Int.MAX_VALUE)) {
+            val payload = JsonObject(good + ("v" to JsonPrimitive(v)))
+            val attrs = assertNotNull(CompactPayload.encode(payload, message.msgId), "v = $v")
+            val item = attrs + ("msgId" to AttributeValue.fromS(message.msgId))
+            assertEquals(payload.toString(), CompactPayload.decode(item).toString())
+        }
+    }
+
+    @Test
     fun `an item holding a payload string is not decoded`() {
         assertNull(CompactPayload.decode(mapOf("payload" to AttributeValue.fromS("{}"), "msgId" to AttributeValue.fromS("m"))))
     }

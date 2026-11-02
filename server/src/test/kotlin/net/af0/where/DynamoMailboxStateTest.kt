@@ -784,7 +784,7 @@ class DynamoMailboxStateTest {
             messages.map { message ->
                 assertTrue(state.post(token, RealMessages.wire(message), message.msgId))
                 val item = rawItem(token, message.msgId)
-                assertFalse("payload" in item, "stored compact")
+                assertTrue("c" in item && "payload" !in item, "stored compact: ${item.keys}")
                 itemSize(item)
             }
         assertEquals(messages.map { RealMessages.wire(it).toString() }, state.drain(token)!!.map { it.toString() })
@@ -865,7 +865,8 @@ class DynamoMailboxStateTest {
                     setBody(RealMessages.wire(message).toString())
                 }
             assertEquals(HttpStatusCode.NoContent, put.status)
-            assertFalse("payload" in rawItem(token, message.msgId), "stored compact")
+            val item = rawItem(token, message.msgId)
+            assertTrue("c" in item && "payload" !in item, "stored compact: ${item.keys}")
 
             val polled = Json.parseToJsonElement(client.get("/inbox/$token").bodyAsText()).jsonArray
             val received = assertIs<EncryptedMessagePayload>(wireJson.decodeFromJsonElement<MailboxPayload>(polled.single()))
