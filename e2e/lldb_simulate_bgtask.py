@@ -48,6 +48,46 @@ def _describe_stop(process):
     return "\n".join(lines)
 
 
+def _simulate_launch(debugger, process):
+    """Triggers the simulated launch; returns [] on success, else one error line per attempt.
+
+    The first attempt that works wins. The first form is the one Apple documents; the others avoid
+    depending on the BackgroundTasks headers being visible to lldb's expression parser (a private
+    selector on a class lldb only knows from the ObjC runtime), and print lldb's own error text.
+    """
+    thread = process.GetThreadAtIndex(0)
+    process.SetSelectedThread(thread)
+    frame = thread.GetFrameAtIndex(0)
+
+    options = lldb.SBExpressionOptions()
+    options.SetLanguage(lldb.eLanguageTypeObjC)
+    options.SetUnwindOnError(True)
+    options.SetTryAllThreads(True)
+    options.SetTimeoutInMicroSeconds(15 * 1000 * 1000)
+
+    direct = '(void)[[BGTaskScheduler sharedScheduler] _simulateLaunchForTaskWithIdentifier:@"%s"]' % TASK_ID
+    by_name = (
+        '(void)[(id)[(id)NSClassFromString(@"BGTaskScheduler") performSelector:'
+        'NSSelectorFromString(@"sharedScheduler")] performSelector:'
+        'NSSelectorFromString(@"_simulateLaunchForTaskWithIdentifier:") withObject:@"%s"]' % TASK_ID
+    )
+
+    errors = []
+    result = frame.EvaluateExpression(direct, options)
+    if result.GetError().Success():
+        return []
+    errors.append("frame.EvaluateExpression(direct): %s" % result.GetError().GetCString())
+
+    interp = debugger.GetCommandInterpreter()
+    for label, expr in (("command direct", direct), ("command by-name", by_name)):
+        res = lldb.SBCommandReturnObject()
+        interp.HandleCommand("expression -l objc -- " + expr, res)
+        if res.Succeeded():
+            return []
+        errors.append("%s: %s" % (label, (res.GetError() or res.GetOutput() or "").strip()))
+    return errors
+
+
 def __lldb_init_module(debugger, _internal_dict):
     target = debugger.GetSelectedTarget()
     process = target.GetProcess()
@@ -60,13 +100,10 @@ def __lldb_init_module(debugger, _internal_dict):
     bp = target.BreakpointCreateByName(RUN_SELECTOR)
     bp.SetAutoContinue(True)
 
-    options = lldb.SBExpressionOptions()
-    options.SetLanguage(lldb.eLanguageTypeObjC)
-    options.SetUnwindOnError(True)
-    expr = '(void)[[BGTaskScheduler sharedScheduler] _simulateLaunchForTaskWithIdentifier:@"%s"]' % TASK_ID
-    result = target.EvaluateExpression(expr, options)
-    if result.GetError().Fail():
-        print("BGTASK_RESULT: error expression failed: %s" % result.GetError().GetCString())
+    errors = _simulate_launch(debugger, process)
+    if errors:
+        print("BGTASK_RESULT: error could not trigger the simulated launch:")
+        print("\n".join(errors))
         process.Detach()
         return
 
