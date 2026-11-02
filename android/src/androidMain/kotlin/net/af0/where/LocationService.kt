@@ -395,14 +395,16 @@ class LocationService : Service() {
                         // Preserve current stationarity here too, for the same reason as the
                         // heartbeat above: a routine fix delivered while still STILL must not
                         // clobber an in-progress "here since" signal by defaulting to false.
-                        sendLocationIfNeeded(
-                            loc.first,
-                            loc.second,
-                            isHeartbeat = false,
-                            source = WakeSource.LOCATION_UPDATE,
-                            stationary = stationary,
-                        )
-                        scheduleTrailingSend(loc.first, loc.second, stationary)
+                        val fixTime = clock()
+                        val admitted =
+                            sendLocationIfNeeded(
+                                loc.first,
+                                loc.second,
+                                isHeartbeat = false,
+                                source = WakeSource.LOCATION_UPDATE,
+                                stationary = stationary,
+                            )
+                        if (!admitted) scheduleTrailingSend(loc.first, loc.second, stationary, fixTime)
                     }
 
                     while (true) {
@@ -973,14 +975,16 @@ class LocationService : Service() {
     // If it was the last fix before we stopped (the active request has a minimum distance, so
     // no more callbacks come), friends would see us short of where we stopped until the next
     // heartbeat. Send it once the throttle window ends, unless something was sent since -
-    // every send reports the latest fix. Each new fix replaces the pending one.
+    // every send reports the latest fix. Each new fix replaces the pending one. Only for a fix
+    // that was dropped: [fixTime] is read before the send attempt, so a send's own duration
+    // can't make it look newer than the send.
     private fun scheduleTrailingSend(
         lat: Double,
         lng: Double,
         stationary: Boolean,
+        fixTime: Long,
     ) {
         trailingSendJob?.cancel()
-        val fixTime = clock()
         val wait = (MIN_SEND_INTERVAL_MS - (fixTime - lastSentTime)).coerceAtLeast(0L) + 1L
         trailingSendJob =
             serviceScope.launch {
@@ -1037,6 +1041,10 @@ class LocationService : Service() {
     // No default for `stationary`: every call site must decide explicitly. A silent
     // `= false` default caused several "here since" regressions where a call site omitted
     // it and unknowingly asserted "moving" - see the "here since" investigation.
+    //
+    // Returns false only when the throttle dropped the fix; true when a send was attempted,
+    // whether or not it succeeded (a failure reopens the gate for the next wake), and also when
+    // sharing is off, where there is nothing to send later either.
     internal suspend fun sendLocationIfNeeded(
         lat: Double,
         lng: Double,
@@ -1045,8 +1053,8 @@ class LocationService : Service() {
         source: WakeSource = WakeSource.LOCATION_UPDATE,
         wakeTrigger: WakeSource? = null,
         stationary: Boolean,
-    ) {
-        if (!userStore.isSharingLocation.value) return
+    ): Boolean {
+        if (!userStore.isSharingLocation.value) return true
         val now = clock()
         val interval = lastSuccessfulSendTime?.let { now - it }
         val shouldSend =
@@ -1062,7 +1070,7 @@ class LocationService : Service() {
                     false
                 }
             }
-        if (!shouldSend) return
+        if (!shouldSend) return false
 
         // Retry transient send failures within the same wake; otherwise a single
         // network blip during a 5-min heartbeat tick costs us another full poll
@@ -1077,7 +1085,7 @@ class LocationService : Service() {
             if (!canSendLocations()) {
                 // Nothing was sent: don't leave the send gate closed for the next wake.
                 sendLock.withLock { lastSentTime = 0L }
-                return
+                return true
             }
             try {
                 locationClient.sendLocation(lat, lng, userStore.effectivelyPausedIds(), stationary = stationary, stamp = stamp)
@@ -1086,7 +1094,7 @@ class LocationService : Service() {
                 checkLateHeartbeat(interval)
                 lastSuccessfulSendTime = sendCompleteTime
                 updateStatus(null)
-                return
+                return true
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
@@ -1100,6 +1108,7 @@ class LocationService : Service() {
         Log.e(TAG, "Failed to send location after $totalAttempts attempts: ${lastError?.message}")
         logReliability(source, false, interval, wakeTrigger)
         updateStatus(lastError ?: Exception("send failed"))
+        return true
     }
 
     private fun checkLateHeartbeat(intervalMs: Long?) {
