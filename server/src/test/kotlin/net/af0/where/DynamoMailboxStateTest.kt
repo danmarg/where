@@ -11,7 +11,7 @@ import software.amazon.awssdk.services.dynamodb.model.AttributeValue
 import software.amazon.awssdk.services.dynamodb.model.BatchWriteItemRequest
 import software.amazon.awssdk.services.dynamodb.model.BatchWriteItemResponse
 import software.amazon.awssdk.services.dynamodb.model.BillingMode
-import software.amazon.awssdk.services.dynamodb.model.CancellationReason
+import software.amazon.awssdk.services.dynamodb.model.ConditionalCheckFailedException
 import software.amazon.awssdk.services.dynamodb.model.CreateTableRequest
 import software.amazon.awssdk.services.dynamodb.model.DeleteItemRequest
 import software.amazon.awssdk.services.dynamodb.model.GetItemRequest
@@ -23,8 +23,6 @@ import software.amazon.awssdk.services.dynamodb.model.ProjectionType
 import software.amazon.awssdk.services.dynamodb.model.PutItemRequest
 import software.amazon.awssdk.services.dynamodb.model.ScalarAttributeType
 import software.amazon.awssdk.services.dynamodb.model.TimeToLiveStatus
-import software.amazon.awssdk.services.dynamodb.model.TransactWriteItemsRequest
-import software.amazon.awssdk.services.dynamodb.model.TransactionCanceledException
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
@@ -98,6 +96,44 @@ class DynamoMailboxStateTest {
         } as DynamoDbClient
 
     private fun freshToken() = "test-" + java.util.UUID.randomUUID().toString().take(12)
+
+    private fun isPutTo(
+        name: String,
+        args: Array<Any?>,
+        tablePrefix: String,
+    ) = name == "putItem" && (args.getOrNull(0) as? PutItemRequest)?.tableName()?.startsWith(tablePrefix) == true
+
+    private fun storedPayload(
+        token: String,
+        msgId: String,
+    ): String? {
+        val client = createDynamoDbClient("test", "test", "us-east-1", endpoint())
+        return client.use {
+            it.getItem(
+                GetItemRequest.builder()
+                    .tableName("test_messages_${tableCounter - 1}")
+                    .key(mapOf("token" to AttributeValue.fromS(token), "msgId" to AttributeValue.fromS(msgId)))
+                    .consistentRead(true)
+                    .build(),
+            ).item()["payload"]?.s()
+        }
+    }
+
+    private fun hasReceivedId(
+        token: String,
+        msgId: String,
+    ): Boolean {
+        val client = createDynamoDbClient("test", "test", "us-east-1", endpoint())
+        return client.use {
+            it.getItem(
+                GetItemRequest.builder()
+                    .tableName("test_received_${tableCounter - 1}")
+                    .key(mapOf("token" to AttributeValue.fromS(token), "msgId" to AttributeValue.fromS(msgId)))
+                    .consistentRead(true)
+                    .build(),
+            ).hasItem()
+        }
+    }
 
     @AfterTest
     fun closeStores() {
@@ -193,11 +229,9 @@ class DynamoMailboxStateTest {
     }
 
     @Test
-    fun `post writes the message and its idempotency record atomically`() {
-        // Regression guard: the message write and the receivedIds write happen inside one
-        // TransactWriteItems call specifically so a crash/AWS error can never leave one without
-        // the other. Verify both rows land together, directly against the tables rather than
-        // through drain()/post()'s own dedup check, so this doesn't just re-test itself.
+    fun `post writes the message and its idempotency record`() {
+        // Verify both rows land, directly against the tables rather than through drain()/post()'s
+        // own dedup check, so this doesn't just re-test itself.
         val state = store()
         val token = freshToken()
         assertTrue(state.post(token, JsonPrimitive("atomic"), "msg-atomic"))
@@ -604,16 +638,16 @@ class DynamoMailboxStateTest {
 
     @Test
     fun `a post whose write commits but then throws does not leave the depth count short`() {
-        // e.g. a client-side timeout after DynamoDB applied the transaction. The client's retry
+        // e.g. a client-side timeout after DynamoDB applied the message write. The client's retry
         // of the same msgId is deduped without incrementing, so a cache that skipped the
         // increment would stay one short for good and admit a post past MAX_QUEUE_DEPTH.
         var failNextWrite = false
         val state =
             store { real ->
                 intercepting(real) { name, args ->
-                    if (name != "transactWriteItems" || !failNextWrite) return@intercepting null
+                    if (!failNextWrite || !isPutTo(name, args, "test_messages_")) return@intercepting null
                     failNextWrite = false
-                    real.transactWriteItems(args[0] as TransactWriteItemsRequest)
+                    real.putItem(args[0] as PutItemRequest)
                     throw SdkClientException.create("simulated timeout after commit")
                 }
             }
@@ -624,7 +658,9 @@ class DynamoMailboxStateTest {
 
         failNextWrite = true
         assertFailsWith<SdkClientException> { state.post(token, JsonPrimitive("x"), "x") }
-        assertTrue(state.post(token, JsonPrimitive("x"), "x"), "the retry is a deduped no-op")
+        // The landed row has no idempotency record yet, so the retry reaches the depth check,
+        // where that row already counts.
+        assertFalse(state.post(token, JsonPrimitive("x"), "x"), "the landed row filled the last slot")
 
         assertFalse(state.post(token, JsonPrimitive("y"), "y"), "the committed write filled the last slot")
     }
@@ -692,33 +728,81 @@ class DynamoMailboxStateTest {
     }
 
     @Test
-    fun `receivedIds conditional check failure is recognized as a duplicate`() {
-        // The transaction's item order is fixed by post(): index 0 is the unconditioned
-        // messagesTable put, index 1 is the conditioned receivedIds put.
-        val e =
-            TransactionCanceledException.builder()
-                .message("Transaction cancelled, please refer cancellation reasons for specific reasons")
-                .cancellationReasons(
-                    CancellationReason.builder().code("None").build(),
-                    CancellationReason.builder().code("ConditionalCheckFailed").build(),
-                )
-                .build()
-        assertTrue(isReceivedIdsConditionalCheckFailure(e))
+    fun `a message write that fails leaves no idempotency record and the retry delivers it`() {
+        var failNextWrite = true
+        val state =
+            store { real ->
+                intercepting(real) { name, args ->
+                    if (!failNextWrite || !isPutTo(name, args, "test_messages_")) return@intercepting null
+                    failNextWrite = false
+                    throw SdkClientException.create("simulated failure before commit")
+                }
+            }
+        val token = freshToken()
+
+        assertFailsWith<SdkClientException> { state.post(token, JsonPrimitive("x"), "x") }
+        assertFalse(hasReceivedId(token, "x"), "no idempotency record for a message that was never stored")
+
+        assertTrue(state.post(token, JsonPrimitive("x"), "x"))
+        assertEquals(listOf(JsonPrimitive("x")), state.drain(token))
     }
 
     @Test
-    fun `other transaction cancellation reasons are not treated as a duplicate`() {
-        // Regression guard: TransactionCanceledException is not synonymous with "duplicate" -
-        // contention, throttling, and other transaction failures cancel it too, and must
-        // propagate as a real failure rather than be swallowed as a false success.
-        val e =
-            TransactionCanceledException.builder()
-                .message("Transaction cancelled, please refer cancellation reasons for specific reasons")
-                .cancellationReasons(
-                    CancellationReason.builder().code("None").build(),
-                    CancellationReason.builder().code("ThrottlingError").build(),
-                )
-                .build()
-        assertFalse(isReceivedIdsConditionalCheckFailure(e))
+    fun `a failed idempotency write after the message write is repaired by the retry`() {
+        // The message lands but its receivedIds record doesn't. The retry must keep the original
+        // row (not overwrite or duplicate it), write the record, and not count the row twice.
+        var failNextWrite = false
+        val state =
+            store { real ->
+                intercepting(real) { name, args ->
+                    if (!failNextWrite || !isPutTo(name, args, "test_received_")) return@intercepting null
+                    failNextWrite = false
+                    throw SdkClientException.create("simulated idempotency write failure")
+                }
+            }
+        val token = freshToken()
+        seedFullQueue(token)
+        assertFalse(state.post(token, JsonPrimitive("overflow"), "overflow-msg")) // seeds the cache
+        // Two free slots: the orphaned row counts toward the depth check, so with only one the
+        // retry would (correctly) get a 429 rather than reach the repair path.
+        state.deleteById(token, "seed-0")
+        state.deleteById(token, "seed-1")
+
+        failNextWrite = true
+        assertFailsWith<SdkClientException> { state.post(token, JsonPrimitive("first"), "x") }
+        assertFalse(hasReceivedId(token, "x"))
+
+        assertTrue(state.post(token, JsonPrimitive("retry"), "x"))
+        assertTrue(hasReceivedId(token, "x"), "the retry writes the missing idempotency record")
+        assertEquals("\"first\"", storedPayload(token, "x"), "the retry must not overwrite the original row")
+
+        assertTrue(state.post(token, JsonPrimitive("y"), "y"))
+        assertFalse(state.post(token, JsonPrimitive("z"), "z"), "x was counted once, so y filled the last slot")
+    }
+
+    @Test
+    fun `an SDK retry that finds its own landed message write keeps the depth count exact`() {
+        // The SDK retries a PutItem internally after e.g. a timeout; if the first attempt landed,
+        // the retry fails the attribute_not_exists condition for a row this very call wrote.
+        var failNextWrite = false
+        val state =
+            store { real ->
+                intercepting(real) { name, args ->
+                    if (!failNextWrite || !isPutTo(name, args, "test_messages_")) return@intercepting null
+                    failNextWrite = false
+                    real.putItem(args[0] as PutItemRequest)
+                    throw ConditionalCheckFailedException.builder().message("simulated SDK retry").build()
+                }
+            }
+        val token = freshToken()
+        seedFullQueue(token)
+        assertFalse(state.post(token, JsonPrimitive("overflow"), "overflow-msg")) // seeds the cache
+        state.deleteById(token, "seed-0") // one free slot
+
+        failNextWrite = true
+        assertTrue(state.post(token, JsonPrimitive("x"), "x"))
+        assertTrue(hasReceivedId(token, "x"), "the idempotency record is still written")
+
+        assertFalse(state.post(token, JsonPrimitive("y"), "y"), "the landed write filled the last slot")
     }
 }

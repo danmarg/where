@@ -37,6 +37,7 @@ import software.amazon.awssdk.services.dynamodb.model.AttributeValue
 import software.amazon.awssdk.services.dynamodb.model.BatchGetItemRequest
 import software.amazon.awssdk.services.dynamodb.model.BatchWriteItemRequest
 import software.amazon.awssdk.services.dynamodb.model.BillingMode
+import software.amazon.awssdk.services.dynamodb.model.ConditionalCheckFailedException
 import software.amazon.awssdk.services.dynamodb.model.CreateTableRequest
 import software.amazon.awssdk.services.dynamodb.model.DeleteItemRequest
 import software.amazon.awssdk.services.dynamodb.model.DeleteRequest
@@ -48,7 +49,6 @@ import software.amazon.awssdk.services.dynamodb.model.KeyType
 import software.amazon.awssdk.services.dynamodb.model.KeysAndAttributes
 import software.amazon.awssdk.services.dynamodb.model.Projection
 import software.amazon.awssdk.services.dynamodb.model.ProjectionType
-import software.amazon.awssdk.services.dynamodb.model.Put
 import software.amazon.awssdk.services.dynamodb.model.PutItemRequest
 import software.amazon.awssdk.services.dynamodb.model.QueryRequest
 import software.amazon.awssdk.services.dynamodb.model.ResourceInUseException
@@ -58,9 +58,6 @@ import software.amazon.awssdk.services.dynamodb.model.ScalarAttributeType
 import software.amazon.awssdk.services.dynamodb.model.Select
 import software.amazon.awssdk.services.dynamodb.model.TimeToLiveSpecification
 import software.amazon.awssdk.services.dynamodb.model.TimeToLiveStatus
-import software.amazon.awssdk.services.dynamodb.model.TransactWriteItem
-import software.amazon.awssdk.services.dynamodb.model.TransactWriteItemsRequest
-import software.amazon.awssdk.services.dynamodb.model.TransactionCanceledException
 import software.amazon.awssdk.services.dynamodb.model.UpdateTimeToLiveRequest
 import software.amazon.awssdk.services.dynamodb.model.WriteRequest
 import java.net.Inet6Address
@@ -364,15 +361,6 @@ fun createDynamoDbClient(
         .build()
 
 /**
- * True if [e] cancelled the message+receivedIds transaction specifically because the receivedIds
- * item (index 1 - see DynamoMailboxState.post()'s transactItems order) already existed, i.e. a
- * genuine duplicate. Any other cancellation reason (throttling, contention, etc.) is a real
- * failure and must not be swallowed as if it were one - see post()'s call site.
- */
-internal fun isReceivedIdsConditionalCheckFailure(e: TransactionCanceledException): Boolean =
-    e.cancellationReasons().getOrNull(1)?.code() == "ConditionalCheckFailed"
-
-/**
  * DynamoDB-backed mailbox store. Two tables, mirroring the same split PostgresMailboxState used
  * and for the same reason: mailbox_received_ids must outlive message deletion, so idempotency
  * can't be folded into the messages table.
@@ -562,53 +550,50 @@ class DynamoMailboxState(
             // the cached count would stay one short. Drop it; the next post re-counts exactly.
             try {
                 if (msgId != null) {
-                    // The message write and its receivedIds record must land together or not at all -
-                    // two independent PutItems left a window where a crash/AWS error between them could
-                    // leave a message durably stored with no idempotency record, so a client retry of
-                    // the same msgId would silently re-insert (a harmless overwrite, since messagesTable
-                    // is keyed on (token, msgId)) but still double-count it in depthCounts. TransactWriteItems
-                    // closes that window instead of narrowing it. The conditionExpression here is mostly
-                    // redundant with the GetItem check above (both run under the same per-token lock, the
-                    // only writer in this process) - it's the defense against exactly the crash case this
-                    // fixes: a prior attempt whose transaction actually committed just before this process
-                    // died, so a fresh attempt (this call, possibly in a restarted process) must still
-                    // recognize it as a duplicate rather than trusting an in-memory decision alone.
-                    try {
-                        client.transactWriteItems(
-                            TransactWriteItemsRequest.builder()
-                                .transactItems(
-                                    TransactWriteItem.builder()
-                                        .put(Put.builder().tableName(messagesTable).item(messageItem).build())
-                                        .build(),
-                                    TransactWriteItem.builder()
-                                        .put(
-                                            Put.builder()
-                                                .tableName(receivedIdsTable)
-                                                .item(
-                                                    mapOf(
-                                                        "token" to AttributeValue.fromS(token),
-                                                        "msgId" to AttributeValue.fromS(msgId),
-                                                        "expiresAt" to AttributeValue.fromN(expiresAt.toString()),
-                                                    ),
-                                                )
-                                                .conditionExpression("attribute_not_exists(msgId)")
-                                                .build(),
-                                        )
-                                        .build(),
-                                )
-                                .build(),
-                        )
-                    } catch (e: TransactionCanceledException) {
-                        // TransactionCanceledException isn't synonymous with "duplicate" - contention,
-                        // throttling, and other transaction failures cancel it too, and those must
-                        // propagate as a real failure rather than be reported to the HTTP layer as a
-                        // false 204 (which would be silent message loss).
-                        if (isReceivedIdsConditionalCheckFailure(e)) {
-                            // Already seen: idempotent no-op, matches the check above.
-                            return true
+                    // Two plain PutItems rather than one TransactWriteItems: a transaction bills every
+                    // item at double the write units, and these two writes are most of the bill.
+                    // Message first, then its receivedIds record, so a failure between them can only
+                    // leave a message with no record, never a record with no message (which would turn
+                    // the client's retry into a silent drop). A message with no record is safe: the
+                    // retry finds the row below and writes the record then. If the recipient has
+                    // already acked the row, the retry re-inserts it and the recipient's ratchet
+                    // classifies the second copy as a replay and drops it.
+                    //
+                    // A retry whose orphaned row is still queued counts toward the depth check above,
+                    // so on a full queue it gets a 429 rather than a no-op; it succeeds once space frees.
+                    val inserted =
+                        try {
+                            client.putItem(
+                                PutItemRequest.builder()
+                                    .tableName(messagesTable)
+                                    .item(messageItem)
+                                    // Never overwrite: that would reset postedAt (reordering delivery)
+                                    // and replace the original payload.
+                                    .conditionExpression("attribute_not_exists(msgId)")
+                                    .build(),
+                            )
+                            true
+                        } catch (e: ConditionalCheckFailedException) {
+                            // The row exists: an earlier attempt's write landed, or the SDK's own retry
+                            // of this call found the row its first, timed-out attempt wrote. Only the
+                            // latter is missing from the cached count and the two can't be told apart,
+                            // so drop the cache; the next post re-counts exactly.
+                            depthCounts.remove(token)
+                            false
                         }
-                        throw e
-                    }
+                    client.putItem(
+                        PutItemRequest.builder()
+                            .tableName(receivedIdsTable)
+                            .item(
+                                mapOf(
+                                    "token" to AttributeValue.fromS(token),
+                                    "msgId" to AttributeValue.fromS(msgId),
+                                    "expiresAt" to AttributeValue.fromN(expiresAt.toString()),
+                                ),
+                            )
+                            .build(),
+                    )
+                    if (!inserted) return true
                 } else {
                     client.putItem(PutItemRequest.builder().tableName(messagesTable).item(messageItem).build())
                 }
