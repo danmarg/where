@@ -779,12 +779,14 @@ class DynamoMailboxState(
      * already in postedAt order via ScanIndexForward - no need to read the whole partition and
      * sort client-side. Limit is applied before FilterExpression on DynamoDB's side, so a page
      * can return fewer than [MAX_MESSAGES_PER_POLL] live items if some in it are expired; the
-     * loop keeps paging until it either has enough or the index is exhausted.
+     * loop keeps paging until it either has enough or the index is exhausted. "Enough" counts
+     * decoded messages, not raw items: malformed items are skipped (they still expire via TTL), and
+     * counting them would let a run of 50 of them hide every valid message behind it.
      */
     override fun drain(token: String): List<JsonElement>? {
         if (!limiter.checkGet(token)) return null
         val now = System.currentTimeMillis() / 1000
-        val items = mutableListOf<Map<String, AttributeValue>>()
+        val messages = mutableListOf<JsonElement>()
         var lastKey: Map<String, AttributeValue>? = null
         do {
             val response =
@@ -806,14 +808,7 @@ class DynamoMailboxState(
                         .exclusiveStartKey(lastKey)
                         .build(),
                 )
-            items.addAll(response.items())
-            lastKey = response.lastEvaluatedKey().takeIf { it.isNotEmpty() }
-        } while (lastKey != null && items.size < MAX_MESSAGES_PER_POLL)
-
-        // One unreadable item must not fail the whole poll: skip it (it still expires via TTL).
-        return items
-            .take(MAX_MESSAGES_PER_POLL)
-            .mapNotNull { item ->
+            for (item in response.items()) {
                 val message =
                     if (CompactPayload.isCompact(item)) {
                         CompactPayload.decode(item)
@@ -822,9 +817,14 @@ class DynamoMailboxState(
                     }
                 if (message == null) {
                     auditLog.warn("Skipping malformed mailbox item (msgId={})", item["msgId"]?.s())
+                } else if (messages.size < MAX_MESSAGES_PER_POLL) {
+                    messages.add(message)
                 }
-                message
             }
+            lastKey = response.lastEvaluatedKey().takeIf { it.isNotEmpty() }
+        } while (lastKey != null && messages.size < MAX_MESSAGES_PER_POLL)
+
+        return messages
     }
 
     override fun deleteById(

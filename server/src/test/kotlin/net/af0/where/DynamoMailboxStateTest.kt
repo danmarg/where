@@ -1022,6 +1022,34 @@ class DynamoMailboxStateTest {
     }
 
     @Test
+    fun `a full page of malformed items does not hide valid messages behind it`() {
+        val state = store(compactPayloads = true)
+        val token = freshToken()
+        val now = System.currentTimeMillis()
+        createDynamoDbClient("test", "test", "us-east-1", endpoint()).use { client ->
+            repeat(60) { i ->
+                client.putItem(
+                    PutItemRequest.builder()
+                        .tableName("test_messages_${tableCounter - 1}")
+                        .item(
+                            mapOf(
+                                "token" to AttributeValue.fromS(token),
+                                "msgId" to AttributeValue.fromS("bad-$i"),
+                                "c" to AttributeValue.fromB(SdkBytes.fromByteArray(byteArrayOf(1))),
+                                "postedAt" to AttributeValue.fromN((now - 10_000 + i).toString()),
+                                "expiresAt" to AttributeValue.fromN((now / 1000 + 3600).toString()),
+                            ),
+                        )
+                        .build(),
+                )
+            }
+        }
+        val messages = RealMessages.locations(3)
+        messages.forEach { assertTrue(state.post(token, RealMessages.wire(it), it.msgId)) }
+        assertEquals(messages.map { RealMessages.wire(it) }, state.drain(token))
+    }
+
+    @Test
     fun `compact items are acked like any other`() {
         val state = store(compactPayloads = true)
         val token = freshToken()
