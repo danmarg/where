@@ -70,7 +70,15 @@ Where is designed so the server learns as little as possible:
 
 Uses an in-memory store by default; set `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` and `AWS_REGION` to use DynamoDB.
 
-`MAILBOX_COMPACT_PAYLOADS=true` stores location messages in a smaller DynamoDB layout (one write unit instead of two). Any server version since that layout reads both, so the flag can be turned off at any time. Rolling back to an older server needs the flag off first and the compact items gone: acked, or expired after 7 days.
+`MAILBOX_COMPACT_PAYLOADS=true` stores location messages in a smaller DynamoDB layout (one write unit instead of two).
+
+| Server | Flag | Reads | Writes |
+|---|---|---|---|
+| before the layout | n/a | legacy only | legacy |
+| with the layout | off (default) | both | legacy |
+| with the layout | on | both | compact |
+
+Turning the flag off only stops new compact writes; it does **not** convert compact records already stored. Rolling back to a server from before the layout is safe only once no compact records remain, since that server fails every poll of a token holding one. To roll back: turn the flag off, wait for clients to ack the compact items or for them to expire (at most 7 days; DynamoDB TTL deletion is lazy and can lag, so expiry is an upper bound, not a guarantee), and verify none remain (for example, scan `messages` for items with a `c` attribute) before deploying the old binary.
 
 ```bash
 ./gradlew :server:run

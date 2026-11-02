@@ -13,6 +13,7 @@ import net.af0.where.e2ee.KeyExchange
 import net.af0.where.e2ee.MailboxPayload
 import net.af0.where.e2ee.MessagePlaintext
 import net.af0.where.e2ee.Session
+import software.amazon.awssdk.core.SdkBytes
 import software.amazon.awssdk.services.dynamodb.model.AttributeValue
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -74,6 +75,38 @@ class CompactPayloadTest {
     @Test
     fun `an item holding a payload string is not decoded`() {
         assertNull(CompactPayload.decode(mapOf("payload" to AttributeValue.fromS("{}"), "msgId" to AttributeValue.fromS("m"))))
+    }
+
+    @Test
+    fun `malformed compact items are rejected, not thrown on`() {
+        val message = RealMessages.locations(1).single()
+        val good =
+            assertNotNull(CompactPayload.encode(RealMessages.wire(message), message.msgId)) +
+                ("msgId" to AttributeValue.fromS(message.msgId))
+        assertNotNull(CompactPayload.decode(good))
+        val bytes = AttributeValue.fromB(SdkBytes.fromByteArray(byteArrayOf(1)))
+        val cases =
+            mapOf(
+                "missing v" to good - "v",
+                "missing e" to good - "e",
+                "missing c" to good - "c",
+                "missing msgId" to good - "msgId",
+                "v as a string" to good + ("v" to AttributeValue.fromS("1")),
+                "e as a string" to good + ("e" to AttributeValue.fromS("abc")),
+                "c as a string" to good + ("c" to AttributeValue.fromS("abc")),
+                "msgId as a number" to good + ("msgId" to AttributeValue.fromN("1")),
+                "negative v" to good + ("v" to AttributeValue.fromN("-1")),
+                "v past Int" to good + ("v" to AttributeValue.fromN("99999999999")),
+                "fractional v" to good + ("v" to AttributeValue.fromN("1.5")),
+                "empty e" to good + ("e" to AttributeValue.fromB(SdkBytes.fromByteArray(ByteArray(0)))),
+                "empty c" to good + ("c" to AttributeValue.fromB(SdkBytes.fromByteArray(ByteArray(0)))),
+                "e and c as bytes but v missing" to mapOf("e" to bytes, "c" to bytes, "msgId" to AttributeValue.fromS("m")),
+            )
+        for ((name, item) in cases) {
+            assertNull(CompactPayload.decode(item), name)
+            assertEquals(true, CompactPayload.isCompact(item), "$name still counts as compact, never legacy")
+        }
+        assertEquals(false, CompactPayload.isCompact(mapOf("payload" to AttributeValue.fromS("{}"))))
     }
 
     @Test

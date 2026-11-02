@@ -25,6 +25,7 @@ import org.testcontainers.utility.DockerImageName
 import software.amazon.awssdk.core.exception.SdkClientException
 import software.amazon.awssdk.services.dynamodb.DynamoDbClient
 import software.amazon.awssdk.services.dynamodb.model.AttributeDefinition
+import software.amazon.awssdk.core.SdkBytes
 import software.amazon.awssdk.services.dynamodb.model.AttributeValue
 import software.amazon.awssdk.services.dynamodb.model.BatchWriteItemRequest
 import software.amazon.awssdk.services.dynamodb.model.BatchWriteItemResponse
@@ -834,6 +835,48 @@ class DynamoMailboxStateTest {
             listOf(JsonPrimitive("legacy"), RealMessages.wire(first), JsonPrimitive("not compactable"), RealMessages.wire(second)),
             state.drain(token),
         )
+    }
+
+    @Test
+    fun `a malformed item is skipped without failing the poll`() {
+        val state = store(compactPayloads = true)
+        val token = freshToken()
+        val (first, second) = RealMessages.locations(2)
+        assertTrue(state.post(token, RealMessages.wire(first), first.msgId))
+        val now = System.currentTimeMillis()
+        val bad =
+            mapOf(
+                "half-compact" to mapOf("c" to AttributeValue.fromB(SdkBytes.fromByteArray(byteArrayOf(1)))),
+                "v as string" to
+                    mapOf(
+                        "v" to AttributeValue.fromS("1"),
+                        "e" to AttributeValue.fromB(SdkBytes.fromByteArray(byteArrayOf(1))),
+                        "c" to AttributeValue.fromB(SdkBytes.fromByteArray(byteArrayOf(1))),
+                    ),
+                "no payload" to emptyMap(),
+                "unparsable payload" to mapOf("payload" to AttributeValue.fromS("{not json")),
+            )
+        createDynamoDbClient("test", "test", "us-east-1", endpoint()).use { client ->
+            bad.entries.forEachIndexed { i, (name, attrs) ->
+                client.putItem(
+                    PutItemRequest.builder()
+                        .tableName("test_messages_${tableCounter - 1}")
+                        .item(
+                            attrs +
+                                mapOf(
+                                    "token" to AttributeValue.fromS(token),
+                                    "msgId" to AttributeValue.fromS("bad-$i-$name"),
+                                    "postedAt" to AttributeValue.fromN((now + i + 1).toString()),
+                                    "expiresAt" to AttributeValue.fromN((now / 1000 + 3600).toString()),
+                                ),
+                        )
+                        .build(),
+                )
+            }
+        }
+        Thread.sleep(10)
+        assertTrue(state.post(token, RealMessages.wire(second), second.msgId))
+        assertEquals(listOf(RealMessages.wire(first), RealMessages.wire(second)), state.drain(token))
     }
 
     @Test

@@ -391,13 +391,15 @@ internal fun isReceivedIdsConditionalCheckFailure(e: TransactionCanceledExceptio
  *
  * Rollout: a server without [decode] can't read these items, and GET fails for their token until
  * they're acked or expire, so writing them is behind DynamoMailboxState.compactPayloads
- * (MAILBOX_COMPACT_PAYLOADS). Turning the flag off is always safe; rolling back to a binary from
- * before this layout needs the flag off and the compact items drained first.
+ * (MAILBOX_COMPACT_PAYLOADS). Turning the flag off is always safe, but it only stops new compact
+ * writes: existing compact items stay compact. Rolling back to a binary from before this layout
+ * needs the flag off and every compact item acked or expired (TTL is a lazy upper bound).
  */
 internal object CompactPayload {
     private val KEYS = listOf("type", "v", "envelope", "ct", "msgId")
     private const val TYPE = "EncryptedMessage"
     private val UNSIGNED_INT = Regex("0|[1-9][0-9]*")
+    private val ATTRIBUTES = setOf("v", "e", "c")
 
     /** The attributes that replace `payload` for [payload], or null if it doesn't qualify. */
     fun encode(
@@ -420,16 +422,28 @@ internal object CompactPayload {
         )
     }
 
-    /** The original payload JSON for an item [encode] wrote, or null if [item] holds `payload`. */
+    /** True if [item] uses the compact layout: it has any of its attributes, rather than `payload`. */
+    fun isCompact(item: Map<String, AttributeValue>): Boolean = item.keys.any { it in ATTRIBUTES }
+
+    /**
+     * The original payload JSON for a compact item [encode] wrote, or null if [item] is malformed
+     * (an attribute missing, of the wrong DynamoDB type, empty, or `v` not an unsigned Int). Check
+     * [isCompact] first: this never falls back to `payload`, so a half-compact item fails here
+     * rather than somewhere less obvious.
+     */
     fun decode(item: Map<String, AttributeValue>): JsonElement? {
-        val ct = item["c"] ?: return null
+        val version =
+            item["v"]?.n()?.takeIf { UNSIGNED_INT.matches(it) }?.toIntOrNull() ?: return null
+        val envelope = item["e"]?.b()?.asByteArray()?.takeIf { it.isNotEmpty() } ?: return null
+        val ciphertext = item["c"]?.b()?.asByteArray()?.takeIf { it.isNotEmpty() } ?: return null
+        val msgId = item["msgId"]?.s() ?: return null
         val base64 = Base64.getEncoder()
         return buildJsonObject {
             put("type", TYPE)
-            put("v", item.getValue("v").n().toInt())
-            put("envelope", base64.encodeToString(item.getValue("e").b().asByteArray()))
-            put("ct", base64.encodeToString(ct.b().asByteArray()))
-            put("msgId", item.getValue("msgId").s())
+            put("v", version)
+            put("envelope", base64.encodeToString(envelope))
+            put("ct", base64.encodeToString(ciphertext))
+            put("msgId", msgId)
         }
     }
 
@@ -807,9 +821,21 @@ class DynamoMailboxState(
             lastKey = response.lastEvaluatedKey().takeIf { it.isNotEmpty() }
         } while (lastKey != null && items.size < MAX_MESSAGES_PER_POLL)
 
+        // One unreadable item must not fail the whole poll: skip it (it still expires via TTL).
         return items
             .take(MAX_MESSAGES_PER_POLL)
-            .map { CompactPayload.decode(it) ?: json.parseToJsonElement(it.getValue("payload").s()) }
+            .mapNotNull { item ->
+                val message =
+                    if (CompactPayload.isCompact(item)) {
+                        CompactPayload.decode(item)
+                    } else {
+                        item["payload"]?.s()?.let { runCatching { json.parseToJsonElement(it) }.getOrNull() }
+                    }
+                if (message == null) {
+                    auditLog.warn("Skipping malformed mailbox item (msgId={})", item["msgId"]?.s())
+                }
+                message
+            }
     }
 
     override fun deleteById(
