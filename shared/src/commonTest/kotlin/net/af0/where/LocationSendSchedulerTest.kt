@@ -285,6 +285,71 @@ class LocationSendSchedulerTest {
         }
 
     @Test
+    fun aRequestTimeoutIsAFailedAttemptNotTheEndOfTheWorker() =
+        runTest {
+            // The mailbox's wall-clock timeout surfaces as a CancellationException subclass. It
+            // must not end the worker (or wakeAndDrain would wait forever on a stuck connection).
+            val h = harness()
+            var timingOut = true
+            h.sender.fail = { if (timingOut) kotlinx.coroutines.CancellationException("wall-clock timeout") else null }
+            h.scheduler.onFix(far(0), -122.0)
+            advanceTimeBy(30_000L)
+            runCurrent()
+            assertEquals(3, h.sender.attempts.size, "retried like any failure")
+
+            timingOut = false
+            h.scheduler.onNetworkRestored()
+            h.scheduler.onFix(far(1), -122.0)
+            advanceTimeBy(300_000L)
+            var drained = false
+            launch {
+                h.scheduler.wakeAndDrain()
+                drained = true
+            }
+            runCurrent()
+            assertEquals(true, drained, "the worker is alive to drain the heartbeat")
+            assertEquals(listOf(far(1), far(1)), h.sender.sent.map { it.lat }) // the fix, then the heartbeat
+        }
+
+    @Test
+    fun eventsStartTheWorkerIfNeeded() =
+        runTest {
+            val clock = { BASE + testScheduler.currentTime }
+            val sender = FakeSender(clock)
+            val scheduler = LocationSendScheduler(sender, FakeGate(), clock, backgroundScope) // never start()ed
+            scheduler.onFix(37.0, -122.0)
+            var drained = false
+            launch {
+                scheduler.wakeAndDrain()
+                drained = true
+            }
+            runCurrent()
+            assertEquals(true, drained)
+            assertEquals(1, sender.sent.size)
+        }
+
+    @Test
+    fun aClockThatJumpsBackDoesNotShutTheGate() =
+        runTest {
+            var offset = 0L
+            val clock = { BASE + testScheduler.currentTime + offset }
+            val sender = FakeSender(clock)
+            val scheduler = LocationSendScheduler(sender, FakeGate(), clock, backgroundScope)
+            scheduler.onFix(far(0), -122.0)
+            runCurrent()
+            offset = -86_400_000L // a day back
+            advanceTimeBy(31_000L)
+            scheduler.onFix(far(1), -122.0)
+            runCurrent()
+            advanceTimeBy(31_000L)
+            runCurrent()
+            assertEquals(2, sender.sent.size)
+            assertTrue(scheduler.isHeartbeatDue().not())
+            advanceTimeBy(300_000L)
+            assertTrue(scheduler.isHeartbeatDue())
+        }
+
+    @Test
     fun resetDiscardsASendSettlingFromBefore() =
         runTest {
             val h = harness()
@@ -308,7 +373,7 @@ class LocationSendSchedulerTest {
             val h = harness()
             advanceTimeBy(400_000L)
             assertTrue(h.scheduler.isHeartbeatDue())
-            h.scheduler.noteKeepalive()
+            h.scheduler.noteKeepalive(success = false)
             assertEquals(false, h.scheduler.isHeartbeatDue(), "no forced GPS fix on every wake after a keepalive")
         }
 
@@ -348,7 +413,8 @@ class LocationSendSchedulerTest {
             val end = 3_600_000L
             var nextWake = 60_000L
             while (testScheduler.currentTime < end) {
-                if (scenario.nextInt(30) == 0) moving = !moving
+                // Moving spells average ~1 min, stationary ones ~8 min, so heartbeats run.
+                if (scenario.nextInt(if (moving) 20 else 160) == 0) moving = !moving
                 lat += if (moving) 0.0005 else scenario.nextDouble(-0.00001, 0.00001)
                 h.scheduler.onFix(lat, -122.0)
                 if (scenario.nextInt(200) == 0) h.gate.stationary = !h.gate.stationary
@@ -376,12 +442,17 @@ class LocationSendSchedulerTest {
                 val gap = b.start - a.start
                 val forced = forcedAt.any { it in a.start + 1..b.start }
                 if (!forced) assertTrue(gap >= 30_000L, "$ctx: sends at ${a.start} and ${b.start} are $gap ms apart")
-                if (a.lat == b.lat && a.stationary == b.stationary && !forced) {
+                val metersApart = kotlin.math.abs(a.lat - b.lat) * 111_000
+                if (metersApart < 200 && a.stationary == b.stationary && !forced) {
                     assertTrue(gap >= 270_000L, "$ctx: unchanged fix re-sent after $gap ms")
                 }
             }
+            // Heartbeat at most 5 min after the last attempt, caught by the next 1-min wake; a failed
+            // round (3 slow attempts) then backs off one more heartbeat.
             val longestGap = h.sender.sent.zipWithNext().maxOf { (a, b) -> b.start - a.start }
-            assertTrue(longestGap <= 300_000L + 60_000L + 3 * 45_000L + 25_000L, "$ctx: heartbeat gap $longestGap ms")
+            assertTrue(longestGap <= 2 * (300_000L + 60_000L + 3 * 45_000L + 25_000L), "$ctx: heartbeat gap $longestGap ms")
+            val heartbeats = h.sender.sent.zipWithNext().count { (a, b) -> kotlin.math.abs(a.lat - b.lat) * 111_000 < 200 }
+            assertTrue(heartbeats > 3, "$ctx: the heartbeat path ran ($heartbeats times)")
         }
 
     private companion object {

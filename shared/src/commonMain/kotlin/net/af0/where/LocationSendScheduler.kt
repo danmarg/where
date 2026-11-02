@@ -1,10 +1,11 @@
 package net.af0.where
 
-import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
@@ -131,9 +132,18 @@ class LocationSendScheduler(
     private val busy = MutableStateFlow(false)
     private var worker: Job? = null
 
+    /** Starts the worker; also restarts it if it ever ended (every event does this too). */
     fun start() {
         if (worker?.isActive == true) return
-        worker = scope.launch { run() }
+        worker =
+            scope.launch {
+                try {
+                    run()
+                } finally {
+                    // Nobody waiting in wakeAndDrain may wait on a worker that's gone.
+                    busy.value = false
+                }
+            }
     }
 
     fun onFix(
@@ -153,7 +163,11 @@ class LocationSendScheduler(
     }
 
     /** True when a wake should arm the heartbeat (see [wakeAndDrain]); a platform may fetch a fresh fix first. */
-    fun isHeartbeatDue(): Boolean = clock() - lastAttempt >= policy.heartbeatMs - policy.heartbeatSlackMs
+    fun isHeartbeatDue(): Boolean {
+        val now = clock()
+        clampToNow(now)
+        return now - lastAttempt >= policy.heartbeatMs - policy.heartbeatSlackMs
+    }
 
     /**
      * A wake: arm the heartbeat if it's due, then return once nothing is due now and no send is
@@ -162,14 +176,17 @@ class LocationSendScheduler(
     suspend fun wakeAndDrain() {
         if (isHeartbeatDue()) heartbeatArmed = true
         kick()
-        busy.first { !it }
+        busy.first { !it || worker?.isActive != true }
     }
 
-    /** The platform sent a keepalive instead (no fix to send): it counts as this heartbeat. */
-    fun noteKeepalive() {
+    /**
+     * The platform sent a keepalive instead (no fix to send). It was a write, so it counts as this
+     * heartbeat's attempt either way - the next wake mustn't force a GPS fix straight away.
+     */
+    fun noteKeepalive(success: Boolean) {
         val now = clock()
         lastAttempt = now
-        lastSuccess = now
+        if (success) lastSuccess = now
         heartbeatArmed = false
     }
 
@@ -193,8 +210,26 @@ class LocationSendScheduler(
 
     private fun kick() {
         parked = false
+        start()
         busy.value = true
         signal.trySend(Unit)
+    }
+
+    // A clock that went backwards would leave these in the future, shutting the gate and the
+    // heartbeat until it caught up.
+    private fun clampToNow(now: Long) {
+        if (lastAttempt > now) lastAttempt = now
+        if (backoffUntil > now + policy.heartbeatMs) backoffUntil = now + policy.heartbeatMs
+    }
+
+    private fun notify(
+        reason: SendReason,
+        success: Boolean,
+        sinceLastSuccessMs: Long?,
+        error: Throwable?,
+    ) {
+        // A listener that throws must not turn a delivered send into a failed one.
+        runCatching { listener?.onSendSettled(reason, success, sinceLastSuccessMs, error) }
     }
 
     private suspend fun run() {
@@ -215,13 +250,12 @@ class LocationSendScheduler(
             busy.value = true
             try {
                 sendSequence()
-            } catch (e: CancellationException) {
-                throw e
             } catch (e: Throwable) {
-                // Nothing may end the worker: that would silently stop all sharing. Treat it
-                // like a failed send.
+                // Only our own cancellation ends the worker; anything else would silently stop all
+                // sharing, so treat it like a failed send.
+                currentCoroutineContext().ensureActive()
                 backoffUntil = clock() + policy.heartbeatMs
-                listener?.onSendSettled(SendReason.LOCATION, false, null, e)
+                notify(SendReason.LOCATION, false, null, e)
             }
         }
     }
@@ -231,6 +265,7 @@ class LocationSendScheduler(
         val fix = latest
         if (parked || fix == null) return null
         val now = clock()
+        clampToNow(now)
         if (forced) return 0
         val gateOpens = maxOf(if (lastAttempt == 0L) 0L else lastAttempt + policy.minIntervalMs, backoffUntil)
         val sent = delivered
@@ -263,6 +298,7 @@ class LocationSendScheduler(
             if (!gate.canSend()) {
                 // Nothing written, so not an attempt: once allowed again, it goes straight out.
                 parked = true
+                if (attempt > 0) notify(reason, false, sinceLastSuccess, lastError)
                 return
             }
             forced = false
@@ -274,17 +310,18 @@ class LocationSendScheduler(
                 delivered = Sent(fix, stationary)
                 lastSuccess = clock()
                 backoffUntil = 0L
-                listener?.onSendSettled(reason, true, sinceLastSuccess, null)
+                notify(reason, true, sinceLastSuccess, null)
                 return
-            } catch (e: CancellationException) {
-                throw e
             } catch (e: Throwable) {
+                // Only our own cancellation propagates. A CancellationException from below - a
+                // wall-clock request timeout is one - is a failed attempt like any other.
+                currentCoroutineContext().ensureActive()
                 lastError = e
             }
         }
         if (epoch != sessionEpoch) return
         backoffUntil = lastAttempt + policy.heartbeatMs
-        listener?.onSendSettled(reason, false, sinceLastSuccess, lastError)
+        notify(reason, false, sinceLastSuccess, lastError)
     }
 
     private fun distanceMeters(

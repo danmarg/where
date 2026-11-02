@@ -323,6 +323,8 @@ class LocationService : Service() {
                     Log.d(TAG, "Network available, triggering syncNow()")
                     networkWakeLock.acquire(WAKE_LOCK_TIMEOUT_MS)
                     serviceScope.launch {
+                        // A location send backing off after failures may retry now.
+                        sendScheduler.onNetworkRestored()
                         try {
                             try {
                                 locationClient.syncNow(
@@ -901,14 +903,17 @@ class LocationService : Service() {
                     // friend isn't spammed every RECOVERY cycle) and the outbox-redundancy
                     // check live in LocationClient.sendRecoveryKeepalives, shared with
                     // sendLocation()'s per-friend throttle.
-                    try {
-                        locationClient.sendRecoveryKeepalives(userStore.effectivelyPausedIds())
-                        logReliability(WakeSource.HEARTBEAT, true, wakeTrigger = source)
-                    } catch (_: Exception) {
-                    }
-                    // Counts as this heartbeat either way, so the next wake doesn't force a GPS
-                    // fix straight away.
-                    sendScheduler.noteKeepalive()
+                    val sent =
+                        try {
+                            locationClient.sendRecoveryKeepalives(userStore.effectivelyPausedIds())
+                            logReliability(WakeSource.HEARTBEAT, true, wakeTrigger = source)
+                            true
+                        } catch (_: Exception) {
+                            false
+                        }
+                    // Counts as this heartbeat's attempt either way, so the next wake doesn't
+                    // force a GPS fix straight away.
+                    sendScheduler.noteKeepalive(sent)
                 }
             }
             val interval = pollInterval(rapid, inForeground, isSharing)
