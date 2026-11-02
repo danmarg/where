@@ -11,11 +11,9 @@ import io.mockk.every
 import io.mockk.mockk
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.channels.Channel
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.advanceUntilIdle
@@ -430,14 +428,15 @@ class LocationServiceTest {
             shadowOf(context).denyPermissions(Manifest.permission.ACCESS_FINE_LOCATION)
 
             try {
-                service.sendLocationIfNeeded(1.0, 2.0, isHeartbeat = true, force = true, stationary = false)
+                service.sendScheduler.onFix(1.0, 2.0)
+                service.sendScheduler.requestForced()
                 advanceUntilIdle()
                 io.mockk.coVerify(exactly = 0) { mockClient.sendLocation(any(), any(), any(), any(), any()) }
 
-                // The refused attempt must not close the send gate: once permission is back, an
-                // ordinary (non-forced) heartbeat goes out straight away.
+                // The refused attempt must not close the send gate: once permission is back, the
+                // next fix goes out straight away.
                 shadowOf(context).grantPermissions(Manifest.permission.ACCESS_FINE_LOCATION)
-                service.sendLocationIfNeeded(1.0, 2.0, isHeartbeat = true, stationary = false)
+                service.sendScheduler.onFix(1.0, 2.0)
                 advanceUntilIdle()
                 io.mockk.coVerify(exactly = 1) { mockClient.sendLocation(any(), any(), any(), any(), any()) }
             } finally {
@@ -471,10 +470,9 @@ class LocationServiceTest {
             controller.create()
 
             try {
-                service.sendLocationIfNeeded(1.0, 2.0, isHeartbeat = false, force = true, stationary = false)
+                service.sendScheduler.onFix(1.0, 2.0)
                 advanceUntilIdle()
                 assertEquals(2, sendCalls, "Send should retry once after transient failure")
-                assertTrue(service.lastSentTime > 0L, "lastSentTime should remain set after eventual success")
             } finally {
                 controller.destroy()
             }
@@ -700,7 +698,7 @@ class LocationServiceTest {
     fun testRoutineLocationUpdate_PreservesStationaryFlagWhileStill() =
         runTest {
             // Regression test: the "here since" investigation found that this call site
-            // (locationSource.lastLocation.collect -> sendLocationIfNeeded) omitted the
+            // (locationSource.lastLocation.collect -> send) omitted the
             // stationary argument entirely, defaulting to false and clobbering a peer's
             // "here since" display within one routine location update after STILL was set.
             val controller = Robolectric.buildService(LocationService::class.java)
@@ -714,13 +712,12 @@ class LocationServiceTest {
             io.mockk.coEvery { mockClient.pollPendingInvites() } returns emptyList()
 
             // Deliberately leave friends/pending-invites empty: this test only exercises the
-            // locationSource.lastLocation.collect -> sendLocationIfNeeded path, not pollLoop's
+            // locationSource.lastLocation.collect -> send path, not pollLoop's
             // heartbeat. With friends populated, pollLoop's first iteration would race a real
             // forceLocationUpdateAndGet() call (genuinely async under Robolectric, not driven by
             // the virtual test clock) against this test's own assertion, which was flaky. With
             // friends empty, pollLoop stops itself on its "no friends" path before ever reaching
-            // that code, so lastSentTime stays untouched and the throttle in sendLocationIfNeeded
-            // can't race with anything.
+            // that code, so the heartbeat can't race with anything.
             controller.create()
 
             service.isStill = true
@@ -779,80 +776,23 @@ class LocationServiceTest {
         }
 
     @Test
-    fun testRapidLocationCallbacks_DoNotBypassSendThrottle() =
+    fun testRapidLocationCallbacks_AreNotSentOrPolledEachTime() =
         runTest {
-            // Regression: every location callback (including the 1 s passive listener, which
-            // sees fixes other apps request, e.g. during navigation) woke pollLoop, and its
-            // heartbeat sent with force = true on every iteration - bypassing both the 30 s
-            // movement throttle and the 5 min heartbeat interval. In production that drove
-            // ~1 send/s to every friend.
-            var currentTime = 1_000_000_000L
-            LocationService.clock = { currentTime }
-
-            val controller = Robolectric.buildService(LocationService::class.java)
-            val service = controller.get()
-
-            val mockClient = io.mockk.mockk<LocationClient>(relaxed = true)
-            service.locationClientOverride = mockClient
-            service.locationSourceOverride = fakeLocationSource
-            val mockE2ee = io.mockk.mockk<net.af0.where.e2ee.E2eeManager>(relaxed = true)
-            service.e2eeManagerOverride = mockE2ee
-            io.mockk.coEvery { mockClient.pollPendingInvites() } returns emptyList()
-
-            val friend = io.mockk.mockk<net.af0.where.e2ee.FriendEntry>(relaxed = true)
-            io.mockk.every { friend.id } returns "friend1"
-            // Each poll republishes listFriends(); an empty list would stop pollLoop.
-            io.mockk.coEvery { mockE2ee.listFriends() } returns listOf(friend)
-            fakeLocationSource.onFriendsUpdated(listOf(friend))
-            fakeLocationSource.onLocation(37.0, -122.0, null)
-
-            controller.create()
-            // STILL with a fresh backstop so the heartbeat re-reports the cached fix instead of
-            // forcing a real (non-virtual-time) GPS request.
-            service.isStill = true
-            service.lastStillForcedFixTime = currentTime
-            advanceUntilIdle()
-
-            // One fix per second for 20 s - all inside MIN_SEND_INTERVAL_MS of the first send.
-            repeat(20) { i ->
-                currentTime += 1_000L
-                fakeLocationSource.onLocation(37.0 + (i + 1) * 0.0001, -122.0, null)
-                advanceUntilIdle()
-            }
-
-            io.mockk.coVerify(exactly = 1) { mockClient.sendLocation(any(), any(), any(), any(), any()) }
-            // Nor should each fix wake a poll of every friend.
-            io.mockk.coVerify(atMost = 3) { mockClient.poll(any(), any(), any()) }
-
-            // A heartbeat is still due once HEARTBEAT_INTERVAL_MS has passed.
-            currentTime += LocationService.HEARTBEAT_INTERVAL_MS
-            service.lastStillForcedFixTime = currentTime
-            fakeLocationSource.wakePoll()
-            advanceUntilIdle()
-
-            io.mockk.coVerify(exactly = 2) { mockClient.sendLocation(any(), any(), any(), any(), any()) }
-            controller.destroy()
-        }
-
-    @Test
-    fun testThrottledFinalFix_IsSentWhenThrottleWindowEnds() =
-        runTest {
-            // Without pollLoop's per-wake forced send, a fix dropped by the 30 s movement
-            // throttle must still go out once the window ends - otherwise the last position
-            // before stopping waits for the next 5 min heartbeat.
+            // Regression for the October 2026 AWS bill: pollLoop forced a send on every wake, and
+            // every location callback (up to 1/s from the passive listener) woke it, so a phone
+            // near a navigating app sent ~1/s to every friend. Sends now go through
+            // LocationSendScheduler (its rate rules are tested in shared); this checks the
+            // service feeds it rather than sending, and rate-limits its own poll wakes.
             val base = 1_000_000_000L
             LocationService.clock = { base + testScheduler.currentTime }
-
             val controller = Robolectric.buildService(LocationService::class.java)
             val service = controller.get()
-
             val mockClient = io.mockk.mockk<LocationClient>(relaxed = true)
             service.locationClientOverride = mockClient
             service.locationSourceOverride = fakeLocationSource
             val mockE2ee = io.mockk.mockk<net.af0.where.e2ee.E2eeManager>(relaxed = true)
             service.e2eeManagerOverride = mockE2ee
             io.mockk.coEvery { mockClient.pollPendingInvites() } returns emptyList()
-
             val friend = io.mockk.mockk<net.af0.where.e2ee.FriendEntry>(relaxed = true)
             io.mockk.every { friend.id } returns "friend1"
             io.mockk.coEvery { mockE2ee.listFriends() } returns listOf(friend)
@@ -863,340 +803,19 @@ class LocationServiceTest {
             service.isStill = true
             service.lastStillForcedFixTime = LocationService.clock()
             runCurrent()
-            io.mockk.coVerify(exactly = 1) { mockClient.sendLocation(any(), any(), any(), any(), any()) }
-
-            advanceTimeBy(10_000L)
-            fakeLocationSource.onLocation(37.01, -122.0, null)
-            runCurrent()
-            io.mockk.coVerify(exactly = 1) { mockClient.sendLocation(any(), any(), any(), any(), any()) }
-
-            advanceTimeBy(25_000L)
-            runCurrent()
-            io.mockk.coVerify(exactly = 1) { mockClient.sendLocation(37.01, -122.0, any(), any(), any()) }
-            io.mockk.coVerify(exactly = 2) { mockClient.sendLocation(any(), any(), any(), any(), any()) }
-            controller.destroy()
-        }
-
-    @Test
-    fun testSentFix_IsNotResentWhenThrottleWindowEnds() =
-        runTest {
-            // A fix that was sent must not also be queued as a throttled trailing send, even
-            // though the send itself takes time (so the clock has moved past the send's start).
-            val base = 1_000_000_000L
-            LocationService.clock = { base + testScheduler.currentTime }
-
-            val controller = Robolectric.buildService(LocationService::class.java)
-            val service = controller.get()
-
-            val mockClient = io.mockk.mockk<LocationClient>(relaxed = true)
-            service.locationClientOverride = mockClient
-            service.locationSourceOverride = fakeLocationSource
-            val mockE2ee = io.mockk.mockk<net.af0.where.e2ee.E2eeManager>(relaxed = true)
-            service.e2eeManagerOverride = mockE2ee
-            io.mockk.coEvery { mockClient.pollPendingInvites() } returns emptyList()
-            io.mockk.coEvery { mockClient.sendLocation(any(), any(), any(), any(), any()) } coAnswers { delay(500L) }
-
-            val friend = io.mockk.mockk<net.af0.where.e2ee.FriendEntry>(relaxed = true)
-            io.mockk.every { friend.id } returns "friend1"
-            io.mockk.coEvery { mockE2ee.listFriends() } returns listOf(friend)
-            fakeLocationSource.onFriendsUpdated(listOf(friend))
-            fakeLocationSource.onLocation(37.0, -122.0, null)
-
-            controller.create()
-            service.isStill = true
-            service.lastStillForcedFixTime = LocationService.clock()
-            runCurrent()
-            advanceTimeBy(1_000L)
-            runCurrent()
-            io.mockk.coVerify(exactly = 1) { mockClient.sendLocation(any(), any(), any(), any(), any()) }
-
-            // Past the throttle window, so the location collector itself sends this fix.
-            advanceTimeBy(31_000L)
-            fakeLocationSource.onLocation(37.01, -122.0, null)
-            runCurrent()
-            advanceTimeBy(1_000L)
-            runCurrent()
-            io.mockk.coVerify(exactly = 1) { mockClient.sendLocation(37.01, -122.0, any(), any(), any()) }
-
-            // No further fixes; well short of the next heartbeat.
-            advanceTimeBy(60_000L)
-            runCurrent()
-            io.mockk.coVerify(exactly = 1) { mockClient.sendLocation(37.01, -122.0, any(), any(), any()) }
-            io.mockk.coVerify(exactly = 2) { mockClient.sendLocation(any(), any(), any(), any(), any()) }
-            controller.destroy()
-        }
-
-    @Test
-    fun testHeartbeatFreshFix_IsNotResentAsTrailingSend() =
-        runTest {
-            // pollLoop's heartbeat hands a fresh fix to the location source and sends it. The
-            // collector sees that same fix a moment later, is refused (the heartbeat is in
-            // flight) and queues it as a trailing send - which must not send it a second time.
-            val base = 1_000_000_000L
-            LocationService.clock = { base + testScheduler.currentTime }
-
-            val controller = Robolectric.buildService(LocationService::class.java)
-            val service = controller.get()
-
-            val mockClient = io.mockk.mockk<LocationClient>(relaxed = true)
-            service.locationClientOverride = mockClient
-            service.locationSourceOverride = fakeLocationSource
-            val mockE2ee = io.mockk.mockk<net.af0.where.e2ee.E2eeManager>(relaxed = true)
-            service.e2eeManagerOverride = mockE2ee
-            io.mockk.coEvery { mockClient.pollPendingInvites() } returns emptyList()
-            io.mockk.coEvery { mockClient.sendLocation(any(), any(), any(), any(), any()) } coAnswers { delay(500L) }
-
-            val friend = io.mockk.mockk<net.af0.where.e2ee.FriendEntry>(relaxed = true)
-            io.mockk.every { friend.id } returns "friend1"
-            io.mockk.coEvery { mockE2ee.listFriends() } returns listOf(friend)
-            fakeLocationSource.onFriendsUpdated(listOf(friend))
-            fakeLocationSource.onLocation(37.0, -122.0, null)
-
-            controller.create()
-            runCurrent()
-            advanceTimeBy(1_000L)
-            runCurrent()
-            io.mockk.coVerify(exactly = 1) { mockClient.sendLocation(any(), any(), any(), any(), any()) }
-
-            advanceTimeBy(LocationService.HEARTBEAT_INTERVAL_MS)
-            // As pollLoop does: publish the fresh fix, then send it without yielding, so the
-            // heartbeat is admitted before the collector sees the fix.
-            backgroundScope.launch {
-                fakeLocationSource.onLocation(37.02, -122.0, null)
-                service.sendLocationIfNeeded(37.02, -122.0, isHeartbeat = true, stationary = false)
-            }
-            runCurrent()
-            advanceTimeBy(5L)
-            runCurrent()
-
-            advanceTimeBy(60_000L)
-            runCurrent()
-            io.mockk.coVerify(exactly = 1) { mockClient.sendLocation(37.02, -122.0, any(), any(), any()) }
-            controller.destroy()
-        }
-
-    private fun startedService(
-        sendLocation: suspend () -> Unit,
-    ): Pair<org.robolectric.android.controller.ServiceController<LocationService>, LocationClient> {
-        val controller = Robolectric.buildService(LocationService::class.java)
-        val service = controller.get()
-        val mockClient = io.mockk.mockk<LocationClient>(relaxed = true)
-        service.locationClientOverride = mockClient
-        service.locationSourceOverride = fakeLocationSource
-        val mockE2ee = io.mockk.mockk<net.af0.where.e2ee.E2eeManager>(relaxed = true)
-        service.e2eeManagerOverride = mockE2ee
-        io.mockk.coEvery { mockClient.pollPendingInvites() } returns emptyList()
-        io.mockk.coEvery { mockClient.sendLocation(any(), any(), any(), any(), any()) } coAnswers { sendLocation() }
-        val friend = io.mockk.mockk<net.af0.where.e2ee.FriendEntry>(relaxed = true)
-        io.mockk.every { friend.id } returns "friend1"
-        io.mockk.coEvery { mockE2ee.listFriends() } returns listOf(friend)
-        fakeLocationSource.onFriendsUpdated(listOf(friend))
-        return controller to mockClient
-    }
-
-    @Test
-    fun testForcedSend_WaitsForTheSendInFlight() =
-        runTest {
-            // A forced send (entering STILL, say) skips the interval but not mutual exclusion:
-            // arriving mid-send, it runs once that send finishes, never alongside it.
-            val base = 1_000_000_000L
-            LocationService.clock = { base + testScheduler.currentTime }
-            var inFlight = 0
-            var maxInFlight = 0
-            val (controller, mockClient) =
-                startedService {
-                    inFlight++
-                    maxInFlight = maxOf(maxInFlight, inFlight)
-                    try {
-                        delay(5_000L)
-                    } finally {
-                        inFlight--
-                    }
-                }
-            val service = controller.get()
-            fakeLocationSource.onLocation(37.0, -122.0, null)
-            controller.create()
-            runCurrent() // the first fix's send is now in flight
-
-            var admitted: Boolean? = null
-            backgroundScope.launch {
-                admitted = service.sendLocationIfNeeded(37.0, -122.0, isHeartbeat = false, force = true, stationary = true)
-            }
-            runCurrent()
-            assertEquals(false, admitted, "refused while a send is in flight")
-            io.mockk.coVerify(exactly = 0) { mockClient.sendLocation(any(), any(), any(), stationary = true, stamp = any()) }
-
-            advanceTimeBy(6_000L)
-            runCurrent()
-            advanceTimeBy(6_000L)
-            runCurrent()
-            io.mockk.coVerify(exactly = 1) { mockClient.sendLocation(37.0, -122.0, any(), stationary = true, stamp = any()) }
-            assertEquals(1, maxInFlight, "sends never overlap")
-            controller.destroy()
-        }
-
-    @Test
-    fun testStaleForcedSend_DoesNotCountAsDeliveringANewerFix() =
-        runTest {
-            // A forced send can carry a fix it captured before newer ones came in. Delivering
-            // it must not count as delivering a newer fix the throttle dropped.
-            val base = 1_000_000_000L
-            LocationService.clock = { base + testScheduler.currentTime }
-            val (controller, mockClient) = startedService {}
-            val service = controller.get()
-            fakeLocationSource.onLocation(37.0, -122.0, null)
-            controller.create()
-            service.isStill = true
-            service.lastStillForcedFixTime = LocationService.clock()
-            runCurrent()
-            io.mockk.coVerify(exactly = 1) { mockClient.sendLocation(any(), any(), any(), any(), any()) }
-
-            advanceTimeBy(10_000L)
-            fakeLocationSource.onLocation(37.01, -122.0, null) // dropped by the throttle
-            runCurrent()
-            advanceTimeBy(5_000L)
-            backgroundScope.launch {
-                service.sendLocationIfNeeded(37.0, -122.0, isHeartbeat = false, force = true, stationary = true)
-            }
-            runCurrent()
-            io.mockk.coVerify(exactly = 2) { mockClient.sendLocation(37.0, -122.0, any(), any(), any()) }
-
-            advanceTimeBy(40_000L)
-            runCurrent()
-            io.mockk.coVerify(exactly = 1) { mockClient.sendLocation(37.01, -122.0, any(), any(), any()) }
-            controller.destroy()
-        }
-
-    /**
-     * Randomized simulation of the send path's rate guarantees, over an hour of virtual time:
-     * bursts of fixes while moving, quiet stretches, activity transitions (flapping included),
-     * sends that take up to 8 s (now and then 45 s) and sends that fail. Scenario tests each
-     * cover one path; this covers their interleavings, and latency, which an instant mock
-     * hides. Checks:
-     *  1. successful sends are at least MIN_SEND_INTERVAL_MS apart;
-     *  2. a fix already sent isn't sent again before the heartbeat is due (a wasted write);
-     *  3. no send starts while another is in flight, forced or not;
-     *  4. after a quiet spell, the last fix has gone out (so the above can't pass by not sending).
-     * Forced sends (the immediate one on entering STILL) and their retries are exempt from 1-2.
-     */
-    @Test
-    fun testSendRateInvariants_RandomizedSimulation_seed1() = simulateSends(1)
-
-    @Test
-    fun testSendRateInvariants_RandomizedSimulation_seed2() = simulateSends(2)
-
-    private fun simulateSends(seed: Int) =
-        runTest {
-            ShadowLog.stream = null // an hour of virtual time logs a lot
-            // Separate streams, so a change in how sends interleave can't reshuffle the scenario.
-            val scenario = kotlin.random.Random(seed)
-            val network = kotlin.random.Random(seed + 1000)
-            val base = 1_000_000_000L
-            LocationService.clock = { base + testScheduler.currentTime }
-
-            val controller = Robolectric.buildService(LocationService::class.java)
-            val service = controller.get()
-            val mockClient = io.mockk.mockk<LocationClient>(relaxed = true)
-            service.locationClientOverride = mockClient
-            service.locationSourceOverride = fakeLocationSource
-            val mockE2ee = io.mockk.mockk<net.af0.where.e2ee.E2eeManager>(relaxed = true)
-            service.e2eeManagerOverride = mockE2ee
-            io.mockk.coEvery { mockClient.pollPendingInvites() } returns emptyList()
-            val friend = io.mockk.mockk<net.af0.where.e2ee.FriendEntry>(relaxed = true)
-            io.mockk.every { friend.id } returns "friend1"
-            io.mockk.coEvery { mockE2ee.listFriends() } returns listOf(friend)
-            fakeLocationSource.onFriendsUpdated(listOf(friend))
-
-            var nextEvents: List<ActivityTransitionEvent>? = null
-            service.activityHelperOverride =
-                object : ActivityHelper {
-                    override fun init(context: android.content.Context) {}
-
-                    override fun extractTransitionEvents(intent: Intent) = nextEvents
-
-                    override fun ensureRegistered(
-                        hasPermission: Boolean,
-                        isSharing: Boolean,
-                    ) {}
-
-                    override fun unregister() {}
-
-                    override fun onDestroy() {}
-                }
-
-            // exempt: an attempt of a forced send, which skips the interval by design.
-            data class Send(val start: Long, val lat: Double, val lng: Double, val exempt: Boolean)
-            val sent = mutableListOf<Send>()
-            val overlaps = mutableListOf<Long>()
-            var inFlight = 0
-            var failures = true
-            io.mockk.coEvery { mockClient.sendLocation(any(), any(), any(), any(), any()) } coAnswers {
-                val start = LocationService.clock()
-                // Only one send holds the gate at a time, so this is the in-flight send's flag.
-                val exempt = service.lastAdmissionForced
-                if (inFlight > 0) overlaps += start - base
-                inFlight++
-                try {
-                    // Now and then one runs into the HTTP timeouts, outlasting the send window.
-                    delay(if (network.nextInt(20) == 0) network.nextLong(30_000L, 45_000L) else network.nextLong(0L, 8_000L))
-                    if (failures && network.nextInt(10) == 0) throw java.io.IOException("simulated network failure")
-                    sent += Send(start, firstArg(), secondArg(), exempt)
-                } finally {
-                    inFlight--
-                }
-            }
-
-            var fix = 0
-
-            fun nextFix() {
-                fix++
-                fakeLocationSource.onLocation(37.0 + fix * 1e-4, -122.0, null)
-            }
-            nextFix()
-            controller.create()
-            runCurrent()
-
-            val end = testScheduler.currentTime + 60 * 60_000L
-            var moving = true
-            while (testScheduler.currentTime < end) {
-                if (scenario.nextInt(20) == 0) moving = !moving
-                if (moving || scenario.nextInt(30) == 0) nextFix()
-                if (BuildConfig.ACTIVITY_RECOGNITION_ENABLED && scenario.nextInt(40) == 0) {
-                    val type = if (scenario.nextBoolean()) ActivityType.STILL else ActivityType.IN_VEHICLE
-                    nextEvents = listOf(ActivityTransitionEvent(type, TransitionType.ENTER))
-                    controller.withIntent(
-                        Intent(service, LocationService::class.java).apply {
-                            action = LocationService.ACTION_ACTIVITY_TRANSITION
-                        },
-                    ).startCommand(0, 1)
-                }
+            for (i in 1..60) {
+                advanceTimeBy(1_000L)
+                fakeLocationSource.onLocation(37.0 + i * 0.01, -122.0, null) // ~1 km each
                 runCurrent()
-                advanceTimeBy(if (moving) scenario.nextLong(500L, 3_000L) else scenario.nextLong(1_000L, 20_000L))
             }
-            // One last fix, then quiet with a healthy network: it must go out well before the
-            // heartbeat would have sent it anyway.
-            failures = false
-            nextFix()
-            runCurrent()
-            advanceTimeBy(150_000L)
-            runCurrent()
-            controller.destroy()
 
-            val lastLat = 37.0 + fix * 1e-4
-            assertTrue(sent.any { it.lat == lastLat }, "seed $seed: the last fix ($lastLat) was never sent")
-            assertTrue(overlaps.isEmpty(), "seed $seed: sends started while another was in flight at $overlaps ms")
-            for ((prev, next) in sent.zipWithNext()) {
-                if (next.exempt) continue
-                val gap = next.start - prev.start
-                val ctx = "seed $seed: sends at ${prev.start - base} and ${next.start - base} ms"
-                assertTrue(gap >= LocationService.MIN_SEND_INTERVAL_MS, "$ctx are only $gap ms apart")
-                if (next.lat == prev.lat && next.lng == prev.lng) {
-                    assertTrue(
-                        gap >= LocationService.HEARTBEAT_INTERVAL_MS - LocationService.HEARTBEAT_EARLY_SLACK_MS,
-                        "$ctx repeat the same fix $gap ms apart",
-                    )
-                }
-            }
+            // t = 0 and 30 s, plus 60 s for the last fix once its window opens.
+            advanceTimeBy(1_000L)
+            runCurrent()
+            io.mockk.coVerify(exactly = 3) { mockClient.sendLocation(any(), any(), any(), any(), any()) }
+            io.mockk.coVerify(exactly = 1) { mockClient.sendLocation(37.0 + 60 * 0.01, -122.0, any(), any(), any()) }
+            io.mockk.coVerify(atMost = 4) { mockClient.poll(any(), any(), any()) }
+            controller.destroy()
         }
 
     @Test
