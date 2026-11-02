@@ -12,24 +12,14 @@ struct WhereApp: App {
         _ = LocationManager.shared
         _ = LocationSyncService.shared
 
-        BGTaskScheduler.shared.register(
-            forTaskWithIdentifier: "net.af0.where.heartbeat",
-            using: nil
-        ) { @Sendable task in
-            // `@Sendable` keeps this closure nonisolated. WhereApp is @MainActor, so without it
-            // Swift 6 infers the closure as main-actor-isolated and checks that at entry; but
-            // BGTaskScheduler (queue: nil) runs it on a background queue, which traps in
-            // `_dispatch_assert_queue_fail` (the 1.31 crash).
-            //
-            // See BGTaskCompletionCoordinator for why this needs its own type: BGTask has no
-            // public initializer, so the completion/reschedule logic has to live somewhere
-            // testable rather than inline in this closure.
-            let coordinator = BGTaskCompletionCoordinator(task: task, scheduleNext: scheduleHeartbeatTask)
-            task.expirationHandler = { coordinator.expire() }
-            coordinator.start {
-                await LocationSyncService.shared.pollAll(updateUi: false, source: .backgroundTask)
-            }
-        }
+        // The registration lives in HeartbeatTaskRegistration (not a closure here): the system calls
+        // the launch handler on a background queue, and a closure written in this @MainActor init
+        // would trap there. See HeartbeatScheduling.
+        HeartbeatTaskRegistration.register(
+            with: SystemHeartbeatScheduler(),
+            poll: { await LocationSyncService.shared.pollAll(updateUi: false, source: .backgroundTask) },
+            scheduleNext: scheduleHeartbeatTask
+        )
         scheduleHeartbeatTask()
     }
 
@@ -52,7 +42,7 @@ struct WhereApp: App {
 }
 
 private func scheduleHeartbeatTask() {
-    let request = BGAppRefreshTaskRequest(identifier: "net.af0.where.heartbeat")
+    let request = BGAppRefreshTaskRequest(identifier: HeartbeatTaskRegistration.identifier)
     request.earliestBeginDate = Date(timeIntervalSinceNow: 5 * 60)
     try? BGTaskScheduler.shared.submit(request)
 }
