@@ -208,7 +208,9 @@ final class LocationSyncService: ObservableObject {
     // Queries whether the device is stationary. Default queries CoreMotion;
     // tests replace with { true } or { false } for deterministic results.
     // Initialized in init() to capture motionActivityManager/motionQueue without
-    // a self reference, avoiding actor-isolation issues in the closure.
+    // a self reference. Note the closure is still main-actor-isolated (it's formed in the
+    // @MainActor init), so the CoreMotion callback inside it is marked @Sendable: CoreMotion
+    // calls it on motionQueue, and an inherited-isolation check there would trap.
     var isStationaryQuery: () async -> Bool = { false }  // overridden in init
     /// Friend IDs awaiting their first location update, keyed to when they were added so
     /// isRapidPolling() can stop treating a stale entry as a reason to keep rapid mode on.
@@ -350,7 +352,7 @@ final class LocationSyncService: ObservableObject {
             }
             return await withCheckedContinuation { continuation in
                 let now = Date()
-                motionManager.queryActivityStarting(from: now.addingTimeInterval(-60), to: now, to: motionQueue) { activities, error in
+                motionManager.queryActivityStarting(from: now.addingTimeInterval(-60), to: now, to: motionQueue) { @Sendable activities, error in
                     if error != nil {
                         continuation.resume(returning: false)
                         return
