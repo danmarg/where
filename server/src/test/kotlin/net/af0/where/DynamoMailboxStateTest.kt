@@ -781,6 +781,38 @@ class DynamoMailboxStateTest {
     }
 
     @Test
+    fun `a failed idempotency write followed by a restart is repaired and queued once`() {
+        // As above, but the process dies before the retry, so depthCounts is lost and re-seeded
+        // from the table: the original payload must survive, the record is repaired, the row is queued once.
+        var failNextWrite = true
+        val first =
+            store { real ->
+                intercepting(real) { name, args ->
+                    if (!failNextWrite || !isPutTo(name, args, "test_received_")) return@intercepting null
+                    failNextWrite = false
+                    throw SdkClientException.create("simulated idempotency write failure")
+                }
+            }
+        val token = freshToken()
+        assertFailsWith<SdkClientException> { first.post(token, JsonPrimitive("first"), "x") }
+        assertFalse(hasReceivedId(token, "x"))
+
+        // "Restart": a new instance over the same tables, with an empty depth cache.
+        val suffix = tableCounter - 1
+        val restarted =
+            DynamoMailboxState(
+                createDynamoDbClient("test", "test", "us-east-1", endpoint()),
+                messagesTable = "test_messages_$suffix",
+                receivedIdsTable = "test_received_$suffix",
+            ).also { stores.add(it) }
+
+        assertTrue(restarted.post(token, JsonPrimitive("retry"), "x"))
+        assertTrue(hasReceivedId(token, "x"), "the retry writes the missing idempotency record")
+        assertEquals("\"first\"", storedPayload(token, "x"), "the retry must not overwrite the original row")
+        assertEquals(listOf(JsonPrimitive("first")), restarted.drain(token), "the row is queued exactly once")
+    }
+
+    @Test
     fun `an SDK retry that finds its own landed message write keeps the depth count exact`() {
         // The SDK retries a PutItem internally after e.g. a timeout; if the first attempt landed,
         // the retry fails the attribute_not_exists condition for a row this very call wrote.
