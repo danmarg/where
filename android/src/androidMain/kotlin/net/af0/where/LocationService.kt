@@ -28,10 +28,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.channels.Channel
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.sync.Mutex
-import kotlinx.coroutines.sync.withLock
 import net.af0.where.e2ee.ConnectionStatus
 import net.af0.where.e2ee.E2eeManager
 import net.af0.where.e2ee.LocationClient
@@ -121,8 +118,6 @@ class LocationService : Service() {
 
     @VisibleForTesting
     internal var lastStillForcedFixTime: Long = 0L
-
-    private var lastSuccessfulSendTime: Long? = null
 
     @VisibleForTesting
     internal var consecutiveLateHeartbeats = 0
@@ -288,6 +283,7 @@ class LocationService : Service() {
 
         e2eeManager = e2eeManagerOverride ?: app.e2eeManager
         locationClient = locationClientOverride ?: app.locationClient
+        sendScheduler = createSendScheduler()
         net.af0.where.e2ee.KtorMailboxClient.onConnectionReset = {
             e2eeManager.addDiagnosticEvent("Mailbox HTTP client auto-reset after repeated failures")
         }
@@ -327,6 +323,8 @@ class LocationService : Service() {
                     Log.d(TAG, "Network available, triggering syncNow()")
                     networkWakeLock.acquire(WAKE_LOCK_TIMEOUT_MS)
                     serviceScope.launch {
+                        // A location send backing off after failures may retry now.
+                        sendScheduler.onNetworkRestored()
                         try {
                             try {
                                 locationClient.syncNow(
@@ -371,6 +369,7 @@ class LocationService : Service() {
 
         serviceScope.launch {
             userStore.isSharingLocation.collect {
+                if (!it) sendScheduler.reset()
                 updateNotification()
                 ensureLocationRegistration()
             }
@@ -391,18 +390,7 @@ class LocationService : Service() {
                     // launch{} below actually runs, which would otherwise describe this same
                     // location event inconsistently depending on scheduling luck.
                     val stationary = isStill
-                    if (userStore.isSharingLocation.value) {
-                        // Preserve current stationarity here too, for the same reason as the
-                        // heartbeat above: a routine fix delivered while still STILL must not
-                        // clobber an in-progress "here since" signal by defaulting to false.
-                        sendLocationIfNeeded(
-                            loc.first,
-                            loc.second,
-                            isHeartbeat = false,
-                            source = WakeSource.LOCATION_UPDATE,
-                            stationary = stationary,
-                        )
-                    }
+                    if (userStore.isSharingLocation.value) sendScheduler.onFix(loc.first, loc.second)
 
                     while (true) {
                         val friendId = pendingFriendSends.tryReceive().getOrNull() ?: break
@@ -422,8 +410,14 @@ class LocationService : Service() {
                     }
 
                     // When our own location changes, trigger a poll for friend updates.
-                    // This ensures that whenever we share, we also receive.
-                    locationSource.wakePoll()
+                    // This ensures that whenever we share, we also receive. At most once per
+                    // MIN_SEND_INTERVAL_MS: fixes arrive up to 1/s (the passive listener), and a
+                    // poll on each would be as wasteful as a send on each.
+                    val now = clock()
+                    if (now - lastLocationPollWakeTime >= MIN_SEND_INTERVAL_MS) {
+                        lastLocationPollWakeTime = now
+                        locationSource.wakePoll()
+                    }
                 }
             }
         }
@@ -505,22 +499,14 @@ class LocationService : Service() {
                             setGeofenceAt(loc.first, loc.second)
                         }
 
-                        if (enteringStill && loc != null) {
+                        if (enteringStill && loc != null && userStore.isSharingLocation.value) {
                             // Immediately tell peers we're stationary here, before we might go
                             // dark - mirrors iOS's immediate send on first stationary detection.
-                            // Not debounced: the whole point is to warn the peer before a
-                            // possible suspension, so any delay defeats it. See the "here since"
+                            // Forced, so not held back by the send interval: the whole point is to
+                            // warn the peer before a possible suspension. See the "here since"
                             // background-triggering investigation.
-                            serviceScope.launch {
-                                sendLocationIfNeeded(
-                                    loc.first,
-                                    loc.second,
-                                    isHeartbeat = false,
-                                    force = true,
-                                    source = WakeSource.ACTIVITY_TRANSITION,
-                                    stationary = true,
-                                )
-                            }
+                            sendScheduler.onFix(loc.first, loc.second)
+                            sendScheduler.requestForced()
                         }
 
                         // Force re-registration with new settings.
@@ -609,20 +595,8 @@ class LocationService : Service() {
                     // Broadcast to all (non-paused) friends — used on master sharing toggle off→on
                     // so peers see us without waiting for the next regular location tick.
                     val loc = locationSource.lastLocation.value
-                    if (loc != null) {
-                        // Snapshot: isStill could change between launch{} and execution.
-                        val stationary = isStill
-                        serviceScope.launch {
-                            sendLocationIfNeeded(
-                                loc.first,
-                                loc.second,
-                                isHeartbeat = false,
-                                force = true,
-                                source = WakeSource.LOCATION_UPDATE,
-                                stationary = stationary,
-                            )
-                        }
-                    }
+                    if (loc != null) sendScheduler.onFix(loc.first, loc.second)
+                    sendScheduler.requestForced()
                 }
             }
         }
@@ -773,9 +747,40 @@ class LocationService : Service() {
 
     override fun onBind(intent: Intent?): IBinder? = null
 
+    private var lastLocationPollWakeTime = 0L
+
+    // What woke pollLoop for the heartbeat being drained, for the reliability log.
+    private var heartbeatWakeTrigger: WakeSource? = null
+
+    /** The only sender of broadcast Locations; see [LocationSendScheduler]. */
     @VisibleForTesting
-    internal var lastSentTime: Long = 0L
-    private val sendLock = Mutex()
+    internal lateinit var sendScheduler: LocationSendScheduler
+
+    private fun createSendScheduler() =
+        LocationSendScheduler(
+            client = locationClient.asBroadcastSender(),
+            gate =
+                object : SendGate {
+                    override fun canSend() = canSendLocations()
+
+                    override fun pausedFriendIds() = userStore.effectivelyPausedIds()
+
+                    override fun stationary() = isStill
+                },
+            // Monotonic: send intervals are elapsed time, and wall-clock changes mustn't move them.
+            clock = { elapsedClock() },
+            scope = serviceScope,
+            listener = { reason, success, sinceLastSuccessMs, error ->
+                val source =
+                    when (reason) {
+                        SendReason.HEARTBEAT -> WakeSource.HEARTBEAT
+                        SendReason.FORCED, SendReason.LOCATION -> WakeSource.LOCATION_UPDATE
+                    }
+                logReliability(source, success, sinceLastSuccessMs, heartbeatWakeTrigger)
+                if (success) checkLateHeartbeat(sinceLastSuccessMs)
+                updateStatus(if (success) null else error ?: Exception("send failed"))
+            },
+        ).also { it.start() }
 
     private suspend fun pollLoop() {
         // On cold/headless restart the StateFlow starts empty — hydrate once before the
@@ -821,12 +826,14 @@ class LocationService : Service() {
             // stuck.  The interval is 30 min in that case (maintenance-only).
             doPoll(source)
             // Heartbeat: ensure we send at least once every 5 minutes when stationary.
-            // Runs regardless of foreground state so background location stays alive.
-            if (isSharing) {
+            // Runs regardless of foreground state so background location stays alive. Only when
+            // due: this loop also wakes on location callbacks and the 10 s / 2 s timers, and
+            // would otherwise force a GPS fix on each.
+            if (isSharing && sendScheduler.isHeartbeatDue()) {
                 val now = clock()
                 val stillBackstopDue = isStillBackstopDue(now)
                 val loc =
-                    if (now - lastSentTime > STATIONARY_FORCE_UPDATE_THRESHOLD_MS) {
+                    run {
                         if (isStill && !stillBackstopDue) {
                             Log.d(TAG, "Stationary and STILL; skipping forced GPS fix, will re-report cached location.")
                             null
@@ -873,8 +880,6 @@ class LocationService : Service() {
                             }
                             freshLoc
                         }
-                    } else {
-                        null
                     }
 
                 val lastLoc =
@@ -886,26 +891,15 @@ class LocationService : Service() {
                     }
 
                 if (lastLoc != null) {
-                    // Force the heartbeat send. The pollLoop timing (5 mins) is already
-                    // what we want for stationary updates, and 'force' ensures we bypass
-                    // the internal 5-min de-duplication check which might be too tight.
-                    // Note: 'force' only bypasses this service-level dedup check, not
-                    // LocationClient.sendLocation()'s per-friend unresponsive-friend throttle -
-                    // a heartbeat to a friend who hasn't been heard from in 5 min is still
-                    // throttled the same as a regular send (intentional: no point forcing a
-                    // heartbeat to someone not reading either).
-                    sendLocationIfNeeded(
-                        lastLoc.first,
-                        lastLoc.second,
-                        isHeartbeat = true,
-                        force = true,
-                        source = WakeSource.HEARTBEAT,
-                        wakeTrigger = source,
-                        // Preserve current stationarity: this heartbeat is the mechanism that's
-                        // supposed to keep "here since" alive every 5 min while stationary, so it
-                        // must not clobber that signal by defaulting to false.
-                        stationary = isStill,
-                    )
+                    // The scheduler sends the latest fix, reading "here since" stationarity at
+                    // send time. Drained here so the send happens under this wake's wake lock.
+                    heartbeatWakeTrigger = source
+                    sendScheduler.onFix(lastLoc.first, lastLoc.second)
+                    val drained = sendScheduler.wakeAndDrain()
+                    heartbeatWakeTrigger = null
+                    // Held back (a backoff after failures): it goes out on the scheduler's timer or
+                    // a later wake, not under this wake lock.
+                    if (drained is DrainResult.Pending) Log.d(TAG, "Heartbeat pending for ${drained.inMs}ms")
                 } else {
                     // RECOVERY (§5.3): If we have no GPS fix but are sharing, send a
                     // keepalive message to all active friends to keep the session alive
@@ -913,12 +907,17 @@ class LocationService : Service() {
                     // friend isn't spammed every RECOVERY cycle) and the outbox-redundancy
                     // check live in LocationClient.sendRecoveryKeepalives, shared with
                     // sendLocation()'s per-friend throttle.
-                    try {
-                        locationClient.sendRecoveryKeepalives(userStore.effectivelyPausedIds())
-                        lastSentTime = now
-                        logReliability(WakeSource.HEARTBEAT, true, wakeTrigger = source)
-                    } catch (_: Exception) {
-                    }
+                    val sent =
+                        try {
+                            locationClient.sendRecoveryKeepalives(userStore.effectivelyPausedIds())
+                            logReliability(WakeSource.HEARTBEAT, true, wakeTrigger = source)
+                            true
+                        } catch (_: Exception) {
+                            false
+                        }
+                    // Counts as this heartbeat's attempt either way, so the next wake doesn't
+                    // force a GPS fix straight away.
+                    sendScheduler.noteKeepalive(sent)
                 }
             }
             val interval = pollInterval(rapid, inForeground, isSharing)
@@ -993,74 +992,6 @@ class LocationService : Service() {
     // choice, so a cached fix must not go out after that stop; when permission returns, sends
     // resume. Read after taking a LocationClient.sharingStamp(), like the pause state.
     private fun canSendLocations(): Boolean = userStore.isSharingLocation.value && hasLocationPermission()
-
-    // No default for `stationary`: every call site must decide explicitly. A silent
-    // `= false` default caused several "here since" regressions where a call site omitted
-    // it and unknowingly asserted "moving" - see the "here since" investigation.
-    internal suspend fun sendLocationIfNeeded(
-        lat: Double,
-        lng: Double,
-        isHeartbeat: Boolean,
-        force: Boolean = false,
-        source: WakeSource = WakeSource.LOCATION_UPDATE,
-        wakeTrigger: WakeSource? = null,
-        stationary: Boolean,
-    ) {
-        if (!userStore.isSharingLocation.value) return
-        val now = clock()
-        val interval = lastSuccessfulSendTime?.let { now - it }
-        val shouldSend =
-            sendLock.withLock {
-                val canSend =
-                    force || lastSentTime == 0L ||
-                        (!isHeartbeat && now - lastSentTime > MIN_SEND_INTERVAL_MS) ||
-                        (isHeartbeat && now - lastSentTime > HEARTBEAT_INTERVAL_MS)
-                if (canSend) {
-                    lastSentTime = now
-                    true
-                } else {
-                    false
-                }
-            }
-        if (!shouldSend) return
-
-        // Retry transient send failures within the same wake; otherwise a single
-        // network blip during a 5-min heartbeat tick costs us another full poll
-        // interval (5 min background) before the next attempt, stacking gaps fast.
-        var lastError: Exception? = null
-        val totalAttempts = 1 + SEND_RETRY_DELAYS_MS.size
-        for (attempt in 0 until totalAttempts) {
-            if (attempt > 0) delay(SEND_RETRY_DELAYS_MS[attempt - 1])
-            // Before reading the sharing state: a stop issued after it drops this Location for
-            // that friend rather than letting it follow the stop (LocationClient.sharingStamp).
-            val stamp = locationClient.sharingStamp()
-            if (!canSendLocations()) {
-                // Nothing was sent: don't leave the send gate closed for the next wake.
-                sendLock.withLock { lastSentTime = 0L }
-                return
-            }
-            try {
-                locationClient.sendLocation(lat, lng, userStore.effectivelyPausedIds(), stationary = stationary, stamp = stamp)
-                val sendCompleteTime = clock()
-                logReliability(source, true, interval, wakeTrigger)
-                checkLateHeartbeat(interval)
-                lastSuccessfulSendTime = sendCompleteTime
-                updateStatus(null)
-                return
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                lastError = e
-                Log.w(TAG, "Send attempt ${attempt + 1}/$totalAttempts failed: ${e.message}")
-            }
-        }
-
-        // All retries exhausted — restore lastSentTime so the next wake can retry.
-        sendLock.withLock { lastSentTime = 0L }
-        Log.e(TAG, "Failed to send location after $totalAttempts attempts: ${lastError?.message}")
-        logReliability(source, false, interval, wakeTrigger)
-        updateStatus(lastError ?: Exception("send failed"))
-    }
 
     private fun checkLateHeartbeat(intervalMs: Long?) {
         if (intervalMs == null) return
@@ -1225,6 +1156,10 @@ class LocationService : Service() {
 
         /** Overridable in tests. */
         var clock: () -> Long = { System.currentTimeMillis() }
+
+        /** Monotonic time, including deep sleep, for the send scheduler. Tests replace it. */
+        @VisibleForTesting
+        var elapsedClock: () -> Long = { SystemClock.elapsedRealtime() }
 
         private const val CHANNEL_ID = "where_location"
         private const val NOTIFICATION_ID = 1
