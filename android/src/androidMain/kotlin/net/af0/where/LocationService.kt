@@ -422,8 +422,14 @@ class LocationService : Service() {
                     }
 
                     // When our own location changes, trigger a poll for friend updates.
-                    // This ensures that whenever we share, we also receive.
-                    locationSource.wakePoll()
+                    // This ensures that whenever we share, we also receive. Rate-limited like
+                    // movement sends: the passive listener can deliver a fix every second, and
+                    // each wake polls every friend.
+                    val now = clock()
+                    if (now - lastLocationPollWakeTime >= MIN_SEND_INTERVAL_MS) {
+                        lastLocationPollWakeTime = now
+                        locationSource.wakePoll()
+                    }
                 }
             }
         }
@@ -775,6 +781,7 @@ class LocationService : Service() {
 
     @VisibleForTesting
     internal var lastSentTime: Long = 0L
+    private var lastLocationPollWakeTime = 0L
     private val sendLock = Mutex()
 
     private suspend fun pollLoop() {
@@ -822,7 +829,10 @@ class LocationService : Service() {
             doPoll(source)
             // Heartbeat: ensure we send at least once every 5 minutes when stationary.
             // Runs regardless of foreground state so background location stays alive.
-            if (isSharing) {
+            // Gated on time since the last send: this loop also wakes on every location
+            // callback (up to 1/s from the passive listener), the 10 s foreground timer and the
+            // 2 s rapid timer, and the forced send below would otherwise fire on each of them.
+            if (isSharing && isHeartbeatDue(clock())) {
                 val now = clock()
                 val stillBackstopDue = isStillBackstopDue(now)
                 val loc =
@@ -886,9 +896,9 @@ class LocationService : Service() {
                     }
 
                 if (lastLoc != null) {
-                    // Force the heartbeat send. The pollLoop timing (5 mins) is already
-                    // what we want for stationary updates, and 'force' ensures we bypass
-                    // the internal 5-min de-duplication check which might be too tight.
+                    // Force the heartbeat send: isHeartbeatDue() above already decided it's
+                    // time, with slack for timer jitter, and 'force' keeps the strict 5-min
+                    // check in sendLocationIfNeeded from skipping a slightly early wake.
                     // Note: 'force' only bypasses this service-level dedup check, not
                     // LocationClient.sendLocation()'s per-friend unresponsive-friend throttle -
                     // a heartbeat to a friend who hasn't been heard from in 5 min is still
@@ -956,6 +966,10 @@ class LocationService : Service() {
         val pi = PendingIntent.getService(this, 0, intent, PendingIntent.FLAG_NO_CREATE or PendingIntent.FLAG_IMMUTABLE)
         if (pi != null) alarmManager.cancel(pi)
     }
+
+    /** True once the last send is old enough for pollLoop's heartbeat - see [HEARTBEAT_EARLY_SLACK_MS]. */
+    @VisibleForTesting
+    internal fun isHeartbeatDue(now: Long): Boolean = now - lastSentTime >= HEARTBEAT_INTERVAL_MS - HEARTBEAT_EARLY_SLACK_MS
 
     /** See [STILL_MODE_FORCE_FIX_INTERVAL_MS]. Extracted for direct testability of the timing math. */
     @VisibleForTesting
@@ -1186,6 +1200,13 @@ class LocationService : Service() {
 
         /** Interval between heartbeat sends when stationary. */
         const val HEARTBEAT_INTERVAL_MS = 300_000L
+
+        /**
+         * pollLoop's heartbeat fires this much before HEARTBEAT_INTERVAL_MS has fully elapsed,
+         * so a wake that lands slightly early (alarm or FLP jitter) doesn't push the heartbeat
+         * to the following wake, a full interval later.
+         */
+        const val HEARTBEAT_EARLY_SLACK_MS = 30_000L
 
         /** Backoff delays for in-wake send retries on transient network failure. */
         val SEND_RETRY_DELAYS_MS = longArrayOf(5_000L, 20_000L)

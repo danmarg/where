@@ -775,6 +775,62 @@ class LocationServiceTest {
         }
 
     @Test
+    fun testRapidLocationCallbacks_DoNotBypassSendThrottle() =
+        runTest {
+            // Regression: every location callback (including the 1 s passive listener, which
+            // sees fixes other apps request, e.g. during navigation) woke pollLoop, and its
+            // heartbeat sent with force = true on every iteration - bypassing both the 30 s
+            // movement throttle and the 5 min heartbeat interval. In production that drove
+            // ~1 send/s to every friend.
+            var currentTime = 1_000_000_000L
+            LocationService.clock = { currentTime }
+
+            val controller = Robolectric.buildService(LocationService::class.java)
+            val service = controller.get()
+
+            val mockClient = io.mockk.mockk<LocationClient>(relaxed = true)
+            service.locationClientOverride = mockClient
+            service.locationSourceOverride = fakeLocationSource
+            val mockE2ee = io.mockk.mockk<net.af0.where.e2ee.E2eeManager>(relaxed = true)
+            service.e2eeManagerOverride = mockE2ee
+            io.mockk.coEvery { mockClient.pollPendingInvites() } returns emptyList()
+
+            val friend = io.mockk.mockk<net.af0.where.e2ee.FriendEntry>(relaxed = true)
+            io.mockk.every { friend.id } returns "friend1"
+            // Each poll republishes listFriends(); an empty list would stop pollLoop.
+            io.mockk.coEvery { mockE2ee.listFriends() } returns listOf(friend)
+            fakeLocationSource.onFriendsUpdated(listOf(friend))
+            fakeLocationSource.onLocation(37.0, -122.0, null)
+
+            controller.create()
+            // STILL with a fresh backstop so the heartbeat re-reports the cached fix instead of
+            // forcing a real (non-virtual-time) GPS request.
+            service.isStill = true
+            service.lastStillForcedFixTime = currentTime
+            advanceUntilIdle()
+
+            // One fix per second for 20 s - all inside MIN_SEND_INTERVAL_MS of the first send.
+            repeat(20) { i ->
+                currentTime += 1_000L
+                fakeLocationSource.onLocation(37.0 + (i + 1) * 0.0001, -122.0, null)
+                advanceUntilIdle()
+            }
+
+            io.mockk.coVerify(exactly = 1) { mockClient.sendLocation(any(), any(), any(), any()) }
+            // Nor should each fix wake a poll of every friend.
+            io.mockk.coVerify(atMost = 3) { mockClient.poll(any(), any(), any()) }
+
+            // A heartbeat is still due once HEARTBEAT_INTERVAL_MS has passed.
+            currentTime += LocationService.HEARTBEAT_INTERVAL_MS
+            service.lastStillForcedFixTime = currentTime
+            fakeLocationSource.wakePoll()
+            advanceUntilIdle()
+
+            io.mockk.coVerify(exactly = 2) { mockClient.sendLocation(any(), any(), any(), any()) }
+            controller.destroy()
+        }
+
+    @Test
     fun testSetGeofenceAt_logsDistinctDiagnosticsForSubmittedQueuedAndFailed() {
         // Regression test: LocationService.setGeofenceAt() branches on GeofenceRequestResult
         // to decide what diagnostic event to log. QUEUED must not be logged as "submitted" -
