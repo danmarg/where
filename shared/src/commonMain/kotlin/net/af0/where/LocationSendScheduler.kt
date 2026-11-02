@@ -27,10 +27,14 @@ data class SendPolicy(
     val heartbeatMs: Long = 300_000L,
     /** How early a wake may arm the heartbeat, to absorb timer jitter. */
     val heartbeatSlackMs: Long = 30_000L,
-    /** A fix this far from the last delivered one is worth sending before the heartbeat. */
-    val minDistanceMeters: Double = 200.0,
-    /** Fixes less accurate than this are ignored (jitter could look like movement). */
-    val maxAccuracyMeters: Double = 200.0,
+    /**
+     * A fix this far from the last delivered one is worth sending before the heartbeat: about a
+     * block, so a walker's pin updates roughly once a minute. Not much lower: urban GPS jitter
+     * of 20-50 m would then look like movement.
+     */
+    val minDistanceMeters: Double = 100.0,
+    /** Fixes less accurate than this are ignored: their jitter could pass for movement. */
+    val maxAccuracyMeters: Double = 100.0,
     /** Delays before the retries of a failed send. */
     val retryDelaysMs: List<Long> = listOf(5_000L, 20_000L),
 )
@@ -75,6 +79,21 @@ interface SendGate {
 }
 
 enum class SendReason { LOCATION, HEARTBEAT, FORCED }
+
+/** What [LocationSendScheduler.wakeAndDrain] left behind. */
+sealed class DrainResult {
+    /** A send was delivered during the drain (the latest fix, as of its last attempt). */
+    data object Sent : DrainResult()
+
+    /** A send ran during the drain and failed all its attempts; it backs off (see SendPolicy). */
+    data object Failed : DrainResult()
+
+    /** Something is due but held back by the send interval or a backoff, for [inMs] more. */
+    data class Pending(val inMs: Long) : DrainResult()
+
+    /** Nothing needs sending. */
+    data object Idle : DrainResult()
+}
 
 /** Hears about each send once it's settled - after its retries, if any. */
 fun interface SendListener {
@@ -128,6 +147,10 @@ class LocationSendScheduler(
     // Bumped by reset(): a send settling from before it doesn't touch the new session's state.
     private var epoch = 0
 
+    // Sends settled so far, and how the last one went (see wakeAndDrain).
+    private var settled = 0L
+    private var lastSettledOk = false
+
     private val signal = Channel<Unit>(Channel.CONFLATED)
     private val busy = MutableStateFlow(false)
     private var worker: Job? = null
@@ -170,13 +193,19 @@ class LocationSendScheduler(
     }
 
     /**
-     * A wake: arm the heartbeat if it's due, then return once nothing is due now and no send is
-     * in flight - so the caller can hold a wake lock or background task across the send.
+     * A wake: arm the heartbeat if it's due, then suspend until no send is in flight and none is
+     * due *now* - so the caller can hold a wake lock or background task across the send. It
+     * doesn't wait out the send interval: a send held back by it is reported as [DrainResult.Pending],
+     * and goes out on the worker's own timer or the next wake.
      */
-    suspend fun wakeAndDrain() {
+    suspend fun wakeAndDrain(): DrainResult {
         if (isHeartbeatDue()) heartbeatArmed = true
+        val settledBefore = settled
         kick()
         busy.first { !it || worker?.isActive != true }
+        if (settled != settledBefore) return if (lastSettledOk) DrainResult.Sent else DrainResult.Failed
+        val wait = nextDueIn()
+        return if (wait == null) DrainResult.Idle else DrainResult.Pending(maxOf(wait, 0L))
     }
 
     /**
@@ -222,6 +251,17 @@ class LocationSendScheduler(
         if (backoffUntil > now + policy.heartbeatMs) backoffUntil = now + policy.heartbeatMs
     }
 
+    private fun settle(
+        reason: SendReason,
+        success: Boolean,
+        sinceLastSuccessMs: Long?,
+        error: Throwable?,
+    ) {
+        settled++
+        lastSettledOk = success
+        notify(reason, success, sinceLastSuccessMs, error)
+    }
+
     private fun notify(
         reason: SendReason,
         success: Boolean,
@@ -255,7 +295,7 @@ class LocationSendScheduler(
                 // sharing, so treat it like a failed send.
                 currentCoroutineContext().ensureActive()
                 backoffUntil = clock() + policy.heartbeatMs
-                notify(SendReason.LOCATION, false, null, e)
+                settle(SendReason.LOCATION, false, null, e)
             }
         }
     }
@@ -298,7 +338,7 @@ class LocationSendScheduler(
             if (!gate.canSend()) {
                 // Nothing written, so not an attempt: once allowed again, it goes straight out.
                 parked = true
-                if (attempt > 0) notify(reason, false, sinceLastSuccess, lastError)
+                if (attempt > 0) settle(reason, false, sinceLastSuccess, lastError)
                 return
             }
             forced = false
@@ -310,7 +350,7 @@ class LocationSendScheduler(
                 delivered = Sent(fix, stationary)
                 lastSuccess = clock()
                 backoffUntil = 0L
-                notify(reason, true, sinceLastSuccess, null)
+                settle(reason, true, sinceLastSuccess, null)
                 return
             } catch (e: Throwable) {
                 // Only our own cancellation propagates. A CancellationException from below - a
@@ -321,7 +361,7 @@ class LocationSendScheduler(
         }
         if (epoch != sessionEpoch) return
         backoffUntil = lastAttempt + policy.heartbeatMs
-        notify(reason, false, sinceLastSuccess, lastError)
+        settle(reason, false, sinceLastSuccess, lastError)
     }
 
     private fun distanceMeters(

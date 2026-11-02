@@ -767,7 +767,8 @@ class LocationService : Service() {
 
                     override fun stationary() = isStill
                 },
-            clock = { clock() },
+            // Monotonic: send intervals are elapsed time, and wall-clock changes mustn't move them.
+            clock = { elapsedClock() },
             scope = serviceScope,
             listener = { reason, success, sinceLastSuccessMs, error ->
                 val source =
@@ -894,8 +895,11 @@ class LocationService : Service() {
                     // send time. Drained here so the send happens under this wake's wake lock.
                     heartbeatWakeTrigger = source
                     sendScheduler.onFix(lastLoc.first, lastLoc.second)
-                    sendScheduler.wakeAndDrain()
+                    val drained = sendScheduler.wakeAndDrain()
                     heartbeatWakeTrigger = null
+                    // Held back (a backoff after failures): it goes out on the scheduler's timer or
+                    // a later wake, not under this wake lock.
+                    if (drained is DrainResult.Pending) Log.d(TAG, "Heartbeat pending for ${drained.inMs}ms")
                 } else {
                     // RECOVERY (§5.3): If we have no GPS fix but are sharing, send a
                     // keepalive message to all active friends to keep the session alive
@@ -1152,6 +1156,10 @@ class LocationService : Service() {
 
         /** Overridable in tests. */
         var clock: () -> Long = { System.currentTimeMillis() }
+
+        /** Monotonic time, including deep sleep, for the send scheduler. Tests replace it. */
+        @VisibleForTesting
+        var elapsedClock: () -> Long = { SystemClock.elapsedRealtime() }
 
         private const val CHANNEL_ID = "where_location"
         private const val NOTIFICATION_ID = 1

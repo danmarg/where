@@ -191,6 +191,9 @@ class LocationServiceTest {
         shadowOf(context).grantPermissions(Manifest.permission.ACCESS_FINE_LOCATION)
         fakeLocationSource = ServiceFakeLocationSource()
         LocationService.clock = { System.currentTimeMillis() }
+        // Robolectric's elapsedRealtime doesn't advance with virtual time: the scheduler follows
+        // whatever clock a test sets.
+        LocationService.elapsedClock = { LocationService.clock() }
 
         // Ensure userStore is at a known state
         val app = context as TestWhereApplication

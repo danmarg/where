@@ -71,7 +71,7 @@ class LocationSendSchedulerTest {
 
     private fun TestScope.harness() = Harness(this, backgroundScope)
 
-    // ~1.1 km per step, comfortably past the 200 m filter.
+    // ~1.1 km per step, comfortably past the 100 m filter.
     private fun far(i: Int) = 37.0 + i * 0.01
 
     @Test
@@ -113,7 +113,11 @@ class LocationSendSchedulerTest {
             }
             advanceTimeBy(60_000L)
             runCurrent()
-            assertEquals(1, h.sender.sent.size, "under 200 m: nothing before the heartbeat")
+            assertEquals(1, h.sender.sent.size, "under 100 m: nothing before the heartbeat")
+
+            h.scheduler.onFix(37.0 + 0.0014, -122.0) // ~155 m from the delivered fix
+            runCurrent()
+            assertEquals(2, h.sender.sent.size, "past 100 m: sent once the interval allows")
         }
 
     @Test
@@ -156,6 +160,45 @@ class LocationSendSchedulerTest {
             runCurrent()
             assertEquals(true, drained)
             assertEquals(1, h.sender.sent.size)
+        }
+
+    @Test
+    fun wakeAndDrainReportsWhatItLeftBehind() =
+        runTest {
+            val h = harness()
+            var result: DrainResult? = null
+
+            // As Android's pollLoop does: report the fix, then drain, without yielding between.
+            fun drain(fixLat: Double? = null) {
+                result = null
+                launch {
+                    if (fixLat != null) h.scheduler.onFix(fixLat, -122.0)
+                    result = h.scheduler.wakeAndDrain()
+                }
+                runCurrent()
+            }
+
+            drain()
+            assertEquals(DrainResult.Idle, result, "no fix yet")
+
+            drain(far(0))
+            assertEquals(DrainResult.Sent, result)
+
+            advanceTimeBy(10_000L)
+            drain(far(1))
+            assertEquals(DrainResult.Pending(20_000L), result, "moved, but inside the send interval")
+
+            advanceTimeBy(20_000L)
+            runCurrent() // the worker's own timer sends it
+            drain()
+            assertEquals(DrainResult.Idle, result)
+
+            h.sender.fail = { RuntimeException("offline") }
+            advanceTimeBy(300_000L)
+            launch { result = h.scheduler.wakeAndDrain() }
+            advanceTimeBy(30_000L) // through the retries
+            runCurrent()
+            assertEquals(DrainResult.Failed, result)
         }
 
     @Test
@@ -442,8 +485,8 @@ class LocationSendSchedulerTest {
                 val gap = b.start - a.start
                 val forced = forcedAt.any { it in a.start + 1..b.start }
                 if (!forced) assertTrue(gap >= 30_000L, "$ctx: sends at ${a.start} and ${b.start} are $gap ms apart")
-                val metersApart = kotlin.math.abs(a.lat - b.lat) * 111_000
-                if (metersApart < 200 && a.stationary == b.stationary && !forced) {
+                val metersApart = kotlin.math.abs(a.lat - b.lat) * METERS_PER_DEGREE
+                if (metersApart < 100 && a.stationary == b.stationary && !forced) {
                     assertTrue(gap >= 270_000L, "$ctx: unchanged fix re-sent after $gap ms")
                 }
             }
@@ -451,11 +494,14 @@ class LocationSendSchedulerTest {
             // round (3 slow attempts) then backs off one more heartbeat.
             val longestGap = h.sender.sent.zipWithNext().maxOf { (a, b) -> b.start - a.start }
             assertTrue(longestGap <= 2 * (300_000L + 60_000L + 3 * 45_000L + 25_000L), "$ctx: heartbeat gap $longestGap ms")
-            val heartbeats = h.sender.sent.zipWithNext().count { (a, b) -> kotlin.math.abs(a.lat - b.lat) * 111_000 < 200 }
+            val heartbeats = h.sender.sent.zipWithNext().count { (a, b) -> kotlin.math.abs(a.lat - b.lat) * METERS_PER_DEGREE < 100 }
             assertTrue(heartbeats > 3, "$ctx: the heartbeat path ran ($heartbeats times)")
         }
 
     private companion object {
         const val BASE = 1_000_000_000L
+
+        // Of latitude, on the scheduler's sphere (6,371 km), so boundary cases agree with it.
+        const val METERS_PER_DEGREE = 6_371_000.0 * kotlin.math.PI / 180
     }
 }
