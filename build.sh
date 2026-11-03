@@ -244,7 +244,7 @@ if ! $SKIP_IOS; then
     echo "Cleaning old iOS build..."
     rm -rf ios/build
     echo "Generating Xcode project..."
-    cd ios && run xcodegen && cd ..
+    (cd ios && run xcodegen)
 
     # Write team ID to Local.xcconfig so it survives xcodegen regeneration.
     # Local.xcconfig is gitignored and loaded by the project for all configurations.
