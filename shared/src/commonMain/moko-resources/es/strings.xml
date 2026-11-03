@@ -10,8 +10,8 @@
     <string name="background_location_message">Permite que Where acceda a tu ubicación en segundo plano para que tus amigos vean tu posición incluso cuando la app no está abierta.</string>
     <string name="allow">Permitir</string>
     <string name="skip">Omitir</string>
-    <string name="location_permission_required">Se requiere permiso de ubicación</string>
     <string name="grant_permission">Conceder permiso</string>
+    <string name="location_permission_needed_to_share">Se necesita permiso de ubicación para compartir tu ubicación. Puedes seguir viendo a los amigos que comparten la suya contigo.</string>
     <string name="location_services_required">Los servicios de ubicación están desactivados</string>
     <string name="enable_location_services">Activar servicios de ubicación</string>
     <string name="friends">Amigos</string>

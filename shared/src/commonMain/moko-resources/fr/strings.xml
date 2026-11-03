@@ -10,8 +10,8 @@
     <string name="background_location_message">Autorisez Where à accéder à votre position en arrière-plan pour que vos amis puissent la voir même lorsque l\'app n\'est pas ouverte.</string>
     <string name="allow">Autoriser</string>
     <string name="skip">Passer</string>
-    <string name="location_permission_required">L\'autorisation de localisation est requise</string>
     <string name="grant_permission">Accorder l\'autorisation</string>
+    <string name="location_permission_needed_to_share">L\'autorisation de localisation est nécessaire pour partager votre position. Vous pouvez toujours voir les amis qui partagent la leur avec vous.</string>
     <string name="location_services_required">Les services de localisation sont désactivés</string>
     <string name="enable_location_services">Activer les services de localisation</string>
     <string name="friends">Amis</string>
