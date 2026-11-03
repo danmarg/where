@@ -79,21 +79,18 @@ final class LocationSyncService: ObservableObject {
             userStore.setSharing(sharing: isSharingLocation)
             locationProvider.sharingStateChanged()
             if !isSharingLocation {
-                forceNextLocationUpdate = false
-                locationFixTimeoutTask?.cancel()
-                locationFixTimeoutTask = nil
-                forceUpdateClearTimeoutTask?.cancel()
-                forceUpdateClearTimeoutTask = nil
+                sendScheduler.reset()
             } else if !oldValue {
                 // Master toggle off→on: broadcast our current location immediately to every
-                // (non-paused) friend so peers don't wait for the next regular tick. Also
-                // request a fresh fix so the next update sends an up-to-date position.
+                // (non-paused) friend so peers don't wait for the next regular tick (forced, so
+                // without a fix yet it goes out with the first one). Also request a fresh fix;
+                // it's sent like any other once it arrives.
                 if let loc = bestAvailableLocation {
-                    sendLocation(lat: loc.lat, lng: loc.lng, heading: loc.heading, force: true, source: .manual, stationary: locationProvider.isStationary)
+                    reportLocation(lat: loc.lat, lng: loc.lng, accuracy: nil, heading: loc.heading, force: true, source: .manual)
+                } else {
+                    sendScheduler.requestForced()
                 }
-                forceNextLocationUpdate = true
                 locationProvider.requestImmediateLocation()
-                armForceLocationUpdateTimeout()
             }
         }
     }
@@ -147,7 +144,8 @@ final class LocationSyncService: ObservableObject {
     private static let normalPollInterval: TimeInterval = 300.0 // 5 min (background sharing)
     private static let maintenancePollInterval: TimeInterval = 30 * 60  // ack-only when not sharing
     private static let staleLocationThreshold: TimeInterval = 60.0
-    private static let locationSendThrottle: TimeInterval = 30.0
+    /// LocationManager's jitter radius around a stationary geofence center. (How far a fix must
+    /// move to be sent is the send scheduler's policy, shared with Android.)
     static let minimumReportingDistanceMeters: CLLocationDistance = 200
     private static let rapidPollDuration: TimeInterval = 60.0
     /// How long a newly-added friend who hasn't sent their first location update keeps the
@@ -166,46 +164,48 @@ final class LocationSyncService: ObservableObject {
     /// stationary backstop). Starts at service init rather than the epoch so a fresh instance
     /// gets one normal stationary cadence before the backstop can engage. internal for testing.
     var lastForcedFixTime: Date = Date()
+    /// How long the heartbeat waits for a fresh fix before sending the cached one.
     var locationFixTimeout: TimeInterval = 10.0  // internal for testing
+    /// locationFixTimeout for services created from now on (tests shorten it: mocks never deliver
+    /// a requested fix).
+    static var defaultLocationFixTimeout: TimeInterval = 10.0
     /// Fixes with horizontalAccuracy above this threshold are cell/WiFi network fixes too noisy
-    /// to broadcast; only sub-200m GPS fixes are sent to friends or used for heartbeats.
-    nonisolated static let minBroadcastAccuracyMeters: CLLocationAccuracy = 200
+    /// to broadcast: the send scheduler's accuracy cap, shared with Android.
+    nonisolated static let minBroadcastAccuracyMeters: CLLocationAccuracy = LocationSendSchedulerKt.defaultSendPolicy.maxAccuracyMeters
     private var visibleUsersCancellables = Set<AnyCancellable>()
     let pathMonitor = NWPathMonitor()  // internal for testing
     private let monitorQueue = DispatchQueue(label: "NWPathMonitorQueue")
 
-    private(set) var lastSentLocation: (lat: Double, lng: Double)? = nil  // readable for testing
+    /// The last accurate fix reported to the send scheduler (readable for testing).
+    private(set) var lastReportedLocation: (lat: Double, lng: Double)? = nil
 
-    /// Best available location for heartbeat sends: accurate GPS fix first, then last sent.
+    /// Best available location for heartbeat sends: accurate GPS fix first, then last reported.
     /// Low-accuracy network fixes (e.g. from stationary cell-tower positioning) are skipped
     /// so a 3km drift doesn't overwrite a precise known location in friends' maps.
     private var bestAvailableLocation: (lat: Double, lng: Double, heading: Double?)? {
         if let loc = locationProvider.lastLocation, loc.horizontalAccuracy >= 0, loc.horizontalAccuracy <= Self.minBroadcastAccuracyMeters {
             return (lat: loc.coordinate.latitude, lng: loc.coordinate.longitude, heading: (locationProvider as? LocationManager)?.heading)
         }
-        if let last = lastSentLocation {
+        if let last = lastReportedLocation {
             return (lat: last.lat, lng: last.lng, heading: ownHeading)
         }
         return nil
     }
-    var lastSentTime: Date = Date(timeIntervalSince1970: 0)  // internal for testing
-    var pendingForcedSendAfterPairing: Bool = false
     var pendingForcedSendFriendId: String? = nil
-    var forceNextLocationUpdate: Bool = false
     var skipNetworkRestore: Bool = false  // internal for testing
-    var locationFixTimeoutTask: Task<Void, Never>? = nil  // internal for testing
-    // Separate from locationFixTimeoutTask: that one belongs exclusively to
-    // handleNetworkRestored()'s stale-fallback-send timeout. Sharing a single task field
-    // between the two meant armForceLocationUpdateTimeout() (called from three other sites)
-    // could cancel and replace an in-flight network-restore fallback before it fired,
-    // silently dropping the send that was supposed to update friends after an outage.
-    var forceUpdateClearTimeoutTask: Task<Void, Never>? = nil  // internal for testing
-    var currentSendTask: Task<Void, Never>? = nil  // internal for testing
-    // Injectable sleep used for the GPS-fix fallback timeout. Tests replace this
-    // with an instant or controllable variant so they don't wait real walltime.
-    var sleepForFixTimeout: @Sendable (TimeInterval) async throws -> Void = { seconds in
-        try await Task.sleep(for: .seconds(seconds))
-    }
+
+    /// The only sender of broadcast Locations (shared with Android): this service reports fixes
+    /// and wakes to it. Set at the end of init; see SendSchedulerBridge.swift.
+    private(set) var sendScheduler: LocationSendScheduler!
+    /// The drain holding a background task while the scheduler sends (at most one at a time).
+    private(set) var drainTask: Task<Void, Never>? = nil  // readable for testing
+    /// How long one wake's sending may hold background time: under the ~30 s an app gets.
+    static let drainMaxWaitMs: Int64 = 25_000
+    /// With no usable fix at all, the heartbeat asks for one at most this often.
+    private static let fixRequestWithoutFallbackInterval: TimeInterval = 60
+    private var lastFixRequestWithoutFallback: Date = .distantPast
+    /// What reported the fix a non-heartbeat send carries, for the diagnostic log.
+    private var lastReportSource: WakeSource = .locationUpdate
     // Queries whether the device is stationary. Default queries CoreMotion;
     // tests replace with { true } or { false } for deterministic results.
     // Initialized in init() to capture motionActivityManager/motionQueue without
@@ -217,10 +217,6 @@ final class LocationSyncService: ObservableObject {
     /// isRapidPolling() can stop treating a stale entry as a reason to keep rapid mode on.
     /// internal (not private) for testing, mirroring lastRapidPollTrigger below.
     var awaitingFirstUpdateIds: [String: Date] = [:]
-    // Monotonically increasing counter used to prevent stale task cleanup from
-    // clearing a newer task's state. Incremented each time a new send task is created.
-    private var sendTaskGeneration: Int = 0
-
     // Injected for testing. Closures are @Sendable and use MainActor.assumeIsolated internally
     // to interact with UIApplication.shared, which is required for background tasks in Swift 6.
     var beginBackgroundTask: @Sendable (String, @Sendable @escaping () -> Void) -> UIBackgroundTaskIdentifier = { name, handler in
@@ -298,7 +294,7 @@ final class LocationSyncService: ObservableObject {
         discardedSessionNames = []
     }
 
-    init(e2eeManager: Shared.E2eeManager? = nil, userStore: Shared.UserStore? = nil, locationClient: LocationClientProtocol? = nil, locationProvider: LocationProviding? = nil) {
+    init(e2eeManager: Shared.E2eeManager? = nil, userStore: Shared.UserStore? = nil, locationClient: LocationClientProtocol? = nil, locationProvider: LocationProviding? = nil, sendClock: MonotonicClock? = nil) {
         logger.debug("LocationSyncService init: serverUrl=\(ServerConfig.httpBaseUrl)")
 
         let keychain = KeychainRawKeyValueStorage()
@@ -327,6 +323,7 @@ final class LocationSyncService: ObservableObject {
         self.userStore = userStoreValue
         self.locationClient = locationClient ?? Shared.LocationClient(baseUrl: ServerConfig.httpBaseUrl, store: store)
         self.locationProvider = locationProvider ?? LocationManager.shared
+        self.locationFixTimeout = Self.defaultLocationFixTimeout
         let repoValue = FriendSyncRepository(e2eeManager: store, userStore: userStoreValue)
         self.repo = repoValue
 
@@ -363,6 +360,17 @@ final class LocationSyncService: ObservableObject {
                 }
             }
         }
+
+        // The real Kotlin client sends directly; test mocks go through the Swift protocol.
+        let sender: BroadcastSender =
+            (self.locationClient as? Shared.LocationClient)?.asBroadcastSender()
+            ?? ProtocolBroadcastSender(client: self.locationClient)
+        self.sendScheduler = LocationSendSchedulerKt.createMainSendScheduler(
+            sender: sender,
+            gate: SchedulerGate(service: self),
+            clock: sendClock ?? SystemMonotonicClock(),
+            listener: SchedulerListener(service: self),
+        )
 
         // Forward repo's @Published changes to our own observers so the existing
         // `service.foo` forwarders continue to drive SwiftUI updates.
@@ -549,32 +557,6 @@ final class LocationSyncService: ObservableObject {
         awaitingFirstUpdateIds.removeAll()
     }
 
-    /// Clears forceNextLocationUpdate after locationFixTimeout if the requested fix never
-    /// arrives, so a stalled CoreLocation pipeline can't leave the flag stuck indefinitely -
-    /// which would silently force whatever unrelated future GPS fix arrives next to bypass
-    /// the 30s send throttle. Callers here (sharing turned on, foreground entry, the
-    /// stationary backstop) already send a fallback location immediately themselves, so
-    /// unlike handleNetworkRestored's own timeout handling this just resets the flag rather
-    /// than also sending a stale fix. Cancels any previously armed timeout of its own
-    /// (forceUpdateClearTimeoutTask, distinct from handleNetworkRestored's
-    /// locationFixTimeoutTask — see that field's comment), since only one
-    /// requestImmediateLocation() is ever meaningfully pending at a time.
-    private func armForceLocationUpdateTimeout() {
-        forceUpdateClearTimeoutTask?.cancel()
-        let sleep = sleepForFixTimeout
-        forceUpdateClearTimeoutTask = Task { [weak self] in
-            do {
-                guard let timeout = self?.locationFixTimeout else { return }
-                try await sleep(timeout)
-            } catch {
-                return
-            }
-            guard let self, self.forceNextLocationUpdate else { return }
-            logger.info("forceNextLocationUpdate timeout: clearing stuck flag")
-            self.forceNextLocationUpdate = false
-        }
-    }
-
     // Extracted for testability. Called from pathMonitor handler and directly in tests.
     func handleNetworkRestored() async {
         do {
@@ -583,42 +565,17 @@ final class LocationSyncService: ObservableObject {
             logger.error("syncNow failed on path update: \(error.localizedDescription)")
         }
 
+        // A send backing off after failures may retry now.
+        sendScheduler.onNetworkRestored()
         guard isSharingLocation else { return }
 
         let locationIsStale = (locationProvider.lastLocation?.timestamp.timeIntervalSinceNow ?? -.infinity) < -Self.staleLocationThreshold
-        if locationIsStale && locationProvider.isStationary {
-            // Don't request a fresh fix when stationary: the position hasn't changed, and
-            // requestImmediateLocation() → didUpdateLocations(_:) broadcasts a Location with
-            // its default stationary:false once the fix arrives (LocationManager doesn't
-            // know this call site's stationary context) — undoing the "here since" signal
-            // we already sent, even though it no longer touches isStationary directly.
-            if let loc = bestAvailableLocation {
-                sendLocation(lat: loc.lat, lng: loc.lng, heading: loc.heading, force: true, source: .network, stationary: true)
-            }
-        } else if locationIsStale {
-            forceNextLocationUpdate = true
+        if locationIsStale && !locationProvider.isStationary {
+            // Moving with a stale fix: get a fresh one; it's sent like any other once it arrives.
+            // (Stationary, the position hasn't changed: nothing new to send.)
             locationProvider.requestImmediateLocation()
-            // Cancel any previous fallback timeout before starting a new one.
-            locationFixTimeoutTask?.cancel()
-            let sleep = sleepForFixTimeout
-            locationFixTimeoutTask = Task { [weak self] in
-                do {
-                    guard let timeout = self?.locationFixTimeout else { return }
-                    try await sleep(timeout)
-                } catch {
-                    logger.debug("locationFixTimeout task cancelled")
-                    return
-                }
-                guard let self = self, self.forceNextLocationUpdate else { return }
-                logger.info("requestImmediateLocation timeout: sending stale fix as fallback")
-                self.forceNextLocationUpdate = false
-                if let loc = self.bestAvailableLocation {
-                    self.sendLocation(lat: loc.lat, lng: loc.lng, heading: loc.heading, force: true, source: .network, stationary: self.locationProvider.isStationary)
-                }
-            }
-        } else if let loc = bestAvailableLocation {
-            sendLocation(lat: loc.lat, lng: loc.lng, heading: loc.heading, source: .network, stationary: locationProvider.isStationary)
         }
+        drainInBackground()
     }
 
     func triggerRapidPoll() {
@@ -636,16 +593,13 @@ final class LocationSyncService: ObservableObject {
         // Reset lastPollTime to .distantPast so tick() bypasses its interval guard and fires
         // a poll immediately. A stuck isPollInFlight is handled by pollAll()'s watchdog task.
         lastPollTime = .distantPast
-        // Proactively send own location so friends see us immediately (subject to 30s throttle).
-        // sendLocation() updates lastSentTime synchronously, so pollAll()'s heartbeat guard
-        // (elapsed >= 300s) will not fire a second send even if a heartbeat was overdue.
+        // Proactively report our location so friends see us soon (the scheduler sends it if it
+        // moved or the heartbeat is due), and request a fresh high-accuracy fix, which arrives
+        // via didUpdateLocations and is reported the same way.
         if isSharingLocation, let loc = bestAvailableLocation {
-            sendLocation(lat: loc.lat, lng: loc.lng, heading: loc.heading, source: .manual, stationary: locationProvider.isStationary)
+            reportLocation(lat: loc.lat, lng: loc.lng, accuracy: nil, heading: loc.heading, source: .manual)
         }
-        // Request a fresh high-accuracy fix; result arrives via didUpdateLocations.
-        forceNextLocationUpdate = true
         locationProvider.requestImmediateLocation()
-        armForceLocationUpdateTimeout()
         // Fire a poll directly rather than through the timer to minimize foreground latency.
         // Tracked so tests can await the poll completion without sleeping.
         foregroundPollTask = Task { @MainActor in
@@ -743,8 +697,6 @@ final class LocationSyncService: ObservableObject {
         }
     }
 
-    private var lastSuccessfulSendTime: Date? = nil
-
     private func logReliability(source: WakeSource, success: Bool, interval: TimeInterval? = nil) {
         let status = success ? "OK" : "ERR"
         var message = "Wake: \(source.rawValue) -> \(status)"
@@ -789,6 +741,7 @@ final class LocationSyncService: ObservableObject {
         // rather than started without budget. Already-received updates are persisted by
         // poll() itself, so stopping between steps loses nothing; the next poll resumes.
         let backgroundTask = self.beginExpiringBackgroundTask("PollAll")
+        let wakeStart = Date()
 
         defer {
             watchdog.cancel()
@@ -820,7 +773,7 @@ final class LocationSyncService: ObservableObject {
             // Always update visibleUsers to ensure map is fresh when returning to foreground.
             updateVisibleUsers()
 
-            if backgroundTask.didExpire {
+            if backgroundTask.didExpire || Task.isCancelled {
                 logger.warning("pollAll: background time expired; skipping invite poll and heartbeat")
                 updateStatus(nil)  // the poll itself succeeded
                 return
@@ -828,7 +781,7 @@ final class LocationSyncService: ObservableObject {
             if updateUi || isInviteSheetShowing {
                 _ = try await pollPendingInvites()
             }
-            if backgroundTask.didExpire {
+            if backgroundTask.didExpire || Task.isCancelled {
                 logger.warning("pollAll: background time expired; skipping heartbeat")
                 updateStatus(nil)  // the poll itself succeeded
                 return
@@ -837,45 +790,57 @@ final class LocationSyncService: ObservableObject {
             // Heartbeat: if we're awake enough to poll, also send location if one is due.
             // This covers wakeups that don't go through tick() (e.g. didUpdateLocations,
             // background-app-refresh, or any direct pollAll() call).
-            let elapsed = Date().timeIntervalSince(lastSentTime)
-            let sharing = isSharingLocation
-            logger.info("pollAll: sharing=\(sharing) elapsed=\(Int(elapsed))s")
-            if isSharingLocation {
-                if elapsed >= Self.normalPollInterval {
-                    let stationary = await isStationaryQuery()
-                    // Converge CoreMotion result into the provider's cached flag so
-                    // background-entry and network-restore sends read a consistent value.
-                    locationProvider.isStationary = stationary
-                    let now = Date()
-                    // Backstop: if we haven't forced a real GPS fix in a long while - whether
-                    // because we've genuinely been stationary the whole time, or because
-                    // CoreMotion's stationary detection or the underlying CLLocationUpdate
-                    // stream/geofence got silently stuck - force one anyway. See
-                    // stationaryForceFixInterval.
-                    let backstopDue = now.timeIntervalSince(lastForcedFixTime) > Self.stationaryForceFixInterval
-                    if stationary && !backstopDue {
-                        logger.info("pollAll: heartbeat due — stationary, re-reporting cached location")
-                        if let loc = bestAvailableLocation {
-                            sendLocation(lat: loc.lat, lng: loc.lng, heading: loc.heading, force: true, source: .heartbeat, stationary: true)
-                        }
+            let heartbeatDue = sendScheduler.isHeartbeatDue()
+            logger.info("pollAll: sharing=\(self.isSharingLocation) heartbeatDue=\(heartbeatDue)")
+            if isSharingLocation && heartbeatDue {
+                let stationary = await isStationaryQuery()
+                // Converge CoreMotion result into the provider's cached flag so
+                // background-entry and network-restore sends read a consistent value.
+                locationProvider.isStationary = stationary
+                let now = Date()
+                // Backstop: if we haven't forced a real GPS fix in a long while - whether
+                // because we've genuinely been stationary the whole time, or because
+                // CoreMotion's stationary detection or the underlying CLLocationUpdate
+                // stream/geofence got silently stuck - force one anyway. See
+                // stationaryForceFixInterval.
+                let backstopDue = now.timeIntervalSince(lastForcedFixTime) > Self.stationaryForceFixInterval
+                var fix: (lat: Double, lng: Double)? = bestAvailableLocation.map { (lat: $0.lat, lng: $0.lng) }
+                if stationary && !backstopDue {
+                    logger.info("pollAll: heartbeat due — stationary, re-reporting cached location")
+                } else {
+                    if backstopDue {
+                        logger.info("pollAll: heartbeat due — stationary backstop: forcing fresh GPS fix after \(Int(Self.stationaryForceFixInterval / 3600))h")
                     } else {
-                        if backstopDue {
-                            logger.info("pollAll: heartbeat due — stationary backstop: forcing fresh GPS fix after \(Int(Self.stationaryForceFixInterval / 3600))h")
-                        } else {
-                            logger.info("pollAll: heartbeat due — moving, requesting fresh fix")
-                        }
-                        lastForcedFixTime = now
-                        forceNextLocationUpdate = true
-                        if let loc = bestAvailableLocation {
-                            sendLocation(lat: loc.lat, lng: loc.lng, heading: loc.heading, force: true, source: .heartbeat, stationary: stationary)
-                        }
-                        locationProvider.requestImmediateLocation()
-                        armForceLocationUpdateTimeout()
+                        logger.info("pollAll: heartbeat due — moving, requesting fresh fix")
                     }
+                    if fix != nil {
+                        lastForcedFixTime = now
+                        // Wait for the fresh fix rather than sending the cached one: a fresh fix
+                        // landing just after would be held back by the send interval, and on a
+                        // background wake we'd be suspended before it went out.
+                        if let fresh = try await awaitFreshFix(since: now) { fix = fresh }
+                    } else if now.timeIntervalSince(lastFixRequestWithoutFallback) >= Self.fixRequestWithoutFallbackInterval {
+                        // No usable fix at all (e.g. approximate location): ask for one, but don't
+                        // hold up this poll waiting - the heartbeat stays due until one arrives.
+                        lastFixRequestWithoutFallback = now
+                        locationProvider.requestImmediateLocation()
+                    }
+                }
+                if backgroundTask.didExpire || Task.isCancelled {
+                    logger.warning("pollAll: background time expired; skipping heartbeat send")
+                } else if let fix {
+                    sendScheduler.onFix(lat: fix.lat, lng: fix.lng, accuracyMeters: nil)
+                    // Within what's left of this wake's budget, not a fresh one.
+                    let remainingMs = Self.drainMaxWaitMs - Int64(Date().timeIntervalSince(wakeStart) * 1000)
+                    _ = try? await sendScheduler.wakeAndDrain(maxWaitMs: KotlinLong(value: max(remainingMs, 1_000)))
                 }
             }
 
             updateStatus(nil)
+        } catch is CancellationError {
+            // The wake's task was cancelled (BGTask expiry): stop here. Not a network failure,
+            // so the status is left alone; the next poll resumes.
+            logger.warning("pollAll: cancelled")
         } catch {
             logger.error("Poll failed: \(error.localizedDescription)")
             updateStatus(error)
@@ -1025,10 +990,8 @@ final class LocationSyncService: ObservableObject {
                     } catch {
                         logger.error("Failed to send proactive location update to \(bobEntry.id): \(error.localizedDescription)")
                     }
-                    self.lastSentTime = Date()
                 } else {
-                    logger.debug("confirmQrScan: lastLocation is nil, setting pendingForcedSendAfterPairing")
-                    self.pendingForcedSendAfterPairing = true
+                    logger.debug("confirmQrScan: lastLocation is nil, deferring the pairing send to the first fix")
                     self.pendingForcedSendFriendId = bobEntry.id
                     locationProvider.requestPermissionAndStart()
                 }
@@ -1082,9 +1045,7 @@ final class LocationSyncService: ObservableObject {
                     } catch {
                         logger.error("Failed to send reactive location update to \(entry.id): \(error.localizedDescription)")
                     }
-                    self.lastSentTime = Date()
                 } else {
-                    self.pendingForcedSendAfterPairing = true
                     self.pendingForcedSendFriendId = entry.id
                     locationProvider.requestPermissionAndStart()
                 }
@@ -1148,46 +1109,33 @@ final class LocationSyncService: ObservableObject {
             return
         }
         logger.info("sendLocationOnBackground: sending location before app suspends")
-        sendLocation(lat: loc.lat, lng: loc.lng, source: .backgroundEntry, stationary: locationProvider.isStationary)
+        reportLocation(lat: loc.lat, lng: loc.lng, accuracy: nil, heading: loc.heading, source: .backgroundEntry)
     }
 
-    // No default for `stationary`: every call site must decide explicitly. A silent
-    // `= false` default caused several "here since" regressions where a call site
-    // omitted it and unknowingly asserted "moving" - see the "here since" investigation.
-    func sendLocation(lat: Double, lng: Double, heading: Double? = nil, force: Bool = false, source: WakeSource = .locationUpdate, stationary: Bool) {
-        // Before reading the sharing and pause state: a stop issued to a friend after it drops
-        // this Location for that friend rather than letting it follow the stop.
-        let stamp = locationClient.sharingStamp()
+    /// Reports a fix to the send scheduler, the only sender of broadcast Locations: it decides
+    /// when to send (the interval, distance and heartbeat policy shared with Android) and reads
+    /// "here since" stationarity at send time, so callers don't pass it. `force` skips the send
+    /// interval (entering stationary, sharing turned on), not the queue behind a send in flight.
+    /// `accuracy` nil means the fix was already vetted (bestAvailableLocation).
+    func reportLocation(lat: Double, lng: Double, accuracy: Double?, heading: Double? = nil, force: Bool = false, source: WakeSource = .locationUpdate) {
         guard isSharingLocation else { return }
-        let now = Date()
-
-        // Software Distance Filter: avoid excessive updates if we haven't moved much,
-        // unless this is a forced update (heartbeat, manual, etc).
-        //
-        // Note: while LocationManager also sets a hardware distanceFilter (the same
-        // minimumReportingDistanceMeters), that only affects didUpdateLocations callbacks. This
-        // software check also covers other wake sources (network restore, visits, etc) and
-        // enforces the "minimumReportingDistanceMeters or 5-minute" reporting contract.
-        if !force, let last = lastSentLocation {
-            let lastLoc = CLLocation(latitude: last.lat, longitude: last.lng)
-            let newLoc = CLLocation(latitude: lat, longitude: lng)
-            if newLoc.distance(from: lastLoc) < Self.minimumReportingDistanceMeters {
-                // Still update the local heading even if we don't broadcast.
-                // Note: heading-only updates are suppressed when stationary to save radio.
-                ownHeading = heading
-                return
-            }
+        ownHeading = heading
+        lastReportSource = source
+        if accuracy.map({ $0 >= 0 && $0 <= Self.minBroadcastAccuracyMeters }) ?? true {
+            lastReportedLocation = (lat: lat, lng: lng)
         }
 
-        // If a friend-specific forced send is pending (set when location was unavailable at
-        // pairing time), fire it now before the throttle check so the newly-paired peer
-        // receives our location even if the throttle would otherwise suppress the broadcast.
+        // If a friend-specific send is pending (set when location was unavailable at pairing
+        // time), send it now: per-friend sends aren't broadcasts and don't go through the
+        // scheduler, so the newly-paired peer gets our location whatever its interval says.
         if let friendId = pendingForcedSendFriendId {
             pendingForcedSendFriendId = nil
             // The friend may have been paused while this send waited for a fix.
             if effectivelyPausedIds().contains(friendId) {
                 logger.info("Skipping forced pairing send: \(friendId) is paused")
             } else {
+                // Before reading the sharing state: a stop issued after it drops the send.
+                let stamp = locationClient.sharingStamp()
                 Task {
                     do {
                         try await locationClient.sendLocationToFriend(friendId: friendId, lat: lat, lng: lng, stationary: false, stamp: stamp)
@@ -1198,65 +1146,51 @@ final class LocationSyncService: ObservableObject {
             }
         }
 
-        let timeSinceLast = now.timeIntervalSince(lastSentTime)
+        sendScheduler.onFix(lat: lat, lng: lng, accuracyMeters: accuracy.map { KotlinDouble(value: $0) })
+        if force { sendScheduler.requestForced() }
+        drainInBackground()
+    }
 
-        var forceUpdate = force
-        if source == .locationUpdate && forceNextLocationUpdate {
-            forceUpdate = true
-            forceNextLocationUpdate = false
-        }
-
-        // Throttle: avoid excessive updates unless forced.
-        if !forceUpdate && timeSinceLast < Self.locationSendThrottle {
-            // Still update the local heading even if we don't send to the server.
-            ownHeading = heading
-            return
-        }
-
-        let interval = lastSuccessfulSendTime.map { now.timeIntervalSince($0) }
-        ownHeading = heading
-        // Set before the send so concurrent callers are throttled while it's in flight. A send
-        // that fails keeps it (the next throttle window / heartbeat retries; network restore
-        // resends), but one cut off by background expiry rolls it back below.
-        let previousSentTime = lastSentTime
-        lastSentTime = now
-        pendingForcedSendAfterPairing = false
-
-        let gen = sendTaskGeneration + 1
-        sendTaskGeneration = gen
-        // Expiry grants no more time, so the send would be suspended mid-flight (and
-        // lastSentTime would claim a send that never landed, deferring the next heartbeat).
-        // Cancel it and make the location eligible to send again.
-        let backgroundTask = self.beginExpiringBackgroundTask("SendLocation") { [weak self] in
-            guard let self, gen == self.sendTaskGeneration else { return }
-            logger.warning("sendLocation: background time expired; cancelling send (source=\(source.rawValue))")
-            self.currentSendTask?.cancel()
-            self.lastSentTime = previousSentTime
-        }
-
-        currentSendTask?.cancel()
-        currentSendTask = Task {
-            defer { backgroundTask.end() }
-            do {
-                try await locationClient.sendLocation(lat: lat, lng: lng, pausedFriendIds: effectivelyPausedIds(), stationary: stationary, stamp: stamp)
-                if !Task.isCancelled && gen == self.sendTaskGeneration {
-                    logger.info("sendLocation: succeeded (lat=\(lat), lng=\(lng), source=\(source.rawValue))")
-                    logReliability(source: source, success: true, interval: interval)
-                    lastSuccessfulSendTime = now
-                    // Software Distance Filter Baseline: only update the baseline when a send
-                    // successfully completes. This ensures that if a transmission fails, the
-                    // next update (even if it's within minimumReportingDistanceMeters of this failed one) will still be
-                    // eligible for broadcast.
-                    self.lastSentLocation = (lat: lat, lng: lng)
-                    updateStatus(nil)
-                }
-            } catch {
-                if !Task.isCancelled && gen == self.sendTaskGeneration {
-                    logger.error("Failed to send location: \(error.localizedDescription)")
-                    logReliability(source: source, success: false, interval: interval)
-                    updateStatus(error)
-                }
+    /// Holds a background task while the scheduler sends whatever this event made due, so a
+    /// background wake isn't suspended mid-send. One drain at a time: it covers events that
+    /// arrive while it waits.
+    private func drainInBackground() {
+        guard drainTask == nil else { return }
+        let backgroundTask = beginExpiringBackgroundTask("SendLocation")
+        drainTask = Task { @MainActor [weak self] in
+            defer {
+                backgroundTask.end()
+                self?.drainTask = nil
             }
+            guard let self else { return }
+            _ = try? await self.sendScheduler.wakeAndDrain(maxWaitMs: KotlinLong(value: Self.drainMaxWaitMs))
+        }
+    }
+
+    /// Requests a fresh fix and waits up to locationFixTimeout for an accurate one newer than
+    /// `start`; nil if none arrives in time. Throws CancellationError if the task is cancelled
+    /// (a BGTask expiring): swallowing it would spin this loop on the main actor until the
+    /// deadline, since a cancelled Task.sleep returns at once.
+    private func awaitFreshFix(since start: Date) async throws -> (lat: Double, lng: Double)? {
+        locationProvider.requestImmediateLocation()
+        let deadline = Date().addingTimeInterval(locationFixTimeout)
+        while true {
+            if let loc = locationProvider.lastLocation, loc.timestamp > start,
+               loc.horizontalAccuracy >= 0, loc.horizontalAccuracy <= Self.minBroadcastAccuracyMeters {
+                return (lat: loc.coordinate.latitude, lng: loc.coordinate.longitude)
+            }
+            if Date() >= deadline { return nil }
+            try await Task.sleep(for: .milliseconds(250))
+        }
+    }
+
+    /// The scheduler's report on a settled send (see SchedulerListener).
+    func sendSettled(heartbeat: Bool, success: Bool, sinceLastSuccess: TimeInterval?, errorMessage: String?) {
+        logReliability(source: heartbeat ? .heartbeat : lastReportSource, success: success, interval: sinceLastSuccess)
+        if let errorMessage {
+            updateStatus(NSError(domain: "net.af0.where.send", code: 1, userInfo: [NSLocalizedDescriptionKey: errorMessage]))
+        } else {
+            updateStatus(nil)
         }
     }
 

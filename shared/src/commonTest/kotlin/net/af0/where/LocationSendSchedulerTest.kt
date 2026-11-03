@@ -202,6 +202,43 @@ class LocationSendSchedulerTest {
         }
 
     @Test
+    fun aBoundedDrainStopsWaitingButNotTheSend() =
+        runTest {
+            // iOS can't cancel a Kotlin suspend call, so a caller with little background time
+            // left bounds its wait instead; the send itself carries on.
+            val h = harness()
+            h.sender.latency = { 60_000L }
+            var result: DrainResult? = null
+            launch {
+                h.scheduler.onFix(37.0, -122.0)
+                result = h.scheduler.wakeAndDrain(maxWaitMs = 10_000L)
+            }
+            advanceTimeBy(10_001L)
+            runCurrent()
+            assertEquals(DrainResult.InFlight, result)
+            advanceTimeBy(60_000L)
+            runCurrent()
+            assertEquals(1, h.sender.sent.size, "the send completed after the caller stopped waiting")
+        }
+
+    @Test
+    fun closeStopsTheWorkerForGood() =
+        runTest {
+            val h = harness()
+            h.scheduler.close()
+            h.scheduler.onFix(37.0, -122.0)
+            var drained = false
+            launch {
+                h.scheduler.wakeAndDrain()
+                drained = true
+            }
+            advanceTimeBy(60_000L)
+            runCurrent()
+            assertEquals(0, h.sender.attempts.size)
+            assertEquals(true, drained, "a drain on a closed scheduler returns rather than hangs")
+        }
+
+    @Test
     fun stationaryChangeIsSentEvenWithoutMovement() =
         runTest {
             val h = harness()
@@ -425,6 +462,7 @@ class LocationSendSchedulerTest {
         runTest {
             val h = harness()
             h.scheduler.onFix(37.0, -122.0, accuracyMeters = 1_500.0)
+            h.scheduler.onFix(37.0, -122.0, accuracyMeters = -1.0) // invalid
             runCurrent()
             assertEquals(0, h.sender.attempts.size)
         }
