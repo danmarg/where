@@ -10,8 +10,8 @@
     <string name="background_location_message">允许 Where 在后台访问你的位置，这样即使应用未打开，朋友也能看到你的位置。</string>
     <string name="allow">允许</string>
     <string name="skip">跳过</string>
-    <string name="location_permission_required">需要位置权限</string>
     <string name="grant_permission">授予权限</string>
+    <string name="location_permission_needed_to_share">分享你的位置需要位置权限。你仍然可以看到与你共享位置的朋友。</string>
     <string name="location_services_required">定位服务已关闭</string>
     <string name="enable_location_services">开启定位服务</string>
     <string name="friends">朋友</string>

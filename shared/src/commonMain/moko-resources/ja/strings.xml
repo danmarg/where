@@ -10,8 +10,8 @@
     <string name="background_location_message">アプリを開いていないときも友だちがあなたの位置を確認できるように、Where にバックグラウンドでの位置情報へのアクセスを許可してください。</string>
     <string name="allow">許可</string>
     <string name="skip">スキップ</string>
-    <string name="location_permission_required">位置情報の許可が必要です</string>
     <string name="grant_permission">許可する</string>
+    <string name="location_permission_needed_to_share">位置情報を共有するには位置情報の許可が必要です。位置情報を共有してくれている友だちは引き続き表示されます。</string>
     <string name="location_services_required">位置情報サービスがオフです</string>
     <string name="enable_location_services">位置情報サービスを有効にする</string>
     <string name="friends">友だち</string>
