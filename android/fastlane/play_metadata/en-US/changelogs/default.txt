@@ -1,1 +1,3 @@
-Improvements in robustness and code quality.
+• Themed icon support on Android 13 and later.
+• Fixed location being sent far more often than needed on some devices, which used extra battery and data.
+• Reliability and security hardening.

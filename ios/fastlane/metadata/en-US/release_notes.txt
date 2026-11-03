@@ -1,1 +1,4 @@
-Improvements in robustness and code quality.
+• Fixed a crash that could happen when the app was woken in the background.
+• Location sharing now resumes after you re-grant location permission.
+• Location updates are sent on a steadier schedule, saving battery.
+• Reliability and security hardening.

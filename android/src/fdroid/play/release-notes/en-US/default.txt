@@ -1,1 +1,4 @@
-Fixed error conditions on devices that don't support location.
+• Themed icon support on Android 13 and later.
+• You can now see friends who share with you without granting location permission; permission is only needed to share your own location.
+• Fixed location being sent far more often than needed on some devices, which used extra battery and data.
+• Translation fixes, reliability and security hardening.
