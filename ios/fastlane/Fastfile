@@ -61,9 +61,12 @@ platform :ios do
   desc "Build and upload to TestFlight"
   lane :beta do
     api_key = asc_api_key
+    # Regenerate before prepare_signing: xcodegen rewrites the project from project.yml
+    # (Automatic, Apple Development), which would drop the manual Apple Distribution
+    # settings prepare_signing writes into it.
+    generate_project
     prepare_signing
     build_number = next_build_number(api_key: api_key)
-    generate_project
     build_shared_framework
     build_release_ipa(build_number: build_number)
     upload_to_testflight(
@@ -76,9 +79,12 @@ platform :ios do
   desc "Build and upload to App Store (for review)"
   lane :release do
     api_key = asc_api_key
+    # Regenerate before prepare_signing: xcodegen rewrites the project from project.yml
+    # (Automatic, Apple Development), which would drop the manual Apple Distribution
+    # settings prepare_signing writes into it.
+    generate_project
     prepare_signing
     build_number = next_build_number(api_key: api_key)
-    generate_project
     build_shared_framework
     build_release_ipa(build_number: build_number)
     upload_to_app_store(
