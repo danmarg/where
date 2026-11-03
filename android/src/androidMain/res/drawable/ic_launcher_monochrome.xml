@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Themed (monochrome) icon layer: the foreground pin's silhouette on its 22x22 pixel grid,
+     with the eyes and smile cut out. Generated from mipmap/ic_launcher_foreground. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="22"
+    android:viewportHeight="22">
+    <path
+        android:fillColor="#FF000000"
+        android:pathData="M7,2h8v1h-8zM6,3h10v1h-10zM5,4h12v1h-12zM4,5h5v1h-5zM11,5h2v1h-2zM15,5h3v1h-3zM4,6h5v1h-5zM11,6h2v1h-2zM15,6h3v1h-3zM3,7h15v1h-15zM3,8h15v1h-15zM3,9h3v1h-3zM7,9h8v1h-8zM16,9h2v1h-2zM3,10h4v1h-4zM8,10h6v1h-6zM15,10h3v1h-3zM3,11h5v1h-5zM14,11h4v1h-4zM4,12h13v1h-13zM5,13h11v1h-11zM5,14h11v1h-11zM6,15h9v1h-9zM6,16h9v1h-9zM7,17h7v1h-7zM8,18h4v1h-4zM9,19h2v1h-2zM10,20h1v1h-1z" />
+</vector>
