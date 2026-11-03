@@ -30,6 +30,32 @@ final class BGTaskCompletionCoordinatorTests: XCTestCase {
         XCTAssertEqual(rescheduleCount.withLock { $0 }, 1, "must reschedule the next task exactly once")
     }
 
+    final class LoggingBGTask: CompletableBGTask, @unchecked Sendable {
+        let log: OSAllocatedUnfairLock<[String]>
+        init(log: OSAllocatedUnfairLock<[String]>) { self.log = log }
+        func markTaskCompleted(success: Bool) { log.withLock { $0.append("complete") } }
+    }
+
+    /// The next task must be submitted before this one completes: the system may suspend the
+    /// app as soon as it's marked complete.
+    func testReschedulesBeforeCompleting() async throws {
+        for expire in [false, true] {
+            let log = OSAllocatedUnfairLock(initialState: [String]())
+            let coordinator = BGTaskCompletionCoordinator(task: LoggingBGTask(log: log)) {
+                log.withLock { $0.append("schedule") }
+            }
+            if expire {
+                coordinator.expire()
+            } else {
+                let workDone = XCTestExpectation(description: "work ran")
+                coordinator.start { workDone.fulfill() }
+                await fulfillment(of: [workDone], timeout: 1.0)
+                try await Task.sleep(for: .milliseconds(50))
+            }
+            XCTAssertEqual(log.withLock { $0 }, ["schedule", "complete"], "expire=\(expire)")
+        }
+    }
+
     func testExpirationDuringWork_cancelsAndCompletesUnsuccessfullyOnce() async throws {
         let fakeTask = FakeBGTask()
         let rescheduleCount = OSAllocatedUnfairLock(initialState: 0)

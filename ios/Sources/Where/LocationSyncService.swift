@@ -773,7 +773,7 @@ final class LocationSyncService: ObservableObject {
             // Always update visibleUsers to ensure map is fresh when returning to foreground.
             updateVisibleUsers()
 
-            if backgroundTask.didExpire {
+            if backgroundTask.didExpire || Task.isCancelled {
                 logger.warning("pollAll: background time expired; skipping invite poll and heartbeat")
                 updateStatus(nil)  // the poll itself succeeded
                 return
@@ -781,7 +781,7 @@ final class LocationSyncService: ObservableObject {
             if updateUi || isInviteSheetShowing {
                 _ = try await pollPendingInvites()
             }
-            if backgroundTask.didExpire {
+            if backgroundTask.didExpire || Task.isCancelled {
                 logger.warning("pollAll: background time expired; skipping heartbeat")
                 updateStatus(nil)  // the poll itself succeeded
                 return
@@ -826,7 +826,7 @@ final class LocationSyncService: ObservableObject {
                         locationProvider.requestImmediateLocation()
                     }
                 }
-                if backgroundTask.didExpire {
+                if backgroundTask.didExpire || Task.isCancelled {
                     logger.warning("pollAll: background time expired; skipping heartbeat send")
                 } else if let fix {
                     sendScheduler.onFix(lat: fix.lat, lng: fix.lng, accuracyMeters: nil)

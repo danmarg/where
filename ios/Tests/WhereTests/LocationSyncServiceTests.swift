@@ -344,6 +344,9 @@ class LocationSyncServiceTests: XCTestCase {
         // Cancel once the heartbeat is waiting for its fresh fix.
         mockLocationProvider.onRequestImmediateLocation = { box.task?.cancel() }
         let service = self.service!
+        // Turning sharing on may already have requested a fix; the flag must come from the wait.
+        mockLocationProvider.requestImmediateLocationCalled = false
+        XCTAssertTrue(service.sendScheduler.isHeartbeatDue(), "Precondition: the heartbeat is due")
         let start = Date()
         box.task = Task { await service.pollAll(updateUi: false) }
         await box.task?.value
