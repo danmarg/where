@@ -393,6 +393,39 @@ class LocationSyncServiceTests: XCTestCase {
         XCTAssertFalse(mockLocationProvider.requestImmediateLocationCalled, "Should NOT call requestImmediateLocation when heartbeat is NOT due")
     }
 
+    /// The scheduler's clock must be the sleep-inclusive one: mach_continuous_time, not
+    /// mach_absolute_time (which stops while the device sleeps, so a heartbeat would never come
+    /// due across a long sleep).
+    func testSystemMonotonicClock_IsMachContinuousTime() {
+        var timebase = mach_timebase_info_data_t()
+        mach_timebase_info(&timebase)
+        let before = mach_continuous_time() * UInt64(timebase.numer) / UInt64(timebase.denom) / 1_000_000
+        let clockMs = SystemMonotonicClock().nowMs()
+        let after = mach_continuous_time() * UInt64(timebase.numer) / UInt64(timebase.denom) / 1_000_000
+        XCTAssertGreaterThanOrEqual(clockMs, Int64(before) - 1)
+        XCTAssertLessThanOrEqual(clockMs, Int64(after) + 1)
+    }
+
+    final class FakeMonotonicClock: NSObject, MonotonicClock, @unchecked Sendable {
+        var ms: Int64 = 1_000_000
+        func nowMs() -> Int64 { ms }
+    }
+
+    /// An hour asleep (the clock jumping an hour between wakes) makes the heartbeat due.
+    func testHeartbeatComesDueAfterAnHourOfSleep() async throws {
+        let mockClient = MockLocationClient()
+        let clock = FakeMonotonicClock()
+        service = LocationSyncService(e2eeManager: service.e2eeManager, userStore: service.userStore, locationClient: mockClient, locationProvider: mockLocationProvider, sendClock: clock)
+        service.skipNetworkRestore = true
+        service.isSharingLocation = true
+        service.reportLocation(lat: 37.7, lng: -122.4, accuracy: 10)
+        await service.drainTask?.value
+        XCTAssertFalse(service.sendScheduler.isHeartbeatDue(), "Just sent: no heartbeat due")
+
+        clock.ms += 3_600_000
+        XCTAssertTrue(service.sendScheduler.isHeartbeatDue(), "An hour later the heartbeat is due")
+    }
+
     // Regression tests for the stationary backstop: CoreMotion's stationary detection and the
     // underlying CLLocationUpdate stream/geofence (LocationManager) can each independently get
     // stuck, mirroring the Android isStill/Activity-Recognition gap - without this, re-reporting

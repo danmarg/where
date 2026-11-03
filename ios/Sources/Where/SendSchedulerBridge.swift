@@ -41,9 +41,11 @@ final class SchedulerListener: NSObject, @preconcurrency SendListener {
     }
 }
 
-/// Elapsed time that keeps counting while the device sleeps (Darwin's CLOCK_MONOTONIC does).
+/// Elapsed time that keeps counting while the device sleeps, so a heartbeat comes due after a
+/// long sleep. CLOCK_MONOTONIC_RAW is mach_continuous_time (sleep-inclusive, never adjusted);
+/// CLOCK_UPTIME_RAW / mach_absolute_time would stop while asleep.
 final class SystemMonotonicClock: NSObject, MonotonicClock {
-    func nowMs() -> Int64 { Int64(clock_gettime_nsec_np(CLOCK_MONOTONIC) / 1_000_000) }
+    func nowMs() -> Int64 { Int64(clock_gettime_nsec_np(CLOCK_MONOTONIC_RAW) / 1_000_000) }
 }
 
 /// Sends through the service's LocationClientProtocol: used when that isn't the real Kotlin
