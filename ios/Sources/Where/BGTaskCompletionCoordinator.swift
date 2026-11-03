@@ -63,8 +63,10 @@ final class BGTaskCompletionCoordinator: @unchecked Sendable {
             return was
         }
         if !alreadyCompleted {
-            task.markTaskCompleted(success: success)
+            // Submit the next request before completing this one: the system may suspend the
+            // app as soon as the task is marked complete, before a later call ever runs.
             scheduleNext()
+            task.markTaskCompleted(success: success)
         }
     }
 }
