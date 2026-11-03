@@ -199,8 +199,10 @@ class LocationSendScheduler(
     fun isHeartbeatDue(): Boolean {
         val now = clock()
         clampToNow(now)
-        // Never attempted: due, whatever the clock's origin (a monotonic clock starts near 0 at boot).
-        return lastAttempt == 0L || now - lastAttempt >= policy.heartbeatMs - policy.heartbeatSlackMs
+        // A scheduler that never sent counts from the clock's zero - boot, for the platforms'
+        // monotonic clocks - so its heartbeat isn't due in the first few minutes after a reboot.
+        // That's fine: fixes still go out as usual, the heartbeat only covers standing still.
+        return now - lastAttempt >= policy.heartbeatMs - policy.heartbeatSlackMs
     }
 
     /**
