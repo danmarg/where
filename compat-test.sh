@@ -56,10 +56,15 @@ OLD="$BASE_DIR/cli/build/install/cli/bin/cli"
 
 ./server/build/install/server/bin/server > "$TEST_DIR/server.log" 2>&1 &
 SERVER_PID=$!
+SERVER_UP=""
 for _ in {1..30}; do
-  curl -s http://localhost:8080/ >/dev/null && break
+  curl -s http://localhost:8080/ >/dev/null && SERVER_UP=1 && break
   sleep 1
 done
+if [ -z "$SERVER_UP" ]; then
+  echo "❌ Server did not start within 30s (see $TEST_DIR/server.log)."
+  exit 1
+fi
 
 fail() {
   echo "❌ $*"
