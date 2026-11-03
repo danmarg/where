@@ -818,7 +818,7 @@ final class LocationSyncService: ObservableObject {
                         // Wait for the fresh fix rather than sending the cached one: a fresh fix
                         // landing just after would be held back by the send interval, and on a
                         // background wake we'd be suspended before it went out.
-                        if let fresh = await awaitFreshFix(since: now) { fix = fresh }
+                        if let fresh = try await awaitFreshFix(since: now) { fix = fresh }
                     } else if now.timeIntervalSince(lastFixRequestWithoutFallback) >= Self.fixRequestWithoutFallbackInterval {
                         // No usable fix at all (e.g. approximate location): ask for one, but don't
                         // hold up this poll waiting - the heartbeat stays due until one arrives.
@@ -837,6 +837,10 @@ final class LocationSyncService: ObservableObject {
             }
 
             updateStatus(nil)
+        } catch is CancellationError {
+            // The wake's task was cancelled (BGTask expiry): stop here. Not a network failure,
+            // so the status is left alone; the next poll resumes.
+            logger.warning("pollAll: cancelled")
         } catch {
             logger.error("Poll failed: \(error.localizedDescription)")
             updateStatus(error)
@@ -1164,8 +1168,10 @@ final class LocationSyncService: ObservableObject {
     }
 
     /// Requests a fresh fix and waits up to locationFixTimeout for an accurate one newer than
-    /// `start`; nil if none arrives in time.
-    private func awaitFreshFix(since start: Date) async -> (lat: Double, lng: Double)? {
+    /// `start`; nil if none arrives in time. Throws CancellationError if the task is cancelled
+    /// (a BGTask expiring): swallowing it would spin this loop on the main actor until the
+    /// deadline, since a cancelled Task.sleep returns at once.
+    private func awaitFreshFix(since start: Date) async throws -> (lat: Double, lng: Double)? {
         locationProvider.requestImmediateLocation()
         let deadline = Date().addingTimeInterval(locationFixTimeout)
         while true {
@@ -1174,7 +1180,7 @@ final class LocationSyncService: ObservableObject {
                 return (lat: loc.coordinate.latitude, lng: loc.coordinate.longitude)
             }
             if Date() >= deadline { return nil }
-            try? await Task.sleep(for: .milliseconds(250))
+            try await Task.sleep(for: .milliseconds(250))
         }
     }
 

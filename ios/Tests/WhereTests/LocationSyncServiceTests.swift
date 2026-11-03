@@ -35,8 +35,10 @@ class LocationSyncServiceTests: XCTestCase {
             requestPermissionAndStartCalled = true
         }
         var requestImmediateLocationCalled = false
+        var onRequestImmediateLocation: (@MainActor () -> Void)?
         func requestImmediateLocation() {
             requestImmediateLocationCalled = true
+            onRequestImmediateLocation?()
         }
         func sharingStateChanged() {}
     }
@@ -317,6 +319,43 @@ class LocationSyncServiceTests: XCTestCase {
         XCTAssertEqual(mockClient.lastStationary, false,
             "Heartbeat while moving must send stationary: false")
     }
+
+    /// A BGTask expiring cancels the poll while the heartbeat waits for a fresh fix: the wait
+    /// must stop at once (a swallowed CancellationError spun the main actor until the deadline)
+    /// and nothing is sent.
+    func testPollAllHeartbeat_CancelledWhileAwaitingFreshFix_StopsPromptly() async throws {
+        let mockClient = MockLocationClient()
+        service = LocationSyncService(e2eeManager: service.e2eeManager, userStore: service.userStore, locationClient: mockClient, locationProvider: mockLocationProvider)
+        service.skipNetworkRestore = true
+        service.isSharingLocation = true
+        service.beginBackgroundTask = { _, _ in .invalid }
+        service.endBackgroundTask = { _ in }
+        service.isStationaryQuery = { false }
+        service.locationFixTimeout = 10
+        mockLocationProvider.location = CLLocation(
+            coordinate: CLLocationCoordinate2D(latitude: 37.7, longitude: -122.4),
+            altitude: 0, horizontalAccuracy: 50, verticalAccuracy: 50, timestamp: Date().addingTimeInterval(-60)
+        )
+        let noSend = XCTestExpectation(description: "No send after cancellation")
+        noSend.isInverted = true
+        mockClient.sendLocationCallback = { noSend.fulfill() }
+
+        let box = PollTaskBox()
+        // Cancel once the heartbeat is waiting for its fresh fix.
+        mockLocationProvider.onRequestImmediateLocation = { box.task?.cancel() }
+        let service = self.service!
+        let start = Date()
+        box.task = Task { await service.pollAll(updateUi: false) }
+        await box.task?.value
+        let elapsed = Date().timeIntervalSince(start)
+
+        XCTAssertTrue(mockLocationProvider.requestImmediateLocationCalled, "The heartbeat should have waited for a fresh fix")
+        XCTAssertLessThan(elapsed, 2, "A cancelled wait must stop at once, not run to locationFixTimeout")
+        await fulfillment(of: [noSend], timeout: 0.5)
+    }
+
+    @MainActor
+    final class PollTaskBox { var task: Task<Void, Never>? }
 
     func testPollAllHeartbeat_ConvergesStationaryFlagIntoProvider() async throws {
         let mockClient = MockLocationClient()
