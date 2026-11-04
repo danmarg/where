@@ -211,7 +211,7 @@ class StopRetryTest {
         }
 
     @Test
-    fun `migration from version 5 adds stopOwed, not owed`() {
+    fun `migration from version 5 adds stopOwed as not owed`() {
         val driver: SqlDriver = createTestSqlDriver()
         driver.execute(null, "ALTER TABLE Friends DROP COLUMN stopOwed", 0)
         WhereDatabase.Schema.migrate(driver, 5, 6)
