@@ -163,7 +163,11 @@ and run on the JVM target via `:shared:jvmTest` and on the iOS simulator via
 Wycheproof vectors (`commonTest/resources/wycheproof`) on both, covering both HMAC backends. The
 schedule property test (`jvmTest/.../ScheduleInterleavingPropertyTest.kt`) drives two managers
 through random sends, drops, duplicates, reorders, crashes and restarts; rerun one schedule with
-`--tests '*ScheduleInterleaving*replay' -Dschedule.seed=<n>`. The crypto backend choice is recorded
+`--tests '*ScheduleInterleaving*replay' -Dschedule.seed=<n>`. `ExhaustiveScheduleTest` (same folder)
+instead enumerates every schedule of sends, posts, polls and faults up to `-Dschedule.depth=N`
+(default 8, ~20 s; `schedule-nightly` runs 10, ~3 min) against `ProtocolCore`, and after each state
+checks that a fair drain delivers everything intact and a fresh round each way still works; a failure
+prints the action sequence. The crypto backend choice is recorded
 in `docs/crypto-backend.md`.
 
 The protocol itself is the pure function `ProtocolCore.step(state, event, now, rng)` (events: invite,

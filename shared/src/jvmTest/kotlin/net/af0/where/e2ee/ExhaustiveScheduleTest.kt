@@ -29,6 +29,11 @@ import kotlin.test.fail
  * server intact (and wasn't left undeliverable by a clock jump) must have been delivered exactly
  * once. A state from which that fails is a session that stays broken (the shape of #416).
  *
+ * Mutation check (done by hand; each is caught in at most 4 actions at the default depth): a soft-failed
+ * frame that doesn't commit its ratchet (the #416 shape: a corrupt frame in a new epoch), CancelPut on the
+ * responder's first ratchet (BootstrapOutboxCancelTest's bug), and replays not ACKed. Not modelled: a network
+ * adversary, the server's TTL, and loss of a seq-1 frame (§5.4.5 accepts that as unrecoverable).
+ *
  * Bounds: `-Dschedule.depth=N` (default [DEFAULT_DEPTH]; CI runs the default, a nightly job a
  * deeper one). A violation prints its action sequence; `-Dschedule.maxStates` caps the search.
  */
