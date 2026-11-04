@@ -142,8 +142,11 @@ final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelega
         updateRegistration()
     }
 
+    // Read live: the published status catches up only after the delegate's Task runs, which may be
+    // after a foreground entry that already asks.
     var hasLocationPermission: Bool {
-        authorizationStatus == .authorizedWhenInUse || authorizationStatus == .authorizedAlways
+        let status = manager?.authorizationStatus ?? authorizationStatus
+        return status == .authorizedWhenInUse || status == .authorizedAlways
     }
 
     func updateRegistration() {

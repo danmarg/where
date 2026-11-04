@@ -28,9 +28,10 @@ class StopRetryTest {
     @AfterTest
     fun restoreClock() = TimeSource.setProvider(DefaultTimeProvider)
 
-    /** Posts fail while [failing], and wait while [gate] is set. */
+    /** Posts fail while [failing], time out while [timingOut], and wait while [gate] is set. */
     private class GatedMailbox(val inner: MemoryMailboxClient = MemoryMailboxClient()) : MailboxClient by inner {
         var failing = false
+        var timingOut = false
         var gate: CompletableDeferred<Unit>? = null
 
         override suspend fun post(
@@ -40,6 +41,7 @@ class StopRetryTest {
         ) {
             gate?.await()
             check(!failing) { "injected post failure" }
+            if (timingOut) throw WallClockTimeoutCancellationException()
             inner.post(baseUrl, token, payload)
         }
     }
@@ -198,6 +200,41 @@ class StopRetryTest {
             assertTrue(p.stopOwed())
             p.alice.poll(pausedFriendIds = setOf(p.bobId))
             assertNotNull(p.bobReads().first.stoppedAtTs)
+        }
+
+    @Test
+    fun `a retried stop that times out on the way does not fail the poll`() =
+        runTest {
+            val p = paired()
+            p.failedStop()
+            p.gated.timingOut = true
+            p.alice.poll(pausedFriendIds = setOf(p.bobId))
+            // Queued, so no longer owed; the outbox delivers it once posts get through.
+            assertFalse(p.stopOwed())
+            p.gated.timingOut = false
+            p.alice.processOutboxes()
+            assertNotNull(p.bobReads().first.stoppedAtTs)
+        }
+
+    @Test
+    fun `a network restore sends an owed stop`() =
+        runTest {
+            val p = paired()
+            p.failedStop()
+            p.alice.syncNow(pausedFriendIds = setOf(p.bobId))
+            assertNotNull(p.bobReads().first.stoppedAtTs)
+        }
+
+    @Test
+    fun `a stop to someone else does not keep a resume from paying the debt`() =
+        runTest {
+            val p = paired()
+            p.failedStop()
+            // Bob is resumed; a stop to another friend goes out before his Location is queued.
+            val stamp = p.alice.sharingStamp()
+            p.alice.sendStoppedSharingToFriend("someone-else")
+            p.alice.sendLocationToFriend(p.bobId, 2.0, 2.0, stamp = stamp)
+            assertFalse(p.stopOwed())
         }
 
     @Test

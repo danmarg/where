@@ -85,12 +85,18 @@ open class LocationClient(
     // after that stop, and date each message after the ones before it (see locationTs and stopTs).
     // stopsIssued counts stops; lastStopIssued is its value at each friend's latest stop, and
     // lastStopIssuedToAll at the latest stop to everyone. All of it, and sharingTsByFriend, changes
-    // under sharingOrderMutex; stopsIssued is also read without it, by sharingStamp().
+    // under sharingOrderMutex. The three stop fields are also read without it (sharingStamp(), and
+    // stopIssuedSince() under the store lock), so they are volatile and the map is replaced, not
+    // mutated.
     private val sharingOrderMutex = Mutex()
 
     @kotlin.concurrent.Volatile
     private var stopsIssued = 0L
-    private val lastStopIssued = mutableMapOf<String, Long>()
+
+    @kotlin.concurrent.Volatile
+    private var lastStopIssued = mapOf<String, Long>()
+
+    @kotlin.concurrent.Volatile
     private var lastStopIssuedToAll = 0L
 
     private class SharingTs(var location: Long, var stop: Long)
@@ -120,7 +126,7 @@ open class LocationClient(
     private suspend fun issueStop(friendId: String?) {
         sharingOrderMutex.withLock {
             stopsIssued++
-            if (friendId == null) lastStopIssuedToAll = stopsIssued else lastStopIssued[friendId] = stopsIssued
+            if (friendId == null) lastStopIssuedToAll = stopsIssued else lastStopIssued = lastStopIssued + (friendId to stopsIssued)
         }
     }
 
@@ -140,7 +146,7 @@ open class LocationClient(
     ): Long? {
         val now = currentTimeSeconds()
         return sharingOrderMutex.withLock {
-            if (stopIssuedSinceLocked(friendId, stamp)) return@withLock null
+            if (stopIssuedSince(friendId, stamp)) return@withLock null
             val last = sharingTsLocked(friendId)
             maxOf(now, last.stop).also { last.location = maxOf(last.location, it) }
         }
@@ -154,8 +160,9 @@ open class LocationClient(
         }
     }
 
-    // Holding sharingOrderMutex.
-    private fun stopIssuedSinceLocked(
+    // Whether a stop to [friendId] was issued after [stamp]. Safe without sharingOrderMutex: issueStop
+    // records a stop here before anything acts on it (markStopOwed, the stop's encrypt).
+    private fun stopIssuedSince(
         friendId: String,
         stamp: Long,
     ): Boolean = maxOf(lastStopIssued[friendId] ?: 0L, lastStopIssuedToAll) > stamp
@@ -275,6 +282,9 @@ open class LocationClient(
         if (!friend.stopOwed || friend.isStale) return
         try {
             sendMessageToFriendInternal(friendId, MessagePlaintext.StoppedSharing(ts = stopTs(friendId)), requireDrainedOutboxFirst = false)
+        } catch (e: WallClockTimeoutCancellationException) {
+            // A request timeout, not a cancellation: the stop is queued and the outbox retries it.
+            store.addDiagnosticEvent("retry owed stop($friendId): ${e.message}", coalesceKey = "retry owed stop")
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -540,6 +550,8 @@ open class LocationClient(
                     try {
                         val mutex = getFriendMutex(friend.id)
                         mutex.withLock { block(friend) }
+                    } catch (_: WallClockTimeoutCancellationException) {
+                        // A request timeout is a per-friend failure like any other, not a cancellation.
                     } catch (e: CancellationException) {
                         throw e
                     } catch (_: Exception) {
@@ -558,6 +570,7 @@ open class LocationClient(
         forEachFriendParallel(store.listFriends()) { friend ->
             processOutbox(friend.id)
             val isPaused = !sharingEnabled || friend.id in pausedFriendIds
+            if (isPaused) retryOwedStopLocked(friend.id)
             pollFriend(friend.id, isPaused)
         }
     }
@@ -597,7 +610,7 @@ open class LocationClient(
             store.deleteFriendKeepingOutbox(friendId, farewell)
         }
         sharingOrderMutex.withLock {
-            lastStopIssued.remove(friendId)
+            lastStopIssued = lastStopIssued - friendId
             sharingTsByFriend.remove(friendId)
         }
         mutexLock.withLock {
@@ -801,14 +814,12 @@ open class LocationClient(
         }
         // This Location passed its check, but a stop to them may be issued while it waits here
         // (behind a stuck outbox, say), and that stop may then be cancelled or fail. So it pays a
-        // stop owed only if no stop at all was issued after its stamp, read under the store lock:
-        // issueStop counts a stop before markStopOwed takes that lock, so the two are in order.
-        // Conservative: a debt left while sharing is harmless (poll retries only for friends we
-        // aren't sharing with), and the next Location clears it.
+        // stop owed only if no stop to them was issued after its stamp, read under the store lock:
+        // issueStop records a stop before markStopOwed takes that lock, so the two are in order.
         sendMessageToFriendInternal(
             friendId,
             MessagePlaintext.Location(lat = lat, lng = lng, acc = 0.0, ts = ts, stationary = stationary),
-            clearsStopOwed = { stopsIssued <= stamp },
+            clearsStopOwed = { !stopIssuedSince(friendId, stamp) },
         )
     }
 
@@ -841,6 +852,8 @@ open class LocationClient(
             try {
                 val payload = MessagePlaintext.StoppedSharing(ts = stopTs(friendId))
                 sendMessageToFriendInternal(friendId, payload, requireDrainedOutboxFirst = false)
+            } catch (_: WallClockTimeoutCancellationException) {
+                // A request timeout: queued, or still owed; either way it is retried.
             } catch (e: CancellationException) {
                 throw e
             } catch (_: Exception) {

@@ -81,16 +81,8 @@ final class LocationSyncService: ObservableObject {
             if !isSharingLocation {
                 sendScheduler.reset()
             } else if !oldValue {
-                // Master toggle off→on: broadcast our current location immediately to every
-                // (non-paused) friend so peers don't wait for the next regular tick (forced, so
-                // without a fix yet it goes out with the first one). Also request a fresh fix;
-                // it's sent like any other once it arrives.
-                if let loc = bestAvailableLocation {
-                    reportLocation(lat: loc.lat, lng: loc.lng, accuracy: nil, heading: loc.heading, force: true, source: .manual)
-                } else {
-                    sendScheduler.requestForced()
-                }
-                locationProvider.requestImmediateLocation()
+                // Master toggle off→on: friends shouldn't wait for the next regular tick.
+                broadcastCurrentLocationNow()
             }
         }
     }
@@ -417,6 +409,17 @@ final class LocationSyncService: ObservableObject {
         displayName = name
     }
 
+    /// Broadcasts our current location to every (non-paused) friend now (forced, so without a fix
+    /// yet it goes out with the first one), and requests a fresh fix, sent like any other.
+    private func broadcastCurrentLocationNow() {
+        if let loc = bestAvailableLocation {
+            reportLocation(lat: loc.lat, lng: loc.lng, accuracy: nil, heading: loc.heading, force: true, source: .manual)
+        } else {
+            sendScheduler.requestForced()
+        }
+        locationProvider.requestImmediateLocation()
+    }
+
     /// Sharing is on and we have location permission: a Location may be sent. Mirrors Android's
     /// `LocationService.canSendLocations`. Take a send's stamp before reading this.
     func canSendLocations() -> Bool {
@@ -432,13 +435,15 @@ final class LocationSyncService: ObservableObject {
     /// we stopped rather than keep our last pin. Sharing itself stays on, as the user's choice:
     /// when permission is back, our location goes out again. The "told them" flag is persisted,
     /// so it fires once per loss; a stop that fails to be queued is retried by LocationClient.
-    func locationPermissionChanged() {
-        guard databaseOpenError == nil else { return }
+    /// Returns whether it broadcast our location (permission is back).
+    @discardableResult
+    func locationPermissionChanged() -> Bool {
+        guard databaseOpenError == nil else { return false }
         let defaults = UserDefaults.standard
         let notified = defaults.bool(forKey: Self.stoppedForMissingPermissionKey)
         let hasPermission = locationProvider.hasLocationPermission
         if isSharingLocation && !hasPermission && !notified {
-            guard !permissionStopInFlight else { return }
+            guard !permissionStopInFlight else { return false }
             permissionStopInFlight = true
             let paused = effectivelyPausedIds()
             Task {
@@ -455,14 +460,11 @@ final class LocationSyncService: ObservableObject {
             }
         } else if hasPermission && notified {
             defaults.set(false, forKey: Self.stoppedForMissingPermissionKey)
-            guard isSharingLocation else { return }
-            if let loc = bestAvailableLocation {
-                reportLocation(lat: loc.lat, lng: loc.lng, accuracy: nil, heading: loc.heading, force: true, source: .manual)
-            } else {
-                sendScheduler.requestForced()
-            }
-            locationProvider.requestImmediateLocation()
+            guard isSharingLocation else { return false }
+            broadcastCurrentLocationNow()
+            return true
         }
+        return false
     }
 
     func toggleSharing() {
@@ -641,14 +643,16 @@ final class LocationSyncService: ObservableObject {
         // Reset lastPollTime to .distantPast so tick() bypasses its interval guard and fires
         // a poll immediately. A stuck isPollInFlight is handled by pollAll()'s watchdog task.
         lastPollTime = .distantPast
-        locationPermissionChanged()
         // Proactively report our location so friends see us soon (the scheduler sends it if it
         // moved or the heartbeat is due), and request a fresh high-accuracy fix, which arrives
-        // via didUpdateLocations and is reported the same way.
-        if canSendLocations(), let loc = bestAvailableLocation {
-            reportLocation(lat: loc.lat, lng: loc.lng, accuracy: nil, heading: loc.heading, source: .manual)
+        // via didUpdateLocations and is reported the same way. Permission just back already did
+        // both, forced.
+        if !locationPermissionChanged() {
+            if canSendLocations(), let loc = bestAvailableLocation {
+                reportLocation(lat: loc.lat, lng: loc.lng, accuracy: nil, heading: loc.heading, source: .manual)
+            }
+            locationProvider.requestImmediateLocation()
         }
-        locationProvider.requestImmediateLocation()
         // Fire a poll directly rather than through the timer to minimize foreground latency.
         // Tracked so tests can await the poll completion without sleeping.
         foregroundPollTask = Task { @MainActor in
