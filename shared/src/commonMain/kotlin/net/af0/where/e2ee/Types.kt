@@ -287,10 +287,34 @@ data class QrPayload(
                 // Base64.UrlSafe.withPadding(Base64.PaddingOption.PRESENT_OPTIONAL) handles both padded and unpadded.
                 val decoder = Base64.UrlSafe.withPadding(Base64.PaddingOption.PRESENT_OPTIONAL)
                 val decoded = decoder.decode(fragment).decodeToString()
-                qrJson.decodeFromString(serializer(), decoded)
+                // JSON can spell a lone surrogate ("\ud800") that UTF-8 can't hold, so one kept here
+                // would change the next time the payload is written out as a link.
+                qrJson.decodeFromString(serializer(), decoded).let {
+                    it.copy(suggestedName = it.suggestedName.replaceLoneSurrogates())
+                }
             } catch (_: Exception) {
                 null
             }
+        }
+    }
+}
+
+/** Replaces each UTF-16 surrogate that isn't half of a valid pair with U+FFFD, as UTF-8 encoding would. */
+internal fun String.replaceLoneSurrogates(): String {
+    if (none { it.isSurrogate() }) return this
+    return buildString(length) {
+        var i = 0
+        while (i < this@replaceLoneSurrogates.length) {
+            val c = this@replaceLoneSurrogates[i]
+            when {
+                c.isHighSurrogate() && i + 1 < this@replaceLoneSurrogates.length && this@replaceLoneSurrogates[i + 1].isLowSurrogate() -> {
+                    append(c).append(this@replaceLoneSurrogates[i + 1])
+                    i++
+                }
+                c.isSurrogate() -> append('\uFFFD')
+                else -> append(c)
+            }
+            i++
         }
     }
 }
