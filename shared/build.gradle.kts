@@ -298,4 +298,9 @@ tasks.register<JavaExec>("generateFuzzSeeds") {
 // it set would be UP-TO-DATE after one without, and silently write nothing.
 tasks.named<Test>("jvmTest") {
     inputs.property("writeVectors", providers.environmentVariable("WHERE_WRITE_VECTORS").orElse(""))
+    // -Dschedule.depth / .maxStates (ExhaustiveScheduleTest) and -Dschedule.seed (the property test's replay).
+    System.getProperties().filter {
+            (k, _) ->
+        k.toString().startsWith("schedule.")
+    }.forEach { (k, v) -> systemProperty(k.toString(), v.toString()) }
 }

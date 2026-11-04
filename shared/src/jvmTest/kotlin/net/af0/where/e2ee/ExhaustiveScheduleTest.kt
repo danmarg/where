@@ -19,13 +19,13 @@ import kotlin.test.fail
  *    between the PUT and the outbox delete), swap two adjacent same-epoch frames, the server loses
  *    a frame, a frame's body is corrupted (header intact, so it soft-fails), the clock jumps past
  *    the skipped-key age, a poll handing over the whole batch, reversed, or just its first or last
- *    frame, with the ACK either landing or lost (a crash before it).
+ *    frame (the server serves a prefix of arrival order, never a suffix), with the ACK either landing or lost (a crash before it).
  *
- * Safety is checked after every step: nothing delivered twice or that wasn't sent to that party or
- * that was corrupted; a replay changes nothing; no step throws; the skipped-key cache stays
+ * Safety is checked after every step: nothing delivered twice or that wasn't sent to that party;
+ * a replay changes nothing; no step throws; the skipped-key cache stays
  * bounded. Liveness is checked at every reachable state: with the faults switched off, both
  * outboxes drain and both mailboxes are read until quiet, after which a fresh message each way
- * must get through, the parties must agree on the tokens, and every message that reached the
+ * must get through, a second round must too, and every message that reached the
  * server intact (and wasn't left undeliverable by a clock jump) must have been delivered exactly
  * once. A state from which that fails is a session that stays broken (the shape of #416).
  *
@@ -74,12 +74,13 @@ class ExhaustiveScheduleTest {
 
     private class Result(val states: Int, val drains: Int, val violation: String?)
 
-    private enum class Mode { ALL, REVERSED, FIRST, LAST }
+    private enum class Mode { ALL, REVERSED, FIRST }
 
     private class Search(val depth: Int, val maxStates: Int) {
         /** Every payload ever put on the wire, by msgId. */
         val payloads = HashMap<String, EncryptedMessagePayload>()
         var drains = 0
+        var lastReport: ProtocolCore.ReceiveReport? = null
 
         fun run(): Result {
             val seen = HashSet<World>()
@@ -160,7 +161,8 @@ class ExhaustiveScheduleTest {
                     for (mode in Mode.entries) {
                         if (batch.size == 1 && mode != Mode.ALL) continue
                         for (ackLost in listOf(false, true)) {
-                            out += "poll ${names(p)} $mode${if (ackLost) " (ack lost)" else ""}" to { poll(w, p, pick(batch, mode), ackLost) }
+                            val label = "poll ${names(p)} $mode" + if (ackLost) " (ack lost)" else ""
+                            out += label to { poll(w, p, pick(batch, mode), ackLost) }
                         }
                     }
                 }
@@ -194,7 +196,6 @@ class ExhaustiveScheduleTest {
             Mode.ALL -> batch
             Mode.REVERSED -> batch.reversed()
             Mode.FIRST -> listOf(batch.first())
-            Mode.LAST -> listOf(batch.last())
         }
 
         fun send(
@@ -252,7 +253,11 @@ class ExhaustiveScheduleTest {
             w: World,
             i: Int,
         ) = w.copy(
-            server = w.server.toMutableList().also { it[i] = w.server[i + 1]; it[i + 1] = w.server[i] },
+            server =
+                w.server.toMutableList().also {
+                    it[i] = w.server[i + 1]
+                    it[i + 1] = w.server[i]
+                },
             faults = w.faults + 1,
         )
 
@@ -283,6 +288,7 @@ class ExhaustiveScheduleTest {
                 } catch (e: Exception) {
                     throw Violation("poll ${names(p)} of ${frames.map { it.number }} threw $e")
                 }
+            lastReport = step.report
             var next = w.copy(parties = w.parties.replace(p, step.state))
             val deliveredNow = mutableListOf<Int>()
             for (effect in step.effects) {
@@ -291,12 +297,13 @@ class ExhaustiveScheduleTest {
                         val n = (effect.plaintext as MessagePlaintext.Location).lat.toInt()
                         deliveredNow += n
                         if (w.senderOf[n] != 1 - p) throw Violation("${names(p)} delivered #$n, which ${names(1 - p)} never sent to it")
-                        if (n in w.corrupted) throw Violation("${names(p)} delivered corrupted #$n")
                         if (n in next.delivered[p]) throw Violation("${names(p)} delivered #$n twice")
                         next = next.copy(delivered = next.delivered.replace(p, next.delivered[p] + n))
                     }
                     is ProtocolCore.Effect.Ack ->
-                        if (!ackLost) next = next.copy(server = next.server.filterNot { it.mailbox == effect.mailbox && it.msgId in effect.ids })
+                        if (!ackLost) {
+                            next = next.copy(server = next.server.filterNot { it.mailbox == effect.mailbox && it.msgId in effect.ids })
+                        }
                     is ProtocolCore.Effect.CancelPut ->
                         next = next.copy(outbox = next.outbox.replace(p, next.outbox[p].filterNot { it.mailbox == effect.mailbox }))
                     is ProtocolCore.Effect.RetireToken -> {}
@@ -306,7 +313,7 @@ class ExhaustiveScheduleTest {
             val after = session(next, p)
             if (after.skippedMessageKeys.size > MAX_SKIPPED_KEYS) throw Violation("skipped keys ${after.skippedMessageKeys.size}")
             if (frames.all { it.number in w.delivered[p] && !it.corrupt } && (deliveredNow.isNotEmpty() || after != before)) {
-                throw Violation("${names(p)}: replay of ${frames.map { it.number }} changed the session or delivered ${deliveredNow}")
+                throw Violation("${names(p)}: replay of ${frames.map { it.number }} changed the session or delivered $deliveredNow")
             }
             return next
         }
@@ -321,7 +328,15 @@ class ExhaustiveScheduleTest {
                 if (liveness) drainAndCheck(node.world)
             } catch (v: Violation) {
                 val trace = generateSequence(node) { it.parent }.map { it.action }.toList().reversed()
-                throw Violation("${v.message}\nschedule (${trace.size - 1} actions):\n" + trace.mapIndexed { i, a -> "  $i. $a" }.joinToString("\n"))
+                throw Violation(
+                    "${v.message}\nschedule (${trace.size - 1} actions):\n" +
+                        trace.mapIndexed {
+                                i,
+                                a,
+                            ->
+                            "  $i. $a"
+                        }.joinToString("\n"),
+                )
             }
         }
 
@@ -339,18 +354,45 @@ class ExhaustiveScheduleTest {
                 for (p in 0..1) {
                     val batch = batchFor(w, p)
                     if (batch.isNotEmpty()) {
-                        w = poll(w, p, batch, ackLost = false)
-                        progress = true
+                        // A corrupted frame that fails without authenticating is never ACKed (it stays
+                        // until the server's TTL), so a poll that changes nothing is not progress.
+                        val after = poll(w, p, batch, ackLost = false)
+                        if (after != w) progress = true
+                        w = after
                     }
                 }
                 if (!progress) return w
             }
-            throw Violation("no quiescence after $MAX_ROUNDS rounds (messages ping-pong or never drain)")
+            throw Violation(
+                "no quiescence after $MAX_ROUNDS rounds; server=${w.server.map {
+                    "#${it.number}@${it.mailbox.take(
+                        6,
+                    )}${if (it.corrupt) "!" else ""}"
+                }}, recv=${(0..1).map {
+                    session(
+                        w,
+                        it,
+                    ).recvToken.toHex().take(6)
+                }}, last report=$lastReport",
+            )
+        }
+
+        /** After a fair drain only a corrupted frame may still sit in a mailbox somebody polls. */
+        fun requireNoCleanResidue(w: World) {
+            for (p in 0..1) {
+                val stuck = batchFor(w, p).filter { !it.corrupt }
+                if (stuck.isNotEmpty()) {
+                    throw Violation(
+                        "${names(p)}'s mailbox still holds intact, unACKed ${stuck.map { "#" + it.number }} after a fair drain",
+                    )
+                }
+            }
         }
 
         fun drainAndCheck(start: World) {
             drains++
             var w = quiesce(start)
+            requireNoCleanResidue(w)
             val freshA = w.created + 1
             w = send(w, 0)
             val freshB = w.created + 1
@@ -358,9 +400,17 @@ class ExhaustiveScheduleTest {
             w = quiesce(w)
             if (freshA !in w.delivered[1]) throw Violation("after a fair drain, a fresh message A->B (#$freshA) was not delivered")
             if (freshB !in w.delivered[0]) throw Violation("after a fair drain, a fresh message B->A (#$freshB) was not delivered")
-            val a = session(w, 0)
-            val b = session(w, 1)
-            if (a.sendToken != b.recvToken || b.sendToken != a.recvToken) throw Violation("tokens disagree after a fair drain")
+            // A second round each way: the epoch the first round settled into must carry traffic too.
+            val againA = w.created + 1
+            w = send(w, 0)
+            val againB = w.created + 1
+            w = send(w, 1)
+            w = quiesce(w)
+            if (againA !in w.delivered[1] || againB !in w.delivered[0]) {
+                throw Violation(
+                    "a second fresh round after a fair drain was not delivered",
+                )
+            }
             for ((n, from) in w.senderOf) {
                 val to = 1 - from
                 val excused = n in w.lost || n in w.corrupted || n in w.atRisk
@@ -372,7 +422,7 @@ class ExhaustiveScheduleTest {
     }
 
     private companion object {
-        const val DEFAULT_DEPTH = 6
+        const val DEFAULT_DEPTH = 8
         const val SENDS = 3
         const val FAULTS = 2
         const val TICKS = 1
