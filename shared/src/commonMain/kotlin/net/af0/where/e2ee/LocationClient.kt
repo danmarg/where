@@ -140,7 +140,7 @@ open class LocationClient(
     ): Long? {
         val now = currentTimeSeconds()
         return sharingOrderMutex.withLock {
-            if (maxOf(lastStopIssued[friendId] ?: 0L, lastStopIssuedToAll) > stamp) return@withLock null
+            if (stopIssuedSinceLocked(friendId, stamp)) return@withLock null
             val last = sharingTsLocked(friendId)
             maxOf(now, last.stop).also { last.location = maxOf(last.location, it) }
         }
@@ -153,6 +153,12 @@ open class LocationClient(
             maxOf(now, last.location + 1).also { last.stop = maxOf(last.stop, it) }
         }
     }
+
+    // Holding sharingOrderMutex.
+    private fun stopIssuedSinceLocked(
+        friendId: String,
+        stamp: Long,
+    ): Boolean = maxOf(lastStopIssued[friendId] ?: 0L, lastStopIssuedToAll) > stamp
 
     // Holding sharingOrderMutex.
     private suspend fun sharingTsLocked(friendId: String): SharingTs =
@@ -272,7 +278,9 @@ open class LocationClient(
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            store.addDiagnosticEvent("retry owed stop($friendId) failed: ${e.message}", coalesceKey = "retry owed stop")
+            // Either the stop wasn't queued (still owed) or it was and delivery failed (the outbox
+            // retries it).
+            store.addDiagnosticEvent("retry owed stop($friendId): ${e.message}", coalesceKey = "retry owed stop")
         }
     }
 
@@ -581,7 +589,7 @@ open class LocationClient(
             // the receiver lets a Location win a same-second tie (as for a resume right after a
             // pause), and a stuck Location from this second may arrive in the same batch.
             val farewell =
-                if (sharingEnabled && isActiveFriend(friend, pausedFriendIds)) {
+                if ((sharingEnabled && isActiveFriend(friend, pausedFriendIds)) || (friend.stopOwed && !friend.isStale)) {
                     MessagePlaintext.StoppedSharing(ts = maxOf(currentTimeSeconds(), friend.lastSentTs + 1))
                 } else {
                     null
@@ -791,7 +799,17 @@ open class LocationClient(
             store.addDiagnosticEvent("sendLocation($friendId): sharing stopped since this send was decided; skipped")
             return
         }
-        sendMessageToFriendInternal(friendId, MessagePlaintext.Location(lat = lat, lng = lng, acc = 0.0, ts = ts, stationary = stationary))
+        // This Location passed its check, but a stop to them may be issued while it waits here
+        // (behind a stuck outbox, say), and that stop may then be cancelled or fail. So it pays a
+        // stop owed only if no stop at all was issued after its stamp, read under the store lock:
+        // issueStop counts a stop before markStopOwed takes that lock, so the two are in order.
+        // Conservative: a debt left while sharing is harmless (poll retries only for friends we
+        // aren't sharing with), and the next Location clears it.
+        sendMessageToFriendInternal(
+            friendId,
+            MessagePlaintext.Location(lat = lat, lng = lng, acc = 0.0, ts = ts, stationary = stationary),
+            clearsStopOwed = { stopsIssued <= stamp },
+        )
     }
 
     /**
@@ -877,6 +895,7 @@ open class LocationClient(
         friendId: String,
         payload: MessagePlaintext,
         requireDrainedOutboxFirst: Boolean = true,
+        clearsStopOwed: () -> Boolean = { true },
     ) {
         // WAL Safety: by default (Location/Keepalive), a non-empty outbox blocks generating a new
         // message - without this, a stuck friend during an outage would accumulate a fresh
@@ -894,7 +913,7 @@ open class LocationClient(
             }
         }
 
-        store.encryptAndAdvance(friendId, payload)
+        store.encryptAndAdvance(friendId, payload, clearsStopOwed)
 
         // We trigger sequential outbox processing for this friend.
         // This ensures messages are sent in order (0, 1, 2...) even if multiple calls happen rapidly.

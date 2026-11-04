@@ -1,6 +1,9 @@
 package net.af0.where.e2ee
 
 import app.cash.sqldelight.db.SqlDriver
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import net.af0.where.db.WhereDatabase
 import kotlin.test.AfterTest
@@ -25,8 +28,25 @@ class StopRetryTest {
     @AfterTest
     fun restoreClock() = TimeSource.setProvider(DefaultTimeProvider)
 
+    /** Posts fail while [failing], and wait while [gate] is set. */
+    private class GatedMailbox(val inner: MemoryMailboxClient = MemoryMailboxClient()) : MailboxClient by inner {
+        var failing = false
+        var gate: CompletableDeferred<Unit>? = null
+
+        override suspend fun post(
+            baseUrl: String,
+            token: String,
+            payload: MailboxPayload,
+        ) {
+            gate?.await()
+            check(!failing) { "injected post failure" }
+            inner.post(baseUrl, token, payload)
+        }
+    }
+
     private class Pair(
         val driver: FailingSqlDriver,
+        val gated: GatedMailbox,
         val mailbox: MemoryMailboxClient,
         val aliceManager: E2eeManager,
         val alice: LocationClient,
@@ -36,9 +56,10 @@ class StopRetryTest {
 
     private suspend fun paired(): Pair {
         val driver = FailingSqlDriver(createTestSqlDriver())
-        val mailbox = MemoryMailboxClient()
+        val gated = GatedMailbox()
+        val mailbox = gated.inner
         val aliceManager = testE2eeManager(driver)
-        val alice = LocationClient("http://localhost", aliceManager, mailbox)
+        val alice = LocationClient("http://localhost", aliceManager, gated)
         val qr = aliceManager.createInvite("Alice")
         val bobManager = testE2eeManager(createTestSqlDriver())
         val bob = LocationClient("http://localhost", bobManager, mailbox)
@@ -49,7 +70,7 @@ class StopRetryTest {
         // Bob reads Alice's transition frame, so what she sends next shares one batch.
         alice.sendKeepalive(bobId)
         bob.poll(isForeground = true, pausedFriendIds = emptySet())
-        return Pair(driver, mailbox, aliceManager, alice, bobManager, bobId)
+        return Pair(driver, gated, mailbox, aliceManager, alice, bobManager, bobId)
     }
 
     /** Bob's view of Alice after one batch, and the Locations it delivered. */
@@ -151,6 +172,42 @@ class StopRetryTest {
             val (alice, lats) = p.bobReads()
             assertNull(alice.stoppedAtTs)
             assertEquals(listOf(1.0, 2.0), lats)
+        }
+
+    @Test
+    fun `a Location decided before a stop that then fails does not pay its debt`() =
+        runTest {
+            val p = paired()
+            // A message stuck in Alice's outbox, so her next send drains it first.
+            p.gated.failing = true
+            runCatching { p.alice.sendKeepalive(p.bobId) }
+            p.gated.failing = false
+            val gate = CompletableDeferred<Unit>().also { p.gated.gate = it }
+
+            // A heartbeat passes its check, then waits on the drain; the user pauses Bob meanwhile,
+            // and that stop is cancelled while it waits for the heartbeat to finish.
+            val heartbeat = launch { p.alice.sendLocationToFriend(p.bobId, 1.0, 1.0) }
+            runCurrent()
+            val stop = launch { p.alice.sendStoppedSharingToFriend(p.bobId) }
+            runCurrent()
+            stop.cancel()
+            p.gated.gate = null
+            gate.complete(Unit)
+            heartbeat.join()
+
+            assertTrue(p.stopOwed())
+            p.alice.poll(pausedFriendIds = setOf(p.bobId))
+            assertNotNull(p.bobReads().first.stoppedAtTs)
+        }
+
+    @Test
+    fun `removing a paused friend who is owed a stop sends it`() =
+        runTest {
+            val p = paired()
+            p.failedStop()
+            p.alice.removeFriend(p.bobId, pausedFriendIds = setOf(p.bobId))
+            p.alice.processOrphanedOutboxes()
+            assertNotNull(p.bobReads().first.stoppedAtTs)
         }
 
     @Test

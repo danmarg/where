@@ -442,13 +442,16 @@ final class LocationSyncService: ObservableObject {
             permissionStopInFlight = true
             let paused = effectivelyPausedIds()
             Task {
-                defer { permissionStopInFlight = false }
                 do {
                     try await locationClient.sendStoppedSharing(pausedFriendIds: paused)
                     UserDefaults.standard.set(true, forKey: Self.stoppedForMissingPermissionKey)
                 } catch {
                     logger.warning("sendStoppedSharing (permission lost) failed, will retry: \(error.localizedDescription)")
                 }
+                permissionStopInFlight = false
+                // Permission may have come back while the stop went out: resume now, not at the
+                // next foreground entry.
+                if locationProvider.hasLocationPermission { locationPermissionChanged() }
             }
         } else if hasPermission && notified {
             defaults.set(false, forKey: Self.stoppedForMissingPermissionKey)

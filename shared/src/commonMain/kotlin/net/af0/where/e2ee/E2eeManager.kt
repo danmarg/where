@@ -56,7 +56,8 @@ data class FriendEntry(
     val stoppedAtTs: Long? = null,
     /**
      * We stopped sharing with them and that StoppedSharing isn't queued yet. Set before the stop
-     * is encrypted, cleared when a stop or Location is queued; LocationClient retries it.
+     * is encrypted, cleared when a stop, or a Location decided on after it, is queued;
+     * LocationClient retries it.
      */
     val stopOwed: Boolean = false,
 ) {
@@ -304,14 +305,19 @@ class E2eeManager(
      * Encrypts a message for a friend and atomically persists the advanced ratchet state.
      * This ensures that the sequence number is ALWAYS advanced locally before a network
      * attempt, preventing nonce reuse if the same message is retried later.
+     *
+     * [clearsStopOwed], read under the store lock (so in order with [markStopOwed]): whether a
+     * Location pays a stop owed. False for one decided on before a stop, which LocationClient lets
+     * through when that stop was issued after its check.
      */
     suspend fun encryptAndAdvance(
         friendId: String,
         payload: MessagePlaintext,
+        clearsStopOwed: () -> Boolean = { true },
     ): Pair<EncryptedMessagePayload, SessionState> {
         return persistence.withFriendAndMetadataLock(friendId) { entry, metadata ->
             if (entry == null) throw Exception("Friend not found: $friendId")
-            val (updatedEntry, message) = encryptToOutbox(friendId, entry, metadata, payload)
+            val (updatedEntry, message) = encryptToOutbox(friendId, entry, metadata, payload, clearsStopOwed())
             PersistenceAction.Update(updatedEntry) to (message to updatedEntry.session)
         }
     }
@@ -362,6 +368,7 @@ class E2eeManager(
         entry: FriendEntry,
         metadata: E2eeStore.MetadataScope,
         payload: MessagePlaintext,
+        clearsStopOwed: Boolean = true,
     ): Pair<FriendEntry, EncryptedMessagePayload> {
         val step =
             ProtocolCore.step(
@@ -389,13 +396,18 @@ class E2eeManager(
                 is MessagePlaintext.StoppedSharing -> payload.ts
                 else -> Long.MIN_VALUE
             }
-        // A queued stop pays a stop owed; a queued Location means sharing is on again, so no
-        // stop is owed any more.
+        // A queued stop pays a stop owed; a queued Location decided on after it means sharing is
+        // on again, so no stop is owed any more.
         val updatedEntry =
             entry.copy(
                 session = nextSession,
                 lastSentTs = maxOf(currentTimeSeconds(), sharingTs),
-                stopOwed = entry.stopOwed && sharingTs == Long.MIN_VALUE,
+                stopOwed =
+                    when (payload) {
+                        is MessagePlaintext.StoppedSharing -> false
+                        is MessagePlaintext.Location -> entry.stopOwed && !clearsStopOwed
+                        else -> entry.stopOwed
+                    },
             )
 
         metadata.insertOutbox(
