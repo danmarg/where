@@ -107,8 +107,8 @@ open class LocationClient(
      * pause.
      *
      * A stop is recorded before it is encrypted and queued. If that then fails or is cancelled, the
-     * Locations it drops were still decided before the pause, so dropping them stays right; the
-     * friend keeps our last pin until a later stop or Location reaches them.
+     * Locations it drops were still decided before the pause, so dropping them stays right, and
+     * the stop is still owed: [poll] queues it while we still aren't sharing with that friend.
      */
     fun sharingStamp(): Long = stopsIssued
 
@@ -222,6 +222,7 @@ open class LocationClient(
                                     // sending this friend anything" - true if they're individually
                                     // paused, or if location sharing is off entirely.
                                     val isPaused = !sharingEnabled || friend.id in pausedFriendIds
+                                    if (isPaused) retryOwedStopLocked(friend.id)
                                     val updates = pollFriend(friend.id, isPaused)
                                     Pair(updates, null)
                                 } catch (e: CancellationException) {
@@ -258,6 +259,22 @@ open class LocationClient(
 
             allUpdates
         }
+
+    // Under the friend's mutex. Queues a stop that was owed but never queued (the store failed, or
+    // we were cancelled or killed first; FriendEntry.stopOwed). The caller has checked we still
+    // aren't sharing with them; if we are again, a Location clears the debt instead. Not a new
+    // stop, so it drops no Locations: the original stop already dropped those decided before it.
+    private suspend fun retryOwedStopLocked(friendId: String) {
+        val friend = store.getFriend(friendId) ?: return
+        if (!friend.stopOwed || friend.isStale) return
+        try {
+            sendMessageToFriendInternal(friendId, MessagePlaintext.StoppedSharing(ts = stopTs(friendId)), requireDrainedOutboxFirst = false)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            store.addDiagnosticEvent("retry owed stop($friendId) failed: ${e.message}", coalesceKey = "retry owed stop")
+        }
+    }
 
     @Throws(Exception::class)
     suspend fun pollPendingInvites(): List<PendingInviteResult> =
@@ -786,6 +803,7 @@ open class LocationClient(
     open suspend fun sendStoppedSharing(pausedFriendIds: Set<String> = emptySet()) {
         issueStop(null)
         val activeFriends = store.listFriends().filter { isActiveFriend(it, pausedFriendIds) }
+        markStopOwed(activeFriends.map { it.id })
         forEachFriendParallel(activeFriends) { friend ->
             val payload = MessagePlaintext.StoppedSharing(ts = stopTs(friend.id))
             sendMessageToFriendInternal(friend.id, payload, requireDrainedOutboxFirst = false)
@@ -799,6 +817,7 @@ open class LocationClient(
     @Throws(Exception::class)
     open suspend fun sendStoppedSharingToFriend(friendId: String) {
         issueStop(friendId)
+        markStopOwed(listOf(friendId))
         val mutex = getFriendMutex(friendId)
         mutex.withLock {
             try {
@@ -809,6 +828,18 @@ open class LocationClient(
             } catch (_: Exception) {
                 // Ignore
             }
+        }
+    }
+
+    // Before the stop is queued, so one that fails, or is cancelled or killed on the way, is
+    // retried by poll. A failure here doesn't stop the stop itself from being tried.
+    private suspend fun markStopOwed(friendIds: List<String>) {
+        try {
+            store.markStopOwed(friendIds)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            store.addDiagnosticEvent("markStopOwed failed: ${e.message}")
         }
     }
 

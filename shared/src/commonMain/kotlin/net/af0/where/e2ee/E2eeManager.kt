@@ -54,6 +54,11 @@ data class FriendEntry(
     val stationarySinceTs: Long? = null,
     /** Epoch-seconds the peer sent StoppedSharing. Null when sharing or after they resume. */
     val stoppedAtTs: Long? = null,
+    /**
+     * We stopped sharing with them and that StoppedSharing isn't queued yet. Set before the stop
+     * is encrypted, cleared when a stop or Location is queued; LocationClient retries it.
+     */
+    val stopOwed: Boolean = false,
 ) {
     companion object {
         const val ACK_TIMEOUT_SECONDS = 7 * 24 * 3600L
@@ -384,10 +389,13 @@ class E2eeManager(
                 is MessagePlaintext.StoppedSharing -> payload.ts
                 else -> Long.MIN_VALUE
             }
+        // A queued stop pays a stop owed; a queued Location means sharing is on again, so no
+        // stop is owed any more.
         val updatedEntry =
             entry.copy(
                 session = nextSession,
                 lastSentTs = maxOf(currentTimeSeconds(), sharingTs),
+                stopOwed = entry.stopOwed && sharingTs == Long.MIN_VALUE,
             )
 
         metadata.insertOutbox(
@@ -603,6 +611,19 @@ class E2eeManager(
                 PersistenceAction.Update(entry.copy(lastLat = lat, lastLng = lng, lastTs = ts)) to Unit
             } else {
                 PersistenceAction.None to Unit
+            }
+        }
+    }
+
+    /** Records that a StoppedSharing to each of [ids] is owed until one is queued (see [FriendEntry.stopOwed]). */
+    suspend fun markStopOwed(ids: Collection<String>) {
+        for (id in ids) {
+            persistence.withFriendAndMetadataLock(id) { entry, _ ->
+                if (entry != null && !entry.stopOwed) {
+                    PersistenceAction.Update(entry.copy(stopOwed = true)) to Unit
+                } else {
+                    PersistenceAction.None to Unit
+                }
             }
         }
     }

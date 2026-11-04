@@ -417,6 +417,51 @@ final class LocationSyncService: ObservableObject {
         displayName = name
     }
 
+    /// Sharing is on and we have location permission: a Location may be sent. Mirrors Android's
+    /// `LocationService.canSendLocations`. Take a send's stamp before reading this.
+    func canSendLocations() -> Bool {
+        isSharingLocation && locationProvider.hasLocationPermission
+    }
+
+    static let stoppedForMissingPermissionKey = "stopped_sharing_for_missing_permission"
+    private var permissionStopInFlight = false
+
+    /// Keeps friends' view right across permission changes; mirrors Android's
+    /// `LocationViewModel.reconcileSharingWithPermission`. With sharing on and permission lost
+    /// (Settings, Location Services off), no Location can go out, so friends are told once that
+    /// we stopped rather than keep our last pin. Sharing itself stays on, as the user's choice:
+    /// when permission is back, our location goes out again. The "told them" flag is persisted,
+    /// so it fires once per loss; a stop that fails to be queued is retried by LocationClient.
+    func locationPermissionChanged() {
+        guard databaseOpenError == nil else { return }
+        let defaults = UserDefaults.standard
+        let notified = defaults.bool(forKey: Self.stoppedForMissingPermissionKey)
+        let hasPermission = locationProvider.hasLocationPermission
+        if isSharingLocation && !hasPermission && !notified {
+            guard !permissionStopInFlight else { return }
+            permissionStopInFlight = true
+            let paused = effectivelyPausedIds()
+            Task {
+                defer { permissionStopInFlight = false }
+                do {
+                    try await locationClient.sendStoppedSharing(pausedFriendIds: paused)
+                    UserDefaults.standard.set(true, forKey: Self.stoppedForMissingPermissionKey)
+                } catch {
+                    logger.warning("sendStoppedSharing (permission lost) failed, will retry: \(error.localizedDescription)")
+                }
+            }
+        } else if hasPermission && notified {
+            defaults.set(false, forKey: Self.stoppedForMissingPermissionKey)
+            guard isSharingLocation else { return }
+            if let loc = bestAvailableLocation {
+                reportLocation(lat: loc.lat, lng: loc.lng, accuracy: nil, heading: loc.heading, force: true, source: .manual)
+            } else {
+                sendScheduler.requestForced()
+            }
+            locationProvider.requestImmediateLocation()
+        }
+    }
+
     func toggleSharing() {
         if isSharingLocation {
             stopSharing()
@@ -517,7 +562,7 @@ final class LocationSyncService: ObservableObject {
                     logger.warning("sendStoppedSharingToFriend(\(id)) failed: \(error.localizedDescription)")
                 }
             }
-        } else if let last = locationProvider.lastLocation, isSharingLocation {
+        } else if let last = locationProvider.lastLocation, canSendLocations() {
             Task {
                 do {
                     try await locationClient.sendLocationToFriend(friendId: id, lat: last.coordinate.latitude, lng: last.coordinate.longitude, stationary: locationProvider.isStationary, stamp: stamp)
@@ -560,14 +605,14 @@ final class LocationSyncService: ObservableObject {
     // Extracted for testability. Called from pathMonitor handler and directly in tests.
     func handleNetworkRestored() async {
         do {
-            try await locationClient.syncNow(pausedFriendIds: effectivelyPausedIds(), sharingEnabled: isSharingLocation)
+            try await locationClient.syncNow(pausedFriendIds: effectivelyPausedIds(), sharingEnabled: canSendLocations())
         } catch {
             logger.error("syncNow failed on path update: \(error.localizedDescription)")
         }
 
         // A send backing off after failures may retry now.
         sendScheduler.onNetworkRestored()
-        guard isSharingLocation else { return }
+        guard canSendLocations() else { return }
 
         let locationIsStale = (locationProvider.lastLocation?.timestamp.timeIntervalSinceNow ?? -.infinity) < -Self.staleLocationThreshold
         if locationIsStale && !locationProvider.isStationary {
@@ -593,10 +638,11 @@ final class LocationSyncService: ObservableObject {
         // Reset lastPollTime to .distantPast so tick() bypasses its interval guard and fires
         // a poll immediately. A stuck isPollInFlight is handled by pollAll()'s watchdog task.
         lastPollTime = .distantPast
+        locationPermissionChanged()
         // Proactively report our location so friends see us soon (the scheduler sends it if it
         // moved or the heartbeat is due), and request a fresh high-accuracy fix, which arrives
         // via didUpdateLocations and is reported the same way.
-        if isSharingLocation, let loc = bestAvailableLocation {
+        if canSendLocations(), let loc = bestAvailableLocation {
             reportLocation(lat: loc.lat, lng: loc.lng, accuracy: nil, heading: loc.heading, source: .manual)
         }
         locationProvider.requestImmediateLocation()
@@ -752,7 +798,7 @@ final class LocationSyncService: ObservableObject {
             let updates = try await locationClient.poll(
                 isForeground: isInForeground(),
                 pausedFriendIds: effectivelyPausedIds(),
-                sharingEnabled: isSharingLocation,
+                sharingEnabled: canSendLocations(),
             )
             logger.debug("Got \(updates.count) location updates")
             for update in updates {
@@ -792,7 +838,7 @@ final class LocationSyncService: ObservableObject {
             // background-app-refresh, or any direct pollAll() call).
             let heartbeatDue = sendScheduler.isHeartbeatDue()
             logger.info("pollAll: sharing=\(self.isSharingLocation) heartbeatDue=\(heartbeatDue)")
-            if isSharingLocation && heartbeatDue {
+            if canSendLocations() && heartbeatDue {
                 let stationary = await isStationaryQuery()
                 // Converge CoreMotion result into the provider's cached flag so
                 // background-entry and network-restore sends read a consistent value.
@@ -982,7 +1028,7 @@ final class LocationSyncService: ObservableObject {
 
                 // Before reading the sharing state: a stop issued after it drops the send.
                 let stamp = locationClient.sharingStamp()
-                if let last = locationProvider.lastLocation, isSharingLocation {
+                if let last = locationProvider.lastLocation, canSendLocations() {
                     // Proactively send our first location update to Alice to trigger confirmation on her side.
                     // We use sendLocationToFriend here to bypass the !isConfirmed check in sendLocation().
                     do {
@@ -1038,7 +1084,7 @@ final class LocationSyncService: ObservableObject {
 
                 // Before reading the sharing state: a stop issued after it drops the send.
                 let stamp = locationClient.sharingStamp()
-                if let last = locationProvider.lastLocation, isSharingLocation {
+                if let last = locationProvider.lastLocation, canSendLocations() {
                     // Proactively send our first location update to Bob to trigger confirmation on his side.
                     do {
                         try await locationClient.sendLocationToFriend(friendId: entry.id, lat: last.coordinate.latitude, lng: last.coordinate.longitude, stationary: false, stamp: stamp)
@@ -1086,7 +1132,7 @@ final class LocationSyncService: ObservableObject {
         do {
             // Queues a StoppedSharing (if we were sharing with them) and deletes them locally;
             // it's delivered below, after the UI has updated, or by a later poll.
-            try await locationClient.removeFriend(friendId: id, pausedFriendIds: effectivelyPausedIds(), sharingEnabled: isSharingLocation)
+            try await locationClient.removeFriend(friendId: id, pausedFriendIds: effectivelyPausedIds(), sharingEnabled: canSendLocations())
             repo.pausedFriendIds.remove(id)
             repo.friends = try await e2eeManager.listFriends()
             updateVisibleUsers()
@@ -1103,7 +1149,7 @@ final class LocationSyncService: ObservableObject {
     }
 
     func sendLocationOnBackground() {
-        guard isSharingLocation else { return }
+        guard canSendLocations() else { return }
         guard let loc = bestAvailableLocation else {
             logger.info("sendLocationOnBackground: skipped — no location available")
             return
@@ -1118,7 +1164,7 @@ final class LocationSyncService: ObservableObject {
     /// interval (entering stationary, sharing turned on), not the queue behind a send in flight.
     /// `accuracy` nil means the fix was already vetted (bestAvailableLocation).
     func reportLocation(lat: Double, lng: Double, accuracy: Double?, heading: Double? = nil, force: Bool = false, source: WakeSource = .locationUpdate) {
-        guard isSharingLocation else { return }
+        guard canSendLocations() else { return }
         ownHeading = heading
         lastReportSource = source
         if accuracy.map({ $0 >= 0 && $0 <= Self.minBroadcastAccuracyMeters }) ?? true {

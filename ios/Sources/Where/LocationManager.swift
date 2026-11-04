@@ -17,6 +17,8 @@ protocol LocationProviding: AnyObject {
     func requestPermissionAndStart()
     func requestImmediateLocation()
     func sharingStateChanged()
+    /// When-In-Use or Always. Without it no Location may be sent, whatever the sharing toggle says.
+    var hasLocationPermission: Bool { get }
 }
 
 @MainActor
@@ -138,6 +140,10 @@ final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelega
 
     func sharingStateChanged() {
         updateRegistration()
+    }
+
+    var hasLocationPermission: Bool {
+        authorizationStatus == .authorizedWhenInUse || authorizationStatus == .authorizedAlways
     }
 
     func updateRegistration() {
@@ -502,6 +508,7 @@ final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelega
             self.manager?.allowsBackgroundLocationUpdates = (status == .authorizedAlways)
             self.manager?.showsBackgroundLocationIndicator = (status == .authorizedAlways)
             self.updateRegistration()
+            LocationSyncService.shared.locationPermissionChanged()
         }
     }
 }
