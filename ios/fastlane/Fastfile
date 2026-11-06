@@ -97,6 +97,9 @@ platform :ios do
       # load_from_filesystem.
       skip_screenshots: true,
       submit_for_review: false,
+      # Skip deliver's "Does the Preview.html look okay?" prompt, which crashes the lane when
+      # run non-interactively; nothing is submitted (above) so there's no review to protect.
+      force: true,
       precheck_include_in_app_purchases: false,
     )
   end
