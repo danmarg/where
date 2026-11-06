@@ -89,10 +89,12 @@ platform :ios do
     build_release_ipa(build_number: build_number)
     upload_to_app_store(
       api_key: api_key,
-      # Not skip_metadata: true - this uploads fastlane/metadata/en-US/release_notes.txt (the
-      # only metadata file present). deliver only pushes fields it finds a file for and leaves
-      # everything else (name, description, keywords, ...) - still managed manually in App
-      # Store Connect - untouched; see deliver's upload_metadata.rb load_from_filesystem.
+      # Not skip_metadata: true - this uploads fastlane/metadata/en-US/release_notes.txt and
+      # description.txt (the only metadata files present; keep description.txt in sync with
+      # android/fastlane/play_metadata/en-US/full_description.txt). deliver only pushes fields
+      # it finds a file for and leaves everything else (name, keywords, ...) - still managed
+      # manually in App Store Connect - untouched; see deliver's upload_metadata.rb
+      # load_from_filesystem.
       skip_screenshots: true,
       submit_for_review: false,
       precheck_include_in_app_purchases: false,
