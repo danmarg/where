@@ -1,11 +1,9 @@
 package net.af0.where.e2ee
 
-import app.cash.sqldelight.db.SqlDriver
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
-import net.af0.where.db.WhereDatabase
 import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -83,7 +81,7 @@ class StopRetryTest {
         return bobManager.listFriends().single() to result.decryptedLocations.map { it.lat }
     }
 
-    private suspend fun Pair.stopOwed() = requireNotNull(aliceManager.getFriend(bobId)).stopOwed
+    private suspend fun Pair.stopOwed() = alice.isStopOwed(bobId)
 
     /** Alice sends a Location, then pauses Bob, and the stop fails to be queued. */
     private suspend fun Pair.failedStop() {
@@ -147,18 +145,6 @@ class StopRetryTest {
             p.failedStop()
             p.alice.sendKeepalive(p.bobId)
             assertTrue(p.stopOwed())
-        }
-
-    @Test
-    fun `an owed stop survives a restart`() =
-        runTest {
-            val p = paired()
-            p.failedStop()
-
-            val restarted = LocationClient("http://localhost", testE2eeManager(p.driver), p.mailbox)
-            restarted.poll(pausedFriendIds = setOf(p.bobId))
-
-            assertNotNull(p.bobReads().first.stoppedAtTs)
         }
 
     @Test
@@ -248,17 +234,23 @@ class StopRetryTest {
         }
 
     @Test
-    fun `migration from version 5 adds stopOwed as not owed`() {
-        val driver: SqlDriver = createTestSqlDriver()
-        driver.execute(null, "ALTER TABLE Friends DROP COLUMN stopOwed", 0)
-        WhereDatabase.Schema.migrate(driver, 5, 6)
-        assertEquals(6, WhereDatabase.Schema.version)
-        driver.execute(
-            null,
-            "INSERT INTO Friends(id, name, sessionBlob, lastRecvTs) VALUES ('f', 'F', X'00', 0)",
-            0,
-        )
-        val owed = WhereDatabase(driver).friendsQueries.getFriend("f").executeAsOne().stopOwed
-        assertEquals(0L, owed)
-    }
+    fun `a stop is queued at once even behind a stuck outbox`() =
+        runTest {
+            val p = paired()
+            p.gated.failing = true
+            runCatching { p.alice.sendKeepalive(p.bobId) }
+            p.gated.failing = false
+            val gate = CompletableDeferred<Unit>().also { p.gated.gate = it }
+
+            val stop = launch { p.alice.sendStoppedSharingToFriend(p.bobId) }
+            runCurrent()
+            // Posts are held up, but the stop is already queued behind the stuck message.
+            assertEquals(2, p.aliceManager.getOutbox(p.bobId).size)
+            assertFalse(p.stopOwed())
+
+            p.gated.gate = null
+            gate.complete(Unit)
+            stop.join()
+            assertNotNull(p.bobReads().first.stoppedAtTs)
+        }
 }

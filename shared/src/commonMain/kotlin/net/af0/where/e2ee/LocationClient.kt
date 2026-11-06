@@ -1,11 +1,13 @@
 package net.af0.where.e2ee
 
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 import net.af0.where.model.UserLocation
 
 /** Silence from a friend beyond this is treated as "not currently reading" - see sendLocation(). */
@@ -84,20 +86,16 @@ open class LocationClient(
     // winning a tie). So per friend we never send a Location that was decided on before a stop
     // after that stop, and date each message after the ones before it (see locationTs and stopTs).
     // stopsIssued counts stops; lastStopIssued is its value at each friend's latest stop, and
-    // lastStopIssuedToAll at the latest stop to everyone. All of it, and sharingTsByFriend, changes
-    // under sharingOrderMutex. The three stop fields are also read without it (sharingStamp(), and
-    // stopIssuedSince() under the store lock), so they are volatile and the map is replaced, not
-    // mutated.
+    // lastStopIssuedToAll at the latest stop to everyone. owedStops holds the friends a stop was
+    // issued to that isn't queued yet (see retryOwedStopLocked). All of it, and sharingTsByFriend,
+    // changes under sharingOrderMutex; stopsIssued is also read without it, by sharingStamp().
     private val sharingOrderMutex = Mutex()
 
     @kotlin.concurrent.Volatile
     private var stopsIssued = 0L
-
-    @kotlin.concurrent.Volatile
-    private var lastStopIssued = mapOf<String, Long>()
-
-    @kotlin.concurrent.Volatile
+    private val lastStopIssued = mutableMapOf<String, Long>()
     private var lastStopIssuedToAll = 0L
+    private val owedStops = mutableSetOf<String>()
 
     private class SharingTs(var location: Long, var stop: Long)
 
@@ -114,21 +112,42 @@ open class LocationClient(
      *
      * A stop is recorded before it is encrypted and queued. If that then fails or is cancelled, the
      * Locations it drops were still decided before the pause, so dropping them stays right, and
-     * the stop is still owed: [poll] queues it while we still aren't sharing with that friend.
+     * the stop is still owed: [poll] and [syncNow] queue it while we still aren't sharing with
+     * that friend. Owed stops are kept in memory, so one is lost if the app is killed first.
      */
     fun sharingStamp(): Long = stopsIssued
 
     /**
      * [friendId] null: a stop to every friend, including one paired while it goes out. Such a
      * friend has had no Location from us, so it shows no pin, and gets none until a send whose
-     * stamp is taken after this stop finds sharing on.
+     * stamp is taken after this stop finds sharing on. The stop is owed to [owedTo] from here, in
+     * the same step, so cancelling the caller later can't lose it.
      */
-    private suspend fun issueStop(friendId: String?) {
-        sharingOrderMutex.withLock {
-            stopsIssued++
-            if (friendId == null) lastStopIssuedToAll = stopsIssued else lastStopIssued = lastStopIssued + (friendId to stopsIssued)
-        }
+    private suspend fun issueStop(
+        friendId: String?,
+        owedTo: Collection<String>,
+    ) = sharingOrderMutex.withLock {
+        stopsIssued++
+        if (friendId == null) lastStopIssuedToAll = stopsIssued else lastStopIssued[friendId] = stopsIssued
+        owedStops.addAll(owedTo)
     }
+
+    // Once a stop to them is queued, nothing is owed: every stop is queued under the friend's
+    // mutex, so a later stop not yet queued was issued before this one was, and this one says the
+    // same, after every Location before it.
+    private suspend fun stopQueued(friendId: String) = sharingOrderMutex.withLock { owedStops.remove(friendId) }
+
+    // Once a Location with [stamp] is queued: one decided on after every stop to them means
+    // sharing is on again, so nothing is owed. One decided on before a stop (it passed its check,
+    // then waited while that stop was issued) pays nothing: the stop may still fail.
+    private suspend fun locationQueued(
+        friendId: String,
+        stamp: Long,
+    ) = sharingOrderMutex.withLock {
+        if (!stopIssuedSinceLocked(friendId, stamp)) owedStops.remove(friendId)
+    }
+
+    internal suspend fun isStopOwed(friendId: String): Boolean = sharingOrderMutex.withLock { friendId in owedStops }
 
     // Under the friend's mutex (so one friend's calls don't interleave). A stop is dated after
     // every Location sent to this friend before it, and a Location no earlier than every stop
@@ -146,7 +165,7 @@ open class LocationClient(
     ): Long? {
         val now = currentTimeSeconds()
         return sharingOrderMutex.withLock {
-            if (stopIssuedSince(friendId, stamp)) return@withLock null
+            if (stopIssuedSinceLocked(friendId, stamp)) return@withLock null
             val last = sharingTsLocked(friendId)
             maxOf(now, last.stop).also { last.location = maxOf(last.location, it) }
         }
@@ -160,9 +179,8 @@ open class LocationClient(
         }
     }
 
-    // Whether a stop to [friendId] was issued after [stamp]. Safe without sharingOrderMutex: issueStop
-    // records a stop here before anything acts on it (markStopOwed, the stop's encrypt).
-    private fun stopIssuedSince(
+    // Holding sharingOrderMutex.
+    private fun stopIssuedSinceLocked(
         friendId: String,
         stamp: Long,
     ): Boolean = maxOf(lastStopIssued[friendId] ?: 0L, lastStopIssuedToAll) > stamp
@@ -274,16 +292,23 @@ open class LocationClient(
         }
 
     // Under the friend's mutex. Queues a stop that was owed but never queued (the store failed, or
-    // we were cancelled or killed first; FriendEntry.stopOwed). The caller has checked we still
-    // aren't sharing with them; if we are again, a Location clears the debt instead. Not a new
-    // stop, so it drops no Locations: the original stop already dropped those decided before it.
+    // it was cancelled first). The caller has checked we still aren't sharing with them; if we are
+    // again, a Location clears the debt instead. Not a new stop, so it drops no Locations: the
+    // original stop already dropped those decided before it.
     private suspend fun retryOwedStopLocked(friendId: String) {
+        if (!sharingOrderMutex.withLock { friendId in owedStops }) return
         val friend = store.getFriend(friendId) ?: return
-        if (!friend.stopOwed || friend.isStale) return
+        if (friend.isStale) return
         try {
-            sendMessageToFriendInternal(friendId, MessagePlaintext.StoppedSharing(ts = stopTs(friendId)), requireDrainedOutboxFirst = false)
+            sendMessageToFriendInternal(
+                friendId,
+                MessagePlaintext.StoppedSharing(ts = stopTs(friendId)),
+                requireDrainedOutboxFirst = false,
+                onQueued = { stopQueued(friendId) },
+            )
         } catch (e: WallClockTimeoutCancellationException) {
-            // A request timeout, not a cancellation: the stop is queued and the outbox retries it.
+            // A request timeout delivering it, not a cancellation: it is queued and the outbox
+            // retries it.
             store.addDiagnosticEvent("retry owed stop($friendId): ${e.message}", coalesceKey = "retry owed stop")
         } catch (e: CancellationException) {
             throw e
@@ -598,11 +623,12 @@ open class LocationClient(
     ) {
         getFriendMutex(friendId).withLock {
             val friend = store.getFriend(friendId) ?: return
+            val stopOwed = sharingOrderMutex.withLock { friendId in owedStops }
             // Nothing follows the farewell, so it can safely be dated after everything before it:
             // the receiver lets a Location win a same-second tie (as for a resume right after a
             // pause), and a stuck Location from this second may arrive in the same batch.
             val farewell =
-                if ((sharingEnabled && isActiveFriend(friend, pausedFriendIds)) || (friend.stopOwed && !friend.isStale)) {
+                if ((sharingEnabled && isActiveFriend(friend, pausedFriendIds)) || (stopOwed && !friend.isStale)) {
                     MessagePlaintext.StoppedSharing(ts = maxOf(currentTimeSeconds(), friend.lastSentTs + 1))
                 } else {
                     null
@@ -610,7 +636,8 @@ open class LocationClient(
             store.deleteFriendKeepingOutbox(friendId, farewell)
         }
         sharingOrderMutex.withLock {
-            lastStopIssued = lastStopIssued - friendId
+            lastStopIssued.remove(friendId)
+            owedStops.remove(friendId)
             sharingTsByFriend.remove(friendId)
         }
         mutexLock.withLock {
@@ -812,14 +839,10 @@ open class LocationClient(
             store.addDiagnosticEvent("sendLocation($friendId): sharing stopped since this send was decided; skipped")
             return
         }
-        // This Location passed its check, but a stop to them may be issued while it waits here
-        // (behind a stuck outbox, say), and that stop may then be cancelled or fail. So it pays a
-        // stop owed only if no stop to them was issued after its stamp, read under the store lock:
-        // issueStop records a stop before markStopOwed takes that lock, so the two are in order.
         sendMessageToFriendInternal(
             friendId,
             MessagePlaintext.Location(lat = lat, lng = lng, acc = 0.0, ts = ts, stationary = stationary),
-            clearsStopOwed = { !stopIssuedSince(friendId, stamp) },
+            onQueued = { locationQueued(friendId, stamp) },
         )
     }
 
@@ -830,12 +853,14 @@ open class LocationClient(
      */
     @Throws(Exception::class)
     open suspend fun sendStoppedSharing(pausedFriendIds: Set<String> = emptySet()) {
-        issueStop(null)
+        // Listed before the stop is issued, so it is owed to them in the same step. Issuing it a
+        // moment later is fine: the caller wrote the pause first, so a send stamped in between
+        // reads it.
         val activeFriends = store.listFriends().filter { isActiveFriend(it, pausedFriendIds) }
-        markStopOwed(activeFriends.map { it.id })
+        issueStop(null, owedTo = activeFriends.map { it.id })
         forEachFriendParallel(activeFriends) { friend ->
             val payload = MessagePlaintext.StoppedSharing(ts = stopTs(friend.id))
-            sendMessageToFriendInternal(friend.id, payload, requireDrainedOutboxFirst = false)
+            sendMessageToFriendInternal(friend.id, payload, requireDrainedOutboxFirst = false, onQueued = { stopQueued(friend.id) })
         }
     }
 
@@ -845,32 +870,19 @@ open class LocationClient(
      */
     @Throws(Exception::class)
     open suspend fun sendStoppedSharingToFriend(friendId: String) {
-        issueStop(friendId)
-        markStopOwed(listOf(friendId))
+        issueStop(friendId, owedTo = listOf(friendId))
         val mutex = getFriendMutex(friendId)
         mutex.withLock {
             try {
                 val payload = MessagePlaintext.StoppedSharing(ts = stopTs(friendId))
-                sendMessageToFriendInternal(friendId, payload, requireDrainedOutboxFirst = false)
+                sendMessageToFriendInternal(friendId, payload, requireDrainedOutboxFirst = false, onQueued = { stopQueued(friendId) })
             } catch (_: WallClockTimeoutCancellationException) {
-                // A request timeout: queued, or still owed; either way it is retried.
+                // A request timeout delivering it: it is queued, and the outbox retries it.
             } catch (e: CancellationException) {
                 throw e
             } catch (_: Exception) {
                 // Ignore
             }
-        }
-    }
-
-    // Before the stop is queued, so one that fails, or is cancelled or killed on the way, is
-    // retried by poll. A failure here doesn't stop the stop itself from being tried.
-    private suspend fun markStopOwed(friendIds: List<String>) {
-        try {
-            store.markStopOwed(friendIds)
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            store.addDiagnosticEvent("markStopOwed failed: ${e.message}")
         }
     }
 
@@ -908,25 +920,26 @@ open class LocationClient(
         friendId: String,
         payload: MessagePlaintext,
         requireDrainedOutboxFirst: Boolean = true,
-        clearsStopOwed: () -> Boolean = { true },
+        onQueued: suspend () -> Unit = {},
     ) {
         // WAL Safety: by default (Location/Keepalive), a non-empty outbox blocks generating a new
         // message - without this, a stuck friend during an outage would accumulate a fresh
         // Location every send cycle instead of just retrying the one already queued.
-        // requireDrainedOutboxFirst=false (StoppedSharing) instead best-effort-drains but always
-        // proceeds to encryptAndAdvance, so a terminal signal isn't dropped just because an older
-        // message is stuck (#369) - safe here specifically because StoppedSharing has no routine
-        // cadence to flood the outbox with, and the receive side already takes the latest
-        // timestamp across duplicate/stale StoppedSharing messages (see E2eeProtocol).
-        if (store.getOutbox(friendId).isNotEmpty()) {
-            if (requireDrainedOutboxFirst) {
-                processOutbox(friendId)
-            } else {
-                runCatching { processOutbox(friendId) }
-            }
+        // requireDrainedOutboxFirst=false (StoppedSharing) queues it straight away instead, so a
+        // terminal signal isn't dropped just because an older message is stuck (#369), and isn't
+        // held up behind a drain either: the outbox is FIFO, so it still goes out after them.
+        // Safe here specifically because StoppedSharing has no routine cadence to flood the outbox
+        // with, and the receive side already takes the latest timestamp across duplicate/stale
+        // StoppedSharing messages (see E2eeProtocol).
+        if (requireDrainedOutboxFirst && store.getOutbox(friendId).isNotEmpty()) {
+            processOutbox(friendId)
         }
 
-        store.encryptAndAdvance(friendId, payload, clearsStopOwed)
+        // One step: a cancellation landing after the write commits mustn't skip onQueued.
+        withContext(NonCancellable) {
+            store.encryptAndAdvance(friendId, payload)
+            onQueued()
+        }
 
         // We trigger sequential outbox processing for this friend.
         // This ensures messages are sent in order (0, 1, 2...) even if multiple calls happen rapidly.
