@@ -1,0 +1,30 @@
+name: Exhaustive schedules (nightly)
+
+# ExhaustiveScheduleTest at a deeper bound than the per-PR run (which uses its default depth).
+on:
+  schedule:
+    - cron: '23 4 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  schedules:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+          cache: gradle
+      - name: Install libsodium
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libsodium-dev
+      - name: Enumerate every schedule to depth 10
+        run: |
+          export LD_LIBRARY_PATH=/usr/lib/x86_64-linux-gnu:$LD_LIBRARY_PATH
+          ./gradlew :shared:jvmTest --tests '*ExhaustiveScheduleTest*' -Dschedule.depth=10

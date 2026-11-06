@@ -1,1 +1,194 @@
-AGENTS.md
+# Where — Design Choices & Coding Standards
+
+## Project overview
+**Where** is a cross-platform real-time location sharing app (iOS, Android, Ktor server) built with Kotlin Multiplatform (KMP). It uses end-to-end encryption (E2EE) by default.
+
+**Tech stack:** Kotlin 2.1 (shared, Android, server, CLI), Swift 6 (iOS), Jetpack Compose (Android), SwiftUI (iOS), Ktor (Netty), `kotlinx.serialization`, Gradle version catalog.
+
+---
+
+## Architecture
+
+### Module layout
+| Module | Role |
+|---|---|
+| `shared/` | KMP library — data models, E2EE crypto implementations (Double Ratchet), `LocationClient` / `E2eeMailboxClient` |
+| `android/` | Android app — Compose UI, FusedLocation foreground service, Google Maps |
+| `server/` | Ktor server — Anonymous Mailbox API, DynamoDB-backed persistent mailbox store |
+| `ios/` | iOS app — SwiftUI + MapKit + CoreLocation, native HTTP polling |
+| `cli/` | Kotlin JVM CLI — utility tool for management and testing |
+
+### Data flow
+```
+[iOS / Android]
+  GPS → LocationService / LocationManager
+      → LocationClient.sendLocation()  (shared KMP on both platforms)
+      → PUT /inbox/{send_token}/{msgId}   (idempotent per msgId)
+      → recipient polls GET /inbox/{recv_token}, then acks with DELETE /inbox/{recv_token}?ids=…
+      → clients update map pins
+```
+
+### Real-time transport
+- **Mailbox API** on `/inbox/{token}` (Ktor REST endpoints): `PUT /inbox/{token}/{msgId}`, `GET /inbox/{token}` (non-destructive, up to 50 messages), `DELETE /inbox/{token}?ids=…` and `DELETE /inbox/{token}/{msgId}` (acks).
+- Server routes opaque encrypted payloads using pairwise routing tokens. To prevent clients from reading their own messages, each session uses separate `sendToken` / `recvToken` pairs symmetrically derived from the ratcheted root key using sender and recipient fingerprints.
+- Messages are encapsulated in standard Double Ratchet envelopes.
+- Clients maintain post-compromise security (PCS) mathematically through automated Keepalives even if only one user is sharing location.
+- Clients poll adaptively: every 2 s right after pairing/invite activity, 10 s in the foreground, 5 min in the background while sharing, 30 min (ack/maintenance only) when not sharing.
+
+### User identity
+- Identity is determined by the device key itself (ephemeral X25519 session keys).
+- No stable random UUIDs or long-term identity keys.
+- Fingerprints are derived from session-scoped ephemeral public keys.
+
+Trust On First Use is NOT a bug; it's a choice (and accepted risk) of the
+current design.
+
+### E2EE
+Uses a standard, bidirectional Double Ratchet protocol with X25519 ephemeral keys, HKDF-SHA-256 for ratcheting, and ChaCha20-Poly1305 for encryption. See `docs/e2ee-location-sync.md` for the full protocol spec.
+
+---
+
+## Key design decisions
+
+### Shared vs. platform-specific networking
+- **Android**: uses `LocationClient` from the shared KMP module (Ktor HTTP client over OkHttp).
+- **iOS**: also uses the shared `LocationClient` (Ktor Darwin engine), driven from Swift `async/await` in `LocationSyncService`.
+- **All protocol data models are in the shared KMP module**. iOS imports the `Shared` framework and uses these types directly.
+
+### Maps
+- **Android (gms flavor)**: `maps-compose` (Google Maps Compose). Requires a `MAPS_API_KEY` in `local.properties`.
+- **Android (fdroid flavor)**: MapLibre, no Google Play services.
+- **iOS**: `MapKit` via `UIViewRepresentable` — no API key needed.
+
+### Battery efficiency
+- **Android**: runs in a foreground service. `FusedLocationProviderClient` (gms) starts at `BALANCED` / 60 s. In the `full` activity-recognition flavor, Activity Recognition switches to `HIGH` / 10 s when moving and `LOW_POWER` / 5 min when still; on gms a geofence acts as a wake-on-departure backstop (its exit switches to `HIGH` / 10 s). The fdroid flavor uses the platform `LocationManager`.
+- **iOS**: `CLLocationUpdate.liveUpdates()` drives updates. The `CLLocationManager` (`kCLLocationAccuracyNearestTenMeters`, `distanceFilter` 200 m) serves one-shot fixes, significant-change and visit monitoring, and a fallback geofence that keep background wakes going.
+- **Sends (both platforms)**: every broadcast Location goes through `LocationSendScheduler` (`shared/commonMain`), one worker that owns sending: at most one attempt per 30 s, a fix sent early only after 100 m of movement (or a stationary change), otherwise the 5 min heartbeat (armed by platform wakes), forced requests (entering stationary, sharing turned on) serialized behind any send in flight, and a backoff after failed rounds. Platforms only report fixes and wakes to it; its policy is tested in `LocationSendSchedulerTest`. Per-friend sends (a new friend, an unpause) stay outside it.
+
+### Server state
+- Mailboxes are persisted in DynamoDB (on-demand, TTL-expired). State survives restarts.
+- Messages are retained for 7 days, aligning with the client re-pair timeout.
+
+---
+
+## Coding standards
+
+### Kotlin (shared + server)
+- **Kotlin 2.1 / JVM 17 (Android) / JVM 21 (server/CLI)**.
+- `kotlinx.serialization` for all JSON. Sealed classes use `classDiscriminator = "type"` and `@SerialName` on each subclass.
+- Coroutines: use `SupervisorJob()` so one failed child doesn't cancel siblings. Prefer `StateFlow` over `LiveData`.
+- No mutable global state except the intentional `LocationRepository` singleton (bridge between service and ViewModel).
+- **E2EE key material** (`shared/.../e2ee/`): keys, tokens and fingerprints use the typed wrappers in `Keys.kt` (`SecretBytes` / `PublicBytes`), never bare `ByteArray`. Reading a key's raw `.bytes` needs `@OptIn(RawKeyAccess::class)`, which only the primitive/KDF files and the persistence codec take (public values have `toByteArray()`). Compare secrets with `constantTimeEquals`; domain-separation strings live in `enum class Label`. The custom detekt rules in `detekt-rules/` enforce this (`./gradlew :shared:detekt`).
+
+### Swift (iOS)
+- **Swift 6 strict concurrency** — all `ObservableObject` classes marked `@MainActor`.
+- Use `async/await` for async polling loops.
+- Networking goes through the shared `LocationClient` (Ktor Darwin engine), called from Swift `async/await`; don't write parallel `URLSession` networking code.
+- Use KMP types directly — no duplicate Swift structs.
+
+### Android
+- Jetpack Compose only — no XML layouts.
+- ViewModels use `AndroidViewModel` when `Application` context is needed.
+- `LocationRepository` is the single source of truth between the foreground `Service` and `ViewModel`.
+
+### Dependency management
+- All versions in `gradle/libs.versions.toml` (version catalog). Never hardcode versions inline.
+- Add new dependencies to the catalog first, then reference via `libs.*` alias.
+
+---
+
+## Local development
+
+### Server
+```bash
+./gradlew :server:run          # or ./scripts/run-server.sh
+curl localhost:8080/health     # → ok
+```
+
+### Android (emulator)
+- Debug builds use `SERVER_HTTP_URL` from `local.properties` (default `http://10.0.2.2:8080`, the emulator's host) and allow plain HTTP (`src/androidDebug/res/xml/network_security_config.xml`). Release builds use production, HTTPS only.
+- Add your Maps API key: `echo "MAPS_API_KEY=your_key" >> local.properties`
+- Build: `./gradlew :android:assembleDebug` or `./scripts/run-android.sh`
+
+### iOS (simulator)
+- Server URL in `ServerConfig.swift`: Debug builds on the simulator use a local server (`http://127.0.0.1:8080`); everything else uses production `https://where-api.af0.net`. Setting `WHERE_SERVER_HTTP_URL` in `ios/Local.xcconfig` (gitignored) overrides both (e.g. a LAN address for a device); the shared `Where` scheme, generated from `project.yml`, passes it to the app.
+- Generate Xcode project: `cd ios && xcodegen`. The project calls `embedAndSignAppleFrameworkForXcode` as a pre-build script automatically.
+- To build the KMP framework manually: `./gradlew :shared:embedAndSignAppleFrameworkForXcode`
+- Run: `./scripts/run-ios.sh` or open `Where.xcodeproj` in Xcode.
+
+### CLI
+```bash
+./gradlew :cli:run    # or ./scripts/run-cli.sh
+```
+
+### Local build configuration
+
+Machine-specific paths (build output dirs, SDK locations, cache dirs) must **never** be added to checked-in files (`gradle.properties`, `build.gradle.kts`, etc.). Use gitignored local overrides instead:
+
+- **`local.gradle.kts`** (gitignored) — applied automatically by the root `build.gradle.kts` if present.
+- **`.envrc`** (gitignored) — use for env vars like `GRADLE_USER_HOME`, `KONAN_DATA_DIR`, `TMPDIR`.
+- **`local.properties`** (gitignored) — Android SDK path and other local Android properties.
+
+The `/Volumes/Ext` external drive is used on the dev machine for all large caches and build outputs. These settings live in `local.gradle.kts` and `.envrc`, not in source control.
+
+### Running tests
+
+```bash
+./gradlew :shared:jvmTest   # unit tests (requires JRE)
+./gradlew :detekt-rules:test :shared:detekt   # E2EE lint rules and their tests
+./gradlew :shared:fuzzCorpusTest   # fuzz targets over the committed corpus (docs/fuzzing.md)
+./gradlew :shared:fuzz -Pfuzz.target=DecryptMessage -Pfuzz.seconds=600   # Jazzer, one target (nightly in fuzz.yml)
+./e2e-test.sh               # end-to-end integration tests
+./compat-test.sh            # last release's CLI vs this checkout: upgrade in place + cross-version pairing
+e2e/ios-upgrade-test.sh     # last release's iOS app → this checkout's, on a fresh simulator (macOS, Maestro)
+e2e/android-upgrade-test.sh # same for Android, on a booted google_apis emulator (Maestro)
+```
+
+The app upgrade tests (`.github/workflows/app-e2e.yml`) build the last `v*` release and this
+checkout as Release builds pointed at a local server, pair the old app with the CLI, upgrade in
+place and check the friend, session and later sends survive. Then, on the upgraded app: a server
+outage (sends and a pairing made during it arrive afterwards), location permission revoked and
+granted again, and pause. iOS also covers background relaunch after termination and device binding
+(a keychain reset shows the repair notice); Android covers process death, invite replay, backup
+refusal, per-friend pause, friend removal, and, nightly or with `-f full=true`, deep Doze without
+a battery exemption and a reboot (`E2E_QUICK=1` skips those two, ~10 min). Android uses the fdroid
+flavor: its platform location providers take emulator test locations directly, while gms fused
+location on an emulator is unreliable. They run nightly (also upgrading from the release before
+last), on PRs touching the apps, and on demand (`gh workflow run app-e2e.yml -f which=android`,
+optionally `-f base_ref=<tag>`). UI steps are Maestro flows in `e2e/flows/`.
+
+The E2EE crypto library tests live in `shared/src/commonTest/kotlin/net/af0/where/e2ee/`
+and run on the JVM target via `:shared:jvmTest` and on the iOS simulator via
+`:shared:iosSimulatorArm64Test` (`ios.yml`). `CryptoPrimitivesVectorTest` runs the vendored
+Wycheproof vectors (`commonTest/resources/wycheproof`) on both, covering both HMAC backends. The
+schedule property test (`jvmTest/.../ScheduleInterleavingPropertyTest.kt`) drives two managers
+through random sends, drops, duplicates, reorders, crashes and restarts; rerun one schedule with
+`--tests '*ScheduleInterleaving*replay' -Dschedule.seed=<n>`. `ExhaustiveScheduleTest` (same folder)
+instead enumerates every schedule of sends, posts, polls and faults up to `-Dschedule.depth=N`
+(default 8, ~20 s; `schedules-nightly.yml` runs 10, ~3 min) against `ProtocolCore`, and after each state
+checks that a fair drain delivers everything intact and a fresh round each way still works; a failure
+prints the action sequence. The crypto backend choice is recorded
+in `docs/crypto-backend.md`.
+
+The protocol itself is the pure function `ProtocolCore.step(state, event, now, rng)` (events: invite,
+scan, init, send, receive; effects: put, cancel put, ack, deliver, retire token). `Session` and
+`KeyExchange` take the time and an `Rng` instead of reading the clock or the CSPRNG; `E2eeManager`
+and `LocationClient` keep the I/O, locking and storage and carry out the effects. The golden
+transcript (`commonTest/resources/vectors/where-v1-transcript.json`, spec §11.1) is that function
+run with seeded RNGs, and `GoldenTranscriptTest` replays it byte for byte on the JVM and iOS. A
+change that breaks it is a protocol change: regenerate it with
+`WHERE_WRITE_VECTORS=1 ./gradlew :shared:jvmTest --tests '*GoldenTranscriptWriter*'` and bump its
+version with the spec's.
+
+---
+
+## Key files
+- `gradle/libs.versions.toml` — central dependency management
+- `docs/e2ee-location-sync.md` — full cryptographic protocol specification
+- `shared/src/commonTest/resources/vectors/` — golden transcript, the spec's normative examples
+
+---
+
+## Planned future work
+- User-controlled sharing (groups, time-limited sharing)
+- Push notifications when a friend's location changes significantly
