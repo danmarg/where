@@ -223,6 +223,82 @@ class StopRetryTest {
             assertFalse(p.stopOwed())
         }
 
+    /** Leaves a Keepalive stuck in Alice's outbox, then holds her posts until the returned gate opens. */
+    private suspend fun Pair.stuckOutboxAndGate(): CompletableDeferred<Unit> {
+        gated.failing = true
+        runCatching { alice.sendKeepalive(bobId) }
+        gated.failing = false
+        return CompletableDeferred<Unit>().also { gated.gate = it }
+    }
+
+    private fun Pair.openGate(gate: CompletableDeferred<Unit>) {
+        gated.gate = null
+        gate.complete(Unit)
+    }
+
+    @Test
+    fun `a network restore sends an owed stop even if the outbox is still stuck`() =
+        runTest {
+            val p = paired()
+            p.failedStop()
+            p.gated.failing = true
+            runCatching { p.alice.sendKeepalive(p.bobId) }
+
+            p.alice.syncNow(pausedFriendIds = setOf(p.bobId))
+
+            // Queued behind the stuck Keepalive, though delivering them still fails.
+            assertFalse(p.stopOwed())
+            assertEquals(2, p.aliceManager.getOutbox(p.bobId).size)
+            p.gated.failing = false
+            p.alice.processOutboxes()
+            assertNotNull(p.bobReads().first.stoppedAtTs)
+        }
+
+    @Test
+    fun `a sync during a stop does not send it twice`() =
+        runTest {
+            val p = paired()
+            p.alice.enableAutomatedKeepalives = false
+            val gate = p.stuckOutboxAndGate()
+            val postedBefore = p.mailbox.allPosted.size
+
+            // A heartbeat holds Bob's lock while it drains the stuck Keepalive; a sync that reads
+            // Bob as paused waits for it, then the stop does.
+            val heartbeat = launch { p.alice.sendLocationToFriend(p.bobId, 1.0, 1.0) }
+            runCurrent()
+            val sync = launch { p.alice.syncNow(pausedFriendIds = setOf(p.bobId)) }
+            runCurrent()
+            val stop = launch { p.alice.sendStoppedSharingToFriend(p.bobId) }
+            runCurrent()
+            p.openGate(gate)
+            heartbeat.join()
+            sync.join()
+            stop.join()
+
+            // The stuck Keepalive, the heartbeat and one stop.
+            assertEquals(3, p.mailbox.allPosted.size - postedBefore)
+            assertFalse(p.stopOwed())
+        }
+
+    @Test
+    fun `a stop to everyone cancelled before it is queued is still owed`() =
+        runTest {
+            val p = paired()
+            val gate = p.stuckOutboxAndGate()
+            val heartbeat = launch { p.alice.sendLocationToFriend(p.bobId, 1.0, 1.0) }
+            runCurrent()
+
+            val stop = launch { p.alice.sendStoppedSharing() }
+            runCurrent()
+            stop.cancel()
+            p.openGate(gate)
+            heartbeat.join()
+
+            assertTrue(p.stopOwed())
+            p.alice.poll(sharingEnabled = false)
+            assertNotNull(p.bobReads().first.stoppedAtTs)
+        }
+
     @Test
     fun `removing a paused friend who is owed a stop sends it`() =
         runTest {

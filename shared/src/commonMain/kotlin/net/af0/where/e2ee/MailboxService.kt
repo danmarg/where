@@ -15,14 +15,14 @@ class MailboxService(
         token: String,
         payload: MailboxPayload,
     ) {
-        client.post(baseUrl, token, payload)
+        request { client.post(baseUrl, token, payload) }
     }
 
     /**
      * Polls a specific mailbox token for messages.
      */
     suspend fun poll(token: String): List<MailboxPayload> {
-        return client.poll(baseUrl, token)
+        return request { client.poll(baseUrl, token) }
     }
 
     /**
@@ -32,7 +32,7 @@ class MailboxService(
         token: String,
         msgId: String,
     ) {
-        client.ackId(baseUrl, token, msgId)
+        request { client.ackId(baseUrl, token, msgId) }
     }
 
     /**
@@ -42,6 +42,19 @@ class MailboxService(
         token: String,
         msgIds: List<String>,
     ) {
-        client.ackIds(baseUrl, token, msgIds)
+        request { client.ackIds(baseUrl, token, msgIds) }
     }
+
+    // A wall-clock timeout (withWallClockTimeout) is a CancellationException so that it can stop
+    // the request, but to callers it is an ordinary failure like any other network error: one
+    // escaping as a cancellation would cancel the caller's whole scope (a poll, a fan-out).
+    private suspend fun <T> request(block: suspend () -> T): T =
+        try {
+            block()
+        } catch (e: WallClockTimeoutCancellationException) {
+            throw MailboxTimeoutException(e)
+        }
 }
+
+/** A mailbox request that timed out (see [MailboxService]). */
+class MailboxTimeoutException(cause: Throwable) : Exception("Mailbox request timed out", cause)
