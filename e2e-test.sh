@@ -39,12 +39,18 @@ trap cleanup EXIT
 
 # Wait for server to boot using a curl loop (up to 30s)
 echo "=== E2E Test: Waiting for server to start ==="
+SERVER_UP=""
 for i in {1..30}; do
   if curl -s http://localhost:8080/ >/dev/null; then
+    SERVER_UP=1
     break
   fi
   sleep 1
 done
+if [ -z "$SERVER_UP" ]; then
+  echo "❌ E2E Test Failed: server did not start within 30s (see $TEST_DIR/e2e_server.log)."
+  exit 1
+fi
 echo "Server is up."
 
 echo "=== E2E Test: Alice creates invite ==="
