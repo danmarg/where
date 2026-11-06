@@ -426,20 +426,23 @@ final class LocationSyncService: ObservableObject {
         isSharingLocation && locationProvider.hasLocationPermission
     }
 
+    // In UserDefaults, not the keychain-backed UserStore: a keychain write can fail, and one from
+    // Kotlin's UserStore setters isn't @Throws, so it would terminate the app.
+    static let stoppedForMissingPermissionKey = "stopped_sharing_for_missing_permission"
     private var permissionStopInFlight = false
 
     /// Keeps friends' view right across permission changes; mirrors Android's
     /// `LocationViewModel.reconcileSharingWithPermission`. With sharing on and permission lost
     /// (Settings, Location Services off), no Location can go out, so friends are told once that
     /// we stopped rather than keep our last pin. Sharing itself stays on, as the user's choice:
-    /// when permission is back, our location goes out again. The "told them" flag is persisted in
-    /// the user store, so it fires once per loss; a stop that fails to be queued is retried by
-    /// LocationClient.
+    /// when permission is back, our location goes out again. The "told them" flag is persisted,
+    /// so it fires once per loss; a stop that fails to be queued is retried by LocationClient.
     /// Returns whether it broadcast our location (permission is back).
     @discardableResult
     func locationPermissionChanged() -> Bool {
         guard databaseOpenError == nil else { return false }
-        let notified = userStore.stoppedForMissingPermission
+        let defaults = UserDefaults.standard
+        let notified = defaults.bool(forKey: Self.stoppedForMissingPermissionKey)
         let hasPermission = locationProvider.hasLocationPermission
         if isSharingLocation && !hasPermission && !notified {
             guard !permissionStopInFlight else { return false }
@@ -448,7 +451,7 @@ final class LocationSyncService: ObservableObject {
             Task {
                 do {
                     try await locationClient.sendStoppedSharing(pausedFriendIds: paused)
-                    userStore.stoppedForMissingPermission = true
+                    UserDefaults.standard.set(true, forKey: Self.stoppedForMissingPermissionKey)
                 } catch {
                     logger.warning("sendStoppedSharing (permission lost) failed, will retry: \(error.localizedDescription)")
                 }
@@ -458,7 +461,7 @@ final class LocationSyncService: ObservableObject {
                 if locationProvider.hasLocationPermission { locationPermissionChanged() }
             }
         } else if hasPermission && notified {
-            userStore.stoppedForMissingPermission = false
+            defaults.set(false, forKey: Self.stoppedForMissingPermissionKey)
             guard isSharingLocation else { return false }
             broadcastCurrentLocationNow()
             return true

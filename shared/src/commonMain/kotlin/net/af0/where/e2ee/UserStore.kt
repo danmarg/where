@@ -122,14 +122,6 @@ class UserStore(private val storage: RawKeyValueStorage) {
         storage.putString(KEY_BACKGROUND_LOCATION_RATIONALE_SHOWN, shown.toString())
     }
 
-    /**
-     * Friends were told we stopped sharing because location permission is missing; cleared when it
-     * is back. Keeps that stop to once per loss (iOS LocationSyncService.locationPermissionChanged).
-     */
-    var stoppedForMissingPermission: Boolean
-        get() = storage.getString(KEY_STOPPED_FOR_MISSING_PERMISSION)?.toBoolean() ?: false
-        set(value) = storage.putString(KEY_STOPPED_FOR_MISSING_PERMISSION, value.toString())
-
     // ---- Per-friend timed share ------------------------------------------------------------
 
     /**
@@ -190,7 +182,6 @@ class UserStore(private val storage: RawKeyValueStorage) {
         private const val KEY_LAST_ZOOM = "last_zoom"
         private const val KEY_CAMERA_REQUESTED = "camera_requested"
         private const val KEY_BACKGROUND_LOCATION_RATIONALE_SHOWN = "background_location_rationale_shown"
-        private const val KEY_STOPPED_FOR_MISSING_PERMISSION = "stopped_sharing_for_missing_permission"
         private const val KEY_FRIEND_EXPIRES_AT = "friend_expires_at"
     }
 }

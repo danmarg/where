@@ -38,6 +38,7 @@ class LocationOptimizationsTests: XCTestCase {
 
     override func setUp() async throws {
         LocationSyncService.defaultLocationFixTimeout = 0
+        UserDefaults.standard.removeObject(forKey: LocationSyncService.stoppedForMissingPermissionKey)
         resetLocationManagerShared()
         // Default to "tracking" so tests aren't at the mercy of whether the shared service's
         // DB has loaded; not-tracking tests set this to false explicitly.

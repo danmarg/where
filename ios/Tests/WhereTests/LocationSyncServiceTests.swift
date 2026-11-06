@@ -50,6 +50,7 @@ class LocationSyncServiceTests: XCTestCase {
     override func setUp() async throws {
         // The heartbeat waits this long for a fresh fix; mocks never deliver one on request.
         LocationSyncService.defaultLocationFixTimeout = 0
+        UserDefaults.standard.removeObject(forKey: LocationSyncService.stoppedForMissingPermissionKey)
         self.mockStorage = MockRawKeyValueStorage()
         self.mockLocationProvider = MockLocationProvider()
         // A fresh database for each test
@@ -1504,7 +1505,7 @@ class LocationSyncServiceTests: XCTestCase {
 
     private func permissionStopRecorded() async throws -> Bool {
         for _ in 0..<200 {
-            if service.userStore.stoppedForMissingPermission { return true }
+            if UserDefaults.standard.bool(forKey: LocationSyncService.stoppedForMissingPermissionKey) { return true }
             try await Task.sleep(for: .milliseconds(10))
         }
         return false
@@ -1550,7 +1551,7 @@ class LocationSyncServiceTests: XCTestCase {
     func testPermissionBack_SendsOurLocationAgain() async throws {
         let mockClient = MockLocationClient()
         let svc = serviceWithFix(mockClient)
-        svc.userStore.stoppedForMissingPermission = true
+        UserDefaults.standard.set(true, forKey: LocationSyncService.stoppedForMissingPermissionKey)
 
         let sent = XCTestExpectation(description: "Location sent once permission is back")
         sent.assertForOverFulfill = false
@@ -1558,7 +1559,7 @@ class LocationSyncServiceTests: XCTestCase {
         svc.locationPermissionChanged()
 
         await fulfillment(of: [sent], timeout: 2.0)
-        XCTAssertFalse(svc.userStore.stoppedForMissingPermission)
+        XCTAssertFalse(UserDefaults.standard.bool(forKey: LocationSyncService.stoppedForMissingPermissionKey))
     }
 
     func testPermissionBackWhileTheStopGoesOut_SendsOurLocationAgain() async throws {
@@ -1574,7 +1575,7 @@ class LocationSyncServiceTests: XCTestCase {
         svc.locationPermissionChanged()
 
         await fulfillment(of: [sent], timeout: 2.0)
-        XCTAssertFalse(svc.userStore.stoppedForMissingPermission)
+        XCTAssertFalse(UserDefaults.standard.bool(forKey: LocationSyncService.stoppedForMissingPermissionKey))
     }
 
     /// Unpausing sends to that friend directly, not through the scheduler's gate.
