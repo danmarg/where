@@ -41,6 +41,7 @@ class LocationSyncServiceTests: XCTestCase {
             onRequestImmediateLocation?()
         }
         func sharingStateChanged() {}
+        var hasLocationPermission = true
     }
 
     var mockStorage: MockRawKeyValueStorage!
@@ -49,6 +50,7 @@ class LocationSyncServiceTests: XCTestCase {
     override func setUp() async throws {
         // The heartbeat waits this long for a fresh fix; mocks never deliver one on request.
         LocationSyncService.defaultLocationFixTimeout = 0
+        UserDefaults.standard.removeObject(forKey: LocationSyncService.stoppedForMissingPermissionKey)
         self.mockStorage = MockRawKeyValueStorage()
         self.mockLocationProvider = MockLocationProvider()
         // A fresh database for each test
@@ -109,8 +111,10 @@ class LocationSyncServiceTests: XCTestCase {
             processOrphanedOutboxesCallCount += 1
         }
         var onPoll: (@MainActor () -> Void)?
+        var lastPollSharingEnabled: Bool?
         func poll(isForeground: Bool, pausedFriendIds: Set<String>, sharingEnabled: Bool) async throws -> [Shared.UserLocation] {
             _pollCallCount += 1
+            lastPollSharingEnabled = sharingEnabled
             onPoll?()
             return pollResult
         }
@@ -1483,6 +1487,119 @@ class LocationSyncServiceTests: XCTestCase {
         svc.stopSharing()
         await fulfillment(of: [stopped], timeout: 2.0)
         XCTAssertEqual(sharingAtStop, false)
+    }
+
+    // MARK: - Location permission
+
+    private func serviceWithFix(_ mockClient: MockLocationClient) -> LocationSyncService {
+        service = LocationSyncService(e2eeManager: service.e2eeManager, userStore: service.userStore, locationClient: mockClient, locationProvider: mockLocationProvider)
+        service.skipNetworkRestore = true
+        service.isSharingLocation = true
+        service.isStationaryQuery = { true }
+        mockLocationProvider.location = CLLocation(
+            coordinate: CLLocationCoordinate2D(latitude: 37.7, longitude: -122.4),
+            altitude: 0, horizontalAccuracy: 50, verticalAccuracy: 50, timestamp: Date()
+        )
+        return service
+    }
+
+    private func permissionStopRecorded() async throws -> Bool {
+        for _ in 0..<200 {
+            if UserDefaults.standard.bool(forKey: LocationSyncService.stoppedForMissingPermissionKey) { return true }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        return false
+    }
+
+    func testPermissionLost_TellsFriendsOnceAndKeepsSharingOn() async throws {
+        let mockClient = MockLocationClient()
+        let svc = serviceWithFix(mockClient)
+        mockLocationProvider.hasLocationPermission = false
+
+        let stopped = XCTestExpectation(description: "stop sent")
+        mockClient.onStop = { stopped.fulfill() }
+        svc.locationPermissionChanged()
+        await fulfillment(of: [stopped], timeout: 2.0)
+        let recorded = try await permissionStopRecorded()
+        XCTAssertTrue(recorded)
+
+        // Once per loss: neither a second change nor a foreground entry sends another.
+        svc.locationPermissionChanged()
+        svc.onForegroundEntry()
+        await svc.foregroundPollTask?.value
+        XCTAssertEqual(mockClient.stopsIssued, 1)
+        XCTAssertTrue(svc.isSharingLocation, "Sharing stays on: it resumes when permission returns")
+    }
+
+    func testPermissionLost_NoLocationIsSent() async throws {
+        let mockClient = MockLocationClient()
+        let svc = serviceWithFix(mockClient)
+        mockLocationProvider.hasLocationPermission = false
+        let noSend = XCTestExpectation(description: "No Location without permission")
+        noSend.isInverted = true
+        mockClient.sendLocationCallback = { noSend.fulfill() }
+
+        XCTAssertTrue(svc.sendScheduler.isHeartbeatDue(), "Precondition: the heartbeat is due")
+        await svc.pollAll(updateUi: false)
+        svc.reportLocation(lat: 37.7, lng: -122.4, accuracy: 10, force: true)
+        svc.sendLocationOnBackground()
+
+        XCTAssertFalse(svc.canSendLocations())
+        await fulfillment(of: [noSend], timeout: 0.5)
+    }
+
+    func testPermissionBack_SendsOurLocationAgain() async throws {
+        let mockClient = MockLocationClient()
+        let svc = serviceWithFix(mockClient)
+        UserDefaults.standard.set(true, forKey: LocationSyncService.stoppedForMissingPermissionKey)
+
+        let sent = XCTestExpectation(description: "Location sent once permission is back")
+        sent.assertForOverFulfill = false
+        mockClient.sendLocationCallback = { sent.fulfill() }
+        svc.locationPermissionChanged()
+
+        await fulfillment(of: [sent], timeout: 2.0)
+        XCTAssertFalse(UserDefaults.standard.bool(forKey: LocationSyncService.stoppedForMissingPermissionKey))
+    }
+
+    func testPermissionBackWhileTheStopGoesOut_SendsOurLocationAgain() async throws {
+        let mockClient = MockLocationClient()
+        let svc = serviceWithFix(mockClient)
+        mockLocationProvider.hasLocationPermission = false
+        let sent = XCTestExpectation(description: "Location sent once permission is back")
+        sent.assertForOverFulfill = false
+        mockClient.sendLocationCallback = { sent.fulfill() }
+        // Permission returns while the stop is on its way.
+        mockClient.onStop = { self.mockLocationProvider.hasLocationPermission = true }
+
+        svc.locationPermissionChanged()
+
+        await fulfillment(of: [sent], timeout: 2.0)
+        XCTAssertFalse(UserDefaults.standard.bool(forKey: LocationSyncService.stoppedForMissingPermissionKey))
+    }
+
+    /// Unpausing sends to that friend directly, not through the scheduler's gate.
+    func testPermissionLost_UnpauseSendsNoLocation() async throws {
+        let mockClient = MockLocationClient()
+        let svc = serviceWithFix(mockClient)
+        svc.togglePauseFriend(id: "friend-1")
+        mockLocationProvider.hasLocationPermission = false
+        let noSend = XCTestExpectation(description: "No Location without permission")
+        noSend.isInverted = true
+        mockClient.sendLocationToFriendCallback = { _ in noSend.fulfill() }
+
+        svc.togglePauseFriend(id: "friend-1")
+
+        await fulfillment(of: [noSend], timeout: 0.5)
+    }
+
+    /// So LocationClient retries an owed stop, as on Android.
+    func testPermissionLost_PollTellsLocationClientWeAreNotSharing() async throws {
+        let mockClient = MockLocationClient()
+        let svc = serviceWithFix(mockClient)
+        mockLocationProvider.hasLocationPermission = false
+        await svc.pollAll(updateUi: false)
+        XCTAssertEqual(mockClient.lastPollSharingEnabled, false)
     }
 
     func testTogglePauseFriend_FriendIsPausedBeforeTheStopGoesOut() async throws {

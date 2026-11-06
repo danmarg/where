@@ -329,7 +329,9 @@ class LocationService : Service() {
                             try {
                                 locationClient.syncNow(
                                     pausedFriendIds = userStore.effectivelyPausedIds(),
-                                    sharingEnabled = userStore.isSharingLocation.value,
+                                    // As FriendPoller's poll: without permission we send nothing,
+                                    // so stops still owed are retried.
+                                    sharingEnabled = canSendLocations(),
                                 )
                                 logReliability(WakeSource.NETWORK, true)
                             } catch (e: CancellationException) {

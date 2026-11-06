@@ -14,7 +14,7 @@ final class SchedulerGate: NSObject, @preconcurrency SendGate {
         self.service = service
     }
 
-    func canSend() -> Bool { service?.isSharingLocation ?? false }
+    func canSend() -> Bool { service?.canSendLocations() ?? false }
 
     func pausedFriendIds() -> Set<String> { service?.effectivelyPausedIds() ?? [] }
 
