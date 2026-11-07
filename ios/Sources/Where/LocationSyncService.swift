@@ -146,8 +146,8 @@ final class LocationSyncService: ObservableObject {
     private static let awaitingFirstUpdateTimeout: TimeInterval = 5 * 60
     /// Even while stationary, force a real GPS fix at this interval instead of only re-reporting
     /// the cached location. CoreMotion's stationary detection and the underlying CLLocationUpdate
-    /// stream/geofence (LocationManager) can each independently get stuck (mirrors the Android
-    /// isStill/Activity-Recognition backstop gap) with no other path back to a fresh fix - this
+    /// stream/geofence (LocationManager) can each independently get stuck with no other path
+    /// back to a fresh fix - this
     /// doesn't depend on either, so a friend's location can't freeze forever. Long enough to
     /// preserve stationary battery savings; short enough that a stuck pipeline surfaces within
     /// hours, not days.

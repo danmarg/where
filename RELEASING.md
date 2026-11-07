@@ -36,7 +36,7 @@ manually in App Store Connect — `ios/fastlane/metadata/en-US/` only has `relea
 This is `android fastlane deploy`. It:
 - Requires a clean git working tree, then bumps `versionName`/`versionCode` in
   `android/build.gradle.kts` and commits that bump by itself.
-- Builds `standardGmsRelease` (no activity recognition) as an AAB.
+- Builds `standardGmsRelease` as an AAB.
 - Prompts for the keystore password, then uploads to Play's **internal** track.
 
 **Push the version-bump commit** (`git push`) before continuing — F-Droid's release step and

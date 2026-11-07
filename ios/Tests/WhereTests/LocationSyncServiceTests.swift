@@ -435,8 +435,8 @@ class LocationSyncServiceTests: XCTestCase {
 
     // Regression tests for the stationary backstop: CoreMotion's stationary detection and the
     // underlying CLLocationUpdate stream/geofence (LocationManager) can each independently get
-    // stuck, mirroring the Android isStill/Activity-Recognition gap - without this, re-reporting
-    // the cached location forever would freeze a friend's view of us even though we're "healthy".
+    // stuck - without this, re-reporting the cached location forever would freeze a friend's
+    // view of us even though we're "healthy".
 
     func testPollAllHeartbeat_StationaryBackstop_ForcesFreshFixAfterInterval() async throws {
         let mockClient = MockLocationClient()

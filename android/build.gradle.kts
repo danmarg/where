@@ -131,16 +131,14 @@ android {
         }
     }
 
-    flavorDimensions += listOf("activityRecognition", "store")
+    // "edition" has a single flavor. It once split `standard` from an unshipped `full` flavor with
+    // Activity Recognition; it stays so variant, task and output names (standardGms,
+    // standardFdroid) don't change under F-Droid's build recipe, fastlane and CI.
+    flavorDimensions += listOf("edition", "store")
 
     productFlavors {
         create("standard") {
-            dimension = "activityRecognition"
-            buildConfigField("Boolean", "ACTIVITY_RECOGNITION_ENABLED", "false")
-        }
-        create("full") {
-            dimension = "activityRecognition"
-            buildConfigField("Boolean", "ACTIVITY_RECOGNITION_ENABLED", "true")
+            dimension = "edition"
         }
         create("gms") {
             dimension = "store"
@@ -186,13 +184,13 @@ android {
 // already been compiled — the opposite of fail-fast. whenReady fires immediately, before any
 // compilation starts, and still only when a gms-flavor build/install is actually requested.
 //
-// Matched against exact umbrella task names only (e.g. `assembleFullGmsRelease`), not a bare
+// Matched against exact umbrella task names only (e.g. `assembleStandardGmsRelease`), not a bare
 // substring match: AGP names plenty of internal, non-app-producing tasks with the same
-// "assemble"/"bundle" + "Gms" substrings — e.g. `bundleFullGmsDebugClassesToRuntimeJar` and
-// `assembleFullGmsDebugUnitTest`, both pulled into the graph by an ordinary unit test run
+// "assemble"/"bundle" + "Gms" substrings — e.g. `bundleStandardGmsDebugClassesToRuntimeJar` and
+// `assembleStandardGmsDebugUnitTest`, both pulled into the graph by an ordinary unit test run
 // (unitTests.isIncludeAndroidResources = true). A substring match trips on those too, breaking
-// `./gradlew :android:testFullGmsDebugUnitTest` even though no app is actually being packaged.
-val realAppOutputTask = Regex("(assemble|bundle|install)(Standard|Full)Gms(Debug|Release)?")
+// `./gradlew :android:testStandardGmsDebugUnitTest` even though no app is actually being packaged.
+val realAppOutputTask = Regex("(assemble|bundle|install)StandardGms(Debug|Release)?")
 gradle.taskGraph.whenReady {
     if (mapsApiKey.isBlank() &&
         allTasks.any { task -> realAppOutputTask.matches(task.name) }
@@ -205,17 +203,7 @@ gradle.taskGraph.whenReady {
     }
 }
 
-// Disable fullFdroid variants: full flavor requires activity recognition which needs GMS.
-// Use productFlavors pair matching rather than a string check so dimension reordering
-// doesn't silently produce a broken APK.
 androidComponents {
-    beforeVariants { variantBuilder ->
-        val flavors = variantBuilder.productFlavors.map { it.second }.toSet()
-        if ("full" in flavors && "fdroid" in flavors) {
-            variantBuilder.enable = false
-        }
-    }
-
     // F-Droid requires each per-ABI split APK to have a distinct versionCode, ordered
     // armeabi-v7a < arm64-v8a < x86 < x86_64. The universal APK and the AAB (Play Store)
     // output are untouched, since they have no ABI filter.

@@ -14,19 +14,11 @@ platform :android do
     )
   end
 
-  desc "Build a release AAB without activity recognition (requires signing env vars)"
+  desc "Build a release AAB (requires signing env vars)"
   lane :build_release do
     gradle(
       project_dir: "../",
       task: ":android:bundleStandardGmsRelease",
-    )
-  end
-
-  desc "Build a release AAB with full activity recognition (requires signing env vars)"
-  lane :build_release_full do
-    gradle(
-      project_dir: "../",
-      task: ":android:bundleFullGmsRelease",
     )
   end
 
@@ -57,7 +49,7 @@ platform :android do
     sh("git", "commit", "-m", "Bump Android version to #{new_version_name} (#{new_version_code})")
   end
 
-  desc "Build standard AAB (no activity recognition) and upload to Google Play (internal track)"
+  desc "Build the release AAB and upload to Google Play (internal track)"
   lane :deploy do
     bump_version("../build.gradle.kts")
     gradle(
@@ -65,9 +57,9 @@ platform :android do
       task: ":android:bundleStandardGmsRelease",
     )
     # Pass the AAB path explicitly: fastlane's gradle action can't disambiguate which flavor's
-    # AAB was just built when more than one exists under build/outputs/bundle (we have both
-    # standardGms and fullGms), so it falls back to "most recently modified file", which can
-    # silently pick the wrong flavor's stale AAB.
+    # AAB was just built when more than one exists under build/outputs/bundle (e.g. a stale one
+    # from another flavor), so it falls back to "most recently modified file", which can
+    # silently pick the wrong one.
     aab_path = Dir[File.expand_path("../build/outputs/bundle/standardGmsRelease/*.aab", __dir__)].first
     UI.user_error!("standardGmsRelease AAB not found — did the gradle bundle task fail silently?") unless aab_path
     # metadata_path is explicit because the default (fastlane/metadata/android) is also the

@@ -29,15 +29,7 @@ Build a debug APK
 [bundle exec] fastlane android build_release
 ```
 
-Build a release AAB without activity recognition (requires signing env vars)
-
-### android build_release_full
-
-```sh
-[bundle exec] fastlane android build_release_full
-```
-
-Build a release AAB with full activity recognition (requires signing env vars)
+Build a release AAB (requires signing env vars)
 
 ### android deploy
 
@@ -45,7 +37,7 @@ Build a release AAB with full activity recognition (requires signing env vars)
 [bundle exec] fastlane android deploy
 ```
 
-Build standard AAB (no activity recognition) and upload to Google Play (internal track)
+Build the release AAB and upload to Google Play (internal track)
 
 ### android release_github_binaries
 

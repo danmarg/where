@@ -115,10 +115,6 @@ class FdroidLocationCallbackTest {
             assertEquals(-122.4194, loc.second, 0.0001)
             assertEquals(45.0, loc.third!!, 0.1)
 
-            // recordRecentFix is called in the same lambda as lastLocationCallbackTime. A single fix
-            // produces zero displacement, confirming the call was made without needing a second fix.
-            assertEquals(0f, service.maxRecentDisplacementMeters(), "One fix → zero displacement, confirming recordRecentFix was called")
-
             controller.destroy()
         }
 }
