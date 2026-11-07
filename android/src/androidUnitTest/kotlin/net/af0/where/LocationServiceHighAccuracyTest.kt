@@ -58,6 +58,7 @@ class LocationServiceHighAccuracyTest {
         io.mockk.unmockkAll()
         Dispatchers.resetMain()
         LocationService.clock = { System.currentTimeMillis() }
+        LocationService.elapsedClock = { android.os.SystemClock.elapsedRealtime() }
     }
 
     private fun geofenceExit() =
@@ -70,6 +71,9 @@ class LocationServiceHighAccuracyTest {
     @Test
     fun highAccuracyEndsAfterTheDeviceStopsMoving() =
         runTest {
+            // The send scheduler waits on virtual time and re-checks this clock; a frozen clock
+            // would make advanceUntilIdle() spin forever once a send is due after the interval.
+            LocationService.elapsedClock = { testScheduler.currentTime }
             (context as TestWhereApplication).userStore.setSharing(true)
             val controller = Robolectric.buildService(LocationService::class.java)
             val service = controller.get()
