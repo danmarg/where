@@ -102,12 +102,15 @@ class LocationService : Service() {
     @VisibleForTesting
     internal var geofenceMayBeRegistered = true
 
+    /** A plant returned UNSUPPORTED (F-Droid): no plant is attempted again in this process. */
+    private var geofencingUnsupported = false
+
     /**
-     * The last plant returned FAILED (always on F-Droid; on GMS without geofencing). Resuming
-     * tracking doesn't retry until the next sharing session, so re-registrations don't repeat a
-     * plant that can't succeed.
+     * No plant has been attempted since startup or the last removal. While set, the next fix
+     * plants the fence, so one still goes up when no cached location was available to plant at.
      */
-    private var geofencePlantFailed = false
+    @VisibleForTesting
+    internal var needsGeofence = true
 
     /** Center of the fence last requested in this process, or null if none or unknown; see [isStaleGeofenceExit]. */
     @VisibleForTesting
@@ -265,7 +268,7 @@ class LocationService : Service() {
                     // so a device already stationary at start would never get one. No center is
                     // recorded: if an exit relaunched us, this lands where that exit triggered,
                     // and checking the exit against it would wrongly call it stale.
-                    setGeofenceAt(loc.latitude, loc.longitude, recordCenter = false)
+                    if (needsGeofence) setGeofenceAt(loc.latitude, loc.longitude, recordCenter = false)
                 }
             }
         }
@@ -343,6 +346,11 @@ class LocationService : Service() {
         serviceScope.launch {
             locationSource.lastLocation.collect { loc ->
                 if (loc != null) {
+                    if (userStore.isSharingLocation.value && needsGeofence && !geofencingUnsupported) {
+                        // No fence yet (no cached location at startup or on resume): plant at the
+                        // first fix. No center, for the same reason as the startup plant.
+                        setGeofenceAt(loc.first, loc.second, recordCenter = false)
+                    }
                     if (userStore.isSharingLocation.value) sendScheduler.onFix(loc.first, loc.second)
 
                     while (true) {
@@ -511,11 +519,14 @@ class LocationService : Service() {
         if (!userStore.isSharingLocation.value) return
         val radiusMeters = GeofencePolicy.radiusMeters(isMoving = true).toFloat()
         val result = locationProvider.setGeofenceAt(lat, lng, radiusMeters)
-        if (result != GeofenceRequestResult.FAILED) {
+        if (result == GeofenceRequestResult.SUBMITTED || result == GeofenceRequestResult.QUEUED) {
             geofenceMayBeRegistered = true
             geofenceCenter = if (recordCenter) lat to lng else null
         }
-        geofencePlantFailed = result == GeofenceRequestResult.FAILED
+        // Attempted: later fixes don't retry. A transient FAILED is retried on the next
+        // registration (e.g. once permission is restored); UNSUPPORTED never is.
+        needsGeofence = false
+        if (result == GeofenceRequestResult.UNSUPPORTED) geofencingUnsupported = true
         when (result) {
             GeofenceRequestResult.SUBMITTED -> {
                 // GMS: request submitted; actual confirmation logged by provider's Task listener.
@@ -531,6 +542,11 @@ class LocationService : Service() {
                 e2eeManager.addDiagnosticEvent("Stationary: Geofence queued")
             }
             GeofenceRequestResult.FAILED -> {
+                // This attempt failed (e.g. permission revoked mid-request); the next registration
+                // retries.
+                Log.w(TAG, "Stationary: geofence request failed; will retry on re-registration")
+            }
+            GeofenceRequestResult.UNSUPPORTED -> {
                 // F-Droid build: geofencing unavailable (GMS-only). Movement-triggered restart
                 // is absent; the service relies solely on WorkManager and the alarm fallback.
                 Log.w(TAG, "Stationary: geofence not set — movement-triggered restart unavailable")
@@ -557,10 +573,7 @@ class LocationService : Service() {
             // A geofence exit's HIGH request belongs to that sharing session; the next one starts
             // at BALANCED rather than resuming HIGH until the next poll wake ends it. Only on
             // sharing off: a brief permission or location-services blip mid-drive keeps HIGH.
-            if (!isSharing) {
-                resetToBalancedAccuracy()
-                geofencePlantFailed = false
-            }
+            if (!isSharing) resetToBalancedAccuracy()
             if (isPassiveRegistered) {
                 locationProvider.removePassiveUpdates()
                 isPassiveRegistered = false
@@ -569,6 +582,7 @@ class LocationService : Service() {
                 locationProvider.removeGeofence()
                 geofenceMayBeRegistered = false
                 geofenceCenter = null
+                needsGeofence = true
             }
             // Note: We don't call stopSelf() here even if permissions are missing or sharing is paused.
             // This is intentional:
@@ -605,7 +619,7 @@ class LocationService : Service() {
         // fixes before delivering — that batching can mask "moving" updates by up to 60s in
         // marginal conditions.
         isRegistered = locationProvider.requestActiveUpdates(currentPriority, currentInterval, 10_000L)
-        if (isRegistered && !geofenceMayBeRegistered && !geofencePlantFailed) {
+        if (isRegistered && !geofenceMayBeRegistered && !geofencingUnsupported) {
             // Tracking resumed (e.g. sharing turned back on) after the fence was removed. Without
             // a new one, nothing would wake us on departure until the service restarted.
             plantGeofenceAtLastKnownLocation()
@@ -813,7 +827,10 @@ class LocationService : Service() {
         if (loc != null) {
             setGeofenceAt(loc.first, loc.second)
         } else {
-            locationProvider.getLastLocationAsync { last -> if (last != null) setGeofenceAt(last.latitude, last.longitude) }
+            // A fix may plant first (needsGeofence); don't plant twice.
+            locationProvider.getLastLocationAsync { last ->
+                if (last != null && needsGeofence) setGeofenceAt(last.latitude, last.longitude)
+            }
         }
     }
 

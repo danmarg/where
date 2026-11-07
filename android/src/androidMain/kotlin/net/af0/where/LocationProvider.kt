@@ -13,7 +13,12 @@ enum class LocationAccuracy {
 enum class GeofenceRequestResult {
     SUBMITTED,
     QUEUED,
+
+    /** This attempt failed (e.g. a SecurityException); a later one may succeed. */
     FAILED,
+
+    /** This build or device can't geofence at all (F-Droid); retrying is pointless. */
+    UNSUPPORTED,
 }
 
 interface LocationProvider {
