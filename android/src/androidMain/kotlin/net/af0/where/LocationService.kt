@@ -391,7 +391,7 @@ class LocationService : Service() {
         // which can take 10 s+, and Samsung re-enters Doze immediately after onReceive() in
         // GeofenceReceiver returns if no wake lock is held here.
         if (intent?.action == ACTION_POLL_ALARM || intent?.action == ACTION_HEARTBEAT_TICK ||
-            (intent?.action == ACTION_GEOFENCE_EVENT && userStore.isSharingLocation.value)
+            (intent?.action == ACTION_GEOFENCE_EVENT && userStore.isSharingLocation.value && geofenceMayBeRegistered)
         ) {
             pollWakeLock.acquire(WAKE_LOCK_TIMEOUT_MS)
         }
@@ -406,6 +406,13 @@ class LocationService : Service() {
             // Don't force a high-accuracy fix or replant it - remove it so it stops waking us.
             Log.d(TAG, "onStartCommand: Geofence event while not sharing; removing stale fence")
             locationProvider.removeGeofence()
+        } else if (intent?.action == ACTION_GEOFENCE_EVENT && !geofenceMayBeRegistered) {
+            // Every removal clears geofenceMayBeRegistered, and only a plant (service start or an
+            // exit) sets it again, so this exit was already pending from a fence we removed - e.g.
+            // one delivered just after sharing was turned off and back on. It isn't a departure
+            // from anywhere we're watching: don't start a HIGH window for it.
+            Log.d(TAG, "onStartCommand: Geofence exit from a removed fence; ignoring")
+            e2eeManager.addDiagnosticEvent("Stale geofence exit ignored")
         } else if (intent?.action == ACTION_GEOFENCE_EVENT) {
             Log.d(TAG, "onStartCommand: Received Geofence Exit event")
             currentPriority = LocationAccuracy.HIGH
@@ -559,6 +566,8 @@ class LocationService : Service() {
                 locationProvider.removePassiveUpdates()
                 isPassiveRegistered = false
             }
+            // Nothing to track for: like sharing off, a later session starts at BALANCED.
+            resetToBalancedAccuracy()
             return
         }
 

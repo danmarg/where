@@ -93,7 +93,7 @@ class LocationServiceHighAccuracyTest {
     }
 
     @Test
-    fun highAccuracyEndsTenMinutesAfterTheLastGeofenceExit() =
+    fun highAccuracyEndsOneWindowAfterTheLastGeofenceExit() =
         runTest {
             val (controller, service) = buildService()
             // Startup registered once at BALANCED.
@@ -147,6 +147,78 @@ class LocationServiceHighAccuracyTest {
             fakeLocationSource.wakePoll()
             advanceUntilIdle()
             assertEquals(LocationAccuracy.BALANCED, service.currentPriority)
+            controller.destroy()
+        }
+
+    /** Moves the elapsed clock to [target] without running the timers in between. */
+    private fun TestScope.setElapsed(target: Long) {
+        offset = target - testScheduler.currentTime
+    }
+
+    @Test
+    fun anExitJustBeforeTheTimeoutKeepsHighThroughThePollLoop() =
+        runTest {
+            val (controller, service) = buildService()
+            service.onStartCommand(geofenceExit(), 0, 1)
+            advanceUntilIdle()
+            val firstExit = service.lastGeofenceExitAt
+
+            // A second exit a minute before the first window ends.
+            setElapsed(firstExit + IDLE - MINUTE)
+            service.onStartCommand(geofenceExit(), 0, 2)
+            advanceUntilIdle()
+            val secondExit = service.lastGeofenceExitAt
+
+            // Past the first exit's window: the real poll loop must not drop HIGH.
+            setElapsed(firstExit + IDLE + MINUTE)
+            fakeLocationSource.wakePoll()
+            advanceUntilIdle()
+            assertEquals(LocationAccuracy.HIGH, service.currentPriority, "the second exit restarted the window")
+
+            // A full window after the second exit, the poll loop drops it.
+            setElapsed(secondExit + IDLE)
+            fakeLocationSource.wakePoll()
+            advanceUntilIdle()
+            assertEquals(LocationAccuracy.BALANCED, service.currentPriority)
+            controller.destroy()
+        }
+
+    @Test
+    fun anExitFromAFenceRemovedWhenSharingStoppedIsIgnored() =
+        runTest {
+            val (controller, service) = buildService()
+            // An exit plants a fence; stopping sharing removes it; sharing resumes without one.
+            service.onStartCommand(geofenceExit(), 0, 1)
+            advanceUntilIdle()
+            val app = context as TestWhereApplication
+            app.userStore.setSharing(false)
+            advanceUntilIdle()
+            app.userStore.setSharing(true)
+            advanceUntilIdle()
+            assertEquals(false, service.geofenceMayBeRegistered)
+            val exitBefore = service.lastGeofenceExitAt
+
+            // The old fence's exit, already pending, arrives now.
+            setElapsed(exitBefore + MINUTE)
+            service.onStartCommand(geofenceExit(), 0, 2)
+            advanceUntilIdle()
+            assertEquals(LocationAccuracy.BALANCED, service.currentPriority, "a stale exit must not start a HIGH window")
+            assertEquals(exitBefore, service.lastGeofenceExitAt)
+            controller.destroy()
+        }
+
+    @Test
+    fun losingTheLastFriendResetsToBalanced() =
+        runTest {
+            val (controller, service) = buildService()
+            service.onStartCommand(geofenceExit(), 0, 1)
+            advanceUntilIdle()
+            assertEquals(LocationAccuracy.HIGH, service.currentPriority)
+
+            fakeLocationSource.onFriendsUpdated(emptyList())
+            advanceUntilIdle()
+            assertEquals(LocationAccuracy.BALANCED, service.currentPriority, "nothing to track for: back to BALANCED")
+            assertEquals(LocationService.BALANCED_INTERVAL_MS, service.currentInterval)
             controller.destroy()
         }
 
