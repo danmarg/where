@@ -102,15 +102,22 @@ class LocationService : Service() {
     @VisibleForTesting
     internal var geofenceMayBeRegistered = true
 
-    /** A plant returned UNSUPPORTED (F-Droid): no plant is attempted again in this process. */
-    private var geofencingUnsupported = false
-
-    /**
-     * No plant has been attempted since startup or the last removal. While set, the next fix
-     * plants the fence, so one still goes up when no cached location was available to plant at.
-     */
+    // Three separate pieces of plant state (see canAttemptGeofencePlant):
+    //
+    // needsGeofence: no fence established since startup or the last removal. Cleared only by a
+    // plant GMS accepted (SUBMITTED/QUEUED), so it survives a FAILED one. While set, plant paths
+    // keep trying: the startup and resume plants, and the next fix when no location was cached.
     @VisibleForTesting
     internal var needsGeofence = true
+
+    // geofenceRetryBlocked: the last attempt FAILED (transient, e.g. a SecurityException). Holds
+    // off further attempts - so every fix doesn't retry - until the next registration clears it
+    // (e.g. the one after permission comes back).
+    @VisibleForTesting
+    internal var geofenceRetryBlocked = false
+
+    // geofencingUnsupported: a plant returned UNSUPPORTED (F-Droid). Never retried in this process.
+    private var geofencingUnsupported = false
 
     /** Center of the fence last requested in this process, or null if none or unknown; see [isStaleGeofenceExit]. */
     @VisibleForTesting
@@ -268,7 +275,7 @@ class LocationService : Service() {
                     // so a device already stationary at start would never get one. No center is
                     // recorded: if an exit relaunched us, this lands where that exit triggered,
                     // and checking the exit against it would wrongly call it stale.
-                    if (needsGeofence) setGeofenceAt(loc.latitude, loc.longitude, recordCenter = false)
+                    if (canAttemptGeofencePlant()) setGeofenceAt(loc.latitude, loc.longitude, recordCenter = false)
                 }
             }
         }
@@ -346,7 +353,7 @@ class LocationService : Service() {
         serviceScope.launch {
             locationSource.lastLocation.collect { loc ->
                 if (loc != null) {
-                    if (userStore.isSharingLocation.value && needsGeofence && !geofencingUnsupported) {
+                    if (userStore.isSharingLocation.value && canAttemptGeofencePlant()) {
                         // No fence yet (no cached location at startup or on resume): plant at the
                         // first fix. No center, for the same reason as the startup plant.
                         setGeofenceAt(loc.first, loc.second, recordCenter = false)
@@ -519,14 +526,17 @@ class LocationService : Service() {
         if (!userStore.isSharingLocation.value) return
         val radiusMeters = GeofencePolicy.radiusMeters(isMoving = true).toFloat()
         val result = locationProvider.setGeofenceAt(lat, lng, radiusMeters)
-        if (result == GeofenceRequestResult.SUBMITTED || result == GeofenceRequestResult.QUEUED) {
-            geofenceMayBeRegistered = true
-            geofenceCenter = if (recordCenter) lat to lng else null
+        when (result) {
+            GeofenceRequestResult.SUBMITTED, GeofenceRequestResult.QUEUED -> {
+                geofenceMayBeRegistered = true
+                geofenceCenter = if (recordCenter) lat to lng else null
+                needsGeofence = false
+                geofenceRetryBlocked = false
+            }
+            // Transient: retried after the next registration, not on every fix.
+            GeofenceRequestResult.FAILED -> geofenceRetryBlocked = true
+            GeofenceRequestResult.UNSUPPORTED -> geofencingUnsupported = true
         }
-        // Attempted: later fixes don't retry. A transient FAILED is retried on the next
-        // registration (e.g. once permission is restored); UNSUPPORTED never is.
-        needsGeofence = false
-        if (result == GeofenceRequestResult.UNSUPPORTED) geofencingUnsupported = true
         when (result) {
             GeofenceRequestResult.SUBMITTED -> {
                 // GMS: request submitted; actual confirmation logged by provider's Task listener.
@@ -619,9 +629,12 @@ class LocationService : Service() {
         // fixes before delivering — that batching can mask "moving" updates by up to 60s in
         // marginal conditions.
         isRegistered = locationProvider.requestActiveUpdates(currentPriority, currentInterval, 10_000L)
-        if (isRegistered && !geofenceMayBeRegistered && !geofencingUnsupported) {
-            // Tracking resumed (e.g. sharing turned back on) after the fence was removed. Without
-            // a new one, nothing would wake us on departure until the service restarted.
+        // A new registration is the retry point for a FAILED plant.
+        if (isRegistered) geofenceRetryBlocked = false
+        if (isRegistered && !geofenceMayBeRegistered && canAttemptGeofencePlant()) {
+            // Tracking resumed (e.g. sharing turned back on) after the fence was removed, or a
+            // plant failed. Without a fence nothing would wake us on departure until the service
+            // restarted.
             plantGeofenceAtLastKnownLocation()
         }
         if (isRegistered) {
@@ -822,14 +835,17 @@ class LocationService : Service() {
         ensureLocationRegistration()
     }
 
+    /** No fence is established, the last attempt didn't fail this registration, and geofencing works. */
+    private fun canAttemptGeofencePlant(): Boolean = needsGeofence && !geofenceRetryBlocked && !geofencingUnsupported
+
     private fun plantGeofenceAtLastKnownLocation() {
         val loc = locationSource.lastLocation.value
         if (loc != null) {
             setGeofenceAt(loc.first, loc.second)
         } else {
-            // A fix may plant first (needsGeofence); don't plant twice.
+            // A fix may plant first, or an attempt fail first; check again when it lands.
             locationProvider.getLastLocationAsync { last ->
-                if (last != null && needsGeofence) setGeofenceAt(last.latitude, last.longitude)
+                if (last != null && canAttemptGeofencePlant()) setGeofenceAt(last.latitude, last.longitude)
             }
         }
     }
