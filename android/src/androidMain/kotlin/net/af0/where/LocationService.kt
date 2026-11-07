@@ -108,9 +108,9 @@ class LocationService : Service() {
     @VisibleForTesting
     internal var currentInterval = BALANCED_INTERVAL_MS
 
-    /** Ends the HIGH-accuracy request a geofence exit starts; see [endHighAccuracyIfIdle]. */
+    /** [elapsedClock] time of the last geofence exit; see [endHighAccuracyIfIdle]. */
     @VisibleForTesting
-    internal val highAccuracyWindow = HighAccuracyWindow(HIGH_ACCURACY_IDLE_MS, MOVEMENT_RADIUS_THRESHOLD_METERS)
+    internal var lastGeofenceExitAt = 0L
 
     @VisibleForTesting
     internal var consecutiveLateHeartbeats = 0
@@ -330,7 +330,6 @@ class LocationService : Service() {
         serviceScope.launch {
             locationSource.lastLocation.collect { loc ->
                 if (loc != null) {
-                    highAccuracyWindow.onFix(clock(), loc.first, loc.second)
                     if (userStore.isSharingLocation.value) sendScheduler.onFix(loc.first, loc.second)
 
                     while (true) {
@@ -411,7 +410,7 @@ class LocationService : Service() {
             Log.d(TAG, "onStartCommand: Received Geofence Exit event")
             currentPriority = LocationAccuracy.HIGH
             currentInterval = HIGH_INTERVAL_MS
-            highAccuracyWindow.start(clock())
+            lastGeofenceExitAt = elapsedClock()
             isRegistered = false
             ensureLocationRegistration()
             logReliability(WakeSource.GEOFENCE, true)
@@ -529,6 +528,9 @@ class LocationService : Service() {
                 locationProvider.removeActiveUpdates()
                 isRegistered = false
             }
+            // A geofence exit's HIGH request belongs to that sharing session; the next one starts
+            // at BALANCED rather than resuming HIGH until the next poll wake ends it.
+            resetToBalancedAccuracy()
             if (isPassiveRegistered) {
                 locationProvider.removePassiveUpdates()
                 isPassiveRegistered = false
@@ -683,7 +685,7 @@ class LocationService : Service() {
                     ensureLocationRegistration()
                 }
             }
-            endHighAccuracyIfIdle(now)
+            endHighAccuracyIfIdle(elapsedClock())
             // Always poll — even when sharing is off we need to process incoming
             // EpochRotations and post Ratchet Acks so Alice's location doesn't get
             // stuck.  The interval is 30 min in that case (maintenance-only).
@@ -751,20 +753,26 @@ class LocationService : Service() {
     }
 
     /**
-     * Drops the HIGH / 10 s request a geofence exit started back to BALANCED / 60 s once the
-     * device has stopped moving ([highAccuracyWindow]). Nothing else lowers it, so without this
-     * GPS stays on at high accuracy after arriving anywhere until the process dies. Runs on
-     * every poll wake, which comes at least every few minutes while sharing.
+     * Drops the HIGH / 10 s request a geofence exit started back to BALANCED / 60 s once
+     * [HIGH_ACCURACY_IDLE_MS] pass without another exit. Nothing else lowers it, so without this
+     * GPS stays on at high accuracy after arriving anywhere until the process dies. Each exit
+     * replants the fence (moving radius) at the new position, so a device that keeps moving
+     * keeps exiting and stays on HIGH; one that has arrived stops exiting. Runs on poll wakes,
+     * so in deep Doze it can land up to a doze-alarm interval late. [now] is [elapsedClock] time.
      */
     @VisibleForTesting
     internal fun endHighAccuracyIfIdle(now: Long) {
-        if (currentPriority != LocationAccuracy.HIGH || !highAccuracyWindow.isIdle(now)) return
-        Log.i(TAG, "No movement for ${HIGH_ACCURACY_IDLE_MS / 60_000}min; back to balanced accuracy")
+        if (currentPriority != LocationAccuracy.HIGH || now - lastGeofenceExitAt < HIGH_ACCURACY_IDLE_MS) return
+        Log.i(TAG, "No geofence exit for ${HIGH_ACCURACY_IDLE_MS / 60_000}min; back to balanced accuracy")
         e2eeManager.addDiagnosticEvent("Stopped moving; balanced accuracy")
-        currentPriority = LocationAccuracy.BALANCED
-        currentInterval = BALANCED_INTERVAL_MS
+        resetToBalancedAccuracy()
         isRegistered = false
         ensureLocationRegistration()
+    }
+
+    private fun resetToBalancedAccuracy() {
+        currentPriority = LocationAccuracy.BALANCED
+        currentInterval = BALANCED_INTERVAL_MS
     }
 
     private fun scheduleDozeAlarm(delayMs: Long) {
@@ -926,9 +934,9 @@ class LocationService : Service() {
         const val HIGH_INTERVAL_MS = 10_000L
 
         /**
-         * How long HIGH priority lasts after the last movement of [MOVEMENT_RADIUS_THRESHOLD_METERS]
-         * or more before dropping back to BALANCED. Long enough that a stop at a traffic light or
-         * a slow walk doesn't flap it; short next to the hours it otherwise stayed on.
+         * How long HIGH priority lasts after the last geofence exit before dropping back to
+         * BALANCED. Covers a walk across the moving-radius fence (400 m, ~5 min at walking pace,
+         * plus the OS's exit latency); short next to the hours it otherwise stayed on.
          */
         const val HIGH_ACCURACY_IDLE_MS = 10 * 60 * 1000L
 
