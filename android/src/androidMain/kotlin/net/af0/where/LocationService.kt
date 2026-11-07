@@ -102,6 +102,10 @@ class LocationService : Service() {
     @VisibleForTesting
     internal var geofenceMayBeRegistered = true
 
+    /** Center of the fence last requested in this process, or null if none or unknown; see [isStaleGeofenceExit]. */
+    @VisibleForTesting
+    internal var geofenceCenter: Pair<Double, Double>? = null
+
     @VisibleForTesting
     internal var currentPriority = LocationAccuracy.BALANCED
 
@@ -391,7 +395,7 @@ class LocationService : Service() {
         // which can take 10 s+, and Samsung re-enters Doze immediately after onReceive() in
         // GeofenceReceiver returns if no wake lock is held here.
         if (intent?.action == ACTION_POLL_ALARM || intent?.action == ACTION_HEARTBEAT_TICK ||
-            (intent?.action == ACTION_GEOFENCE_EVENT && userStore.isSharingLocation.value && geofenceMayBeRegistered)
+            (intent?.action == ACTION_GEOFENCE_EVENT && userStore.isSharingLocation.value && !isStaleGeofenceExit(intent))
         ) {
             pollWakeLock.acquire(WAKE_LOCK_TIMEOUT_MS)
         }
@@ -406,12 +410,10 @@ class LocationService : Service() {
             // Don't force a high-accuracy fix or replant it - remove it so it stops waking us.
             Log.d(TAG, "onStartCommand: Geofence event while not sharing; removing stale fence")
             locationProvider.removeGeofence()
-        } else if (intent?.action == ACTION_GEOFENCE_EVENT && !geofenceMayBeRegistered) {
-            // Every removal clears geofenceMayBeRegistered, and only a plant (service start or an
-            // exit) sets it again, so this exit was already pending from a fence we removed - e.g.
-            // one delivered just after sharing was turned off and back on. It isn't a departure
-            // from anywhere we're watching: don't start a HIGH window for it.
-            Log.d(TAG, "onStartCommand: Geofence exit from a removed fence; ignoring")
+        } else if (intent?.action == ACTION_GEOFENCE_EVENT && isStaleGeofenceExit(intent)) {
+            // Not a departure from the fence we're watching (see isStaleGeofenceExit): don't start
+            // a HIGH window or replant for it.
+            Log.d(TAG, "onStartCommand: Geofence exit not from the current fence; ignoring")
             e2eeManager.addDiagnosticEvent("Stale geofence exit ignored")
         } else if (intent?.action == ACTION_GEOFENCE_EVENT) {
             Log.d(TAG, "onStartCommand: Received Geofence Exit event")
@@ -487,7 +489,8 @@ class LocationService : Service() {
         // keepalive throttle once did. Android has no stationary signal, so it always uses the
         // moving radius. Re-centering *cadence* is NOT shared - unlike iOS's proactive per-fix
         // drift check (GeofencePolicy.shouldRecenter()), Android replants only on an actual
-        // GEOFENCE_TRANSITION_EXIT (see ACTION_GEOFENCE_EVENT below). That's still
+        // GEOFENCE_TRANSITION_EXIT (see ACTION_GEOFENCE_EVENT below), at service start, and when
+        // tracking resumes without a fence (see ensureLocationRegistration). That's still
         // self-bounding - exiting the current fence is exactly what triggers the next
         // replant - just a different mechanism, not a shared one.
         // Only plant while sharing: async callers (getLastLocationAsync, the geofence-event fix)
@@ -496,7 +499,10 @@ class LocationService : Service() {
         if (!userStore.isSharingLocation.value) return
         val radiusMeters = GeofencePolicy.radiusMeters(isMoving = true).toFloat()
         val result = locationProvider.setGeofenceAt(lat, lng, radiusMeters)
-        if (result != GeofenceRequestResult.FAILED) geofenceMayBeRegistered = true
+        if (result != GeofenceRequestResult.FAILED) {
+            geofenceMayBeRegistered = true
+            geofenceCenter = lat to lng
+        }
         when (result) {
             GeofenceRequestResult.SUBMITTED -> {
                 // GMS: request submitted; actual confirmation logged by provider's Task listener.
@@ -546,6 +552,7 @@ class LocationService : Service() {
             if (geofenceMayBeRegistered) {
                 locationProvider.removeGeofence()
                 geofenceMayBeRegistered = false
+                geofenceCenter = null
             }
             // Note: We don't call stopSelf() here even if permissions are missing or sharing is paused.
             // This is intentional:
@@ -582,6 +589,11 @@ class LocationService : Service() {
         // fixes before delivering — that batching can mask "moving" updates by up to 60s in
         // marginal conditions.
         isRegistered = locationProvider.requestActiveUpdates(currentPriority, currentInterval, 10_000L)
+        if (isRegistered && !geofenceMayBeRegistered) {
+            // Tracking resumed (e.g. sharing turned back on) after the fence was removed. Without
+            // a new one, nothing would wake us on departure until the service restarted.
+            plantGeofenceAtLastKnownLocation()
+        }
         if (isRegistered) {
             lastRegistrationTime = clock()
             lastLocationCallbackTime = 0L // reset so watchdog waits for the first callback from this registration
@@ -778,6 +790,37 @@ class LocationService : Service() {
         resetToBalancedAccuracy()
         isRegistered = false
         ensureLocationRegistration()
+    }
+
+    private fun plantGeofenceAtLastKnownLocation() {
+        val loc = locationSource.lastLocation.value
+        if (loc != null) {
+            setGeofenceAt(loc.first, loc.second)
+        } else {
+            locationProvider.getLastLocationAsync { last -> if (last != null) setGeofenceAt(last.latitude, last.longitude) }
+        }
+    }
+
+    /**
+     * True if a geofence exit can't be a departure from the fence we're watching now, so it must
+     * have been pending from an earlier one (e.g. delivered just after sharing went off and on):
+     * - No fence may be registered: every removal clears [geofenceMayBeRegistered] and only a plant
+     *   sets it, so the exit came from a fence we removed.
+     * - Its triggering location is well inside the current fence ([geofenceCenter]): an exit of
+     *   this fence is reported from at least its radius away. Half the radius leaves room for fix
+     *   error. A stale exit triggered far from the current fence is accepted, which is right: the
+     *   device has moved since. Exits with no triggering location, or before this process knows
+     *   the center, can't be checked and are accepted.
+     */
+    private fun isStaleGeofenceExit(intent: Intent): Boolean {
+        if (!geofenceMayBeRegistered) return true
+        val center = geofenceCenter ?: return false
+        val lat = intent.getDoubleExtra(EXTRA_GEOFENCE_LAT, Double.NaN)
+        val lng = intent.getDoubleExtra(EXTRA_GEOFENCE_LNG, Double.NaN)
+        if (lat.isNaN() || lng.isNaN()) return false
+        val distance = FloatArray(1)
+        android.location.Location.distanceBetween(center.first, center.second, lat, lng, distance)
+        return distance[0] < GeofencePolicy.radiusMeters(isMoving = true) / 2
     }
 
     private fun resetToBalancedAccuracy() {

@@ -64,10 +64,14 @@ class LocationServiceHighAccuracyTest {
         LocationService.elapsedClock = { android.os.SystemClock.elapsedRealtime() }
     }
 
-    private fun geofenceExit() =
+    /**
+     * An exit triggered at [lat]. Each one replants the fence there, so a later exit must be at
+     * least the fence radius away to count as a departure from it: [STEP] (~555 m) per exit.
+     */
+    private fun geofenceExit(lat: Double = 37.0) =
         android.content.Intent(context, LocationService::class.java).apply {
             action = LocationService.ACTION_GEOFENCE_EVENT
-            putExtra(LocationService.EXTRA_GEOFENCE_LAT, 37.0)
+            putExtra(LocationService.EXTRA_GEOFENCE_LAT, lat)
             putExtra(LocationService.EXTRA_GEOFENCE_LNG, -122.0)
         }
 
@@ -108,7 +112,7 @@ class LocationServiceHighAccuracyTest {
 
             // Still moving: a second exit 8 min later restarts the window.
             offset += 8 * MINUTE
-            service.onStartCommand(geofenceExit(), 0, 2)
+            service.onStartCommand(geofenceExit(37.0 + STEP), 0, 2)
             advanceUntilIdle()
             val secondExit = service.lastGeofenceExitAt
             service.endHighAccuracyIfIdle(secondExit + IDLE - 1)
@@ -123,7 +127,7 @@ class LocationServiceHighAccuracyTest {
             }
 
             // The next departure switches back to HIGH.
-            service.onStartCommand(geofenceExit(), 0, 3)
+            service.onStartCommand(geofenceExit(37.0 + 2 * STEP), 0, 3)
             advanceUntilIdle()
             assertEquals(LocationAccuracy.HIGH, service.currentPriority)
             controller.destroy()
@@ -165,7 +169,7 @@ class LocationServiceHighAccuracyTest {
 
             // A second exit a minute before the first window ends.
             setElapsed(firstExit + IDLE - MINUTE)
-            service.onStartCommand(geofenceExit(), 0, 2)
+            service.onStartCommand(geofenceExit(37.0 + STEP), 0, 2)
             advanceUntilIdle()
             val secondExit = service.lastGeofenceExitAt
 
@@ -184,25 +188,62 @@ class LocationServiceHighAccuracyTest {
         }
 
     @Test
-    fun anExitFromAFenceRemovedWhenSharingStoppedIsIgnored() =
+    fun resumingSharingReplantsTheFenceAndIgnoresTheOldFencesExit() =
         runTest {
             val (controller, service) = buildService()
-            // An exit plants a fence; stopping sharing removes it; sharing resumes without one.
+            // An exit at 37.0 plants a fence there; stopping sharing removes it.
             service.onStartCommand(geofenceExit(), 0, 1)
             advanceUntilIdle()
             val app = context as TestWhereApplication
             app.userStore.setSharing(false)
             advanceUntilIdle()
+            assertEquals(false, service.geofenceMayBeRegistered)
+            val exitBefore = service.lastGeofenceExitAt
+
+            // The device is now just past where the old fence would report its exit. Resuming
+            // sharing plants a new fence here.
+            val here = 37.0 + STEP
+            fakeLocationSource.onLocation(here, -122.0, null)
+            advanceUntilIdle()
+            app.userStore.setSharing(true)
+            advanceUntilIdle()
+            verify { mockLocationProvider.setGeofenceAt(here, -122.0, any()) }
+            assertEquals(here to -122.0, service.geofenceCenter)
+
+            // The old fence's exit, already pending, arrives now, triggered here: inside the new
+            // fence, so not a departure from it.
+            setElapsed(exitBefore + MINUTE)
+            service.onStartCommand(geofenceExit(here), 0, 2)
+            advanceUntilIdle()
+            assertEquals(LocationAccuracy.BALANCED, service.currentPriority, "a stale exit must not start a HIGH window")
+            assertEquals(exitBefore, service.lastGeofenceExitAt)
+
+            // A real departure from the new fence still counts.
+            service.onStartCommand(geofenceExit(here + STEP), 0, 3)
+            advanceUntilIdle()
+            assertEquals(LocationAccuracy.HIGH, service.currentPriority)
+            controller.destroy()
+        }
+
+    @Test
+    fun anExitWithNoFenceRegisteredIsIgnored() =
+        runTest {
+            val (controller, service) = buildService()
+            service.onStartCommand(geofenceExit(), 0, 1)
+            advanceUntilIdle()
+            val app = context as TestWhereApplication
+            app.userStore.setSharing(false)
+            advanceUntilIdle()
+            // No known location, so resuming can't plant a fence.
             app.userStore.setSharing(true)
             advanceUntilIdle()
             assertEquals(false, service.geofenceMayBeRegistered)
             val exitBefore = service.lastGeofenceExitAt
 
-            // The old fence's exit, already pending, arrives now.
             setElapsed(exitBefore + MINUTE)
-            service.onStartCommand(geofenceExit(), 0, 2)
+            service.onStartCommand(geofenceExit(37.0 + STEP), 0, 2)
             advanceUntilIdle()
-            assertEquals(LocationAccuracy.BALANCED, service.currentPriority, "a stale exit must not start a HIGH window")
+            assertEquals(LocationAccuracy.BALANCED, service.currentPriority)
             assertEquals(exitBefore, service.lastGeofenceExitAt)
             controller.destroy()
         }
@@ -249,5 +290,8 @@ class LocationServiceHighAccuracyTest {
     private companion object {
         const val MINUTE = 60_000L
         const val IDLE = LocationService.HIGH_ACCURACY_IDLE_MS
+
+        /** ~555 m of latitude: more than the 400 m fence radius. */
+        const val STEP = 0.005
     }
 }
