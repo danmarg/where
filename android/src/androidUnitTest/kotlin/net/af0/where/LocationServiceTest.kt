@@ -578,6 +578,8 @@ class LocationServiceTest {
         val mockE2ee = io.mockk.mockk<net.af0.where.e2ee.E2eeManager>(relaxed = true)
         service.e2eeManagerOverride = mockE2ee
         controller.create()
+        // Startup may plant a fence (and log) itself; count only the calls below.
+        io.mockk.clearMocks(mockE2ee, answers = false, recordedCalls = true, verificationMarks = true)
 
         val setGeofenceAt =
             LocationService::class.java

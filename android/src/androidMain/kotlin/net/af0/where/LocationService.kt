@@ -631,10 +631,12 @@ class LocationService : Service() {
         isRegistered = locationProvider.requestActiveUpdates(currentPriority, currentInterval, 10_000L)
         // A new registration is the retry point for a FAILED plant.
         if (isRegistered) geofenceRetryBlocked = false
-        if (isRegistered && !geofenceMayBeRegistered && canAttemptGeofencePlant()) {
-            // Tracking resumed (e.g. sharing turned back on) after the fence was removed, or a
-            // plant failed. Without a fence nothing would wake us on departure until the service
-            // restarted.
+        if (isRegistered && canAttemptGeofencePlant()) {
+            // No fence established yet: at startup, after a FAILED plant, or after sharing turned
+            // back on removed it. needsGeofence decides, not geofenceMayBeRegistered, which starts
+            // true for a fence a previous process may have left - so a fresh process whose first
+            // plant failed still retries here, without waiting for a fix that may never come
+            // while stationary. Replanting the same fence ID is harmless.
             plantGeofenceAtLastKnownLocation()
         }
         if (isRegistered) {
@@ -839,13 +841,18 @@ class LocationService : Service() {
     private fun canAttemptGeofencePlant(): Boolean = needsGeofence && !geofenceRetryBlocked && !geofencingUnsupported
 
     private fun plantGeofenceAtLastKnownLocation() {
+        // Record the center only when this process removed the old fence itself (sharing went off
+        // and on): then a pending exit from it can be told apart. While a previous process's fence
+        // may still be live - at startup, or before any plant has succeeded - an exit can have
+        // relaunched us from about where this plant lands, so no center (see the startup plant).
+        val recordCenter = !geofenceMayBeRegistered
         val loc = locationSource.lastLocation.value
         if (loc != null) {
-            setGeofenceAt(loc.first, loc.second)
+            setGeofenceAt(loc.first, loc.second, recordCenter)
         } else {
             // A fix may plant first, or an attempt fail first; check again when it lands.
             locationProvider.getLastLocationAsync { last ->
-                if (last != null && canAttemptGeofencePlant()) setGeofenceAt(last.latitude, last.longitude)
+                if (last != null && canAttemptGeofencePlant()) setGeofenceAt(last.latitude, last.longitude, recordCenter)
             }
         }
     }
