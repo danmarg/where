@@ -147,10 +147,9 @@ final class LocationSyncService: ObservableObject {
     /// Even while stationary, force a real GPS fix at this interval instead of only re-reporting
     /// the cached location. CoreMotion's stationary detection and the underlying CLLocationUpdate
     /// stream/geofence (LocationManager) can each independently get stuck with no other path
-    /// back to a fresh fix - this
-    /// doesn't depend on either, so a friend's location can't freeze forever. Long enough to
-    /// preserve stationary battery savings; short enough that a stuck pipeline surfaces within
-    /// hours, not days.
+    /// back to a fresh fix - this doesn't depend on either, so a friend's location can't freeze
+    /// forever. Long enough to preserve stationary battery savings; short enough that a stuck
+    /// pipeline surfaces within hours, not days.
     static let stationaryForceFixInterval: TimeInterval = 2 * 60 * 60
     /// Last time we forced a real GPS fix from the pollAll heartbeat (moving heartbeat or
     /// stationary backstop). Starts at service init rather than the epoch so a fresh instance

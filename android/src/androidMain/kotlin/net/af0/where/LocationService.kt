@@ -338,7 +338,7 @@ class LocationService : Service() {
                         if (friendId in userStore.effectivelyPausedIds()) continue
                         launch {
                             try {
-                                locationClient.sendLocationToFriend(friendId, loc.first, loc.second, stationary = false, stamp = stamp)
+                                locationClient.sendLocationToFriend(friendId, loc.first, loc.second, stamp = stamp)
                             } catch (e: Exception) {
                                 Log.e(TAG, "Failed to send deferred location to $friendId: ${e.message}")
                             }
@@ -444,7 +444,7 @@ class LocationService : Service() {
                     if (loc != null) {
                         serviceScope.launch {
                             try {
-                                locationClient.sendLocationToFriend(friendId, loc.first, loc.second, stationary = false, stamp = stamp)
+                                locationClient.sendLocationToFriend(friendId, loc.first, loc.second, stamp = stamp)
                             } catch (e: Exception) {
                                 Log.e(TAG, "Failed to send forced location to $friendId: ${e.message}")
                             }
@@ -620,6 +620,7 @@ class LocationService : Service() {
 
                     override fun pausedFriendIds() = userStore.effectivelyPausedIds()
 
+                    // Android has no stationary signal (no Activity Recognition; see #391).
                     override fun stationary() = false
                 },
             // Monotonic: send intervals are elapsed time, and wall-clock changes mustn't move them.
@@ -663,8 +664,8 @@ class LocationService : Service() {
                 return
             }
             // Watchdog: Samsung (and some other OEMs) can silently revoke FLP registrations
-            // without any error callback. If we're in moving mode and haven't seen a callback
-            // for STALE_REGISTRATION_THRESHOLD_MS, force a re-registration.
+            // without any error callback. If we haven't seen a callback for
+            // STALE_REGISTRATION_THRESHOLD_MS, force a re-registration.
             val now = clock()
             if (isRegistered) {
                 val referenceTime = if (lastLocationCallbackTime > 0L) lastLocationCallbackTime else lastRegistrationTime
@@ -731,8 +732,8 @@ class LocationService : Service() {
             // setExactAndAllowWhileIdle. Scheduling below that causes silent deferral to the
             // next maintenance window — often hours on Samsung in deep Doze.
             // During rapid polling (key exchange) keep the tight interval for responsiveness.
-            // FLP PRIORITY_LOW_POWER callbacks drive the finer-grained stationary heartbeat
-            // while the foreground service is alive; the alarm is the dead-service safety net.
+            // FLP callbacks and the poll timer drive the finer-grained heartbeat while the
+            // foreground service is alive; the alarm is the dead-service safety net.
             scheduleDozeAlarm(if (rapid) interval else maxOf(DOZE_ALARM_INTERVAL_MS, interval))
             // All work for this wake is complete. Release the wake lock now so we don't hold
             // it across the entire sleep interval (could be 10+ min in background).
@@ -921,8 +922,8 @@ class LocationService : Service() {
          * Interval for the dead-service doze alarm. setExactAndAllowWhileIdle is rate-limited
          * to roughly one delivery per ~9 min by the Android platform (enforced more aggressively
          * on Samsung); scheduling below this causes silent deferral to the next maintenance
-         * window, which can be hours in deep Doze. FLP PRIORITY_LOW_POWER callbacks drive the
-         * finer-grained stationary heartbeat while the foreground service is alive.
+         * window, which can be hours in deep Doze. FLP callbacks and the poll timer drive the
+         * finer-grained heartbeat while the foreground service is alive.
          */
         const val DOZE_ALARM_INTERVAL_MS = 10 * 60 * 1000L
 

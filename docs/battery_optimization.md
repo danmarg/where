@@ -93,7 +93,7 @@ The Fused Location Provider on Android requests updates using a time interval. W
 
 ## 4. Stationary & Motion States
 
-To prevent continuous GPS consumption when a device is stationary, both platforms employ motion detection to transition between active tracking and sleep.
+To prevent continuous GPS consumption when a device is stationary, iOS uses motion detection to transition between active tracking and sleep. Android has no stationary signal and relies on a distance filter and a geofence instead (§4.1).
 
 ### 4.1 Android: Foreground FLP Request, Geofencing, and Heartbeat
 Android does have a guaranteed periodic wake primitive (`setExactAndAllowWhileIdle`), but it is rate-limited to ~once per 9 minutes per app and is further deferred to maintenance windows once the device enters deep Doze (typically after ~1h stationary with the screen off and unplugged). That cadence — potentially hours apart overnight — is too sparse for the 5-minute heartbeat budget in §2.1. To deliver a deterministic heartbeat, we instead lean on the fact that **`FusedLocationProviderClient` callbacks fire even in deep Doze when the host service is a foreground service of type `location`**, and use those callbacks as our wake source.
