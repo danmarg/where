@@ -581,21 +581,21 @@ class LocationServiceTest {
 
         val setGeofenceAt =
             LocationService::class.java
-                .getDeclaredMethod("setGeofenceAt", java.lang.Double.TYPE, java.lang.Double.TYPE)
+                .getDeclaredMethod("setGeofenceAt", java.lang.Double.TYPE, java.lang.Double.TYPE, java.lang.Boolean.TYPE)
                 .apply { isAccessible = true }
 
         io.mockk.every { mockProvider.setGeofenceAt(any(), any(), any()) } returns GeofenceRequestResult.SUBMITTED
-        setGeofenceAt.invoke(service, 1.0, 2.0)
+        setGeofenceAt.invoke(service, 1.0, 2.0, true)
         io.mockk.verify(exactly = 1) { mockE2ee.addDiagnosticEvent("Stationary: Geofence submitted") }
 
         io.mockk.every { mockProvider.setGeofenceAt(any(), any(), any()) } returns GeofenceRequestResult.QUEUED
-        setGeofenceAt.invoke(service, 3.0, 4.0)
+        setGeofenceAt.invoke(service, 3.0, 4.0, true)
         io.mockk.verify(exactly = 1) { mockE2ee.addDiagnosticEvent("Stationary: Geofence queued") }
         // Still exactly 1 - QUEUED must not also log "submitted".
         io.mockk.verify(exactly = 1) { mockE2ee.addDiagnosticEvent("Stationary: Geofence submitted") }
 
         io.mockk.every { mockProvider.setGeofenceAt(any(), any(), any()) } returns GeofenceRequestResult.FAILED
-        setGeofenceAt.invoke(service, 5.0, 6.0)
+        setGeofenceAt.invoke(service, 5.0, 6.0, true)
         // FAILED logs neither - counts from the prior two cases must stay unchanged.
         io.mockk.verify(exactly = 1) { mockE2ee.addDiagnosticEvent("Stationary: Geofence submitted") }
         io.mockk.verify(exactly = 1) { mockE2ee.addDiagnosticEvent("Stationary: Geofence queued") }
