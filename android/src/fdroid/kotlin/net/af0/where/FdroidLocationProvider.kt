@@ -226,7 +226,7 @@ class FdroidLocationProvider : LocationProvider {
         lat: Double,
         lng: Double,
         radiusMeters: Float,
-    ): GeofenceRequestResult = GeofenceRequestResult.FAILED
+    ): GeofenceRequestResult = GeofenceRequestResult.UNSUPPORTED
 
     override fun onDestroy() {
         removeActiveUpdates()

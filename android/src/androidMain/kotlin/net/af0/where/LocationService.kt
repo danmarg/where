@@ -102,11 +102,36 @@ class LocationService : Service() {
     @VisibleForTesting
     internal var geofenceMayBeRegistered = true
 
+    // Three separate pieces of plant state (see canAttemptGeofencePlant):
+    //
+    // needsGeofence: no fence established since startup or the last removal. Cleared only by a
+    // plant GMS accepted (SUBMITTED/QUEUED), so it survives a FAILED one. While set, plant paths
+    // keep trying: the startup and resume plants, and the next fix when no location was cached.
+    @VisibleForTesting
+    internal var needsGeofence = true
+
+    // geofenceRetryBlocked: the last attempt FAILED (transient, e.g. a SecurityException). Holds
+    // off further attempts - so every fix doesn't retry - until the next registration clears it
+    // (e.g. the one after permission comes back).
+    @VisibleForTesting
+    internal var geofenceRetryBlocked = false
+
+    // geofencingUnsupported: a plant returned UNSUPPORTED (F-Droid). Never retried in this process.
+    private var geofencingUnsupported = false
+
+    /** Center of the fence last requested in this process, or null if none or unknown; see [isStaleGeofenceExit]. */
+    @VisibleForTesting
+    internal var geofenceCenter: Pair<Double, Double>? = null
+
     @VisibleForTesting
     internal var currentPriority = LocationAccuracy.BALANCED
 
     @VisibleForTesting
-    internal var currentInterval = 60_000L
+    internal var currentInterval = BALANCED_INTERVAL_MS
+
+    /** [elapsedClock] time of the last geofence exit; see [endHighAccuracyIfIdle]. */
+    @VisibleForTesting
+    internal var lastGeofenceExitAt = 0L
 
     @VisibleForTesting
     internal var consecutiveLateHeartbeats = 0
@@ -247,8 +272,10 @@ class LocationService : Service() {
                         if (loc.hasBearing()) loc.bearing.toDouble() else null,
                     )
                     // Plant the initial geofence. Otherwise only a geofence exit replants it,
-                    // so a device already stationary at start would never get one.
-                    setGeofenceAt(loc.latitude, loc.longitude)
+                    // so a device already stationary at start would never get one. No center is
+                    // recorded: if an exit relaunched us, this lands where that exit triggered,
+                    // and checking the exit against it would wrongly call it stale.
+                    if (canAttemptGeofencePlant()) setGeofenceAt(loc.latitude, loc.longitude, recordCenter = false)
                 }
             }
         }
@@ -326,6 +353,11 @@ class LocationService : Service() {
         serviceScope.launch {
             locationSource.lastLocation.collect { loc ->
                 if (loc != null) {
+                    if (userStore.isSharingLocation.value && canAttemptGeofencePlant()) {
+                        // No fence yet (no cached location at startup or on resume): plant at the
+                        // first fix. No center, for the same reason as the startup plant.
+                        setGeofenceAt(loc.first, loc.second, recordCenter = false)
+                    }
                     if (userStore.isSharingLocation.value) sendScheduler.onFix(loc.first, loc.second)
 
                     while (true) {
@@ -386,8 +418,9 @@ class LocationService : Service() {
         // ACTION_GEOFENCE_EVENT is included because it launches forceLocationUpdateAndGet()
         // which can take 10 s+, and Samsung re-enters Doze immediately after onReceive() in
         // GeofenceReceiver returns if no wake lock is held here.
+        val staleGeofenceExit = intent?.action == ACTION_GEOFENCE_EVENT && isStaleGeofenceExit(intent)
         if (intent?.action == ACTION_POLL_ALARM || intent?.action == ACTION_HEARTBEAT_TICK ||
-            (intent?.action == ACTION_GEOFENCE_EVENT && userStore.isSharingLocation.value)
+            (intent?.action == ACTION_GEOFENCE_EVENT && userStore.isSharingLocation.value && !staleGeofenceExit)
         ) {
             pollWakeLock.acquire(WAKE_LOCK_TIMEOUT_MS)
         }
@@ -402,10 +435,16 @@ class LocationService : Service() {
             // Don't force a high-accuracy fix or replant it - remove it so it stops waking us.
             Log.d(TAG, "onStartCommand: Geofence event while not sharing; removing stale fence")
             locationProvider.removeGeofence()
+        } else if (staleGeofenceExit) {
+            // Not a departure from the fence we're watching (see isStaleGeofenceExit): don't start
+            // a HIGH window or replant for it.
+            Log.d(TAG, "onStartCommand: Geofence exit not from the current fence; ignoring")
+            e2eeManager.addDiagnosticEvent("Stale geofence exit ignored")
         } else if (intent?.action == ACTION_GEOFENCE_EVENT) {
             Log.d(TAG, "onStartCommand: Received Geofence Exit event")
             currentPriority = LocationAccuracy.HIGH
-            currentInterval = 10_000L
+            currentInterval = HIGH_INTERVAL_MS
+            lastGeofenceExitAt = elapsedClock()
             isRegistered = false
             ensureLocationRegistration()
             logReliability(WakeSource.GEOFENCE, true)
@@ -465,9 +504,11 @@ class LocationService : Service() {
         return START_STICKY
     }
 
+    /** [recordCenter] false leaves [geofenceCenter] unknown, so exits aren't checked against it. */
     private fun setGeofenceAt(
         lat: Double,
         lng: Double,
+        recordCenter: Boolean = true,
     ) {
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED) return
         // Radius sizing is shared with iOS (GeofencePolicy.radiusMeters(), Kotlin commonMain) so
@@ -475,7 +516,8 @@ class LocationService : Service() {
         // keepalive throttle once did. Android has no stationary signal, so it always uses the
         // moving radius. Re-centering *cadence* is NOT shared - unlike iOS's proactive per-fix
         // drift check (GeofencePolicy.shouldRecenter()), Android replants only on an actual
-        // GEOFENCE_TRANSITION_EXIT (see ACTION_GEOFENCE_EVENT below). That's still
+        // GEOFENCE_TRANSITION_EXIT (see ACTION_GEOFENCE_EVENT below), at service start, and when
+        // tracking resumes without a fence (see ensureLocationRegistration). That's still
         // self-bounding - exiting the current fence is exactly what triggers the next
         // replant - just a different mechanism, not a shared one.
         // Only plant while sharing: async callers (getLastLocationAsync, the geofence-event fix)
@@ -484,7 +526,17 @@ class LocationService : Service() {
         if (!userStore.isSharingLocation.value) return
         val radiusMeters = GeofencePolicy.radiusMeters(isMoving = true).toFloat()
         val result = locationProvider.setGeofenceAt(lat, lng, radiusMeters)
-        if (result != GeofenceRequestResult.FAILED) geofenceMayBeRegistered = true
+        when (result) {
+            GeofenceRequestResult.SUBMITTED, GeofenceRequestResult.QUEUED -> {
+                geofenceMayBeRegistered = true
+                geofenceCenter = if (recordCenter) lat to lng else null
+                needsGeofence = false
+                geofenceRetryBlocked = false
+            }
+            // Transient: retried after the next registration, not on every fix.
+            GeofenceRequestResult.FAILED -> geofenceRetryBlocked = true
+            GeofenceRequestResult.UNSUPPORTED -> geofencingUnsupported = true
+        }
         when (result) {
             GeofenceRequestResult.SUBMITTED -> {
                 // GMS: request submitted; actual confirmation logged by provider's Task listener.
@@ -500,6 +552,11 @@ class LocationService : Service() {
                 e2eeManager.addDiagnosticEvent("Stationary: Geofence queued")
             }
             GeofenceRequestResult.FAILED -> {
+                // This attempt failed (e.g. permission revoked mid-request); the next registration
+                // retries.
+                Log.w(TAG, "Stationary: geofence request failed; will retry on re-registration")
+            }
+            GeofenceRequestResult.UNSUPPORTED -> {
                 // F-Droid build: geofencing unavailable (GMS-only). Movement-triggered restart
                 // is absent; the service relies solely on WorkManager and the alarm fallback.
                 Log.w(TAG, "Stationary: geofence not set — movement-triggered restart unavailable")
@@ -523,6 +580,10 @@ class LocationService : Service() {
                 locationProvider.removeActiveUpdates()
                 isRegistered = false
             }
+            // A geofence exit's HIGH request belongs to that sharing session; the next one starts
+            // at BALANCED rather than resuming HIGH until the next poll wake ends it. Only on
+            // sharing off: a brief permission or location-services blip mid-drive keeps HIGH.
+            if (!isSharing) resetToBalancedAccuracy()
             if (isPassiveRegistered) {
                 locationProvider.removePassiveUpdates()
                 isPassiveRegistered = false
@@ -530,6 +591,8 @@ class LocationService : Service() {
             if (geofenceMayBeRegistered) {
                 locationProvider.removeGeofence()
                 geofenceMayBeRegistered = false
+                geofenceCenter = null
+                needsGeofence = true
             }
             // Note: We don't call stopSelf() here even if permissions are missing or sharing is paused.
             // This is intentional:
@@ -550,6 +613,8 @@ class LocationService : Service() {
                 locationProvider.removePassiveUpdates()
                 isPassiveRegistered = false
             }
+            // Nothing to track for: like sharing off, a later session starts at BALANCED.
+            resetToBalancedAccuracy()
             return
         }
 
@@ -564,6 +629,14 @@ class LocationService : Service() {
         // fixes before delivering — that batching can mask "moving" updates by up to 60s in
         // marginal conditions.
         isRegistered = locationProvider.requestActiveUpdates(currentPriority, currentInterval, 10_000L)
+        // A new registration is the retry point for a FAILED plant.
+        if (isRegistered) geofenceRetryBlocked = false
+        if (isRegistered && !geofenceMayBeRegistered && canAttemptGeofencePlant()) {
+            // Tracking resumed (e.g. sharing turned back on) after the fence was removed, or a
+            // plant failed. Without a fence nothing would wake us on departure until the service
+            // restarted.
+            plantGeofenceAtLastKnownLocation()
+        }
         if (isRegistered) {
             lastRegistrationTime = clock()
             lastLocationCallbackTime = 0L // reset so watchdog waits for the first callback from this registration
@@ -677,6 +750,7 @@ class LocationService : Service() {
                     ensureLocationRegistration()
                 }
             }
+            endHighAccuracyIfIdle(elapsedClock())
             // Always poll — even when sharing is off we need to process incoming
             // EpochRotations and post Ratchet Acks so Alice's location doesn't get
             // stuck.  The interval is 30 min in that case (maintenance-only).
@@ -741,6 +815,66 @@ class LocationService : Service() {
             locationSource.awaitPollWake(interval)
             cancelDozeAlarm()
         }
+    }
+
+    /**
+     * Drops the HIGH / 10 s request a geofence exit started back to BALANCED / 60 s once
+     * [HIGH_ACCURACY_IDLE_MS] pass without another exit. Nothing else lowers it, so without this
+     * GPS stays on at high accuracy after arriving anywhere until the process dies. Each exit
+     * replants the fence (moving radius) at the new position, so a device that keeps moving
+     * keeps exiting and stays on HIGH; one that has arrived stops exiting. Runs on poll wakes,
+     * so in deep Doze it can land up to a doze-alarm interval late. [now] is [elapsedClock] time.
+     */
+    @VisibleForTesting
+    internal fun endHighAccuracyIfIdle(now: Long) {
+        if (currentPriority != LocationAccuracy.HIGH || now - lastGeofenceExitAt < HIGH_ACCURACY_IDLE_MS) return
+        Log.i(TAG, "No geofence exit for ${HIGH_ACCURACY_IDLE_MS / 60_000}min; back to balanced accuracy")
+        e2eeManager.addDiagnosticEvent("Stopped moving; balanced accuracy")
+        resetToBalancedAccuracy()
+        isRegistered = false
+        ensureLocationRegistration()
+    }
+
+    /** No fence is established, the last attempt didn't fail this registration, and geofencing works. */
+    private fun canAttemptGeofencePlant(): Boolean = needsGeofence && !geofenceRetryBlocked && !geofencingUnsupported
+
+    private fun plantGeofenceAtLastKnownLocation() {
+        val loc = locationSource.lastLocation.value
+        if (loc != null) {
+            setGeofenceAt(loc.first, loc.second)
+        } else {
+            // A fix may plant first, or an attempt fail first; check again when it lands.
+            locationProvider.getLastLocationAsync { last ->
+                if (last != null && canAttemptGeofencePlant()) setGeofenceAt(last.latitude, last.longitude)
+            }
+        }
+    }
+
+    /**
+     * True if a geofence exit can't be a departure from the fence we're watching now, so it must
+     * have been pending from an earlier one (e.g. delivered just after sharing went off and on):
+     * - No fence may be registered: every removal clears [geofenceMayBeRegistered] and only a plant
+     *   sets it, so the exit came from a fence we removed.
+     * - Its triggering location is well inside the current fence ([geofenceCenter]): an exit of
+     *   this fence is reported from at least its radius away. Half the radius leaves room for fix
+     *   error. A stale exit triggered far from the current fence is accepted, which is right: the
+     *   device has moved since. Exits with no triggering location, or before this process knows
+     *   the center, can't be checked and are accepted.
+     */
+    private fun isStaleGeofenceExit(intent: Intent): Boolean {
+        if (!geofenceMayBeRegistered) return true
+        val center = geofenceCenter ?: return false
+        val lat = intent.getDoubleExtra(EXTRA_GEOFENCE_LAT, Double.NaN)
+        val lng = intent.getDoubleExtra(EXTRA_GEOFENCE_LNG, Double.NaN)
+        if (lat.isNaN() || lng.isNaN()) return false
+        val distance = FloatArray(1)
+        android.location.Location.distanceBetween(center.first, center.second, lat, lng, distance)
+        return distance[0] < GeofencePolicy.radiusMeters(isMoving = true) / 2
+    }
+
+    private fun resetToBalancedAccuracy() {
+        currentPriority = LocationAccuracy.BALANCED
+        currentInterval = BALANCED_INTERVAL_MS
     }
 
     private fun scheduleDozeAlarm(delayMs: Long) {
@@ -894,6 +1028,20 @@ class LocationService : Service() {
          * and broadcast to friends.
          */
         const val MOVEMENT_RADIUS_THRESHOLD_METERS = 200f
+
+        /** Active request interval at BALANCED priority, the default. */
+        const val BALANCED_INTERVAL_MS = 60_000L
+
+        /** Active request interval at HIGH priority, after a geofence exit. */
+        const val HIGH_INTERVAL_MS = 10_000L
+
+        /**
+         * How long HIGH priority lasts after the last geofence exit before dropping back to
+         * BALANCED. Covers a walk across the moving-radius fence (400 m, ~5 min at walking pace)
+         * plus the OS's exit latency (often 2-6 min with the screen off), so a steady walker
+         * doesn't flap between HIGH and BALANCED; short next to the hours it otherwise stayed on.
+         */
+        const val HIGH_ACCURACY_IDLE_MS = 15 * 60 * 1000L
 
         /**
          * Interval to wait before forcing a fresh GPS fix if stationary (§5.3).
