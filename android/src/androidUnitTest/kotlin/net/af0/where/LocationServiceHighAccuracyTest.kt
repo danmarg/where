@@ -32,6 +32,7 @@ class LocationServiceHighAccuracyTest {
     private lateinit var mockLocationProvider: LocationProvider
     private var now = 1_000_000_000L
     private var offset = 0L
+    private val friend = mockk<net.af0.where.e2ee.FriendEntry>(relaxed = true)
 
     @Before
     fun setup() {
@@ -39,7 +40,7 @@ class LocationServiceHighAccuracyTest {
         shadowOf(context).grantPermissions(Manifest.permission.ACCESS_FINE_LOCATION)
 
         fakeLocationSource = ServiceFakeLocationSource()
-        fakeLocationSource.onFriendsUpdated(listOf(mockk<net.af0.where.e2ee.FriendEntry>(relaxed = true)))
+        fakeLocationSource.onFriendsUpdated(listOf(friend))
         LocationService.clock = { now }
 
         mockLocationProvider = mockk(relaxed = true)
@@ -80,7 +81,11 @@ class LocationServiceHighAccuracyTest {
         val service = controller.get()
         service.locationProviderOverride = mockLocationProvider
         service.locationClientOverride = mockk(relaxed = true)
-        service.e2eeManagerOverride = mockk(relaxed = true)
+        // The poll loop refreshes the friend list from here; with none it stops registering
+        // location (and the service stops itself), so the exit's HIGH request would never go out.
+        val e2ee = mockk<net.af0.where.e2ee.E2eeManager>(relaxed = true)
+        io.mockk.coEvery { e2ee.listFriends() } returns listOf(friend)
+        service.e2eeManagerOverride = e2ee
         service.locationSourceOverride = fakeLocationSource
         controller.create()
         advanceUntilIdle()
