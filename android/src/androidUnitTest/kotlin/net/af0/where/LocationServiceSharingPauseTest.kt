@@ -55,6 +55,7 @@ class LocationServiceSharingPauseTest {
     fun tearDown() {
         io.mockk.unmockkAll()
         Dispatchers.resetMain()
+        LocationService.elapsedClock = { android.os.SystemClock.elapsedRealtime() }
     }
 
     @Test
@@ -228,6 +229,9 @@ class LocationServiceSharingPauseTest {
         }
 
     private fun TestScope.startSharingService(): Pair<ServiceController<LocationService>, LocationService> {
+        // The send scheduler waits on virtual time and re-checks this clock. Frozen, it would make
+        // advanceUntilIdle() spin forever once a second fix makes a send due after the interval.
+        LocationService.elapsedClock = { testScheduler.currentTime }
         (context as TestWhereApplication).userStore.setSharing(true)
         // A heartbeat's forced fix finds nothing, so only the fixes a test sends exist (whether a
         // heartbeat is due depends on the elapsed clock other test classes may have set).
