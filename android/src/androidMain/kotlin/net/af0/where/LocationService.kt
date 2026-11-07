@@ -43,7 +43,6 @@ enum class WakeSource(val value: String) {
     WORKER("Worker"),
     GEOFENCE("Geofence"),
     LOCATION_UPDATE("GPS"),
-    ACTIVITY_TRANSITION("Activity"),
     HEARTBEAT("Heartbeat"),
     NETWORK("Network"),
     MANUAL("Manual"),
@@ -56,9 +55,6 @@ enum class WakeSource(val value: String) {
 class LocationService : Service() {
     @VisibleForTesting
     internal var locationProviderOverride: LocationProvider? = null
-
-    @VisibleForTesting
-    internal var activityHelperOverride: ActivityHelper? = null
 
     @VisibleForTesting
     internal var e2eeManagerOverride: E2eeManager? = null
@@ -85,7 +81,6 @@ class LocationService : Service() {
     private lateinit var pollWakeLock: PowerManager.WakeLock
     private lateinit var networkWakeLock: PowerManager.WakeLock
     private lateinit var locationProvider: LocationProvider
-    private lateinit var activityHelper: ActivityHelper
 
     // Set when startForeground() throws in onCreate() (see there). Everything below that call
     // in onCreate() — including the lateinit properties above — never gets initialized in that
@@ -114,12 +109,6 @@ class LocationService : Service() {
     internal var currentInterval = 60_000L
 
     @VisibleForTesting
-    internal var isStill = false
-
-    @VisibleForTesting
-    internal var lastStillForcedFixTime: Long = 0L
-
-    @VisibleForTesting
     internal var consecutiveLateHeartbeats = 0
 
     @VisibleForTesting
@@ -127,43 +116,6 @@ class LocationService : Service() {
 
     @VisibleForTesting
     internal var lastRegistrationTime: Long = 0L
-
-    private data class RecentFix(val ts: Long, val lat: Double, val lng: Double)
-
-    private val recentFixes = ArrayDeque<RecentFix>()
-
-    private fun recordRecentFix(
-        lat: Double,
-        lng: Double,
-    ) {
-        val now = clock()
-        recentFixes.addLast(RecentFix(now, lat, lng))
-        val cutoff = now - RECENT_FIX_WINDOW_MS
-        while (recentFixes.isNotEmpty() && recentFixes.first().ts < cutoff) {
-            recentFixes.removeFirst()
-        }
-    }
-
-    @VisibleForTesting
-    internal fun maxRecentDisplacementMeters(): Float {
-        if (recentFixes.size < 2) return 0f
-        val results = FloatArray(1)
-        var maxD = 0f
-        val list = recentFixes.toList()
-        for (i in list.indices) {
-            for (j in i + 1 until list.size) {
-                android.location.Location.distanceBetween(
-                    list[i].lat,
-                    list[i].lng,
-                    list[j].lat,
-                    list[j].lng,
-                    results,
-                )
-                if (results[0] > maxD) maxD = results[0]
-            }
-        }
-        return maxD
-    }
 
     private val pendingFriendSends = Channel<String>(Channel.UNLIMITED)
 
@@ -226,14 +178,6 @@ class LocationService : Service() {
     private var networkCallback: ConnectivityManager.NetworkCallback? = null
     private var locationProvidersChangedReceiver: BroadcastReceiver? = null
 
-    private fun hasActivityPermission(): Boolean {
-        return if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
-            ContextCompat.checkSelfPermission(this, Manifest.permission.ACTIVITY_RECOGNITION) == PackageManager.PERMISSION_GRANTED
-        } else {
-            true
-        }
-    }
-
     override fun onCreate() {
         super.onCreate()
         Log.d(TAG, "onCreate")
@@ -291,12 +235,8 @@ class LocationService : Service() {
         locationProvider = locationProviderOverride ?: createLocationProvider()
         locationProvider.init(this) { lat, lng, bearing ->
             lastLocationCallbackTime = clock()
-            recordRecentFix(lat, lng)
             locationSource.onLocation(lat, lng, bearing)
         }
-
-        activityHelper = activityHelperOverride ?: createActivityHelper()
-        activityHelper.init(this)
 
         if (hasLocationPermission()) {
             locationProvider.getLastLocationAsync { loc ->
@@ -306,9 +246,8 @@ class LocationService : Service() {
                         loc.longitude,
                         if (loc.hasBearing()) loc.bearing.toDouble() else null,
                     )
-                    // Plant the initial geofence. Activity Recognition only fires on
-                    // transitions, so if the device is already stationary at start no
-                    // STILL-enter fires and the geofence would never be set otherwise.
+                    // Plant the initial geofence. Otherwise only a geofence exit replants it,
+                    // so a device already stationary at start would never get one.
                     setGeofenceAt(loc.latitude, loc.longitude)
                 }
             }
@@ -387,11 +326,6 @@ class LocationService : Service() {
         serviceScope.launch {
             locationSource.lastLocation.collect { loc ->
                 if (loc != null) {
-                    // Snapshot once: isStill is a mutable var another coroutine (an activity
-                    // transition, the backstop) could flip between here and when an async
-                    // launch{} below actually runs, which would otherwise describe this same
-                    // location event inconsistently depending on scheduling luck.
-                    val stationary = isStill
                     if (userStore.isSharingLocation.value) sendScheduler.onFix(loc.first, loc.second)
 
                     while (true) {
@@ -404,7 +338,7 @@ class LocationService : Service() {
                         if (friendId in userStore.effectivelyPausedIds()) continue
                         launch {
                             try {
-                                locationClient.sendLocationToFriend(friendId, loc.first, loc.second, stationary = stationary, stamp = stamp)
+                                locationClient.sendLocationToFriend(friendId, loc.first, loc.second, stamp = stamp)
                             } catch (e: Exception) {
                                 Log.e(TAG, "Failed to send deferred location to $friendId: ${e.message}")
                             }
@@ -447,78 +381,6 @@ class LocationService : Service() {
         Log.d(TAG, "onStartCommand: isRegistered=$isRegistered")
         ensurePollLoopRunning()
         ensureLocationRegistration()
-        if (BuildConfig.ACTIVITY_RECOGNITION_ENABLED) {
-            activityHelper.ensureRegistered(hasActivityPermission(), userStore.isSharingLocation.value)
-        }
-
-        if (BuildConfig.ACTIVITY_RECOGNITION_ENABLED && intent?.action == ACTION_ACTIVITY_TRANSITION) {
-            val events = activityHelper.extractTransitionEvents(intent)
-            if (events != null) {
-                for (event in events) {
-                    Log.d(TAG, "Activity Transition: ${event.type} (${event.transition})")
-                    // Cross-check: if Activity Recognition reports STILL but we've actually
-                    // moved >100m in the last 2 minutes (e.g. phone-in-pocket while walking),
-                    // ignore the signal rather than demoting the location request.
-                    if (event.type == ActivityType.STILL && event.transition == TransitionType.ENTER) {
-                        val displacement = maxRecentDisplacementMeters()
-                        if (displacement > STILL_DISPLACEMENT_IGNORE_METERS) {
-                            Log.i(TAG, "Ignoring STILL enter: moved ${displacement.toInt()}m in last 2 min")
-                            e2eeManager.addDiagnosticEvent("STILL ignored (moved ${displacement.toInt()}m)")
-                            continue
-                        }
-                    }
-                    val newPriority =
-                        when (event.type) {
-                            ActivityType.STILL -> LocationAccuracy.LOW_POWER
-                            else -> LocationAccuracy.HIGH
-                        }
-                    val newInterval =
-                        when (event.type) {
-                            ActivityType.STILL -> HEARTBEAT_INTERVAL_MS
-                            else -> 10_000L
-                        }
-
-                    if (newPriority != currentPriority || newInterval != currentInterval) {
-                        currentPriority = newPriority
-                        currentInterval = newInterval
-                        Log.i(TAG, "Updating location request: priority=$currentPriority, interval=$currentInterval")
-                        logReliability(WakeSource.ACTIVITY_TRANSITION, true)
-
-                        val enteringStill = event.type == ActivityType.STILL
-                        isStill = enteringStill
-                        if (enteringStill) {
-                            // Start the STILL-mode force-fix countdown fresh so a device that
-                            // just settled doesn't immediately re-force a fix on top of the
-                            // stationary send below.
-                            lastStillForcedFixTime = clock()
-                        }
-                        // Always maintain a geofence as a belt-and-suspenders restart trigger
-                        // in case the foreground service is killed. On MOVING transitions we
-                        // replant it at the current position rather than removing it so that
-                        // real movement still wakes us regardless of activity state.
-                        val loc = locationSource.lastLocation.value
-                        if (loc != null) {
-                            setGeofenceAt(loc.first, loc.second)
-                        }
-
-                        if (enteringStill && loc != null && userStore.isSharingLocation.value) {
-                            // Immediately tell peers we're stationary here, before we might go
-                            // dark - mirrors iOS's immediate send on first stationary detection.
-                            // Forced, so not held back by the send interval: the whole point is to
-                            // warn the peer before a possible suspension. See the "here since"
-                            // background-triggering investigation.
-                            sendScheduler.onFix(loc.first, loc.second)
-                            sendScheduler.requestForced()
-                        }
-
-                        // Force re-registration with new settings.
-                        isRegistered = false
-                        ensureLocationRegistration()
-                    }
-                }
-            }
-        }
-
         // Acquire the wake lock for any intent that drives real work (GPS fix + network send).
         // Applied unconditionally — no isHeld guard — so back-to-back wakes refresh the timeout.
         // ACTION_GEOFENCE_EVENT is included because it launches forceLocationUpdateAndGet()
@@ -544,7 +406,6 @@ class LocationService : Service() {
             Log.d(TAG, "onStartCommand: Received Geofence Exit event")
             currentPriority = LocationAccuracy.HIGH
             currentInterval = 10_000L
-            isStill = false
             isRegistered = false
             ensureLocationRegistration()
             logReliability(WakeSource.GEOFENCE, true)
@@ -581,11 +442,9 @@ class LocationService : Service() {
                 } else if (friendId != null) {
                     val loc = locationSource.lastLocation.value
                     if (loc != null) {
-                        // Snapshot: isStill could change between launch{} and execution.
-                        val stationary = isStill
                         serviceScope.launch {
                             try {
-                                locationClient.sendLocationToFriend(friendId, loc.first, loc.second, stationary = stationary, stamp = stamp)
+                                locationClient.sendLocationToFriend(friendId, loc.first, loc.second, stamp = stamp)
                             } catch (e: Exception) {
                                 Log.e(TAG, "Failed to send forced location to $friendId: ${e.message}")
                             }
@@ -613,11 +472,9 @@ class LocationService : Service() {
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED) return
         // Radius sizing is shared with iOS (GeofencePolicy.radiusMeters(), Kotlin commonMain) so
         // the two platforms can't silently drift apart on "how big" the way the automated-
-        // keepalive throttle once did: larger while moving (we have live GPS truth anyway;
-        // fewer re-registrations needed), tighter once STILL (position isn't drifting, so a
-        // real departure should be caught fast). Re-centering *cadence* is NOT shared - unlike
-        // iOS's proactive per-fix drift check (GeofencePolicy.shouldRecenter()), Android
-        // replants only on an ActivityRecognition STILL/MOVING transition or an actual
+        // keepalive throttle once did. Android has no stationary signal, so it always uses the
+        // moving radius. Re-centering *cadence* is NOT shared - unlike iOS's proactive per-fix
+        // drift check (GeofencePolicy.shouldRecenter()), Android replants only on an actual
         // GEOFENCE_TRANSITION_EXIT (see ACTION_GEOFENCE_EVENT below). That's still
         // self-bounding - exiting the current fence is exactly what triggers the next
         // replant - just a different mechanism, not a shared one.
@@ -625,7 +482,7 @@ class LocationService : Service() {
         // can complete after sharing was turned off, and a fence planted then would never be
         // removed by ensureLocationRegistration().
         if (!userStore.isSharingLocation.value) return
-        val radiusMeters = GeofencePolicy.radiusMeters(isMoving = !isStill).toFloat()
+        val radiusMeters = GeofencePolicy.radiusMeters(isMoving = true).toFloat()
         val result = locationProvider.setGeofenceAt(lat, lng, radiusMeters)
         if (result != GeofenceRequestResult.FAILED) geofenceMayBeRegistered = true
         when (result) {
@@ -703,11 +560,10 @@ class LocationService : Service() {
             if (isPassiveRegistered) Log.i(TAG, "Passive location updates registered.")
         }
 
-        // When moving, keep max delivery delay tight (10s) so the provider doesn't batch up to a
-        // full minute of fixes before delivering — that batching can mask "moving"
-        // updates by up to 60s in marginal conditions. When STILL, batching is fine.
-        val maxDelay = if (isStill) 60_000L else 10_000L
-        isRegistered = locationProvider.requestActiveUpdates(currentPriority, currentInterval, maxDelay)
+        // Keep max delivery delay tight (10s) so the provider doesn't batch up to a full minute of
+        // fixes before delivering — that batching can mask "moving" updates by up to 60s in
+        // marginal conditions.
+        isRegistered = locationProvider.requestActiveUpdates(currentPriority, currentInterval, 10_000L)
         if (isRegistered) {
             lastRegistrationTime = clock()
             lastLocationCallbackTime = 0L // reset so watchdog waits for the first callback from this registration
@@ -728,9 +584,6 @@ class LocationService : Service() {
         locationProvider.onDestroy()
         isRegistered = false
         isPassiveRegistered = false
-        if (BuildConfig.ACTIVITY_RECOGNITION_ENABLED) {
-            activityHelper.onDestroy()
-        }
         val connectivityManager = getSystemService(ConnectivityManager::class.java)
         networkCallback?.let { connectivityManager?.unregisterNetworkCallback(it) }
         locationProvidersChangedReceiver?.let { unregisterReceiver(it) }
@@ -767,7 +620,8 @@ class LocationService : Service() {
 
                     override fun pausedFriendIds() = userStore.effectivelyPausedIds()
 
-                    override fun stationary() = isStill
+                    // Android has no stationary signal (no Activity Recognition; see #391).
+                    override fun stationary() = false
                 },
             // Monotonic: send intervals are elapsed time, and wall-clock changes mustn't move them.
             clock = { elapsedClock() },
@@ -810,10 +664,10 @@ class LocationService : Service() {
                 return
             }
             // Watchdog: Samsung (and some other OEMs) can silently revoke FLP registrations
-            // without any error callback. If we're in moving mode and haven't seen a callback
-            // for STALE_REGISTRATION_THRESHOLD_MS, force a re-registration.
+            // without any error callback. If we haven't seen a callback for
+            // STALE_REGISTRATION_THRESHOLD_MS, force a re-registration.
             val now = clock()
-            if (isRegistered && !isStill) {
+            if (isRegistered) {
                 val referenceTime = if (lastLocationCallbackTime > 0L) lastLocationCallbackTime else lastRegistrationTime
                 if (referenceTime > 0L && now - referenceTime > STALE_REGISTRATION_THRESHOLD_MS) {
                     Log.w(TAG, "FLP callbacks stale for ${(now - referenceTime) / 60000}min; re-registering")
@@ -832,57 +686,8 @@ class LocationService : Service() {
             // due: this loop also wakes on location callbacks and the 10 s / 2 s timers, and
             // would otherwise force a GPS fix on each.
             if (isSharing && sendScheduler.isHeartbeatDue()) {
-                val now = clock()
-                val stillBackstopDue = isStillBackstopDue(now)
-                val loc =
-                    run {
-                        if (isStill && !stillBackstopDue) {
-                            Log.d(TAG, "Stationary and STILL; skipping forced GPS fix, will re-report cached location.")
-                            null
-                        } else {
-                            if (stillBackstopDue) {
-                                // Backstop: Activity Recognition and the geofence it plants are
-                                // both OS-driven signals that can silently die (missed transition
-                                // broadcasts, a geofence that never fires) leaving isStill stuck
-                                // true with no other path back to a real fix (see the isStill-gated
-                                // watchdog above). This is independent of that machinery: a plain
-                                // one-shot fix on its own timer, so a friend can't freeze forever.
-                                val stillMinutes = STILL_MODE_FORCE_FIX_INTERVAL_MS / 60_000
-                                Log.d(TAG, "STILL backstop: forcing fresh GPS fix after ${stillMinutes}min stationary.")
-                                e2eeManager.addDiagnosticEvent("STILL backstop: forcing GPS fix")
-                                lastStillForcedFixTime = now
-                            } else {
-                                Log.d(TAG, "Stationary threshold exceeded; forcing fresh location fix.")
-                            }
-                            val cachedLoc = locationSource.lastLocation.value
-                            val freshLoc = forceLocationUpdateAndGet()
-                            // The backstop exists precisely because isStill can be stuck true with
-                            // no other path back to reality (see comment above) - so when it forces
-                            // a fix, cross-check displacement the same way the STILL-enter transition
-                            // handler does, and correct the stuck flag if we actually moved. Without
-                            // this, a friend would see a frozen "here since" timestamp on top of a
-                            // silently-updating position.
-                            if (stillBackstopDue && freshLoc != null && cachedLoc != null) {
-                                val results = FloatArray(1)
-                                android.location.Location.distanceBetween(
-                                    cachedLoc.first,
-                                    cachedLoc.second,
-                                    freshLoc.latitude,
-                                    freshLoc.longitude,
-                                    results,
-                                )
-                                if (results[0] > STILL_DISPLACEMENT_IGNORE_METERS) {
-                                    Log.i(
-                                        TAG,
-                                        "STILL backstop: moved ${results[0].toInt()}m since last fix; correcting stuck isStill flag.",
-                                    )
-                                    e2eeManager.addDiagnosticEvent("STILL backstop: moved ${results[0].toInt()}m, correcting isStill")
-                                    isStill = false
-                                }
-                            }
-                            freshLoc
-                        }
-                    }
+                Log.d(TAG, "Stationary threshold exceeded; forcing fresh location fix.")
+                val loc = forceLocationUpdateAndGet()
 
                 val lastLoc =
                     if (loc != null) {
@@ -927,8 +732,8 @@ class LocationService : Service() {
             // setExactAndAllowWhileIdle. Scheduling below that causes silent deferral to the
             // next maintenance window — often hours on Samsung in deep Doze.
             // During rapid polling (key exchange) keep the tight interval for responsiveness.
-            // FLP PRIORITY_LOW_POWER callbacks drive the finer-grained stationary heartbeat
-            // while the foreground service is alive; the alarm is the dead-service safety net.
+            // FLP callbacks and the poll timer drive the finer-grained heartbeat while the
+            // foreground service is alive; the alarm is the dead-service safety net.
             scheduleDozeAlarm(if (rapid) interval else maxOf(DOZE_ALARM_INTERVAL_MS, interval))
             // All work for this wake is complete. Release the wake lock now so we don't hold
             // it across the entire sleep interval (could be 10+ min in background).
@@ -957,10 +762,6 @@ class LocationService : Service() {
         val pi = PendingIntent.getService(this, 0, intent, PendingIntent.FLAG_NO_CREATE or PendingIntent.FLAG_IMMUTABLE)
         if (pi != null) alarmManager.cancel(pi)
     }
-
-    /** See [STILL_MODE_FORCE_FIX_INTERVAL_MS]. Extracted for direct testability of the timing math. */
-    @VisibleForTesting
-    internal fun isStillBackstopDue(now: Long): Boolean = isStill && now - lastStillForcedFixTime > STILL_MODE_FORCE_FIX_INTERVAL_MS
 
     @VisibleForTesting
     internal fun pollInterval(
@@ -1082,10 +883,8 @@ class LocationService : Service() {
     companion object {
         const val ACTION_POLL_ALARM = "net.af0.where.ACTION_POLL_ALARM"
         const val ACTION_FORCE_PUBLISH = "net.af0.where.ACTION_FORCE_PUBLISH"
-        const val ACTION_ACTIVITY_TRANSITION = "net.af0.where.ACTION_ACTIVITY_TRANSITION"
         const val ACTION_GEOFENCE_EVENT = "net.af0.where.ACTION_GEOFENCE_EVENT"
         const val ACTION_HEARTBEAT_TICK = "net.af0.where.ACTION_HEARTBEAT_TICK"
-        internal const val PENDING_INTENT_REQUEST_CODE_ACTIVITY = 1
         const val EXTRA_FRIEND_ID = "friend_id"
         const val EXTRA_GEOFENCE_LAT = "geofence_lat"
         const val EXTRA_GEOFENCE_LNG = "geofence_lng"
@@ -1102,17 +901,6 @@ class LocationService : Service() {
          * flow even when the OS throttles streaming updates in sleep mode.
          */
         const val STATIONARY_FORCE_UPDATE_THRESHOLD_MS = 5 * 60 * 1000L
-
-        /**
-         * Even while classified STILL, force a real one-shot GPS fix at this interval instead of
-         * only re-reporting the cached location. Activity Recognition transitions and the
-         * geofence they plant can both silently stop firing (missed broadcast, geofence that
-         * never triggers), leaving isStill stuck true indefinitely with no other recovery path -
-         * this backstop doesn't depend on either, so a friend's location can't freeze forever.
-         * Long enough to preserve STILL-mode battery savings; short enough that a stuck
-         * classifier surfaces within hours, not days.
-         */
-        const val STILL_MODE_FORCE_FIX_INTERVAL_MS = 2 * 60 * 60 * 1000L
 
         /** Minimum interval between non-heartbeat (movement-triggered) location sends. */
         const val MIN_SEND_INTERVAL_MS = 30_000L
@@ -1134,27 +922,17 @@ class LocationService : Service() {
          * Interval for the dead-service doze alarm. setExactAndAllowWhileIdle is rate-limited
          * to roughly one delivery per ~9 min by the Android platform (enforced more aggressively
          * on Samsung); scheduling below this causes silent deferral to the next maintenance
-         * window, which can be hours in deep Doze. FLP PRIORITY_LOW_POWER callbacks drive the
-         * finer-grained stationary heartbeat while the foreground service is alive.
+         * window, which can be hours in deep Doze. FLP callbacks and the poll timer drive the
+         * finer-grained heartbeat while the foreground service is alive.
          */
         const val DOZE_ALARM_INTERVAL_MS = 10 * 60 * 1000L
 
         /**
-         * If no FLP callback has arrived for this long while in non-STILL mode, treat the
-         * registration as silently dropped and force a re-registration. Samsung's power
-         * management can revoke FLP registrations without any error callback.
+         * If no FLP callback has arrived for this long, treat the registration as silently
+         * dropped and force a re-registration. Samsung's power management can revoke FLP
+         * registrations without any error callback.
          */
         const val STALE_REGISTRATION_THRESHOLD_MS = 15 * 60 * 1000L
-
-        /** Window of recent GPS fixes consulted by the STILL cross-check. */
-        const val RECENT_FIX_WINDOW_MS = 2 * 60 * 1000L
-
-        /**
-         * If Activity Recognition reports STILL but we've actually moved more than this
-         * many meters in the last [RECENT_FIX_WINDOW_MS], ignore the signal — common
-         * mis-classification when the phone is in a steady pocket while walking.
-         */
-        const val STILL_DISPLACEMENT_IGNORE_METERS = 100f
 
         /** Overridable in tests. */
         var clock: () -> Long = { System.currentTimeMillis() }

@@ -82,16 +82,6 @@ class GmsLocationProviderTest {
     }
 
     @Test
-    fun requestActiveUpdates_lowPower_mapsToPriorityLowPower() {
-        val slot = slot<LocationRequest>()
-        every {
-            mockFusedClient.requestLocationUpdates(capture(slot), any<LocationCallback>(), any())
-        } returns mockk(relaxed = true)
-        provider.requestActiveUpdates(LocationAccuracy.LOW_POWER, 60_000L, 60_000L)
-        assertEquals(Priority.PRIORITY_LOW_POWER, slot.captured.priority)
-    }
-
-    @Test
     fun requestActiveUpdates_passive_mapsToPriorityPassive() {
         val slot = slot<LocationRequest>()
         every {

@@ -56,7 +56,6 @@ class LocationServiceStartForegroundFailureTest {
         service.locationClientOverride = mockk(relaxed = true)
         service.uiStateStoreOverride = FakeUiStateStore()
         service.locationProviderOverride = mockk(relaxed = true)
-        service.activityHelperOverride = mockk(relaxed = true)
 
         controller.create()
 
@@ -74,12 +73,11 @@ class LocationServiceStartForegroundFailureTest {
         service.locationClientOverride = mockk(relaxed = true)
         service.uiStateStoreOverride = FakeUiStateStore()
         service.locationProviderOverride = mockk(relaxed = true)
-        service.activityHelperOverride = mockk(relaxed = true)
 
         controller.create()
 
         // Before the fix, this threw UninitializedPropertyAccessException because onCreate()
-        // returned before initializing locationProvider/activityHelper/etc., and onDestroy()
+        // returned before initializing locationProvider etc., and onDestroy()
         // unconditionally dereferenced them.
         controller.destroy()
     }
@@ -95,7 +93,6 @@ class LocationServiceStartForegroundFailureTest {
         service.locationClientOverride = mockk(relaxed = true)
         service.uiStateStoreOverride = FakeUiStateStore()
         service.locationProviderOverride = mockk(relaxed = true)
-        service.activityHelperOverride = mockk(relaxed = true)
 
         controller.create()
 
@@ -125,7 +122,6 @@ class LocationServiceStartForegroundFailureTest {
         service.locationClientOverride = mockk(relaxed = true)
         service.uiStateStoreOverride = FakeUiStateStore()
         service.locationProviderOverride = mockk(relaxed = true)
-        service.activityHelperOverride = mockk(relaxed = true)
 
         controller.create()
 

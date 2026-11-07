@@ -5,7 +5,6 @@ import android.location.Location
 
 enum class LocationAccuracy {
     PASSIVE,
-    LOW_POWER,
     BALANCED,
     HIGH,
 }

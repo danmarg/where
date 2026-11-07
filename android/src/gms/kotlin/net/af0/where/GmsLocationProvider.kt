@@ -74,7 +74,6 @@ class GmsLocationProvider : LocationProvider {
     private fun LocationAccuracy.toGmsPriority() =
         when (this) {
             LocationAccuracy.PASSIVE -> Priority.PRIORITY_PASSIVE
-            LocationAccuracy.LOW_POWER -> Priority.PRIORITY_LOW_POWER
             LocationAccuracy.BALANCED -> Priority.PRIORITY_BALANCED_POWER_ACCURACY
             LocationAccuracy.HIGH -> Priority.PRIORITY_HIGH_ACCURACY
         }

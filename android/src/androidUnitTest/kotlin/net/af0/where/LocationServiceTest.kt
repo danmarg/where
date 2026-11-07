@@ -482,32 +482,6 @@ class LocationServiceTest {
         }
 
     @Test
-    fun testDisplacementHelperDetectsMovement() {
-        var currentTime = 1_000_000_000L
-        LocationService.clock = { currentTime }
-        val service = Robolectric.buildService(LocationService::class.java).get()
-
-        val recordRecentFix =
-            LocationService::class.java
-                .getDeclaredMethod("recordRecentFix", java.lang.Double.TYPE, java.lang.Double.TYPE)
-                .apply { isAccessible = true }
-
-        // Stationary: same coordinate twice -> ~0m displacement.
-        recordRecentFix.invoke(service, 37.7749, -122.4194)
-        currentTime += 30_000L
-        recordRecentFix.invoke(service, 37.7749, -122.4194)
-        assertTrue(service.maxRecentDisplacementMeters() < 1f, "Stationary fixes should report ~0m displacement")
-
-        // Add a fix ~200m north -> displacement should exceed STILL threshold.
-        currentTime += 30_000L
-        recordRecentFix.invoke(service, 37.77670, -122.4194)
-        assertTrue(
-            service.maxRecentDisplacementMeters() > LocationService.STILL_DISPLACEMENT_IGNORE_METERS,
-            "Moving ~200m should exceed STILL_DISPLACEMENT_IGNORE_METERS",
-        )
-    }
-
-    @Test
     fun testForceLocationUpdate_Throttle() =
         runTest {
             var currentTime = 1_000_000_000L
@@ -545,240 +519,6 @@ class LocationServiceTest {
         }
 
     @Test
-    fun testIsStillBackstopDue_FalseWhenNotStill() {
-        var currentTime = 1_000_000_000L
-        LocationService.clock = { currentTime }
-        val service = Robolectric.buildService(LocationService::class.java).get()
-
-        service.isStill = false
-        service.lastStillForcedFixTime = 0L
-        currentTime += LocationService.STILL_MODE_FORCE_FIX_INTERVAL_MS * 10
-
-        assertFalse(
-            service.isStillBackstopDue(currentTime),
-            "Backstop must never fire while moving - only the STILL branch skips forcing a fresh fix",
-        )
-    }
-
-    @Test
-    fun testIsStillBackstopDue_FalseBeforeIntervalElapses() {
-        val service = Robolectric.buildService(LocationService::class.java).get()
-        service.isStill = true
-        service.lastStillForcedFixTime = 1_000_000_000L
-
-        assertFalse(
-            service.isStillBackstopDue(1_000_000_000L + LocationService.STILL_MODE_FORCE_FIX_INTERVAL_MS - 1_000L),
-            "Must preserve STILL-mode battery savings until the full backstop interval has elapsed",
-        )
-    }
-
-    @Test
-    fun testIsStillBackstopDue_TrueAfterIntervalElapses() {
-        val service = Robolectric.buildService(LocationService::class.java).get()
-        service.isStill = true
-        service.lastStillForcedFixTime = 1_000_000_000L
-
-        assertTrue(
-            service.isStillBackstopDue(1_000_000_000L + LocationService.STILL_MODE_FORCE_FIX_INTERVAL_MS + 1_000L),
-            "Regression test: a dead Activity-Recognition/geofence registration must not freeze " +
-                "location forever - a real GPS fix must eventually be forced even while classified STILL",
-        )
-    }
-
-    @Test
-    fun testActivityTransitionToStill_ResetsBackstopCountdown() =
-        runTest {
-            // Regression test: entering STILL must (re)start the backstop countdown from "now",
-            // not leave a stale lastStillForcedFixTime from a previous STILL period (which could
-            // make the backstop fire immediately on every re-entry into STILL instead of only
-            // after a genuine multi-hour stall).
-            org.junit.Assume.assumeTrue(
-                "Activity recognition only enabled in full flavor",
-                BuildConfig.ACTIVITY_RECOGNITION_ENABLED,
-            )
-            var currentTime = 1_000_000_000L
-            LocationService.clock = { currentTime }
-
-            val controller = Robolectric.buildService(LocationService::class.java)
-            val service = controller.get()
-
-            val mockClient = io.mockk.mockk<LocationClient>(relaxed = true)
-            service.locationClientOverride = mockClient
-            service.locationSourceOverride = fakeLocationSource
-
-            var nextEvents: List<ActivityTransitionEvent>? = null
-            service.activityHelperOverride =
-                object : ActivityHelper {
-                    override fun init(context: android.content.Context) {}
-
-                    override fun extractTransitionEvents(intent: Intent) = nextEvents
-
-                    override fun ensureRegistered(
-                        hasPermission: Boolean,
-                        isSharing: Boolean,
-                    ) {}
-
-                    override fun unregister() {}
-
-                    override fun onDestroy() {}
-                }
-            controller.create()
-            fakeLocationSource.onLocation(37.0, -122.0, null)
-
-            assertEquals(0L, service.lastStillForcedFixTime, "must start unset before any STILL transition")
-
-            nextEvents = listOf(ActivityTransitionEvent(ActivityType.STILL, TransitionType.ENTER))
-            val intent =
-                Intent(service, LocationService::class.java).apply {
-                    action = LocationService.ACTION_ACTIVITY_TRANSITION
-                }
-            controller.withIntent(intent).startCommand(0, 1)
-            advanceUntilIdle()
-
-            assertEquals(
-                currentTime,
-                service.lastStillForcedFixTime,
-                "entering STILL must (re)start the backstop countdown at the current time",
-            )
-        }
-
-    @Test
-    fun testActivityTransitionToStill_SendsImmediateStationaryLocation() =
-        runTest {
-            org.junit.Assume.assumeTrue(
-                "Activity recognition only enabled in full flavor",
-                BuildConfig.ACTIVITY_RECOGNITION_ENABLED,
-            )
-            val controller = Robolectric.buildService(LocationService::class.java)
-            val service = controller.get()
-
-            val mockClient = io.mockk.mockk<LocationClient>(relaxed = true)
-            service.locationClientOverride = mockClient
-            service.locationSourceOverride = fakeLocationSource
-
-            var nextEvents: List<ActivityTransitionEvent>? = null
-            service.activityHelperOverride =
-                object : ActivityHelper {
-                    override fun init(context: android.content.Context) {}
-
-                    override fun extractTransitionEvents(intent: Intent) = nextEvents
-
-                    override fun ensureRegistered(
-                        hasPermission: Boolean,
-                        isSharing: Boolean,
-                    ) {}
-
-                    override fun unregister() {}
-
-                    override fun onDestroy() {}
-                }
-            controller.create()
-            fakeLocationSource.onLocation(37.0, -122.0, null)
-            // Drain the routine locationSource.lastLocation.collect reaction to this location
-            // (correctly stationary: false, since isStill is still false at this point) before
-            // triggering the STILL transition below, so that send can't overlap with - and get
-            // conflated with - the one under test.
-            advanceUntilIdle()
-            io.mockk.clearMocks(mockClient, answers = false)
-
-            // Entering STILL must immediately send a stationary-flagged Location — not after
-            // any debounce — so a peer can render "here since HH:mm" before this device might
-            // go dark. See the "here since" background-triggering investigation.
-            nextEvents = listOf(ActivityTransitionEvent(ActivityType.STILL, TransitionType.ENTER))
-            val intent =
-                Intent(service, LocationService::class.java).apply {
-                    action = LocationService.ACTION_ACTIVITY_TRANSITION
-                }
-            controller.withIntent(intent).startCommand(0, 1)
-            advanceUntilIdle()
-
-            io.mockk.coVerify(exactly = 1) {
-                mockClient.sendLocation(37.0, -122.0, any(), stationary = true, stamp = any())
-            }
-        }
-
-    @Test
-    fun testRoutineLocationUpdate_PreservesStationaryFlagWhileStill() =
-        runTest {
-            // Regression test: the "here since" investigation found that this call site
-            // (locationSource.lastLocation.collect -> send) omitted the
-            // stationary argument entirely, defaulting to false and clobbering a peer's
-            // "here since" display within one routine location update after STILL was set.
-            val controller = Robolectric.buildService(LocationService::class.java)
-            val service = controller.get()
-
-            val mockClient = io.mockk.mockk<LocationClient>(relaxed = true)
-            service.locationClientOverride = mockClient
-            service.locationSourceOverride = fakeLocationSource
-            val mockE2ee = io.mockk.mockk<net.af0.where.e2ee.E2eeManager>(relaxed = true)
-            service.e2eeManagerOverride = mockE2ee
-            io.mockk.coEvery { mockClient.pollPendingInvites() } returns emptyList()
-
-            // Deliberately leave friends/pending-invites empty: this test only exercises the
-            // locationSource.lastLocation.collect -> send path, not pollLoop's
-            // heartbeat. With friends populated, pollLoop's first iteration would race a real
-            // forceLocationUpdateAndGet() call (genuinely async under Robolectric, not driven by
-            // the virtual test clock) against this test's own assertion, which was flaky. With
-            // friends empty, pollLoop stops itself on its "no friends" path before ever reaching
-            // that code, so the heartbeat can't race with anything.
-            controller.create()
-
-            service.isStill = true
-            fakeLocationSource.onLocation(37.5, -122.5, null)
-            advanceUntilIdle()
-
-            io.mockk.coVerify(atLeast = 1) {
-                mockClient.sendLocation(37.5, -122.5, any(), stationary = true, stamp = any())
-            }
-            io.mockk.coVerify(exactly = 0) {
-                mockClient.sendLocation(37.5, -122.5, any(), stationary = false, stamp = any())
-            }
-        }
-
-    @Test
-    fun testHeartbeat_PreservesStationaryFlagWhileStill() =
-        runTest {
-            // Regression test: the pollLoop() heartbeat exists specifically to keep peers
-            // updated "every 5 minutes when stationary" (see its own comment), but omitted
-            // the stationary argument and so defaulted to false — clobbering a peer's
-            // "here since" display on every single heartbeat tick.
-            var currentTime = 1_000_000_000L
-            LocationService.clock = { currentTime }
-
-            val controller = Robolectric.buildService(LocationService::class.java)
-            val service = controller.get()
-
-            val mockClient = io.mockk.mockk<LocationClient>(relaxed = true)
-            service.locationClientOverride = mockClient
-            service.locationSourceOverride = fakeLocationSource
-            val mockE2ee = io.mockk.mockk<net.af0.where.e2ee.E2eeManager>(relaxed = true)
-            service.e2eeManagerOverride = mockE2ee
-            io.mockk.coEvery { mockClient.pollPendingInvites() } returns emptyList()
-
-            val friend = io.mockk.mockk<net.af0.where.e2ee.FriendEntry>(relaxed = true)
-            io.mockk.every { friend.id } returns "friend1"
-            fakeLocationSource.onFriendsUpdated(listOf(friend))
-            fakeLocationSource.onLocation(37.0, -122.0, null)
-
-            controller.create()
-
-            // Simulate a device that has already settled into STILL, with the backstop
-            // countdown fresh so the heartbeat re-reports the cached fix rather than
-            // forcing a new GPS request.
-            service.isStill = true
-            service.lastStillForcedFixTime = currentTime
-
-            advanceUntilIdle()
-
-            io.mockk.coVerify(atLeast = 1) {
-                mockClient.sendLocation(37.0, -122.0, any(), stationary = true, stamp = any())
-            }
-            io.mockk.coVerify(exactly = 0) {
-                mockClient.sendLocation(37.0, -122.0, any(), stationary = false, stamp = any())
-            }
-        }
-
-    @Test
     fun testRapidLocationCallbacks_AreNotSentOrPolledEachTime() =
         runTest {
             // Regression for the October 2026 AWS bill: pollLoop forced a send on every wake, and
@@ -793,6 +533,12 @@ class LocationServiceTest {
             val mockClient = io.mockk.mockk<LocationClient>(relaxed = true)
             service.locationClientOverride = mockClient
             service.locationSourceOverride = fakeLocationSource
+            // The heartbeat's forced fix finds nothing, so it re-reports the cached location and
+            // only the scripted fixes below reach the scheduler.
+            val mockProvider = io.mockk.mockk<LocationProvider>(relaxed = true)
+            io.mockk.coEvery { mockProvider.getCurrentLocation() } returns null
+            io.mockk.coEvery { mockProvider.getLastLocation() } returns null
+            service.locationProviderOverride = mockProvider
             val mockE2ee = io.mockk.mockk<net.af0.where.e2ee.E2eeManager>(relaxed = true)
             service.e2eeManagerOverride = mockE2ee
             io.mockk.coEvery { mockClient.pollPendingInvites() } returns emptyList()
@@ -803,8 +549,6 @@ class LocationServiceTest {
             fakeLocationSource.onLocation(37.0, -122.0, null)
 
             controller.create()
-            service.isStill = true
-            service.lastStillForcedFixTime = LocationService.clock()
             runCurrent()
             for (i in 1..60) {
                 advanceTimeBy(1_000L)
