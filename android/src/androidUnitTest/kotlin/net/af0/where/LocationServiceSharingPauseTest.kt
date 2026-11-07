@@ -197,12 +197,18 @@ class LocationServiceSharingPauseTest {
             // Pause once so the startup "may be registered" state is resolved by a remove.
             app.userStore.setSharing(false)
             advanceUntilIdle()
+            // Resuming with a known location replants the fence there; the add fails.
+            fakeLocationSource.onLocation(37.0, -122.0, null)
             app.userStore.setSharing(true)
             advanceUntilIdle()
+            verify(atLeast = 1) { mockLocationProvider.setGeofenceAt(37.0, -122.0, any()) }
+            assertFalse(service.geofenceMayBeRegistered, "a FAILED add must not mark a fence as possibly registered")
+            // With no fence registered, a geofence exit can only be stale: ignored, not replanted.
+            io.mockk.clearMocks(mockLocationProvider, answers = false, recordedCalls = true, verificationMarks = true)
             service.onStartCommand(geofenceEvent(), 0, 1)
             advanceUntilIdle()
-            verify(atLeast = 1) { mockLocationProvider.setGeofenceAt(any(), any(), any()) }
-            assertFalse(service.geofenceMayBeRegistered, "a FAILED add must not mark a fence as possibly registered")
+            verify(exactly = 0) { mockLocationProvider.setGeofenceAt(any(), any(), any()) }
+            assertFalse(service.geofenceMayBeRegistered)
             controller.destroy()
         }
 }
