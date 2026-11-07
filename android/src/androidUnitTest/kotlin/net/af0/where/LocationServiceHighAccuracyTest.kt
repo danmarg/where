@@ -22,7 +22,7 @@ import org.robolectric.Shadows.shadowOf
 import org.robolectric.annotation.Config
 import kotlin.test.assertEquals
 
-/** A geofence exit's HIGH-accuracy request ends 10 minutes after the last exit. */
+/** A geofence exit's HIGH-accuracy request ends [LocationService.HIGH_ACCURACY_IDLE_MS] after the last exit. */
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [33], application = TestWhereApplication::class)
 class LocationServiceHighAccuracyTest {
@@ -92,9 +92,6 @@ class LocationServiceHighAccuracyTest {
         return controller to service
     }
 
-    private fun highRegistrations() =
-        io.mockk.verify { mockLocationProvider.requestActiveUpdates(LocationAccuracy.HIGH, LocationService.HIGH_INTERVAL_MS, any()) }
-
     @Test
     fun highAccuracyEndsTenMinutesAfterTheLastGeofenceExit() =
         runTest {
@@ -105,18 +102,18 @@ class LocationServiceHighAccuracyTest {
             service.onStartCommand(geofenceExit(), 0, 1)
             advanceUntilIdle()
             assertEquals(LocationAccuracy.HIGH, service.currentPriority)
-            highRegistrations()
+            verify(exactly = 1) { mockLocationProvider.requestActiveUpdates(LocationAccuracy.HIGH, LocationService.HIGH_INTERVAL_MS, any()) }
 
-            // Still moving: a second exit 8 min later restarts the 10 min.
+            // Still moving: a second exit 8 min later restarts the window.
             offset += 8 * MINUTE
             service.onStartCommand(geofenceExit(), 0, 2)
             advanceUntilIdle()
             val secondExit = service.lastGeofenceExitAt
-            service.endHighAccuracyIfIdle(secondExit + 10 * MINUTE - 1)
-            assertEquals(LocationAccuracy.HIGH, service.currentPriority, "just under 10 min after the last exit: still HIGH")
+            service.endHighAccuracyIfIdle(secondExit + IDLE - 1)
+            assertEquals(LocationAccuracy.HIGH, service.currentPriority, "just under the window after the last exit: still HIGH")
 
-            // Arrived: no exit for 10 min drops back and re-registers at BALANCED.
-            service.endHighAccuracyIfIdle(secondExit + 10 * MINUTE)
+            // Arrived: a full window without an exit drops back and re-registers at BALANCED.
+            service.endHighAccuracyIfIdle(secondExit + IDLE)
             assertEquals(LocationAccuracy.BALANCED, service.currentPriority)
             assertEquals(LocationService.BALANCED_INTERVAL_MS, service.currentInterval)
             verify(exactly = 2) {
@@ -143,8 +140,8 @@ class LocationServiceHighAccuracyTest {
             advanceUntilIdle()
             assertEquals(LocationAccuracy.HIGH, service.currentPriority)
 
-            // Ten minutes of elapsed time do end it, through the same poll-loop path.
-            offset += 10 * MINUTE
+            // A full window of elapsed time does end it, through the same poll-loop path.
+            offset += IDLE
             fakeLocationSource.wakePoll()
             advanceUntilIdle()
             assertEquals(LocationAccuracy.BALANCED, service.currentPriority)
@@ -166,10 +163,17 @@ class LocationServiceHighAccuracyTest {
             advanceUntilIdle()
             assertEquals(LocationAccuracy.BALANCED, service.currentPriority, "a new sharing session starts at BALANCED")
             assertEquals(LocationService.BALANCED_INTERVAL_MS, service.currentInterval)
+            // And the registration that actually went out on resume was BALANCED, after the HIGH one.
+            io.mockk.verifyOrder {
+                mockLocationProvider.requestActiveUpdates(LocationAccuracy.HIGH, LocationService.HIGH_INTERVAL_MS, any())
+                mockLocationProvider.removeActiveUpdates()
+                mockLocationProvider.requestActiveUpdates(LocationAccuracy.BALANCED, LocationService.BALANCED_INTERVAL_MS, any())
+            }
             controller.destroy()
         }
 
     private companion object {
         const val MINUTE = 60_000L
+        const val IDLE = LocationService.HIGH_ACCURACY_IDLE_MS
     }
 }

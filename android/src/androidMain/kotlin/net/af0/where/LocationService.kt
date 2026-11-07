@@ -529,8 +529,9 @@ class LocationService : Service() {
                 isRegistered = false
             }
             // A geofence exit's HIGH request belongs to that sharing session; the next one starts
-            // at BALANCED rather than resuming HIGH until the next poll wake ends it.
-            resetToBalancedAccuracy()
+            // at BALANCED rather than resuming HIGH until the next poll wake ends it. Only on
+            // sharing off: a brief permission or location-services blip mid-drive keeps HIGH.
+            if (!isSharing) resetToBalancedAccuracy()
             if (isPassiveRegistered) {
                 locationProvider.removePassiveUpdates()
                 isPassiveRegistered = false
@@ -935,10 +936,11 @@ class LocationService : Service() {
 
         /**
          * How long HIGH priority lasts after the last geofence exit before dropping back to
-         * BALANCED. Covers a walk across the moving-radius fence (400 m, ~5 min at walking pace,
-         * plus the OS's exit latency); short next to the hours it otherwise stayed on.
+         * BALANCED. Covers a walk across the moving-radius fence (400 m, ~5 min at walking pace)
+         * plus the OS's exit latency (often 2-6 min with the screen off), so a steady walker
+         * doesn't flap between HIGH and BALANCED; short next to the hours it otherwise stayed on.
          */
-        const val HIGH_ACCURACY_IDLE_MS = 10 * 60 * 1000L
+        const val HIGH_ACCURACY_IDLE_MS = 15 * 60 * 1000L
 
         /**
          * Interval to wait before forcing a fresh GPS fix if stationary (§5.3).
