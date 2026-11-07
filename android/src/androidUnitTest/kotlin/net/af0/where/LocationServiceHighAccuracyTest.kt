@@ -102,7 +102,9 @@ class LocationServiceHighAccuracyTest {
             service.onStartCommand(geofenceExit(), 0, 1)
             advanceUntilIdle()
             assertEquals(LocationAccuracy.HIGH, service.currentPriority)
-            verify(exactly = 1) { mockLocationProvider.requestActiveUpdates(LocationAccuracy.HIGH, LocationService.HIGH_INTERVAL_MS, any()) }
+            verify(exactly = 1) {
+                mockLocationProvider.requestActiveUpdates(LocationAccuracy.HIGH, LocationService.HIGH_INTERVAL_MS, any())
+            }
 
             // Still moving: a second exit 8 min later restarts the window.
             offset += 8 * MINUTE
