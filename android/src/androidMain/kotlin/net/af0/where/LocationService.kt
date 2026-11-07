@@ -102,6 +102,13 @@ class LocationService : Service() {
     @VisibleForTesting
     internal var geofenceMayBeRegistered = true
 
+    /**
+     * The last plant returned FAILED (always on F-Droid; on GMS without geofencing). Resuming
+     * tracking doesn't retry until the next sharing session, so re-registrations don't repeat a
+     * plant that can't succeed.
+     */
+    private var geofencePlantFailed = false
+
     /** Center of the fence last requested in this process, or null if none or unknown; see [isStaleGeofenceExit]. */
     @VisibleForTesting
     internal var geofenceCenter: Pair<Double, Double>? = null
@@ -255,8 +262,10 @@ class LocationService : Service() {
                         if (loc.hasBearing()) loc.bearing.toDouble() else null,
                     )
                     // Plant the initial geofence. Otherwise only a geofence exit replants it,
-                    // so a device already stationary at start would never get one.
-                    setGeofenceAt(loc.latitude, loc.longitude)
+                    // so a device already stationary at start would never get one. No center is
+                    // recorded: if an exit relaunched us, this lands where that exit triggered,
+                    // and checking the exit against it would wrongly call it stale.
+                    setGeofenceAt(loc.latitude, loc.longitude, recordCenter = false)
                 }
             }
         }
@@ -394,8 +403,9 @@ class LocationService : Service() {
         // ACTION_GEOFENCE_EVENT is included because it launches forceLocationUpdateAndGet()
         // which can take 10 s+, and Samsung re-enters Doze immediately after onReceive() in
         // GeofenceReceiver returns if no wake lock is held here.
+        val staleGeofenceExit = intent?.action == ACTION_GEOFENCE_EVENT && isStaleGeofenceExit(intent)
         if (intent?.action == ACTION_POLL_ALARM || intent?.action == ACTION_HEARTBEAT_TICK ||
-            (intent?.action == ACTION_GEOFENCE_EVENT && userStore.isSharingLocation.value && !isStaleGeofenceExit(intent))
+            (intent?.action == ACTION_GEOFENCE_EVENT && userStore.isSharingLocation.value && !staleGeofenceExit)
         ) {
             pollWakeLock.acquire(WAKE_LOCK_TIMEOUT_MS)
         }
@@ -410,7 +420,7 @@ class LocationService : Service() {
             // Don't force a high-accuracy fix or replant it - remove it so it stops waking us.
             Log.d(TAG, "onStartCommand: Geofence event while not sharing; removing stale fence")
             locationProvider.removeGeofence()
-        } else if (intent?.action == ACTION_GEOFENCE_EVENT && isStaleGeofenceExit(intent)) {
+        } else if (staleGeofenceExit) {
             // Not a departure from the fence we're watching (see isStaleGeofenceExit): don't start
             // a HIGH window or replant for it.
             Log.d(TAG, "onStartCommand: Geofence exit not from the current fence; ignoring")
@@ -479,9 +489,11 @@ class LocationService : Service() {
         return START_STICKY
     }
 
+    /** [recordCenter] false leaves [geofenceCenter] unknown, so exits aren't checked against it. */
     private fun setGeofenceAt(
         lat: Double,
         lng: Double,
+        recordCenter: Boolean = true,
     ) {
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED) return
         // Radius sizing is shared with iOS (GeofencePolicy.radiusMeters(), Kotlin commonMain) so
@@ -501,8 +513,9 @@ class LocationService : Service() {
         val result = locationProvider.setGeofenceAt(lat, lng, radiusMeters)
         if (result != GeofenceRequestResult.FAILED) {
             geofenceMayBeRegistered = true
-            geofenceCenter = lat to lng
+            geofenceCenter = if (recordCenter) lat to lng else null
         }
+        geofencePlantFailed = result == GeofenceRequestResult.FAILED
         when (result) {
             GeofenceRequestResult.SUBMITTED -> {
                 // GMS: request submitted; actual confirmation logged by provider's Task listener.
@@ -544,7 +557,10 @@ class LocationService : Service() {
             // A geofence exit's HIGH request belongs to that sharing session; the next one starts
             // at BALANCED rather than resuming HIGH until the next poll wake ends it. Only on
             // sharing off: a brief permission or location-services blip mid-drive keeps HIGH.
-            if (!isSharing) resetToBalancedAccuracy()
+            if (!isSharing) {
+                resetToBalancedAccuracy()
+                geofencePlantFailed = false
+            }
             if (isPassiveRegistered) {
                 locationProvider.removePassiveUpdates()
                 isPassiveRegistered = false
@@ -589,7 +605,7 @@ class LocationService : Service() {
         // fixes before delivering — that batching can mask "moving" updates by up to 60s in
         // marginal conditions.
         isRegistered = locationProvider.requestActiveUpdates(currentPriority, currentInterval, 10_000L)
-        if (isRegistered && !geofenceMayBeRegistered) {
+        if (isRegistered && !geofenceMayBeRegistered && !geofencePlantFailed) {
             // Tracking resumed (e.g. sharing turned back on) after the fence was removed. Without
             // a new one, nothing would wake us on departure until the service restarted.
             plantGeofenceAtLastKnownLocation()

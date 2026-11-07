@@ -226,6 +226,28 @@ class LocationServiceHighAccuracyTest {
         }
 
     @Test
+    fun anExitThatRelaunchedTheServiceIsNotTakenForStale() =
+        runTest {
+            // Process death, then the exit relaunches the service. Startup's plant (from
+            // getLastLocationAsync) lands where the exit triggered, before the exit is handled.
+            io.mockk.every { mockLocationProvider.getLastLocationAsync(any()) } answers {
+                firstArg<(android.location.Location?) -> Unit>().invoke(
+                    android.location.Location("test").apply {
+                        latitude = 37.0
+                        longitude = -122.0
+                    },
+                )
+            }
+            val (controller, service) = buildService()
+            verify { mockLocationProvider.setGeofenceAt(37.0, -122.0, any()) }
+
+            service.onStartCommand(geofenceExit(), 0, 1)
+            advanceUntilIdle()
+            assertEquals(LocationAccuracy.HIGH, service.currentPriority, "the relaunching exit is a real departure")
+            controller.destroy()
+        }
+
+    @Test
     fun anExitWithNoFenceRegisteredIsIgnored() =
         runTest {
             val (controller, service) = buildService()

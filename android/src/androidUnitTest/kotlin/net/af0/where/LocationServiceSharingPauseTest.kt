@@ -213,6 +213,13 @@ class LocationServiceSharingPauseTest {
             advanceUntilIdle()
             verify(exactly = 0) { mockLocationProvider.setGeofenceAt(any(), any(), any()) }
             assertFalse(service.geofenceMayBeRegistered)
+
+            // A later re-registration in the same sharing session doesn't retry the failed plant.
+            service.isRegistered = false
+            fakeLocationSource.onFriendsUpdated(listOf(io.mockk.mockk<net.af0.where.e2ee.FriendEntry>(relaxed = true)))
+            advanceUntilIdle()
+            assertTrue(service.isRegistered)
+            verify(exactly = 0) { mockLocationProvider.setGeofenceAt(any(), any(), any()) }
             controller.destroy()
         }
 }
