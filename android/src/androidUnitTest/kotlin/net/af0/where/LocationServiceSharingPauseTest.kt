@@ -190,7 +190,11 @@ class LocationServiceSharingPauseTest {
             val service = controller.get()
             service.locationProviderOverride = mockLocationProvider
             service.locationClientOverride = mockk(relaxed = true)
-            service.e2eeManagerOverride = mockk(relaxed = true)
+            // The poll loop reloads friends from here; with none, resuming wouldn't register
+            // (or replant) at all.
+            val mockE2ee = mockk<net.af0.where.e2ee.E2eeManager>(relaxed = true)
+            io.mockk.coEvery { mockE2ee.listFriends() } returns listOf(io.mockk.mockk<net.af0.where.e2ee.FriendEntry>(relaxed = true))
+            service.e2eeManagerOverride = mockE2ee
             service.locationSourceOverride = fakeLocationSource
             controller.create()
             advanceUntilIdle()
