@@ -13,7 +13,12 @@ enum class LocationAccuracy {
 enum class GeofenceRequestResult {
     SUBMITTED,
     QUEUED,
+
+    /** This attempt failed (e.g. a SecurityException); a later one may succeed. */
     FAILED,
+
+    /** This build or device can't geofence at all (F-Droid); retrying is pointless. */
+    UNSUPPORTED,
 }
 
 interface LocationProvider {
@@ -49,8 +54,9 @@ interface LocationProvider {
      * actual registration success/failure is logged via the Task listeners inside the
      * implementation. QUEUED specifically means this target was recorded to submit once a prior,
      * still-in-flight request for a *different* target resolves - so callers logging "submitted"
-     * for QUEUED would be lying about what's actually been sent to GMS. The F-Droid build always
-     * returns FAILED (no geofencing).
+     * for QUEUED would be lying about what's actually been sent to GMS. FAILED is this attempt
+     * only (e.g. a SecurityException); the F-Droid build always returns UNSUPPORTED (no
+     * geofencing).
      */
     fun setGeofenceAt(
         lat: Double,

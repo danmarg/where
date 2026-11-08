@@ -7,6 +7,7 @@ import io.mockk.mockk
 import io.mockk.verify
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.test.StandardTestDispatcher
+import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.runTest
@@ -18,7 +19,9 @@ import org.junit.runner.RunWith
 import org.robolectric.Robolectric
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.Shadows.shadowOf
+import org.robolectric.android.controller.ServiceController
 import org.robolectric.annotation.Config
+import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
@@ -52,6 +55,7 @@ class LocationServiceSharingPauseTest {
     fun tearDown() {
         io.mockk.unmockkAll()
         Dispatchers.resetMain()
+        LocationService.elapsedClock = { android.os.SystemClock.elapsedRealtime() }
     }
 
     @Test
@@ -190,19 +194,170 @@ class LocationServiceSharingPauseTest {
             val service = controller.get()
             service.locationProviderOverride = mockLocationProvider
             service.locationClientOverride = mockk(relaxed = true)
-            service.e2eeManagerOverride = mockk(relaxed = true)
+            // The poll loop reloads friends from here; with none, resuming wouldn't register
+            // (or replant) at all.
+            val mockE2ee = mockk<net.af0.where.e2ee.E2eeManager>(relaxed = true)
+            io.mockk.coEvery { mockE2ee.listFriends() } returns listOf(io.mockk.mockk<net.af0.where.e2ee.FriendEntry>(relaxed = true))
+            service.e2eeManagerOverride = mockE2ee
             service.locationSourceOverride = fakeLocationSource
             controller.create()
             advanceUntilIdle()
             // Pause once so the startup "may be registered" state is resolved by a remove.
             app.userStore.setSharing(false)
             advanceUntilIdle()
+            // Resuming with a known location replants the fence there; the add fails.
+            fakeLocationSource.onLocation(37.0, -122.0, null)
             app.userStore.setSharing(true)
             advanceUntilIdle()
+            verify(atLeast = 1) { mockLocationProvider.setGeofenceAt(37.0, -122.0, any()) }
+            assertFalse(service.geofenceMayBeRegistered, "a FAILED add must not mark a fence as possibly registered")
+            // With no fence registered, a geofence exit can only be stale: ignored, not replanted.
+            io.mockk.clearMocks(mockLocationProvider, answers = false, recordedCalls = true, verificationMarks = true)
             service.onStartCommand(geofenceEvent(), 0, 1)
             advanceUntilIdle()
-            verify(atLeast = 1) { mockLocationProvider.setGeofenceAt(any(), any(), any()) }
-            assertFalse(service.geofenceMayBeRegistered, "a FAILED add must not mark a fence as possibly registered")
+            verify(exactly = 0) { mockLocationProvider.setGeofenceAt(any(), any(), any()) }
+            assertFalse(service.geofenceMayBeRegistered)
+
+            // FAILED is transient (e.g. permission revoked mid-request): the next registration,
+            // such as the one after permission is restored, retries the plant.
+            service.isRegistered = false
+            fakeLocationSource.onFriendsUpdated(listOf(io.mockk.mockk<net.af0.where.e2ee.FriendEntry>(relaxed = true)))
+            advanceUntilIdle()
+            assertTrue(service.isRegistered)
+            verify(exactly = 1) { mockLocationProvider.setGeofenceAt(37.0, -122.0, any()) }
+            controller.destroy()
+        }
+
+    private fun TestScope.startSharingService(): Pair<ServiceController<LocationService>, LocationService> {
+        // The send scheduler waits on virtual time and re-checks this clock. Frozen, it would make
+        // advanceUntilIdle() spin forever once a second fix makes a send due after the interval.
+        LocationService.elapsedClock = { testScheduler.currentTime }
+        (context as TestWhereApplication).userStore.setSharing(true)
+        // A heartbeat's forced fix finds nothing, so only the fixes a test sends exist (whether a
+        // heartbeat is due depends on the elapsed clock other test classes may have set).
+        io.mockk.coEvery { mockLocationProvider.getCurrentLocation() } returns null
+        io.mockk.coEvery { mockLocationProvider.getLastLocation() } returns null
+        val controller = Robolectric.buildService(LocationService::class.java)
+        val service = controller.get()
+        service.locationProviderOverride = mockLocationProvider
+        service.locationClientOverride = mockk(relaxed = true)
+        // A friend, so the poll loop's reload keeps the service tracking.
+        val mockE2ee = mockk<net.af0.where.e2ee.E2eeManager>(relaxed = true)
+        io.mockk.coEvery { mockE2ee.listFriends() } returns listOf(io.mockk.mockk<net.af0.where.e2ee.FriendEntry>(relaxed = true))
+        service.e2eeManagerOverride = mockE2ee
+        service.locationSourceOverride = fakeLocationSource
+        controller.create()
+        advanceUntilIdle()
+        return controller to service
+    }
+
+    @Test
+    fun fenceIsPlantedAtTheFirstFixWhenNoCachedLocationExists() =
+        runTest {
+            io.mockk.every { mockLocationProvider.setGeofenceAt(any(), any(), any()) } returns GeofenceRequestResult.SUBMITTED
+            io.mockk.every { mockLocationProvider.getLastLocationAsync(any()) } answers {
+                firstArg<(android.location.Location?) -> Unit>().invoke(null)
+            }
+            val (controller, service) = startSharingService()
+            // No cached location: nothing to plant at yet.
+            verify(exactly = 0) { mockLocationProvider.setGeofenceAt(any(), any(), any()) }
+            assertTrue(service.needsGeofence)
+
+            // The first fix plants the fence there; later fixes don't plant again.
+            fakeLocationSource.onLocation(37.0, -122.0, null)
+            advanceUntilIdle()
+            verify(exactly = 1) { mockLocationProvider.setGeofenceAt(37.0, -122.0, any()) }
+            fakeLocationSource.onLocation(37.01, -122.0, null)
+            advanceUntilIdle()
+            verify(exactly = 1) { mockLocationProvider.setGeofenceAt(any(), any(), any()) }
+            assertTrue(service.geofenceMayBeRegistered)
+            controller.destroy()
+        }
+
+    @Test
+    fun failedPlantIsRetriedOnTheNextRegistrationWithNoCachedLocation() =
+        runTest {
+            io.mockk.every { mockLocationProvider.setGeofenceAt(any(), any(), any()) } returns GeofenceRequestResult.FAILED
+            // Startup's lookups find nothing (so lastLocation stays null); once sharing resumes they
+            // find a fix.
+            var lookupsFindFix = false
+            io.mockk.every { mockLocationProvider.getLastLocationAsync(any()) } answers {
+                val loc =
+                    if (!lookupsFindFix) {
+                        null
+                    } else {
+                        android.location.Location("test").apply {
+                            latitude = 37.0
+                            longitude = -122.0
+                        }
+                    }
+                firstArg<(android.location.Location?) -> Unit>().invoke(loc)
+            }
+            val (controller, service) = startSharingService()
+            val app = context as TestWhereApplication
+            app.userStore.setSharing(false)
+            advanceUntilIdle()
+
+            // Resuming: no cached location, so the plant goes through the async lookup, and fails.
+            lookupsFindFix = true
+            app.userStore.setSharing(true)
+            advanceUntilIdle()
+            assertEquals(null, fakeLocationSource.lastLocation.value)
+            verify(exactly = 1) { mockLocationProvider.setGeofenceAt(37.0, -122.0, any()) }
+            assertTrue(service.needsGeofence, "a FAILED plant leaves the fence still needed")
+            assertTrue(service.geofenceRetryBlocked)
+
+            // The next registration (e.g. after permission is restored) retries it.
+            service.isRegistered = false
+            fakeLocationSource.onFriendsUpdated(listOf(io.mockk.mockk<net.af0.where.e2ee.FriendEntry>(relaxed = true)))
+            advanceUntilIdle()
+            assertTrue(service.isRegistered)
+            assertEquals(null, fakeLocationSource.lastLocation.value)
+            verify(exactly = 2) { mockLocationProvider.setGeofenceAt(37.0, -122.0, any()) }
+            controller.destroy()
+        }
+
+    @Test
+    fun aFreshProcesssFailedFirstPlantIsRetriedOnTheNextRegistration() =
+        runTest {
+            // A fresh process: geofenceMayBeRegistered starts true (a previous process's fence may
+            // be live) and sharing is never toggled. The first plant fails; the second succeeds.
+            io.mockk.every { mockLocationProvider.setGeofenceAt(any(), any(), any()) } returnsMany
+                listOf(GeofenceRequestResult.FAILED, GeofenceRequestResult.SUBMITTED)
+            fakeLocationSource.onLocation(37.0, -122.0, null)
+            val (controller, service) = startSharingService()
+            verify(exactly = 1) { mockLocationProvider.setGeofenceAt(37.0, -122.0, any()) }
+            assertTrue(service.geofenceMayBeRegistered, "never toggled: still the startup assumption")
+            assertTrue(service.needsGeofence)
+
+            // The next registration retries, with no new fix needed (none comes while stationary).
+            service.isRegistered = false
+            fakeLocationSource.onFriendsUpdated(listOf(io.mockk.mockk<net.af0.where.e2ee.FriendEntry>(relaxed = true)))
+            advanceUntilIdle()
+            assertTrue(service.isRegistered)
+            verify(exactly = 2) { mockLocationProvider.setGeofenceAt(37.0, -122.0, any()) }
+            assertFalse(service.needsGeofence)
+            // Planted while a previous process's fence may have been live: no center recorded.
+            assertEquals(null, service.geofenceCenter)
+            controller.destroy()
+        }
+
+    @Test
+    fun unsupportedGeofencingIsNotRetried() =
+        runTest {
+            io.mockk.every { mockLocationProvider.setGeofenceAt(any(), any(), any()) } returns GeofenceRequestResult.UNSUPPORTED
+            val (controller, service) = startSharingService()
+            fakeLocationSource.onLocation(37.0, -122.0, null)
+            advanceUntilIdle()
+            verify(exactly = 1) { mockLocationProvider.setGeofenceAt(any(), any(), any()) }
+
+            // Neither later fixes nor a re-registration try again.
+            fakeLocationSource.onLocation(37.01, -122.0, null)
+            service.isRegistered = false
+            fakeLocationSource.onFriendsUpdated(listOf(io.mockk.mockk<net.af0.where.e2ee.FriendEntry>(relaxed = true)))
+            advanceUntilIdle()
+            assertTrue(service.isRegistered)
+            verify(exactly = 1) { mockLocationProvider.setGeofenceAt(any(), any(), any()) }
             controller.destroy()
         }
 }
