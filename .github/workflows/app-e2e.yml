@@ -91,8 +91,17 @@ jobs:
       - name: Install tools
         run: |
           brew install xcodegen
-          curl -Ls "https://get.maestro.mobile.dev" | bash
+          # The installer can fail transiently and `curl | bash` hides it, leaving no
+          # `maestro` on PATH until the first flow runs. Retry, then verify.
+          for attempt in 1 2 3 4; do
+            curl -fsSL --retry 3 "https://get.maestro.mobile.dev" -o "$RUNNER_TEMP/maestro-install.sh" \
+              && bash "$RUNNER_TEMP/maestro-install.sh" \
+              && [ -x "$HOME/.maestro/bin/maestro" ] && break
+            echo "maestro install attempt $attempt failed" >&2
+            sleep $((attempt * 10))
+          done
           echo "$HOME/.maestro/bin" >> "$GITHUB_PATH"
+          "$HOME/.maestro/bin/maestro" --version
 
       - name: Resolve baseline
         id: base
@@ -158,8 +167,17 @@ jobs:
         run: |
           yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null
           "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platform-tools" "platforms;android-36"
-          curl -Ls "https://get.maestro.mobile.dev" | bash
+          # The installer can fail transiently and `curl | bash` hides it, leaving no
+          # `maestro` on PATH until the first flow runs. Retry, then verify.
+          for attempt in 1 2 3 4; do
+            curl -fsSL --retry 3 "https://get.maestro.mobile.dev" -o "$RUNNER_TEMP/maestro-install.sh" \
+              && bash "$RUNNER_TEMP/maestro-install.sh" \
+              && [ -x "$HOME/.maestro/bin/maestro" ] && break
+            echo "maestro install attempt $attempt failed" >&2
+            sleep $((attempt * 10))
+          done
           echo "$HOME/.maestro/bin" >> "$GITHUB_PATH"
+          "$HOME/.maestro/bin/maestro" --version
 
       - name: Resolve baseline
         id: base
