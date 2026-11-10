@@ -1,3 +1,3 @@
-• Themed icon support on Android 13 and later.
-• Fixed location being sent far more often than needed on some devices, which used extra battery and data.
+• Uses less battery after you've been on the move: high-accuracy location now drops back to normal 15 minutes after you last left a place.
+• Friends are now reliably told when you stop sharing, even if the app was interrupted at the time.
 • Reliability and security hardening.
