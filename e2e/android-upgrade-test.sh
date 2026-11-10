@@ -350,8 +350,10 @@ else
   log "After a reboot, sharing resumes without opening the app"
   kill "$LOGCAT_PID" 2>/dev/null
   adb reboot
-  adb wait-for-device
-  until [ "$(adb shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')" = 1 ]; do sleep 3; done
+  # Bounded: an emulator that never comes back must fail here, not hang until the job timeout.
+  timeout 300 adb wait-for-device || fail "the emulator didn't come back within 5 min of the reboot"
+  boot_completed() { [ "$(adb shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')" = 1 ]; }
+  retry 300 boot_completed || fail "the emulator didn't finish booting within 5 min of coming back"
   start_logcat
   setup_test_location
   adb shell dumpsys deviceidle whitelist "+$PKG" >/dev/null # shell-added exemptions don't survive a reboot
