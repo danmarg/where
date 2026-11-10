@@ -91,7 +91,9 @@ assert_no_sends_while_paused() {
 
 # save_app_log <label>: the app's recent unified log, kept in $WORK for the CI log artifact.
 save_app_log() {
-  xcrun simctl spawn "$SIM" log show --last 15m --style compact \
+  # --info --debug: the app's own Logger lines are at those levels (kept by the `log config`
+  # after boot); without them the saved log holds only system frameworks.
+  xcrun simctl spawn "$SIM" log show --last 15m --style compact --info --debug \
     --predicate 'process == "Where"' > "$WORK/app-$1.log" 2>&1 || true
 }
 
@@ -113,6 +115,9 @@ SIM=$(xcrun simctl create where-e2e "iPhone 17")
 export MAESTRO_DEVICE=$SIM
 xcrun simctl boot "$SIM"
 xcrun simctl bootstatus "$SIM" -b >/dev/null
+# Keep the app's info/debug log lines so save_app_log shows why a send was skipped or failed.
+xcrun simctl spawn "$SIM" log config --subsystem net.af0.where --mode "level:debug,persist:debug" ||
+  echo "warning: couldn't raise the app's log level; saved app logs will lack its own lines"
 xcrun simctl location "$SIM" set 52.520,13.405
 
 log "Baseline app pairs with the CLI"
