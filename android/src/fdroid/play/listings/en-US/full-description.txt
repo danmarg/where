@@ -1,4 +1,4 @@
-Where is a cross-platform, end-to-end encrypted realtime location sharing app.
+Where is a cross-platform, end-to-end encrypted realtime location sharing app. Share your location with friends and family, and no one else: not even us.
 
 Where is designed so the server learns as little as possible:
 
