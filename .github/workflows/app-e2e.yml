@@ -146,6 +146,10 @@ jobs:
         base: ${{ fromJSON(needs.baselines.outputs.refs) }}
     runs-on: ubuntu-latest
     timeout-minutes: 110
+    env:
+      # The emulator-runner's defaults, spelled out: the test relaunches the emulator with them
+      # if it exits on a reboot.
+      EMULATOR_OPTIONS: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim
     steps:
       - uses: actions/checkout@v4
         with:
@@ -212,6 +216,7 @@ jobs:
           target: google_apis
           arch: x86_64
           disable-animations: true
+          emulator-options: ${{ env.EMULATOR_OPTIONS }}
           script: e2e/android-upgrade-test.sh
 
       - name: Upload logs
@@ -227,5 +232,6 @@ jobs:
             ${{ runner.temp }}/e2e/cli-locations.txt
             ${{ runner.temp }}/e2e/cli-bob-locations.txt
             ${{ runner.temp }}/e2e/cli-keepalive.log
+            ${{ runner.temp }}/e2e/emulator-relaunch.log
             ~/.maestro/tests/
           retention-days: 7
