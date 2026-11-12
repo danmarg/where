@@ -349,11 +349,25 @@ else
 
   log "After a reboot, sharing resumes without opening the app"
   kill "$LOGCAT_PID" 2>/dev/null
-  adb reboot
-  # Bounded: an emulator that never comes back must fail here, not hang until the job timeout.
-  timeout 300 adb wait-for-device || fail "the emulator didn't come back within 5 min of the reboot"
   boot_completed() { [ "$(adb shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')" = 1 ]; }
-  retry 300 boot_completed || fail "the emulator didn't finish booting within 5 min of coming back"
+  not_booted() { ! boot_completed; }
+  # The emulator's console port is up for as long as its process is, across a guest reboot.
+  emulator_alive() { (exec 3<>/dev/tcp/127.0.0.1/5554) 2>/dev/null; }
+  booted_or_dead() { boot_completed || ! emulator_alive; }
+  adb reboot
+  retry 60 not_booted || fail "the emulator didn't go down for the reboot"
+  # Bounded: an emulator that never comes back must fail here, not hang until the job timeout.
+  retry 300 booted_or_dead || fail "the emulator didn't finish booting within 5 min of the reboot"
+  if ! boot_completed; then
+    # The emulator process sometimes exits on a guest reboot (about 3 in 10 CI runs). Its data
+    # survives (-no-snapshot), so a cold start of the same AVD is the reboot the app sees.
+    echo "⚠️  the emulator exited on reboot; starting it again in place of the reboot"
+    # shellcheck disable=SC2086 # EMULATOR_OPTIONS is a list of flags
+    "$ANDROID_HOME/emulator/emulator" -port 5554 -avd test ${EMULATOR_OPTIONS:?} \
+      >> "$WORK/emulator-relaunch.log" 2>&1 &
+    timeout 300 adb wait-for-device || fail "the relaunched emulator didn't come up within 5 min"
+    retry 300 boot_completed || fail "the relaunched emulator didn't finish booting within 5 min"
+  fi
   start_logcat
   setup_test_location
   adb shell dumpsys deviceidle whitelist "+$PKG" >/dev/null # shell-added exemptions don't survive a reboot
