@@ -48,9 +48,9 @@ class FdroidLocationCallbackTest {
         Dispatchers.setMain(testDispatcher)
         shadowOf(context).grantPermissions(Manifest.permission.ACCESS_FINE_LOCATION)
 
-        // Enable GPS so FdroidLocationProvider selects it in requestActiveUpdates().
+        // Enable NETWORK, which FdroidLocationProvider selects for a balanced request.
         val lm = context.getSystemService(Context.LOCATION_SERVICE) as LocationManager
-        shadowOf(lm).setProviderEnabled(LocationManager.GPS_PROVIDER, true)
+        shadowOf(lm).setProviderEnabled(LocationManager.NETWORK_PROVIDER, true)
 
         io.mockk.mockkObject(net.af0.where.e2ee.KtorMailboxClient)
         io.mockk.coEvery { net.af0.where.e2ee.KtorMailboxClient.poll(any(), any()) } returns emptyList()
@@ -88,13 +88,13 @@ class FdroidLocationCallbackTest {
             controller.create()
             advanceUntilIdle()
 
-            assertTrue(service.isRegistered, "Service should register with GPS when a friend is present")
+            assertTrue(service.isRegistered, "Service should register when a friend is present")
             assertEquals(0L, service.lastLocationCallbackTime, "No callback fired yet")
 
-            // Simulate a GPS fix arriving from the system LocationManager.
+            // Simulate a network fix arriving from the system LocationManager.
             val lm = context.getSystemService(Context.LOCATION_SERVICE) as LocationManager
             val fix =
-                Location(LocationManager.GPS_PROVIDER).apply {
+                Location(LocationManager.NETWORK_PROVIDER).apply {
                     latitude = 37.7749
                     longitude = -122.4194
                     bearing = 45f

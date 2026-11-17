@@ -1,0 +1,95 @@
+package net.af0.where
+
+import android.app.Application
+import android.content.Context
+import android.location.Location
+import android.location.LocationManager
+import android.os.Looper
+import androidx.test.core.app.ApplicationProvider
+import org.junit.Test
+import org.junit.runner.RunWith
+import org.robolectric.RobolectricTestRunner
+import org.robolectric.Shadows.shadowOf
+import org.robolectric.annotation.Config
+import java.util.concurrent.TimeUnit
+import kotlin.test.assertEquals
+import kotlin.test.assertTrue
+
+/**
+ * The continuous request goes to NETWORK when it is enabled (GPS held on indoors drains the
+ * battery without ever fixing), and a GPS-only device releases a request that gets no fix.
+ */
+@RunWith(RobolectricTestRunner::class)
+@Config(sdk = [33], application = TestWhereApplication::class)
+class FdroidLocationProviderSelectionTest {
+    private val context: Application get() = ApplicationProvider.getApplicationContext()
+    private val lm get() = context.getSystemService(Context.LOCATION_SERVICE) as LocationManager
+    private val fixes = mutableListOf<Pair<Double, Double>>()
+
+    private fun provider(
+        gps: Boolean,
+        network: Boolean,
+    ): FdroidLocationProvider {
+        val shadow = shadowOf(lm)
+        shadow.setProviderEnabled(LocationManager.GPS_PROVIDER, gps)
+        shadow.setProviderEnabled(LocationManager.NETWORK_PROVIDER, network)
+        return FdroidLocationProvider().also { it.init(context) { lat, lng, _ -> fixes += lat to lng } }
+    }
+
+    private fun fix(provider: String) {
+        shadowOf(lm).simulateLocation(
+            Location(provider).apply {
+                latitude = 37.0
+                longitude = -122.0
+                accuracy = 10f
+                time = System.currentTimeMillis()
+            },
+        )
+        shadowOf(Looper.getMainLooper()).idle()
+    }
+
+    @Test
+    fun balancedRequest_usesNetwork_whenBothProvidersEnabled() {
+        val p = provider(gps = true, network = true)
+        assertTrue(p.requestActiveUpdates(LocationAccuracy.BALANCED, 60_000L, 10_000L))
+
+        fix(LocationManager.GPS_PROVIDER)
+        assertEquals(0, fixes.size, "GPS must not be listened to for a balanced request")
+        fix(LocationManager.NETWORK_PROVIDER)
+        assertEquals(1, fixes.size)
+    }
+
+    @Test
+    fun highRequest_usesGps_whenAvailable() {
+        val p = provider(gps = true, network = true)
+        assertTrue(p.requestActiveUpdates(LocationAccuracy.HIGH, 10_000L, 10_000L))
+
+        fix(LocationManager.NETWORK_PROVIDER)
+        assertEquals(0, fixes.size)
+        fix(LocationManager.GPS_PROVIDER)
+        assertEquals(1, fixes.size)
+    }
+
+    @Test
+    fun gpsOnlyDevice_releasesRequestThatGetsNoFix() {
+        val p = provider(gps = true, network = false)
+        assertTrue(p.requestActiveUpdates(LocationAccuracy.BALANCED, 60_000L, 10_000L))
+
+        shadowOf(Looper.getMainLooper()).idleFor(6, TimeUnit.MINUTES)
+
+        fix(LocationManager.GPS_PROVIDER)
+        assertEquals(0, fixes.size, "The no-fix timeout should have removed the GPS listener")
+    }
+
+    @Test
+    fun gpsOnlyDevice_keepsRequestOnceAFixArrives() {
+        val p = provider(gps = true, network = false)
+        assertTrue(p.requestActiveUpdates(LocationAccuracy.BALANCED, 60_000L, 10_000L))
+
+        fix(LocationManager.GPS_PROVIDER)
+        shadowOf(Looper.getMainLooper()).idleFor(6, TimeUnit.MINUTES)
+
+        fix(LocationManager.GPS_PROVIDER)
+        assertEquals(2, fixes.size, "A device that fixed once keeps its request; only a silent one is released")
+    }
+}

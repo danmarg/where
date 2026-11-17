@@ -7,6 +7,7 @@ import android.location.LocationManager
 import android.os.Build
 import android.os.Bundle
 import android.os.CancellationSignal
+import android.os.Handler
 import android.os.Looper
 import android.util.Log
 import kotlinx.coroutines.suspendCancellableCoroutine
@@ -15,12 +16,22 @@ import java.util.concurrent.Executors
 import kotlin.coroutines.resume
 
 private const val TAG = "FdroidLocationProvider"
+private const val GPS_ONE_SHOT_TIMEOUT_MS = 10_000L
+private const val GPS_NO_FIX_TIMEOUT_MS = 5 * 60_000L
 
 class FdroidLocationProvider : LocationProvider {
     private lateinit var locationManager: LocationManager
     private var activeListener: LocationListener? = null
     private var passiveListener: LocationListener? = null
     private var onLocationCallback: ((Double, Double, Double?) -> Unit)? = null
+
+    // Set when the last one-shot GPS fix timed out (typically indoors); the next one-shot goes
+    // to NETWORK instead of spending another GPS_ONE_SHOT_TIMEOUT_MS searching. Cleared by any
+    // successful one-shot.
+    @Volatile private var lastGpsOneShotFailed = false
+
+    // Stops a continuous GPS-only request that never produces a fix; see armGpsNoFixTimeout.
+    private var gpsNoFixTimeout: Runnable? = null
 
     // Captured at init() time — callers must invoke init() on the thread whose looper
     // should receive location callbacks (LocationService calls init() on the main thread).
@@ -40,23 +51,62 @@ class FdroidLocationProvider : LocationProvider {
         callback(loc)
     }
 
-    // GPS preferred, NETWORK as fallback - but only among providers actually enabled on this
-    // device. Some AOSP/de-Googled builds (a demographic this build already targets - see
-    // requestActiveUpdates below) have no network location provider installed at all, and
-    // LocationManager throws IllegalArgumentException for a provider name it doesn't recognize
-    // (undocumented as a checked exception, but per the getLastKnownLocation/getCurrentLocation/
-    // requestLocationUpdates contract). isProviderEnabled() itself throws for an unrecognized
-    // name on some OEM builds, so we go through the enabled-providers list instead of probing
-    // GPS_PROVIDER/NETWORK_PROVIDER directly.
-    // FUSED_PROVIDER is intentionally excluded: it is a GMS-injected provider string not
-    // present in AOSP and absent on de-Googled devices.
-    private fun selectFallbackProvider(): String? {
+    // Providers are chosen from the enabled list, never probed by name: some AOSP/de-Googled
+    // builds have no network location provider at all, and LocationManager throws
+    // IllegalArgumentException for a name it doesn't recognize (isProviderEnabled() itself does
+    // on some OEM builds). FUSED_PROVIDER is excluded: GMS-injected, absent on de-Googled devices.
+    //
+    // Provider for the continuous request. GPS holds the receiver on for as long as the request
+    // lives and, with no sky view, searches without ever getting a fix, so it is used only when
+    // HIGH accuracy is asked for (this flavor can't reach HIGH: that comes from a geofence exit)
+    // or when it is the only provider enabled. The 200 m distance filter doesn't help: it
+    // suppresses callbacks, not the receiver's work. NETWORK works indoors at a fraction of the
+    // cost, and a stationary device wants nothing finer.
+    private fun selectActiveProvider(accuracy: LocationAccuracy): String? {
         val enabled = locationManager.getProviders(true)
         return when {
-            enabled.contains(LocationManager.GPS_PROVIDER) -> LocationManager.GPS_PROVIDER
+            accuracy == LocationAccuracy.HIGH && enabled.contains(LocationManager.GPS_PROVIDER) -> LocationManager.GPS_PROVIDER
             enabled.contains(LocationManager.NETWORK_PROVIDER) -> LocationManager.NETWORK_PROVIDER
+            enabled.contains(LocationManager.GPS_PROVIDER) -> LocationManager.GPS_PROVIDER
             else -> null
         }
+    }
+
+    // Provider for a one-shot fix: GPS first for accuracy, NETWORK once GPS has just timed out.
+    private fun selectOneShotProvider(): String? {
+        val enabled = locationManager.getProviders(true)
+        val network = enabled.contains(LocationManager.NETWORK_PROVIDER)
+        val gps = enabled.contains(LocationManager.GPS_PROVIDER)
+        return when {
+            lastGpsOneShotFailed && network -> LocationManager.NETWORK_PROVIDER
+            gps -> LocationManager.GPS_PROVIDER
+            network -> LocationManager.NETWORK_PROVIDER
+            else -> null
+        }
+    }
+
+    // A GPS-only device (no network location provider, e.g. AOSP without a network location
+    // service) can't be moved to NETWORK. If that request gets no fix within
+    // GPS_NO_FIX_TIMEOUT_MS it is removed rather than left searching. Nothing re-arms it here:
+    // LocationService's stale-registration watchdog re-registers once no callback has arrived
+    // for STALE_REGISTRATION_THRESHOLD_MS, so the receiver is off for the rest of that window.
+    // The first callback cancels the timeout; a fix that arrived means GPS can see the sky.
+    private fun armGpsNoFixTimeout(listener: LocationListener) {
+        cancelGpsNoFixTimeout()
+        val timeout =
+            Runnable {
+                if (activeListener === listener) {
+                    Log.i(TAG, "No GPS fix within ${GPS_NO_FIX_TIMEOUT_MS / 60_000} min; releasing the receiver until re-registration")
+                    removeActiveUpdates()
+                }
+            }
+        gpsNoFixTimeout = timeout
+        Handler(callbackLooper).postDelayed(timeout, GPS_NO_FIX_TIMEOUT_MS)
+    }
+
+    private fun cancelGpsNoFixTimeout() {
+        gpsNoFixTimeout?.let { Handler(callbackLooper).removeCallbacks(it) }
+        gpsNoFixTimeout = null
     }
 
     // LocationListener only gained default no-op implementations of onStatusChanged /
@@ -105,7 +155,7 @@ class FdroidLocationProvider : LocationProvider {
             Log.i(TAG, "PASSIVE accuracy: active registration skipped; passive listener covers this (registered=$ok)")
             return ok
         }
-        val provider = selectFallbackProvider()
+        val provider = selectActiveProvider(accuracy)
         if (provider == null) {
             Log.w(TAG, "No enabled location provider (GPS or NETWORK) available; active registration skipped")
             return false
@@ -115,6 +165,7 @@ class FdroidLocationProvider : LocationProvider {
         val minDistance = LocationService.MOVEMENT_RADIUS_THRESHOLD_METERS
         val listener =
             createLocationListener { loc ->
+                cancelGpsNoFixTimeout()
                 onLocationCallback?.invoke(loc.latitude, loc.longitude, if (loc.hasBearing()) loc.bearing.toDouble() else null)
             }
         // Mirror GmsLocationProvider's 10s floor to prevent excessive wakeups under fast
@@ -124,13 +175,16 @@ class FdroidLocationProvider : LocationProvider {
         return try {
             locationManager.requestLocationUpdates(provider, effectiveInterval, minDistance, listener, callbackLooper)
             activeListener = listener
+            // Only worth bounding when GPS is the sole provider: otherwise HIGH on a device that
+            // has NETWORK is asked for on purpose.
+            if (provider == LocationManager.GPS_PROVIDER && accuracy != LocationAccuracy.HIGH) armGpsNoFixTimeout(listener)
             Log.i(TAG, "Registered active location updates via $provider (accuracy=$accuracy, intervalMs=$effectiveInterval)")
             true
         } catch (e: SecurityException) {
             Log.w(TAG, "SecurityException requesting $provider updates: ${e.message}")
             false
         } catch (e: IllegalArgumentException) {
-            // Provider existed when selectFallbackProvider() checked but vanished before this
+            // Provider existed when selectActiveProvider()/selectOneShotProvider() checked but vanished before this
             // call (TOCTOU) - defensive, since LocationManager throws for an unrecognized name.
             Log.w(TAG, "$provider no longer available requesting updates: ${e.message}")
             false
@@ -158,6 +212,7 @@ class FdroidLocationProvider : LocationProvider {
     }
 
     override fun removeActiveUpdates() {
+        cancelGpsNoFixTimeout()
         activeListener?.let {
             try {
                 locationManager.removeUpdates(it)
@@ -180,39 +235,45 @@ class FdroidLocationProvider : LocationProvider {
     }
 
     override suspend fun getCurrentLocation(): Location? {
-        return withTimeoutOrNull(10_000L) {
-            suspendCancellableCoroutine { cont ->
-                try {
-                    // R == API 30; LocationManager.getCurrentLocation() was added in API 30.
-                    // The else branch returns the best last-known fix, which may be stale.
-                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-                        val provider = selectFallbackProvider()
-                        if (provider == null) {
-                            Log.w(TAG, "No enabled location provider (GPS or NETWORK) available; falling back to last-known fix")
-                            cont.resume(getBestLastKnownLocation())
-                        } else {
-                            val signal = CancellationSignal()
-                            cont.invokeOnCancellation { signal.cancel() }
-                            locationManager.getCurrentLocation(provider, signal, Executors.newSingleThreadExecutor()) { loc ->
-                                cont.resume(loc)
-                            }
-                        }
-                    } else {
+        val oneShotProvider = selectOneShotProvider()
+        val result =
+            withTimeoutOrNull(GPS_ONE_SHOT_TIMEOUT_MS) {
+                getCurrentLocationFrom(oneShotProvider)
+            }
+        if (oneShotProvider == LocationManager.GPS_PROVIDER) lastGpsOneShotFailed = result == null
+        return result
+    }
+
+    private suspend fun getCurrentLocationFrom(provider: String?): Location? =
+        suspendCancellableCoroutine { cont ->
+            try {
+                // R == API 30; LocationManager.getCurrentLocation() was added in API 30.
+                // The else branch returns the best last-known fix, which may be stale.
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                    if (provider == null) {
+                        Log.w(TAG, "No enabled location provider (GPS or NETWORK) available; falling back to last-known fix")
                         cont.resume(getBestLastKnownLocation())
+                    } else {
+                        val signal = CancellationSignal()
+                        cont.invokeOnCancellation { signal.cancel() }
+                        locationManager.getCurrentLocation(provider, signal, Executors.newSingleThreadExecutor()) { loc ->
+                            cont.resume(loc)
+                        }
                     }
-                } catch (e: SecurityException) {
-                    Log.e(TAG, "SecurityException getting current location: ${e.message}")
-                    cont.resume(null)
-                } catch (e: IllegalArgumentException) {
-                    // Provider existed when selectFallbackProvider() checked but vanished before
-                    // this call (TOCTOU) - defensive, since LocationManager throws for an
-                    // unrecognized name.
-                    Log.w(TAG, "Provider no longer available getting current location: ${e.message}")
-                    cont.resume(null)
+                } else {
+                    cont.resume(getBestLastKnownLocation())
                 }
+            } catch (e: SecurityException) {
+                Log.e(TAG, "SecurityException getting current location: ${e.message}")
+                cont.resume(null)
+            } catch (e: IllegalArgumentException) {
+                // Provider existed when selectActiveProvider()/selectOneShotProvider() checked but vanished before
+                // this call (TOCTOU) - defensive, since LocationManager throws for an
+                // unrecognized name.
+                Log.w(TAG, "Provider no longer available getting current location: ${e.message}")
+                cont.resume(null)
             }
         }
-    }
 
     override suspend fun getLastLocation(): Location? = getBestLastKnownLocation()
 
