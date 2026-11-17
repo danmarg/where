@@ -13,6 +13,7 @@ import androidx.test.core.app.ApplicationProvider
 import io.mockk.every
 import io.mockk.mockk
 import kotlinx.coroutines.async
+import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import org.junit.Test
@@ -23,6 +24,7 @@ import org.robolectric.annotation.Config
 import org.robolectric.shadows.ShadowSensor
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /** The F-Droid provider's side of stationary mode (#483). */
@@ -103,5 +105,20 @@ class FdroidMotionTriggerTest {
             shadowOf(Looper.getMainLooper()).idle()
             runCurrent()
             assertEquals(2.0, result.await()?.latitude, "not the last-known fix")
+        }
+
+    @Test
+    @Config(sdk = [28])
+    fun belowApi30_getCurrentLocationTimesOutAndRemovesItsListener() =
+        runTest {
+            shadowOf(lm).setProviderEnabled(LocationManager.GPS_PROVIDER, true)
+            val provider = provider()
+            val result = async { provider.getCurrentLocation() }
+            runCurrent()
+            assertEquals(1, shadowOf(lm).getLocationUpdateListeners().size, "a single update is pending")
+            advanceTimeBy(10_001L)
+            runCurrent()
+            assertNull(result.await(), "no fix in 10 s")
+            assertTrue(shadowOf(lm).getLocationUpdateListeners().isEmpty(), "the single update was cancelled")
         }
 }

@@ -34,8 +34,8 @@ class FdroidLocationProvider : LocationProvider {
     private var sensorManager: SensorManager? = null
     private var motionSensor: Sensor? = null
 
-    // The provider the active listener is on, or null when it isn't registered.
-    private var activeProvider: String? = null
+    // getCurrentLocation's callbacks; one for the provider's life rather than a thread per call.
+    private val currentLocationExecutor by lazy { Executors.newSingleThreadExecutor() }
 
     // The armed significant-motion listener; touched only on the main thread (init, the
     // service's calls, and trigger delivery all run there).
@@ -61,11 +61,11 @@ class FdroidLocationProvider : LocationProvider {
     // so it works the same on microG, GrapheneOS and plain AOSP. One-shot: it disarms itself
     // after firing. Some low-end devices lack it; then this returns false. SensorManager delivers
     // trigger events on the main looper, inside the sensor service's wake lock.
-    // Refused while the active listener is on NETWORK (no GPS): that listener is cheap, and its
+    // Refused while the active listener would be on NETWORK (no GPS): that listener is cheap, and its
     // fixes are too coarse for LocationService to tell movement from noise.
     override fun armMotionTrigger(onMotion: () -> Unit): Boolean {
         cancelMotionTrigger()
-        if (activeProvider != LocationManager.GPS_PROVIDER) return false
+        if (selectFallbackProvider() != LocationManager.GPS_PROVIDER) return false
         val sm = sensorManager ?: return false
         val sensor = motionSensor ?: return false
         val listener =
@@ -77,7 +77,8 @@ class FdroidLocationProvider : LocationProvider {
                 }
             }
         if (!sm.requestTriggerSensor(listener, sensor)) {
-            Log.w(TAG, "Significant-motion sensor refused the trigger request")
+            // Debug: LocationService asks again on every poll wake.
+            Log.d(TAG, "Significant-motion sensor refused the trigger request")
             return false
         }
         motionListener = listener
@@ -181,7 +182,6 @@ class FdroidLocationProvider : LocationProvider {
         return try {
             locationManager.requestLocationUpdates(provider, effectiveInterval, minDistance, listener, callbackLooper)
             activeListener = listener
-            activeProvider = provider
             Log.i(TAG, "Registered active location updates via $provider (accuracy=$accuracy, intervalMs=$effectiveInterval)")
             true
         } catch (e: SecurityException) {
@@ -223,7 +223,6 @@ class FdroidLocationProvider : LocationProvider {
                 Log.w(TAG, "removeActiveUpdates failed: ${e.message}")
             }
             activeListener = null
-            activeProvider = null
         }
     }
 
@@ -250,7 +249,7 @@ class FdroidLocationProvider : LocationProvider {
                         // R == API 30; LocationManager.getCurrentLocation() was added in API 30.
                         val signal = CancellationSignal()
                         cont.invokeOnCancellation { signal.cancel() }
-                        locationManager.getCurrentLocation(provider, signal, Executors.newSingleThreadExecutor()) { loc ->
+                        locationManager.getCurrentLocation(provider, signal, currentLocationExecutor) { loc ->
                             cont.resume(loc)
                         }
                     } else {

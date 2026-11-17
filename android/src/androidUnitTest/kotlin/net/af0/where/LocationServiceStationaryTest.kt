@@ -4,7 +4,6 @@ import android.Manifest
 import android.app.Application
 import android.location.Location
 import androidx.test.core.app.ApplicationProvider
-import io.mockk.coVerify
 import io.mockk.every
 import io.mockk.mockk
 import io.mockk.slot
@@ -103,7 +102,8 @@ class LocationServiceStationaryTest {
         northMeters: Double = 0.0,
         accuracy: Float = 10f,
         ageMs: Long = 0L,
-    ) = Location("gps").apply {
+        provider: String = "gps",
+    ) = Location(provider).apply {
         latitude = 37.0 + northMeters / 111_000.0
         longitude = -122.0
         this.accuracy = accuracy
@@ -144,7 +144,7 @@ class LocationServiceStationaryTest {
         }
 
     @Test
-    fun motionRestoresBalancedAndForcesAFix() =
+    fun motionRestoresBalancedAndWakesThePoll() =
         runTest {
             val (controller, service) = buildService()
             goStationary(service)
@@ -157,7 +157,6 @@ class LocationServiceStationaryTest {
             verify(exactly = 2) {
                 mockLocationProvider.requestActiveUpdates(LocationAccuracy.BALANCED, LocationService.BALANCED_INTERVAL_MS, any())
             }
-            coVerify { mockLocationProvider.getCurrentLocation() }
 
             // A late duplicate trigger is harmless.
             onMotion.captured.invoke()
@@ -219,8 +218,12 @@ class LocationServiceStationaryTest {
             assertEquals(LocationAccuracy.PASSIVE, service.currentPriority, "a coarse fix isn't movement")
             service.noteFix(fix(northMeters = 1_000.0, ageMs = 10 * MINUTE))
             assertEquals(LocationAccuracy.PASSIVE, service.currentPriority, "a stale fix isn't movement")
+            service.noteFix(fix(northMeters = 1_000.0, provider = "network"))
+            assertEquals(LocationAccuracy.PASSIVE, service.currentPriority, "a network fix isn't movement")
             service.noteFix(fix(northMeters = 100.0))
             assertEquals(LocationAccuracy.PASSIVE, service.currentPriority, "under the movement radius")
+            service.noteFix(fix(northMeters = 280.0, accuracy = 90f))
+            assertEquals(LocationAccuracy.PASSIVE, service.currentPriority, "within 200 m plus both fixes' error")
 
             service.noteFix(fix(northMeters = 1_000.0))
             assertEquals(LocationAccuracy.BALANCED, service.currentPriority, "the sensor missed a real move")
@@ -281,6 +284,80 @@ class LocationServiceStationaryTest {
             advanceUntilIdle()
             assertEquals(elapsed(), service.lastMovedAt, "a new session starts a fresh countdown")
             assertEquals(LocationAccuracy.BALANCED, service.currentPriority)
+            controller.destroy()
+        }
+
+    @Test
+    fun theAnchorSurvivesEnteringStationary() =
+        runTest {
+            val (controller, service) = buildService()
+            service.noteFix(fix())
+            goStationary(service)
+            // The first credible heartbeat fix after a missed departure is enough.
+            service.noteFix(fix(northMeters = 1_000.0))
+            assertEquals(LocationAccuracy.BALANCED, service.currentPriority)
+            controller.destroy()
+        }
+
+    @Test
+    fun theForegroundEndsStationaryAndHoldsItOff() =
+        runTest {
+            val (controller, service) = buildService()
+            goStationary(service)
+            fakeLocationSource.setAppForeground(true)
+            fakeLocationSource.wakePoll()
+            advanceUntilIdle()
+            assertEquals(LocationAccuracy.BALANCED, service.currentPriority)
+
+            // Still visible a whole window later: the poll loop doesn't go stationary.
+            setElapsed(elapsed() + 2 * IDLE)
+            fakeLocationSource.wakePoll()
+            advanceUntilIdle()
+            assertEquals(LocationAccuracy.BALANCED, service.currentPriority)
+            controller.destroy()
+        }
+
+    @Test
+    fun aLostTriggerEndsStationary() =
+        runTest {
+            val (controller, service) = buildService()
+            goStationary(service)
+            service.maintainStationary(inForeground = false)
+            assertEquals(LocationAccuracy.PASSIVE, service.currentPriority, "re-armed")
+
+            triggerAvailable = false
+            service.maintainStationary(inForeground = false)
+            assertEquals(LocationAccuracy.BALANCED, service.currentPriority)
+            controller.destroy()
+        }
+
+    @Test
+    fun anOutageWhileStationaryResumesBalanced() =
+        runTest {
+            val (controller, service) = buildService()
+            goStationary(service)
+            val lm = context.getSystemService(android.location.LocationManager::class.java)
+            shadowOf(lm).setLocationEnabled(false)
+            service.onStartCommand(null, 0, 1)
+            advanceUntilIdle()
+            shadowOf(lm).setLocationEnabled(true)
+            service.onStartCommand(null, 0, 2)
+            advanceUntilIdle()
+            assertEquals(LocationAccuracy.BALANCED, service.currentPriority, "the device may have moved, unobserved")
+            verify { mockLocationProvider.cancelMotionTrigger() }
+            controller.destroy()
+        }
+
+    @Test
+    fun approximateLocationNeverGoesStationary() =
+        runTest {
+            shadowOf(context).denyPermissions(Manifest.permission.ACCESS_FINE_LOCATION)
+            shadowOf(context).grantPermissions(Manifest.permission.ACCESS_COARSE_LOCATION)
+            val (controller, service) = buildService()
+            assertEquals(true, service.trackingSession, "tracking on approximate location")
+            service.enterStationaryIfIdle(service.lastMovedAt + IDLE)
+            assertEquals(LocationAccuracy.BALANCED, service.currentPriority)
+            verify(exactly = 0) { mockLocationProvider.armMotionTrigger(any()) }
             controller.destroy()
         }
 
