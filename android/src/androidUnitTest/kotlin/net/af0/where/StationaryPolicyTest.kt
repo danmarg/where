@@ -60,7 +60,9 @@ class StationaryPolicyTest {
         assertEquals(0L, policy.lastMovedAt, "network, coarse, stale or accuracy-less fixes aren't moves")
 
         policy.onFix(fix(t, northMeters = 2_000.0), t)
-        assertEquals(t, policy.lastMovedAt)
+        assertEquals(0L, policy.lastMovedAt, "one fix past the threshold awaits confirmation")
+        policy.onFix(fix(t + 1, northMeters = 2_050.0), t + 1)
+        assertEquals(t + 1, policy.lastMovedAt)
     }
 
     @Test
@@ -71,7 +73,8 @@ class StationaryPolicyTest {
         policy.onFix(fix(1_000L, northMeters = 280.0, accuracy = 90.0), 1_000L)
         assertEquals(0L, policy.lastMovedAt)
         policy.onFix(fix(2_000L, northMeters = 400.0, accuracy = 90.0), 2_000L)
-        assertEquals(2_000L, policy.lastMovedAt)
+        policy.onFix(fix(3_000L, northMeters = 410.0, accuracy = 90.0), 3_000L)
+        assertEquals(3_000L, policy.lastMovedAt)
     }
 
     @Test
@@ -80,9 +83,10 @@ class StationaryPolicyTest {
         val t = idle + 60_000L
         assertFalse(policy.onFix(fix(t), t), "seeds the anchor")
         assertFalse(policy.onFix(fix(t, northMeters = 100.0), t))
-        assertTrue(policy.onFix(fix(t, northMeters = 1_000.0), t))
+        assertFalse(policy.onFix(fix(t, northMeters = 1_000.0), t), "unconfirmed")
+        assertTrue(policy.onFix(fix(t + 1, northMeters = 1_020.0), t + 1))
         assertEquals(Mode.MOVING, policy.mode)
-        assertEquals(t, policy.lastMovedAt)
+        assertEquals(t + 1, policy.lastMovedAt)
     }
 
     @Test
@@ -91,20 +95,22 @@ class StationaryPolicyTest {
         policy.onFix(fix(0L), 0L)
         stationaryAt(idle)
         val t = idle + 60_000L
-        assertTrue(policy.onFix(fix(t, northMeters = 1_000.0), t), "the first credible fix after a missed departure is enough")
+        assertFalse(policy.onFix(fix(t, northMeters = 1_000.0), t))
+        assertTrue(policy.onFix(fix(t + 1, northMeters = 1_020.0), t + 1), "two credible fixes after a missed departure")
     }
 
     @Test
     fun withNoCredibleAnchorStationaryUsesTheBestFixItHas() {
         policy.startTracking(0L)
-        // Indoors: only a network fix, ±500 m.
-        policy.onFix(fix(0L, accuracy = 500.0, gps = false), 0L)
+        // Indoors: only a network fix, ±500 m, just before entering.
+        policy.onFix(fix(idle - 1_000L, accuracy = 500.0, gps = false), idle - 1_000L)
         stationaryAt(idle)
         assertEquals(500.0, policy.anchor?.accuracyMeters)
         val t = idle + 60_000L
-        assertFalse(policy.onFix(fix(t, northMeters = 600.0), t), "within its error: not a move, but a sharper anchor")
+        assertFalse(policy.onFix(fix(t, northMeters = 300.0), t), "inside its error circle: the same place, sharper")
         assertEquals(10.0, policy.anchor?.accuracyMeters)
-        assertTrue(policy.onFix(fix(t, northMeters = 1_000.0), t), "now 400 m from the sharper anchor")
+        assertFalse(policy.onFix(fix(t, northMeters = 800.0), t))
+        assertTrue(policy.onFix(fix(t + 1, northMeters = 820.0), t + 1), "500 m from the sharper anchor, confirmed")
     }
 
     @Test
@@ -144,5 +150,55 @@ class StationaryPolicyTest {
         assertEquals(policy.longFixTimeoutMs, policy.heartbeatFixTimeoutMs(due))
         assertEquals(policy.fixTimeoutMs, policy.heartbeatFixTimeoutMs(due + 5 * 60_000L))
         assertEquals(policy.longFixTimeoutMs, policy.heartbeatFixTimeoutMs(due + policy.longFixEveryMs))
+    }
+
+    @Test
+    fun oneOutlierDoesNotEndStationary() {
+        policy.startTracking(0L)
+        policy.onFix(fix(0L), 0L)
+        stationaryAt(idle)
+        val t = idle + 60_000L
+        assertFalse(policy.onFix(fix(t, northMeters = 300.0, accuracy = 15.0), t), "multipath: \"15 m\", 300 m off")
+        assertFalse(policy.onFix(fix(t + 1_000L), t + 1_000L), "back at the true spot cancels it")
+        assertFalse(policy.onFix(fix(t + 2_000L, northMeters = 300.0, accuracy = 15.0), t + 2_000L))
+        assertEquals(Mode.STATIONARY, policy.mode)
+        assertEquals(37.0, policy.anchor?.lat, "the anchor didn't follow the outliers")
+    }
+
+    @Test
+    fun anUnconfirmedMoveExpires() {
+        policy.startTracking(0L)
+        policy.onFix(fix(0L), 0L)
+        stationaryAt(idle)
+        val t = idle + 60_000L
+        policy.onFix(fix(t, northMeters = 1_000.0), t)
+        val late = t + policy.confirmWindowMs + 1
+        assertFalse(policy.onFix(fix(late, northMeters = 1_000.0), late), "too late to confirm; starts a new candidate")
+        assertTrue(policy.onFix(fix(late + 1, northMeters = 1_000.0), late + 1))
+    }
+
+    @Test
+    fun theAnchorDoesNotCreepAlongWithAWalk() {
+        policy.startTracking(0L)
+        policy.onFix(fix(0L, accuracy = 90.0), 0L)
+        // 280 m out at 10 m: within the threshold (no move) but outside the anchor's 90 m circle.
+        policy.onFix(fix(1_000L, northMeters = 280.0), 1_000L)
+        assertEquals(37.0, policy.anchor?.lat, "not adopted as the anchor")
+    }
+
+    @Test
+    fun aStaleOrVeryCoarseFixIsNoFallbackAnchor() {
+        policy.startTracking(0L)
+        policy.onFix(fix(0L, accuracy = 3_000.0, gps = false), 0L)
+        stationaryAt(idle)
+        assertNull(policy.anchor, "a 3 km cell fix")
+
+        val other = StationaryPolicy()
+        other.startTracking(0L)
+        // The forced fix's last-known fallback: an hour-old GPS fix from elsewhere.
+        other.onFix(fix(idle, northMeters = 2_000.0, ageMs = 60 * 60_000L), idle)
+        assertTrue(other.dueToEnter(idle))
+        other.entered(idle)
+        assertNull(other.anchor)
     }
 }

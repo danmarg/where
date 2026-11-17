@@ -2,6 +2,7 @@ package net.af0.where
 
 import kotlin.math.asin
 import kotlin.math.cos
+import kotlin.math.min
 import kotlin.math.sin
 import kotlin.math.sqrt
 
@@ -24,8 +25,16 @@ class StationaryPolicy(
     val credibleAccuracyMeters: Double = 100.0,
     /** ...and at most this old: a forced fix can fall back to an old last-known one. */
     val credibleMaxAgeMs: Long = 60_000L,
+    /**
+     * A move needs a second credible fix past the threshold within this long of the first: one
+     * multipath outlier (a "15 m" fix 300 m off) mustn't end stationary mode. Long enough for two
+     * heartbeats on a Doze alarm cadence.
+     */
+    val confirmWindowMs: Long = 15 * 60_000L,
+    /** The coarsest fix that can stand in as an anchor when there's no credible one. */
+    val fallbackAnchorMaxAccuracyMeters: Double = 500.0,
     /** The heartbeat's fix timeout... */
-    val fixTimeoutMs: Long = 10_000L,
+    val fixTimeoutMs: Long = LocationProvider.DEFAULT_FIX_TIMEOUT_MS,
     /**
      * ...except, while stationary, once per [longFixEveryMs]: with no active request a cold
      * receiver can't download ephemeris in 10 s bursts, so a departure the sensor missed would
@@ -61,9 +70,12 @@ class StationaryPolicy(
     var anchor: Fix? = null
         private set
 
-    // The latest fix with an accuracy, credible or not: a fallback anchor on entering stationary.
+    // The latest fresh fix that could stand in as an anchor on entering stationary.
     private var latestFix: Fix? = null
-    private var lastLongFixAt = Long.MIN_VALUE
+
+    // A credible fix past the threshold, awaiting a second to confirm the move.
+    private var unconfirmedMove: Fix? = null
+    private var lastLongFixAt = 0L
 
     /** Tracking (re)starts: a fresh countdown. A no-op while already tracking. */
     fun startTracking(now: Long) {
@@ -80,6 +92,7 @@ class StationaryPolicy(
     fun stopTracking(forgetPlace: Boolean): Boolean {
         val wasStationary = mode == Mode.STATIONARY
         mode = Mode.OFF
+        unconfirmedMove = null
         if (forgetPlace) {
             anchor = null
             latestFix = null
@@ -99,9 +112,9 @@ class StationaryPolicy(
     fun entered(now: Long) {
         if (mode != Mode.MOVING) return
         mode = Mode.STATIONARY
-        // Without a credible anchor (e.g. indoors all along), the best fix we have: its accuracy
+        // Without a credible anchor (e.g. indoors all along), the latest fresh fix: its accuracy
         // widens the move threshold, so a coarse one can't fake a move, only miss a short one.
-        if (anchor == null) anchor = latestFix
+        if (anchor == null) anchor = latestFix?.takeIf { now - it.elapsedMs <= credibleMaxAgeMs }
         lastLongFixAt = now
     }
 
@@ -121,19 +134,33 @@ class StationaryPolicy(
         fix: Fix,
         now: Long,
     ): Boolean {
-        if (fix.accuracyMeters != null) latestFix = fix
+        val fresh = now - fix.elapsedMs <= credibleMaxAgeMs
+        if (fresh && (fix.accuracyMeters ?: Double.MAX_VALUE) <= fallbackAnchorMaxAccuracyMeters) latestFix = fix
         if (!isCredible(fix, now)) return false
+        val accuracy = fix.accuracyMeters ?: return false
         val last = anchor
-        val accuracy = fix.accuracyMeters!!
-        val lastAccuracy = last?.accuracyMeters ?: 0.0
-        if (last != null && distanceMeters(last, fix) < moveRadiusMeters + lastAccuracy + accuracy) {
-            // Not a move; but a sharper fix of the same place narrows the next threshold.
-            if (accuracy < lastAccuracy) anchor = fix
+        if (last == null) {
+            // Seeding the anchor isn't a move: the first fix after any registration always arrives.
+            anchor = fix
             return false
         }
+        val lastAccuracy = last.accuracyMeters ?: 0.0
+        val distance = distanceMeters(last, fix)
+        if (distance < moveRadiusMeters + lastAccuracy + accuracy) {
+            unconfirmedMove = null
+            // Not a move. A sharper fix inside the anchor's own error circle is the same place,
+            // better measured: it narrows the next threshold (and can't creep along with a walk).
+            if (accuracy < lastAccuracy && distance <= lastAccuracy) anchor = fix
+            return false
+        }
+        val pending = unconfirmedMove
+        if (pending == null || fix.elapsedMs - pending.elapsedMs > confirmWindowMs) {
+            unconfirmedMove = fix
+            return false
+        }
+        unconfirmedMove = null
         anchor = fix
-        // Seeding the anchor isn't a move: the first fix after any registration always arrives.
-        if (last == null || mode == Mode.OFF) return false
+        if (mode == Mode.OFF) return false
         lastMovedAt = now
         return leave(now)
     }
@@ -160,6 +187,6 @@ class StationaryPolicy(
         val dLat = Math.toRadians(b.lat - a.lat)
         val dLng = Math.toRadians(b.lng - a.lng)
         val h = sin(dLat / 2).let { it * it } + cos(Math.toRadians(a.lat)) * cos(Math.toRadians(b.lat)) * sin(dLng / 2).let { it * it }
-        return 2 * r * asin(sqrt(h))
+        return 2 * r * asin(min(1.0, sqrt(h)))
     }
 }

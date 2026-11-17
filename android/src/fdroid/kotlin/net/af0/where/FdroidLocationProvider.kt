@@ -15,11 +15,12 @@ import android.os.Looper
 import android.util.Log
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withTimeoutOrNull
-import java.util.concurrent.ExecutorService
-import java.util.concurrent.Executors
 import kotlin.coroutines.resume
 
 private const val TAG = "FdroidLocationProvider"
+
+// LocationManager.getCurrentLocation gives up after this long, whatever the caller's timeout.
+private const val PLATFORM_CURRENT_LOCATION_MAX_MS = 30_000L
 
 class FdroidLocationProvider : LocationProvider {
     private lateinit var locationManager: LocationManager
@@ -34,13 +35,6 @@ class FdroidLocationProvider : LocationProvider {
 
     private var sensorManager: SensorManager? = null
     private var motionSensor: Sensor? = null
-
-    // getCurrentLocation's callbacks; one for the provider's life rather than a thread per call,
-    // shut down in onDestroy.
-    private var currentLocationExecutor: ExecutorService? = null
-
-    private fun currentLocationExecutor() =
-        currentLocationExecutor ?: Executors.newSingleThreadExecutor().also { currentLocationExecutor = it }
 
     // The armed significant-motion listener; touched only on the main thread (init, the
     // service's calls, and trigger delivery all run there).
@@ -71,13 +65,13 @@ class FdroidLocationProvider : LocationProvider {
     // Arms once: re-requesting would tear down the sensor connection, and could drop an event
     // already queued or restart the HAL's detection window mid-departure.
     override fun armMotionTrigger(onMotion: () -> Unit): Boolean {
+        val sm = sensorManager ?: return false
+        val sensor = motionSensor ?: return false
         if (selectFallbackProvider() != LocationManager.GPS_PROVIDER) {
             cancelMotionTrigger()
             return false
         }
         if (motionListener != null) return true
-        val sm = sensorManager ?: return false
-        val sensor = motionSensor ?: return false
         val listener =
             object : TriggerEventListener() {
                 override fun onTrigger(event: TriggerEvent?) {
@@ -257,27 +251,30 @@ class FdroidLocationProvider : LocationProvider {
                     if (provider == null) {
                         Log.w(TAG, "No enabled location provider (GPS or NETWORK) available; falling back to last-known fix")
                         cont.resume(getBestLastKnownLocation())
-                    } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-                        // R == API 30; LocationManager.getCurrentLocation() was added in API 30.
-                        val signal = CancellationSignal()
-                        cont.invokeOnCancellation { signal.cancel() }
-                        locationManager.getCurrentLocation(provider, signal, currentLocationExecutor()) { loc ->
-                            cont.resume(loc)
-                        }
-                    } else if (activeListener != null) {
+                    } else if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R && activeListener != null) {
                         // Below API 30 with the active listener running, last-known is its latest
                         // fix: fresh enough, without holding the caller for a fix.
                         cont.resume(getBestLastKnownLocation())
+                    } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && timeoutMs <= PLATFORM_CURRENT_LOCATION_MAX_MS) {
+                        // R == API 30; LocationManager.getCurrentLocation() was added in API 30.
+                        // The callback only resumes the continuation: run it on the binder thread.
+                        val signal = CancellationSignal()
+                        cont.invokeOnCancellation { signal.cancel() }
+                        locationManager.getCurrentLocation(provider, signal, Runnable::run) { loc ->
+                            cont.resume(loc)
+                        }
                     } else {
-                        // Stationary (no active listener): last-known is stale, and this fix is the
-                        // fallback for a departure the significant-motion sensor missed.
-                        val listener =
+                        // A listener until the first fix: below API 30 while stationary (last-known
+                        // is stale there), and for a timeout past getCurrentLocation's platform cap
+                        // (a stationary long fix, giving a cold receiver time for ephemeris).
+                        lateinit var listener: LocationListener
+                        listener =
                             createLocationListener { loc ->
+                                locationManager.removeUpdates(listener)
                                 if (cont.isActive) cont.resume(loc)
                             }
                         cont.invokeOnCancellation { locationManager.removeUpdates(listener) }
-                        @Suppress("DEPRECATION")
-                        locationManager.requestSingleUpdate(provider, listener, callbackLooper)
+                        locationManager.requestLocationUpdates(provider, 0L, 0f, listener, callbackLooper)
                     }
                 } catch (e: SecurityException) {
                     Log.e(TAG, "SecurityException getting current location: ${e.message}")
@@ -311,7 +308,5 @@ class FdroidLocationProvider : LocationProvider {
         removeActiveUpdates()
         removePassiveUpdates()
         cancelMotionTrigger()
-        currentLocationExecutor?.shutdown()
-        currentLocationExecutor = null
     }
 }

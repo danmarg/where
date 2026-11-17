@@ -231,6 +231,8 @@ class LocationServiceStationaryTest {
             assertEquals(LocationAccuracy.PASSIVE, service.currentPriority, "within 200 m plus both fixes' error")
 
             service.noteFix(fix(northMeters = 1_000.0))
+            setElapsed(elapsed() + 1)
+            service.noteFix(fix(northMeters = 1_020.0))
             assertEquals(LocationAccuracy.BALANCED, service.currentPriority, "the sensor missed a real move")
             verify { mockLocationProvider.cancelMotionTrigger() }
             controller.destroy()
@@ -250,8 +252,9 @@ class LocationServiceStationaryTest {
             listener(fix(northMeters = -400.0, accuracy = 300f))
             assertEquals(start, service.stationary.lastMovedAt)
 
-            // A real move does.
+            // A real move does, once confirmed.
             listener(fix(northMeters = 500.0))
+            listener(fix(northMeters = 520.0))
             assertEquals(start + 10 * MINUTE, service.stationary.lastMovedAt)
             service.enterStationaryIfIdle(start + IDLE)
             assertEquals(LocationAccuracy.BALANCED, service.currentPriority)
@@ -298,8 +301,10 @@ class LocationServiceStationaryTest {
             val (controller, service) = buildService()
             service.noteFix(fix())
             goStationary(service)
-            // The first credible heartbeat fix after a missed departure is enough.
+            // Two credible fixes after a missed departure.
             service.noteFix(fix(northMeters = 1_000.0))
+            setElapsed(elapsed() + 1)
+            service.noteFix(fix(northMeters = 1_020.0))
             assertEquals(LocationAccuracy.BALANCED, service.currentPriority)
             controller.destroy()
         }

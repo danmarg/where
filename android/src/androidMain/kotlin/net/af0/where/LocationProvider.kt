@@ -46,7 +46,7 @@ interface LocationProvider {
     fun removePassiveUpdates()
 
     /** A fresh fix, or null if none comes within [timeoutMs]. */
-    suspend fun getCurrentLocation(timeoutMs: Long = 10_000L): Location?
+    suspend fun getCurrentLocation(timeoutMs: Long = DEFAULT_FIX_TIMEOUT_MS): Location?
 
     suspend fun getLastLocation(): Location?
 
@@ -91,6 +91,11 @@ interface LocationProvider {
     fun cancelMotionTrigger() {}
 
     fun onDestroy()
+
+    companion object {
+        /** A forced fix's usual timeout; see [StationaryPolicy.longFixTimeoutMs] for the exception. */
+        const val DEFAULT_FIX_TIMEOUT_MS = 10_000L
+    }
 }
 
 /**

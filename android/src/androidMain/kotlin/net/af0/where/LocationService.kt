@@ -684,6 +684,9 @@ class LocationService : Service() {
             super.onDestroy()
             return
         }
+        // Before the provider's teardown: a fix already queued on the looper mustn't reach the
+        // policy and re-register on a destroyed service.
+        locationProvider.setFixListener(null)
         locationProvider.onDestroy()
         isRegistered = false
         isPassiveRegistered = false
@@ -804,7 +807,15 @@ class LocationService : Service() {
             // would otherwise force a GPS fix on each.
             if (isSharing && sendScheduler.isHeartbeatDue()) {
                 Log.d(TAG, "Stationary threshold exceeded; forcing fresh location fix.")
-                val loc = forceLocationUpdateAndGet(stationary.heartbeatFixTimeoutMs(elapsedClock()))
+                val fixTimeoutMs = stationary.heartbeatFixTimeoutMs(elapsedClock())
+                // A long stationary fix: renew the wake lock so the poll and send after it stay
+                // covered (WAKE_LOCK_TIMEOUT_MS was sized for the short one).
+                if (fixTimeoutMs > LocationProvider.DEFAULT_FIX_TIMEOUT_MS && pollWakeLock.isHeld) {
+                    pollWakeLock.acquire(
+                        WAKE_LOCK_TIMEOUT_MS,
+                    )
+                }
+                val loc = forceLocationUpdateAndGet(fixTimeoutMs)
 
                 val lastLoc =
                     if (loc != null) {
@@ -966,7 +977,8 @@ class LocationService : Service() {
         if (!stationary.leave(elapsedClock())) return
         // Synchronously, before the sensor's wake lock goes: a launched coroutine is only posted.
         motionWakeLock.acquire(WAKE_LOCK_TIMEOUT_MS)
-        resumeFromStationary(WakeSource.MOTION)
+        resumeFromStationary("motion")
+        logReliability(WakeSource.MOTION, true)
         // No forced fix of its own: the BALANCED listener just registered is already searching, and
         // the woken iteration forces one if a heartbeat is due. It releases motionWakeLock when
         // done (the timeout bounds it).
@@ -993,16 +1005,15 @@ class LocationService : Service() {
             }
         stationary.leave(elapsedClock())
         diagnostic("$STATIONARY_ENDED ($reason)")
-        resumeFromStationary(WakeSource.MANUAL)
+        resumeFromStationary(reason)
     }
 
-    /** Carries out leaving stationary: BALANCED again, the trigger disarmed. */
-    private fun resumeFromStationary(source: WakeSource) {
-        Log.i(TAG, "Leaving stationary (${source.value}); balanced accuracy")
+    /** Carries out leaving stationary: BALANCED again, the trigger disarmed. [reason] is for the log. */
+    private fun resumeFromStationary(reason: String) {
+        Log.i(TAG, "Leaving stationary ($reason); balanced accuracy")
         resetToBalancedAccuracy()
         isRegistered = false
         ensureLocationRegistration()
-        if (source == WakeSource.MOTION) logReliability(source, true)
     }
 
     /** Every fix, from the providers' listeners and the heartbeat, for [StationaryPolicy.onFix]. */
@@ -1018,7 +1029,7 @@ class LocationService : Service() {
             )
         if (stationary.onFix(fix, elapsedClock())) {
             diagnostic(STATIONARY_MOVED_UNTRIGGERED)
-            resumeFromStationary(WakeSource.HEARTBEAT)
+            resumeFromStationary("${loc.provider} fix moved")
         }
     }
 
@@ -1094,7 +1105,7 @@ class LocationService : Service() {
     }
 
     @VisibleForTesting
-    internal suspend fun forceLocationUpdateAndGet(timeoutMs: Long = StationaryPolicy().fixTimeoutMs): android.location.Location? {
+    internal suspend fun forceLocationUpdateAndGet(timeoutMs: Long = LocationProvider.DEFAULT_FIX_TIMEOUT_MS): android.location.Location? {
         return try {
             val loc = locationProvider.getCurrentLocation(timeoutMs)
             when {

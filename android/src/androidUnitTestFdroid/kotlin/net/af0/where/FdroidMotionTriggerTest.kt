@@ -12,6 +12,7 @@ import android.os.SystemClock
 import androidx.test.core.app.ApplicationProvider
 import io.mockk.every
 import io.mockk.mockk
+import io.mockk.verify
 import kotlinx.coroutines.async
 import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.runCurrent
@@ -68,6 +69,58 @@ class FdroidMotionTriggerTest {
         assertTrue(provider.requestActiveUpdates(LocationAccuracy.BALANCED, 60_000L, 10_000L))
         assertTrue(provider.armMotionTrigger {})
     }
+
+    @Test
+    fun armsOnce() {
+        shadowOf(lm).setProviderEnabled(LocationManager.GPS_PROVIDER, true)
+        val provider = providerWithSensor()
+        assertTrue(provider.armMotionTrigger {})
+        assertTrue(provider.armMotionTrigger {}, "already armed")
+        verify(exactly = 1) { sensorManager.requestTriggerSensor(any(), any()) }
+        verify(exactly = 0) { sensorManager.cancelTriggerSensor(any(), any()) }
+
+        // After a cancel, arming requests again.
+        provider.cancelMotionTrigger()
+        assertTrue(provider.armMotionTrigger {})
+        verify(exactly = 2) { sensorManager.requestTriggerSensor(any(), any()) }
+    }
+
+    @Test
+    fun aCancelledTriggerIgnoresALateEvent() {
+        shadowOf(lm).setProviderEnabled(LocationManager.GPS_PROVIDER, true)
+        val provider = providerWithSensor()
+        val armed = io.mockk.slot<android.hardware.TriggerEventListener>()
+        every { sensorManager.requestTriggerSensor(capture(armed), any()) } returns true
+        var fired = 0
+        assertTrue(provider.armMotionTrigger { fired++ })
+        provider.cancelMotionTrigger()
+        armed.captured.onTrigger(null)
+        assertEquals(0, fired)
+    }
+
+    @Test
+    fun aLongTimeoutUsesAListenerPastThePlatformCap() =
+        runTest {
+            shadowOf(lm).setProviderEnabled(LocationManager.GPS_PROVIDER, true)
+            val provider = provider()
+            val result = async { provider.getCurrentLocation(45_000L) }
+            runCurrent()
+            assertEquals(1, shadowOf(lm).getLocationUpdateListeners().size, "a listener, not getCurrentLocation's 30 s cap")
+            advanceTimeBy(40_000L)
+            runCurrent()
+            shadowOf(lm).simulateLocation(
+                Location(LocationManager.GPS_PROVIDER).apply {
+                    latitude = 3.0
+                    longitude = 3.0
+                    time = 3_000L
+                    elapsedRealtimeNanos = SystemClock.elapsedRealtimeNanos()
+                },
+            )
+            shadowOf(Looper.getMainLooper()).idle()
+            runCurrent()
+            assertEquals(3.0, result.await()?.latitude, "a fix at 40 s still counts")
+            assertTrue(shadowOf(lm).getLocationUpdateListeners().isEmpty(), "removed after the fix")
+        }
 
     @Test
     fun networkOnly_noTrigger() {
