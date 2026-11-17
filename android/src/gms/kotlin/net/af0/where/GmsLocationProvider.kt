@@ -126,9 +126,9 @@ class GmsLocationProvider : LocationProvider {
         }
     }
 
-    override suspend fun getCurrentLocation(): Location? {
+    override suspend fun getCurrentLocation(timeoutMs: Long): Location? {
         return try {
-            withTimeoutOrNull(10_000L) {
+            withTimeoutOrNull(timeoutMs) {
                 fusedClient.getCurrentLocation(Priority.PRIORITY_BALANCED_POWER_ACCURACY, null).await()
             }
         } catch (e: SecurityException) {

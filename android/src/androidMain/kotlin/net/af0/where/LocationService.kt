@@ -82,9 +82,9 @@ class LocationService : Service() {
     private lateinit var pollWakeLock: PowerManager.WakeLock
     private lateinit var networkWakeLock: PowerManager.WakeLock
 
-    // Covers a motion trigger's forced fix and the poll iteration it wakes, released at the end of
-    // that iteration (motionWakePending). Separate from pollWakeLock, which an iteration already in
-    // progress releases when it finishes.
+    // Covers the poll iteration a motion trigger wakes, released at the end of that iteration
+    // (motionWakePending). Separate from pollWakeLock, which an iteration already in progress
+    // releases when it finishes.
     private lateinit var motionWakeLock: PowerManager.WakeLock
 
     // Main thread only: set when a motion trigger wakes the poll loop.
@@ -142,23 +142,18 @@ class LocationService : Service() {
     @VisibleForTesting
     internal var lastGeofenceExitAt = 0L
 
-    // Stationary mode (F-Droid; see enterStationaryIfIdle) is currentPriority == PASSIVE: the
-    // active request is off and the significant-motion trigger is armed.
-
-    /** Sharing with someone and registered since the last stop; its start counts as movement. */
+    /**
+     * F-Droid's stationary mode (#483): the policy decides, this service carries it out. While
+     * [StationaryPolicy.Mode.STATIONARY], currentPriority is PASSIVE and the motion trigger is armed.
+     */
     @VisibleForTesting
-    internal var trackingSession = false
-
-    /** [elapsedClock] time of the last credible [MOVEMENT_RADIUS_THRESHOLD_METERS] move (or session start / leaving stationary). */
-    @VisibleForTesting
-    internal var lastMovedAt = 0L
-
-    /** Where the last credible move ended; null until a credible fix seeds it. */
-    @VisibleForTesting
-    internal var movementAnchor: android.location.Location? = null
+    internal val stationary = StationaryPolicy()
 
     // Logs only the first armMotionTrigger refusal of a run of them (gms refuses every time).
     private var motionTriggerRefusalLogged = false
+
+    // The poll loop's last view of the foreground, to spot the app leaving it.
+    private var wasInForeground = false
 
     @VisibleForTesting
     internal var consecutiveLateHeartbeats = 0
@@ -286,7 +281,7 @@ class LocationService : Service() {
             lastLocationCallbackTime = clock()
             locationSource.onLocation(lat, lng, bearing)
         }
-        locationProvider.setActiveFixListener { noteFix(it) }
+        locationProvider.setFixListener { noteFix(it) }
 
         if (hasLocationPermission()) {
             locationProvider.getLastLocationAsync { loc ->
@@ -467,7 +462,6 @@ class LocationService : Service() {
             e2eeManager.addDiagnosticEvent("Stale geofence exit ignored")
         } else if (intent?.action == ACTION_GEOFENCE_EVENT) {
             Log.d(TAG, "onStartCommand: Received Geofence Exit event")
-            locationProvider.cancelMotionTrigger()
             currentPriority = LocationAccuracy.HIGH
             currentInterval = HIGH_INTERVAL_MS
             lastGeofenceExitAt = elapsedClock()
@@ -609,12 +603,11 @@ class LocationService : Service() {
             // A geofence exit's HIGH request belongs to that sharing session; the next one starts
             // at BALANCED rather than resuming HIGH until the next poll wake ends it. Only on
             // sharing off: a brief permission or location-services blip mid-drive keeps HIGH.
-            if (!isSharing) endTrackingSession()
-            // Whatever the cause, the stationary countdown restarts when tracking comes back: the
-            // device may have moved during the outage, unobserved. For the same reason stationary
-            // mode ends (a HIGH request is kept for a blip mid-drive).
-            trackingSession = false
-            if (currentPriority == LocationAccuracy.PASSIVE) resetToBalancedAccuracy()
+            if (!isSharing) resetToBalancedAccuracy()
+            // Whatever the cause, tracking stops: the device may move unobserved, so stationary
+            // mode ends and the countdown restarts when tracking comes back. Sharing off forgets
+            // the place too; an outage keeps it (a HIGH request is kept for a blip mid-drive).
+            if (stationary.stopTracking(forgetPlace = !isSharing)) resetToBalancedAccuracy()
             if (isPassiveRegistered) {
                 locationProvider.removePassiveUpdates()
                 isPassiveRegistered = false
@@ -645,7 +638,8 @@ class LocationService : Service() {
                 isPassiveRegistered = false
             }
             // Nothing to track for: like sharing off, a later session starts at BALANCED.
-            endTrackingSession()
+            stationary.stopTracking(forgetPlace = true)
+            resetToBalancedAccuracy()
             return
         }
 
@@ -670,12 +664,9 @@ class LocationService : Service() {
             // while stationary. Replanting the same fence ID is harmless.
             plantGeofenceAtLastKnownLocation()
         }
-        if (isRegistered && !trackingSession) {
-            // Not on re-registrations (watchdog, permission blips, leaving HIGH): they mustn't
-            // restart the stationary countdown.
-            trackingSession = true
-            lastMovedAt = elapsedClock()
-        }
+        // Starts the countdown on the first registration after tracking stopped; a no-op on
+        // re-registrations (watchdog, leaving HIGH or stationary).
+        if (isRegistered) stationary.startTracking(elapsedClock())
         if (isRegistered) {
             lastRegistrationTime = clock()
             lastLocationCallbackTime = 0L // reset so watchdog waits for the first callback from this registration
@@ -788,7 +779,7 @@ class LocationService : Service() {
             val now = clock()
             // Not while stationary: nothing active is registered, and passive callbacks may
             // legitimately not come for hours.
-            if (isRegistered && currentPriority != LocationAccuracy.PASSIVE) {
+            if (isRegistered && stationary.mode != StationaryPolicy.Mode.STATIONARY) {
                 val referenceTime = if (lastLocationCallbackTime > 0L) lastLocationCallbackTime else lastRegistrationTime
                 if (referenceTime > 0L && now - referenceTime > STALE_REGISTRATION_THRESHOLD_MS) {
                     Log.w(TAG, "FLP callbacks stale for ${(now - referenceTime) / 60000}min; re-registering")
@@ -799,6 +790,8 @@ class LocationService : Service() {
                 }
             }
             endHighAccuracyIfIdle(elapsedClock())
+            if (wasInForeground && !inForeground) stationary.backgrounded(elapsedClock())
+            wasInForeground = inForeground
             maintainStationary(inForeground)
             if (!inForeground) enterStationaryIfIdle(elapsedClock())
             // Always poll — even when sharing is off we need to process incoming
@@ -811,7 +804,7 @@ class LocationService : Service() {
             // would otherwise force a GPS fix on each.
             if (isSharing && sendScheduler.isHeartbeatDue()) {
                 Log.d(TAG, "Stationary threshold exceeded; forcing fresh location fix.")
-                val loc = forceLocationUpdateAndGet()
+                val loc = forceLocationUpdateAndGet(stationary.heartbeatFixTimeoutMs(elapsedClock()))
 
                 val lastLoc =
                     if (loc != null) {
@@ -930,60 +923,50 @@ class LocationService : Service() {
         return distance[0] < GeofencePolicy.radiusMeters(isMoving = true) / 2
     }
 
-    /** Also leaves stationary mode, so every path back to BALANCED disarms the motion trigger. */
+    /** Every path back to BALANCED, stationary's included, disarms the motion trigger here. */
     private fun resetToBalancedAccuracy() {
         currentPriority = LocationAccuracy.BALANCED
         currentInterval = BALANCED_INTERVAL_MS
         locationProvider.cancelMotionTrigger()
     }
 
-    /** Sharing off or no one to share with: the next session starts moving, at BALANCED. */
-    private fun endTrackingSession() {
-        resetToBalancedAccuracy()
-        trackingSession = false
-        movementAnchor = null
-    }
-
     /**
-     * F-Droid's answer to the geofence: with no fused provider, BALANCED keeps the GPS (or network)
-     * listener running nonstop, which drains the battery while sitting still (#483). After
-     * [STATIONARY_IDLE_MS] without a credible move, drop the active request (passive and the
-     * heartbeat's one-shot fixes stay) and arm the significant-motion sensor to bring it back.
-     * Runs on poll wakes, like [endHighAccuracyIfIdle]. A no-op where the trigger is unavailable
-     * (gms, which keeps BALANCED and its geofence; devices without the sensor). [now] is
-     * [elapsedClock] time.
+     * Enters stationary mode when the policy says it's due ([StationaryPolicy.idleMs] in the
+     * background without a credible move): drops the active request (the passive listener and the
+     * heartbeat's one-shot fixes stay) and arms the significant-motion trigger to bring it back.
+     * Runs on background poll wakes, like [endHighAccuracyIfIdle]. A no-op where the trigger is
+     * unavailable (gms, which keeps BALANCED and its geofence; no sensor; no GPS) and on
+     * approximate location. [now] is [elapsedClock] time.
      */
     @VisibleForTesting
     internal fun enterStationaryIfIdle(now: Long) {
-        if (!trackingSession) return
+        if (!stationary.dueToEnter(now)) return
         if (currentPriority != LocationAccuracy.BALANCED || !isRegistered || !isPassiveRegistered) return
-        if (now - lastMovedAt < STATIONARY_IDLE_MS) return
         // Approximate location only: fixes come fudged to ~2 km, so no move could ever be credible
         // and the heartbeat couldn't catch one the sensor missed.
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED) return
-        // Asked again on each poll wake: a refusal can be transient (the sensor HAL, or the F-Droid
-        // listener on NETWORK for now), and asking is cheap.
+        // Asked again on each due wake: a refusal can be transient (the sensor HAL, or no GPS for
+        // now), and asking is cheap.
         if (!locationProvider.armMotionTrigger { onMotionTrigger() }) {
             if (!motionTriggerRefusalLogged) Log.i(TAG, "No motion trigger available; staying on balanced accuracy")
             motionTriggerRefusalLogged = true
             return
         }
         motionTriggerRefusalLogged = false
-        Log.i(TAG, "No movement for ${STATIONARY_IDLE_MS / 60_000}min; stationary until motion")
-        // Coalesced: indoor walking can cycle this several times an hour.
-        e2eeManager.addDiagnosticEvent("Stationary: location updates paused until motion", "stationary-enter")
+        stationary.entered(now)
+        Log.i(TAG, "No movement for ${stationary.idleMs / 60_000}min; stationary until motion")
+        diagnostic(STATIONARY_ENTERED)
         currentPriority = LocationAccuracy.PASSIVE
-        // The anchor is kept: it's always a credible fix, and the heartbeat compares against it.
         isRegistered = false
         ensureLocationRegistration()
     }
 
     /** Called on the main thread, inside the sensor's wake lock. */
     private fun onMotionTrigger() {
-        if (currentPriority != LocationAccuracy.PASSIVE) return
+        if (!stationary.leave(elapsedClock())) return
         // Synchronously, before the sensor's wake lock goes: a launched coroutine is only posted.
         motionWakeLock.acquire(WAKE_LOCK_TIMEOUT_MS)
-        leaveStationary(WakeSource.MOTION)
+        resumeFromStationary(WakeSource.MOTION)
         // No forced fix of its own: the BALANCED listener just registered is already searching, and
         // the woken iteration forces one if a heartbeat is due. It releases motionWakeLock when
         // done (the timeout bounds it).
@@ -995,63 +978,53 @@ class LocationService : Service() {
     /**
      * Runs on every poll wake while stationary: ends it when the app is in the foreground (the map
      * should follow the user, and battery doesn't matter then), or when what it relies on is gone
-     * (the passive registration, or the trigger: re-armed here, since a one-shot trigger can be lost
-     * silently, e.g. to a sensor HAL restart).
+     * (the passive registration, or the trigger: GPS turned off, or the sensor refusing).
      */
     @VisibleForTesting
     internal fun maintainStationary(inForeground: Boolean) {
-        if (currentPriority != LocationAccuracy.PASSIVE) return
+        if (stationary.mode != StationaryPolicy.Mode.STATIONARY) return
         val reason =
             when {
                 inForeground -> "app in foreground"
                 !isRegistered || !isPassiveRegistered -> "passive updates lost"
-                !locationProvider.armMotionTrigger { onMotionTrigger() } -> "motion trigger lost"
+                // A no-op while armed; re-arms after a trigger the provider lost.
+                !locationProvider.armMotionTrigger { onMotionTrigger() } -> "motion trigger unavailable"
                 else -> return
             }
-        e2eeManager.addDiagnosticEvent("Stationary: ended ($reason)")
-        leaveStationary(WakeSource.MANUAL)
+        stationary.leave(elapsedClock())
+        diagnostic("$STATIONARY_ENDED ($reason)")
+        resumeFromStationary(WakeSource.MANUAL)
     }
 
-    private fun leaveStationary(source: WakeSource) {
-        if (currentPriority != LocationAccuracy.PASSIVE) return
+    /** Carries out leaving stationary: BALANCED again, the trigger disarmed. */
+    private fun resumeFromStationary(source: WakeSource) {
         Log.i(TAG, "Leaving stationary (${source.value}); balanced accuracy")
         resetToBalancedAccuracy()
-        lastMovedAt = elapsedClock()
         isRegistered = false
         ensureLocationRegistration()
-        // The other causes log their own, uncoalesced event.
         if (source == WakeSource.MOTION) logReliability(source, true)
     }
 
-    /**
-     * Movement detection for [enterStationaryIfIdle]: active-listener fixes and the heartbeat's
-     * forced fixes, if [isCredibleFix]. A move of [MOVEMENT_RADIUS_THRESHOLD_METERS] (plus both
-     * fixes' accuracy) from the anchor restarts the countdown, and while stationary means the
-     * sensor missed one.
-     */
+    /** Every fix, from the providers' listeners and the heartbeat, for [StationaryPolicy.onFix]. */
     @VisibleForTesting
     internal fun noteFix(loc: android.location.Location) {
-        if (!isCredibleFix(loc)) return
-        val anchor = movementAnchor
-        // Both fixes' error could otherwise add up to a "move" of a still device.
-        if (anchor != null && anchor.distanceTo(loc) < MOVEMENT_RADIUS_THRESHOLD_METERS + anchor.accuracy + loc.accuracy) return
-        movementAnchor = loc
-        // Seeding the anchor isn't a move: the first fix after any registration always arrives.
-        if (anchor == null) return
-        lastMovedAt = elapsedClock()
-        if (currentPriority == LocationAccuracy.PASSIVE) {
-            e2eeManager.addDiagnosticEvent("Stationary: moved without a motion trigger")
-            leaveStationary(WakeSource.HEARTBEAT)
+        val fix =
+            StationaryPolicy.Fix(
+                lat = loc.latitude,
+                lng = loc.longitude,
+                accuracyMeters = if (loc.hasAccuracy()) loc.accuracy.toDouble() else null,
+                isGps = loc.provider == android.location.LocationManager.GPS_PROVIDER,
+                elapsedMs = loc.elapsedRealtimeNanos / 1_000_000,
+            )
+        if (stationary.onFix(fix, elapsedClock())) {
+            diagnostic(STATIONARY_MOVED_UNTRIGGERED)
+            resumeFromStationary(WakeSource.HEARTBEAT)
         }
     }
 
-    // GPS only: network fixes (other apps' included, via the forced fix's last-known fallback) jump
-    // hundreds of meters indoors. And fresh: that fallback can be an old fix.
-    private fun isCredibleFix(loc: android.location.Location): Boolean {
-        if (loc.provider != android.location.LocationManager.GPS_PROVIDER) return false
-        if (!loc.hasAccuracy() || loc.accuracy > CREDIBLE_FIX_ACCURACY_METERS) return false
-        return elapsedClock() - loc.elapsedRealtimeNanos / 1_000_000 <= CREDIBLE_FIX_MAX_AGE_MS
-    }
+    // Coalesced against an identical previous event: indoor walking can cycle stationary mode
+    // several times an hour.
+    private fun diagnostic(message: String) = e2eeManager.addDiagnosticEvent(message, message)
 
     private fun scheduleDozeAlarm(delayMs: Long) {
         val intent = Intent(this, LocationService::class.java).apply { action = ACTION_POLL_ALARM }
@@ -1121,9 +1094,9 @@ class LocationService : Service() {
     }
 
     @VisibleForTesting
-    internal suspend fun forceLocationUpdateAndGet(): android.location.Location? {
+    internal suspend fun forceLocationUpdateAndGet(timeoutMs: Long = StationaryPolicy().fixTimeoutMs): android.location.Location? {
         return try {
-            val loc = locationProvider.getCurrentLocation()
+            val loc = locationProvider.getCurrentLocation(timeoutMs)
             when {
                 loc != null -> Log.d(TAG, "Forced location fix successful: ${loc.latitude}, ${loc.longitude}")
                 else -> {
@@ -1219,18 +1192,9 @@ class LocationService : Service() {
          */
         const val HIGH_ACCURACY_IDLE_MS = 15 * 60 * 1000L
 
-        /**
-         * How long BALANCED runs without [MOVEMENT_RADIUS_THRESHOLD_METERS] of movement before the
-         * F-Droid build turns its active request off and waits on the significant-motion sensor;
-         * see [enterStationaryIfIdle].
-         */
-        const val STATIONARY_IDLE_MS = HIGH_ACCURACY_IDLE_MS
-
-        /** A fix counts as movement evidence only this accurate ([isCredibleFix])... */
-        const val CREDIBLE_FIX_ACCURACY_METERS = 100f
-
-        /** ...and only this fresh: a forced fix can fall back to an old last-known one. */
-        const val CREDIBLE_FIX_MAX_AGE_MS = 60_000L
+        const val STATIONARY_ENTERED = "Stationary: location updates paused until motion"
+        const val STATIONARY_ENDED = "Stationary: ended"
+        const val STATIONARY_MOVED_UNTRIGGERED = "Stationary: moved without a motion trigger"
 
         /**
          * Interval to wait before forcing a fresh GPS fix if stationary (§5.3).

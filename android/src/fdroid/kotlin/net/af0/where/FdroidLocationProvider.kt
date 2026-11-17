@@ -15,6 +15,7 @@ import android.os.Looper
 import android.util.Log
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withTimeoutOrNull
+import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import kotlin.coroutines.resume
 
@@ -25,7 +26,7 @@ class FdroidLocationProvider : LocationProvider {
     private var activeListener: LocationListener? = null
     private var passiveListener: LocationListener? = null
     private var onLocationCallback: ((Double, Double, Double?) -> Unit)? = null
-    private var activeFixListener: ((Location) -> Unit)? = null
+    private var fixListener: ((Location) -> Unit)? = null
 
     // Captured at init() time — callers must invoke init() on the thread whose looper
     // should receive location callbacks (LocationService calls init() on the main thread).
@@ -34,8 +35,12 @@ class FdroidLocationProvider : LocationProvider {
     private var sensorManager: SensorManager? = null
     private var motionSensor: Sensor? = null
 
-    // getCurrentLocation's callbacks; one for the provider's life rather than a thread per call.
-    private val currentLocationExecutor by lazy { Executors.newSingleThreadExecutor() }
+    // getCurrentLocation's callbacks; one for the provider's life rather than a thread per call,
+    // shut down in onDestroy.
+    private var currentLocationExecutor: ExecutorService? = null
+
+    private fun currentLocationExecutor() =
+        currentLocationExecutor ?: Executors.newSingleThreadExecutor().also { currentLocationExecutor = it }
 
     // The armed significant-motion listener; touched only on the main thread (init, the
     // service's calls, and trigger delivery all run there).
@@ -52,8 +57,8 @@ class FdroidLocationProvider : LocationProvider {
         motionSensor = sensorManager?.getDefaultSensor(Sensor.TYPE_SIGNIFICANT_MOTION)
     }
 
-    override fun setActiveFixListener(listener: ((Location) -> Unit)?) {
-        activeFixListener = listener
+    override fun setFixListener(listener: ((Location) -> Unit)?) {
+        fixListener = listener
     }
 
     // TYPE_SIGNIFICANT_MOTION is a wake-up sensor in the sensor hub: it fires when the device
@@ -63,9 +68,14 @@ class FdroidLocationProvider : LocationProvider {
     // trigger events on the main looper, inside the sensor service's wake lock.
     // Refused while the active listener would be on NETWORK (no GPS): that listener is cheap, and its
     // fixes are too coarse for LocationService to tell movement from noise.
+    // Arms once: re-requesting would tear down the sensor connection, and could drop an event
+    // already queued or restart the HAL's detection window mid-departure.
     override fun armMotionTrigger(onMotion: () -> Unit): Boolean {
-        cancelMotionTrigger()
-        if (selectFallbackProvider() != LocationManager.GPS_PROVIDER) return false
+        if (selectFallbackProvider() != LocationManager.GPS_PROVIDER) {
+            cancelMotionTrigger()
+            return false
+        }
+        if (motionListener != null) return true
         val sm = sensorManager ?: return false
         val sensor = motionSensor ?: return false
         val listener =
@@ -173,7 +183,7 @@ class FdroidLocationProvider : LocationProvider {
         val listener =
             createLocationListener { loc ->
                 onLocationCallback?.invoke(loc.latitude, loc.longitude, if (loc.hasBearing()) loc.bearing.toDouble() else null)
-                activeFixListener?.invoke(loc)
+                fixListener?.invoke(loc)
             }
         // Mirror GmsLocationProvider's 10s floor to prevent excessive wakeups under fast
         // heartbeat conditions (e.g. activity transition to MOVING uses a 10s interval).
@@ -203,6 +213,8 @@ class FdroidLocationProvider : LocationProvider {
         val listener =
             createLocationListener { loc ->
                 onLocationCallback?.invoke(loc.latitude, loc.longitude, if (loc.hasBearing()) loc.bearing.toDouble() else null)
+                // Another app's GPS (navigation, say) is the best sign of a move the sensor missed.
+                fixListener?.invoke(loc)
             }
         return try {
             locationManager.requestLocationUpdates(LocationManager.PASSIVE_PROVIDER, 1_000L, 0f, listener, callbackLooper)
@@ -237,8 +249,8 @@ class FdroidLocationProvider : LocationProvider {
         }
     }
 
-    override suspend fun getCurrentLocation(): Location? {
-        return withTimeoutOrNull(10_000L) {
+    override suspend fun getCurrentLocation(timeoutMs: Long): Location? {
+        return withTimeoutOrNull(timeoutMs) {
             suspendCancellableCoroutine { cont ->
                 try {
                     val provider = selectFallbackProvider()
@@ -249,13 +261,16 @@ class FdroidLocationProvider : LocationProvider {
                         // R == API 30; LocationManager.getCurrentLocation() was added in API 30.
                         val signal = CancellationSignal()
                         cont.invokeOnCancellation { signal.cancel() }
-                        locationManager.getCurrentLocation(provider, signal, currentLocationExecutor) { loc ->
+                        locationManager.getCurrentLocation(provider, signal, currentLocationExecutor()) { loc ->
                             cont.resume(loc)
                         }
+                    } else if (activeListener != null) {
+                        // Below API 30 with the active listener running, last-known is its latest
+                        // fix: fresh enough, without holding the caller for a fix.
+                        cont.resume(getBestLastKnownLocation())
                     } else {
-                        // A real fix below API 30 too, not the last-known one: while stationary
-                        // (no active listener) that's stale, and the heartbeat's fix is the
-                        // fallback for a motion the significant-motion sensor missed.
+                        // Stationary (no active listener): last-known is stale, and this fix is the
+                        // fallback for a departure the significant-motion sensor missed.
                         val listener =
                             createLocationListener { loc ->
                                 if (cont.isActive) cont.resume(loc)
@@ -296,5 +311,7 @@ class FdroidLocationProvider : LocationProvider {
         removeActiveUpdates()
         removePassiveUpdates()
         cancelMotionTrigger()
+        currentLocationExecutor?.shutdown()
+        currentLocationExecutor = null
     }
 }
