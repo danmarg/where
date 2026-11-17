@@ -1,0 +1,266 @@
+package net.af0.where
+
+import android.Manifest
+import android.app.Application
+import android.location.Location
+import androidx.test.core.app.ApplicationProvider
+import io.mockk.coVerify
+import io.mockk.every
+import io.mockk.mockk
+import io.mockk.slot
+import io.mockk.verify
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.test.StandardTestDispatcher
+import kotlinx.coroutines.test.TestScope
+import kotlinx.coroutines.test.advanceUntilIdle
+import kotlinx.coroutines.test.resetMain
+import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.test.setMain
+import org.junit.After
+import org.junit.Before
+import org.junit.Test
+import org.junit.runner.RunWith
+import org.robolectric.Robolectric
+import org.robolectric.RobolectricTestRunner
+import org.robolectric.Shadows.shadowOf
+import org.robolectric.annotation.Config
+import kotlin.test.assertEquals
+import kotlin.test.assertNotNull
+
+/**
+ * F-Droid's stationary mode (#483): after [LocationService.STATIONARY_IDLE_MS] without a credible
+ * move the active request goes off (PASSIVE) and the significant-motion trigger brings it back.
+ */
+@RunWith(RobolectricTestRunner::class)
+@Config(sdk = [33], application = TestWhereApplication::class)
+class LocationServiceStationaryTest {
+    private val context: Application get() = ApplicationProvider.getApplicationContext()
+    private val testDispatcher = StandardTestDispatcher()
+    private lateinit var fakeLocationSource: ServiceFakeLocationSource
+    private lateinit var mockLocationProvider: LocationProvider
+    private var offset = 0L
+    private val friend = mockk<net.af0.where.e2ee.FriendEntry>(relaxed = true)
+    private val onMotion = slot<() -> Unit>()
+    private var activeFix: ((Location) -> Unit)? = null
+    private var triggerAvailable = true
+
+    @Before
+    fun setup() {
+        Dispatchers.setMain(testDispatcher)
+        shadowOf(context).grantPermissions(Manifest.permission.ACCESS_FINE_LOCATION)
+
+        fakeLocationSource = ServiceFakeLocationSource()
+        fakeLocationSource.onFriendsUpdated(listOf(friend))
+        LocationService.clock = { 1_000_000_000L }
+
+        mockLocationProvider = mockk(relaxed = true)
+        every { mockLocationProvider.requestPassiveUpdates() } returns true
+        every { mockLocationProvider.requestActiveUpdates(any(), any(), any()) } returns true
+        every { mockLocationProvider.setGeofenceAt(any(), any(), any()) } returns GeofenceRequestResult.UNSUPPORTED
+        every { mockLocationProvider.armMotionTrigger(capture(onMotion)) } answers { triggerAvailable }
+        every { mockLocationProvider.setActiveFixListener(any()) } answers { activeFix = firstArg() }
+        io.mockk.coEvery { mockLocationProvider.getCurrentLocation() } returns null
+        io.mockk.coEvery { mockLocationProvider.getLastLocation() } returns null
+
+        io.mockk.mockkObject(net.af0.where.e2ee.KtorMailboxClient)
+        io.mockk.coEvery { net.af0.where.e2ee.KtorMailboxClient.poll(any(), any()) } returns emptyList()
+        io.mockk.mockkObject(UserPrefs)
+    }
+
+    @After
+    fun tearDown() {
+        io.mockk.unmockkAll()
+        Dispatchers.resetMain()
+        LocationService.clock = { System.currentTimeMillis() }
+        LocationService.elapsedClock = { android.os.SystemClock.elapsedRealtime() }
+    }
+
+    private fun TestScope.buildService(): Pair<org.robolectric.android.controller.ServiceController<LocationService>, LocationService> {
+        LocationService.elapsedClock = { offset + testScheduler.currentTime }
+        (context as TestWhereApplication).userStore.setSharing(true)
+        val controller = Robolectric.buildService(LocationService::class.java)
+        val service = controller.get()
+        service.locationProviderOverride = mockLocationProvider
+        service.locationClientOverride = mockk(relaxed = true)
+        val e2ee = mockk<net.af0.where.e2ee.E2eeManager>(relaxed = true)
+        io.mockk.coEvery { e2ee.listFriends() } returns listOf(friend)
+        service.e2eeManagerOverride = e2ee
+        service.locationSourceOverride = fakeLocationSource
+        controller.create()
+        advanceUntilIdle()
+        return controller to service
+    }
+
+    private fun TestScope.elapsed() = offset + testScheduler.currentTime
+
+    /** Moves the elapsed clock to [target] without running the timers in between. */
+    private fun TestScope.setElapsed(target: Long) {
+        offset = target - testScheduler.currentTime
+    }
+
+    /** A fix [northMeters] north of the origin, taken [ageMs] ago. */
+    private fun TestScope.fix(
+        northMeters: Double = 0.0,
+        accuracy: Float = 10f,
+        ageMs: Long = 0L,
+    ) = Location("gps").apply {
+        latitude = 37.0 + northMeters / 111_000.0
+        longitude = -122.0
+        this.accuracy = accuracy
+        elapsedRealtimeNanos = (elapsed() - ageMs) * 1_000_000
+        time = elapsed()
+    }
+
+    private fun TestScope.goStationary(service: LocationService) {
+        setElapsed(service.lastMovedAt + IDLE)
+        service.enterStationaryIfIdle(elapsed())
+        assertEquals(LocationAccuracy.PASSIVE, service.currentPriority)
+    }
+
+    @Test
+    fun goesStationaryOneWindowAfterTheLastMove() =
+        runTest {
+            val (controller, service) = buildService()
+            val start = service.lastMovedAt
+            service.enterStationaryIfIdle(start + IDLE - 1)
+            assertEquals(LocationAccuracy.BALANCED, service.currentPriority)
+            verify(exactly = 0) { mockLocationProvider.armMotionTrigger(any()) }
+
+            service.enterStationaryIfIdle(start + IDLE)
+            assertEquals(LocationAccuracy.PASSIVE, service.currentPriority)
+            verify { mockLocationProvider.requestActiveUpdates(LocationAccuracy.PASSIVE, any(), any()) }
+            controller.destroy()
+        }
+
+    @Test
+    fun thePollLoopEntersStationary() =
+        runTest {
+            val (controller, service) = buildService()
+            setElapsed(service.lastMovedAt + IDLE)
+            fakeLocationSource.wakePoll()
+            advanceUntilIdle()
+            assertEquals(LocationAccuracy.PASSIVE, service.currentPriority)
+            controller.destroy()
+        }
+
+    @Test
+    fun motionRestoresBalancedAndForcesAFix() =
+        runTest {
+            val (controller, service) = buildService()
+            goStationary(service)
+            setElapsed(elapsed() + 60 * MINUTE)
+
+            onMotion.captured.invoke()
+            advanceUntilIdle()
+            assertEquals(LocationAccuracy.BALANCED, service.currentPriority)
+            assertEquals(elapsed(), service.lastMovedAt, "leaving restarts the countdown")
+            verify(exactly = 2) {
+                mockLocationProvider.requestActiveUpdates(LocationAccuracy.BALANCED, LocationService.BALANCED_INTERVAL_MS, any())
+            }
+            coVerify { mockLocationProvider.getCurrentLocation() }
+
+            // A late duplicate trigger is harmless.
+            onMotion.captured.invoke()
+            advanceUntilIdle()
+            verify(exactly = 2) {
+                mockLocationProvider.requestActiveUpdates(LocationAccuracy.BALANCED, LocationService.BALANCED_INTERVAL_MS, any())
+            }
+            controller.destroy()
+        }
+
+    @Test
+    fun withoutATriggerItStaysBalancedAndDoesNotRetry() =
+        runTest {
+            triggerAvailable = false
+            val (controller, service) = buildService()
+            val start = service.lastMovedAt
+            service.enterStationaryIfIdle(start + IDLE)
+            service.enterStationaryIfIdle(start + 2 * IDLE)
+            assertEquals(LocationAccuracy.BALANCED, service.currentPriority)
+            verify(exactly = 1) { mockLocationProvider.armMotionTrigger(any()) }
+            verify(exactly = 0) { mockLocationProvider.requestActiveUpdates(LocationAccuracy.PASSIVE, any(), any()) }
+            controller.destroy()
+        }
+
+    @Test
+    fun onlyACredibleMoveLeavesStationary() =
+        runTest {
+            val (controller, service) = buildService()
+            goStationary(service)
+
+            service.noteFix(fix())
+            assertNotNull(service.movementAnchor, "the first credible fix seeds the anchor")
+            service.noteFix(fix(northMeters = 1_000.0, accuracy = 500f))
+            assertEquals(LocationAccuracy.PASSIVE, service.currentPriority, "a coarse fix isn't movement")
+            service.noteFix(fix(northMeters = 1_000.0, ageMs = 10 * MINUTE))
+            assertEquals(LocationAccuracy.PASSIVE, service.currentPriority, "a stale fix isn't movement")
+            service.noteFix(fix(northMeters = 100.0))
+            assertEquals(LocationAccuracy.PASSIVE, service.currentPriority, "under the movement radius")
+
+            service.noteFix(fix(northMeters = 1_000.0))
+            assertEquals(LocationAccuracy.BALANCED, service.currentPriority, "the sensor missed a real move")
+            verify { mockLocationProvider.cancelMotionTrigger() }
+            controller.destroy()
+        }
+
+    @Test
+    fun coarseActiveFixesDoNotHoldOffStationary() =
+        runTest {
+            val (controller, service) = buildService()
+            val start = service.lastMovedAt
+            val listener = assertNotNull(activeFix)
+            listener(fix())
+            // Indoors: network fixes wander hundreds of meters.
+            setElapsed(start + 5 * MINUTE)
+            listener(fix(northMeters = 400.0, accuracy = 300f))
+            setElapsed(start + 10 * MINUTE)
+            listener(fix(northMeters = -400.0, accuracy = 300f))
+            assertEquals(start, service.lastMovedAt)
+
+            // A real move does.
+            listener(fix(northMeters = 500.0))
+            assertEquals(start + 10 * MINUTE, service.lastMovedAt)
+            service.enterStationaryIfIdle(start + IDLE)
+            assertEquals(LocationAccuracy.BALANCED, service.currentPriority)
+            controller.destroy()
+        }
+
+    @Test
+    fun reRegisteringDoesNotRestartTheCountdown() =
+        runTest {
+            val (controller, service) = buildService()
+            val start = service.lastMovedAt
+            // As the watchdog does.
+            setElapsed(start + 10 * MINUTE)
+            service.isRegistered = false
+            service.onStartCommand(null, 0, 1)
+            advanceUntilIdle()
+            assertEquals(start, service.lastMovedAt)
+            controller.destroy()
+        }
+
+    @Test
+    fun stoppingSharingDisarmsTheTriggerAndTheNextSessionStartsMoving() =
+        runTest {
+            val (controller, service) = buildService()
+            goStationary(service)
+
+            val app = context as TestWhereApplication
+            app.userStore.setSharing(false)
+            advanceUntilIdle()
+            assertEquals(LocationAccuracy.BALANCED, service.currentPriority)
+            verify { mockLocationProvider.cancelMotionTrigger() }
+
+            setElapsed(elapsed() + 60 * MINUTE)
+            app.userStore.setSharing(true)
+            advanceUntilIdle()
+            assertEquals(elapsed(), service.lastMovedAt, "a new session starts a fresh countdown")
+            assertEquals(LocationAccuracy.BALANCED, service.currentPriority)
+            controller.destroy()
+        }
+
+    private companion object {
+        const val MINUTE = 60_000L
+        const val IDLE = LocationService.STATIONARY_IDLE_MS
+    }
+}

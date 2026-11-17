@@ -71,6 +71,23 @@ interface LocationProvider {
      */
     fun removeGeofence() {}
 
+    /**
+     * Receives every fix from the active listener (not the passive one, which carries other apps'
+     * coarse fixes), on the main thread, for movement detection. Only the F-Droid build reports
+     * them; the gms build has no stationary mode.
+     */
+    fun setActiveFixListener(listener: ((Location) -> Unit)?) {}
+
+    /**
+     * Arms a one-shot wake for when the device starts moving: the significant-motion sensor in
+     * the F-Droid build (the gms build wakes on a geofence exit instead). [onMotion] runs at most
+     * once per arm, on the main thread. False when this build or device has no such trigger.
+     */
+    fun armMotionTrigger(onMotion: () -> Unit): Boolean = false
+
+    /** Disarms the [armMotionTrigger] trigger, if one is armed. */
+    fun cancelMotionTrigger() {}
+
     fun onDestroy()
 }
 

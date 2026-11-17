@@ -1,6 +1,10 @@
 package net.af0.where
 
 import android.content.Context
+import android.hardware.Sensor
+import android.hardware.SensorManager
+import android.hardware.TriggerEvent
+import android.hardware.TriggerEventListener
 import android.location.Location
 import android.location.LocationListener
 import android.location.LocationManager
@@ -21,10 +25,17 @@ class FdroidLocationProvider : LocationProvider {
     private var activeListener: LocationListener? = null
     private var passiveListener: LocationListener? = null
     private var onLocationCallback: ((Double, Double, Double?) -> Unit)? = null
+    private var activeFixListener: ((Location) -> Unit)? = null
 
     // Captured at init() time — callers must invoke init() on the thread whose looper
     // should receive location callbacks (LocationService calls init() on the main thread).
     private lateinit var callbackLooper: Looper
+
+    private var sensorManager: SensorManager? = null
+
+    // The armed significant-motion listener; touched only on the main thread (init, the
+    // service's calls, and trigger delivery all run there).
+    private var motionListener: TriggerEventListener? = null
 
     override fun init(
         context: Context,
@@ -33,6 +44,43 @@ class FdroidLocationProvider : LocationProvider {
         this.onLocationCallback = onLocation
         callbackLooper = Looper.myLooper() ?: Looper.getMainLooper()
         locationManager = context.applicationContext.getSystemService(Context.LOCATION_SERVICE) as LocationManager
+        sensorManager = context.applicationContext.getSystemService(Context.SENSOR_SERVICE) as? SensorManager
+    }
+
+    override fun setActiveFixListener(listener: ((Location) -> Unit)?) {
+        activeFixListener = listener
+    }
+
+    // TYPE_SIGNIFICANT_MOTION is a wake-up sensor in the sensor hub: it fires when the device
+    // starts walking, cycling or riding, with no location provider or network backend involved,
+    // so it works the same on microG, GrapheneOS and plain AOSP. One-shot: it disarms itself
+    // after firing. Some low-end devices lack it; then this returns false. SensorManager delivers
+    // trigger events on the main looper, inside the sensor service's wake lock.
+    override fun armMotionTrigger(onMotion: () -> Unit): Boolean {
+        cancelMotionTrigger()
+        val sm = sensorManager ?: return false
+        val sensor = sm.getDefaultSensor(Sensor.TYPE_SIGNIFICANT_MOTION) ?: return false
+        val listener =
+            object : TriggerEventListener() {
+                override fun onTrigger(event: TriggerEvent?) {
+                    if (motionListener !== this) return
+                    motionListener = null
+                    onMotion()
+                }
+            }
+        if (!sm.requestTriggerSensor(listener, sensor)) {
+            Log.w(TAG, "Significant-motion sensor refused the trigger request")
+            return false
+        }
+        motionListener = listener
+        return true
+    }
+
+    override fun cancelMotionTrigger() {
+        val listener = motionListener ?: return
+        motionListener = null
+        val sm = sensorManager ?: return
+        sm.getDefaultSensor(Sensor.TYPE_SIGNIFICANT_MOTION)?.let { sm.cancelTriggerSensor(listener, it) }
     }
 
     override fun getLastLocationAsync(callback: (Location?) -> Unit) {
@@ -116,6 +164,7 @@ class FdroidLocationProvider : LocationProvider {
         val listener =
             createLocationListener { loc ->
                 onLocationCallback?.invoke(loc.latitude, loc.longitude, if (loc.hasBearing()) loc.bearing.toDouble() else null)
+                activeFixListener?.invoke(loc)
             }
         // Mirror GmsLocationProvider's 10s floor to prevent excessive wakeups under fast
         // heartbeat conditions (e.g. activity transition to MOVING uses a 10s interval).
@@ -231,5 +280,6 @@ class FdroidLocationProvider : LocationProvider {
     override fun onDestroy() {
         removeActiveUpdates()
         removePassiveUpdates()
+        cancelMotionTrigger()
     }
 }
