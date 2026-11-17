@@ -9,6 +9,7 @@ import android.graphics.Path
 import android.graphics.RectF
 import android.location.Location
 import android.text.TextPaint
+import androidx.annotation.VisibleForTesting
 import androidx.compose.foundation.layout.*
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -42,15 +43,24 @@ private const val STYLE_URL = "https://tiles.openfreemap.org/styles/liberty"
 /**
  * Renders a marker bitmap with a persistent name label above a pin shape, matching the
  * GMS MarkerComposable visual. subtitle is shown below the name when the peer is selected.
- * The bitmap anchor is bottom-center (MapLibre default), which places the pin tip at the
- * geographic coordinate.
+ * MapLibre anchors a marker's icon at its center (its own default marker is padded the same
+ * way), so the bitmap carries transparent space below the pin as tall as the label and pin:
+ * that puts the pin tip at the center, on the geographic coordinate (#482).
  */
 private fun peerMarkerIcon(
     context: Context,
     name: String,
     subtitle: String?,
     alpha: Float,
-): org.maplibre.android.annotations.Icon {
+): org.maplibre.android.annotations.Icon = IconFactory.getInstance(context).fromBitmap(peerMarkerBitmap(context, name, subtitle, alpha))
+
+@VisibleForTesting
+internal fun peerMarkerBitmap(
+    context: Context,
+    name: String,
+    subtitle: String?,
+    alpha: Float,
+): Bitmap {
     val dm = context.resources.displayMetrics
     val dp = dm.density
     val sp = dm.scaledDensity
@@ -88,7 +98,8 @@ private fun peerMarkerIcon(
     val pinR = pinW / 2f
 
     val bmpW = maxOf(boxW, pinW).roundToInt()
-    val bmpH = (boxH + pinH).roundToInt()
+    // The tip (at boxH + pinH) lands on the bitmap's center.
+    val bmpH = (2 * (boxH + pinH)).roundToInt()
     val cx = bmpW / 2f
 
     val bmp = Bitmap.createBitmap(bmpW, bmpH, Bitmap.Config.ARGB_8888)
@@ -126,7 +137,7 @@ private fun peerMarkerIcon(
         }
     canvas.drawPath(path, pinPaint)
 
-    return IconFactory.getInstance(context).fromBitmap(bmp)
+    return bmp
 }
 
 @Composable
