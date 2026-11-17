@@ -41,19 +41,40 @@ import kotlin.math.roundToInt
 private const val STYLE_URL = "https://tiles.openfreemap.org/styles/liberty"
 
 /**
+ * A peer pin on screen: the tip (on the coordinate) and its icon's size, padding included. Only
+ * the half above the tip is drawn.
+ */
+internal data class PinOnScreen(
+    val userId: String,
+    val tipX: Float,
+    val tipY: Float,
+    val width: Int,
+    val height: Int,
+)
+
+/**
+ * The friend whose drawn pin (or label) is at ([x], [y]), the last drawn on top; null for empty
+ * map. MapLibre hit-tests a marker against its whole icon, centered on the coordinate, so its
+ * own pick would include the transparent padding below the tip.
+ */
+@VisibleForTesting
+internal fun pinAt(
+    x: Float,
+    y: Float,
+    pins: List<PinOnScreen>,
+): String? =
+    pins.lastOrNull { pin ->
+        x >= pin.tipX - pin.width / 2f && x <= pin.tipX + pin.width / 2f &&
+            y >= pin.tipY - pin.height / 2f && y <= pin.tipY
+    }?.userId
+
+/**
  * Renders a marker bitmap with a persistent name label above a pin shape, matching the
  * GMS MarkerComposable visual. subtitle is shown below the name when the peer is selected.
  * MapLibre anchors a marker's icon at its center (its own default marker is padded the same
  * way), so the bitmap carries transparent space below the pin as tall as the label and pin:
  * that puts the pin tip at the center, on the geographic coordinate (#482).
  */
-private fun peerMarkerIcon(
-    context: Context,
-    name: String,
-    subtitle: String?,
-    alpha: Float,
-): org.maplibre.android.annotations.Icon = IconFactory.getInstance(context).fromBitmap(peerMarkerBitmap(context, name, subtitle, alpha))
-
 @VisibleForTesting
 internal fun peerMarkerBitmap(
     context: Context,
@@ -178,6 +199,9 @@ fun MapComposable(
     var mapRef by remember { mutableStateOf<MapLibreMap?>(null) }
     var mapViewRef by remember { mutableStateOf<MapView?>(null) }
     var didInitialCenter by remember { mutableStateOf(false) }
+
+    // Where the last touch on the map went down, in MapView pixels; see pinAt.
+    val lastTouch = remember { floatArrayOf(Float.NaN, Float.NaN) }
     val lifecycleOwner = LocalLifecycleOwner.current
 
     DisposableEffect(lifecycleOwner) {
@@ -261,6 +285,13 @@ fun MapComposable(
         factory = { ctx ->
             MapView(ctx).apply {
                 onCreate(null)
+                setOnTouchListener { _, event ->
+                    if (event.actionMasked == android.view.MotionEvent.ACTION_DOWN) {
+                        lastTouch[0] = event.x
+                        lastTouch[1] = event.y
+                    }
+                    false
+                }
                 getMapAsync { map ->
                     val last = UserPrefs.getLastLocation(ctx)
                     map.cameraPosition =
@@ -289,21 +320,42 @@ fun MapComposable(
             // can resolve taps without relying on LatLng equality.
             map.clear()
             val markerIds = mutableMapOf<Long, String>()
+            // In drawing order, for pinAt: userId, tip, icon size.
+            val drawn = mutableListOf<Triple<String, LatLng, Bitmap>>()
             markerData.forEach { (user, meta, subtitle) ->
                 val (_, name, style) = meta
                 val pinAlpha = if (style == PeerPinStyle.DIMMED) 0.45f else 1f
                 val isSelected = selectedUserId == user.userId
+                val position = LatLng(user.lat, user.lng)
+                val bitmap = peerMarkerBitmap(context, name, if (isSelected) subtitle else null, pinAlpha)
                 val marker =
                     map.addMarker(
                         MarkerOptions()
-                            .position(LatLng(user.lat, user.lng))
-                            .icon(peerMarkerIcon(context, name, if (isSelected) subtitle else null, pinAlpha)),
+                            .position(position)
+                            .icon(IconFactory.getInstance(context).fromBitmap(bitmap)),
                     )
-                if (marker != null) markerIds[marker.id] = user.userId
+                if (marker != null) {
+                    markerIds[marker.id] = user.userId
+                    drawn += Triple(user.userId, position, bitmap)
+                }
             }
             map.setOnMarkerClickListener { marker ->
-                val userId = markerIds[marker.id] ?: return@setOnMarkerClickListener false
-                onSelectedUserIdChange(if (selectedUserId == userId) null else userId)
+                val picked = markerIds[marker.id] ?: return@setOnMarkerClickListener false
+                // MapLibre's pick counts the icon's transparent padding below the tip; resolve
+                // the tap against what's drawn. No touch recorded: trust its pick.
+                val userId =
+                    if (lastTouch[0].isNaN()) {
+                        picked
+                    } else {
+                        val pins =
+                            drawn.map { (id, position, bitmap) ->
+                                val tip = map.projection.toScreenLocation(position)
+                                PinOnScreen(id, tip.x, tip.y, bitmap.width, bitmap.height)
+                            }
+                        pinAt(lastTouch[0], lastTouch[1], pins)
+                    }
+                // A tap on empty map under a pin: what the map click listener would do.
+                onSelectedUserIdChange(if (userId == null || selectedUserId == userId) null else userId)
                 true
             }
         },
