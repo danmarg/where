@@ -82,9 +82,13 @@ class LocationService : Service() {
     private lateinit var pollWakeLock: PowerManager.WakeLock
     private lateinit var networkWakeLock: PowerManager.WakeLock
 
-    // Covers the forced fix after a motion trigger. Separate from pollWakeLock, which a poll
-    // iteration already in progress releases when it finishes.
+    // Covers a motion trigger's forced fix and the poll iteration it wakes, released at the end of
+    // that iteration (motionWakePending). Separate from pollWakeLock, which an iteration already in
+    // progress releases when it finishes.
     private lateinit var motionWakeLock: PowerManager.WakeLock
+
+    // Main thread only: set when a motion trigger wakes the poll loop.
+    private var motionWakePending = false
     private lateinit var locationProvider: LocationProvider
 
     // Set when startForeground() throws in onCreate() (see there). Everything below that call
@@ -153,8 +157,8 @@ class LocationService : Service() {
     @VisibleForTesting
     internal var movementAnchor: android.location.Location? = null
 
-    // False once armMotionTrigger refuses (gms, or no sensor): never retried in this process.
-    private var motionTriggerSupported = true
+    // Logs only the first armMotionTrigger refusal of a run of them (gms refuses every time).
+    private var motionTriggerRefusalLogged = false
 
     @VisibleForTesting
     internal var consecutiveLateHeartbeats = 0
@@ -260,23 +264,15 @@ class LocationService : Service() {
         }
 
         alarmManager = getSystemService(AlarmManager::class.java)
-        pollWakeLock =
-            (getSystemService(Context.POWER_SERVICE) as PowerManager)
-                .newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "where:poll_alarm").also {
-                    it.setReferenceCounted(false)
-                }
+        val powerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
+
+        fun partialWakeLock(tag: String) =
+            powerManager.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, tag).also { it.setReferenceCounted(false) }
+        pollWakeLock = partialWakeLock("where:poll_alarm")
         // Separate from pollWakeLock: both are non-reference-counted, so sharing one let a
         // network-change sync release the lock mid-way through an alarm-driven fix + send.
-        networkWakeLock =
-            (getSystemService(Context.POWER_SERVICE) as PowerManager)
-                .newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "where:network_sync").also {
-                    it.setReferenceCounted(false)
-                }
-        motionWakeLock =
-            (getSystemService(Context.POWER_SERVICE) as PowerManager)
-                .newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "where:motion").also {
-                    it.setReferenceCounted(false)
-                }
+        networkWakeLock = partialWakeLock("where:network_sync")
+        motionWakeLock = partialWakeLock("where:motion")
 
         e2eeManager = e2eeManagerOverride ?: app.e2eeManager
         locationClient = locationClientOverride ?: app.locationClient
@@ -613,6 +609,10 @@ class LocationService : Service() {
             // at BALANCED rather than resuming HIGH until the next poll wake ends it. Only on
             // sharing off: a brief permission or location-services blip mid-drive keeps HIGH.
             if (!isSharing) endTrackingSession()
+            // Whatever the cause, the stationary countdown restarts when tracking comes back: the
+            // device may have moved during the outage, unobserved. Priority (and an armed motion
+            // trigger) is kept for a blip.
+            trackingSession = false
             if (isPassiveRegistered) {
                 locationProvider.removePassiveUpdates()
                 isPassiveRegistered = false
@@ -731,7 +731,9 @@ class LocationService : Service() {
 
                     override fun pausedFriendIds() = userStore.effectivelyPausedIds()
 
-                    // Android has no stationary signal (no Activity Recognition; see #391).
+                    // No stationary signal (no Activity Recognition; see #391). F-Droid's
+                    // stationary mode isn't one: it starts 15-25 min after arrival, so peers'
+                    // "here since" would be late, and gms has no such mode.
                     override fun stationary() = false
                 },
             // Monotonic: send intervals are elapsed time, and wall-clock changes mustn't move them.
@@ -761,6 +763,10 @@ class LocationService : Service() {
             val rapid = isRapidPolling()
             val inForeground = locationSource.isAppInForeground.value
             val isSharing = userStore.isSharingLocation.value
+            // Captured here so an iteration already running when the motion trigger fired
+            // doesn't release the lock that covers the one it woke.
+            val releaseMotionWakeLock = motionWakePending
+            motionWakePending = false
             val pending = pendingWakeSource
             val source =
                 if (pending != null) {
@@ -855,6 +861,7 @@ class LocationService : Service() {
             // All work for this wake is complete. Release the wake lock now so we don't hold
             // it across the entire sleep interval (could be 10+ min in background).
             if (pollWakeLock.isHeld) pollWakeLock.release()
+            if (releaseMotionWakeLock && motionWakeLock.isHeld) motionWakeLock.release()
             locationSource.awaitPollWake(interval)
             cancelDozeAlarm()
         }
@@ -945,14 +952,17 @@ class LocationService : Service() {
      */
     @VisibleForTesting
     internal fun enterStationaryIfIdle(now: Long) {
-        if (!motionTriggerSupported || !trackingSession) return
+        if (!trackingSession) return
         if (currentPriority != LocationAccuracy.BALANCED || !isRegistered || !isPassiveRegistered) return
         if (now - lastMovedAt < STATIONARY_IDLE_MS) return
+        // Asked again on each poll wake: a refusal can be transient (the sensor HAL, or the F-Droid
+        // listener on NETWORK for now), and asking is cheap.
         if (!locationProvider.armMotionTrigger { onMotionTrigger() }) {
-            Log.i(TAG, "No motion trigger on this build/device; staying on balanced accuracy")
-            motionTriggerSupported = false
+            if (!motionTriggerRefusalLogged) Log.i(TAG, "No motion trigger available; staying on balanced accuracy")
+            motionTriggerRefusalLogged = true
             return
         }
+        motionTriggerRefusalLogged = false
         Log.i(TAG, "No movement for ${STATIONARY_IDLE_MS / 60_000}min; stationary until motion")
         e2eeManager.addDiagnosticEvent("Stationary: location updates paused until motion")
         currentPriority = LocationAccuracy.PASSIVE
@@ -976,10 +986,10 @@ class LocationService : Service() {
                     locationSource.onLocation(loc.latitude, loc.longitude, if (loc.hasBearing()) loc.bearing.toDouble() else null)
                     noteFix(loc)
                 }
-                pollWakeLock.acquire(WAKE_LOCK_TIMEOUT_MS)
-                locationSource.wakePoll()
             } finally {
-                if (motionWakeLock.isHeld) motionWakeLock.release()
+                // The woken iteration releases motionWakeLock when done (and the timeout bounds it).
+                motionWakePending = true
+                locationSource.wakePoll()
             }
         }
     }

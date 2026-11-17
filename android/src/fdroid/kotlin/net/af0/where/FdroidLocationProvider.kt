@@ -32,6 +32,10 @@ class FdroidLocationProvider : LocationProvider {
     private lateinit var callbackLooper: Looper
 
     private var sensorManager: SensorManager? = null
+    private var motionSensor: Sensor? = null
+
+    // The provider the active listener is on, or null when it isn't registered.
+    private var activeProvider: String? = null
 
     // The armed significant-motion listener; touched only on the main thread (init, the
     // service's calls, and trigger delivery all run there).
@@ -45,6 +49,7 @@ class FdroidLocationProvider : LocationProvider {
         callbackLooper = Looper.myLooper() ?: Looper.getMainLooper()
         locationManager = context.applicationContext.getSystemService(Context.LOCATION_SERVICE) as LocationManager
         sensorManager = context.applicationContext.getSystemService(Context.SENSOR_SERVICE) as? SensorManager
+        motionSensor = sensorManager?.getDefaultSensor(Sensor.TYPE_SIGNIFICANT_MOTION)
     }
 
     override fun setActiveFixListener(listener: ((Location) -> Unit)?) {
@@ -56,10 +61,13 @@ class FdroidLocationProvider : LocationProvider {
     // so it works the same on microG, GrapheneOS and plain AOSP. One-shot: it disarms itself
     // after firing. Some low-end devices lack it; then this returns false. SensorManager delivers
     // trigger events on the main looper, inside the sensor service's wake lock.
+    // Refused while the active listener is on NETWORK (no GPS): that listener is cheap, and its
+    // fixes are too coarse for LocationService to tell movement from noise.
     override fun armMotionTrigger(onMotion: () -> Unit): Boolean {
         cancelMotionTrigger()
+        if (activeProvider != LocationManager.GPS_PROVIDER) return false
         val sm = sensorManager ?: return false
-        val sensor = sm.getDefaultSensor(Sensor.TYPE_SIGNIFICANT_MOTION) ?: return false
+        val sensor = motionSensor ?: return false
         val listener =
             object : TriggerEventListener() {
                 override fun onTrigger(event: TriggerEvent?) {
@@ -79,8 +87,8 @@ class FdroidLocationProvider : LocationProvider {
     override fun cancelMotionTrigger() {
         val listener = motionListener ?: return
         motionListener = null
-        val sm = sensorManager ?: return
-        sm.getDefaultSensor(Sensor.TYPE_SIGNIFICANT_MOTION)?.let { sm.cancelTriggerSensor(listener, it) }
+        val sensor = motionSensor ?: return
+        sensorManager?.cancelTriggerSensor(listener, sensor)
     }
 
     override fun getLastLocationAsync(callback: (Location?) -> Unit) {
@@ -173,6 +181,7 @@ class FdroidLocationProvider : LocationProvider {
         return try {
             locationManager.requestLocationUpdates(provider, effectiveInterval, minDistance, listener, callbackLooper)
             activeListener = listener
+            activeProvider = provider
             Log.i(TAG, "Registered active location updates via $provider (accuracy=$accuracy, intervalMs=$effectiveInterval)")
             true
         } catch (e: SecurityException) {
@@ -214,6 +223,7 @@ class FdroidLocationProvider : LocationProvider {
                 Log.w(TAG, "removeActiveUpdates failed: ${e.message}")
             }
             activeListener = null
+            activeProvider = null
         }
     }
 
@@ -232,22 +242,28 @@ class FdroidLocationProvider : LocationProvider {
         return withTimeoutOrNull(10_000L) {
             suspendCancellableCoroutine { cont ->
                 try {
-                    // R == API 30; LocationManager.getCurrentLocation() was added in API 30.
-                    // The else branch returns the best last-known fix, which may be stale.
-                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-                        val provider = selectFallbackProvider()
-                        if (provider == null) {
-                            Log.w(TAG, "No enabled location provider (GPS or NETWORK) available; falling back to last-known fix")
-                            cont.resume(getBestLastKnownLocation())
-                        } else {
-                            val signal = CancellationSignal()
-                            cont.invokeOnCancellation { signal.cancel() }
-                            locationManager.getCurrentLocation(provider, signal, Executors.newSingleThreadExecutor()) { loc ->
-                                cont.resume(loc)
-                            }
+                    val provider = selectFallbackProvider()
+                    if (provider == null) {
+                        Log.w(TAG, "No enabled location provider (GPS or NETWORK) available; falling back to last-known fix")
+                        cont.resume(getBestLastKnownLocation())
+                    } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                        // R == API 30; LocationManager.getCurrentLocation() was added in API 30.
+                        val signal = CancellationSignal()
+                        cont.invokeOnCancellation { signal.cancel() }
+                        locationManager.getCurrentLocation(provider, signal, Executors.newSingleThreadExecutor()) { loc ->
+                            cont.resume(loc)
                         }
                     } else {
-                        cont.resume(getBestLastKnownLocation())
+                        // A real fix below API 30 too, not the last-known one: while stationary
+                        // (no active listener) that's stale, and the heartbeat's fix is the
+                        // fallback for a motion the significant-motion sensor missed.
+                        val listener =
+                            createLocationListener { loc ->
+                                if (cont.isActive) cont.resume(loc)
+                            }
+                        cont.invokeOnCancellation { locationManager.removeUpdates(listener) }
+                        @Suppress("DEPRECATION")
+                        locationManager.requestSingleUpdate(provider, listener, callbackLooper)
                     }
                 } catch (e: SecurityException) {
                     Log.e(TAG, "SecurityException getting current location: ${e.message}")

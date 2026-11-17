@@ -169,7 +169,7 @@ class LocationServiceStationaryTest {
         }
 
     @Test
-    fun withoutATriggerItStaysBalancedAndDoesNotRetry() =
+    fun withoutATriggerItStaysBalancedUntilOneArms() =
         runTest {
             triggerAvailable = false
             val (controller, service) = buildService()
@@ -177,8 +177,33 @@ class LocationServiceStationaryTest {
             service.enterStationaryIfIdle(start + IDLE)
             service.enterStationaryIfIdle(start + 2 * IDLE)
             assertEquals(LocationAccuracy.BALANCED, service.currentPriority)
-            verify(exactly = 1) { mockLocationProvider.armMotionTrigger(any()) }
             verify(exactly = 0) { mockLocationProvider.requestActiveUpdates(LocationAccuracy.PASSIVE, any(), any()) }
+
+            // A refusal can be transient: a later wake asks again.
+            triggerAvailable = true
+            service.enterStationaryIfIdle(start + 3 * IDLE)
+            assertEquals(LocationAccuracy.PASSIVE, service.currentPriority)
+            controller.destroy()
+        }
+
+    @Test
+    fun anOutageRestartsTheCountdown() =
+        runTest {
+            val (controller, service) = buildService()
+            val start = service.lastMovedAt
+            // Location services go off for hours, sharing still on.
+            shadowOf(context.getSystemService(android.location.LocationManager::class.java))
+                .setLocationEnabled(false)
+            service.onStartCommand(null, 0, 1)
+            advanceUntilIdle()
+            setElapsed(start + 5 * IDLE)
+            shadowOf(context.getSystemService(android.location.LocationManager::class.java))
+                .setLocationEnabled(true)
+            service.onStartCommand(null, 0, 2)
+            advanceUntilIdle()
+            assertEquals(elapsed(), service.lastMovedAt, "the device may have moved, unobserved")
+            service.enterStationaryIfIdle(elapsed())
+            assertEquals(LocationAccuracy.BALANCED, service.currentPriority)
             controller.destroy()
         }
 
