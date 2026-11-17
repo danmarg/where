@@ -36,13 +36,20 @@ class FdroidLocationProviderSelectionTest {
         return FdroidLocationProvider().also { it.init(context) { lat, lng, _ -> fixes += lat to lng } }
     }
 
+    private var fixCount = 0
+
     private fun fix(provider: String) {
+        // Each fix moves at least 200 m past the last and has a monotonically later timestamp,
+        // so neither the production distance filter nor Robolectric's own last-fix ordering can
+        // silently drop the second one.
+        fixCount++
         shadowOf(lm).simulateLocation(
             Location(provider).apply {
-                latitude = 37.0
+                latitude = 37.0 + fixCount * 0.01
                 longitude = -122.0
                 accuracy = 10f
-                time = System.currentTimeMillis()
+                time = System.currentTimeMillis() + fixCount
+                elapsedRealtimeNanos = android.os.SystemClock.elapsedRealtimeNanos() + fixCount * 1_000_000L
             },
         )
         shadowOf(Looper.getMainLooper()).idle()

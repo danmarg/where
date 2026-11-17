@@ -12,6 +12,7 @@ import android.os.Looper
 import android.util.Log
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withTimeoutOrNull
+import java.util.concurrent.Executor
 import java.util.concurrent.Executors
 import kotlin.coroutines.resume
 
@@ -19,16 +20,20 @@ private const val TAG = "FdroidLocationProvider"
 private const val GPS_ONE_SHOT_TIMEOUT_MS = 10_000L
 private const val GPS_NO_FIX_TIMEOUT_MS = 5 * 60_000L
 
+// After this long, the "last GPS one-shot timed out" hint is forgotten: conditions (indoors vs.
+// outside, sharing stop/restart) may have changed and GPS deserves another chance.
+private const val GPS_ONE_SHOT_FAIL_RETRY_MS = 10 * 60_000L
+
 class FdroidLocationProvider : LocationProvider {
     private lateinit var locationManager: LocationManager
     private var activeListener: LocationListener? = null
     private var passiveListener: LocationListener? = null
     private var onLocationCallback: ((Double, Double, Double?) -> Unit)? = null
 
-    // Set when the last one-shot GPS fix timed out (typically indoors); the next one-shot goes
-    // to NETWORK instead of spending another GPS_ONE_SHOT_TIMEOUT_MS searching. Cleared by any
-    // successful one-shot.
-    @Volatile private var lastGpsOneShotFailed = false
+    // Monotonic ms at which the last one-shot GPS fix timed out (0 = never, or forgotten). The
+    // next one-shot within GPS_ONE_SHOT_FAIL_RETRY_MS goes to NETWORK instead of spending another
+    // GPS_ONE_SHOT_TIMEOUT_MS searching. Reads and writes are confined to the callback looper.
+    private var lastGpsOneShotFailAt = 0L
 
     // Stops a continuous GPS-only request that never produces a fix; see armGpsNoFixTimeout.
     private var gpsNoFixTimeout: Runnable? = null
@@ -37,12 +42,21 @@ class FdroidLocationProvider : LocationProvider {
     // should receive location callbacks (LocationService calls init() on the main thread).
     private lateinit var callbackLooper: Looper
 
+    // The handler the no-fix timeout is posted to. One instance is kept so removeCallbacks
+    // matches the post site (MessageQueue.removeMessages filters by Handler instance).
+    private lateinit var callbackHandler: Handler
+
+    // One-shot GPS fixes on API >= R take an Executor. Reused so each getCurrentLocation call
+    // doesn't leak a non-daemon thread.
+    private val oneShotExecutor: Executor by lazy { Executors.newSingleThreadExecutor() }
+
     override fun init(
         context: Context,
         onLocation: (Double, Double, Double?) -> Unit,
     ) {
         this.onLocationCallback = onLocation
         callbackLooper = Looper.myLooper() ?: Looper.getMainLooper()
+        callbackHandler = Handler(callbackLooper)
         locationManager = context.applicationContext.getSystemService(Context.LOCATION_SERVICE) as LocationManager
     }
 
@@ -72,13 +86,16 @@ class FdroidLocationProvider : LocationProvider {
         }
     }
 
-    // Provider for a one-shot fix: GPS first for accuracy, NETWORK once GPS has just timed out.
+    // Provider for a one-shot fix: GPS first for accuracy, NETWORK for a GPS_ONE_SHOT_FAIL_RETRY_MS
+    // window after a GPS timeout (so an indoor miss doesn't cost another full timeout on each call).
     private fun selectOneShotProvider(): String? {
         val enabled = locationManager.getProviders(true)
         val network = enabled.contains(LocationManager.NETWORK_PROVIDER)
         val gps = enabled.contains(LocationManager.GPS_PROVIDER)
+        val skipGps = lastGpsOneShotFailAt > 0 &&
+            (android.os.SystemClock.elapsedRealtime() - lastGpsOneShotFailAt) < GPS_ONE_SHOT_FAIL_RETRY_MS
         return when {
-            lastGpsOneShotFailed && network -> LocationManager.NETWORK_PROVIDER
+            skipGps && network -> LocationManager.NETWORK_PROVIDER
             gps -> LocationManager.GPS_PROVIDER
             network -> LocationManager.NETWORK_PROVIDER
             else -> null
@@ -101,11 +118,11 @@ class FdroidLocationProvider : LocationProvider {
                 }
             }
         gpsNoFixTimeout = timeout
-        Handler(callbackLooper).postDelayed(timeout, GPS_NO_FIX_TIMEOUT_MS)
+        callbackHandler.postDelayed(timeout, GPS_NO_FIX_TIMEOUT_MS)
     }
 
     private fun cancelGpsNoFixTimeout() {
-        gpsNoFixTimeout?.let { Handler(callbackLooper).removeCallbacks(it) }
+        gpsNoFixTimeout?.let { callbackHandler.removeCallbacks(it) }
         gpsNoFixTimeout = null
     }
 
@@ -175,9 +192,10 @@ class FdroidLocationProvider : LocationProvider {
         return try {
             locationManager.requestLocationUpdates(provider, effectiveInterval, minDistance, listener, callbackLooper)
             activeListener = listener
-            // Only worth bounding when GPS is the sole provider: otherwise HIGH on a device that
-            // has NETWORK is asked for on purpose.
-            if (provider == LocationManager.GPS_PROVIDER && accuracy != LocationAccuracy.HIGH) armGpsNoFixTimeout(listener)
+            // Any GPS registration that never fixes should be released: HIGH asked for on purpose
+            // is still wasteful indoors (e.g. a geofence-exit false-positive). LocationService's
+            // stale-registration watchdog re-registers once the watchdog's threshold passes.
+            if (provider == LocationManager.GPS_PROVIDER) armGpsNoFixTimeout(listener)
             Log.i(TAG, "Registered active location updates via $provider (accuracy=$accuracy, intervalMs=$effectiveInterval)")
             true
         } catch (e: SecurityException) {
@@ -240,7 +258,13 @@ class FdroidLocationProvider : LocationProvider {
             withTimeoutOrNull(GPS_ONE_SHOT_TIMEOUT_MS) {
                 getCurrentLocationFrom(oneShotProvider)
             }
-        if (oneShotProvider == LocationManager.GPS_PROVIDER) lastGpsOneShotFailed = result == null
+        if (oneShotProvider == LocationManager.GPS_PROVIDER) {
+            // Null here is either the GPS callback resolving null or the outer timeout cancelling
+            // it; either way the fix wasn't delivered in time. A successful GPS one-shot clears
+            // the hint; the time-based decay in selectOneShotProvider lets GPS retry later
+            // regardless, so a NETWORK run doesn't need to clear it itself.
+            lastGpsOneShotFailAt = if (result == null) android.os.SystemClock.elapsedRealtime() else 0L
+        }
         return result
     }
 
@@ -256,7 +280,7 @@ class FdroidLocationProvider : LocationProvider {
                     } else {
                         val signal = CancellationSignal()
                         cont.invokeOnCancellation { signal.cancel() }
-                        locationManager.getCurrentLocation(provider, signal, Executors.newSingleThreadExecutor()) { loc ->
+                        locationManager.getCurrentLocation(provider, signal, oneShotExecutor) { loc ->
                             cont.resume(loc)
                         }
                     }
