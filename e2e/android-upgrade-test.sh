@@ -362,8 +362,11 @@ else
     # The emulator process sometimes exits on a guest reboot (about 3 in 10 CI runs). Its data
     # survives (-no-snapshot), so a cold start of the same AVD is the reboot the app sees.
     echo "⚠️  the emulator exited on reboot; starting it again in place of the reboot"
+    # A crashed emulator leaves AVD lock entries that otherwise refuse the relaunch; recent
+    # emulator versions make some of them directories (mkdir() as an atomic lock), hence -rf.
+    find "$HOME/.android/avd/test.avd" -maxdepth 1 -name '*.lock' -exec rm -rf {} +
     # shellcheck disable=SC2086 # EMULATOR_OPTIONS is a list of flags
-    "$ANDROID_HOME/emulator/emulator" -port 5554 -avd test ${EMULATOR_OPTIONS:?} \
+    "$ANDROID_HOME/emulator/emulator" -port 5554 -avd test ${EMULATOR_OPTIONS:?set it to the same flags the initial launch used} \
       >> "$WORK/emulator-relaunch.log" 2>&1 &
     timeout 300 adb wait-for-device || fail "the relaunched emulator didn't come up within 5 min"
     retry 300 boot_completed || fail "the relaunched emulator didn't finish booting within 5 min"
