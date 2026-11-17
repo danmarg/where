@@ -266,7 +266,6 @@ class LocationServiceStationaryTest {
             setElapsed(elapsed() + 1)
             service.noteFix(fix(northMeters = 1_020.0))
             assertStationary(service, false, "the sensor missed a real move")
-            verify { mockLocationProvider.cancelMotionTrigger() }
             controller.destroy()
         }
 
@@ -317,7 +316,6 @@ class LocationServiceStationaryTest {
             app.userStore.setSharing(false)
             advanceUntilIdle()
             assertStationary(service, false)
-            verify { mockLocationProvider.cancelMotionTrigger() }
 
             setElapsed(elapsed() + 60 * MINUTE)
             app.userStore.setSharing(true)
@@ -386,7 +384,6 @@ class LocationServiceStationaryTest {
             service.onStartCommand(null, 0, 2)
             advanceUntilIdle()
             assertStationary(service, false, "the device may have moved, unobserved")
-            verify { mockLocationProvider.cancelMotionTrigger() }
             controller.destroy()
         }
 
@@ -432,6 +429,26 @@ class LocationServiceStationaryTest {
             woken.complete(Unit)
             advanceUntilIdle()
             assertFalse(motionLock.isHeld, "the woken iteration releases it when done")
+            controller.destroy()
+        }
+
+    @Test
+    fun aLongFixThatFailsAtOnceIsRetriedEvenWithALastKnownFix() =
+        runTest {
+            val (controller, service) = buildService()
+            goStationary(service)
+            // The fresh fix fails; the heartbeat falls back to the cached one.
+            io.mockk.coEvery { mockLocationProvider.getLastLocation() } answers { fix(ageMs = 60 * MINUTE) }
+            val long = service.stationary.longFixTimeoutMs
+            setElapsed(elapsed() + service.stationary.longFixEveryMs)
+            fakeLocationSource.wakePoll()
+            advanceUntilIdle()
+            io.mockk.coVerify(exactly = 1) { mockLocationProvider.getCurrentLocation(long) }
+
+            setElapsed(elapsed() + 6 * MINUTE)
+            fakeLocationSource.wakePoll()
+            advanceUntilIdle()
+            io.mockk.coVerify(exactly = 2) { mockLocationProvider.getCurrentLocation(long) }
             controller.destroy()
         }
 

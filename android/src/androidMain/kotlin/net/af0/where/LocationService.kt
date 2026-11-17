@@ -355,6 +355,10 @@ class LocationService : Service() {
                     intent: Intent,
                 ) {
                     Log.d(TAG, "Location providers changed, refreshing registration and notification")
+                    // Re-request even at the same priority: fdroid picks GPS or NETWORK at
+                    // registration, so a listener left on NETWORK while GPS was off moves back.
+                    // Not isRegistered = false: a provider turned off must still remove it.
+                    registeredPriority = null
                     ensureLocationRegistration()
                     updateNotification()
                 }
@@ -477,6 +481,8 @@ class LocationService : Service() {
             currentPriority = LocationAccuracy.HIGH
             currentInterval = HIGH_INTERVAL_MS
             lastGeofenceExitAt = elapsedClock()
+            // A departure: stationary (if this provider had both) mustn't keep it PASSIVE.
+            stationary.leave(elapsedClock())
             isRegistered = false
             ensureLocationRegistration()
             logReliability(WakeSource.GEOFENCE, true)
@@ -843,8 +849,10 @@ class LocationService : Service() {
                     )
                 }
                 val fixStartedAt = elapsedClock()
-                val loc = forceLocationUpdateAndGet(fixTimeoutMs)
-                stationary.heartbeatFixDone(fixTimeoutMs, loc != null, elapsedClock() - fixStartedAt, elapsedClock())
+                val forced = forceFix(fixTimeoutMs)
+                // Fresh only: a last-known fallback is no sign the long fix did its job.
+                stationary.heartbeatFixDone(fixTimeoutMs, forced.fresh, elapsedClock() - fixStartedAt, elapsedClock())
+                val loc = forced.location
 
                 val lastLoc =
                     if (loc != null) {
@@ -1034,8 +1042,8 @@ class LocationService : Service() {
 
     /** Carries out leaving stationary: the awake request again, the trigger disarmed. [reason] is for the log. */
     private fun resumeFromStationary(reason: String) {
-        Log.i(TAG, "Leaving stationary ($reason); balanced accuracy")
         ensureLocationRegistration()
+        Log.i(TAG, "Leaving stationary ($reason); priority=$effectivePriority")
     }
 
     /** Every fix, from the providers' listeners and the heartbeat, for [StationaryPolicy.onFix]. */
@@ -1127,23 +1135,31 @@ class LocationService : Service() {
     }
 
     @VisibleForTesting
-    internal suspend fun forceLocationUpdateAndGet(timeoutMs: Long = LocationProvider.DEFAULT_FIX_TIMEOUT_MS): android.location.Location? {
+    internal suspend fun forceLocationUpdateAndGet(timeoutMs: Long = LocationProvider.DEFAULT_FIX_TIMEOUT_MS): android.location.Location? =
+        forceFix(timeoutMs).location
+
+    /**
+     * A forced fix, falling back to the last known location when it times out or returns null.
+     * [ForcedFix.fresh] says whether the provider produced one, as the long-fix slot needs.
+     */
+    private class ForcedFix(val location: android.location.Location?, val fresh: Boolean)
+
+    private suspend fun forceFix(timeoutMs: Long): ForcedFix {
         return try {
             val loc = locationProvider.getCurrentLocation(timeoutMs)
-            when {
-                loc != null -> Log.d(TAG, "Forced location fix successful: ${loc.latitude}, ${loc.longitude}")
-                else -> {
-                    Log.d(TAG, "Forced location fix timed out or returned null; falling back to last known location")
-                    return locationProvider.getLastLocation()
-                }
+            if (loc != null) {
+                Log.d(TAG, "Forced location fix successful: ${loc.latitude}, ${loc.longitude}")
+                ForcedFix(loc, fresh = true)
+            } else {
+                Log.d(TAG, "Forced location fix timed out or returned null; falling back to last known location")
+                ForcedFix(locationProvider.getLastLocation(), fresh = false)
             }
-            loc
         } catch (e: SecurityException) {
             Log.e(TAG, "SecurityException during forced location fix: ${e.message}")
-            null
+            ForcedFix(null, fresh = false)
         } catch (e: Exception) {
             Log.e(TAG, "Forced location fix failed: ${e.message}")
-            null
+            ForcedFix(null, fresh = false)
         }
     }
 
