@@ -32,8 +32,10 @@ class FdroidLocationProvider : LocationProvider {
 
     // Monotonic ms at which the last one-shot GPS fix timed out (0 = never, or forgotten). The
     // next one-shot within GPS_ONE_SHOT_FAIL_RETRY_MS goes to NETWORK instead of spending another
-    // GPS_ONE_SHOT_TIMEOUT_MS searching. Reads and writes are confined to the callback looper.
-    private var lastGpsOneShotFailAt = 0L
+    // GPS_ONE_SHOT_TIMEOUT_MS searching. @Volatile because getCurrentLocation is a suspend fun
+    // whose dispatcher is set by the caller (today always the callback looper, but nothing in
+    // the API forbids a future caller on another one).
+    @Volatile private var lastGpsOneShotFailAt = 0L
 
     // Stops a continuous GPS-only request that never produces a fix; see armGpsNoFixTimeout.
     private var gpsNoFixTimeout: Runnable? = null
@@ -46,9 +48,16 @@ class FdroidLocationProvider : LocationProvider {
     // matches the post site (MessageQueue.removeMessages filters by Handler instance).
     private lateinit var callbackHandler: Handler
 
-    // One-shot GPS fixes on API >= R take an Executor. Reused so each getCurrentLocation call
-    // doesn't leak a non-daemon thread.
-    private val oneShotExecutor: Executor by lazy { Executors.newSingleThreadExecutor() }
+    // One-shot GPS fixes on API >= R take an Executor. Reused across calls — each
+    // getCurrentLocation used to allocate and leak a non-daemon thread — and the daemon flag
+    // lets the JVM shut down even if a provider is destroyed before onDestroy runs.
+    // isInitialized() is read in onDestroy() to avoid forcing construction only to shut it down.
+    private val oneShotExecutorLazy: Lazy<java.util.concurrent.ExecutorService> = lazy {
+        Executors.newSingleThreadExecutor { r ->
+            Thread(r, "FdroidLocationProvider-oneshot").apply { isDaemon = true }
+        }
+    }
+    private val oneShotExecutor: Executor get() = oneShotExecutorLazy.value
 
     override fun init(
         context: Context,
@@ -180,9 +189,13 @@ class FdroidLocationProvider : LocationProvider {
         // Use the same 200m distance filter as GmsLocationProvider so stationary users
         // don't receive a flood of fixes (PASSIVE is handled above and never reaches here).
         val minDistance = LocationService.MOVEMENT_RADIUS_THRESHOLD_METERS
+        // Re-armed on each fix so a device that got a fix and then went indoors is released
+        // within GPS_NO_FIX_TIMEOUT_MS of the last fix, not held forever (a one-shot cancel
+        // would assume stationarity). HIGH is left alone: it was asked for on purpose.
+        val rearmTimeout = provider == LocationManager.GPS_PROVIDER && accuracy != LocationAccuracy.HIGH
         val listener =
             createLocationListener { loc ->
-                cancelGpsNoFixTimeout()
+                if (rearmTimeout) armGpsNoFixTimeout(activeListener ?: return@createLocationListener)
                 onLocationCallback?.invoke(loc.latitude, loc.longitude, if (loc.hasBearing()) loc.bearing.toDouble() else null)
             }
         // Mirror GmsLocationProvider's 10s floor to prevent excessive wakeups under fast
@@ -192,10 +205,7 @@ class FdroidLocationProvider : LocationProvider {
         return try {
             locationManager.requestLocationUpdates(provider, effectiveInterval, minDistance, listener, callbackLooper)
             activeListener = listener
-            // Any GPS registration that never fixes should be released: HIGH asked for on purpose
-            // is still wasteful indoors (e.g. a geofence-exit false-positive). LocationService's
-            // stale-registration watchdog re-registers once the watchdog's threshold passes.
-            if (provider == LocationManager.GPS_PROVIDER) armGpsNoFixTimeout(listener)
+            if (rearmTimeout) armGpsNoFixTimeout(listener)
             Log.i(TAG, "Registered active location updates via $provider (accuracy=$accuracy, intervalMs=$effectiveInterval)")
             true
         } catch (e: SecurityException) {
@@ -316,5 +326,8 @@ class FdroidLocationProvider : LocationProvider {
     override fun onDestroy() {
         removeActiveUpdates()
         removePassiveUpdates()
+        // Daemon-threaded, so a missed shutdown won't keep the JVM alive, but shut it down to
+        // release the worker promptly when the service goes away.
+        if (oneShotExecutorLazy.isInitialized()) oneShotExecutorLazy.value.shutdownNow()
     }
 }

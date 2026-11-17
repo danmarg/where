@@ -89,14 +89,32 @@ class FdroidLocationProviderSelectionTest {
     }
 
     @Test
-    fun gpsOnlyDevice_keepsRequestOnceAFixArrives() {
+    fun gpsOnlyDevice_keepsRequestWhileFixesKeepArriving() {
         val p = provider(gps = true, network = false)
         assertTrue(p.requestActiveUpdates(LocationAccuracy.BALANCED, 60_000L, 10_000L))
 
+        // Each fix re-arms the no-fix timeout, so a device that keeps producing fixes stays
+        // registered even if any one gap approaches the 5-min cap.
+        fix(LocationManager.GPS_PROVIDER)
+        shadowOf(Looper.getMainLooper()).idleFor(4, TimeUnit.MINUTES)
+        fix(LocationManager.GPS_PROVIDER)
+        shadowOf(Looper.getMainLooper()).idleFor(4, TimeUnit.MINUTES)
+        fix(LocationManager.GPS_PROVIDER)
+
+        assertEquals(3, fixes.size, "A device that keeps fixing keeps its request")
+    }
+
+    @Test
+    fun gpsOnlyDevice_releasesRequestOnceFixesStop() {
+        val p = provider(gps = true, network = false)
+        assertTrue(p.requestActiveUpdates(LocationAccuracy.BALANCED, 60_000L, 10_000L))
+
+        // A device that fixed once and then went indoors is released within 5 min of the last
+        // fix, not held forever (a one-shot cancel would assume stationarity).
         fix(LocationManager.GPS_PROVIDER)
         shadowOf(Looper.getMainLooper()).idleFor(6, TimeUnit.MINUTES)
-
         fix(LocationManager.GPS_PROVIDER)
-        assertEquals(2, fixes.size, "A device that fixed once keeps its request; only a silent one is released")
+
+        assertEquals(1, fixes.size, "The re-armed no-fix timeout should have released the receiver")
     }
 }
